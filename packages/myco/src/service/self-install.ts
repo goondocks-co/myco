@@ -5,6 +5,7 @@ import { isDevServiceMode } from '../grove/paths.js';
 import type { ServiceManager, ServiceVariant } from './types.js';
 
 interface MinimalLogger {
+  debug(kind: string, message: string, meta?: Record<string, unknown>): void;
   info(kind: string, message: string, meta?: Record<string, unknown>): void;
   warn(kind: string, message: string, meta?: Record<string, unknown>): void;
 }
@@ -48,18 +49,27 @@ export async function ensureSelfInstalledAsService(
 
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });
-    // Always call install — its content-compare is the only path that
-    // rewrites a stale plist (e.g. one pointing at a binary location that
-    // no longer exists after a layout change). Short-circuiting on
-    // `isInstalled` strands users with a broken unit file across upgrades.
-    await mgr.install(spec);
-    logger.info('daemon.service_install', wasInstalled
-      ? `Refreshed managed service ${label}`
-      : `Installed managed service ${label}`, {
+
+    // `force: true` would terminate the calling daemon.
+    const result = await mgr.install(spec);
+
+    if (!result.changed) {
+      logger.debug('daemon.service_install', `Managed service ${label} unchanged`, {
+        variant, platform: mgr.platformName, executable,
+      });
+      return;
+    }
+    if (!wasInstalled) {
+      logger.info('daemon.service_install', `Installed managed service ${label}`, {
+        variant, platform: mgr.platformName, executable,
+      });
+      return;
+    }
+    logger.info('daemon.service_install', `Wrote updated managed service ${label}`, {
       variant,
       platform: mgr.platformName,
       executable,
-      refreshed: wasInstalled,
+      supervisor_reloaded: result.supervisorReloaded,
     });
   } catch (err) {
     logger.warn('daemon.service_install', 'Service install skipped', {

@@ -12,8 +12,10 @@ import { FakeServiceManager } from '../helpers/fake-service-manager';
 const FakeManager = FakeServiceManager;
 
 class CapturingLogger {
+  debugs: Array<{ kind: string; message: string; meta?: Record<string, unknown> }> = [];
   infos: Array<{ kind: string; message: string; meta?: Record<string, unknown> }> = [];
   warns: Array<{ kind: string; message: string; meta?: Record<string, unknown> }> = [];
+  debug(kind: string, message: string, meta?: Record<string, unknown>): void { this.debugs.push({ kind, message, meta }); }
   info(kind: string, message: string, meta?: Record<string, unknown>): void { this.infos.push({ kind, message, meta }); }
   warn(kind: string, message: string, meta?: Record<string, unknown>): void { this.warns.push({ kind, message, meta }); }
 }
@@ -59,8 +61,25 @@ describe('ensureSelfInstalledAsService', () => {
     await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(1);
     expect(mgr.installCalls[0].label).toBe('co.goondocks.myco');
-    expect(logger.infos.some((e) => e.message.includes('Refreshed managed service'))).toBe(true);
-    expect(logger.infos.some((e) => e.meta?.refreshed === true)).toBe(true);
+    expect(logger.infos.some((e) => e.message.includes('Wrote updated managed service'))).toBe(true);
+  });
+
+  test('calls install without force (a supervisor reload would terminate the calling daemon)', async () => {
+    const mgr = new FakeManager({ preInstalled: true });
+    const logger = new CapturingLogger();
+    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    expect(mgr.installCalls).toHaveLength(1);
+    expect(mgr.installOptions[0]?.force).toBeFalsy();
+  });
+
+  test('emits debug (not info) when the existing unit matches the current spec', async () => {
+    const mgr = new FakeManager();
+    mgr.installResultOverride = { changed: false, supervisorReloaded: false };
+    mgr.installed.add('co.goondocks.myco');
+    const logger = new CapturingLogger();
+    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    expect(logger.infos.some((e) => e.message.includes('managed service'))).toBe(false);
+    expect(logger.debugs.some((e) => e.message.includes('unchanged'))).toBe(true);
   });
 
   test('skips and logs info when the platform is unsupported', async () => {

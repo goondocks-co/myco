@@ -5,6 +5,7 @@ import type { DaemonServiceState } from './service-state.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import { spawnUpdateScript } from './update-installer.js';
+import * as updateInProgress from './update-in-progress.js';
 import {
   resolveMycoBinary,
   readUpdateError,
@@ -61,6 +62,7 @@ export function registerSelfReconcileJob(
           installUpdate: (target: string) => runUpdateInstall(deps, target),
           readUpdateError,
           consumeUpdateError,
+          updateInFlight: () => updateInProgress.inFlight(deps.daemonService.stateDir) !== null,
         });
       } finally {
         running = false;
@@ -111,5 +113,17 @@ async function runUpdateInstall(
     daemonPort: deps.server.port,
     targetVersion,
   });
-  deps.scheduleShutdown();
+  updateInProgress.write(deps.daemonService.stateDir, {
+    targetVersion,
+    startedAt: Date.now(),
+    initiator: 'self-reconcile',
+  });
+
+  // When the service manager will drive the restart, skip the
+  // immediate SIGTERM here. Same reasoning as in handleUpdateApply:
+  // a SIGTERM before `npm install` completes lets the supervisor
+  // respawn a daemon on the still-pre-install binary.
+  if (!serviceRestartCommand) {
+    deps.scheduleShutdown();
+  }
 }

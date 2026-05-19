@@ -95,6 +95,15 @@ export interface InstallParams {
  * 6. Always: `cd <projectRoot> && myco daemon &` so the new daemon's
  *    resolveVaultDir picks up the vault from cwd.
  * 7. Cleans up the script file itself.
+ *
+ * Single-writer invariant for `restart-reason.json` and the script-
+ * generated files: the script is spawned detached after the daemon
+ * begins shutdown, sleeps UPDATE_SCRIPT_DELAY_SECONDS, and only then
+ * writes. The new daemon reads `restart-reason.json` once at startup.
+ * The lifecycle lock added in this release also guarantees the new
+ * daemon waits for the old one to release before proceeding, so
+ * concurrent writers to these files are not reachable. No file lock
+ * is required at this layer.
  */
 export function generateUpdateScript(params: InstallParams): string {
   const {

@@ -74,15 +74,46 @@ describe('LaunchdServiceManager', () => {
     expect(runner.calls).toEqual([]);
   });
 
-  test('install detects changed spec and replaces the plist', async () => {
+  test('install on changed spec writes the new plist without bootout when force is omitted', async () => {
     const s1 = spec(home);
     await mgr.install(s1);
     runner.calls.length = 0;
     const s2 = { ...s1, args: ['daemon', '--verbose'] };
-    await mgr.install(s2);
+    const result = await mgr.install(s2);
+    expect(runner.calls).toEqual([]); // no launchctl calls
+    expect(result).toEqual({ changed: true, supervisorReloaded: false });
+    // New plist content is on disk; takes effect on the next supervisor
+    // restart of the service.
+    const plistPath = path.join(agentsDir, `${s2.label}.plist`);
+    expect(fs.readFileSync(plistPath, 'utf-8')).toContain('--verbose');
+  });
+
+  test('install on changed spec with force=true reloads the supervisor', async () => {
+    const s1 = spec(home);
+    await mgr.install(s1);
+    runner.calls.length = 0;
+    const s2 = { ...s1, args: ['daemon', '--verbose'] };
+    const result = await mgr.install(s2, { force: true });
     expect(runner.calls[0]).toEqual(['bootout', `gui/501/${s1.label}`]);
     expect(runner.calls[1][0]).toBe('bootstrap');
     expect(runner.calls[2]).toEqual(['enable', `gui/501/${s1.label}`]);
+    expect(result).toEqual({ changed: true, supervisorReloaded: true });
+  });
+
+  test('install returns { changed: false, supervisorReloaded: false } on idempotent no-op', async () => {
+    const s = spec(home);
+    await mgr.install(s);
+    runner.calls.length = 0;
+    const result = await mgr.install(s);
+    expect(runner.calls).toEqual([]);
+    expect(result).toEqual({ changed: false, supervisorReloaded: false });
+  });
+
+  test('install on first install reloads the supervisor (no running service to disturb)', async () => {
+    const s = spec(home);
+    const result = await mgr.install(s);
+    expect(runner.calls[0][0]).toBe('bootstrap');
+    expect(result).toEqual({ changed: true, supervisorReloaded: true });
   });
 
   test('uninstall runs bootout and removes the plist', async () => {

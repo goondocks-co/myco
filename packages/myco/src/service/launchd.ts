@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
-import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
+import type {
+  InstallOptions,
+  InstallResult,
+  ServiceManager,
+  ServiceSpec,
+  ServiceStatus,
+} from './types.js';
 
 export interface LaunchctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
@@ -55,16 +61,14 @@ export class LaunchdServiceManager implements ServiceManager {
     return fs.existsSync(this.plistPath(label));
   }
 
-  async install(spec: ServiceSpec): Promise<void> {
+  async install(spec: ServiceSpec, opts: InstallOptions = {}): Promise<InstallResult> {
     const plistPath = this.plistPath(spec.label);
     const rendered = renderLaunchdPlist(spec);
 
-    const existing = fs.existsSync(plistPath) ? fs.readFileSync(plistPath, 'utf-8') : null;
-    if (existing === rendered) return; // idempotent no-op
-
-    if (existing !== null) {
-      // Spec changed — unload the old definition before writing the new one.
-      await this.runner.run(['bootout', this.domainTarget(spec.label)]);
+    let existing: string | null = null;
+    try { existing = fs.readFileSync(plistPath, 'utf-8'); } catch { /* ENOENT */ }
+    if (existing === rendered) {
+      return { changed: false, supervisorReloaded: false };
     }
 
     fs.mkdirSync(this.agentsDir, { recursive: true });
@@ -72,8 +76,22 @@ export class LaunchdServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(plistPath, rendered);
 
+    if (existing === null) {
+      await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
+      await this.runner.run(['enable', this.domainTarget(spec.label)]);
+      return { changed: true, supervisorReloaded: true };
+    }
+
+    // bootout terminates the running service; default is to write the
+    // new plist and let the next supervisor-initiated restart pick it
+    // up. `force: true` opts into an immediate swap.
+    if (!opts.force) {
+      return { changed: true, supervisorReloaded: false };
+    }
+    await this.runner.run(['bootout', this.domainTarget(spec.label)]);
     await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
     await this.runner.run(['enable', this.domainTarget(spec.label)]);
+    return { changed: true, supervisorReloaded: true };
   }
 
   async uninstall(label: string): Promise<void> {

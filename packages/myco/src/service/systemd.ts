@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
-import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
+import type {
+  InstallOptions,
+  InstallResult,
+  ServiceManager,
+  ServiceSpec,
+  ServiceStatus,
+} from './types.js';
 
 export interface SystemctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
@@ -47,19 +53,25 @@ export class SystemdUserServiceManager implements ServiceManager {
     return fs.existsSync(this.unitPath(label));
   }
 
-  async install(spec: ServiceSpec): Promise<void> {
+  async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const unitPath = this.unitPath(spec.label);
     const rendered = renderSystemdUnit(spec);
-    const existing = fs.existsSync(unitPath) ? fs.readFileSync(unitPath, 'utf-8') : null;
-    if (existing === rendered) return;
+    let existing: string | null = null;
+    try { existing = fs.readFileSync(unitPath, 'utf-8'); } catch { /* ENOENT */ }
+    if (existing === rendered) {
+      return { changed: false, supervisorReloaded: false };
+    }
 
     fs.mkdirSync(this.unitDir, { recursive: true });
     fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(unitPath, rendered);
 
+    // `daemon-reload` only re-reads unit files; it doesn't restart
+    // running services. Always safe to call regardless of `opts.force`.
     await this.runner.run(['--user', 'daemon-reload']);
     await this.runner.run(['--user', 'enable', `${spec.label}.service`]);
+    return { changed: true, supervisorReloaded: true };
   }
 
   async uninstall(label: string): Promise<void> {
