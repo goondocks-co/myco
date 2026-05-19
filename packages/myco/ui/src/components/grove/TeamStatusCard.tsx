@@ -1,21 +1,14 @@
 import { Users } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Surface } from '../ui/surface';
+import { Panel } from '../ui/panel';
+import { IconEyebrow } from '../ui/icon-eyebrow';
+import { DefRow } from '../ui/def-row';
 import { Badge } from '../ui/badge';
 import { useTeamStatus } from '../../hooks/use-team';
 import { useTeamMembers } from '../../hooks/use-team-members';
 
 interface Props {
   groveSlug: string;
-}
-
-function Row({ k, children }: { k: string; children: React.ReactNode }) {
-  return (
-    <div className="flex justify-between gap-2">
-      <dt className="text-on-surface-variant">{k}</dt>
-      <dd className="text-on-surface">{children}</dd>
-    </div>
-  );
 }
 
 export function TeamStatusCard({ groveSlug }: Props) {
@@ -27,24 +20,20 @@ export function TeamStatusCard({ groveSlug }: Props) {
   const tone: 'default' | 'outline' | 'destructive' =
     !connected ? 'outline' : healthy ? 'default' : 'destructive';
   const label = !connected ? 'not connected' : healthy ? 'synced' : 'unhealthy';
+  const count = members?.members.length ?? 0;
 
   return (
-    <Link to={`/g/${groveSlug}/team`} className="block">
-      <Surface level="low" className="rounded-lg p-5 space-y-3 transition-colors hover:bg-surface-container">
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-primary">
-          <Users className="h-3.5 w-3.5" />
-          <span>Team</span>
-        </div>
-        <div className="text-lg font-medium text-on-surface">
-          {members?.members.length ?? 0} members
-        </div>
-        <dl className="space-y-1 text-xs">
-          <Row k="Status"><Badge variant={tone}>{label}</Badge></Row>
-          <Row k="Pending sync">
-            <span>{status?.pending_sync_count ?? 0}</span>
-          </Row>
+    <Link to={`/g/${groveSlug}/team`} className="block transition-opacity hover:opacity-90">
+      <Panel
+        tone="ochre"
+        eyebrow={<IconEyebrow Icon={Users} tone="ochre">Team</IconEyebrow>}
+        title={`${count} member${count === 1 ? '' : 's'}`}
+      >
+        <dl className="flex flex-col gap-1">
+          <DefRow term="Status"><Badge variant={tone}>{label}</Badge></DefRow>
+          <DefRow term="Pending sync"><span>{status?.pending_sync_count ?? 0}</span></DefRow>
         </dl>
-      </Surface>
+      </Panel>
     </Link>
   );
 }

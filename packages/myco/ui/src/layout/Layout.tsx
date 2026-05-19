@@ -328,8 +328,16 @@ function NavGroup({
   collapsed: boolean;
   children: React.ReactNode;
 }) {
+  // Collapsed sidebar: emit a divider above each group to preserve grouping.
   return (
-    <div className="space-y-0.5">
+    <div
+      role="group"
+      aria-label={label}
+      className={cn(
+        'space-y-0.5',
+        collapsed && 'border-t border-[var(--ghost-border)] pt-3 mt-3 first:border-t-0 first:pt-0 first:mt-0',
+      )}
+    >
       {!collapsed && (
         <div className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
           {label}

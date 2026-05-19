@@ -1,13 +1,9 @@
 import { type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
-import { TabSwitcher, type Tab } from './tab-switcher';
 
 interface PageHeaderProps {
   title: string;
   subtitle?: string;
-  tabs?: Tab[];
-  activeTab?: string;
-  onTabChange?: (tabId: string) => void;
   actions?: ReactNode;
   className?: string;
 }
@@ -15,9 +11,6 @@ interface PageHeaderProps {
 export function PageHeader({
   title,
   subtitle,
-  tabs,
-  activeTab,
-  onTabChange,
   actions,
   className,
 }: PageHeaderProps) {
@@ -34,14 +27,6 @@ export function PageHeader({
         </div>
         {actions && <div className="flex items-center gap-2">{actions}</div>}
       </div>
-      {tabs && activeTab && onTabChange && (
-        <TabSwitcher
-          tabs={tabs}
-          activeTab={activeTab}
-          onTabChange={onTabChange}
-          className="mt-4"
-        />
-      )}
     </div>
   );
 }

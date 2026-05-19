@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { HelpCircle, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
+import { PageContainer } from '../components/ui/page-container';
 import { TileTabs } from '../components/ui/tile-tabs';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -165,7 +166,7 @@ export default function Skills() {
   }, []);
 
   return (
-    <div className="p-6 space-y-6">
+    <PageContainer>
       <PageHeader
         title="Skills"
         subtitle="Discovered skill candidates and promoted skill records"
@@ -197,6 +198,6 @@ export default function Skills() {
       {tab === 'skills' && selectedSkill && (
         <SkillDetail skillName={selectedSkill} onBack={() => setSelectedSkill(undefined)} />
       )}
-    </div>
+    </PageContainer>
   );
 }

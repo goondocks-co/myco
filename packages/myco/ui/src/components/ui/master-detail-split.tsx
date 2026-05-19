@@ -52,7 +52,7 @@ export function MasterDetailSplit({
               <span>Back</span>
             </button>
           )}
-          <div className="flex-1 overflow-y-auto">{detail}</div>
+          <div className="flex-1 overflow-y-auto p-6">{detail}</div>
         </section>
       );
     }
@@ -80,7 +80,8 @@ export function MasterDetailSplit({
       >
         {master}
       </aside>
-      <section aria-label={detailAriaLabel} className="flex-1 overflow-y-auto">
+      {/* Detail owns its gutter so every consumer renders flush to the divider. */}
+      <section aria-label={detailAriaLabel} className="flex-1 overflow-y-auto p-6">
         {detail}
       </section>
     </div>

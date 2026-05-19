@@ -2,10 +2,49 @@ import { useState } from 'react';
 import { WifiOff, RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { postJson } from '../../lib/api';
-import { Surface } from '../../components/ui/surface';
-import { SectionHeader } from '../../components/ui/section-header';
+import { Panel } from '../../components/ui/panel';
+import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { StepCircle } from '../../components/ui/step-circle';
+import { cn } from '../../lib/cn';
+
+type StepState = 'idle' | 'active' | 'complete';
+
+function Step({
+  n,
+  state,
+  title,
+  children,
+}: {
+  n: number;
+  state: StepState;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li
+      aria-current={state === 'active' ? 'step' : undefined}
+      className={cn(
+        'flex gap-3 rounded-md border border-[var(--ghost-border)] px-4 py-3 transition-colors',
+        state === 'active' && 'bg-sage/[0.05] border-l-2 border-l-sage',
+        state === 'complete' && 'opacity-70',
+      )}
+    >
+      <StepCircle
+        number={n}
+        className={cn(
+          state === 'active' && 'bg-sage/15 text-sage',
+          state === 'complete' && 'bg-sage text-on-sage',
+        )}
+      />
+      <div className="min-w-0 flex-1 space-y-1">
+        <h4 className="text-sm font-medium text-on-surface m-0">{title}</h4>
+        {children}
+      </div>
+    </li>
+  );
+}
 
 function ConnectForm({
   onConnected,
@@ -34,16 +73,16 @@ function ConnectForm({
   };
 
   return (
-    <Surface level="low" ghostBorder className="p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <WifiOff className="h-4 w-4 text-on-surface-variant" />
-        <SectionHeader>Connect Grove</SectionHeader>
-      </div>
-      <p className="text-sm text-on-surface-variant mb-4">
+    <Panel
+      tone="sage"
+      eyebrow={<IconEyebrow Icon={WifiOff} tone="sage">Connect Grove</IconEyebrow>}
+      title="Paste credentials"
+    >
+      <p className="text-sm text-on-surface-variant m-0 mb-3">
         Provision {scopeName} with <code className="font-mono">myco-team install</code> first
         (<code className="font-mono">myco-team-dev install</code> in dev), then enter the Worker URL and Team key.
       </p>
-      <form onSubmit={handleSubmit} className="space-y-3">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <div>
           <label className="block text-xs font-medium text-on-surface-variant mb-1">Worker URL</label>
           <Input
@@ -64,9 +103,7 @@ function ConnectForm({
             required
           />
         </div>
-        {error && (
-          <p className="text-sm text-tertiary">{error}</p>
-        )}
+        {error && <p className="text-sm text-terracotta m-0">{error}</p>}
         <Button type="submit" size="sm" disabled={loading || !url || !teamKey}>
           {loading ? (
             <>
@@ -78,7 +115,7 @@ function ConnectForm({
           )}
         </Button>
       </form>
-    </Surface>
+    </Panel>
   );
 }
 
@@ -93,42 +130,39 @@ export function NotConnectedView({ scopeName }: { scopeName: string }) {
   const onConnected = () => queryClient.invalidateQueries({ queryKey: ['team-status'] });
 
   return (
-    <div className="space-y-4">
-      <Surface level="low" ghostBorder className="p-6 space-y-4">
-        <SectionHeader>Getting Started</SectionHeader>
-        <p className="text-sm text-on-surface-variant">
+    <div className="flex flex-col gap-4">
+      <Panel
+        tone="ochre"
+        eyebrow="Getting started"
+        title="Connect this Grove to a team worker"
+      >
+        <p className="text-sm text-on-surface-variant m-0 mb-3">
           Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
           One team member provisions the worker, then shares the connection details.
         </p>
-
-        <div className="space-y-3">
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
+        <ol className="m-0 p-0 list-none flex flex-col gap-3">
+          <Step n={1} state="active" title="Install prerequisites">
             <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
               npm install -g @goondocks/myco-team wrangler && wrangler login
             </code>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">2. Provision the Grove worker</p>
+          </Step>
+          <Step n={2} state="idle" title="Provision the Grove worker">
             <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
               myco-team install
             </code>
-            <p className="text-xs text-on-surface-variant mt-1">
+            <p className="text-xs text-on-surface-variant m-0 mt-1">
               Creates a D1 database, Vectorize index, and deploys the sync worker.
               Outputs a Worker URL and Team key for the Grove.
             </p>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
-            <p className="text-xs text-on-surface-variant">
+          </Step>
+          <Step n={3} state="idle" title="Connect">
+            <p className="text-xs text-on-surface-variant m-0">
               Paste the Worker URL and Team key below, or if you ran <code className="font-mono">myco-team install</code>,
               you're already connected.
             </p>
-          </div>
-        </div>
-      </Surface>
+          </Step>
+        </ol>
+      </Panel>
 
       <ConnectForm scopeName={scopeName} onConnected={onConnected} />
     </div>

@@ -3,39 +3,14 @@ import { Copy, Key, Cloud, Terminal, Network, RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { type TeamStatusResponse } from '../../hooks/use-team';
 import { postJson } from '../../lib/api';
-import { Surface } from '../../components/ui/surface';
+import { Panel } from '../../components/ui/panel';
+import { IconEyebrow } from '../../components/ui/icon-eyebrow';
+import { Eyebrow } from '../../components/ui/eyebrow';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { CopyableField } from '../../components/team/CopyableField';
 import { RedactedField } from '../../components/team/RedactedField';
-
-const eyebrowClass = 'text-[10px] uppercase tracking-wider text-on-surface-variant';
-
-function PanelHeader({
-  icon,
-  eyebrow,
-  title,
-  action,
-}: {
-  icon: React.ReactNode;
-  eyebrow: string;
-  title: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 text-on-surface-variant">{icon}</div>
-        <div className="space-y-0.5">
-          <div className={eyebrowClass}>{eyebrow}</div>
-          <h3 className="text-sm font-medium text-on-surface">{title}</h3>
-        </div>
-      </div>
-      {action && <div className="flex items-center gap-2">{action}</div>}
-    </div>
-  );
-}
 
 export function StatusTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
@@ -60,79 +35,64 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {/* 1. Grove credentials */}
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <PanelHeader
-          icon={<Key className="h-4 w-4" />}
-          eyebrow="Grove Credentials"
-          title="Share these to add a machine"
-          action={
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled
-              title="Coming soon"
-            >
-              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-              Rotate team key
-            </Button>
-          }
-        />
-        <p className="text-xs text-on-surface-variant">
+      <Panel
+        tone="sage"
+        eyebrow={<IconEyebrow Icon={Key}>Grove Credentials</IconEyebrow>}
+        title="Share these to add a machine"
+        actions={
+          <Button variant="ghost" size="sm" disabled title="Coming soon">
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Rotate team key
+          </Button>
+        }
+      >
+        <p className="text-xs text-on-surface-variant m-0 mb-3">
           Use these to add a machine to this Grove team. The Team key is sensitive — share only with people who should write to this Grove.
         </p>
-
-        <div className="space-y-3">
-          {status.worker_url && (
-            <CopyableField label="Worker URL" value={status.worker_url} />
-          )}
-          {status.team_key && (
-            <RedactedField label="Team key" value={status.team_key} />
-          )}
+        <div className="flex flex-col gap-3">
+          {status.worker_url && <CopyableField label="Worker URL" value={status.worker_url} />}
+          {status.team_key && <RedactedField label="Team key" value={status.team_key} />}
         </div>
-      </Surface>
+      </Panel>
 
       {/* 2. Cloud MCP endpoint */}
       {status.mcp_token && status.mcp_endpoint && (
-        <Surface level="low" ghostBorder className="p-5 space-y-3">
-          <PanelHeader
-            icon={<Cloud className="h-4 w-4" />}
-            eyebrow="Cloud MCP endpoint"
-            title="For cloud agents"
-            action={
-              <>
-                <Badge variant={status.mcp_healthy ? 'default' : 'destructive'}>
-                  {status.mcp_healthy ? 'healthy' : 'unhealthy'}
-                </Badge>
-                <button
-                  onClick={() => setShowRotateConfirm(true)}
-                  className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors inline-flex items-center gap-1"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Rotate token
-                </button>
-              </>
-            }
-          />
-          <p className="text-xs text-on-surface-variant">
+        <Panel
+          tone="sage"
+          eyebrow={<IconEyebrow Icon={Cloud}>Cloud MCP endpoint</IconEyebrow>}
+          title="For cloud agents"
+          actions={
+            <>
+              <Badge variant={status.mcp_healthy ? 'default' : 'destructive'}>
+                {status.mcp_healthy ? 'healthy' : 'unhealthy'}
+              </Badge>
+              <button
+                onClick={() => setShowRotateConfirm(true)}
+                className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors inline-flex items-center gap-1"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Rotate token
+              </button>
+            </>
+          }
+        >
+          <p className="text-xs text-on-surface-variant m-0 mb-3">
             Configure cloud agents with this endpoint to access Grove team intelligence.
           </p>
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <CopyableField label="MCP URL" value={status.mcp_endpoint} />
             <RedactedField label="MCP Access Token" value={status.mcp_token} />
           </div>
 
-          <details className="text-xs">
+          <details className="text-xs mt-3">
             <summary
               onClick={(e) => {
-                // Preserve the existing showMcpSnippet state for parity, even
-                // though <details> manages its own open state. Toggling here
-                // keeps the snippet copy button mounted whenever open.
                 e.preventDefault();
                 setShowMcpSnippet(!showMcpSnippet);
               }}
-              className={`${eyebrowClass} cursor-pointer hover:text-on-surface transition-colors list-none`}
+              className="myco-eyebrow-sm text-on-surface-variant cursor-pointer hover:text-on-surface transition-colors list-none"
             >
               {showMcpSnippet ? 'Hide snippet' : 'Config snippet'}
             </summary>
@@ -160,84 +120,79 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
               );
             })()}
           </details>
-        </Surface>
+        </Panel>
       )}
 
       {/* 3. This node */}
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <PanelHeader
-          icon={<Terminal className="h-4 w-4" />}
-          eyebrow="This node"
-          title="Identity of this machine in the team"
-        />
+      <Panel
+        tone="sage"
+        eyebrow={<IconEyebrow Icon={Terminal}>This node</IconEyebrow>}
+        title="Identity of this machine in the team"
+      >
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="space-y-1">
-            <div className={eyebrowClass}>Machine ID</div>
+            <Eyebrow size="sm">Machine ID</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.machine_id}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Package version</div>
+            <Eyebrow size="sm">Package version</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.package_version}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Protocol version</div>
+            <Eyebrow size="sm">Protocol version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.sync_protocol_version}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Schema version</div>
+            <Eyebrow size="sm">Schema version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.schema_version}</code>
           </div>
         </div>
-
         {status.health_error && (
-          <p className="text-sm text-tertiary">
-            {status.health_error}
-          </p>
+          <p className="text-sm text-terracotta m-0 mt-3">{status.health_error}</p>
         )}
-      </Surface>
+      </Panel>
 
       {/* 4. Collective */}
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <PanelHeader
-          icon={<Network className="h-4 w-4" />}
-          eyebrow="Collective"
-          title="Cross-team coordination"
-          action={
-            <Badge variant={status.collective_connected ? 'default' : 'outline'}>
-              {status.collective_connected ? 'connected' : 'not connected'}
-            </Badge>
-          }
-        />
+      <Panel
+        tone="sage"
+        eyebrow={<IconEyebrow Icon={Network}>Collective</IconEyebrow>}
+        title="Cross-team coordination"
+        actions={
+          <Badge variant={status.collective_connected ? 'default' : 'outline'}>
+            {status.collective_connected ? 'connected' : 'not connected'}
+          </Badge>
+        }
+      >
         {status.collective_connected ? (
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <div className="grid gap-3 sm:grid-cols-2">
               {status.collective_url && (
                 <div className="space-y-1">
-                  <div className={eyebrowClass}>URL</div>
+                  <Eyebrow size="sm">URL</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_url}</code>
                 </div>
               )}
               {status.collective_project_id && (
                 <div className="space-y-1">
-                  <div className={eyebrowClass}>Project ID</div>
+                  <Eyebrow size="sm">Project ID</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_project_id}</code>
                 </div>
               )}
               <div className="space-y-1">
-                <div className={eyebrowClass}>Last settings sync</div>
-                <p className="text-xs font-mono text-on-surface">
+                <Eyebrow size="sm">Last settings sync</Eyebrow>
+                <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_settings_sync ? new Date(status.collective_last_settings_sync * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
               <div className="space-y-1">
-                <div className={eyebrowClass}>Last heartbeat</div>
-                <p className="text-xs font-mono text-on-surface">
+                <Eyebrow size="sm">Last heartbeat</Eyebrow>
+                <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_heartbeat ? new Date(status.collective_last_heartbeat * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
             </div>
             <div className="space-y-1">
-              <div className={eyebrowClass}>Capabilities</div>
+              <Eyebrow size="sm">Capabilities</Eyebrow>
               <div className="flex flex-wrap gap-2">
                 {status.collective_capabilities.map((capability) => (
                   <Badge key={capability} variant="outline">{capability}</Badge>
@@ -245,18 +200,18 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
               </div>
             </div>
             <div className="space-y-1">
-              <div className={eyebrowClass}>Effective overrides</div>
+              <Eyebrow size="sm">Effective overrides</Eyebrow>
               <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
                 {JSON.stringify(status.collective_settings, null, 2)}
               </pre>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-on-surface-variant">
+          <p className="text-sm text-on-surface-variant m-0">
             This team worker is not currently connected to a Myco Collective.
           </p>
         )}
-      </Surface>
+      </Panel>
 
       <div className="flex justify-end">
         <Button
@@ -285,9 +240,6 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
             queryClient.invalidateQueries({ queryKey: ['team-status'] });
             setShowRotateConfirm(false);
           } catch (err) {
-            // Surface the failure instead of dismissing the dialog. Without
-            // this, an operator hits "Rotate" and sees nothing happen —
-            // making the path indistinguishable from success at a glance.
             setRotateError(err instanceof Error ? err.message : String(err));
           } finally {
             setRotating(false);
@@ -296,7 +248,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         errorMessage={rotateError}
       />
       {disconnectError && (
-        <p className="text-sm text-tertiary text-right" data-testid="team-disconnect-error">
+        <p className="text-sm text-terracotta text-right m-0" data-testid="team-disconnect-error">
           Disconnect failed: {disconnectError}
         </p>
       )}

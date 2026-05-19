@@ -7,6 +7,7 @@
 // the component under test (ui). Force all `react`/`react-dom` imports to
 // resolve to the root-level copies.
 import path from 'node:path';
+import fs from 'node:fs';
 const repoRoot = path.resolve(import.meta.dir, '..', '..');
 Bun.plugin({
   name: 'react-dedupe',
@@ -24,6 +25,25 @@ Bun.plugin({
     }
   },
 });
+
+// Warn when nested React copies still exist; `npm test` strips them before jsdom.
+const NESTED_UI_NODE_MODULES = [
+  path.join(repoRoot, 'packages/myco/ui/node_modules'),
+  path.join(repoRoot, 'packages/myco-collective/ui/node_modules'),
+  path.join(repoRoot, 'packages/myco-team/ui/node_modules'),
+];
+const NESTED_REACT_PKGS = ['react', 'react-dom', 'react-router-dom', 'react-router', '@tanstack/react-query'];
+for (const base of NESTED_UI_NODE_MODULES) {
+  for (const pkg of NESTED_REACT_PKGS) {
+    const dupe = path.join(base, pkg);
+    if (fs.existsSync(dupe)) {
+      console.warn(
+        `[jsdom-preload] nested copy detected: ${path.relative(repoRoot, dupe)}\n` +
+        '  -> hooks may break under direct `bun test`; prefer `npm test`, which strips these before the jsdom phase.',
+      );
+    }
+  }
+}
 
 import { JSDOM } from 'jsdom';
 

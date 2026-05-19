@@ -1,7 +1,7 @@
-import { Cpu } from 'lucide-react';
+import { Cpu, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Surface } from '../ui/surface';
-import { Eyebrow } from '../ui/eyebrow';
+import { Panel } from '../ui/panel';
+import { IconEyebrow } from '../ui/icon-eyebrow';
 import { MetricCard } from '../ui/metric-card';
 import { useEmbeddingDetails } from '../../hooks/use-embedding-details';
 import { useDatabaseDetails } from '../../hooks/use-database-details';
@@ -18,22 +18,19 @@ export function GroveVaultSummary({ groveSlug }: Props) {
   const totalPending = emb ? Object.values(emb.pending).reduce((a, b) => a + b, 0) : 0;
 
   return (
-    <Surface level="low" accent="sage" className="rounded-lg p-5 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Cpu className="h-4 w-4 text-sage" />
-          <div className="space-y-0.5">
-            <Eyebrow tone="sage">Grove</Eyebrow>
-            <h3 className="myco-display-sm text-on-surface m-0">Vault</h3>
-          </div>
-        </div>
+    <Panel
+      tone="sage"
+      eyebrow={<IconEyebrow Icon={Cpu} tone="sage">Grove</IconEyebrow>}
+      title="Vault"
+      actions={
         <Link
           to={`/g/${groveSlug}/operations`}
-          className="text-xs text-sage hover:text-sage/80"
+          className="inline-flex items-center gap-1 text-xs font-sans text-on-surface-variant hover:text-on-surface"
         >
-          Manage in Operations →
+          Operations <ArrowRight className="h-3 w-3" />
         </Link>
-      </div>
+      }
+    >
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard label="Vectors" value={emb ? String(emb.total) : '—'} tone="sage" mono />
         <MetricCard
@@ -55,6 +52,6 @@ export function GroveVaultSummary({ groveSlug }: Props) {
           mono
         />
       </div>
-    </Surface>
+    </Panel>
   );
 }
