@@ -572,18 +572,13 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['team'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
-  // Promoted to Grove tier in 2026-05-20 agent-config Grove promotion
-  ['embedding', 'provider'],
-  ['embedding', 'model'],
-  ['embedding', 'base_url'],
-  ['agent', 'provider'],
-  ['agent', 'harness'],
-  ['agent', 'model'],
-  ['agent', 'tasks'],
-  ['agent', 'summary_batch_interval'],
-  ['agent', 'scheduled_tasks_enabled'],
-  ['agent', 'event_tasks_enabled'],
-  ['agent', 'cold_project_threshold_days'],
+  // NOTE: The 11 paths promoted to Grove tier in 2026-05-20
+  // (embedding.provider/model/base_url, agent.provider/harness/model/tasks/
+  // summary_batch_interval/scheduled_tasks_enabled/event_tasks_enabled/
+  // cold_project_threshold_days) are intentionally NOT listed here.
+  // runAgentConfigGrovePromotion() in update.ts owns the lift-and-strip for
+  // those paths. Adding them here would cause the loader to erase them from
+  // disk before the migration ever runs, producing silent data loss.
 ];
 
 export const MycoConfigSchema = z.preprocess(

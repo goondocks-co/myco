@@ -15,7 +15,7 @@ import {
   type MigrationPlan,
   type MigrationProjectState,
 } from './agent-config-grove-promotion.js';
-import { loadGroveConfig } from '../config/loader.js';
+import { loadGroveConfig, loadMergedConfig, invalidateMergedConfigCache } from '../config/loader.js';
 import { withMultiGroveFixture } from '../test-utils/grove-fixture.js';
 
 // ---------------------------------------------------------------------------
@@ -876,6 +876,85 @@ describe('end-to-end: full migration pipeline (mirrors runAllProjects)', () => {
         expect(groveConfig.agent.harness).toBe('claude-code');
         // Suppress unused variable warning.
         void mtimeAfterRun1;
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: loader must not erase promoted paths before migration runs
+//
+// Before the fix, PROJECT_TIER_LEGACY_FIELDS included the 11 promoted paths.
+// loadMergedConfig (migrateTiers: true) would strip them from disk before
+// runAgentConfigGrovePromotion ran, causing silent data loss. This test
+// guards against that regression.
+// ---------------------------------------------------------------------------
+
+describe('regression: loader does not erase promoted paths before migration', () => {
+  test('lifts agent.provider from myco.yaml even after loader has run', async () => {
+    const g = groveId('reg001a');
+    const p = projId('reg001a');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                myco: {
+                  version: 3,
+                  agent: { provider: { type: 'openrouter' }, model: 'qwen3' },
+                  capture: { transcript_paths: ['/tmp/t'] },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const project = handle.groves[0]!.projects[0]!;
+        const mycoYamlPath = path.join(project.vaultDir, 'myco.yaml');
+
+        // Step 1: simulate the loader running (as the daemon does on every
+        // loadMergedConfig call — migrateTiers: true is the default there).
+        invalidateMergedConfigCache(project.vaultDir);
+        loadMergedConfig(project.vaultDir, {
+          groveId: g,
+          mycoHome: handle.mycoHome,
+        });
+
+        // Step 2: the on-disk myco.yaml must still carry agent.provider/model
+        // because the loader no longer strips promoted paths.
+        const rawAfterLoad = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+        expect((rawAfterLoad.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
+        expect((rawAfterLoad.agent as Record<string, unknown>)?.model).toBe('qwen3');
+
+        // Step 3: run the migration.
+        const machine = {
+          groves: handle.groves.map((grv) => ({
+            id: grv.id,
+            grovePath: grv.grovePath,
+            projects: grv.projects.map((prj) => ({ id: prj.id, vaultDir: prj.vaultDir })),
+          })),
+        };
+        const { plan, errors } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        expect(errors).toHaveLength(0);
+        const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
+        expect(result.ok).toBe(true);
+
+        // Step 4: grove.yaml now carries agent.provider and agent.model.
+        const groveConfig = loadGroveConfig(g, handle.mycoHome);
+        expect(groveConfig.agent.provider).toEqual({ type: 'openrouter' });
+        expect(groveConfig.agent.model).toBe('qwen3');
+
+        // Step 5: myco.yaml no longer carries the promoted paths.
+        const rawAfterMigration = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+        expect(rawAfterMigration.agent).toBeUndefined();
+        // Non-promoted field (capture) survived.
+        expect((rawAfterMigration.capture as Record<string, unknown>).transcript_paths).toEqual(['/tmp/t']);
       },
     );
   });

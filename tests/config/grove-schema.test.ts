@@ -93,18 +93,35 @@ describe('ProjectConfigSchema', () => {
 });
 
 describe('PROJECT_TIER_LEGACY_FIELDS', () => {
-  test('includes all newly-promoted dot-paths', () => {
+  test('does NOT include the 11 promoted paths — migration owns the lift', () => {
+    // These paths were promoted to Grove tier by runAgentConfigGrovePromotion.
+    // The loader must NOT strip them; stripping before migration erases data.
     const stringified = PROJECT_TIER_LEGACY_FIELDS.map((p) => p.join('.'));
-    expect(stringified).toContain('embedding.provider');
-    expect(stringified).toContain('embedding.model');
-    expect(stringified).toContain('embedding.base_url');
-    expect(stringified).toContain('agent.provider');
-    expect(stringified).toContain('agent.harness');
-    expect(stringified).toContain('agent.model');
-    expect(stringified).toContain('agent.tasks');
-    expect(stringified).toContain('agent.summary_batch_interval');
-    expect(stringified).toContain('agent.scheduled_tasks_enabled');
-    expect(stringified).toContain('agent.event_tasks_enabled');
-    expect(stringified).toContain('agent.cold_project_threshold_days');
+    expect(stringified).not.toContain('embedding.provider');
+    expect(stringified).not.toContain('embedding.model');
+    expect(stringified).not.toContain('embedding.base_url');
+    expect(stringified).not.toContain('agent.provider');
+    expect(stringified).not.toContain('agent.harness');
+    expect(stringified).not.toContain('agent.model');
+    expect(stringified).not.toContain('agent.tasks');
+    expect(stringified).not.toContain('agent.summary_batch_interval');
+    expect(stringified).not.toContain('agent.scheduled_tasks_enabled');
+    expect(stringified).not.toContain('agent.event_tasks_enabled');
+    expect(stringified).not.toContain('agent.cold_project_threshold_days');
+  });
+
+  test('still includes the pre-existing legacy entries', () => {
+    // Guard against accidental removal of the 10 pre-existing entries.
+    const stringified = PROJECT_TIER_LEGACY_FIELDS.map((p) => p.join('.'));
+    expect(stringified).toContain('daemon.port');
+    expect(stringified).toContain('daemon.log_level');
+    expect(stringified).toContain('daemon.log_retention_days');
+    expect(stringified).toContain('daemon.stale_session_threshold_ms');
+    expect(stringified).toContain('backup');
+    expect(stringified).toContain('maintenance');
+    expect(stringified).toContain('update');
+    expect(stringified).toContain('team');
+    expect(stringified).toContain('embedding.run_in_deep_sleep');
+    expect(stringified).toContain('agent.scheduled_tasks_active_window_days');
   });
 });

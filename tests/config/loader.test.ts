@@ -10,6 +10,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import YAML from 'yaml';
 
 describe('Config Loader', () => {
   let tmpDir: string;
@@ -312,13 +313,20 @@ describe('Grove-tier promotion — merge verification', () => {
     expect(config.embedding.model).toBe('nomic-embed-text');
   });
 
-  it('legacy agent.provider in myco.yaml is silently stripped — does not override Grove default', () => {
-    // Simulate a pre-promotion myco.yaml that still carries agent.provider
+  it('legacy agent.provider in myco.yaml is preserved on disk until migration', () => {
+    // Simulate a pre-promotion myco.yaml that still carries agent.provider.
+    // The loader must NOT strip it from disk — runAgentConfigGrovePromotion
+    // needs to find it when it runs. Before the fix, PROJECT_TIER_LEGACY_FIELDS
+    // included agent.provider, causing the loader to erase it on every
+    // loadMergedConfig call (silent data loss). After the fix, the raw project
+    // doc flows through the merge unchanged, so the value is visible in the
+    // merged config AND survives on disk for the migration to lift.
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
     fs.writeFileSync(
-      path.join(tmpDir, 'myco.yaml'),
+      mycoYamlPath,
       'version: 3\nagent:\n  provider:\n    type: openrouter\n',
     );
-    // No grove.yaml — Grove defaults apply (provider is undefined by default)
+    // No grove.yaml — Grove defaults apply
 
     let caughtError: unknown = null;
     let config: ReturnType<typeof loadMergedConfig> | null = null;
@@ -330,8 +338,17 @@ describe('Grove-tier promotion — merge verification', () => {
 
     // Must not throw
     expect(caughtError).toBeNull();
-    // The legacy agent.provider must not survive into the merged shape
-    expect(config!.agent.provider).not.toEqual({ type: 'openrouter' });
+
+    // After the fix the raw project doc still has agent.provider, so the sparse
+    // merge surfaces it in the merged config. The migration will own lifting it
+    // to grove.yaml and stripping it from myco.yaml.
+    expect(config!.agent.provider).toEqual({ type: 'openrouter' });
+
+    // Critically: the on-disk myco.yaml must still carry agent.provider so that
+    // the migration can find and lift it. The loader must NOT have written it
+    // back with the agent block removed.
+    const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+    expect((rawOnDisk.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
   });
 });
 
