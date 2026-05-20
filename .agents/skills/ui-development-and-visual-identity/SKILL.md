@@ -133,6 +133,56 @@ function TeamSurface() {
 }
 ```
 
+### URL State Management with React Router
+
+**Critical update**: Use React Router hooks instead of window.location for MemoryRouter compatibility:
+
+```typescript
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+
+function useUrlState() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  
+  // Use React Router hooks instead of window.location
+  // This ensures MemoryRouter compatibility for testing and Electron contexts
+  const readUrlState = () => ({
+    pathname: location.pathname,
+    search: location.search,
+    hash: location.hash,
+    params: Object.fromEntries(searchParams.entries())
+  });
+  
+  const updateUrlState = (newParams: Record<string, string>) => {
+    const currentParams = Object.fromEntries(searchParams.entries());
+    const mergedParams = { ...currentParams, ...newParams };
+    setSearchParams(mergedParams);
+  };
+  
+  return { readUrlState, updateUrlState };
+}
+
+function SettingsPage() {
+  const { readUrlState, updateUrlState } = useUrlState();
+  const currentTab = readUrlState().params.tab || 'general';
+  
+  const handleTabChange = (tabId: string) => {
+    updateUrlState({ tab: tabId });
+  };
+  
+  return (
+    <div className="settings-page">
+      <TabSwitcher 
+        tabs={settingsTabs} 
+        activeTab={currentTab} 
+        onTabChange={handleTabChange} 
+      />
+    </div>
+  );
+}
+```
+
 ## Procedure B: Theme System
 
 ### Core Theme Architecture
@@ -290,8 +340,16 @@ function WorkerConstraintForm() {
 
 ## Procedure E: Master-Detail Layout
 
+**Critical update**: Layout primitives own spacing decisions, not leaf pages:
+
 ```typescript
-export function MasterDetailSplit({ masterContent, detailContent, showDetail, onCloseDetail }) {
+export function MasterDetailSplit({ 
+  masterContent, 
+  detailContent, 
+  showDetail, 
+  onCloseDetail,
+  spacing = 'default' // Primitive controls spacing
+}) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape' && showDetail) onCloseDetail();
@@ -300,8 +358,15 @@ export function MasterDetailSplit({ masterContent, detailContent, showDetail, on
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [showDetail, onCloseDetail]);
 
+  // Layout primitive owns all spacing decisions
+  const spacingClass = {
+    'compact': 'spacing-compact',
+    'default': 'spacing-default',
+    'comfortable': 'spacing-comfortable'
+  }[spacing];
+
   return (
-    <div className={`master-detail-split ${showDetail ? 'detail-open' : ''}`}>
+    <div className={`master-detail-split ${showDetail ? 'detail-open' : ''} ${spacingClass}`}>
       <div className="master-panel">{masterContent}</div>
       {showDetail && (
         <div className="detail-panel">
@@ -310,6 +375,19 @@ export function MasterDetailSplit({ masterContent, detailContent, showDetail, on
         </div>
       )}
     </div>
+  );
+}
+
+// Usage: Let primitive control spacing, not leaf pages
+function ProjectListPage() {
+  return (
+    <MasterDetailSplit
+      spacing="comfortable" // Primitive decision, not page decision
+      masterContent={<ProjectList />}
+      detailContent={showDetail && <ProjectDetail projectId={selectedProject} />}
+      showDetail={!!selectedProject}
+      onCloseDetail={() => setSelectedProject(null)}
+    />
   );
 }
 ```
@@ -372,6 +450,85 @@ function RuntimeStatusBadge() {
 }
 ```
 
+## Procedure I: PR Merge Discipline and Go-Ahead Patterns
+
+**Critical update**: Wait for explicit go-ahead signals before merging PRs:
+
+```typescript
+// PR merge readiness checks
+interface PRMergeChecks {
+  reviewsComplete: boolean;
+  ciPassing: boolean;
+  conflictsResolved: boolean;
+  goAheadReceived: boolean; // New requirement
+}
+
+function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChecks }) {
+  const canMerge = Object.values(checks).every(Boolean);
+  
+  return (
+    <div className="pr-merge-controls">
+      <ChecklistItem checked={checks.reviewsComplete} label="Reviews complete" />
+      <ChecklistItem checked={checks.ciPassing} label="CI passing" />
+      <ChecklistItem checked={checks.conflictsResolved} label="Conflicts resolved" />
+      <ChecklistItem 
+        checked={checks.goAheadReceived} 
+        label="Explicit go-ahead received"
+        critical
+      />
+      
+      <Button 
+        disabled={!canMerge}
+        variant={canMerge ? 'default' : 'ghost'}
+        onClick={() => mergePR(prId)}
+      >
+        {canMerge ? 'Merge PR' : 'Waiting for go-ahead signal'}
+      </Button>
+      
+      {!checks.goAheadReceived && (
+        <Alert variant="warning">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Go-ahead required</AlertTitle>
+          <AlertDescription>
+            Wait for explicit merge approval signal before proceeding. 
+            Auto-merge disabled until go-ahead confirmation received.
+          </AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+}
+
+// Go-ahead signal patterns for different contexts
+const GoAheadSignals = {
+  // Team review contexts
+  REVIEW_COMPLETE: 'review:complete',
+  DESIGN_APPROVED: 'design:approved', 
+  
+  // CI/deployment contexts  
+  STAGING_VERIFIED: 'staging:verified',
+  PERF_BASELINE_MET: 'perf:baseline-met',
+  
+  // Architecture contexts
+  ARCH_REVIEW_PASSED: 'arch:review-passed',
+  BREAKING_CHANGE_APPROVED: 'breaking:approved'
+};
+
+function useGoAheadPattern(requiredSignals: string[]) {
+  const [receivedSignals, setReceivedSignals] = useState<Set<string>>(new Set());
+  
+  const allSignalsReceived = requiredSignals.every(signal => 
+    receivedSignals.has(signal)
+  );
+  
+  const receiveSignal = (signal: string) => {
+    setReceivedSignals(prev => new Set(prev).add(signal));
+  };
+  
+  return { allSignalsReceived, receiveSignal, receivedSignals };
+}
+```
+
 ## Cross-Cutting Gotchas
 
 ### Theme Development
@@ -397,3 +554,12 @@ function RuntimeStatusBadge() {
 
 ### UI Workspace Verification
 **Missing type checks after worktree creation cause build failures**. The enhanced setup includes automatic verification steps.
+
+### React Router vs Window Location
+**Using window.location directly breaks MemoryRouter compatibility**. Always use React Router hooks (useLocation, useNavigate, useSearchParams) for URL state management. Direct window access fails in testing environments and Electron contexts that use MemoryRouter.
+
+### Layout Primitive Spacing Authority
+**Leaf pages must not override layout primitive spacing decisions**. MasterDetailSplit and similar primitives own spacing through props - leaf components should not apply conflicting margin/padding styles. This prevents layout inconsistencies and ensures visual design system coherence.
+
+### PR Merge Go-Ahead Discipline  
+**Auto-merge without explicit go-ahead signals creates integration risks**. Always implement go-ahead confirmation patterns for non-trivial PRs. Missing explicit approval gates cause premature merges that bypass critical review checkpoints.

@@ -25,7 +25,15 @@ describe('post-tool-use hook buffer fallback', () => {
         [path.resolve('packages/myco/src/cli.ts'), 'hook', 'post-tool-use', '--symbiont', 'codex'],
         {
           cwd: projectRoot,
-          env: { ...process.env, MYCO_NO_AUTO_SPAWN: '1' },
+          // Isolate MYCO_HOME so daemon discovery cannot reach a real
+          // daemon listening on the developer's canonical port. Without
+          // this, `getInfoAsync`'s lifecycle-lock + /health fallback
+          // would find the prod daemon and POST instead of buffering.
+          env: {
+            ...process.env,
+            MYCO_NO_AUTO_SPAWN: '1',
+            MYCO_HOME: path.join(projectRoot, 'home'),
+          },
           input: JSON.stringify({
             session_id: 'session-buffer-1',
             transcript_path: transcriptPath,

@@ -396,12 +396,251 @@ Ensure SQLite schema changes are propagated to D1 deployment schema.
 
 3. **Create Idempotent D1 Migrations**: Add `ALTER TABLE` statements for existing D1 databases
 
-4. **Test D1 Compatibility**: Run schema validation tests
+4. **Test D1 compatibility**: Run schema validation tests
    ```bash
    npm test -- tests/worker/schema.test.ts
    ```
 
 **Critical Rule**: Treat D1 schema updates as a required paired step with any SQLite schema change that syncs to team. Add checklist verification for D1 column parity.
+
+## Procedure M: Session Lifecycle Batch Management and Tool Call Aggregation
+
+Modern schema versions (v44-v45) introduce specialized patterns for session lifecycle batch management and tool call aggregation tables that require specific migration techniques.
+
+### ensureOpenBatch Migration Pattern
+
+When implementing session lifecycle management, use the `ensureOpenBatch` pattern for migrations that must guarantee an active prompt batch exists before proceeding:
+
+```typescript
+{
+  version: 44,
+  name: 'add_session_tool_call_aggregation',
+  description: 'Add session_myco_tool_calls table for tool usage analytics',
+  up: (db: Database) => {
+    // Critical: Ensure session has open batch before tool call tracking
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_myco_tool_calls (
+        id              TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL,
+        batch_id        TEXT,
+        tool_name       TEXT NOT NULL,
+        call_count      INTEGER NOT NULL DEFAULT 0,
+        last_called_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+        FOREIGN KEY (session_id) REFERENCES sessions(id),
+        FOREIGN KEY (batch_id) REFERENCES prompt_batches(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_tool_calls_session
+        ON session_myco_tool_calls(session_id, tool_name);
+      CREATE INDEX IF NOT EXISTS idx_session_tool_calls_batch  
+        ON session_myco_tool_calls(batch_id);
+    `);
+  }
+}
+```
+
+### Tool Call Aggregation Architecture
+
+When creating aggregation tables for tool usage analytics:
+
+1. **Session-Scoped Aggregation**: Always link to both session_id and batch_id for proper lifecycle tracking
+2. **Tool Name Canonicalization**: Store canonical tool names, not raw MCP tool identifiers that may drift
+3. **Temporal Tracking**: Include both count and last_called_at for usage pattern analysis
+
+### Stop Boundary Materialization Pattern
+
+**Critical Implementation**: Tool call counts are materialized at session Stop boundary via `aggregateSessionMycoToolCalls()` — a pure function that computes session-scoped tool usage from the activities table and persists to `session_myco_tool_calls`.
+
+Key characteristics:
+- **Flat Table Design**: Store `(session_id, tool_name, op, count)` rather than denormalized JSON
+- **Stop Boundary Timing**: Aggregation happens at session completion, not per-call
+- **Team Sync Exclusion**: Tool usage data remains local-only and does not sync to team D1 databases
+- **Idempotent Aggregation**: `aggregateSessionMycoToolCalls()` can be re-run safely; uses UPSERT patterns
+
+Implementation pattern:
+```typescript
+export function aggregateSessionMycoToolCalls(
+  db: Database, 
+  sessionId: string
+): void {
+  // Compute counts from activities table
+  const toolCounts = db.prepare(`
+    SELECT 
+      json_extract(content, '$.tool_name') as tool_name,
+      json_extract(content, '$.op') as op,
+      COUNT(*) as count
+    FROM activities 
+    WHERE session_id = ? 
+      AND json_extract(content, '$.tool_name') IS NOT NULL
+    GROUP BY tool_name, op
+  `).all(sessionId);
+  
+  // Materialize to aggregation table (UPSERT)
+  for (const {tool_name, op, count} of toolCounts) {
+    db.prepare(`
+      INSERT INTO session_myco_tool_calls (session_id, tool_name, op, call_count)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, tool_name, op) 
+      DO UPDATE SET call_count = excluded.call_count
+    `).run(sessionId, tool_name, op, count);
+  }
+}
+```
+
+### Phantom Batch Detection and Recovery
+
+Schema v44 introduces phantom batch detection patterns for sessions that have orphaned batch references:
+
+```sql
+-- Query pattern for phantom batch detection
+SELECT s.id as session_id, pb.id as batch_id
+FROM sessions s  
+LEFT JOIN prompt_batches pb ON s.id = pb.session_id
+WHERE s.status = 'active' AND pb.id IS NULL;
+```
+
+Migration design must account for phantom batch cleanup:
+
+```typescript
+{
+  version: 45,
+  name: 'fix_phantom_batch_references', 
+  description: 'Clean up orphaned session batch references',
+  up: (db: Database) => {
+    // Identify and fix phantom batch states
+    db.exec(`
+      UPDATE sessions 
+      SET status = 'completed'
+      WHERE status = 'active' 
+        AND id NOT IN (SELECT DISTINCT session_id FROM prompt_batches);
+    `);
+  }
+}
+```
+
+**Critical Pattern**: Always check for phantom states before adding constraints that assume referential integrity.
+
+## Procedure N: D1 Drift Reconciliation Architecture
+
+D1 drift reconciliation introduces specialized migration patterns for handling cloud-local schema synchronization issues that emerge in team deployment scenarios.
+
+### Drift Detection Schema
+
+Implement drift reconciliation with dedicated tracking tables:
+
+```sql
+CREATE TABLE IF NOT EXISTS d1_drift_journal (
+  id               TEXT PRIMARY KEY,
+  drift_type       TEXT NOT NULL, -- 'schema_version', 'table_missing', 'column_missing'
+  local_state      TEXT,          -- JSON snapshot of local state
+  d1_state         TEXT,          -- JSON snapshot of D1 state  
+  reconcile_action TEXT,          -- 'migrate_d1', 'backfill_local', 'manual_review'
+  detected_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+  resolved_at      INTEGER,
+  resolution_notes TEXT
+);
+```
+
+### D1 Reconciliation Query Patterns
+
+When building drift reconciliation, use defensive query patterns that handle schema mismatches:
+
+```typescript
+// Defensive column checking before INSERT
+const hasColumn = db.prepare(`
+  SELECT COUNT(*) as count 
+  FROM pragma_table_info('my_table') 
+  WHERE name = 'new_column'
+`).get() as {count: number};
+
+if (hasColumn.count > 0) {
+  // Safe to insert with new column
+  insertWithNewColumn(data);
+} else {
+  // Fall back to legacy insert pattern
+  insertLegacyPattern(data);
+}
+```
+
+### Team Sync Reconciliation Flow
+
+D1 drift reconciliation must handle the case where team sync deployments introduce schema versions that local clients haven't migrated to yet:
+
+1. **Schema Version Check**: Always query D1 schema version before attempting sync operations
+2. **Graceful Degradation**: If D1 is ahead, use compatible subset of operations
+3. **Reconciliation Backlog**: Queue drift fixes for background processing
+
+## Procedure O: Tool Name Canonicalization for Activities Migration
+
+Activities table processing in modern schema versions requires tool name canonicalization to handle MCP tool identifier evolution and prevent data fragmentation.
+
+### Canonicalization Migration Pattern
+
+```typescript
+{
+  version: 46,
+  name: 'canonicalize_activity_tool_names',
+  description: 'Standardize tool names in activities for consistent analytics',
+  up: (db: Database) => {
+    // Create mapping table for tool name normalization
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tool_name_canonical_map (
+        raw_name        TEXT NOT NULL,
+        canonical_name  TEXT NOT NULL,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (raw_name)
+      );
+    `);
+    
+    // Populate with known tool name mappings
+    db.exec(`
+      INSERT OR IGNORE INTO tool_name_canonical_map (raw_name, canonical_name) VALUES
+      ('vault_search_fts', 'vault_search'),
+      ('vault_search_semantic', 'vault_search'),
+      ('vault_unprocessed_batches', 'vault_read'),
+      ('vault_sessions_list', 'vault_read');
+    `);
+    
+    // Update activities to use canonical names
+    db.exec(`
+      UPDATE activities 
+      SET content = json_set(
+        content,
+        '$.tool_name',
+        COALESCE(
+          (SELECT canonical_name FROM tool_name_canonical_map 
+           WHERE raw_name = json_extract(activities.content, '$.tool_name')),
+          json_extract(activities.content, '$.tool_name')
+        )
+      )
+      WHERE json_extract(content, '$.tool_name') IS NOT NULL;
+    `);
+  }
+}
+```
+
+### Canonicalization Query Helpers
+
+Create query helpers that automatically apply canonicalization:
+
+```typescript
+export function getCanonicalToolName(rawName: string, db: Database): string {
+  const result = db.prepare(`
+    SELECT canonical_name 
+    FROM tool_name_canonical_map 
+    WHERE raw_name = ?
+  `).get(rawName) as {canonical_name: string} | undefined;
+  
+  return result?.canonical_name ?? rawName;
+}
+```
+
+### Activities Processing Gotchas
+
+- **MCP Prefix Stripping**: Raw tool names often include `mcp__myco-vault__` prefixes that should be stripped for analytics
+- **Version-Specific Mappings**: Tool names evolve across MCP schema versions; maintain mapping for each version
+- **Retroactive Application**: Apply canonicalization to existing activities during migration, not just new ones
+
+**Critical Rule**: Always canonicalize tool names during activities processing to prevent analytics fragmentation across schema versions.
 
 ## Cross-Cutting Gotchas
 
@@ -419,3 +658,10 @@ Ensure SQLite schema changes are propagated to D1 deployment schema.
 - **Version Pinning Fragility** — Tests asserting `SCHEMA_VERSION === N` break immediately when the schema advances. Test schema capabilities and invariants instead of exact version numbers. Import `SCHEMA_VERSION` from `packages/myco/src/db/schema.ts` and use relative comparisons.
 - **D1 Parity Gaps** — Adding columns to SQLite without updating D1 schema causes silent sync failures. The team CLI at `packages/myco-team/src/cli.ts` manages D1 deployment - treat D1 updates as mandatory paired steps.
 - **Test Chain Assumptions** — Hand-building specific schema versions in tests misses migration chain interactions. Follow patterns from existing migration tests like `tests/db/migrate-v40.test.ts` that test real migration sequences.
+- **ensureOpenBatch Dependencies** — Schema v44+ migrations that create tool call aggregation tables must account for sessions that may not have active batches. Check batch existence before creating batch-dependent records.
+- **Phantom Batch States** — Always check for orphaned session references before adding FK constraints. Use phantom batch detection queries to identify cleanup requirements.
+- **D1 Drift Reconciliation** — Team sync scenarios can create schema version mismatches between local and D1. Always query D1 schema version before sync operations and implement graceful degradation for version skew.
+- **Tool Name Canonicalization** — MCP tool identifiers evolve across schema versions. Store canonical tool names in analytics tables and maintain mapping tables for retroactive normalization.
+- **Migration Ordering for Tool Aggregation** — Tool call aggregation tables must be created before tool name canonicalization migrations to avoid FK constraint violations during data normalization.
+- **Stop Boundary Materialization** — Tool usage analytics use Stop boundary aggregation rather than real-time updates. Run `aggregateSessionMycoToolCalls()` at session completion, not per tool invocation.
+- **Team Sync Exclusion for Analytics** — Tool usage data (session_myco_tool_calls) remains local-only and should not sync to team D1 databases to avoid analytics data pollution.
