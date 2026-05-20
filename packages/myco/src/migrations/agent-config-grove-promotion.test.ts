@@ -1,10 +1,21 @@
 /**
  * Tests for the agent-config Grove promotion migration pre-flight passes
- * (Tasks 5.2 + 5.3).
+ * (Tasks 5.2 + 5.3) and write phase (Tasks 5.4 + 5.5).
  */
 
 import { describe, test, expect } from 'bun:test';
-import { readMigrationPlan, validateMigrationPlan, type MigrationPlan } from './agent-config-grove-promotion.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import YAML from 'yaml';
+import {
+  readMigrationPlan,
+  validateMigrationPlan,
+  writeArchive,
+  executeMigration,
+  type MigrationPlan,
+  type MigrationProjectState,
+} from './agent-config-grove-promotion.js';
+import { loadGroveConfig } from '../config/loader.js';
 import { withMultiGroveFixture } from '../test-utils/grove-fixture.js';
 
 // ---------------------------------------------------------------------------
@@ -346,6 +357,337 @@ describe('validateMigrationPlan', () => {
           (e) => e.projectId === p && e.message.includes('agent.model'),
         );
         expect(leakError).toBeDefined();
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeArchive (Task 5.4)
+// ---------------------------------------------------------------------------
+
+describe('writeArchive', () => {
+  test('writes archive file with both myco_yaml and local_yaml slices', async () => {
+    const g = groveId('arc001');
+    const p = projId('arc001');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                myco: {
+                  version: 3,
+                  agent: { model: 'claude-sonnet', provider: { type: 'anthropic' } },
+                },
+                local: {
+                  agent: { model: 'claude-opus' },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+        const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const project = plan.groves[0]!.projects[0]!;
+
+        const archivePath = writeArchive(project);
+
+        expect(archivePath).not.toBeNull();
+        expect(fs.existsSync(archivePath!)).toBe(true);
+
+        const raw = fs.readFileSync(archivePath!, 'utf-8');
+        const doc = YAML.parse(raw) as Record<string, unknown>;
+        expect(doc.project_id).toBe(p);
+        expect(doc.grove_id).toBe(g);
+        expect(doc.captured_at).toBeDefined();
+
+        // Both slices present in archive.
+        const mycoYaml = doc.myco_yaml as Record<string, unknown>;
+        const localYaml = doc.local_yaml as Record<string, unknown>;
+        expect((mycoYaml.agent as Record<string, unknown>).model).toBe('claude-sonnet');
+        expect((localYaml.agent as Record<string, unknown>).model).toBe('claude-opus');
+
+        // Archive path is inside vaultDir/archive/<timestamp>/
+        expect(archivePath!).toContain(path.join(project.vaultDir, 'archive'));
+        expect(path.basename(archivePath!)).toBe('agent-config-promotion.yaml');
+      },
+    );
+  });
+
+  test('returns null when both slices are empty', async () => {
+    const g = groveId('arc002');
+    const p = projId('arc002');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                myco: { version: 3, capture: { transcript_paths: ['/tmp/t'] } },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+        const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const project = plan.groves[0]!.projects[0]!;
+
+        const archivePath = writeArchive(project);
+        expect(archivePath).toBeNull();
+
+        // No archive directory created.
+        const archiveBase = path.join(project.vaultDir, 'archive');
+        expect(fs.existsSync(archiveBase)).toBe(false);
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeMigration (Task 5.5)
+// ---------------------------------------------------------------------------
+
+describe('executeMigration', () => {
+  test('persists candidateGroveConfig and strips project files', async () => {
+    const g = groveId('exec01');
+    const p = projId('exec01');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                myco: {
+                  version: 3,
+                  agent: { model: 'claude-sonnet', provider: { type: 'anthropic' } },
+                  capture: { transcript_paths: ['/tmp/t'] },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+        const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
+
+        expect(result.ok).toBe(true);
+        expect(result.errors).toHaveLength(0);
+
+        // Grove config now has agent.model from the lifted project.
+        const savedGrove = loadGroveConfig(g, handle.mycoHome);
+        expect(savedGrove.agent.model).toBe('claude-sonnet');
+
+        // myco.yaml no longer carries agent.* (promoted paths stripped).
+        const project = plan.groves[0]!.projects[0]!;
+        const mycoRaw = YAML.parse(fs.readFileSync(project.mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+        expect(mycoRaw.agent).toBeUndefined();
+        // Non-promoted fields survive.
+        expect((mycoRaw.capture as Record<string, unknown>).transcript_paths).toEqual(['/tmp/t']);
+      },
+    );
+  });
+
+  test('does not create local.yaml when it did not exist before migration', async () => {
+    const g = groveId('exec02');
+    const p = projId('exec02');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                // No `local` key — fixture will not write local.yaml.
+                myco: {
+                  version: 3,
+                  agent: { model: 'gpt-4o' },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const vaultDir = handle.groves[0]!.projects[0]!.vaultDir;
+        const localYamlPath = path.join(vaultDir, 'local.yaml');
+
+        // Confirm local.yaml does not exist before migration.
+        expect(fs.existsSync(localYamlPath)).toBe(false);
+
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+        const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
+
+        expect(result.ok).toBe(true);
+        // local.yaml must not have been created.
+        expect(fs.existsSync(localYamlPath)).toBe(false);
+      },
+    );
+  });
+
+  test('idempotent: re-running on already-migrated plan produces no new archive', async () => {
+    const g = groveId('exec03');
+    const p = projId('exec03');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p,
+                myco: {
+                  version: 3,
+                  agent: { model: 'claude-haiku' },
+                  capture: { transcript_paths: ['/tmp/t'] },
+                },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+
+        // First run.
+        const { plan: plan1 } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const result1 = await executeMigration(plan1, { mycoHome: handle.mycoHome });
+        expect(result1.ok).toBe(true);
+
+        // Count archive dirs after first run.
+        const vaultDir = plan1.groves[0]!.projects[0]!.vaultDir;
+        const archiveBase = path.join(vaultDir, 'archive');
+        const firstRunDirs = fs.existsSync(archiveBase) ? fs.readdirSync(archiveBase) : [];
+
+        // Second run — re-read (promotedSlices will be empty after strip).
+        const { plan: plan2 } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+        const result2 = await executeMigration(plan2, { mycoHome: handle.mycoHome });
+        expect(result2.ok).toBe(true);
+
+        // No new archive dir created on second run.
+        const secondRunDirs = fs.existsSync(archiveBase) ? fs.readdirSync(archiveBase) : [];
+        expect(secondRunDirs).toHaveLength(firstRunDirs.length);
+      },
+    );
+  });
+
+  test('grove write failure short-circuits that grove but continues to next', async () => {
+    const g1 = groveId('exec04a');
+    const g2 = groveId('exec04b');
+    const p1 = projId('exec04a');
+    const p2 = projId('exec04b');
+
+    await withMultiGroveFixture(
+      {
+        groves: [
+          {
+            id: g1,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p1,
+                myco: { version: 3, agent: { model: 'model-a' } },
+              },
+            ],
+          },
+          {
+            id: g2,
+            grove_yaml: {},
+            projects: [
+              {
+                id: p2,
+                myco: { version: 3, agent: { model: 'model-b' } },
+              },
+            ],
+          },
+        ],
+      },
+      async (handle) => {
+        const machine = {
+          groves: handle.groves.map((g) => ({
+            id: g.id,
+            grovePath: g.grovePath,
+            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+          })),
+        };
+        const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
+
+        // Force a grove write failure on the first grove by making its config
+        // path a directory (rename will fail or write will fail).
+        const grove1ConfigPath = path.join(handle.groves[0]!.grovePath, 'grove.yaml');
+        fs.rmSync(grove1ConfigPath, { force: true });
+        fs.mkdirSync(grove1ConfigPath); // a directory where a file is expected
+
+        const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
+
+        // There should be an error for grove 1.
+        expect(result.ok).toBe(false);
+        const g1Error = result.errors.find((e) => e.groveId === g1);
+        expect(g1Error).toBeDefined();
+        expect(g1Error!.message).toContain('grove write failed');
+
+        // Grove 2 succeeded — its config should be written.
+        const grove2Config = loadGroveConfig(g2, handle.mycoHome);
+        expect(grove2Config.agent.model).toBe('model-b');
+
+        // Grove 1's project myco.yaml should NOT have been stripped (skipped).
+        const proj1MycoPath = plan.groves[0]!.projects[0]!.mycoYamlPath;
+        const proj1Raw = YAML.parse(fs.readFileSync(proj1MycoPath, 'utf-8')) as Record<string, unknown>;
+        expect((proj1Raw.agent as Record<string, unknown>).model).toBe('model-a');
       },
     );
   });

@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { GroveConfigSchema, ProjectConfigSchema, type GroveConfig } from '../config/schema.js';
-import { loadGroveConfig } from '../config/loader.js';
+import { loadGroveConfig, saveGroveConfig } from '../config/loader.js';
 import { resolveGroveDir, resolveMycoHome } from '../grove/paths.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { isPlainObject } from '../utils/deep-merge.js';
@@ -46,6 +46,12 @@ export interface MigrationProjectState {
   strippedLocal: Record<string, unknown>;
   promotedSliceMyco: Record<string, unknown>;
   promotedSliceLocal: Record<string, unknown>;
+  /**
+   * True when `localYamlPath` existed on disk during the read pass.
+   * Used by the write phase to avoid creating a new empty local.yaml
+   * for projects that never had one.
+   */
+  originalLocalExisted: boolean;
 }
 
 /** Per-Grove migration state during read pass. */
@@ -217,6 +223,9 @@ export async function readMigrationPlan(
       const mycoYamlPath = path.join(vaultDir, 'myco.yaml');
       const localYamlPath = path.join(vaultDir, 'local.yaml');
 
+      // Check local.yaml existence before reading (needed for originalLocalExisted).
+      const originalLocalExisted = fs.existsSync(localYamlPath);
+
       // Read myco.yaml
       let originalMyco: Record<string, unknown>;
       try {
@@ -241,6 +250,7 @@ export async function readMigrationPlan(
           strippedLocal: {},
           promotedSliceMyco: {},
           promotedSliceLocal: {},
+          originalLocalExisted,
         });
         continue;
       }
@@ -283,6 +293,7 @@ export async function readMigrationPlan(
         strippedLocal,
         promotedSliceMyco,
         promotedSliceLocal,
+        originalLocalExisted,
       });
     }
 
@@ -364,4 +375,112 @@ export function validateMigrationPlan(plan: MigrationPlan): MigrationResult {
   }
 
   return { ok: errors.length === 0, plan, errors };
+}
+
+// ---------------------------------------------------------------------------
+// writeArchive (Task 5.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture the original promoted-field values from a project to a timestamped
+ * archive directory before stripping them.
+ *
+ * Returns the archive file path, or null when both slices are empty (nothing
+ * to archive).
+ */
+export function writeArchive(project: MigrationProjectState): string | null {
+  const mycoEmpty = Object.keys(project.promotedSliceMyco).length === 0;
+  const localEmpty = Object.keys(project.promotedSliceLocal).length === 0;
+  if (mycoEmpty && localEmpty) return null;
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
+  const archiveDir = path.join(project.vaultDir, 'archive', timestamp);
+  fs.mkdirSync(archiveDir, { recursive: true });
+  const archivePath = path.join(archiveDir, 'agent-config-promotion.yaml');
+
+  const document = {
+    project_id: project.projectId,
+    grove_id: project.groveId,
+    captured_at: new Date().toISOString(),
+    myco_yaml: project.promotedSliceMyco,
+    local_yaml: project.promotedSliceLocal,
+  };
+  fs.writeFileSync(archivePath, YAML.stringify(document), 'utf-8');
+  return archivePath;
+}
+
+// ---------------------------------------------------------------------------
+// executeMigration (Task 5.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Atomic per-Grove write phase: writes candidate Grove config, archives
+ * promoted project values, then writes stripped myco.yaml + local.yaml.
+ *
+ * Errors are collected rather than thrown — a Grove-level failure short-
+ * circuits that Grove's project writes but does not abort other Groves.
+ */
+export async function executeMigration(
+  plan: MigrationPlan,
+  options: { mycoHome?: string } = {},
+): Promise<MigrationResult> {
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const errors: MigrationError[] = [];
+
+  for (const grove of plan.groves) {
+    // Only write the Grove config when the candidate differs from the original
+    // (avoids a no-op write and unnecessary cache invalidation).
+    const changed =
+      JSON.stringify(grove.candidateGroveConfig) !== JSON.stringify(grove.originalGroveConfig);
+    if (changed) {
+      try {
+        saveGroveConfig(grove.groveId, grove.candidateGroveConfig, mycoHome);
+      } catch (err) {
+        errors.push({
+          groveId: grove.groveId,
+          message: `grove write failed: ${String(err)}`,
+        });
+        continue;
+      }
+    }
+
+    for (const project of grove.projects) {
+      try {
+        writeArchive(project);
+      } catch (err) {
+        errors.push({
+          groveId: grove.groveId,
+          projectId: project.projectId,
+          message: `archive write failed: ${String(err)}`,
+        });
+        continue;
+      }
+
+      try {
+        atomicWriteYaml(project.mycoYamlPath, project.strippedMyco);
+
+        // Only write local.yaml when the file previously existed, OR when
+        // strippedLocal has content. This avoids creating a new empty
+        // local.yaml for projects that never had one.
+        const localHasContent = Object.keys(project.strippedLocal).length > 0;
+        if (project.originalLocalExisted || localHasContent) {
+          atomicWriteYaml(project.localYamlPath, project.strippedLocal);
+        }
+      } catch (err) {
+        errors.push({
+          groveId: grove.groveId,
+          projectId: project.projectId,
+          message: `project file write failed: ${String(err)}`,
+        });
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, plan, errors };
+}
+
+function atomicWriteYaml(filePath: string, doc: Record<string, unknown>): void {
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, YAML.stringify(doc), 'utf-8');
+  fs.renameSync(tmp, filePath);
 }
