@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { GroveConfigSchema } from '@myco/config/schema';
+import { GroveConfigSchema, ProjectConfigSchema } from '@myco/config/schema';
 
 describe('GroveAgentSchema', () => {
   test('accepts promoted agent runtime fields', () => {
@@ -66,5 +66,28 @@ describe('GroveEmbeddingSchema', () => {
     expect(() => GroveConfigSchema.parse({
       embedding: { base_url: 'not-a-url' },
     })).toThrow();
+  });
+});
+
+describe('ProjectConfigSchema', () => {
+  test('does not declare agent or embedding blocks', () => {
+    const parsed = ProjectConfigSchema.parse({
+      version: 3,
+      config_version: 10,
+    });
+    expect(parsed).not.toHaveProperty('agent');
+    expect(parsed).not.toHaveProperty('embedding');
+  });
+
+  test('still accepts cortex, capture, notifications, appearance', () => {
+    const parsed = ProjectConfigSchema.parse({
+      version: 3,
+      config_version: 10,
+      cortex: { enabled: true },
+      capture: {},
+      notifications: { enabled: true },
+      appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
+    });
+    expect(parsed.cortex.enabled).toBe(true);
   });
 });

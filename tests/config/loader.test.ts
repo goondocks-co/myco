@@ -126,22 +126,6 @@ intelligence:
     expect(config.embedding.provider).toBe('openai-compatible');
   });
 
-  it('updateConfig applies transform and persists', () => {
-    const yaml = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`;
-    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
-
-    const result = updateConfig(tmpDir, (config) => ({
-      ...config,
-      embedding: { ...config.embedding, model: 'nomic-embed-text' },
-    }));
-
-    expect(result.embedding.model).toBe('nomic-embed-text');
-
-    // Verify it was persisted to disk
-    const reloaded = loadConfig(tmpDir);
-    expect(reloaded.embedding.model).toBe('nomic-embed-text');
-  });
-
   it('updateConfig rejects invalid transforms without writing', () => {
     const yaml = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);

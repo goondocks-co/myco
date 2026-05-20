@@ -59,29 +59,6 @@ describe('myco setup-llm', () => {
     expect(parsed).toHaveProperty('model');
   });
 
-  it('--embedding-model updates the embedding model', async () => {
-    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
-    const config = readConfig(tmpDir);
-    const embedding = config.embedding as Record<string, unknown>;
-    expect(embedding.model).toBe('nomic-embed-text');
-  });
-
-  it('--embedding-provider updates the embedding provider', async () => {
-    await run(['--embedding-provider', 'openai-compatible', '--embedding-url', 'http://localhost:1234'], tmpDir);
-    const config = readConfig(tmpDir);
-    const embedding = config.embedding as Record<string, unknown>;
-    expect(embedding.provider).toBe('openai-compatible');
-    expect(embedding.base_url).toBe('http://localhost:1234');
-  });
-
-  it('partial update preserves other fields unchanged', async () => {
-    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
-    const config = readConfig(tmpDir);
-    const embedding = config.embedding as Record<string, unknown>;
-    expect(embedding.model).toBe('nomic-embed-text');
-    expect(embedding.provider).toBe('ollama');
-  });
-
   it('prints updated embedding config after a change', async () => {
     await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     const allOutput = logged.join('\n');

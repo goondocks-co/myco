@@ -31,9 +31,6 @@ const EmbeddingProviderBaseSchema = z.object({
   run_in_deep_sleep: z.boolean().default(true),
 });
 const EmbeddingProviderSchema = EmbeddingProviderBaseSchema;
-const ProjectEmbeddingProviderSchema = EmbeddingProviderBaseSchema.omit({
-  run_in_deep_sleep: true,
-});
 
 const DaemonSchema = z.object({
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -189,9 +186,6 @@ const AgentBaseSchema = z.object({
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 });
 const AgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema);
-const ProjectAgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema.omit({
-  scheduled_tasks_active_window_days: true,
-}));
 
 const BackupRetentionSchema = z.object({
   /** Number of most-recent daily backups to keep per (Grove, machine). */
@@ -542,10 +536,8 @@ export const GroveConfigSchema = z.object({
 export const ProjectConfigSchema = z.object({
   version: z.literal(3),
   config_version: z.number().int().nonnegative().default(0),
-  embedding: ProjectEmbeddingProviderSchema.default(() => ProjectEmbeddingProviderSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
-  agent: ProjectAgentSchema.default(() => ProjectAgentSchema.parse({})),
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),

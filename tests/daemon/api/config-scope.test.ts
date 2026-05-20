@@ -38,7 +38,6 @@ describe('scoped config HTTP handlers', () => {
     });
     const project = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
     expect(project).toContain('theme: plum');
-    expect(project).toContain('provider: ollama');
   });
 
   it('PUT /scoped scope=project with invalid patch returns 400 validation_failed', async () => {

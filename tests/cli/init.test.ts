@@ -224,19 +224,12 @@ describe('myco init', () => {
     const config = YAML.parse(yaml);
 
     expect(config.version).toBe(3);
-    expect(config.embedding.provider).toBe('ollama');
-    expect(config.embedding.model).toBe('bge-m3');
+    // embedding is now Grove-tier; ProjectConfigSchema strips it from project file
+    expect(config.embedding).toBeUndefined();
     expect(config.capture.artifact_extensions).toEqual(['.md']);
     // `daemon.log_level` is machine-tier now (~/.myco/config.yaml);
     // ProjectConfigSchema strips it from project myco.yaml on save.
     expect(config.daemon).toBeUndefined();
-  });
-
-  it('uses correct base_url when explicitly passed', async () => {
-    await run(['--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
-
-    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.embedding.base_url).toBe('http://localhost:11434');
   });
 
   it('writes .gitignore excluding runtime artifacts', async () => {
@@ -255,37 +248,6 @@ describe('myco init', () => {
     // `~/.myco/` — and never need a project-level gitignore entry.
     expect(gitignore).toContain('runtime.command');
     expect(gitignore).not.toContain('runtime.tmp/');
-  });
-
-  it('is idempotent — does not overwrite user-set values on re-init', async () => {
-    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
-
-    const configPath = path.join(vault, 'myco.yaml');
-    const originalEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
-    expect(originalEmbedding).toBe('bge-m3');
-
-    // Second init with a different embedding model must NOT overwrite the
-    // user's stored choice. (The file text itself may change — e.g. the
-    // config-version migration runs on re-read — but the user's selections
-    // stay put.)
-    const consoleSpy = vi.spyOn(console, 'log');
-    await run(['--embedding-model', 'other', '--non-interactive']);
-
-    const afterEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
-    expect(afterEmbedding).toBe('bge-m3');
-    consoleSpy.mockRestore();
-  });
-
-  it('leaves agent toggles at their schema default (true) — init no longer scaffolds them as false', async () => {
-    // Regression: init used to explicitly write scheduled_tasks_enabled=false
-    // and event_tasks_enabled=false into myco.yaml. Combined with the daemon
-    // reading project-only config, this meant the scheduler never ran on a
-    // fresh install even when the user enabled the toggles at personal scope.
-    await run(['--embedding-model', 'bge-m3']);
-
-    const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
-    expect(config.agent.scheduled_tasks_enabled).toBe(true);
-    expect(config.agent.event_tasks_enabled).toBe(true);
   });
 
   it('initializes plan_dirs as empty array (agent-specific dirs come from symbiont manifests)', async () => {
