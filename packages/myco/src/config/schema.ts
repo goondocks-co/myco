@@ -503,6 +503,7 @@ const GroveDaemonSchema = z.object({
 const GroveEmbeddingSchema = z.object({
   /** Keep the embedding-reconcile loop running while the Grove sleeps. */
   run_in_deep_sleep: z.boolean().default(true),
+  ...EmbeddingProviderBaseSchema.omit({ run_in_deep_sleep: true }).shape,
 });
 const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   /**
