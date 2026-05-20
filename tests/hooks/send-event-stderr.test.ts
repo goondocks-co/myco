@@ -34,15 +34,21 @@ describe('hook send-event stderr observability', () => {
     const { projectRoot, vaultDir, transcriptPath } = setupProject();
 
     try {
-      // No daemon.json + MYCO_NO_AUTO_SPAWN=1 means capturePost short-circuits
-      // to ok=false without an HTTP error envelope — the "transport-failure"
+      // Isolated MYCO_HOME + no daemon.json + MYCO_NO_AUTO_SPAWN=1 means
+      // capturePost's three-tier discovery (daemon.json → daemon.lock →
+      // /health on canonical port) finds nothing reachable, so result.ok
+      // is false with result.data undefined — the "transport-failure"
       // branch in classifyBufferFallback.
       const result = spawnSync(
         process.execPath,
         [path.resolve('packages/myco/src/cli.ts'), 'hook', 'post-tool-use', '--symbiont', 'codex'],
         {
           cwd: projectRoot,
-          env: { ...process.env, MYCO_NO_AUTO_SPAWN: '1' },
+          env: {
+            ...process.env,
+            MYCO_NO_AUTO_SPAWN: '1',
+            MYCO_HOME: path.join(projectRoot, 'home'),
+          },
           input: JSON.stringify({
             session_id: 'sess-stderr-transport',
             transcript_path: transcriptPath,

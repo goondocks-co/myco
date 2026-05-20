@@ -46,13 +46,15 @@ Navigate to the project root and run:
 myco init
 ```
 
+**Global Symbiont Detection:** The modern Myco daemon uses manifest-driven symbiont detection via the `detectionDir` field in symbiont manifests. This enables automatic discovery of installed agents without manual configuration. The daemon performs detection checks at startup and periodically thereafter, reducing the need for explicit symbiont registration in many cases.
+
 **Project Root Safety:** `myco init` includes safety guards to prevent initialization in dangerous locations. Specifically, it will refuse to run in unsafe project roots like `$HOME` to prevent accidental vault creation in your home directory. Choose a proper project directory (e.g., `/Users/yourname/projects/myapp`) before running init.
 
 **What `myco init` does:**
 
 1. Creates `.myco/` directory (vault database, config, secrets)
 2. Writes `.myco/myco.yaml` with project configuration
-3. **Seeds the `symbionts` list in `.myco/myco.yaml`** — reads each installed symbiont's manifest `defaultEnabled` field via `SymbiontInstaller` and populates the per-project activation list with sensible defaults
+3. **Seeds the `symbionts` list in `.myco/myco.yaml`** — reads each installed symbiont's manifest `defaultEnabled` field via `SymbiontInstaller` and populates the per-project activation list with sensible defaults. The Global Symbiont Install architecture enhances this with manifest-driven detection patterns that automatically identify available agents via their `detectionDir` configuration.
 4. Registers MCP server entries for each enabled symbiont
 5. Installs hook files for each enabled symbiont — hooks use harness env vars (`${CLAUDE_PROJECT_DIR:-.}`, `${CURSOR_PROJECT_DIR:-.}`, etc.) for root-anchoring so they resolve correctly regardless of working directory
 6. Creates skill symlinks under `.agents/skills/`
@@ -80,9 +82,9 @@ symbionts:
   # so it is NOT added to this project's list
 ```
 
-This list is the **per-project activation gate**. An agent installed on the machine but absent from this list is not active for this project. This decouples machine-level installation from project-level activation.
+This list is the **per-project activation gate**. An agent installed on the machine but absent from this list is not active for this project. This decouples machine-level installation from project-level activation. The Global Symbiont Install architecture supplements this with automatic detection patterns that can identify agents even when they're not explicitly listed, improving discovery reliability.
 
-After `myco init`, review the `symbionts` list in `.myco/myco.yaml` and add/remove agents for this project specifically.
+After `myco init`, review the `symbionts` list in `.myco/myco.yaml` and add/remove agents for this project specifically. The daemon's manifest-driven detection will help identify any available agents that weren't automatically included.
 
 ### 3. Verify the Installation
 
@@ -99,8 +101,9 @@ myco doctor
 - Hook files are present and executable
 - Vault database is accessible
 - No configuration drift between `.myco/myco.yaml` and the active symbiont set
+- **Global detection status** — Validates that the manifest-driven symbiont detection system is functioning properly and can identify installed agents
 
-Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the project but whose MCP entry is missing or stale. It does NOT flag agents that are installed globally but have no config directory here — binary presence without a project config directory is not a problem.
+Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the project but whose MCP entry is missing or stale. It does NOT flag agents that are installed globally but have no config directory here — binary presence without a project config directory is not a problem. With Global Symbiont Install architecture, doctor also validates the detection system's ability to find agents via manifest `detectionDir` patterns.
 
 **Note:** Doctor warns (rather than errors) when LLM or embedding providers are unconfigured. Data-collection mode is a valid post-init state — unconfigured providers mean the agent pipeline won't run, but session capture continues normally. These warnings are expected immediately after `myco init`.
 
@@ -117,6 +120,8 @@ The daemon runs in the background and handles session capture, agent task schedu
 ```bash
 myco stats
 ```
+
+**Global Detection Architecture:** The modern daemon includes enhanced symbiont detection capabilities that run periodically to identify newly installed or removed agents. This background detection process uses manifest-driven patterns to maintain accurate symbiont registry state without manual intervention.
 
 ### 5. Configure Myco Agent (Optional)
 
@@ -136,6 +141,8 @@ myco update
 Updates the CLI binary and refreshes hook files, MCP entries, and skill symlinks for all active symbionts. `myco update` respects the existing `symbionts` list in `.myco/myco.yaml` — it does not overwrite or reset per-project activation choices.
 
 `myco update` also auto-migrates hook files from the old relative-path format (`node .agents/myco-hook.cjs`) to the current harness env-var format that uses `${CLAUDE_PROJECT_DIR:-.}` (and cursor/windsurf equivalents) for correct root resolution.
+
+**Global Detection Updates:** Updates now include refreshing the manifest-driven detection registry, ensuring that newly installed symbionts with `detectionDir` configurations are properly discovered by the daemon's background detection processes.
 
 **Automatic Configuration Migration:** `myco update` now automatically migrates legacy project configuration fields to the Grove tier instead of silently stripping them. Specifically:
 - `embedding.run_in_deep_sleep` moves from Project to Grove config
@@ -256,17 +263,19 @@ const enabled = getEnabledSymbiontNames(config);
 
 This function is the single source of truth. Do not read `.myco/myco.yaml.symbionts` directly or filter inline — previously copy-pasted in 3 places (`packages/myco/src/cli/update.ts`, `packages/myco/src/cli/doctor.ts`, daemon API), now canonicalized in `packages/myco/src/config/loader.ts`.
 
+**Global Detection Integration:** The active symbionts query now integrates with the manifest-driven detection system, cross-referencing the explicit `symbionts` list with detected agents to provide comprehensive symbiont status information.
+
 ## Common Pitfalls
 
-**`symbionts` list absent from `.myco/myco.yaml` after init.** If a symbiont's manifest is missing the `defaultEnabled` field, `SymbiontInstaller` cannot determine the default and the symbiont may be excluded from the initial list. Add it manually after init, or add `defaultEnabled: true/false` to the manifest before running init.
+**`symbionts` list absent from `.myco/myco.yaml` after init.** If a symbiont's manifest is missing the `defaultEnabled` field, `SymbiontInstaller` cannot determine the default and the symbiont may be excluded from the initial list. Add it manually after init, or add `defaultEnabled: true/false` to the manifest before running init. The Global Symbiont Install architecture's manifest-driven detection can help identify missing symbionts that should be added to the project list.
 
-**Machine-level install ≠ project-level activation.** An agent can be installed on the machine but absent from a project's `symbionts` list. `myco doctor` will not flag this. The symbiont is simply not active for that project. Use `myco init` or manually edit `.myco/myco.yaml` to add it.
+**Machine-level install ≠ project-level activation.** An agent can be installed on the machine but absent from a project's `symbionts` list. `myco doctor` will not flag this. The symbiont is simply not active for that project. Use `myco init` or manually edit `.myco/myco.yaml` to add it. The daemon's global detection system can identify such agents and suggest their addition.
 
-**`myco doctor` mis-reports agents as "unregistered."** This was a historical bug where doctor used binary-on-PATH presence to detect agents. Current behavior: doctor only flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the current project but MCP isn't registered. If you see a false positive, check whether the config directory actually exists.
+**`myco doctor` mis-reports agents as "unregistered."** This was a historical bug where doctor used binary-on-PATH presence to detect agents. Current behavior: doctor only flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the current project but MCP isn't registered. If you see a false positive, check whether the config directory actually exists. The Global Symbiont Install architecture adds manifest-driven validation to reduce these false positives.
 
 **`myco doctor` warnings for unconfigured providers are expected, not broken.** Immediately after `myco init`, doctor will warn that LLM/embedding providers are unconfigured. This is data-collection mode — valid and intentional. Configure providers via the daemon UI when ready.
 
-**`myco update` after adding a new symbiont to `symbionts`.** After manually adding a symbiont to the `symbionts` list in `.myco/myco.yaml`, run `myco update` to register its MCP entry and install its hooks. The daemon UI is the primary interface — CLI is only for bootstrap operations.
+**`myco update` after adding a new symbiont to `symbionts`.** After manually adding a symbiont to the `symbionts` list in `.myco/myco.yaml`, run `myco update` to register its MCP entry and install its hooks. The daemon UI is the primary interface — CLI is only for bootstrap operations. The global detection system will also validate that the added symbiont can be properly detected.
 
 **Old hook format (relative path) after upgrading.** Hooks installed before the harness env-var migration used bare relative paths (`node .agents/myco-hook.cjs`) and fail when the agent invokes them from a different working directory. Run `myco update` to auto-migrate to the current format that uses `${CLAUDE_PROJECT_DIR:-.}` (and cursor/windsurf equivalents) for correct root resolution.
 
@@ -279,6 +288,8 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 **CLI help shows before config processing.** Commands like `myco init --help` and `myco update --help` display usage information immediately without reading or validating configuration files. This means help is available even in projects with broken or missing `.myco/myco.yaml` files.
 
 **Attempting to init in unsafe locations.** `myco init` will refuse to run in dangerous project roots like `$HOME` or other system directories to prevent accidental vault creation in inappropriate locations. Always navigate to a proper project directory before running init.
+
+**Global detection lag.** The manifest-driven detection system runs periodically rather than continuously. If a newly installed symbiont isn't immediately detected, wait for the next detection cycle or restart the daemon to force detection. The detection interval is configurable in the daemon settings.
 
 ### Development Environment Gotchas
 
@@ -293,3 +304,5 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 **Symlinks go stale after package relocation.** When the Myco project restructures (e.g., moving into a monorepo), `~/.local/bin/myco-*` symlinks still point to the old locations. If the target dist file doesn't exist at the old path, hooks will fail silently. Fix this by re-running `make dev-link` after any significant directory reorganization.
 
 **Team and Collective dev binaries are separate tools.** `myco-team-dev` and `myco-collective-dev` are for manual CLI use. `~/.myco/runtime.command` still points to `myco-dev`, because hooks and the daemon only need the main Myco binary.
+
+**Global detection in development mode.** When running `myco-dev`, the manifest-driven detection system uses the development binary's manifest registry. This may differ from the production registry, potentially affecting symbiont detection behavior during development. Use `myco-dev doctor` to validate detection status with the development binary.

@@ -55,6 +55,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Timeout cascade failure** | Task shows *"process aborted by user"* when no user action occurred |
 | **Self-mutation discipline** | Daemon corrupts its own state during normal operations; daemon.json becomes invalid after restart |
 | **Daemon restart/reconciliation** | PID conflicts, EPERM errors, MCP bridge indefinite reconnect loops |
+| **Daemon startup ordering** | "Database is locked" errors during startup due to FTS rebuild before port-claim |
 
 ---
 
@@ -155,6 +156,86 @@ try {
   await markFailed(task.id, err.message);
   logger.error('[Executor] Phase failed', { taskId: task.id, err });
   throw err;
+}
+```
+
+### Daemon Startup Ordering — FTS Rebuild Before Port-Claim Bug
+
+**Problem:** The daemon's "step-aside if a healthy sibling is alive" check fires after `ensureSelfInstalledAsService` and after schema migration (including FTS rebuild). This ordering allows an orphan daemon to perform expensive FTS rebuild operations while another daemon instance is starting, leading to "database is locked" errors.
+
+**Root cause sequence:**
+1. Daemon A starts and begins schema migration including FTS rebuild
+2. Daemon B starts and also begins schema migration including FTS rebuild  
+3. Both daemons hold database locks during FTS operations
+4. Daemon A reaches port-claim and finds port 20915 occupied
+5. Daemon A should step aside but has already performed expensive FTS work
+6. Result: "database is locked" errors and wasted computation
+
+**Fix pattern:** Move the port-claim check before expensive database operations:
+```typescript
+// In src/daemon/main.ts - CORRECTED startup order
+export async function startDaemon(opts: StartDaemonOptions) {
+  // 1. FIRST: Check if we should step aside for existing healthy daemon
+  const existingDaemon = await checkForExistingDaemon();
+  if (existingDaemon?.healthy) {
+    logger.info('Healthy daemon already running, stepping aside');
+    return { shouldStepAside: true, existingPid: existingDaemon.pid };
+  }
+
+  // 2. SECOND: Claim port early to prevent other daemon startup attempts
+  const port = await claimPort(opts.port || 20915);
+  if (!port.claimed) {
+    throw new Error(`Port ${opts.port} claimed by another process during startup`);
+  }
+
+  // 3. THIRD: Now safe to perform expensive database operations
+  await ensureSelfInstalledAsService(opts);
+  await migrateDatabaseSchema(); // Includes FTS rebuild - now safe from conflicts
+  
+  // 4. Continue with normal startup...
+  const powerManager = await initializePowerManager();
+  // ... rest of startup
+}
+
+// Port claim should be atomic and fail fast
+async function claimPort(port: number): Promise<{ claimed: boolean; conflictPid?: number }> {
+  try {
+    const server = await createServer().listen(port);
+    return { claimed: true, server };
+  } catch (err) {
+    if (err.code === 'EADDRINUSE') {
+      const conflictPid = await findProcessUsingPort(port);
+      return { claimed: false, conflictPid };
+    }
+    throw err;
+  }
+}
+```
+
+**Diagnostic pattern for startup ordering bugs:**
+```bash
+# Look for this failure signature in logs
+grep -B 10 -A 5 "database is locked" ~/.myco/daemon.log
+grep -B 5 -A 5 "FTS.*rebuild\|FTS.*index" ~/.myco/daemon.log
+
+# Check for multiple daemon startup attempts
+grep -E "Starting daemon|Port.*already in use|Stepping aside" ~/.myco/daemon.log | tail -20
+```
+
+**Prevention pattern:** Always check for resource conflicts before expensive operations:
+```typescript
+// Pattern: check-then-claim-then-work, not work-then-check
+async function expensiveStartupOperation() {
+  // 1. Check if we should proceed
+  const shouldProceed = await checkPreconditions();
+  if (!shouldProceed) return;
+
+  // 2. Claim exclusive access to shared resources  
+  const lock = await claimExclusiveLock();
+  if (!lock.acquired) throw new Error('Resource conflict');
+
+  // 3. Now safe to do expensive work
+  await performExpensiveWork();
 }
 ```
 
@@ -491,84 +572,54 @@ export function startDaemonWithCleanup() {
 }
 ```
 
-### Configuration Update Reconciliation
-
-Apply intent + reconciliation to configuration changes:
-
-```typescript
-export async function updateDaemonConfigWithReconciliation(
-  configUpdates: Partial<DaemonConfig>
-) {
-  // 1. Validate update before applying
-  const currentConfig = await loadCurrentConfig();
-  const mergedConfig = { ...currentConfig, ...configUpdates };
-  
-  const validation = await validateConfig(mergedConfig);
-  if (!validation.valid) {
-    throw new Error(`Config validation failed: ${validation.errors}`);
-  }
-  
-  // 2. Declare config update intent
-  const intent = await declareConfigUpdateIntent({
-    from: currentConfig,
-    to: mergedConfig,
-    partial: configUpdates
-  });
-  
-  try {
-    // 3. Apply config update atomically
-    await applyConfigUpdate(mergedConfig);
-    
-    // 4. Verify config took effect
-    const appliedConfig = await loadCurrentConfig();
-    if (!deepEqual(appliedConfig, mergedConfig)) {
-      throw new Error('Config update verification failed');
-    }
-    
-    // 5. Reconcile intent on success
-    await markIntentReconciled(intent.id);
-    
-  } catch (err) {
-    // Rollback on failure
-    await applyConfigUpdate(currentConfig);
-    await markIntentFailed(intent.id, err.message);
-    throw err;
-  }
-}
-```
-
-### Supervisor-Owned Lifecycle Pattern
-
-Separate the daemon process from lifecycle decisions:
-
-```typescript
-export class DaemonSupervisor {
-  async restartDaemon() {
-    const intentId = await declareRestartIntent(this.currentState);
-    await this.signalDaemonShutdown();
-    await this.waitForShutdown({ timeoutMs: 30000 });
-    await this.startNewDaemon();
-    await reconcileRestartIntent(intentId);
-  }
-  
-  async updateDaemonConfig(newConfig: DaemonConfig) {
-    const validation = await validateDaemonConfig(newConfig);
-    if (!validation.valid) {
-      throw new Error(`Invalid config: ${validation.errors}`);
-    }
-    
-    const intentId = await declareConfigUpdateIntent(newConfig);
-    await applyConfigUpdate(newConfig);
-    await reconcileConfigUpdateIntent(intentId);
-  }
-}
-```
-
 **Usage:** Apply self-mutation discipline to any operation where Myco modifies its own state. Always use intent + reconciliation patterns and avoid self-mutation by the target process.
 
 ---
 
-## Quick Reference — Error to Fix Map
+## Step 10 — Advanced Daemon Startup Ordering Diagnostics
+
+**When:** Investigating startup failures related to resource conflicts, database locks, or multi-instance coordination.
+
+### Startup Ordering Failure Mode Detection
+
+```bash
+# Detect startup ordering conflicts (FTS rebuild before port-claim)
+grep -E "FTS.*rebuild|database.*locked|Port.*already" ~/.myco/daemon.log | head -20
+
+# Timeline analysis for multi-instance startup attempts  
+awk '/Starting daemon|Port|FTS|database.*locked/ {print $1" "$2" "$0}' ~/.myco/daemon.log | tail -30
+
+# Check for abandoned startup operations
+ps aux | grep myco | grep -v grep
+lsof | grep myco | grep -E "(db|socket|lock)"
+```
+
+### Startup Resource Conflict Resolution
+
+```typescript
+export async function resolveStartupResourceConflicts() {
+  // 1. Detect and resolve database lock conflicts
+  const dbLocks = await detectDatabaseLocks();
+  if (dbLocks.length > 0) {
+    logger.warn('Database locks detected during startup', { locks: dbLocks });
+    await resolveDatabaseLockConflicts(dbLocks);
+  }
+
+  // 2. Detect and resolve port conflicts  
+  const portConflicts = await detectPortConflicts();
+  if (portConflicts.length > 0) {
+    logger.warn('Port conflicts detected during startup', { conflicts: portConflicts });
+    await resolvePortConflicts(portConflicts);
+  }
+
+  // 3. Clean up orphaned startup attempts
+  await cleanupOrphanedStartupAttempts();
+}
+```
+
+---
+
+## Step 11 — Quick Reference — Error to Fix Map
 
 | Error / Symptom | Likely Cause | Fix |
 |----------------|--------------|-----|
@@ -584,3 +635,5 @@ export class DaemonSupervisor {
 | Process identity drift after daemon updates | Self-mutation during update process | Supervisor-owned lifecycle: external supervisor manages updates |
 | EPERM livelock during daemon restart | `reconcileExistingDaemon` loops on permission error | Distinguish ESRCH from EPERM; escalate EPERM to user intervention |
 | MCP bridge indefinite reconnect loop | Mode 4 restart failure - bridge never establishes | Stop daemon, clean bridge state, restart with bridge health verification |
+| "Database is locked" during startup | FTS rebuild before port-claim allows orphan operations | Move port-claim check before expensive database operations |
+| Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |

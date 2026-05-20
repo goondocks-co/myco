@@ -81,6 +81,11 @@ export interface DaemonServiceState {
   scope: DaemonServiceScope;
   stateDir: string;
   statePath: string;
+  /** `<stateDir>/daemon.lock` — held open by the lifecycle-lock owner
+   *  for its entire lifetime. Carries pid+port+authToken once
+   *  `server.start()` has bound; readable by hooks as a fallback when
+   *  `statePath` is missing. */
+  lockPath: string;
   canonicalPort: number;
 }
 
@@ -99,10 +104,12 @@ export function resolveDaemonServiceState(
 ): DaemonServiceState {
   const mycoHome = resolveMycoHome({ env: options.env as NodeJS.ProcessEnv | undefined });
   const statePath = resolveServiceDaemonStatePath(mycoHome);
+  const stateDir = path.dirname(statePath);
   return {
     scope: 'global',
-    stateDir: path.dirname(statePath),
+    stateDir,
     statePath,
+    lockPath: path.join(stateDir, 'daemon.lock'),
     canonicalPort: resolveGlobalDaemonPort(mycoHome),
   };
 }
