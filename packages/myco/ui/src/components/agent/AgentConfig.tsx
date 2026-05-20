@@ -189,7 +189,8 @@ export function AgentConfig() {
           <ScopedField
             path="agent.scheduled_tasks_enabled"
             label="Scheduled Tasks"
-            defaultScope="local"
+            defaultScope="grove"
+            allowPersonal={false}
             hint="runs intelligence/skill-survey/skill-evolve on a cron"
           >
             {({ value, onChange }) => (
@@ -204,7 +205,8 @@ export function AgentConfig() {
           <ScopedField
             path="agent.event_tasks_enabled"
             label="Event-Driven Tasks"
-            defaultScope="local"
+            defaultScope="grove"
+            allowPersonal={false}
             hint="titles + summaries on session end"
           >
             {({ value, onChange }) => (

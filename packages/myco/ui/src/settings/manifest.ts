@@ -122,7 +122,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.provider.type',
         label: 'Provider',
-        scope: 'project',
+        scope: 'grove',
         kind: 'select',
         category: 'Agent',
         icon: 'Bot',
@@ -133,7 +133,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.provider.model',
         label: 'Model',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
@@ -143,7 +143,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.provider.base_url',
         label: 'Base URL',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
@@ -153,7 +153,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.provider.context_length',
         label: 'Context length',
-        scope: 'project',
+        scope: 'grove',
         kind: 'number',
         category: 'Agent',
         icon: 'Bot',
@@ -163,17 +163,17 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.model',
         label: 'Default model',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
-        note: 'Project-wide default model used when neither the provider block nor a per-task override sets one.',
+        note: 'Grove-wide default model used when neither the provider block nor a per-task override sets one.',
         customRender: 'card-owns',
       },
       {
         key: 'agent.harness',
         label: 'Harness',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
@@ -192,7 +192,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.scheduled_tasks_enabled',
         label: 'Scheduled tasks',
-        scope: 'project',
+        scope: 'grove',
         kind: 'toggle',
         category: 'Scheduled tasks',
         icon: 'Activity',
@@ -201,7 +201,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'agent.event_tasks_enabled',
         label: 'Event-driven tasks',
-        scope: 'project',
+        scope: 'grove',
         kind: 'toggle',
         category: 'Scheduled tasks',
         icon: 'Activity',
@@ -231,7 +231,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'embedding.provider',
         label: 'Provider',
-        scope: 'project',
+        scope: 'grove',
         kind: 'select',
         category: 'Embedding',
         icon: 'Brain',
@@ -241,7 +241,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'embedding.model',
         label: 'Model',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Embedding',
         icon: 'Brain',
@@ -251,7 +251,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'embedding.base_url',
         label: 'Base URL',
-        scope: 'project',
+        scope: 'grove',
         kind: 'text',
         category: 'Embedding',
         icon: 'Brain',
