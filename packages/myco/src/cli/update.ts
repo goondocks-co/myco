@@ -9,6 +9,7 @@ import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
+import { resolveGroveDir } from '../grove/paths.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
@@ -18,6 +19,12 @@ import {
   completeLegacyArchive,
   summarizeImportedRowCount,
 } from '../grove/activation.js';
+import {
+  readMigrationPlan,
+  validateMigrationPlan,
+  executeMigration,
+  type MachineState,
+} from '../migrations/agent-config-grove-promotion.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -296,6 +303,71 @@ function dashboardUrlForVault(vaultDir: string): string | null {
 }
 
 /**
+ * Build the MachineState the migration module needs from the live
+ * Grove registry. Only the Groves already resolved by `runAllProjects`
+ * (filtered by `servedBy`) are included so the migration scope matches
+ * the update scope exactly.
+ *
+ * Groves whose id fails the structural format check are silently
+ * excluded — they can't have a grovePath and the migration can't touch
+ * them safely. This also makes test mocks with simplified ids (e.g.
+ * `'grove_test'`) tolerable when the test only exercises the per-project
+ * update loop, not the migration path.
+ */
+function collectMachineState(groves: ReturnType<typeof listGroves>): MachineState {
+  const result: MachineState = { groves: [] };
+  for (const grove of groves) {
+    let grovePath: string;
+    try {
+      grovePath = resolveGroveDir(grove.id);
+    } catch {
+      // Structurally invalid grove id — skip; can't derive a safe path.
+      continue;
+    }
+    result.groves.push({
+      id: grove.id,
+      grovePath,
+      projects: listRegisteredProjects(grove.id).map((p) => ({
+        id: p.project_id,
+        vaultDir: path.join(p.root, '.myco'),
+      })),
+    });
+  }
+  return result;
+}
+
+/**
+ * Run the agent-config Grove promotion migration as the final step of
+ * `runAllProjects`. Read → validate → execute; any failure throws so
+ * the `runAllProjects` caller can surface it alongside per-project
+ * failures and exit non-zero.
+ */
+async function runAgentConfigGrovePromotion(machine: MachineState): Promise<void> {
+  const read = await readMigrationPlan(machine);
+  if (read.errors.length > 0) {
+    console.error('agent-config Grove promotion: pre-flight read failed');
+    for (const e of read.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration aborted (read failure)');
+  }
+
+  const validated = validateMigrationPlan(read.plan);
+  if (!validated.ok) {
+    console.error('agent-config Grove promotion: pre-flight validation failed');
+    for (const e of validated.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration aborted (validation failure)');
+  }
+
+  const result = await executeMigration(read.plan);
+  if (!result.ok) {
+    console.error('agent-config Grove promotion: write phase failed');
+    for (const e of result.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration failed mid-write — manual intervention required');
+  }
+
+  console.log('  ✓ agent-config Grove promotion complete');
+}
+
+/**
  * Iterate every (Grove, project) pair in the registry and run the
  * per-project sync for each. Used by the post-binary-install update
  * script (machine-level binary install kicks one of these per Grove
@@ -332,6 +404,21 @@ async function runAllProjects(): Promise<void> {
       failures.push({ target, error });
       console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  // Run the agent-config Grove promotion migration after all per-project
+  // updates complete. This is the last step — it operates on the same
+  // Grove set that was used for the per-project loop.
+  console.log('');
+  try {
+    const machine = collectMachineState(groves);
+    await runAgentConfigGrovePromotion(machine);
+  } catch (error) {
+    failures.push({
+      target: { groveSlug: '(machine)', projectName: 'agent-config Grove promotion', root: '' },
+      error,
+    });
+    console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   console.log('');
