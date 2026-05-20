@@ -81,6 +81,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
         {label}
         {isPersonal(controlKey) ? (
           <ScopePill
+            mode="local-default"
             onPromote={() => set(controlKey, effective[controlKey], 'project').catch((err) => console.error('[appearance] promote failed', err))}
             onReset={() => resetKey(controlKey).catch((err) => console.error('[appearance] reset failed', err))}
           />

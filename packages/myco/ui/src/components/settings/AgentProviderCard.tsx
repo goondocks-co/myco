@@ -190,7 +190,7 @@ export function AgentProviderCard() {
         <span className="flex items-center gap-2">
           Myco Agent
           {personal ? (
-            <ScopePill onPromote={handlePromoteScope} onReset={handleResetScope} />
+            <ScopePill mode="local-default" onPromote={handlePromoteScope} onReset={handleResetScope} />
           ) : (
             <ScopeBadge scope="project" />
           )}
