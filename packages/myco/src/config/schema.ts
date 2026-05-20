@@ -504,7 +504,7 @@ const GroveEmbeddingSchema = z.object({
   /** Keep the embedding-reconcile loop running while the Grove sleeps. */
   run_in_deep_sleep: z.boolean().default(true),
 });
-const GroveAgentSchema = z.object({
+const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   /**
    * Cap how recently a project must have been active (sessions or
    * prompt_batches) for scheduled tasks to fire against it. 0 disables
@@ -519,7 +519,7 @@ const GroveAgentSchema = z.object({
   harness: HarnessIdSchema.optional(),
   model: z.string().optional(),
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
-});
+}));
 
 export const GroveConfigSchema = z.object({
   daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),

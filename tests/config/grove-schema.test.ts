@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { GroveConfigSchema } from './schema.js';
+import { GroveConfigSchema } from '@myco/config/schema';
 
 describe('GroveAgentSchema', () => {
   test('accepts promoted agent runtime fields', () => {
@@ -29,5 +29,14 @@ describe('GroveAgentSchema', () => {
     expect(parsed.agent.scheduled_tasks_enabled).toBe(true);
     expect(parsed.agent.event_tasks_enabled).toBe(true);
     expect(parsed.agent.cold_project_threshold_days).toBe(14);
+  });
+
+  test('rejects legacy runtime key', () => {
+    const result = GroveConfigSchema.safeParse({
+      agent: {
+        runtime: 'bun',
+      },
+    });
+    expect(result.success).toBe(false);
   });
 });
