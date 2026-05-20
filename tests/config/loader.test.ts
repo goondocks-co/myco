@@ -261,6 +261,80 @@ describe('Local config overlay', () => {
   });
 });
 
+describe('Grove-tier promotion — merge verification', () => {
+  let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
+  // Valid Grove-era id: grove_<32 hex chars>
+  const groveId = 'grove_' + 'a'.repeat(32);
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-grove-merge-'));
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-grove-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
+    invalidateMergedConfigCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousMycoHome;
+    }
+    invalidateMergedConfigCache();
+  });
+
+  function writeGroveConfig(groveYaml: string): void {
+    const groveDir = path.join(mycoHomeDir, 'groves', groveId);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'grove.yaml'), groveYaml);
+  }
+
+  it('Grove-tier agent.model reaches merged config', () => {
+    writeMinimalProject(tmpDir);
+    writeGroveConfig('agent:\n  model: claude-haiku-4-5\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.agent.model).toBe('claude-haiku-4-5');
+  });
+
+  it('Grove-tier embedding.provider and model reach merged config', () => {
+    writeMinimalProject(tmpDir);
+    writeGroveConfig('embedding:\n  provider: ollama\n  model: nomic-embed-text\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.model).toBe('nomic-embed-text');
+  });
+
+  it('legacy agent.provider in myco.yaml is silently stripped — does not override Grove default', () => {
+    // Simulate a pre-promotion myco.yaml that still carries agent.provider
+    fs.writeFileSync(
+      path.join(tmpDir, 'myco.yaml'),
+      'version: 3\nagent:\n  provider:\n    type: openrouter\n',
+    );
+    // No grove.yaml — Grove defaults apply (provider is undefined by default)
+
+    let caughtError: unknown = null;
+    let config: ReturnType<typeof loadMergedConfig> | null = null;
+    try {
+      config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    // Must not throw
+    expect(caughtError).toBeNull();
+    // The legacy agent.provider must not survive into the merged shape
+    expect(config!.agent.provider).not.toEqual({ type: 'openrouter' });
+  });
+});
+
 describe('loadMergedConfig caching', () => {
   let tmpDir: string;
   beforeEach(() => {
