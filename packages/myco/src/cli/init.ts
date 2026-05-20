@@ -13,7 +13,7 @@ import {
 } from './shared.js';
 import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
-import { updateConfig, saveConfig, loadGroveConfig, saveGroveConfig } from '../config/loader.js';
+import { updateConfig, saveConfig, updateGroveConfig } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { DEFAULT_OLLAMA_EMBEDDING_MODEL } from '../constants.js';
 import { getPluginVersion } from '../version.js';
@@ -140,7 +140,6 @@ export async function run(args: string[]): Promise<void> {
     // Let schema defaults fill the agent section. Scheduled/event toggles
     // default to true, but the agent only runs once the user configures a
     // provider in Settings, so a no-op "enabled" state is safe.
-    // Embedding config is Grove-tier and written below after grove registration.
     const config = withInferredReleaseProvenanceDefaults(MycoConfigSchema.parse({
       version: 3,
     }), projectRoot);
@@ -170,11 +169,10 @@ export async function run(args: string[]): Promise<void> {
   // config belongs in ~/.myco/groves/<id>/config.yaml, not the project
   // YAML — ProjectConfigSchema strips those fields on save.
   if (Object.keys(embeddingFromFlags).length > 0) {
-    const currentGroveConfig = loadGroveConfig(grove.id);
-    saveGroveConfig(grove.id, {
-      ...currentGroveConfig,
-      embedding: { ...currentGroveConfig.embedding, ...embeddingFromFlags },
-    });
+    updateGroveConfig(grove.id, (c) => ({
+      ...c,
+      embedding: { ...c.embedding, ...embeddingFromFlags },
+    }));
   }
 
   const allManifests = loadManifests();

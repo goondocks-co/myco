@@ -177,6 +177,21 @@ export function saveGroveConfig(
   invalidateMergedConfigCache();
 }
 
+/**
+ * Load → transform → save in one call, matching the `updateConfig` pattern
+ * for the project tier. Returns the saved (Zod-validated) GroveConfig.
+ */
+export function updateGroveConfig(
+  groveId: string,
+  transform: (current: GroveConfig) => GroveConfig,
+  opts?: { mycoHome?: string },
+): GroveConfig {
+  const current = loadGroveConfig(groveId, opts?.mycoHome);
+  const next = transform(current);
+  saveGroveConfig(groveId, next, opts?.mycoHome);
+  return next;
+}
+
 function readRawYamlDoc(filePath: string): Record<string, unknown> {
   if (!fs.existsSync(filePath)) return {};
   const raw = fs.readFileSync(filePath, 'utf-8').trim();

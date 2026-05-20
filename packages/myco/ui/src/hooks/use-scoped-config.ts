@@ -5,19 +5,17 @@ import {
   fetchLocalConfig,
   writeScopedConfig,
   clearLocalConfigKeys,
-  putJson,
 } from '../lib/api';
 import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
 import type { ConfigPath } from '../lib/config-paths';
+import { useUpdateGroveConfig } from './use-grove-config';
 
 export type Scope = 'project' | 'local' | 'grove';
 
 const MERGED_KEY = ['config', 'merged'] as const;
 const LOCAL_KEY = ['config', 'local'] as const;
 const NOTIFICATIONS_KEY = ['notifications'] as const;
-// Prefix-level key: matches ['grove-config', <groveId>] for all groves.
-const GROVE_CONFIG_KEY = ['grove-config'] as const;
 
 /**
  * Scoped config hook — generalizes the Appearance provider pattern so any
@@ -39,6 +37,7 @@ const GROVE_CONFIG_KEY = ['grove-config'] as const;
  */
 export function useScopedConfig() {
   const qc = useQueryClient();
+  const updateGroveConfig = useUpdateGroveConfig();
 
   const merged = useQuery({
     queryKey: MERGED_KEY,
@@ -69,18 +68,12 @@ export function useScopedConfig() {
     void qc.invalidateQueries({ queryKey: MERGED_KEY });
     invalidateNotifications();
   }, [invalidateNotifications, qc]);
-  const invalidateGrove = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: GROVE_CONFIG_KEY });
-    void qc.invalidateQueries({ queryKey: MERGED_KEY });
-    invalidateNotifications();
-  }, [invalidateNotifications, qc]);
   const invalidateForScope = useCallback(
     (scope: Scope) => {
       if (scope === 'local') return invalidateLocal();
-      if (scope === 'grove') return invalidateGrove();
       return invalidateProject();
     },
-    [invalidateLocal, invalidateGrove, invalidateProject],
+    [invalidateLocal, invalidateProject],
   );
 
   const setField = useCallback(
@@ -88,13 +81,14 @@ export function useScopedConfig() {
       const patch: Record<string, unknown> = {};
       setAtPath(patch, path, value);
       if (scope === 'grove') {
-        await putJson<unknown>('/grove-config', { patch });
+        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        invalidateNotifications();
       } else {
         await writeScopedConfig(scope, patch);
+        invalidateForScope(scope);
       }
-      invalidateForScope(scope);
     },
-    [invalidateForScope],
+    [invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   /**
@@ -117,13 +111,14 @@ export function useScopedConfig() {
         setAtPath(patch, path, value);
       }
       if (scope === 'grove') {
-        await putJson<unknown>('/grove-config', { patch });
+        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        invalidateNotifications();
       } else {
         await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
+        invalidateForScope(scope);
       }
-      invalidateForScope(scope);
     },
-    [invalidateForScope],
+    [invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   const resetField = useCallback(async (path: ConfigPath): Promise<void> => {

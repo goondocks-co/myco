@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { loadGroveConfig, saveGroveConfig } from '../config/loader.js';
+import { loadGroveConfig, updateGroveConfig } from '../config/loader.js';
 import { parseStringFlag } from './shared.js';
 import type { EmbeddingProviderConfig } from '../config/schema.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
@@ -60,20 +60,16 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   const embeddingUrl = parseStringFlag(args, '--embedding-url');
   if (embeddingUrl !== undefined) updates.base_url = embeddingUrl;
 
-  // Embedding config belongs in the Grove tier. Resolve the Grove id from
-  // the project manifest and write to ~/.myco/groves/<id>/config.yaml.
   const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
   if (!groveId) {
     console.error('Error: project is not bound to a Grove. Run `myco init` first.');
     return;
   }
 
-  const currentGrove = loadGroveConfig(groveId);
-  const updatedGrove = {
-    ...currentGrove,
-    embedding: { ...currentGrove.embedding, ...updates },
-  };
-  saveGroveConfig(groveId, updatedGrove);
+  const updatedGrove = updateGroveConfig(groveId, (c) => ({
+    ...c,
+    embedding: { ...c.embedding, ...updates },
+  }));
 
   console.log('Embedding configuration updated.');
   console.log(JSON.stringify(updatedGrove.embedding, null, 2));

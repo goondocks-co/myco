@@ -40,7 +40,7 @@ interface ScopeBadgeProps {
   scope: 'personal' | 'project' | 'grove' | 'all-groves' | 'machine';
 }
 
-const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel | 'Grove' | 'All Groves'> = {
+const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel | 'All Groves'> = {
   personal: 'Personal',
   project: 'Project',
   grove: 'Grove',

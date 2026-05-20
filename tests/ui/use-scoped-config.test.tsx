@@ -1,11 +1,6 @@
 // @vitest-environment jsdom
 /**
- * Unit tests for the useScopedConfig hook — covers the grove-scope dispatch
- * added in Tasks 3.1+3.2.
- *
- * The hook calls writeScopedConfig (from ../lib/api) for 'project'/'local'
- * writes and putJson('/grove-config', { patch }) for 'grove' writes.
- * Tests confirm routing, payload shape, and query invalidation.
+ * Unit tests for the useScopedConfig hook.
  */
 
 import { renderHook, act } from '@testing-library/react';

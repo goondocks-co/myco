@@ -48,6 +48,17 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
+function resolveTierBadge(
+  scopeBadgeOverride: 'personal' | 'project' | 'grove' | undefined,
+  lockScope: Scope | undefined,
+  defaultScope: Scope,
+): 'personal' | 'project' | 'grove' {
+  if (scopeBadgeOverride) return scopeBadgeOverride;
+  if (lockScope === 'local') return 'personal';
+  if (lockScope === 'grove' || defaultScope === 'grove') return 'grove';
+  return 'project';
+}
+
 export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   path,
   label,
@@ -93,9 +104,8 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
       void setField(path, toWrite, writeScope).then(() => {
         if (requiresRestart) markRestartDirty(path);
       }).catch((err) => {
-        // On failure, snap draft back and surface the error inline. Without
-        // a visible indicator a swallowed write looks identical to a no-op,
-        // which Chris flagged in /simplify review #6.
+        // On failure, snap draft back and surface the error inline; without
+        // a visible indicator a swallowed write looks identical to a no-op.
         setDraft(effectiveRef.current);
         setError(err instanceof Error ? err.message : String(err));
         console.error(`[scoped-field] write failed for ${path}`, err);
@@ -123,7 +133,7 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
 
   // Resolve the badge for the field's default tier, used in both the static
   // badge (inactive state) and the shared-default pill trigger.
-  const defaultTierBadge = (scopeBadgeOverride ?? (lockScope === 'local' ? 'personal' : (defaultScope === 'grove' ? 'grove' : 'project'))) as 'personal' | 'project' | 'grove';
+  const defaultTierBadge = resolveTierBadge(scopeBadgeOverride, lockScope, defaultScope);
 
   let indicator: ReactNode = undefined;
   if (!lockScope && allowPersonal) {

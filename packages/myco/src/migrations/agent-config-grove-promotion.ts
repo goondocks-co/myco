@@ -5,8 +5,6 @@
  * the project's Grove grove.yaml, then strips those paths from every
  * project's myco.yaml and local.yaml. First-project-wins per Grove;
  * non-first projects' values are archived but discarded.
- *
- * Spec: docs/superpowers/specs/2026-05-20-myco-agent-config-grove-promotion-design.md
  */
 
 import fs from 'node:fs';
@@ -16,7 +14,8 @@ import { GroveConfigSchema, ProjectConfigSchema, type GroveConfig } from '../con
 import { loadGroveConfig, saveGroveConfig } from '../config/loader.js';
 import { resolveGroveDir, resolveMycoHome } from '../grove/paths.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
-import { isPlainObject } from '../utils/deep-merge.js';
+import { isPlainObject, deepMerge } from '../utils/deep-merge.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 /** Dot-path entries promoted from Project tier to Grove tier in 2026-05. */
 export const PROMOTED_PATHS: ReadonlyArray<readonly string[]> = [
@@ -77,14 +76,11 @@ export interface MigrationError {
 
 export interface MigrationResult {
   ok: boolean;
-  plan?: MigrationPlan;
+  plan: MigrationPlan;
   errors: MigrationError[];
 }
 
-/**
- * Machine-level input type for the read pass. Callers (Task 5.6) provide
- * this by walking listRegisteredGroves / listProjectsInGrove.
- */
+/** Machine-level input type for the read pass. */
 export interface MachineState {
   groves: Array<{
     id: string;
@@ -114,66 +110,25 @@ function readRawYaml(filePath: string): Record<string, unknown> {
 }
 
 /**
- * Deep-clone a plain object via JSON round-trip. Sufficient for config
- * shapes (strings, numbers, booleans, arrays, nested objects).
+ * In a single pass over `PROMOTED_PATHS`, extract the promoted-path values
+ * into a slice and produce a stripped clone with those paths removed.
+ * Avoids the two-pass pattern (extractPromotedSlice + stripPromotedPaths).
  */
-function cloneDoc(obj: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
-}
-
-/**
- * Extract the subset of `doc` that lives under `PROMOTED_PATHS`.
- * Returns a sparse object containing only the paths that have a value.
- */
-function extractPromotedSlice(doc: Record<string, unknown>): Record<string, unknown> {
+function extractAndStrip(
+  doc: Record<string, unknown>,
+): { slice: Record<string, unknown>; stripped: Record<string, unknown> } {
   const slice: Record<string, unknown> = {};
+  const stripped = structuredClone(doc);
   for (const segments of PROMOTED_PATHS) {
     const value = getAtPath(doc, segments);
     if (value !== undefined) {
       setAtPath(slice, segments, value);
     }
-  }
-  return slice;
-}
-
-/**
- * Return a clone of `doc` with all `PROMOTED_PATHS` removed.
- */
-function stripPromotedPaths(doc: Record<string, unknown>): Record<string, unknown> {
-  const stripped = cloneDoc(doc);
-  for (const segments of PROMOTED_PATHS) {
     unsetAtPath(stripped, segments, { pruneEmptyParents: true });
   }
-  return stripped;
+  return { slice, stripped };
 }
 
-/**
- * Merge `source` into `base`, but only at keys where `base` does NOT
- * already have an explicit value (i.e. base-existing wins). Operates
- * recursively at plain-object boundaries.
- */
-function deepMergeUnlessPresent(
-  base: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(source)) {
-    if (value === undefined) continue;
-    if (key in result) {
-      // Base already has a value — recurse for nested objects, skip scalars.
-      if (isPlainObject(result[key]) && isPlainObject(value)) {
-        result[key] = deepMergeUnlessPresent(
-          result[key] as Record<string, unknown>,
-          value as Record<string, unknown>,
-        );
-      }
-      // Otherwise: base wins, skip.
-    } else {
-      result[key] = value;
-    }
-  }
-  return result;
-}
 
 // ---------------------------------------------------------------------------
 // readMigrationPlan
@@ -216,7 +171,7 @@ export async function readMigrationPlan(
     const groveConfigFilePath = path.join(grovePath, 'grove.yaml');
     const groveRaw = readRawYaml(groveConfigFilePath);
 
-    let candidateRaw = cloneDoc(groveRaw);
+    let candidateRaw = structuredClone(groveRaw);
 
     for (const projectInput of projectInputs) {
       const { id: projectId, vaultDir } = projectInput;
@@ -269,16 +224,15 @@ export async function readMigrationPlan(
         originalLocal = {};
       }
 
-      const promotedSliceMyco = extractPromotedSlice(originalMyco);
-      const promotedSliceLocal = extractPromotedSlice(originalLocal);
-      const strippedMyco = stripPromotedPaths(originalMyco);
-      const strippedLocal = stripPromotedPaths(originalLocal);
+      const { slice: promotedSliceMyco, stripped: strippedMyco } = extractAndStrip(originalMyco);
+      const { slice: promotedSliceLocal, stripped: strippedLocal } = extractAndStrip(originalLocal);
 
       // First project with any promoted values lifts into the Grove config.
       if (liftedFromProjectId === null && Object.keys(promotedSliceMyco).length > 0) {
         liftedFromProjectId = projectId;
-        // Grove-existing wins: only copy paths that aren't already set in groveRaw.
-        candidateRaw = deepMergeUnlessPresent(candidateRaw, promotedSliceMyco) as Record<string, unknown>;
+        // Grove-existing wins: merge with candidateRaw as source so its values
+        // overwrite any keys already present in candidateRaw at conflict points.
+        candidateRaw = deepMerge(promotedSliceMyco, candidateRaw, { arrayStrategy: 'replace' }) as Record<string, unknown>;
       }
 
       projects.push({
@@ -378,7 +332,7 @@ export function validateMigrationPlan(plan: MigrationPlan): MigrationResult {
 }
 
 // ---------------------------------------------------------------------------
-// writeArchive (Task 5.4)
+// writeArchive
 // ---------------------------------------------------------------------------
 
 /**
@@ -393,7 +347,8 @@ export function writeArchive(project: MigrationProjectState): string | null {
   const localEmpty = Object.keys(project.promotedSliceLocal).length === 0;
   if (mycoEmpty && localEmpty) return null;
 
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
   const archiveDir = path.join(project.vaultDir, 'archive', timestamp);
   fs.mkdirSync(archiveDir, { recursive: true });
   const archivePath = path.join(archiveDir, 'agent-config-promotion.yaml');
@@ -401,7 +356,7 @@ export function writeArchive(project: MigrationProjectState): string | null {
   const document = {
     project_id: project.projectId,
     grove_id: project.groveId,
-    captured_at: new Date().toISOString(),
+    captured_at: now.toISOString(),
     myco_yaml: project.promotedSliceMyco,
     local_yaml: project.promotedSliceLocal,
   };
@@ -410,7 +365,7 @@ export function writeArchive(project: MigrationProjectState): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// executeMigration (Task 5.5)
+// executeMigration
 // ---------------------------------------------------------------------------
 
 /**
@@ -457,14 +412,14 @@ export async function executeMigration(
       }
 
       try {
-        atomicWriteYaml(project.mycoYamlPath, project.strippedMyco);
+        atomicWriteFileSync(project.mycoYamlPath, YAML.stringify(project.strippedMyco));
 
         // Only write local.yaml when the file previously existed, OR when
         // strippedLocal has content. This avoids creating a new empty
         // local.yaml for projects that never had one.
         const localHasContent = Object.keys(project.strippedLocal).length > 0;
         if (project.originalLocalExisted || localHasContent) {
-          atomicWriteYaml(project.localYamlPath, project.strippedLocal);
+          atomicWriteFileSync(project.localYamlPath, YAML.stringify(project.strippedLocal));
         }
       } catch (err) {
         errors.push({
@@ -479,8 +434,3 @@ export async function executeMigration(
   return { ok: errors.length === 0, plan, errors };
 }
 
-function atomicWriteYaml(filePath: string, doc: Record<string, unknown>): void {
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, YAML.stringify(doc), 'utf-8');
-  fs.renameSync(tmp, filePath);
-}

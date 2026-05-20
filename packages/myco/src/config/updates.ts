@@ -2,6 +2,16 @@ import type { MycoConfig, EmbeddingProviderConfig, TaskProviderOverride, PhaseOv
 import { setAtPath } from '../utils/dot-path.js';
 
 /**
+ * Minimal shape required by `withTaskConfig`. Both `MycoConfig` and `GroveConfig`
+ * satisfy this interface, removing the need for `as unknown as MycoConfig` casts
+ * at Grove-tier call sites.
+ */
+export interface WithTaskConfigShape {
+  agent: { tasks?: Record<string, TaskProviderOverride> } & Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
  * Set a value at a dot-separated path, returning a new config object.
  * Creates intermediate objects along the path as needed.
  */
@@ -109,11 +119,11 @@ const TASK_CONFIG_UPDATE_KEYS: ReadonlySet<keyof TaskConfigUpdate> = new Set([
  * Apply partial task config updates, returning a new config object.
  * Null values delete fields. Empty task entries and phase maps are cleaned up.
  */
-export function withTaskConfig(
-  config: MycoConfig,
+export function withTaskConfig<T extends WithTaskConfigShape>(
+  config: T,
   taskId: string,
   update: TaskConfigUpdate,
-): MycoConfig {
+): T {
   assertKnownKeys<TaskConfigUpdate>('withTaskConfig', update, TASK_CONFIG_UPDATE_KEYS);
 
   const tasks = { ...(config.agent.tasks ?? {}) };
@@ -222,7 +232,7 @@ export function withTaskConfig(
       ...config.agent,
       tasks: Object.keys(tasks).length > 0 ? tasks : undefined,
     },
-  };
+  } as T;
 }
 
 /**

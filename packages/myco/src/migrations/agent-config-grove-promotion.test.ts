@@ -1,6 +1,5 @@
 /**
- * Tests for the agent-config Grove promotion migration pre-flight passes
- * (Tasks 5.2 + 5.3) and write phase (Tasks 5.4 + 5.5).
+ * Tests for the agent-config Grove promotion migration.
  */
 
 import { describe, test, expect } from 'bun:test';
@@ -16,7 +15,7 @@ import {
   type MigrationProjectState,
 } from './agent-config-grove-promotion.js';
 import { loadGroveConfig, loadMergedConfig, invalidateMergedConfigCache } from '../config/loader.js';
-import { withMultiGroveFixture } from '../test-utils/grove-fixture.js';
+import { withMultiGroveFixture, handleToMachineState } from '../test-utils/grove-fixture.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,13 +87,7 @@ describe('readMigrationPlan', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan, errors } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
 
@@ -149,13 +142,7 @@ describe('readMigrationPlan', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan, errors } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         expect(errors).toHaveLength(0);
@@ -206,13 +193,7 @@ describe('readMigrationPlan', () => {
           'utf-8',
         );
 
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan, errors } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
 
@@ -263,13 +244,7 @@ describe('validateMigrationPlan', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         const result = validateMigrationPlan(plan);
@@ -296,13 +271,7 @@ describe('validateMigrationPlan', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
 
@@ -335,13 +304,7 @@ describe('validateMigrationPlan', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
 
@@ -363,7 +326,7 @@ describe('validateMigrationPlan', () => {
 });
 
 // ---------------------------------------------------------------------------
-// writeArchive (Task 5.4)
+// writeArchive
 // ---------------------------------------------------------------------------
 
 describe('writeArchive', () => {
@@ -393,13 +356,7 @@ describe('writeArchive', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         const project = plan.groves[0]!.projects[0]!;
 
@@ -447,13 +404,7 @@ describe('writeArchive', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         const project = plan.groves[0]!.projects[0]!;
 
@@ -469,7 +420,7 @@ describe('writeArchive', () => {
 });
 
 // ---------------------------------------------------------------------------
-// executeMigration (Task 5.5)
+// executeMigration
 // ---------------------------------------------------------------------------
 
 describe('executeMigration', () => {
@@ -497,13 +448,7 @@ describe('executeMigration', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
 
@@ -554,13 +499,7 @@ describe('executeMigration', () => {
         // Confirm local.yaml does not exist before migration.
         expect(fs.existsSync(localYamlPath)).toBe(false);
 
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         const result = await executeMigration(plan, { mycoHome: handle.mycoHome });
 
@@ -595,13 +534,7 @@ describe('executeMigration', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         // First run.
         const { plan: plan1 } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
@@ -657,13 +590,7 @@ describe('executeMigration', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
 
         // Force a grove write failure on the first grove by making its config
@@ -694,10 +621,7 @@ describe('executeMigration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end: multi-Grove, multi-project (Task 5.7)
-//
-// Mirrors the MachineState that runAllProjects builds via collectMachineState.
-// Verifies the full read → validate → execute pipeline across two Groves.
+// End-to-end: multi-Grove, multi-project
 // ---------------------------------------------------------------------------
 
 describe('end-to-end: full migration pipeline (mirrors runAllProjects)', () => {
@@ -754,13 +678,7 @@ describe('end-to-end: full migration pipeline (mirrors runAllProjects)', () => {
       },
       async (handle) => {
         // Build MachineState the same way collectMachineState does in update.ts.
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         // Step 1: read
         const { plan, errors: readErrors } = await readMigrationPlan(machine, {
@@ -840,13 +758,7 @@ describe('end-to-end: full migration pipeline (mirrors runAllProjects)', () => {
         ],
       },
       async (handle) => {
-        const machine = {
-          groves: handle.groves.map((g) => ({
-            id: g.id,
-            grovePath: g.grovePath,
-            projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
 
         // First run.
         const { plan: plan1 } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
@@ -933,13 +845,7 @@ describe('regression: loader does not erase promoted paths before migration', ()
         expect((rawAfterLoad.agent as Record<string, unknown>)?.model).toBe('qwen3');
 
         // Step 3: run the migration.
-        const machine = {
-          groves: handle.groves.map((grv) => ({
-            id: grv.id,
-            grovePath: grv.grovePath,
-            projects: grv.projects.map((prj) => ({ id: prj.id, vaultDir: prj.vaultDir })),
-          })),
-        };
+        const machine = handleToMachineState(handle);
         const { plan, errors } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
         expect(errors).toHaveLength(0);
         const result = await executeMigration(plan, { mycoHome: handle.mycoHome });

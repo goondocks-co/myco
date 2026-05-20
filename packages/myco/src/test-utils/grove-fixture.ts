@@ -1,5 +1,5 @@
 /**
- * Multi-Grove fixture helper for migration pre-flight tests.
+ * Multi-Grove fixture helper for migration tests.
  *
  * Creates a sandboxed MYCO_HOME with grove.yaml files and per-project
  * temp dirs holding myco.yaml / local.yaml. Restores MYCO_HOME after the
@@ -11,6 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { MYCO_HOME_ENV } from '../grove/paths.js';
+import type { MachineState } from '../migrations/agent-config-grove-promotion.js';
 
 export interface FixtureProjectInput {
   id: string;
@@ -91,17 +92,26 @@ export async function withMultiGroveFixture(
     const handle: FixtureMachineHandle = { mycoHome, groves };
     await fn(handle);
   } finally {
-    // Restore MYCO_HOME before cleaning up
     if (previousMycoHome === undefined) {
       delete process.env[MYCO_HOME_ENV];
     } else {
       process.env[MYCO_HOME_ENV] = previousMycoHome;
     }
 
-    // Clean up all temp dirs
     for (const dir of projectDirs) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
     fs.rmSync(mycoHome, { recursive: true, force: true });
   }
+}
+
+/** Build a MachineState from a FixtureMachineHandle for migration tests. */
+export function handleToMachineState(handle: FixtureMachineHandle): MachineState {
+  return {
+    groves: handle.groves.map((g) => ({
+      id: g.id,
+      grovePath: g.grovePath,
+      projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
+    })),
+  };
 }

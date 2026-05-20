@@ -303,40 +303,6 @@ function dashboardUrlForVault(vaultDir: string): string | null {
 }
 
 /**
- * Build the MachineState the migration module needs from the live
- * Grove registry. Only the Groves already resolved by `runAllProjects`
- * (filtered by `servedBy`) are included so the migration scope matches
- * the update scope exactly.
- *
- * Groves whose id fails the structural format check are silently
- * excluded — they can't have a grovePath and the migration can't touch
- * them safely. This also makes test mocks with simplified ids (e.g.
- * `'grove_test'`) tolerable when the test only exercises the per-project
- * update loop, not the migration path.
- */
-function collectMachineState(groves: ReturnType<typeof listGroves>): MachineState {
-  const result: MachineState = { groves: [] };
-  for (const grove of groves) {
-    let grovePath: string;
-    try {
-      grovePath = resolveGroveDir(grove.id);
-    } catch {
-      // Structurally invalid grove id — skip; can't derive a safe path.
-      continue;
-    }
-    result.groves.push({
-      id: grove.id,
-      grovePath,
-      projects: listRegisteredProjects(grove.id).map((p) => ({
-        id: p.project_id,
-        vaultDir: path.join(p.root, '.myco'),
-      })),
-    });
-  }
-  return result;
-}
-
-/**
  * Run the agent-config Grove promotion migration as the final step of
  * `runAllProjects`. Read → validate → execute; any failure throws so
  * the `runAllProjects` caller can surface it alongside per-project
@@ -382,10 +348,20 @@ async function runAllProjects(): Promise<void> {
   const variant = detectInstallVariant();
   const groves = listGroves(undefined, { servedBy: serviceVariantToDirName(variant) });
   const targets: { groveSlug: string; projectName: string; root: string }[] = [];
+  const machineGroves: MachineState['groves'] = [];
   for (const grove of groves) {
+    let grovePath: string;
+    try {
+      grovePath = resolveGroveDir(grove.id);
+    } catch {
+      continue;
+    }
+    const groveProjects: MachineState['groves'][number]['projects'] = [];
     for (const project of listRegisteredProjects(grove.id)) {
       targets.push({ groveSlug: grove.slug, projectName: project.name, root: project.root });
+      groveProjects.push({ id: project.project_id, vaultDir: path.join(project.root, '.myco') });
     }
+    machineGroves.push({ id: grove.id, grovePath, projects: groveProjects });
   }
 
   if (targets.length === 0) {
@@ -406,13 +382,9 @@ async function runAllProjects(): Promise<void> {
     }
   }
 
-  // Run the agent-config Grove promotion migration after all per-project
-  // updates complete. This is the last step — it operates on the same
-  // Grove set that was used for the per-project loop.
   console.log('');
   try {
-    const machine = collectMachineState(groves);
-    await runAgentConfigGrovePromotion(machine);
+    await runAgentConfigGrovePromotion({ groves: machineGroves });
   } catch (error) {
     failures.push({
       target: { groveSlug: '(machine)', projectName: 'agent-config Grove promotion', root: '' },

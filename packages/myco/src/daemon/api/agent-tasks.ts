@@ -29,7 +29,6 @@ import { loadMergedConfig, updateConfig, loadGroveConfig, saveGroveConfig } from
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import type { MycoConfig } from '../../config/schema.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -336,15 +335,10 @@ export async function handleUpdateTaskConfig(
   }
 
   if (groveId) {
-    // Grove-tier write: apply withTaskConfig against a synthetic MycoConfig
-    // shell that wraps the Grove's agent section, then extract and persist
-    // only the agent.tasks slice back to Grove config.
     let updatedTasks;
     try {
       const groveConfig = loadGroveConfig(groveId);
-      // Construct a minimal MycoConfig shell so withTaskConfig can operate
-      const shell = { agent: groveConfig.agent } as unknown as MycoConfig;
-      const updated = withTaskConfig(shell, taskId, body);
+      const updated = withTaskConfig(groveConfig, taskId, body);
       updatedTasks = updated.agent.tasks;
       saveGroveConfig(groveId, {
         ...groveConfig,
