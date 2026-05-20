@@ -572,6 +572,18 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['team'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
+  // Promoted to Grove tier in 2026-05-20 agent-config Grove promotion
+  ['embedding', 'provider'],
+  ['embedding', 'model'],
+  ['embedding', 'base_url'],
+  ['agent', 'provider'],
+  ['agent', 'harness'],
+  ['agent', 'model'],
+  ['agent', 'tasks'],
+  ['agent', 'summary_batch_interval'],
+  ['agent', 'scheduled_tasks_enabled'],
+  ['agent', 'event_tasks_enabled'],
+  ['agent', 'cold_project_threshold_days'],
 ];
 
 export const MycoConfigSchema = z.preprocess(

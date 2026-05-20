@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { GroveConfigSchema, ProjectConfigSchema } from '@myco/config/schema';
+import { GroveConfigSchema, ProjectConfigSchema, PROJECT_TIER_LEGACY_FIELDS } from '@myco/config/schema';
 
 describe('GroveAgentSchema', () => {
   test('accepts promoted agent runtime fields', () => {
@@ -89,5 +89,22 @@ describe('ProjectConfigSchema', () => {
       appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
     });
     expect(parsed.cortex.enabled).toBe(true);
+  });
+});
+
+describe('PROJECT_TIER_LEGACY_FIELDS', () => {
+  test('includes all newly-promoted dot-paths', () => {
+    const stringified = PROJECT_TIER_LEGACY_FIELDS.map((p) => p.join('.'));
+    expect(stringified).toContain('embedding.provider');
+    expect(stringified).toContain('embedding.model');
+    expect(stringified).toContain('embedding.base_url');
+    expect(stringified).toContain('agent.provider');
+    expect(stringified).toContain('agent.harness');
+    expect(stringified).toContain('agent.model');
+    expect(stringified).toContain('agent.tasks');
+    expect(stringified).toContain('agent.summary_batch_interval');
+    expect(stringified).toContain('agent.scheduled_tasks_enabled');
+    expect(stringified).toContain('agent.event_tasks_enabled');
+    expect(stringified).toContain('agent.cold_project_threshold_days');
   });
 });
