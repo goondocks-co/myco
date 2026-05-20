@@ -5,16 +5,19 @@ import {
   fetchLocalConfig,
   writeScopedConfig,
   clearLocalConfigKeys,
+  putJson,
 } from '../lib/api';
 import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
 import type { ConfigPath } from '../lib/config-paths';
 
-export type Scope = 'project' | 'local';
+export type Scope = 'project' | 'local' | 'grove';
 
 const MERGED_KEY = ['config', 'merged'] as const;
 const LOCAL_KEY = ['config', 'local'] as const;
 const NOTIFICATIONS_KEY = ['notifications'] as const;
+// Prefix-level key: matches ['grove-config', <groveId>] for all groves.
+const GROVE_CONFIG_KEY = ['grove-config'] as const;
 
 /**
  * Scoped config hook — generalizes the Appearance provider pattern so any
@@ -66,16 +69,29 @@ export function useScopedConfig() {
     void qc.invalidateQueries({ queryKey: MERGED_KEY });
     invalidateNotifications();
   }, [invalidateNotifications, qc]);
+  const invalidateGrove = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: GROVE_CONFIG_KEY });
+    void qc.invalidateQueries({ queryKey: MERGED_KEY });
+    invalidateNotifications();
+  }, [invalidateNotifications, qc]);
   const invalidateForScope = useCallback(
-    (scope: Scope) => (scope === 'local' ? invalidateLocal() : invalidateProject()),
-    [invalidateLocal, invalidateProject],
+    (scope: Scope) => {
+      if (scope === 'local') return invalidateLocal();
+      if (scope === 'grove') return invalidateGrove();
+      return invalidateProject();
+    },
+    [invalidateLocal, invalidateGrove, invalidateProject],
   );
 
   const setField = useCallback(
     async <T,>(path: ConfigPath, value: T, scope: Scope): Promise<void> => {
       const patch: Record<string, unknown> = {};
       setAtPath(patch, path, value);
-      await writeScopedConfig(scope, patch);
+      if (scope === 'grove') {
+        await putJson<unknown>('/grove-config', { patch });
+      } else {
+        await writeScopedConfig(scope, patch);
+      }
       invalidateForScope(scope);
     },
     [invalidateForScope],
@@ -86,6 +102,9 @@ export function useScopedConfig() {
    * and optionally clears a set of dot-paths — both in a single PUT so
    * coupled transitions can't tear (e.g. Clear Provider unsets the provider
    * and disables the tied task toggles together).
+   *
+   * For grove scope, `clearPaths` is not supported (Grove config has no
+   * local-override layer to clear); any provided clear paths are ignored.
    */
   const setFields = useCallback(
     async (
@@ -97,7 +116,11 @@ export function useScopedConfig() {
       for (const { path, value } of fields) {
         setAtPath(patch, path, value);
       }
-      await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
+      if (scope === 'grove') {
+        await putJson<unknown>('/grove-config', { patch });
+      } else {
+        await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
+      }
       invalidateForScope(scope);
     },
     [invalidateForScope],
