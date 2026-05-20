@@ -40,6 +40,7 @@ const FOREGROUND_REEMBED_MAX_PASSES = 25;
 interface EmbeddingScopeOptions {
   db?: Database;
   scope?: DbProjectScope;
+  groveId?: string | null;
 }
 
 function readQueueDepthSafely(options: EmbeddingScopeOptions = {}): number {
@@ -131,7 +132,7 @@ export async function handleGetEmbeddingStatus(
   vaultDir: string,
   options: EmbeddingScopeOptions = {},
 ): Promise<RouteResponse> {
-  const config = loadMergedConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir, { groveId: options.groveId ?? null });
 
   const scope = options.scope ?? ALL_PROJECTS_SCOPE;
   const { queue_depth, embedded_count } = options.db

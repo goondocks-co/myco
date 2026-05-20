@@ -1084,7 +1084,10 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
+  server.registerRoute('GET', '/api/symbionts', async (req) => handleListSymbionts(
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+    req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+  ));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
@@ -1734,6 +1737,7 @@ export async function main(): Promise<void> {
     return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
       db: runtime.db,
       scope: projectScopeFromRequestContext(req.requestContext),
+      groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
     });
   });
   server.registerRoute('GET', '/api/embedding/details', async (req) => {

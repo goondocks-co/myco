@@ -613,15 +613,31 @@ export interface LoadMergedConfigOptions {
  * Build the merged runtime config from the four storage tiers in
  * resolution order: machine → grove → project → personal.
  *
- * The legacy single-arg form (`loadMergedConfig(vaultDir)`) is kept for
- * compatibility — it skips the Grove tier (Grove-tier fields fall through
- * to schema defaults). New call sites should pass the Grove id from the
- * request context to get a fully-resolved config.
+ * Always pass `options.groveId` (from the request context or project manifest)
+ * to get a fully-resolved config including Grove-tier agent and embedding
+ * values. Pass `groveId: null` explicitly when the caller has confirmed there
+ * is no bound Grove.
+ *
+ * @deprecated Calling without `options.groveId` skips the Grove tier —
+ *   Grove-tier fields fall through to schema defaults. Use
+ *   `loadMergedConfig(vaultDir, { groveId })` to avoid silent misconfiguration.
  */
 export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOptions = {}): MycoConfig {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   const localPath = localConfigPath(vaultDir);
   const groveId = options.groveId ?? null;
+
+  // Warn in development when groveId is not provided at all (undefined means
+  // the caller didn't think about it; null means "confirmed: no Grove").
+  const env = process.env.NODE_ENV;
+  if (options.groveId === undefined && env !== 'production' && env !== 'test') {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[myco] loadMergedConfig called without groveId — Grove-tier config will be skipped.\n' +
+      `  at: ${vaultDir}\n` +
+      '  Pass { groveId: requestContext?.groveId ?? null } to include the Grove tier.',
+    );
+  }
   const mycoHome = options.mycoHome ?? resolveMycoHome();
 
   const configStat = statOrNull(configPath);

@@ -11,6 +11,7 @@ import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
@@ -54,7 +55,8 @@ async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; confi
   }
   try {
     const { loadMergedConfig } = await import('../config/loader.js');
-    const config = loadMergedConfig(vaultDir);
+    const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+    const config = loadMergedConfig(vaultDir, { groveId });
     return { check: { name: 'Vault', status: 'ok', detail: `.myco/ (v${config.version})`, fixable: false }, config };
   } catch (err) {
     return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} parse error: ${(err as Error).message}`, fixable: false }, config: null };

@@ -305,7 +305,7 @@ export async function handleGetTaskConfig(
   vaultDir: string,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
-  const config = loadMergedConfig(vaultDir);
+  const config = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
   const taskConfig = config.agent.tasks?.[taskId] ?? null;
   return { status: HTTP_OK, body: { taskId, config: taskConfig } };
 }
