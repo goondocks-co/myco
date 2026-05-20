@@ -322,13 +322,13 @@ describe('Unified Settings page', () => {
     });
   });
 
-  it('Mixed scopes badge appears on Embedding (project + grove)', () => {
+  it('Mixed scopes badge appears on Release Provenance (project + grove)', () => {
     renderPage();
-    // The Embedding manifest spans project (provider/model/base_url) + grove
-    // (run_in_deep_sleep). The page surfaces a "Mixed scopes" badge per group.
-    const embedSection = document.getElementById('embedding');
-    expect(embedSection).toBeTruthy();
-    expect(embedSection?.textContent ?? '').toContain('Mixed scopes');
+    // Release Provenance spans project (enabled, refs, github.*) + grove
+    // (reconcile_interval_minutes). The page surfaces a "Mixed scopes" badge per group.
+    const rpSection = document.getElementById('release-provenance');
+    expect(rpSection).toBeTruthy();
+    expect(rpSection?.textContent ?? '').toContain('Mixed scopes');
   });
 
   it('grove-scoped fields are disabled when no project is selected', () => {
