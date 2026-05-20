@@ -27,6 +27,7 @@ const INTEGRATION_INCLUDES = [
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
 const forwardedArgs = process.argv.slice(2);
+const ISOLATED_NODE_CHUNK_SIZE = 8;
 
 // Bun's `--isolate` mode pays a large per-file startup cost. These groups
 // have been validated to run correctly when imported through one generated
@@ -525,6 +526,31 @@ function buildNoIsolatePhases(targets, groups, options) {
   ];
 }
 
+function chunkItems(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function buildIsolatedNodePhases(targets, options) {
+  if (targets.length === 0) return [];
+
+  const chunks = chunkItems(targets, ISOLATED_NODE_CHUNK_SIZE);
+  if (chunks.length > 1) {
+    console.log(
+      `[run-bun-tests] isolated node env: ${targets.length} targets across ${chunks.length} chunks`,
+    );
+  }
+
+  return chunks.map((chunk, index) => ({
+    label: chunks.length === 1 ? 'node env isolated' : `node env isolated ${index + 1}`,
+    args: [...options, ...chunk],
+    isolate: true,
+  }));
+}
+
 function fastIgnoreArgs() {
   return FAST_EXCLUDES.map((p) => `--path-ignore-patterns=${p}**`);
 }
@@ -597,10 +623,7 @@ function buildArgs() {
     const sharedTargets = findSharedTargets(sharedFiles);
     const sharedGroups = findSharedGroups(sharedFiles);
 
-    const isolatedArgs = [
-      ...options,
-      ...writeNodeBundleTargets(isolatedFiles),
-    ];
+    const isolatedTargets = writeNodeBundleTargets(isolatedFiles);
 
     if (sharedTargets.length > 0 || sharedGroups.length > 0) {
       const groupCount = sharedTargets.length + sharedGroups.length;
@@ -613,7 +636,7 @@ function buildArgs() {
     return {
       nonDomPhases: [
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
-        ...(isolatedArgs.length > options.length ? [{ label: 'node env isolated', args: isolatedArgs, isolate: true }] : []),
+        ...buildIsolatedNodePhases(isolatedTargets, options),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
     };
