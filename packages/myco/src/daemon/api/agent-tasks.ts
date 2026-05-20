@@ -25,10 +25,11 @@ import {
 } from '@myco/agent/registry.js';
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
-import { loadMergedConfig, updateConfig } from '../../config/loader.js';
+import { loadMergedConfig, updateConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { MycoConfig } from '../../config/schema.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -296,7 +297,7 @@ export async function handleDeleteTask(
 }
 
 /**
- * Get the full config override for a specific task from myco.yaml.
+ * Get the full config override for a specific task from the merged config.
  *
  * Returns: provider, model, maxTurns, timeoutSeconds, and per-phase overrides.
  */
@@ -311,16 +312,21 @@ export async function handleGetTaskConfig(
 }
 
 /**
- * Update config overrides for a specific task in myco.yaml.
+ * Update config overrides for a specific task.
  *
  * Accepts partial updates — only provided fields are set. Fields set to
  * `null` are removed. Supports: provider, model, maxTurns, timeoutSeconds, phases.
  *
  * Phase overrides are keyed by phase name and support: provider, model, maxTurns.
+ *
+ * When a groveId is present, writes to the Grove-tier config (the canonical
+ * home for agent.tasks after the Grove promotion). Falls back to myco.yaml
+ * for projects not yet bound to a Grove.
  */
 export async function handleUpdateTaskConfig(
   req: RouteRequest,
   vaultDir: string,
+  groveId?: string | null,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
   const body = req.body as TaskConfigUpdate | undefined;
@@ -329,6 +335,31 @@ export async function handleUpdateTaskConfig(
     return { status: HTTP_BAD_REQUEST, body: { error: 'missing_body' } };
   }
 
+  if (groveId) {
+    // Grove-tier write: apply withTaskConfig against a synthetic MycoConfig
+    // shell that wraps the Grove's agent section, then extract and persist
+    // only the agent.tasks slice back to Grove config.
+    let updatedTasks;
+    try {
+      const groveConfig = loadGroveConfig(groveId);
+      // Construct a minimal MycoConfig shell so withTaskConfig can operate
+      const shell = { agent: groveConfig.agent } as unknown as MycoConfig;
+      const updated = withTaskConfig(shell, taskId, body);
+      updatedTasks = updated.agent.tasks;
+      saveGroveConfig(groveId, {
+        ...groveConfig,
+        agent: { ...groveConfig.agent, tasks: updatedTasks },
+      });
+    } catch (err) {
+      return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };
+    }
+    return {
+      status: HTTP_OK,
+      body: { taskId, config: updatedTasks?.[taskId] ?? null },
+    };
+  }
+
+  // No Grove bound — fall back to project-tier myco.yaml write.
   let updated;
   try {
     updated = updateConfig(vaultDir, (config) =>

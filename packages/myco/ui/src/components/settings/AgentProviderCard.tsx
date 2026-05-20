@@ -24,7 +24,7 @@ import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
-import { ScopeBadge, ScopePill } from '../config/ScopePill';
+import { ScopePill } from '../config/ScopePill';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
 
@@ -39,14 +39,15 @@ function isSecretProvider(type: ProviderDraft['type']): type is AgentSecretProvi
   return type === 'openai' || type === 'openrouter';
 }
 
-/** Myco Agent — personal-default. Provider configuration is staged locally
+/** Myco Agent — Grove-default. Provider configuration is staged locally
  *  and saved explicitly because harness -> provider -> model -> reasoning is
  *  a dependency chain that cannot be persisted safely as independent writes.
  *  Two coupled writes use setFields:
  *    • setting a provider for the first time also enables both task toggles
- *    • clearing the provider disables both task toggles and removes overrides */
+ *    • clearing the provider disables both task toggles and removes overrides
+ *  Default tier is Grove; the ScopePill offers hard opt-in to Personal. */
 export function AgentProviderCard() {
-  const { effective, setFields, isLocalOverride, resetField, promoteField } = useScopedConfig();
+  const { effective, setFields, isLocalOverride, resetField } = useScopedConfig();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const { data: providerSecretsData } = useProviderSecrets();
   const saveProviderSecret = useSaveProviderSecret();
@@ -94,14 +95,17 @@ export function AgentProviderCard() {
       await resetField('agent.provider');
     }
   }, [isLocalOverride, resetField]);
-  const handlePromoteScope = useCallback(async () => {
-    if (isLocalOverride('agent.harness')) {
-      await promoteField('agent.harness');
-    }
-    if (isLocalOverride('agent.provider')) {
-      await promoteField('agent.provider');
-    }
-  }, [isLocalOverride, promoteField]);
+  /** Hard opt-in: write the current effective values to local scope. */
+  const handleSavePersonal = useCallback(async () => {
+    const value = draftToNormalizedProviderConfig(draft, reasoningModels);
+    await setFields(
+      [
+        { path: 'agent.harness', value: draft.harness || maybeInferHarnessFromProviderType(draft.type) },
+        { path: 'agent.provider', value },
+      ],
+      'local',
+    );
+  }, [draft, reasoningModels, setFields]);
 
   const writeProvider = useCallback((next: ProviderDraft, autoEnableTasks: boolean) => {
     const value = draftToNormalizedProviderConfig(next, reasoningModels);
@@ -115,8 +119,8 @@ export function AgentProviderCard() {
         { path: 'agent.event_tasks_enabled', value: true },
       );
     }
-    void setFields(fields, 'local');
-  }, [reasoningModels, setFields]);
+    void setFields(fields, personal ? 'local' : 'grove');
+  }, [personal, reasoningModels, setFields]);
 
   const handleClear = useCallback(() => {
     clearDraft();
@@ -137,7 +141,7 @@ export function AgentProviderCard() {
             { path: 'agent.scheduled_tasks_enabled', value: false },
             { path: 'agent.event_tasks_enabled', value: false },
           ],
-          'local',
+          personal ? 'local' : 'grove',
           ['agent.provider', 'agent.harness'],
         );
       } catch (err) {
@@ -148,7 +152,7 @@ export function AgentProviderCard() {
 
     const shouldAutoEnableTasks = savedDraft.type === '' && draft.type !== '';
     writeProvider(draft, shouldAutoEnableTasks);
-  }, [draft, savedDraft.type, setFields, writeProvider]);
+  }, [draft, personal, savedDraft.type, setFields, writeProvider]);
 
   const handleSaveApiKey = useCallback(() => {
     if (!secretProvider || apiKeyInput.trim() === '') return;
@@ -189,11 +193,13 @@ export function AgentProviderCard() {
       <SectionHeader>
         <span className="flex items-center gap-2">
           Myco Agent
-          {personal ? (
-            <ScopePill mode="local-default" onPromote={handlePromoteScope} onReset={handleResetScope} />
-          ) : (
-            <ScopeBadge scope="project" />
-          )}
+          <ScopePill
+            mode="shared-default"
+            hasLocalOverride={personal}
+            defaultScopeBadge="grove"
+            onSavePersonal={handleSavePersonal}
+            onReset={handleResetScope}
+          />
         </span>
       </SectionHeader>
 

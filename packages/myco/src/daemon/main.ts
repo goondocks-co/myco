@@ -1500,11 +1500,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
     const requestVaultDir = taskVaultDir(req);
-    const result = await handleUpdateTaskConfig(req, requestVaultDir);
+    const requestGroveId = req.requestContext?.groveId ?? dataPaths.requestContext.groveId;
+    const result = await handleUpdateTaskConfig(req, requestVaultDir, requestGroveId);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions([`agent.tasks.${req.params.id}`], {
         vaultDir: requestVaultDir,
-        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+        groveId: requestGroveId,
       });
     }
     return result;
