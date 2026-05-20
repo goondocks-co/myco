@@ -126,6 +126,12 @@ export function useScopedConfig() {
     invalidateLocal();
   }, [invalidateLocal]);
 
+  const resetFields = useCallback(async (paths: ConfigPath[]): Promise<void> => {
+    if (paths.length === 0) return;
+    await clearLocalConfigKeys(paths as string[]);
+    invalidateLocal();
+  }, [invalidateLocal]);
+
   const promoteField = useCallback(async (path: ConfigPath): Promise<void> => {
     const value = getAtPath((mergedRef.current ?? {}) as Record<string, unknown>, path);
     const patch: Record<string, unknown> = {};
@@ -149,6 +155,7 @@ export function useScopedConfig() {
     setField,
     setFields,
     resetField,
+    resetFields,
     promoteField,
   };
 }

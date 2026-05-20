@@ -47,7 +47,7 @@ function isSecretProvider(type: ProviderDraft['type']): type is AgentSecretProvi
  *    • clearing the provider disables both task toggles and removes overrides
  *  Default tier is Grove; the ScopePill offers hard opt-in to Personal. */
 export function AgentProviderCard() {
-  const { effective, setFields, isLocalOverride, resetField } = useScopedConfig();
+  const { effective, setFields, isLocalOverride, resetFields } = useScopedConfig();
   const { data: providersData, isPending: isLoadingProviders } = useProviders();
   const { data: providerSecretsData } = useProviderSecrets();
   const saveProviderSecret = useSaveProviderSecret();
@@ -88,13 +88,12 @@ export function AgentProviderCard() {
 
   const personal = isLocalOverride('agent.provider') || isLocalOverride('agent.harness');
   const handleResetScope = useCallback(async () => {
-    if (isLocalOverride('agent.harness')) {
-      await resetField('agent.harness');
-    }
-    if (isLocalOverride('agent.provider')) {
-      await resetField('agent.provider');
-    }
-  }, [isLocalOverride, resetField]);
+    const harness = isLocalOverride('agent.harness');
+    const provider = isLocalOverride('agent.provider');
+    if (harness && provider) { await resetFields(['agent.harness', 'agent.provider']); return; }
+    if (harness) { await resetFields(['agent.harness']); return; }
+    if (provider) { await resetFields(['agent.provider']); }
+  }, [isLocalOverride, resetFields]);
   /** Hard opt-in: write the current effective values to local scope. */
   const handleSavePersonal = useCallback(async () => {
     const value = draftToNormalizedProviderConfig(draft, reasoningModels);

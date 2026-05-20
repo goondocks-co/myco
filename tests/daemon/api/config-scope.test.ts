@@ -162,4 +162,38 @@ describe('scoped config HTTP handlers', () => {
     expect((res.body as any).error).toBe('validation_failed');
     expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
   });
+
+  it('PUT /scoped local clear never writes config_version to local.yaml', async () => {
+    // Simulate a local.yaml that gained config_version via a prior migration run.
+    // Write the file directly to bypass the API (which now strips config_version).
+    const localPath = path.join(tmpDir, 'local.yaml');
+    fs.writeFileSync(localPath,
+      `config_version: 9\nagent:\n  harness: claude-sdk\n  provider:\n    type: anthropic\n    model: claude-sonnet-4-5\n`);
+
+    // Clear the agent.* paths — simulates "Reset to Grove".
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      patch: {},
+      clear: ['agent.harness', 'agent.provider'],
+    });
+    expect(res.status).toBeUndefined();
+
+    const rawYaml = fs.readFileSync(localPath, 'utf-8');
+    expect(rawYaml).not.toContain('config_version');
+    // local.yaml should be empty (or absent) when no user-set keys remain.
+    const local = await handleGetLocalConfig(tmpDir);
+    expect((local.body as any).agent?.harness).toBeUndefined();
+    expect((local.body as any).agent?.provider).toBeUndefined();
+  });
+
+  it('PUT /scoped local patch never writes config_version to local.yaml', async () => {
+    // Write a normal local override (no prior migration artifact).
+    await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      patch: { appearance: { theme: 'moss' } },
+    });
+    const localPath = path.join(tmpDir, 'local.yaml');
+    const rawYaml = fs.readFileSync(localPath, 'utf-8');
+    expect(rawYaml).not.toContain('config_version');
+  });
 });
