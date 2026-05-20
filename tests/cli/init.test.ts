@@ -62,6 +62,8 @@ mock.module('@myco/vault/resolve.js', () => ({
 import { run } from '@myco/cli/init.js';
 import { initDatabase, openDatabase, closeDatabase } from '@myco/db/client.js';
 import { resolveVaultDir } from '@myco/vault/resolve.js';
+import { loadGroveConfig } from '@myco/config/loader.js';
+import { loadProjectManifest } from '@myco/config/project-manifest.js';
 
 describe('myco init', () => {
   let testDir: string;
@@ -230,6 +232,34 @@ describe('myco init', () => {
     // `daemon.log_level` is machine-tier now (~/.myco/config.yaml);
     // ProjectConfigSchema strips it from project myco.yaml on save.
     expect(config.daemon).toBeUndefined();
+  });
+
+  it('uses correct base_url when explicitly passed', async () => {
+    await run(['--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
+
+    const groveId = loadProjectManifest(vault)?.grove?.id;
+    expect(groveId).toBeDefined();
+    const groveConfig = loadGroveConfig(groveId!);
+    expect(groveConfig.embedding.base_url).toBe('http://localhost:11434');
+  });
+
+  it('is idempotent — does not overwrite user-set values on re-init', async () => {
+    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
+
+    const groveId = loadProjectManifest(vault)?.grove?.id;
+    expect(groveId).toBeDefined();
+    const originalModel = loadGroveConfig(groveId!).embedding.model;
+    expect(originalModel).toBe('bge-m3');
+
+    // Second init with a different embedding model must NOT overwrite the
+    // user's stored choice — the idempotency guard at `hasEmbeddingFlags &&
+    // !alreadyInitialized` prevents it.
+    const consoleSpy = vi.spyOn(console, 'log');
+    await run(['--embedding-model', 'other', '--non-interactive']);
+
+    const afterModel = loadGroveConfig(groveId!).embedding.model;
+    expect(afterModel).toBe('bge-m3');
+    consoleSpy.mockRestore();
   });
 
   it('writes .gitignore excluding runtime artifacts', async () => {

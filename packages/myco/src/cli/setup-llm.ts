@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import { loadConfig, updateConfig } from '../config/loader.js';
-import { withEmbedding } from '../config/updates.js';
+import { loadGroveConfig, saveGroveConfig } from '../config/loader.js';
 import { parseStringFlag } from './shared.js';
 import type { EmbeddingProviderConfig } from '../config/schema.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 
 const USAGE = `Usage: myco setup-llm [options]
@@ -20,10 +20,15 @@ Options:
 `;
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
-  // Show current settings
+  // Show current settings — embedding lives in the Grove tier
   if (args.includes('--show')) {
-    const config = loadConfig(vaultDir);
-    console.log(JSON.stringify(config.embedding, null, 2));
+    const showGroveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+    if (!showGroveId) {
+      console.error('Error: project is not bound to a Grove. Run `myco init` first.');
+      return;
+    }
+    const showGroveConfig = loadGroveConfig(showGroveId);
+    console.log(JSON.stringify(showGroveConfig.embedding, null, 2));
     return;
   }
 
@@ -55,11 +60,23 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   const embeddingUrl = parseStringFlag(args, '--embedding-url');
   if (embeddingUrl !== undefined) updates.base_url = embeddingUrl;
 
-  // Apply the update through the single write gate
-  const updated = updateConfig(vaultDir, (config) => withEmbedding(config, updates));
+  // Embedding config belongs in the Grove tier. Resolve the Grove id from
+  // the project manifest and write to ~/.myco/groves/<id>/config.yaml.
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+  if (!groveId) {
+    console.error('Error: project is not bound to a Grove. Run `myco init` first.');
+    return;
+  }
+
+  const currentGrove = loadGroveConfig(groveId);
+  const updatedGrove = {
+    ...currentGrove,
+    embedding: { ...currentGrove.embedding, ...updates },
+  };
+  saveGroveConfig(groveId, updatedGrove);
 
   console.log('Embedding configuration updated.');
-  console.log(JSON.stringify(updated.embedding, null, 2));
+  console.log(JSON.stringify(updatedGrove.embedding, null, 2));
 
   if (embeddingModel !== undefined) {
     console.log('\nWarning: changing the embedding model requires a full vector index rebuild.');
