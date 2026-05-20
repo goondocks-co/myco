@@ -172,7 +172,7 @@ import { PowerManager } from './power.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
-import { registerSelfReconcileJob } from './self-reconcile-wiring.js';
+import { startSelfReconcileLoop } from './self-reconcile-wiring.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -627,10 +627,9 @@ export async function main(): Promise<void> {
   // bootout` followed by `myco daemon`). The bounded poll lets the
   // handoff complete without each side hitting the legacy reconcile
   // path's HTTP probe.
-  const lockPath = path.join(daemonService.stateDir, 'daemon.lock');
   let daemonLifecycleLock: LockHandle | null = null;
   const lockResult = await attemptDaemonStartup({
-    lockPath,
+    lockPath: daemonService.lockPath,
     databasePath: dataPaths.databasePath,
     waitForReleaseMs: 2000,
   });
@@ -650,7 +649,7 @@ export async function main(): Promise<void> {
       process.exit(0);
     }
     const retry = await attemptDaemonStartup({
-      lockPath,
+      lockPath: daemonService.lockPath,
       databasePath: dataPaths.databasePath,
       waitForReleaseMs: 2000,
     });
@@ -661,12 +660,12 @@ export async function main(): Promise<void> {
       process.exit(0);
     }
     daemonLifecycleLock = retry.lock;
-    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired after eviction', { lock_path: lockPath });
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired after eviction', { lock_path: daemonService.lockPath });
   } else {
     // Acquired on the first try (or during the wait window). Skip the
     // legacy reconcile path — flock denied none.
     daemonLifecycleLock = lockResult.lock;
-    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: lockPath });
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: daemonService.lockPath });
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
@@ -1837,6 +1836,11 @@ export async function main(): Promise<void> {
     );
     process.exit(1);
   }
+  daemonLifecycleLock?.update({
+    port: server.port,
+    authToken: server.getAuthToken(),
+  });
+
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
 
   // Clear any update-in-progress sentinel left by the orchestrator
@@ -1914,7 +1918,7 @@ export async function main(): Promise<void> {
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
   });
-  registerSelfReconcileJob(powerManager, logger, {
+  const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,
     server,
     daemonVaultDir: bootstrapVaultDir,
@@ -2014,6 +2018,7 @@ export async function main(): Promise<void> {
 
   const runShutdown = async (signal: string) => {
     logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
+    selfReconcileLoop.stop();
     powerManager.stop();
     eventLoopLagProbe.stop();
     // Wait for any active stop processing to finish before shutting down

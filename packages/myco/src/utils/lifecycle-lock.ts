@@ -80,10 +80,27 @@ export interface LockHolder {
   pid: number;
   startedAt: number;
   command?: string;
+  /** Port the lock holder is serving on. Written after `acquire()`
+   *  once the HTTP listener has bound, via `LockHandle.update()`. The
+   *  daemon-client discovery path reads this when `daemon.json` is
+   *  absent — making the canonical `~/.myco/service/daemon.json` a
+   *  cache rather than a hard requirement for capture to reach the
+   *  daemon. */
+  port?: number;
+  /** Daemon-issued bearer token (G4). Recorded so out-of-band
+   *  callers that discover via the lock can attach `x-myco-auth` to
+   *  context-switching requests without needing `daemon.json`. */
+  authToken?: string;
 }
 
 export interface LockHandle {
   release(): void;
+  /** Merge `metadata` into the on-disk holder record. Used by the
+   *  daemon to publish its port and auth-token after `start()` binds.
+   *  Writes through the same fd that holds the flock, so updates are
+   *  atomic with respect to ownership: only the lock holder can
+   *  rewrite the file. */
+  update(metadata: Partial<LockHolder>): void;
   readonly path: string;
   readonly pid: number;
 }
@@ -125,11 +142,12 @@ export const LifecycleLock = {
     }
 
     const command = opts.command ?? process.argv.join(' ');
-    writeHolderMetadata(fd, {
+    const current: LockHolder = {
       pid: process.pid,
       startedAt: Math.floor(Date.now() / 1000),
       command,
-    });
+    };
+    writeHolderMetadata(fd, current);
 
     let released = false;
     const release = (): void => {
@@ -140,9 +158,15 @@ export const LifecycleLock = {
     };
     process.on('exit', release);
 
+    const update = (metadata: Partial<LockHolder>): void => {
+      if (released) return;
+      Object.assign(current, metadata);
+      writeHolderMetadata(fd, current);
+    };
+
     return {
       acquired: true,
-      lock: { release, path: lockPath, pid: process.pid },
+      lock: { release, update, path: lockPath, pid: process.pid },
     };
   },
 
@@ -201,8 +225,40 @@ function readHolderMetadata(fd: number): LockHolder | null {
       pid: parsed.pid,
       startedAt: parsed.startedAt,
       command: typeof parsed.command === 'string' ? parsed.command : undefined,
+      port: typeof parsed.port === 'number' ? parsed.port : undefined,
+      authToken: typeof parsed.authToken === 'string' ? parsed.authToken : undefined,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the lock-holder record from a lockfile path without holding the
+ * lock — the fallback source of truth for daemon-client discovery when
+ * `daemon.json` is absent. The owner's flock is unaffected: this is a
+ * pure read, no flock call.
+ */
+export function readLockHolder(lockPath: string): LockHolder | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  if (raw.length === 0) return null;
+  let parsed: Partial<LockHolder>;
+  try {
+    parsed = JSON.parse(raw) as Partial<LockHolder>;
+  } catch {
+    return null;
+  }
+  if (typeof parsed.pid !== 'number' || typeof parsed.startedAt !== 'number') return null;
+  return {
+    pid: parsed.pid,
+    startedAt: parsed.startedAt,
+    command: typeof parsed.command === 'string' ? parsed.command : undefined,
+    port: typeof parsed.port === 'number' ? parsed.port : undefined,
+    authToken: typeof parsed.authToken === 'string' ? parsed.authToken : undefined,
+  };
 }

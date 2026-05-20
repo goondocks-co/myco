@@ -28,6 +28,7 @@ import {
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
+import { readLockHolder } from '../utils/lifecycle-lock.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import { serviceVariantForState } from '../service/labels.js';
@@ -176,7 +177,7 @@ export class DaemonClient {
     });
     this.defaultHeaders = {
       ...(options.requestContext ? requestContextHeaders(options.requestContext) : {}),
-      ...resolveDaemonAuthHeader(this.daemonService.statePath),
+      ...resolveDaemonAuthHeader(this.daemonService),
       ...(options.headers ?? {}),
     };
     this.serviceManager = options.serviceManager ?? null;
@@ -201,7 +202,7 @@ export class DaemonClient {
     options?: ClientOptions,
     recovery?: RequestFailureRecovery,
   ): Promise<ClientResult> {
-    const info = this.readDaemonJson();
+    const info = await this.getInfoAsync();
     if (!info) {
       this.spawnDaemon();
       return { ok: false };
@@ -224,7 +225,7 @@ export class DaemonClient {
   }
 
   async put(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
-    const info = this.readDaemonJson();
+    const info = await this.getInfoAsync();
     if (!info) {
       this.spawnDaemon();
       return { ok: false };
@@ -247,7 +248,7 @@ export class DaemonClient {
   }
 
   async get(endpoint: string, options?: ClientOptions): Promise<ClientResult> {
-    const info = this.readDaemonJson();
+    const info = await this.getInfoAsync();
     if (!info) {
       this.spawnDaemon();
       return { ok: false };
@@ -268,7 +269,7 @@ export class DaemonClient {
   }
 
   async delete(endpoint: string, body?: unknown, options?: ClientOptions): Promise<ClientResult> {
-    const info = this.readDaemonJson();
+    const info = await this.getInfoAsync();
     if (!info) {
       this.spawnDaemon();
       return { ok: false };
@@ -299,7 +300,7 @@ export class DaemonClient {
 
   async isHealthy(cachedInfo?: DaemonInfo | null): Promise<boolean> {
     try {
-      const info = cachedInfo ?? this.readDaemonJson();
+      const info = cachedInfo ?? await this.getInfoAsync();
       if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
@@ -315,7 +316,7 @@ export class DaemonClient {
 
   async isReady(cachedInfo?: DaemonInfo | null): Promise<boolean> {
     try {
-      const info = cachedInfo ?? this.readDaemonJson();
+      const info = cachedInfo ?? await this.getInfoAsync();
       if (!info) return false;
 
       const res = await fetch(`http://127.0.0.1:${info.port}/ready`, {
@@ -377,7 +378,7 @@ export class DaemonClient {
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
     const checkStale = opts?.checkStale ?? true;
-    const info = this.readDaemonJson();
+    const info = await this.getInfoAsync();
 
     if (checkStale && info && await this.isStale(info)) {
       this.killDaemon(info);
@@ -406,21 +407,35 @@ export class DaemonClient {
   }
 
   /**
-   * Async sibling of `getInfo()` that falls back to a `/health` probe
-   * on the canonical port when daemon.json is missing or stale. The
-   * sync `getInfo()` returns null in that case, which loses sight of a
-   * healthy daemon any time the state file is externally nuked between
-   * its write and the daemon's next self-reconcile tick.
-   *
-   * The reconstructed `DaemonInfo` omits `auth_token` because /health
-   * deliberately doesn't expose it. Callers that need the bearer
-   * (context-switching requests) must wait for the daemon's next
-   * self-reconcile tick to re-write daemon.json.
+   * Three-tier daemon discovery: `daemon.json` → `daemon.lock` →
+   * `/health` on the canonical port. The lock tier is what keeps
+   * capture alive when `daemon.json` is missing — the lock fd is held
+   * open for the daemon's entire lifetime, so it survives whatever
+   * deleted the state file (eviction race, manual rm, supervisor
+   * cleanup) without paying a /health round-trip on every hook.
    */
   async getInfoAsync(): Promise<DaemonInfo | null> {
     const direct = this.readDaemonJson();
     if (direct) return direct;
+    const fromLock = this.readDaemonInfoFromLock();
+    if (fromLock) return fromLock;
     return this.discoverViaHealth();
+  }
+
+  /**
+   * Reconstruct a `DaemonInfo` from the lifecycle lockfile when
+   * `daemon.json` is missing. Returns null when the lock has no port
+   * recorded yet (daemon mid-startup, pre-`server.start()` listen
+   * callback) or the pid in the lock is no longer alive.
+   */
+  private readDaemonInfoFromLock(): DaemonInfo | null {
+    const holder = readLockHolder(this.daemonService.lockPath);
+    if (!holder) return null;
+    if (typeof holder.port !== 'number') return null;
+    if (!isProcessAlive(holder.pid)) return null;
+    const info: DaemonInfo = { pid: holder.pid, port: holder.port };
+    if (typeof holder.authToken === 'string') info.auth_token = holder.authToken;
+    return info;
   }
 
   /**
@@ -486,7 +501,7 @@ export class DaemonClient {
       pollIntervalMs: deps?.pollIntervalMs ?? DAEMON_RESTART_POLL_INTERVAL_MS,
     };
 
-    const prevInfo = this.readDaemonJson();
+    const prevInfo = await this.getInfoAsync();
     const prevPid = prevInfo?.pid;
     const prevPort = prevInfo?.port;
 
@@ -642,15 +657,27 @@ export function createHookDaemonClient(
 
 /**
  * Resolve the daemon-issued bearer token (G4). Spawned children
- * inherit it via env; out-of-band invocations recover it from
- * `daemon.json`. Returns the headers ready to merge into a fetch
- * request — empty when no token is available, so the gate stays a
- * no-op for callers the daemon did not produce.
+ * inherit it via env; out-of-band invocations recover it from the
+ * three discovery tiers in order: env, `daemon.json`, `daemon.lock`.
+ * Returns the headers ready to merge into a fetch request — empty
+ * when no token is available, so the gate stays a no-op for callers
+ * the daemon did not produce.
+ *
+ * The lock-tier fallback matters because `defaultHeaders` is built
+ * once at `DaemonClient` construction time. If `daemon.json` is
+ * missing at that moment, every later request goes without the
+ * bearer — even if `getInfoAsync` finds the daemon via the lock at
+ * call time and reaches it successfully, the request is rejected at
+ * the auth gate. Reading the lock here closes that gap.
  */
-function resolveDaemonAuthHeader(daemonStatePath: string): Record<string, string> {
+function resolveDaemonAuthHeader(
+  daemonService: DaemonServiceState,
+): Record<string, string> {
   const fromEnv = process.env[REQUEST_CONTEXT_AUTH_ENV];
   if (fromEnv) return { [REQUEST_CONTEXT_AUTH_HEADER]: fromEnv };
-  const state = readDaemonState(daemonStatePath);
+  const state = readDaemonState(daemonService.statePath);
   if (state?.auth_token) return { [REQUEST_CONTEXT_AUTH_HEADER]: state.auth_token };
+  const holder = readLockHolder(daemonService.lockPath);
+  if (holder?.authToken) return { [REQUEST_CONTEXT_AUTH_HEADER]: holder.authToken };
   return {};
 }
