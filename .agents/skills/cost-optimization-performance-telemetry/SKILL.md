@@ -19,6 +19,7 @@ Systematic procedures for analyzing, optimizing, and monitoring LLM costs and pe
 - Knowledge of turn budget configuration in task definitions
 - Understanding of map-phase architecture and accelerator systems
 - Understanding of Grove global daemon cost attribution and multi-project scoping
+- Familiarity with Bun test isolation and build profile optimization
 
 ## Procedure A: LLM Cost Analysis & Budget Calibration
 
@@ -66,7 +67,7 @@ Identify cost leak patterns and calibrate budgets for sustainable operation acro
 
 ## Procedure B: Performance Bottleneck Identification
 
-Prioritize optimization efforts based on runtime dominance analysis with Grove coordination overhead.
+Prioritize optimization efforts based on runtime dominance analysis with Grove coordination overhead and test suite optimization patterns.
 
 1. **Profile model inference vs grove coordination overhead**:
    - Measure actual model API call time vs tool execution time
@@ -90,11 +91,19 @@ Prioritize optimization efforts based on runtime dominance analysis with Grove c
    - **MCP transport**: Benefit from direct MCP connections eliminating HTTP loopback overhead
    - Track grove-scoped tool usage patterns and cross-grove coordination costs
 
-4. **Document grove optimization priorities**:
+4. **Test suite performance optimization with measured-isolation**:
+   - **Isolation-boundary runner architecture**: Use `scripts/run-bun-tests.mjs` measured-isolation model
+   - **Domain-scoped Bun processes**: Group related test files into single Bun processes rather than isolating every file
+   - **Performance gain**: Achieve 20% test suite improvement through optimal isolation boundaries
+   - **Trade-off analysis**: Balance test isolation safety vs execution speed
+   - **Build profile optimization**: Exclude flaky integration tests from performance-critical build profiles
+
+5. **Document grove optimization priorities**:
    - Runtime optimization takes precedence when model-dominated
    - Grove coordination optimization for coordination-dominated workloads
    - Token throughput optimization for system-dominated workloads
    - Tool consolidation for emission-ceiling cases with grove boundaries
+   - Test suite optimization for development cycle acceleration
 
 ## Procedure C: Cost-Effective Scheduling & Resource Allocation
 
@@ -143,7 +152,7 @@ Optimize task cadence and resource allocation patterns across grove boundaries.
 
 ## Procedure D: SDK Execution Telemetry & Monitoring
 
-Implement comprehensive cost and performance tracking with grove attribution.
+Implement comprehensive cost and performance tracking with grove attribution and improved accuracy.
 
 1. **Set up grove-aware multi-provider runtime tracking**:
    ```typescript
@@ -178,6 +187,12 @@ Implement comprehensive cost and performance tracking with grove attribution.
    - Monitor concurrent task interference patterns across grove boundaries
    - Validate phased executor resource boundaries with grove awareness
    - Track global daemon resource usage across multiple groves
+
+5. **Improved telemetry accuracy for tool call counting**:
+   - **Accurate tool emission tracking**: Fix telemetry that undercounts tool calls in multi-tool turns
+   - **Emission ceiling validation**: Monitor tasks hitting tool emission limits vs budget limits
+   - **Tool-heavy vs token-heavy workload classification**: Categorize tasks by dominant resource consumption
+   - **Tool consolidation effectiveness measurement**: Track performance improvements from tool usage optimization
 
 ## Procedure E: Agent Harness Cost Control Patterns
 
@@ -307,12 +322,65 @@ Optimize costs specifically for Grove's global daemon and multi-project architec
    - Optimize grove topology for cost-efficient cross-grove collaboration
    - Implement grove-aware cost budgets and throttling policies
 
+## Procedure H: Test Suite & Build Performance Optimization
+
+Optimize test execution and build performance to reduce development cycle costs and infrastructure overhead.
+
+1. **Implement measured-isolation test architecture**:
+   ```bash
+   # Use scripts/run-bun-tests.mjs for optimized test isolation
+   # Group related test files into domain-scoped Bun processes
+   ./scripts/run-bun-tests.mjs --domain agent-harness
+   ./scripts/run-bun-tests.mjs --domain daemon-core
+   
+   # Avoid expensive per-file isolation for related tests
+   # Balance: test independence vs execution speed
+   ```
+
+2. **Domain-scoped test process management**:
+   - **Agent harness tests**: Group all harness-related tests in one Bun process
+   - **Daemon core tests**: Isolate daemon core tests for state management safety
+   - **Utility/helper tests**: Bundle small utility tests to reduce process overhead
+   - **Integration tests**: Keep integration tests isolated but exclude flaky tests from performance builds
+
+3. **Build profile optimization strategies**:
+   ```typescript
+   // In build configuration
+   const buildProfiles = {
+     performance: {
+       excludePatterns: [
+         '**/flaky-integration/**',
+         '**/slow-integration/**'
+       ],
+       testIsolation: 'domain-scoped',
+       parallelism: 'high'
+     },
+     comprehensive: {
+       includeAll: true,
+       testIsolation: 'per-file',
+       parallelism: 'medium'
+     }
+   };
+   ```
+
+4. **Test execution cost modeling**:
+   - **Isolation overhead**: Measure cost of process spawning vs test parallelism benefits
+   - **Domain boundary optimization**: Find optimal test grouping for fastest execution
+   - **CI/CD resource allocation**: Balance test thoroughness vs build speed requirements
+   - **Developer feedback loop**: Optimize local test execution for rapid iteration
+
+5. **Performance regression detection**:
+   - **Baseline test execution times**: Track test suite performance over time
+   - **Isolation boundary effectiveness**: Monitor 20% improvement target from measured-isolation
+   - **Build profile impact**: Compare performance vs comprehensive build outcomes
+   - **Resource utilization tracking**: Monitor CPU/memory usage during test execution
+
 ## Cross-Cutting Gotchas
 
 - **Never ignore settingSources overhead** — Claude SDK makes expensive config calls unless explicitly disabled with `settingSources: []`
 - **Session state gating is critical** — Running expensive intelligence tasks on active sessions produces stale artifacts and wastes budget
 - **Local model budgets need 3-4× multipliers** — They're slower but cheaper per token; budget for the time difference
-- **Tool emission ceilings hit before token budgets** — Monitor tool usage patterns, not just token consumption
+- **Tool emission ceilings hit before token budgets** — Monitor tool usage patterns, not just token consumption; improved telemetry now tracks this accurately
 - **No-op detection prevents cost burn** — Always check if work is actually needed before starting expensive operations
 - **KV-cache reuse patterns vary by SDK** — OpenAI SDK can be 15× faster than Claude SDK for similar workloads due to better caching
 - **Mechanical drift detection beats expensive verification** — File fingerprinting and structural analysis costs cents vs. dollars for LLM verification phases
@@ -325,3 +393,6 @@ Optimize costs specifically for Grove's global daemon and multi-project architec
 - **Cross-grove costs compound quickly** — Operations spanning multiple groves have multiplicative coordination costs; prefer within-grove operations when possible
 - **Global daemon cost attribution is complex** — Fair-share resource allocation across groves requires careful cost modeling and attribution
 - **Grove coordination delays affect budget burn** — Cross-grove coordination latency can cause budget exhaustion before task completion; account for coordination overhead in budget planning
+- **Test isolation boundaries are performance-critical** — Measured-isolation provides 20% performance improvement over naive per-file isolation; domain-scoped processes balance safety and speed
+- **Build profile selection impacts development velocity** — Performance profiles exclude flaky tests for speed; comprehensive profiles include everything for thorough validation
+- **Tool call telemetry accuracy matters** — Undercounting tool calls leads to incorrect budget allocation; ensure telemetry captures all tool emissions accurately
