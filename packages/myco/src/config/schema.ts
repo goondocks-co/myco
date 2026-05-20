@@ -511,6 +511,14 @@ const GroveAgentSchema = z.object({
    * cold-project gating.
    */
   scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
+  summary_batch_interval: z.number().int().min(0).default(5),
+  scheduled_tasks_enabled: z.boolean().default(true),
+  event_tasks_enabled: z.boolean().default(true),
+  cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
+  provider: ProviderOverrideSchema.optional(),
+  harness: HarnessIdSchema.optional(),
+  model: z.string().optional(),
+  tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 });
 
 export const GroveConfigSchema = z.object({
