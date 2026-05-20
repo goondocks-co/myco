@@ -21,23 +21,37 @@ Quality engineering procedures for establishing and maintaining robust build val
 
 ## Procedure 1: Multi-stage Quality Gates
 
-Establish and maintain the distinction between comprehensive build validation (`make build`) versus bundler-only builds (`npm run build`).
+Establish and maintain the distinction between fast development builds (`make build`) versus comprehensive CI validation (`make build-all`).
 
 ### Build Orchestration Strategy
 
-The `make build` workflow provides comprehensive validation:
+**Default Development Build** uses fast profile excluding integration tests:
 ```bash
-# Full quality gate pipeline
+# Fast development build (default)
 make build
-# Executes: make check, then npm run build
-# Where check = lint + test
+# Executes: MYCO_TEST_PROFILE=fast make check, then npm run build
+# Excludes: tests/integration/, tests/smoke/, tests/daemon/integration/
 ```
 
-Versus bundler-only build:
+**Full CI Build** includes all test buckets:
+```bash
+# Full CI validation pipeline
+make build-all
+# Executes: full test suite including integration tests, then npm run build
+```
+
+**Bundler-only Build** (skips all validation):
 ```bash
 # Bundler only - skips type checking and tests
 npm run build
 ```
+
+### Fast Profile Test Exclusions
+
+The `MYCO_TEST_PROFILE=fast` excludes these test buckets to avoid CI flakes during development:
+- `tests/integration/` - Integration tests that may have external dependencies
+- `tests/smoke/` - Smoke tests that may require full system setup
+- `tests/daemon/integration/` - Daemon integration tests with timing dependencies
 
 ### Implementing Quality Gates
 
@@ -48,12 +62,13 @@ grep -A 10 "^build:" Makefile
 
 2. **Validate stage dependencies** - each stage should fail fast:
    - TypeScript compilation via `tsc --noEmit` in lint
-   - Test execution via `node scripts/run-bun-tests.mjs`
+   - Fast test execution via `MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs`
    - Bundler compilation via workspace builds
    - Worker validation via `npm run check:workers`
 
 3. **Prevent silent quality failures** in release workflows:
-   - Always use `make build` in CI/CD, never `npm run build`
+   - Use `make build` for development (fast feedback loop)
+   - Use `make build-all` in CI/CD for comprehensive validation
    - Verify exit codes are properly propagated
    - Add explicit validation steps after bundler operations
 
@@ -79,8 +94,9 @@ When build stages fail:
 ```bash
 # Run stages individually to isolate failures
 npm run lint          # tsc --noEmit + worker checks
-npm test              # full test suite
-npm run test:fast     # fast profile only
+npm test              # fast profile by default
+npm run test:fast     # explicit fast profile
+npm run test:integration  # integration tests only
 npm run build         # workspace builds only
 ```
 
@@ -427,7 +443,7 @@ Three independent failure modes affect `npm publish` in GitHub Actions:
 # Use project's test runner script
 node scripts/run-bun-tests.mjs
 
-# Profile-based testing
+# Profile-based testing (fast is now default for make build)
 MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs
 MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs
 ```
@@ -678,7 +694,7 @@ npm install && npm run build && npm test
 - [ ] MCP/capture wiring initialized: `myco-dev init --worktree` completed
 - [ ] Build artifacts generated: `npm run build` passed
 - [ ] Isolated smoke tests pass: All smoke test tiers green with isolation
-- [ ] Test suite passes: `npm test` all green
+- [ ] Test suite passes: `npm test` all green (fast profile by default)
 - [ ] Vendor cache isolated: no cross-worktree contamination
 - [ ] Database isolation verified: `.myco/test.db` is worktree-scoped
 - [ ] Configuration isolation: `.myco/config.yaml` is worktree-specific
@@ -705,6 +721,7 @@ done
 - **Native dependency conflicts**: Use `npm rebuild` after Node version changes or branch switches
 - **Tree-shaking fragility**: Value imports of type helpers contaminate package bundles and break platform boundaries - use type-only imports
 - **Platform boundary contamination**: Cross-package value imports break tree-shaking and create platform-specific build failures
+- **Fast profile assumptions**: Remember `make build` now uses fast profile by default - use `make build-all` for comprehensive CI validation
 
 ### Release Workflow Traps
 - **npm global installations in CI**: Never `npm install -g npm@latest` - corrupts npm's dependencies

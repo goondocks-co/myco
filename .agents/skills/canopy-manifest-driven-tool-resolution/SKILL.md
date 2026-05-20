@@ -97,12 +97,13 @@ export function resolveCanopyReadTool(
 
 ### Shell Argument Parsing
 
-For shell-pattern mode, use `shlex` for quote-aware argument parsing:
+For shell-pattern mode, use `shlex` for quote-aware argument parsing. The function must check both `toolInput.command` and `toolInput.bash?.command` to handle varying symbiont argument structures:
 
 ```typescript
 import shlex from 'shlex';
 
 function extractPathFromShellArgs(toolInput: any, strategy: string): string | null {
+  // Handle both direct command and nested bash.command patterns
   const command = toolInput.command || toolInput.bash?.command;
   if (!command || typeof command !== 'string') return null;
 
@@ -120,7 +121,7 @@ function extractPathFromShellArgs(toolInput: any, strategy: string): string | nu
 }
 ```
 
-**Design principle:** The resolver is the single authority for path extraction. All consumers (hooks, queries) must use this resolver to maintain consistency.
+**Design principle:** The resolver is the single authority for path extraction. All consumers (hooks, queries) must use this resolver to maintain consistency. The dual `toolInput.command || toolInput.bash?.command` pattern handles symbionts that structure shell arguments differently.
 
 ## Procedure C: Unify Pre/Post Tool-Use Hooks
 

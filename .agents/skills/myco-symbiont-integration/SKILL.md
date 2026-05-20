@@ -48,9 +48,6 @@ Sessions are the fundamental unit of developer work, identified by `transcript_p
 2. **Implement DB-backed session persistence** in the `SessionRegistry` constructor by querying the database for active sessions at startup.
 
 3. **Design status transitions** following the pattern: `active` → `settled` → `archived`
-   - `active`: Session has recent activity or open connections
-   - `settled`: No recent activity but transcript still accessible  
-   - `archived`: Transcript moved or session explicitly closed
 
 ### Session Reactivation Patterns
 
@@ -101,13 +98,12 @@ Steering prompts occur mid-turn when users refine their request. The hierarchica
 Each symbiont has different transcript formats requiring specialized detection:
 
 **Claude Code**: Mine JSONL transcripts for `role: "user"` entries between tool_use blocks
-**Codex**: Detect `turn_id` changes in the event stream  
+**Codex**: Detect `turn_id` changes in the event stream
 **OpenCode**: Parse plugin field boundaries in server responses
 
 Example Claude Code detection in `packages/myco/src/capture/prompt-kind.ts`:
 ```typescript
 function detectSteeringInClaudeCode(events: HookEvent[]): boolean {
-  // Use classifyNextPromptKind with manifest rules to classify prompt timing
   const promptKinds = extractUserPromptKinds(events, transcriptPath);
   return promptKinds.some(kind => kind.steering);
 }
@@ -133,7 +129,6 @@ Route summaries to the correct batch based on turn structure using the parent tr
 
 **Rule**: Summary belongs on the parent batch when the latest batch is a steering child
 
-Example routing logic:
 ```typescript
 function determineSummaryTarget(latestBatch: PromptBatch): string {
   // Walk up parent chain to find the root parent for steering children
@@ -146,8 +141,6 @@ function determineSummaryTarget(latestBatch: PromptBatch): string {
 }
 ```
 
-This ensures response summaries appear on the main conversation flow, not scattered across steering children.
-
 ---
 
 ## Architectural Foundations: Cross-Symbiont Durability
@@ -159,21 +152,8 @@ Capture systems must survive daemon restarts, network issues, and symbiont crash
 Implement database-backed session recovery:
 
 1. **Store session state** in SQLite sessions table, not just in-memory
-2. **Query active sessions at startup** to rebuild the `SessionRegistry` state  
+2. **Query active sessions at startup** to rebuild the `SessionRegistry` state
 3. **Handle partial state** gracefully when transcripts have moved
-
-```typescript
-async initializeFromDatabase() {
-  const activeSessions = await this.db.getSessionsByStatus('active');
-  for (const sessionData of activeSessions) {
-    if (await this.transcriptExists(sessionData.transcript_path)) {
-      await this.addExistingSession(sessionData);
-    } else {
-      await this.markSessionArchived(sessionData.id);
-    }
-  }
-}
-```
 
 ### Buffer Fallback Mechanisms
 
@@ -190,6 +170,118 @@ The three-layer OpenCode SIGTERM fix provides a durability template:
 1. **DB-backed registry**: Session state survives daemon restart
 2. **Scope fix**: `any_agent` rules only match known agents or unknown events
 3. **Plugin buffer fallback**: Local event storage for network issues
+
+---
+
+## Architectural Foundations: Global Symbiont Installation Architecture
+
+Global symbiont installation provides unified detection and management of agent integrations at the machine level, supporting both greenfield installs and brownfield adoption scenarios.
+
+### Unified Detection Function Architecture
+
+**Invariant**: All symbiont detection in the global install path flows through a single `runSymbiontDetection()` function. Detection is entirely manifest-driven via the `detectionDir` field.
+
+```typescript
+function runSymbiontDetection(): DetectionResult {
+  // Walk manifest registry for all registered symbionts
+  for (const manifest of symbiontManifestRegistry) {
+    if (manifest.detectionDir && existsSync(manifest.detectionDir)) {
+      return { detected: true, symbiont: manifest.id, path: manifest.detectionDir };
+    }
+  }
+  return { detected: false };
+}
+```
+
+**Four triggers invoke detection**:
+1. **Manual detection**: `myco install --detect`
+2. **Daemon startup**: Background detection during daemon initialization
+3. **Tick-based scanning**: Periodic detection for new installations
+4. **Grove activation**: Detection when switching project contexts
+
+### Manifest-Driven Detection Configuration
+
+Each symbiont manifest must include a `detectionDir` field pointing to the agent's installation directory:
+
+```yaml
+# Example: ~/.myco/manifests/claude-code.yaml
+id: claude-code
+detectionDir: ~/Library/Application Support/Claude/Claude Desktop
+capture:
+  # ... capture rules
+registration:
+  # ... registration config
+```
+
+**Detection principles**:
+- Never create the agent's directory — only detect existing installations
+- Detection must be passive and non-intrusive
+- Support both global installations and user-specific installs
+- Handle platform-specific installation paths
+
+### Greenfield vs Brownfield Installation Flows
+
+**Greenfield Install** (fresh agent, no prior Myco integration):
+1. **Detect agent installation** via `runSymbiontDetection()`
+2. **Initialize Myco integration** by installing hooks and MCP configuration
+3. **Register symbiont** in global registry
+4. **Test integration** with capture validation
+
+**Brownfield Install** (existing Myco integration):
+1. **Detect existing integration** via manifest registry
+2. **Validate integration status** (hooks, MCP, permissions)
+3. **Update if necessary** using incremental upgrade procedures
+4. **Preserve existing configuration** and session history
+
+### Safety Invariants and Self-Mutation Discipline
+
+**Self-Mutation Discipline**: Global symbiont installation must never modify itself or create circular dependencies.
+
+**Non-negotiable safety invariants**:
+1. **Installation atomicity**: All installation steps must be transactional
+2. **Rollback capability**: Failed installations must be completely reversible
+3. **Permission boundaries**: Never escalate privileges beyond necessary scope
+4. **Configuration isolation**: Each symbiont has isolated configuration space
+5. **Registry consistency**: Manifest registry must remain consistent across all operations
+
+### Launcher Write-Ordering and Binary Path Resolution
+
+**Launcher Write-Ordering**: Global installation must coordinate launcher updates to prevent corruption during concurrent installs.
+
+```typescript
+// Atomic launcher update pattern
+async function updateLauncher(symbiontId: string, config: LauncherConfig) {
+  const tempPath = `${launcherPath}.tmp.${Date.now()}`;
+  await writeFile(tempPath, generateLauncherScript(config));
+  await rename(tempPath, launcherPath);  // Atomic replacement
+}
+```
+
+**Binary Path Resolution**: Global installation must resolve agent binary paths across platforms and installation methods.
+
+```typescript
+// Cross-platform binary resolution
+function resolveAgentBinary(symbiont: SymbiontManifest): string {
+  const candidates = [
+    symbiont.binaryPath,  // Explicit path from manifest
+    ...platformSpecificPaths[process.platform],  // Platform defaults
+    ...pathBasedResolution(symbiont.binaryName)   // PATH search
+  ];
+
+  return candidates.find(path => existsSync(path)) || null;
+}
+```
+
+### Marker-Bounded Configuration Blocks
+
+**Marker-Bounded Config**: Global installation uses delimited configuration blocks to enable safe updates and removal.
+
+**Marker patterns**:
+- **BEGIN/END MYCO INTEGRATION**: For agent configuration files
+- **# MYCO-MANAGED**: For individual configuration lines
+- **/** MYCO:START **/ ... /** MYCO:END **/**: For JSON/JSONC files
+
+This enables surgical updates without corrupting existing agent configuration.
 
 ---
 
@@ -221,14 +313,7 @@ Move from hardcoded agent-specific logic to declarative manifest-driven capture.
    }
    ```
 
-3. **Implement domain-keyed schemas** using the `CaptureRule` type from `packages/myco/src/symbionts/manifest-schema.ts`:
-   ```typescript
-   interface CaptureConfig {
-     prompts: PromptCaptureRule;
-     attachments?: AttachmentCaptureRule;
-     events?: EventCaptureRule;
-   }
-   ```
+3. **Implement domain-keyed schemas** using the `CaptureRule` type from `packages/myco/src/symbionts/manifest-schema.ts`.
 
 #### Hook Purity Pattern
 
@@ -294,11 +379,8 @@ const schema = z.string().min(1);
 const config = {
   strictMcpConfig: true,
   settingSources: [], // empty array prevents unwanted config loading
-  // ... other config
 };
 ```
-
-The `settingSources: []` setting prevents the SDK from loading configuration that might conflict with Myco's MCP setup.
 
 ---
 
@@ -315,8 +397,6 @@ The `settingSources: []` setting prevents the SDK from loading configuration tha
 Runtime.command = 'myco-run';  // redirect through myco wrapper
 ```
 
-This ensures that command execution goes through Myco's capture pipeline, maintaining session context and proper logging.
-
 ### 3.2 substituteRuntimeCommand Flag for PATH Collision Issues
 
 **Issue:** GUI applications (like OpenCode) can have PATH collisions where the system `node` binary differs from the development `node` binary, causing runtime command failures.
@@ -326,10 +406,7 @@ This ensures that command execution goes through Myco's capture pipeline, mainta
 ```yaml
 manifest:
   substituteRuntimeCommand: true  # enable PATH collision handling
-  # ... other config
 ```
-
-When this flag is enabled, Myco will substitute the runtime command with an absolute path to avoid PATH-based resolution issues.
 
 ### 3.3 PATH Collision Gotchas with GUI Apps
 
@@ -363,11 +440,6 @@ Agent integrations commonly need stop buffer fallback patterns to handle gracefu
 // Persist buffer state on shutdown signals
 process.on('SIGTERM', async () => {
   await persistBufferState();
-  await gracefulShutdown();
-});
-
-process.on('SIGINT', async () => {
-  await persistBufferState(); 
   await gracefulShutdown();
 });
 ```
@@ -438,11 +510,7 @@ if (!isValidSession) {
 }
 ```
 
-This helper checks for:
-- Session ID validity
-- Transcript path accessibility  
-- Hook registration status
-- Environment variable consistency
+This helper checks session ID validity, transcript path accessibility, hook registration status, and environment variable consistency.
 
 ---
 
@@ -482,7 +550,7 @@ Register the new symbiont in the `SymbiontInstaller` class with install, update,
 // In packages/myco/src/capture/installer/index.ts
 symbiont: {
   install: async () => { /* implementation */ },
-  update: async () => { /* implementation */ }, 
+  update: async () => { /* implementation */ },
   remove: async () => { /* implementation */ },
   doctor: async () => { /* implementation */ },
 }
@@ -500,8 +568,6 @@ const skillFiles = await glob('**\\/SKILL.md', { cwd: skillsDir });
 const skills = skillFiles.map(file => parseSkillFromPath(file));
 ```
 
-This ensures that only properly-formatted skill files are discovered and registered, preventing the installer from picking up unrelated markdown files as skills.
-
 ---
 
 ## Procedure 8: MCP Tool Registration Verification
@@ -517,20 +583,12 @@ This ensures that only properly-formatted skill files are discovered and registe
 const advertisedTools = await getAdvertisedMcpTools();
 const registeredTools = await getRegisteredMcpTools();
 
-const missingTools = advertisedTools.filter(tool => 
+const missingTools = advertisedTools.filter(tool =>
   !registeredTools.includes(tool)
-);
-
-const phantomTools = registeredTools.filter(tool => 
-  !isValidToolHandler(tool)
 );
 
 if (missingTools.length > 0) {
   console.warn(`Missing tool registrations: ${missingTools.join(', ')}`);
-}
-
-if (phantomTools.length > 0) {
-  console.warn(`Phantom tool references: ${phantomTools.join(', ')}`);
 }
 ```
 
@@ -541,19 +599,17 @@ if (phantomTools.length > 0) {
 ```ts
 // Test that all expected tools are properly registered
 test('MCP tool registration completeness', async () => {
-  const expectedTools = ['tool1', 'tool2', 'tool3']; 
+  const expectedTools = ['tool1', 'tool2', 'tool3'];
   const actualTools = await getMcpToolList();
-  
+
   expect(actualTools).toEqual(expect.arrayContaining(expectedTools));
-  
+
   // Verify no phantom tools
   for (const tool of actualTools) {
     expect(await validateToolHandler(tool)).toBe(true);
   }
 });
 ```
-
-This prevents deployment of symbionts with incomplete or broken tool registration.
 
 ---
 
@@ -574,14 +630,6 @@ const expectedTypes = parseTypeDefinitions(apiSchema);
 const implementation = buildParserFromTypes(expectedTypes);
 ```
 
-**Anti-pattern:** Inferring API behavior without verification:
-```ts
-// AVOID: Inference without verification
-const assumedSchema = {
-  // ... assumptions that may be wrong
-};
-```
-
 ### 9.2 Regression Prevention via API Verification
 
 **Pattern:** Build API verification into the integration test suite:
@@ -591,12 +639,10 @@ const assumedSchema = {
 test('API compatibility verification', async () => {
   const liveApiSchema = await fetchLiveApiSchema();
   const currentImplementation = getCurrentParserSchema();
-  
+
   expect(isCompatible(currentImplementation, liveApiSchema)).toBe(true);
 });
 ```
-
-This ensures that symbiont integrations stay current with evolving agent APIs and prevents "inference over verification" failure modes.
 
 ---
 
@@ -671,3 +717,13 @@ Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, o
 **MCP tool registration must be verified** — Audit tool registration completeness during integration to prevent phantom tools and missing tool handlers.
 
 **API verification prevents inference failures** — Always fetch authoritative type definitions from external APIs rather than inferring behavior from documentation. Build verification into test suites.
+
+**Global installation detection must be passive** — Never create directories during detection; only detect existing agent installations. Detection should be non-intrusive and manifest-driven.
+
+**Self-mutation discipline is non-negotiable** — Global installation must never modify itself or create circular dependencies. All operations must be transactional with rollback capability.
+
+**Launcher write-ordering prevents corruption** — Use atomic file operations when updating launcher scripts to prevent corruption during concurrent global installs.
+
+**Binary path resolution must be cross-platform** — Support platform-specific installation paths and handle GUI application PATH limitations with absolute binary paths.
+
+**Marker-bounded configuration enables safe updates** — Always use delimited configuration blocks (BEGIN/END MYCO INTEGRATION) for surgical updates without corrupting existing agent configuration.
