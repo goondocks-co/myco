@@ -27,6 +27,279 @@ const INTEGRATION_INCLUDES = [
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
 const forwardedArgs = process.argv.slice(2);
+const ISOLATED_NODE_CHUNK_SIZE = 8;
+
+// Bun's `--isolate` mode pays a large per-file startup cost. These groups
+// have been validated to run correctly when imported through one generated
+// bundle file, while unlisted groups keep per-file isolation.
+const SAFE_NODE_BUNDLE_GROUPS = new Set([
+  'tests/agent/tasks',
+  'tests/canopy',
+  'tests/canopy/aggregate',
+  'tests/canopy/describe',
+  'tests/canopy/inject',
+  'tests/canopy/map',
+  'tests/canopy/parsers',
+  'tests/canopy/scanner',
+  'tests/capture',
+  'tests/cli/providers',
+  'tests/collective',
+  'tests/config',
+  'tests/constants',
+  'tests/context',
+  'tests/daemon/config-reactions',
+  'tests/daemon/database',
+  'tests/daemon/embedding',
+  'tests/daemon/jobs',
+  'tests/db/queries',
+  'tests/deploy',
+  'tests/embedding',
+  'tests/grove',
+  'tests/intelligence',
+  'tests/logs',
+  'tests/mcp',
+  'tests/mcp/tools',
+  'tests/myco-shared',
+  'tests/notifications',
+  'tests/plans',
+  'tests/prompts',
+  'tests/release-provenance',
+  'tests/service',
+  'tests/services',
+  'tests/symbionts',
+  'tests/symbionts/parsers',
+  'tests/symbionts/templates',
+  'tests/templates',
+  'tests/tools',
+  'tests/ui',
+  'tests/ui/layout',
+  'tests/utils',
+  'tests/vault',
+  'tests/worker',
+  'tests/worker/integration',
+  'tests/worker/mcp',
+]);
+
+// These targets pass as their own shared-process Bun run without `--isolate`.
+// They are the first-class speed path: one process per clean domain, while
+// leak-prone domains keep per-file isolation below.
+const NO_ISOLATE_NODE_TARGETS = [
+  'tests/agent/tasks',
+  'tests/canopy',
+  'tests/capture',
+  'tests/cli/providers',
+  'tests/collective',
+  'tests/config',
+  'tests/constants',
+  'tests/context',
+  'tests/daemon/config-reactions',
+  'tests/daemon/database',
+  'tests/daemon/embedding',
+  'tests/daemon/jobs',
+  'tests/db',
+  'tests/deploy',
+  'tests/embedding',
+  'tests/grove',
+  'tests/hooks',
+  'tests/intelligence',
+  'tests/logs',
+  'tests/mcp',
+  'tests/myco-shared',
+  'tests/notifications',
+  'tests/plans',
+  'tests/prompts',
+  'tests/release-provenance',
+  'tests/service',
+  'tests/services',
+  'tests/symbionts',
+  'tests/templates',
+  'tests/tools',
+  'tests/ui/layout',
+  'tests/utils',
+  'tests/vault',
+  'tests/worker',
+  'tests/semantic-search-filters.test.ts',
+];
+
+const NO_ISOLATE_NODE_GROUPS = [
+  {
+    label: 'tests-agent-stable',
+    targets: [
+      'tests/agent/claude-code-executable.test.ts',
+      'tests/agent/context-queries.test.ts',
+      'tests/agent/lmstudio-context.test.ts',
+      'tests/agent/map-phase.test.ts',
+      'tests/agent/ollama-context.test.ts',
+      'tests/agent/openai-runtime.test.ts',
+      'tests/agent/openrouter-catalog.test.ts',
+      'tests/agent/orchestrator.test.ts',
+      'tests/agent/phase-loop.test.ts',
+      'tests/agent/provider-harness.test.ts',
+      'tests/agent/provider.test.ts',
+      'tests/agent/run-accounting.test.ts',
+      'tests/agent/runtime-claude.test.ts',
+      'tests/agent/schemas.test.ts',
+      'tests/agent/skill-candidate-evidence.test.ts',
+      'tests/agent/skill-candidate-quality.test.ts',
+      'tests/agent/skill-drift.test.ts',
+      'tests/agent/skill-staging.test.ts',
+      'tests/agent/tools-dry-run.test.ts',
+      'tests/agent/tools/canopy-tools.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-root-stable',
+    targets: [
+      'tests/daemon/backup-multiline.test.ts',
+      'tests/daemon/capture-images.test.ts',
+      'tests/daemon/codex-plan-capture.test.ts',
+      'tests/daemon/event-loop-lag.test.ts',
+      'tests/daemon/git-status.test.ts',
+      'tests/daemon/handle-user-prompt-steering.test.ts',
+      'tests/daemon/inflight-runs.test.ts',
+      'tests/daemon/lifecycle.test.ts',
+      'tests/daemon/migration-tasks.test.ts',
+      'tests/daemon/plan-capture.test.ts',
+      'tests/daemon/plan-watch-reaction.test.ts',
+      'tests/daemon/port.test.ts',
+      'tests/daemon/power.test.ts',
+      'tests/daemon/project-power-state.test.ts',
+      'tests/daemon/reconciliation-cache-poisoning.test.ts',
+      'tests/daemon/reconciliation-dedup.test.ts',
+      'tests/daemon/router.test.ts',
+      'tests/daemon/skill-usage-detection.test.ts',
+      'tests/daemon/stale-session-sweep.test.ts',
+      'tests/daemon/static.test.ts',
+      'tests/daemon/stop-processing.test.ts',
+      'tests/daemon/task-scheduler.test.ts',
+      'tests/daemon/team-members-handler.test.ts',
+      'tests/daemon/update-in-progress-sentinel.test.ts',
+      'tests/daemon/update-installer.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-api-stable',
+    targets: [
+      'tests/daemon/api/action-inflight.test.ts',
+      'tests/daemon/api/action-scope.test.ts',
+      'tests/daemon/api/agent-runs-overrides-security.test.ts',
+      'tests/daemon/api/agent-tasks.test.ts',
+      'tests/daemon/api/backup-config-grove-tier.test.ts',
+      'tests/daemon/api/backup-liveconfig.test.ts',
+      'tests/daemon/api/canopy-entries-api.test.ts',
+      'tests/daemon/api/canopy-map-api.test.ts',
+      'tests/daemon/api/config-cortex-paths.test.ts',
+      'tests/daemon/api/config.test.ts',
+      'tests/daemon/api/context.test.ts',
+      'tests/daemon/api/cortex.test.ts',
+      'tests/daemon/api/database-scope.test.ts',
+      'tests/daemon/api/database.test.ts',
+      'tests/daemon/api/digest-revisions.test.ts',
+      'tests/daemon/api/embedding-ops.test.ts',
+      'tests/daemon/api/groves-crud.test.ts',
+      'tests/daemon/api/groves.test.ts',
+      'tests/daemon/api/key-leak-guard.test.ts',
+      'tests/daemon/api/log-explorer.test.ts',
+      'tests/daemon/api/maintenance.test.ts',
+      'tests/daemon/api/models.test.ts',
+      'tests/daemon/api/mycelium.test.ts',
+      'tests/daemon/api/pause-enforcement.test.ts',
+      'tests/daemon/api/progress.test.ts',
+      'tests/daemon/api/projects-activity.test.ts',
+      'tests/daemon/api/projects-backup-restore.test.ts',
+      'tests/daemon/api/provider-secrets.test.ts',
+      'tests/daemon/api/providers-ssrf.test.ts',
+      'tests/daemon/api/restart.test.ts',
+      'tests/daemon/api/run-serializer.test.ts',
+      'tests/daemon/api/schemas/execution-overrides-traversal.test.ts',
+      'tests/daemon/api/search-canopy.test.ts',
+      'tests/daemon/api/search-normalization.test.ts',
+      'tests/daemon/api/search-team.test.ts',
+      'tests/daemon/api/sessions.test.ts',
+      'tests/daemon/api/skills-delete.test.ts',
+      'tests/daemon/api/skills.test.ts',
+      'tests/daemon/api/spores-session-filter.test.ts',
+      'tests/daemon/api/spores.test.ts',
+      'tests/daemon/api/stats.test.ts',
+      'tests/daemon/api/team-connect-handlers.test.ts',
+      'tests/daemon/api/team-connect-status.test.ts',
+      'tests/daemon/api/team-upgrade-worker.test.ts',
+      'tests/daemon/api/update.test.ts',
+    ],
+  },
+  {
+    label: 'tests-agent-tools-core',
+    targets: [
+      'tests/agent/instruction-builders.test.ts',
+      'tests/agent/tools-release-provenance.test.ts',
+      'tests/agent/context.test.ts',
+      'tests/agent/openai-local-mcp.test.ts',
+      'tests/agent/registry.test.ts',
+      'tests/agent/cost-resolver.test.ts',
+      'tests/agent/tools.test.ts',
+      'tests/agent/map-phase-tool-surface.test.ts',
+      'tests/agent/loader.test.ts',
+      'tests/agent/executor-dry-run.test.ts',
+      'tests/agent/executor-cleanup.test.ts',
+      'tests/agent/tools/canopy-list.test.ts',
+    ],
+  },
+  {
+    label: 'tests-agent-skill-tools',
+    targets: [
+      'tests/agent/tools-skills.test.ts',
+      'tests/agent/tools/vault-search-canopy.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-service-boundary',
+    targets: [
+      'tests/daemon/team-sync.test.ts',
+      'tests/daemon/reconciliation-stop.test.ts',
+      'tests/daemon/reconcile-existing-daemon.test.ts',
+      'tests/daemon/grove-runtime-cache.test.ts',
+      'tests/daemon/eviction.test.ts',
+      'tests/daemon/machine-id.test.ts',
+      'tests/daemon/server-security.test.ts',
+      'tests/daemon/grove-ownership-boundary.test.ts',
+      'tests/daemon/legacy-scope-removed.test.ts',
+      'tests/daemon/data-paths.test.ts',
+      'tests/daemon/http-server-limits.test.ts',
+      'tests/daemon/logger.test.ts',
+      'tests/daemon/state-file-invariant.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-capture-backup',
+    targets: [
+      'tests/daemon/event-dispatch.test.ts',
+      'tests/daemon/backup-canopy-roundtrip.test.ts',
+      'tests/daemon/capture.test.ts',
+      'tests/daemon/backup.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-power-sweeps',
+    targets: [
+      'tests/daemon/power-jobs.test.ts',
+      'tests/daemon/scope-iteration.test.ts',
+      'tests/daemon/cold-project-gate.test.ts',
+      'tests/daemon/tick-paths-pause.test.ts',
+      'tests/daemon/scheduler-pause.test.ts',
+      'tests/daemon/self-reconcile.test.ts',
+    ],
+  },
+  {
+    label: 'tests-daemon-lifecycle-leftovers',
+    targets: [
+      'tests/daemon/startup-pauses.test.ts',
+      'tests/daemon/intent.test.ts',
+      'tests/daemon/agent-loop-responsiveness.test.ts',
+      'tests/daemon/lifecycle-lock-startup.test.ts',
+      'tests/daemon/trigger-title-summary.test.ts',
+    ],
+  },
+];
 
 const VALUE_FLAGS = new Set([
   '-t',
@@ -93,6 +366,189 @@ function relativeUnique(files) {
   return [...new Set(files.map((f) => path.relative(REPO, f)))].sort();
 }
 
+function isFastExcluded(file) {
+  return FAST_EXCLUDES.some((excluded) => {
+    if (file === excluded) return true;
+    return excluded.endsWith('/') && file.startsWith(excluded);
+  });
+}
+
+function groupKeyForTestFile(file) {
+  const parts = file.split('/');
+  if (parts.length <= 2) return 'tests/root';
+  return parts.slice(0, Math.min(3, parts.length - 1)).join('/');
+}
+
+function bundleSlug(key) {
+  return key.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '') || 'root';
+}
+
+function writeNodeBundleTargets(files) {
+  if (process.env.MYCO_TEST_BUNDLE_NODE === '0') {
+    return files;
+  }
+
+  const groups = new Map();
+  const isolated = [];
+
+  for (const file of files) {
+    const key = groupKeyForTestFile(file);
+    if (!SAFE_NODE_BUNDLE_GROUPS.has(key)) {
+      isolated.push(file);
+      continue;
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  }
+
+  const bundleDir = path.join(REPO, 'target', 'test-bundles', 'node-env');
+  fs.rmSync(bundleDir, { recursive: true, force: true });
+  fs.mkdirSync(bundleDir, { recursive: true });
+
+  const bundledTargets = [];
+  let bundledFileCount = 0;
+
+  for (const [key, groupFiles] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (groupFiles.length < 2) {
+      isolated.push(...groupFiles);
+      continue;
+    }
+
+    bundledFileCount += groupFiles.length;
+    const relativeBundle = path.join('target', 'test-bundles', 'node-env', `${bundleSlug(key)}.test.ts`);
+    const absoluteBundle = path.join(REPO, relativeBundle);
+    const imports = groupFiles
+      .sort()
+      .map((file) => `import '../../../${file}';`)
+      .join('\n');
+    fs.writeFileSync(absoluteBundle, `${imports}\n`);
+    bundledTargets.push(relativeBundle);
+  }
+
+  if (bundledTargets.length > 0) {
+    console.log(
+      `[run-bun-tests] bundled node env: ${bundledFileCount} files -> ${bundledTargets.length} bundles; ${isolated.length} files stay isolated`,
+    );
+  }
+
+  return [...bundledTargets.sort(), ...isolated.sort()];
+}
+
+function targetCoversFile(target, file) {
+  if (file === target) return true;
+  return !target.endsWith('.ts') && file.startsWith(`${target}/`);
+}
+
+function isCoveredByNoIsolateTarget(file) {
+  return NO_ISOLATE_NODE_TARGETS.some((target) => targetCoversFile(target, file))
+    || NO_ISOLATE_NODE_GROUPS.some((group) => group.targets.some((target) => targetCoversFile(target, file)));
+}
+
+function targetHasFiles(target, files) {
+  return files.some((file) => targetCoversFile(target, file));
+}
+
+function groupHasFiles(group, files) {
+  return group.targets.some((target) => targetHasFiles(target, files));
+}
+
+function noIsolateArgsForTarget(target, options) {
+  return [
+    ...options,
+    target,
+    "--path-ignore-patterns=**/*.test.tsx",
+    ...(profile === 'fast' ? fastIgnoreArgs() : []),
+  ];
+}
+
+function noIsolateArgsForGroup(group, options) {
+  return [
+    ...options,
+    ...group.targets,
+    "--path-ignore-patterns=**/*.test.tsx",
+    ...(profile === 'fast' ? fastIgnoreArgs() : []),
+  ];
+}
+
+function noIsolatePhaseForTarget(target, options) {
+  return {
+    label: `node env shared ${bundleSlug(target)}`,
+    args: noIsolateArgsForTarget(target, options),
+    isolate: false,
+  };
+}
+
+function noIsolatePhaseForGroup(group, options) {
+  return {
+    label: `node env shared ${group.label}`,
+    args: noIsolateArgsForGroup(group, options),
+    isolate: false,
+  };
+}
+
+function sharedTargetFiles(target, files) {
+  return files.filter((file) => targetCoversFile(target, file));
+}
+
+function sharedGroupFiles(group, files) {
+  return files.filter((file) => group.targets.some((target) => targetCoversFile(target, file)));
+}
+
+function sharedFileCount(targets, groups, files) {
+  const covered = new Set();
+  for (const target of targets) {
+    for (const file of sharedTargetFiles(target, files)) covered.add(file);
+  }
+  for (const group of groups) {
+    for (const file of sharedGroupFiles(group, files)) covered.add(file);
+  }
+  return covered.size;
+}
+
+function findSharedTargets(files) {
+  return NO_ISOLATE_NODE_TARGETS.filter((target) => targetHasFiles(target, files));
+}
+
+function findSharedGroups(files) {
+  return NO_ISOLATE_NODE_GROUPS.filter((group) => groupHasFiles(group, files));
+}
+
+function buildNoIsolatePhases(targets, groups, options) {
+  return [
+    ...targets.map((target) => noIsolatePhaseForTarget(target, options)),
+    ...groups.map((group) => noIsolatePhaseForGroup(group, options)),
+  ];
+}
+
+function chunkItems(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function buildIsolatedNodePhases(targets, options) {
+  if (targets.length === 0) return [];
+
+  const chunks = chunkItems(targets, ISOLATED_NODE_CHUNK_SIZE);
+  if (chunks.length > 1) {
+    console.log(
+      `[run-bun-tests] isolated node env: ${targets.length} targets across ${chunks.length} chunks`,
+    );
+  }
+
+  return chunks.map((chunk, index) => ({
+    label: chunks.length === 1 ? 'node env isolated' : `node env isolated ${index + 1}`,
+    args: [...options, ...chunk],
+    isolate: true,
+  }));
+}
+
+function fastIgnoreArgs() {
+  return FAST_EXCLUDES.map((p) => `--path-ignore-patterns=${p}**`);
+}
+
 function expandTargets(targets) {
   const nonDom = [];
   const dom = [];
@@ -121,9 +577,9 @@ function expandTargets(targets) {
 }
 
 /**
- * Returns two arrays: [nonDomArgs, domArgs]. Each is an argv suffix passed to
- * `bun test`. `nonDomArgs` always ignores tsx files; `domArgs` always ignores
- * non-tsx files.
+ * Returns node-env phases plus optional DOM args. Whole-suite node runs are
+ * split by isolation boundary; explicit target and integration runs stay in
+ * one isolated node phase.
  */
 function buildArgs() {
   const { options, targets } = parseForwardedArgs(forwardedArgs);
@@ -139,10 +595,44 @@ function buildArgs() {
 
     const nonDomTargets = [...expanded.nonDom, ...expanded.passthrough];
     return {
-      nonDom: nonDomTargets.length > 0
-        ? [...options, ...nonDomTargets, "--path-ignore-patterns=**/*.test.tsx"]
-        : null,
+      nonDomPhases: nonDomTargets.length > 0
+        ? [{
+            label: 'node env',
+            args: [...options, ...nonDomTargets, "--path-ignore-patterns=**/*.test.tsx"],
+            isolate: true,
+          }]
+        : [],
       dom: expanded.dom.length > 0 ? [...options, ...expanded.dom] : null,
+    };
+  }
+
+  if (profile !== 'integration') {
+    const allTests = relativeUnique(findTests(path.join(REPO, 'tests')));
+    const nonDomFiles = allTests
+      .filter((file) => !file.endsWith('.test.tsx'))
+      .filter((file) => profile !== 'fast' || !isFastExcluded(file));
+    const sharedFiles = nonDomFiles.filter(isCoveredByNoIsolateTarget);
+    const isolatedFiles = nonDomFiles.filter((file) => !isCoveredByNoIsolateTarget(file));
+
+    const sharedTargets = findSharedTargets(sharedFiles);
+    const sharedGroups = findSharedGroups(sharedFiles);
+
+    const isolatedTargets = writeNodeBundleTargets(isolatedFiles);
+
+    if (sharedTargets.length > 0 || sharedGroups.length > 0) {
+      const groupCount = sharedTargets.length + sharedGroups.length;
+      const fileCount = sharedFileCount(sharedTargets, sharedGroups, sharedFiles);
+      console.log(
+        `[run-bun-tests] non-isolated node env: ${fileCount} files across ${groupCount} target groups`,
+      );
+    }
+
+    return {
+      nonDomPhases: [
+        ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
+        ...buildIsolatedNodePhases(isolatedTargets, options),
+      ],
+      dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
     };
   }
 
@@ -150,28 +640,16 @@ function buildArgs() {
     return {
       // Integration profile: tests/integration + tests/smoke plus a few
       // named files. None are tsx at time of writing.
-      nonDom: [...options, ...INTEGRATION_INCLUDES, "--path-ignore-patterns=**/*.test.tsx"],
+      nonDomPhases: [{
+        label: 'node env',
+        args: [...options, ...INTEGRATION_INCLUDES, "--path-ignore-patterns=**/*.test.tsx"],
+        isolate: true,
+      }],
       dom: null,
     };
   }
 
-  if (profile === 'fast') {
-    // Fast profile: everything except the integration/smoke buckets.
-    const ignores = [
-      "--path-ignore-patterns=**/*.test.tsx",
-      ...FAST_EXCLUDES.map((p) => `--path-ignore-patterns=${p}**`),
-    ];
-    return {
-      nonDom: [...options, 'tests/', ...ignores],
-      // Also run the UI tests in fast mode (they're quick).
-      dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
-    };
-  }
-
-  return {
-    nonDom: [...options, 'tests/', "--path-ignore-patterns=**/*.test.tsx"],
-    dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
-  };
+  throw new Error(`Unknown test profile: ${profile}`);
 }
 
 // Where per-phase test artifacts land. Always written so that a non-zero exit
@@ -192,7 +670,12 @@ function logPath(label) {
   return path.join(REPORT_DIR, `${label.replace(/\s+/g, '-')}.log`);
 }
 
-function runPhase(label, extraArgs, bunfig) {
+function resetReportDir() {
+  fs.rmSync(REPORT_DIR, { recursive: true, force: true });
+  fs.mkdirSync(REPORT_DIR, { recursive: true });
+}
+
+function runPhase(label, extraArgs, bunfig, { isolate }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
   // `BUN_CONFIG_FILE` is not observed by `bun test` for the bunfig; the only
   // reliable way to swap configs is to move the file on disk for the
@@ -216,7 +699,8 @@ function runPhase(label, extraArgs, bunfig) {
     // post-run scan can recover the "1 error" class that Bun's JUnit
     // reporter drops (file-load errors, unhandled rejections, etc.).
     const args = [
-      'test', '--isolate',
+      'test',
+      ...(isolate ? ['--isolate'] : []),
       '--reporter=junit',
       `--reporter-outfile=${reportFile}`,
       ...extraArgs,
@@ -482,15 +966,18 @@ function stripDuplicateReact() {
   }
 }
 
-const { nonDom, dom } = buildArgs();
+const { nonDomPhases, dom } = buildArgs();
 const phaseReports = [];
+resetReportDir();
 
-const nonDomStatus = runPhase('node env', nonDom, path.join(REPO, 'bunfig.toml'));
-if (nonDom !== null && nonDom.length > 0) {
+let nonDomStatus = 0;
+for (const phase of nonDomPhases) {
+  const status = runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate });
+  nonDomStatus ||= status;
   phaseReports.push({
-    label: 'node env',
-    file: reportPath('node env'),
-    log: logPath('node env'),
+    label: phase.label,
+    file: reportPath(phase.label),
+    log: logPath(phase.label),
   });
 }
 
@@ -501,6 +988,7 @@ if (dom !== null) {
     'jsdom',
     dom,
     path.join(REPO, 'bunfig.dom.toml'),
+    { isolate: true },
   );
   phaseReports.push({
     label: 'jsdom',
