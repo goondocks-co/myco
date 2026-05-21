@@ -37,6 +37,7 @@ mock.module('@myco/vault/resolve.js', () => ({
   // real guard would let them through too. Stub as a no-op so cli paths
   // that import this module don't fail at import time.
   assertSafeProjectRoot: vi.fn(),
+  isSafeProjectRoot: vi.fn(() => true),
   UnsafeProjectRootError,
 }));
 

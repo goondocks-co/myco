@@ -12,20 +12,16 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
-  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Gemini%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Gemini | Windsurf | OpenCode | Pi">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Antigravity%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Antigravity | Windsurf | OpenCode | Pi">
 </p>
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Then initialize in your project:
-```bash
-cd your-project
-myco init
-```
+That's it — Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically. No `myco init` per project; no per-worktree bootstrap. New project? Just start coding — Myco picks it up the first time your agent fires a hook. Data capture starts immediately, intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, VS Code Copilot, Antigravity, Windsurf, OpenCode, and Pi.
 
-`myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, and Pi.
+Run `myco init` only as a recovery / refresh — it's idempotent. For a deliberate project-local override (dogfood / regulated repo), use `myco init --project [path]`.
 
 ## Upgrade path
 
@@ -123,7 +119,7 @@ Myco integrates with coding agents through **symbionts** — named for the mycor
 | [Cursor](https://cursor.com) | — | `.cursor/mcp.json` | `.cursor/skills/` | `autoApprove` | `.cursor/plans/` |
 | [Codex](https://github.com/openai/codex) | `.codex/hooks.json` | `.codex/config.toml` | `.agents/skills/` | — | — |
 | [VS Code Copilot](https://code.visualstudio.com/docs/copilot) | `.github/hooks/` | `.vscode/mcp.json` | `.agents/skills/` | `autoApprove` | — |
-| [Gemini CLI](https://geminicli.com) | `.gemini/settings.json` | `.gemini/settings.json` | `.agents/skills/` | `coreTools` | `.gemini/plans/` |
+| [Google Antigravity](https://antigravity.google) | `~/.gemini/config/plugins/myco/hooks.json` | `~/.gemini/config/plugins/myco/mcp_config.json` | `~/.gemini/config/plugins/myco/skills/` | plugin bundle | `.agents/plugins/myco/plans/` |
 | [Windsurf](https://windsurf.com) | `.windsurf/hooks.json` | — | `.agents/skills/` | `cascadeCommandsAllowList` | `~/.windsurf/plans/` |
 | [OpenCode](https://opencode.ai) | `.opencode/plugins/myco.ts` (plugin) | `opencode.json` (`mcp` key) | `.agents/skills/` | `permission.bash` | `.opencode/plans/` |
 | [Pi](https://github.com/badlogic/pi-mono) | `.pi/extensions/myco/index.ts` (extension) | via `pi.registerTool()` | `.agents/skills/` | — | `.pi/plans/` |

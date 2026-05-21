@@ -69,15 +69,18 @@ Hooks and MCP via JSON and TOML configuration. Skills via the `.agents/skills/` 
 | Skills | `.agents/skills/` (native) |
 | Auto-approve | `chat.tools.terminal.autoApprove` in `.vscode/settings.json` |
 
-### Gemini CLI
+### Google Antigravity
 
-All configuration shares a single file (`.gemini/settings.json`).
+Antigravity replaced the retired Gemini CLI. Configuration ships as a plugin bundle under `~/.gemini/config/plugins/myco/` (Antigravity reuses the `~/.gemini/` user-home directory). Existing Gemini sessions are remapped to `antigravity` automatically on schema v47.
 
 | Component | Location |
 |-----------|----------|
-| Hooks, MCP, auto-approve | `.gemini/settings.json` |
-| Skills | `.agents/skills/` (native) |
-| Plans | `.gemini/plans/` |
+| Hooks (workspace) | `.agents/plugins/myco/hooks.json` |
+| Hooks (global) | `~/.gemini/config/plugins/myco/hooks.json` |
+| MCP (workspace) | `.agents/plugins/myco/mcp_config.json` |
+| MCP (global) | `~/.gemini/config/plugins/myco/mcp_config.json` |
+| Skills (plugin) | `~/.gemini/config/plugins/myco/skills/` |
+| Plans | `.agents/plugins/myco/plans/` |
 
 ### Windsurf
 

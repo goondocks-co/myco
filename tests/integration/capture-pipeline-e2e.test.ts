@@ -36,7 +36,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
-import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
+import { TEST_REQUEST_CONTEXT, makeTestRequestContext } from '../helpers/request-context';
 import { createEventDispatcher } from '@myco/daemon/event-dispatch.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { PowerManager } from '@myco/daemon/power.js';
@@ -45,6 +45,8 @@ import { getSession } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listActivities, countActivities } from '@myco/db/queries/activities.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 
 function makeDispatcher() {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-capture-e2e-log-'));
@@ -264,7 +266,7 @@ function makeDispatcherWithRealReconciler(opts: { bufferDir: string; vaultDir?: 
     logger,
   });
   const sessionBuffers = new Map();
-  const reconciler = createReconciler({ bufferDir: opts.bufferDir, logger: logger as never, projectRoot: process.cwd() });
+  const reconciler = createReconciler({ bufferDirs: [opts.bufferDir], logger: logger as never, projectRoot: process.cwd() });
 
   const handler = createEventDispatcher({
     registry,
@@ -289,19 +291,54 @@ function makeDispatcherWithRealReconciler(opts: { bufferDir: string; vaultDir?: 
 
 describe('capture pipeline — mid-session restart replay', () => {
   let tmpBuffer: string;
+  let groveBoundCtx: ReturnType<typeof makeTestRequestContext>;
+  let savedMycoHome: string | undefined;
 
   beforeAll(() => { setupTestDb(); });
-  afterAll(() => { teardownTestDb(); });
+  afterAll(() => {
+    teardownTestDb();
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
+  });
   beforeEach(() => {
     cleanTestDb();
-    // Shared vault root across the two simulated daemons so the dispatcher's
-    // internal EventBuffer writes are visible to the reconciler at restart.
-    // bufferDir is the conventional <vaultRoot>/buffer subdir.
+    // Shared vault root across the two simulated daemons. Under the
+    // no-fallback buffer model, the dispatcher writes via the request
+    // context's (groveId, projectId) — so the test sets up a real Grove
+    // + registered project in an isolated MYCO_HOME and reads back the
+    // resolved buffer dir for `tmpBuffer`. Manual appendBuffer writes
+    // and reconciler reads both target this resolved path.
     const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-replay-vault-'));
-    fs.mkdirSync(path.join(vaultRoot, 'buffer'), { recursive: true });
-    tmpBuffer = path.join(vaultRoot, 'buffer');
+    const mycoHome = path.join(vaultRoot, 'home');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    savedMycoHome ??= process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    const grove = createGrove('replay-test', mycoHome);
+    const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'replay-test',
+      projectRoot: vaultRoot,
+    }, mycoHome);
+    tmpBuffer = resolveProjectBufferDir(grove.id, projectId, mycoHome);
+    fs.mkdirSync(tmpBuffer, { recursive: true });
+    groveBoundCtx = makeTestRequestContext({
+      groveId: grove.id,
+      projectId,
+      vaultDir: path.join(vaultRoot, '.myco'),
+    });
     (globalThis as Record<string, unknown>).__replayVaultRoot = vaultRoot;
   });
+
+  function postWithGroveCtx(handler: ReturnType<typeof makeDispatcherWithRealReconciler>['handler'], body: Record<string, unknown>) {
+    return handler({
+      requestContext: groveBoundCtx,
+      body,
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+  }
 
   it('mid-session daemon restart with no SessionStart re-fire does not lose buffer events or orphan activities', async () => {
     const sessionId = 'replay-incident-001';
@@ -313,13 +350,13 @@ describe('capture pipeline — mid-session restart replay', () => {
     };
 
     // ── Phase A: original daemon. Dispatcher's internal EventBuffer
-    //    writes to <vaultRoot>/buffer/, the same dir Phase B's reconciler
-    //    reads — exactly mirroring production layout. ──
+    //    writes to the Grove-resolved buffer dir under MYCO_HOME — the
+    //    same dir Phase B's reconciler reads. Mirrors production layout. ──
     const a = makeDispatcherWithRealReconciler({ bufferDir: tmpBuffer, vaultDir: vaultRoot });
     const transcriptPath = '/tmp/fake-transcript.jsonl';
-    await post(a.handler, { type: 'user_prompt', session_id: sessionId, agent, prompt: 'investigate the wedge', transcript_path: transcriptPath });
-    await post(a.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Read', tool_input: { file_path: '/x.ts' }, transcript_path: transcriptPath });
-    await post(a.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Bash', tool_input: { command: 'ls' }, transcript_path: transcriptPath });
+    await postWithGroveCtx(a.handler, { type: 'user_prompt', session_id: sessionId, agent, prompt: 'investigate the wedge', transcript_path: transcriptPath });
+    await postWithGroveCtx(a.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Read', tool_input: { file_path: '/x.ts' }, transcript_path: transcriptPath });
+    await postWithGroveCtx(a.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Bash', tool_input: { command: 'ls' }, transcript_path: transcriptPath });
 
     // Simulate the wedge — daemon stops responding. Production hooks keep
     // writing the buffer JSONL even when the POST fails, so events arrive
@@ -341,7 +378,7 @@ describe('capture pipeline — mid-session restart replay', () => {
     //   - the buffered prompt now exists as batch #2
     //   - the buffered tool_use now exists as activity attached to it
     //   - the post-restart tool_use also attaches to batch #2 (the open one)
-    await post(b.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Write', tool_input: { file_path: '/z.ts' }, transcript_path: '/tmp/fake-transcript.jsonl' });
+    await postWithGroveCtx(b.handler, { type: 'tool_use', session_id: sessionId, agent, tool_name: 'Write', tool_input: { file_path: '/z.ts' }, transcript_path: '/tmp/fake-transcript.jsonl' });
 
     // ── Assertions ──
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });

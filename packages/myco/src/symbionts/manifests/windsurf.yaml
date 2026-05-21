@@ -2,6 +2,7 @@ name: windsurf
 displayName: Windsurf
 binary: windsurf
 configDir: .windsurf
+detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 hookFields:
   sessionId: trajectory_id
@@ -12,7 +13,13 @@ capture:
     - ~/.windsurf/plans/
 registration:
   hooksTarget: .windsurf/hooks.json
+  globalHooksTarget: ~/.codeium/windsurf/hooks.json
+  # New capability — Windsurf MCP only available at the user-global location
+  # under ~/.codeium/windsurf/mcp_config.json. No project-local equivalent;
+  # mcpTarget omitted on purpose.
+  globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.codeium/windsurf/skills
   settingsTarget: .windsurf/settings.json
 capabilities:
   # Windsurf's bundled hook template does not currently register a

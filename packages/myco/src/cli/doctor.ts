@@ -415,8 +415,109 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkDaemon(vaultDir));
   checks.push(await checkService());
   checks.push(checkBinaryVersionSkew());
+  checks.push(await checkGlobalLaunchers());
+  checks.push(...await checkDetectedSymbionts());
+  checks.push(await checkMigrationStatus(vaultDir));
 
   return checks;
+}
+
+/**
+ * Global launcher health: `~/.myco/launcher.cjs` and
+ * `~/.myco/mcp-launcher.cjs` exist and are non-empty. Their absence is
+ * the signal that drives the daemon's first-start auto-bootstrap; once
+ * the daemon has come up at least once they must be present, so a
+ * missing launcher here is a real failure mode (recover via `myco init`).
+ */
+async function checkGlobalLaunchers(): Promise<DoctorCheck> {
+  const { resolveMycoHome } = await import('../grove/paths.js');
+  const mycoHome = resolveMycoHome();
+  const launcherPath = path.join(mycoHome, 'launcher.cjs');
+  const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+  const launcherOk = fs.existsSync(launcherPath) && fs.statSync(launcherPath).size > 0;
+  const mcpOk = fs.existsSync(mcpLauncherPath) && fs.statSync(mcpLauncherPath).size > 0;
+  if (launcherOk && mcpOk) {
+    return { name: 'Launchers', status: 'ok', detail: `${mycoHome}/launcher.cjs + mcp-launcher.cjs`, fixable: false };
+  }
+  return {
+    name: 'Launchers',
+    status: 'fail',
+    detail: 'Global launchers missing. Run `myco init` to re-write them.',
+    fixable: false,
+  };
+}
+
+/**
+ * Per-symbiont detection summary. One row per agent whose `detectionDir`
+ * is present, marked ok if Myco's global config is wired in.
+ */
+async function checkDetectedSymbionts(): Promise<DoctorCheck[]> {
+  const { loadManifests, resolvePackageRoot } = await import('../symbionts/detect.js');
+  const { SymbiontInstaller } = await import('../symbionts/installer.js');
+  const pkgRoot = resolvePackageRoot();
+  const rows: DoctorCheck[] = [];
+  for (const manifest of loadManifests()) {
+    const installer = new SymbiontInstaller(manifest, '/', pkgRoot, false, undefined, null, 'global');
+    if (!installer.isAvailableForScope()) continue;
+    rows.push({
+      name: rows.length === 0 ? 'Symbionts' : '',
+      status: 'ok',
+      detail: `${manifest.displayName} detected`,
+      fixable: false,
+    });
+  }
+  if (rows.length === 0) {
+    rows.push({
+      name: 'Symbionts',
+      status: 'warn',
+      detail: 'No coding agents detected on this machine.',
+      fixable: false,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Migration walker status. Reports the last pass's summary plus any
+ * per-project errors retained in the bounded audit log.
+ */
+async function checkMigrationStatus(vaultDir: string): Promise<DoctorCheck> {
+  try {
+    const { getDatabase } = await import('../db/client.js');
+    const { latestMigrationSummary, listMigrationErrors } = await import('../db/queries/migration-log.js');
+    const db = getDatabase();
+    const summary = latestMigrationSummary(db);
+    const errors = listMigrationErrors(db);
+    if (!summary && errors.length === 0) {
+      return { name: 'Migration', status: 'ok', detail: 'No migration walker passes yet (greenfield install).', fixable: false };
+    }
+    if (errors.length > 0) {
+      const names = errors.map((e) => e.affected_project_id ?? '<unknown>').join(', ');
+      return {
+        name: 'Migration',
+        status: 'fail',
+        detail: `${errors.length} project(s) with migration errors: ${names}`,
+        fixable: false,
+      };
+    }
+    if (summary) {
+      const details = JSON.parse(summary.details) as { projects_visited: number; projects_cleaned: number };
+      return {
+        name: 'Migration',
+        status: 'ok',
+        detail: `Last pass cleaned ${details.projects_cleaned}/${details.projects_visited} project(s).`,
+        fixable: false,
+      };
+    }
+    return { name: 'Migration', status: 'ok', detail: 'No issues recorded.', fixable: false };
+  } catch (err) {
+    return {
+      name: 'Migration',
+      status: 'warn',
+      detail: `Could not read migration log: ${err instanceof Error ? err.message : String(err)}`,
+      fixable: false,
+    };
+  }
 }
 
 /** Auto-repair fixable issues. Returns descriptions of actions taken. */

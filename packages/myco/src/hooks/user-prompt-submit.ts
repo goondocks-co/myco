@@ -4,7 +4,8 @@ import { readHookInput } from './input.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,11 +63,18 @@ export async function main() {
     // so "session not captured" investigations can rule out the hook layer
     // without comparing buffer-file mtimes against transcript mtimes.
     if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
-      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
-      buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
-      process.stderr.write(
-        `[myco] user-prompt-submit buffered (${classifyBufferFallback(eventResult)}) session=${sessionId}\n`,
-      );
+      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
+      if (location) {
+        const buffer = new EventBuffer(location.bufferDir, sessionId);
+        buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
+        process.stderr.write(
+          `[myco] user-prompt-submit buffered (${classifyBufferFallback(eventResult)}) session=${sessionId}\n`,
+        );
+      } else {
+        process.stderr.write(
+          `[myco] user-prompt-submit dropped (project-not-registered) session=${sessionId}\n`,
+        );
+      }
     }
 
     const contextResult = await client.post('/context/prompt', {

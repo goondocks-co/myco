@@ -2,6 +2,7 @@ name: claude-code
 displayName: Claude Code
 binary: claude
 configDir: .claude
+detectionDir: ~/.claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
 resumeCommand: "claude --resume {sessionId}"
@@ -157,8 +158,11 @@ capture:
     interruptMarker: "[Request interrupted by user for tool use]"
 registration:
   hooksTarget: .claude/settings.json
+  globalHooksTarget: ~/.claude/settings.json
   mcpTarget: .mcp.json
+  globalMcpTarget: ~/.claude/settings.json
   skillsTarget: .claude/skills
+  globalSkillsTarget: ~/.claude/skills
   settingsTarget: .claude/settings.json
   instructionsFile: CLAUDE.md
 capabilities:

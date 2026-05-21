@@ -20,6 +20,9 @@ import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.
 import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
+import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
+import { runGlobalBootstrap } from '../cli/bootstrap.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -94,7 +97,7 @@ import { createSessionContextHandler, createPromptContextHandler, createResumeCo
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
-import { handleListSymbionts } from './api/symbionts.js';
+import { handleListSymbionts, handleDetectSymbionts } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
 import {
@@ -595,6 +598,12 @@ export async function main(): Promise<void> {
     env: process.env,
   });
   setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
+  // Bind the daemon's service state so any in-process call to
+  // `installGlobalLaunchers` (from `runGlobalBootstrap`, /api/symbionts/
+  // detect, or the PowerManager tick) raises the `refresh-launchers`
+  // intent instead of writing directly. Single self-mutation thread.
+  const { bindDaemonForLauncherRefresh } = await import('../grove/launcher-install.js');
+  bindDaemonForLauncherRefresh(daemonService);
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -994,16 +1003,63 @@ export async function main(): Promise<void> {
     ),
   });
 
-  const bufferDir = path.join(bootstrapVaultDir, 'buffer');
+  // Every registered project's buffer dir under the global Grove tree.
+  // No legacy bootstrap path — there is exactly one canonical home for a
+  // project's buffer, and the reconciler scans those and only those.
+  const bufferDirs = listAllProjectBufferDirs();
   const sessionBuffers = new Map<string, EventBuffer>();
 
-  const reconciler = createReconciler({ bufferDir, logger, projectRoot });
+  const reconciler = createReconciler({ bufferDirs, logger, projectRoot });
   reconciler.runStartupReconciliation();
 
   // Runtime migration tasks (vector reindex, file rewrites, etc.) — idempotent,
   // gated by the migration_tasks ledger in the DB so each task runs once per
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
+
+  // First-start auto-bootstrap. Signal: the global launcher is absent
+  // from `~/.myco/`. When fired, write the launchers and run a symbiont
+  // detection pass so every installed agent on the machine gets Myco
+  // wired into its user-global config without the user touching the
+  // CLI. Idempotent — subsequent daemon starts skip immediately.
+  // PowerManager tick (Step 7) handles re-detection thereafter.
+  try {
+    const mycoHome = resolveMycoHome();
+    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    if (!fs.existsSync(launcherPath)) {
+      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap — launchers absent', {
+        myco_home: mycoHome,
+      });
+      const result = runGlobalBootstrap();
+      const installed = result.symbionts.filter((r) => r.status === 'installed');
+      const notDetected = result.symbionts.filter((r) => r.status === 'not-detected');
+      const errored = result.symbionts.filter((r) => r.status === 'error');
+      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap complete', {
+        launchers_written: result.launchers.written.length,
+        symbionts_installed: installed.length,
+        symbionts_not_detected: notDetected.length,
+        symbionts_errored: errored.length,
+        installed_names: installed.map((r) => r.symbiont),
+        projects_cleaned: result.migration.projectsCleaned,
+        projects_errored: result.migration.projectsErrored,
+      });
+      // Persist the migration pass to the bounded audit log so doctor
+      // can surface any per-project errors. Same code path the
+      // PowerManager tick uses.
+      try {
+        const { recordMigrationPass } = await import('../db/queries/migration-log.js');
+        recordMigrationPass(getDatabase(), result.migration);
+      } catch (err) {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Migration audit log write failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  } catch (err) {
+    logger.error(LOG_KINDS.DAEMON_START, 'First-start global bootstrap failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // --- Stop processor (created early so triggerTitleSummary is available to /events route) ---
   const stopProcessor = createStopProcessor({
@@ -1085,6 +1141,10 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/symbionts', async (req) => handleListSymbionts(
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+    req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+  ));
+  server.registerRoute('POST', '/api/symbionts/detect', async (req) => handleDetectSymbionts(
     req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
     req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
   ));

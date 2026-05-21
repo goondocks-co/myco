@@ -2,7 +2,8 @@ import { createHookDaemonClient } from './client.js';
 import { classifyBufferFallback } from './send-event.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
 import fs from 'node:fs';
@@ -34,7 +35,14 @@ export async function main() {
     });
 
     if (!result.ok) {
-      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
+      if (!location) {
+        process.stderr.write(
+          `[myco] post-tool-use dropped (project-not-registered) session=${sessionId}\n`,
+        );
+        return;
+      }
+      const buffer = new EventBuffer(location.bufferDir, sessionId);
       buffer.append({
         type: 'tool_use',
         tool_name: input.toolName,

@@ -149,14 +149,14 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });
 
-  it('gemini manifest has registration with shared settings target', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+  it('antigravity manifest has registration with plugin-bundle layout', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.registration).toBeDefined();
-    expect(manifest.registration!.hooksTarget).toBe('.gemini/settings.json');
-    expect(manifest.registration!.mcpTarget).toBe('.gemini/settings.json');
-    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.hooksTarget).toBe('.agents/plugins/myco/hooks.json');
+    expect(manifest.registration!.mcpTarget).toBe('.agents/plugins/myco/mcp_config.json');
+    expect(manifest.registration!.skillsTarget).toBe('.agents/plugins/myco/skills');
+    expect(manifest.registration!.globalHooksTarget).toBe('~/.gemini/config/plugins/myco/hooks.json');
   });
 
   it('windsurf manifest has registration without mcpTarget', () => {
@@ -169,10 +169,10 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.settingsTarget).toBe('.windsurf/settings.json');
   });
 
-  it('gemini manifest has planDirs configured', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+  it('antigravity manifest has planDirs configured', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.capture?.planDirs).toEqual(['.gemini/plans/']);
+    expect(manifest.capture?.planDirs).toEqual(['.agents/plugins/myco/plans/']);
   });
 
   it('accepts planTags array in capture block', () => {

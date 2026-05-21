@@ -4,7 +4,8 @@ import { createHookDaemonClient, isIgnoredEventResponse } from './client.js';
 import { type NormalizedHookInput } from './normalize.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,7 +64,20 @@ export async function sendEvent(
 
     // Buffer on transport failure OR server-side `ignored` so reconcile can replay it.
     if (!result.ok || isIgnoredEventResponse(result.data)) {
-      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      // Project must be registered globally to receive a buffered write.
+      // No fallback location: Grove migration taught us that "if not in
+      // global, fall back to project-local" silently produces divergent
+      // state. Auto-registration on first hook (Step 13) covers live
+      // capture; until that lands, a daemon-unreachable hit on a
+      // pre-register project drops with a visible stderr trace.
+      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
+      if (!location) {
+        process.stderr.write(
+          `[myco] ${hookName} dropped (project-not-registered) session=${sessionId}\n`,
+        );
+        return;
+      }
+      const buffer = new EventBuffer(location.bufferDir, sessionId);
       buffer.append(eventWithContext);
       // Stderr log so "session not captured" investigations can see the
       // buffer-fallback path firing — previously this was completely silent,

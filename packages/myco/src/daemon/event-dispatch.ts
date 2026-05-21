@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
+import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -352,12 +353,28 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       }
     }
 
-    // Persist to disk so events survive daemon restarts
+    // Persist to disk so events survive daemon restarts. The buffer lives
+    // under the owning project's Grove dir, resolved from the bound
+    // request context. There is NO fallback location — request context
+    // missing either id means we can't safely route the buffer to its
+    // owning project, and silently writing to a substitute path is the
+    // bug class we kept rediscovering through Grove migration regressions.
+    // Skip the buffer write and log it; the event still flows through the
+    // live DB path above.
     if (!sessionBuffers.has(event.session_id)) {
-      const bufferDir = path.join(vaultDir, 'buffer');
-      sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
+      const ctx = req.requestContext;
+      if (!ctx?.groveId || !ctx?.projectId) {
+        logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Skipping buffer write — request context missing grove/project ids', {
+          session_id: event.session_id,
+          has_grove: !!ctx?.groveId,
+          has_project: !!ctx?.projectId,
+        });
+      } else {
+        const bufferDir = resolveProjectBufferDir(ctx.groveId, ctx.projectId);
+        sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
+      }
     }
-    sessionBuffers.get(event.session_id)!.append(event);
+    sessionBuffers.get(event.session_id)?.append(event);
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {

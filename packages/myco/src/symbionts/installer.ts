@@ -1,6 +1,9 @@
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { installGlobalLaunchers } from '../grove/launcher-install.js';
+import { expandHome } from '../grove/paths.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlSectionKeys } from './toml-helpers.js';
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
@@ -100,6 +103,7 @@ const CURSOR_PROJECT_ROOT_CD =
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
 
+
 /** Start/end markers for the reference block prepended to existing instruction files. */
 const INSTRUCTIONS_REF_START = '<!-- myco:agents-ref:start -->';
 const INSTRUCTIONS_REF_END = '<!-- myco:agents-ref:end -->';
@@ -124,6 +128,45 @@ export interface InstallResult {
   pluginPackage: boolean;
 }
 
+export type InstallScope = 'project' | 'global';
+
+/**
+ * Per-scope capability switch. Centralizes the "which operations run
+ * under which scope" decision so it lives in one declarative table
+ * instead of scattered `if (installScope === 'global')` guards through
+ * every install / uninstall method.
+ *
+ * Project scope: full project-content management (AGENTS.md stub,
+ * .gitignore, instruction files), per-project launcher writes, and a
+ * canonical-symlink skills layer.
+ *
+ * Global scope: project-content surfaces are skipped (the install
+ * doesn't touch the project tree), the hook guard becomes the shared
+ * `~/.myco/launcher.cjs` + `mcp-launcher.cjs`, skills symlink directly
+ * into the agent's globalSkillsTarget, and plugin package deps are
+ * irrelevant.
+ */
+interface ScopeCapabilities {
+  agentsMd: boolean;
+  gitignore: boolean;
+  instructions: boolean;
+  pluginPackage: boolean;
+  globalLauncher: boolean;
+  flatSkills: boolean;
+  detectionGate: boolean;
+}
+
+const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
+  project: {
+    agentsMd: true, gitignore: true, instructions: true, pluginPackage: true,
+    globalLauncher: false, flatSkills: false, detectionGate: false,
+  },
+  global: {
+    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
+    globalLauncher: true, flatSkills: true, detectionGate: true,
+  },
+};
+
 export class SymbiontInstaller {
   /**
    * `vaultDir` defaults to `<projectRoot>/.myco` for ordinary installs.
@@ -134,6 +177,20 @@ export class SymbiontInstaller {
   private readonly vaultDir: string;
   /** Grove id for config loading — undefined triggers a dev-mode warning. */
   private readonly groveId: string | null | undefined;
+  /**
+   * Scope governs *which operations execute* and *where files land*.
+   *
+   *   - `'project'`: today's behavior. Files write under `projectRoot`;
+   *     project-content surfaces (AGENTS.md, `.gitignore`, instruction
+   *     stubs) are managed in step.
+   *   - `'global'`: user-global install. Target paths come from each
+   *     manifest's `global*Target` fields; project-content surfaces are
+   *     skipped entirely; the hook guard is replaced by the absolute-path
+   *     launchers at `~/.myco/launcher.cjs` + `~/.myco/mcp-launcher.cjs`.
+   *     A detection gate refuses to install when the agent's
+   *     `manifest.detectionDir` does not exist on disk.
+   */
+  private readonly installScope: InstallScope;
 
   constructor(
     private manifest: SymbiontManifest,
@@ -145,9 +202,104 @@ export class SymbiontInstaller {
     private suppressBundledTemplates: boolean = false,
     vaultDir?: string,
     groveId?: string | null,
+    installScope: InstallScope = 'project',
   ) {
     this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
     this.groveId = groveId;
+    this.installScope = installScope;
+  }
+
+  /** Capability switch for the active scope. */
+  private get capabilities(): ScopeCapabilities {
+    return SCOPE_CAPABILITIES[this.installScope];
+  }
+
+  /**
+   * Absolute path for a manifest target field, resolved by scope:
+   *
+   *   - `'project'` joins the project-relative manifest field
+   *     (`reg.hooksTarget`, etc.) onto `projectRoot`.
+   *   - `'global'` expands `~` in the corresponding `globalXxxTarget`
+   *     field. Returns `null` when the manifest declares no global
+   *     surface for that field (explicit `null` per Decision 7).
+   */
+  private resolveAbsoluteTarget(field: 'hooks' | 'mcp' | 'skills' | 'settings'): string | null {
+    const reg = this.manifest.registration;
+    if (!reg) return null;
+    if (this.installScope === 'global') {
+      // No `globalSettingsTarget` on manifests — settings under the
+      // global install are merged into the same file as hooks (Claude
+      // Code's `~/.claude/settings.json`, Codex's `~/.codex/config.toml`,
+      // etc.). Settings-merge handles the marker-bounded shared write.
+      const target = field === 'hooks' ? reg.globalHooksTarget
+        : field === 'mcp' ? reg.globalMcpTarget
+        : field === 'skills' ? reg.globalSkillsTarget
+        : reg.globalHooksTarget;
+      if (!target) return null;
+      return expandHome(target);
+    }
+    const target = field === 'hooks' ? reg.hooksTarget
+      : field === 'mcp' ? reg.mcpTarget
+      : field === 'skills' ? reg.skillsTarget
+      : reg.settingsTarget;
+    if (!target) return null;
+    return path.join(this.projectRoot, target);
+  }
+
+  /**
+   * Whether Myco is currently configured for this symbiont under the
+   * active scope. Inspects the agent's hooks file using the same
+   * marker logic the installer uses to write the block: a JSON
+   * settings file contains a hook group flagged by `isMycoHookGroup`,
+   * or a plugin-file template contains the `MYCO_PLUGIN_FILE_MARKER`.
+   *
+   * Pattern: the answer to "is Myco configured here?" lives in the
+   * same module that owns marker semantics — substring-scanning the
+   * file from elsewhere drifts the moment markers change.
+   */
+  isConfigured(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.hooksTarget) return false;
+    const targetPath = this.resolveAbsoluteTarget('hooks');
+    if (!targetPath) return false;
+    try {
+      const raw = fs.readFileSync(targetPath, 'utf-8');
+      if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
+        return raw.includes(MYCO_PLUGIN_FILE_MARKER);
+      }
+      const parsed = JSON.parse(raw) as { hooks?: Record<string, unknown[]> };
+      const hooks = parsed.hooks ?? {};
+      for (const groups of Object.values(hooks)) {
+        for (const group of groups as Array<Record<string, unknown>>) {
+          if (isMycoHookGroup(group)) return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Detection gate for the global install. Returns false when the agent
+   * isn't installed on this machine (its declared `detectionDir` is
+   * absent) — the installer should silently skip rather than create the
+   * agent's config dir on its behalf (Decision 7's "never create the
+   * agent's dir" rule).
+   *
+   * Always returns true for `installScope: 'project'` — project-local
+   * installs are explicitly opted into by `myco init --project`, so the
+   * gate doesn't apply.
+   */
+  isAvailableForScope(): boolean {
+    if (this.installScope !== 'global') return true;
+    const dir = this.manifest.detectionDir;
+    if (!dir) return false;
+    try {
+      return fs.statSync(expandHome(dir)).isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -185,7 +337,10 @@ export class SymbiontInstaller {
       if (fs.readFileSync(absPath, 'utf-8') === content) return false;
     } catch { /* doesn't exist — proceed */ }
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(absPath, content, 'utf-8');
+    // Atomic write so a torn write to a shared user-home agent config
+    // (under `installScope: 'global'`) can never leave the file
+    // half-written. Same discipline as launcher-install.ts.
+    atomicWriteFileSync(absPath, content);
     return true;
   }
 
@@ -202,7 +357,18 @@ export class SymbiontInstaller {
    */
   installHookGuard(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.hooksTarget) return false;
+    if (!reg?.hooksTarget && !this.capabilities.globalLauncher) return false;
+
+    if (this.capabilities.globalLauncher) {
+      // Global launcher path: the absolute-path launchers at
+      // `~/.myco/launcher.cjs` and `~/.myco/mcp-launcher.cjs` replace
+      // the project-local `.agents/myco-run.cjs` / `myco-cli.cjs`.
+      // `installGlobalLaunchers()` is idempotent and shared across every
+      // symbiont's global install — the first symbiont's install pass
+      // writes them; subsequent passes see content matches and skip.
+      const report = installGlobalLaunchers();
+      return report.written.length > 0;
+    }
 
     const guardTemplate = this.readTemplateFile(HOOK_GUARD_TEMPLATE_FILENAME);
     if (!guardTemplate) return false;
@@ -232,7 +398,12 @@ export class SymbiontInstaller {
    */
   uninstallHookGuard(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.hooksTarget) return false;
+    if (!reg?.hooksTarget && !this.capabilities.globalLauncher) return false;
+
+    // Global launcher path: the launchers are shared across every symbiont,
+    // so a per-symbiont uninstall must NOT remove them — that's `myco
+    // remove`'s job (Step 15). No-op here.
+    if (this.capabilities.globalLauncher) return false;
 
     let removed = false;
     for (const relPath of [HOOK_GUARD_PROJECT_PATH, CLI_LAUNCHER_PROJECT_PATH, LEGACY_HOOK_GUARD_PATH]) {
@@ -263,8 +434,20 @@ export class SymbiontInstaller {
   /** Run all registration steps. */
   install(): InstallResult {
     const reg = this.manifest.registration;
-    this.reconcileAgentsMd();
-    // Install hook guard before hooks so the guard script is in place when hooks reference it
+    if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
+      // Agent isn't installed on this machine — skip silently, never
+      // create the agent's config dir on its behalf.
+      return {
+        hooks: false, mcp: false, skills: false, settings: false,
+        instructions: false, pluginPackage: false,
+      };
+    }
+    // Project-content surfaces (AGENTS.md, .gitignore, instruction stubs)
+    // are intentionally project-scope-only — they live in the repo tree.
+    if (this.capabilities.agentsMd) this.reconcileAgentsMd();
+    // Install hook guard before hooks so the guard script is in place when hooks reference it.
+    // Write-ordering invariant: launchers MUST land before any agent's
+    // global config is updated to reference them.
     this.installHookGuard();
     // One-time migration: sweep legacy MYCO_CMD / myco-run entries that
     // the pre-runtime.command dispatch pattern wrote into symbiont config
@@ -278,10 +461,10 @@ export class SymbiontInstaller {
           mcp: this.installMcp(),
           skills: this.installSkills(),
           settings: this.installSettings(),
-          instructions: this.installInstructions(),
+          instructions: this.capabilities.instructions ? this.installInstructions() : false,
           pluginPackage: this.installPluginPackage(),
         };
-    this.updateGitignore();
+    if (this.capabilities.gitignore) this.updateGitignore();
     return result;
   }
 
@@ -368,7 +551,7 @@ export class SymbiontInstaller {
     if (!reg) return;
 
     if (reg.settingsTarget) {
-      const settingsPath = path.join(this.projectRoot, reg.settingsTarget);
+      const settingsPath = this.resolveAbsoluteTarget("settings")!;
       const format = reg.settingsFormat ?? 'json';
       if (format === 'toml') {
         this.stripLegacyFromToml(settingsPath);
@@ -381,7 +564,7 @@ export class SymbiontInstaller {
       // MCP server env blocks — cursor writes MYCO_CMD here under
       // `mcp.myco.env` / `mcpServers.myco.env`. TOML MCP targets live
       // inside the same config.toml already handled above.
-      this.stripLegacyFromJson(path.join(this.projectRoot, reg.mcpTarget));
+      this.stripLegacyFromJson(this.resolveAbsoluteTarget("mcp")!);
     }
   }
 
@@ -503,7 +686,7 @@ export class SymbiontInstaller {
    * Single read → apply all transforms in memory → single write.
    */
   private installBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
-    const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
+    const targetPath = this.resolveAbsoluteTarget("hooks")!;
     let data = readJsonFile(targetPath);
     let hooks = false, mcp = false, settings = false;
 
@@ -567,12 +750,12 @@ export class SymbiontInstaller {
           mcp: this.uninstallMcp(),
           skills: this.uninstallSkills(),
           settings: this.uninstallSettings(),
-          instructions: this.uninstallInstructions(),
+          instructions: this.capabilities.instructions ? this.uninstallInstructions() : false,
           pluginPackage: false,
         };
     // Remove hook guard after hooks/settings so the file is cleaned up last
     this.uninstallHookGuard();
-    this.cleanGitignore();
+    if (this.capabilities.gitignore) this.cleanGitignore();
     return result;
   }
 
@@ -580,7 +763,7 @@ export class SymbiontInstaller {
    * Batched uninstall for agents where hooks, MCP, and settings share one JSON file.
    */
   private uninstallBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
-    const targetPath = path.join(this.projectRoot, reg.hooksTarget ?? reg.mcpTarget ?? reg.settingsTarget!);
+    const targetPath = this.resolveAbsoluteTarget("hooks")!;
     const data = readJsonFile(targetPath);
     if (Object.keys(data).length === 0) {
       return {
@@ -711,7 +894,7 @@ export class SymbiontInstaller {
         // Remove from start marker through end marker + trailing whitespace
         const afterEnd = endIdx + INSTRUCTIONS_REF_END.length;
         const cleaned = (content.slice(0, startIdx) + content.slice(afterEnd)).replace(/^\n+/, '');
-        fs.writeFileSync(targetPath, cleaned, 'utf-8');
+        atomicWriteFileSync(targetPath, cleaned);
         return true;
       }
     }
@@ -742,12 +925,12 @@ export class SymbiontInstaller {
     for (const name of staleSkillNames) {
       try { fs.unlinkSync(path.join(canonicalDir, name)); } catch { /* doesn't exist */ }
       if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-        try { fs.unlinkSync(path.join(this.projectRoot, reg.skillsTarget, name)); } catch { /* doesn't exist */ }
+        try { fs.unlinkSync(path.join(this.resolveAbsoluteTarget("skills")!, name)); } catch { /* doesn't exist */ }
       }
     }
 
     if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-      try { fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget)); } catch { /* not empty or missing */ }
+      try { fs.rmdirSync(this.resolveAbsoluteTarget("skills")!); } catch { /* not empty or missing */ }
     }
     try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
   }
@@ -853,7 +1036,18 @@ export class SymbiontInstaller {
     if (!rawTemplate) return false;
     const template = this.resolveHookTemplatePlaceholders(rawTemplate);
 
-    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+    const targetPath = this.resolveAbsoluteTarget("hooks")!;
+    // Defensive: writeJsonFile would silently overwrite a TOML file with
+    // JSON, corrupting the user's mcp_servers / profiles / etc. We don't
+    // currently support TOML hook merging, so refuse loudly rather than
+    // produce a divergent-state failure mode.
+    if (targetPath.endsWith('.toml')) {
+      throw new Error(
+        `Refusing to write JSON hooks to a TOML target: ${targetPath} ` +
+        `(manifest ${this.manifest.name}). Point hooksTarget / globalHooksTarget ` +
+        `at a .json file or add explicit TOML hook merging support.`,
+      );
+    }
     const settings = readJsonFile(targetPath);
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
 
@@ -879,8 +1073,7 @@ export class SymbiontInstaller {
     if (reg.hooksConfigVersion !== undefined) {
       settings.version = reg.hooksConfigVersion;
     }
-    writeJsonFile(targetPath, settings);
-    return true;
+    return writeJsonFile(targetPath, settings);
   }
 
   /**
@@ -921,13 +1114,18 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
 
-    const templateContent = this.loadTemplateRaw('plugin.ts');
+    // Most plugin-file symbionts ship a TS plugin under `plugin.ts`
+    // (opencode, pi). Antigravity's bundle layout differs — its hook config
+    // is a verbatim `hooks.json` file inside the bundle — so the manifest
+    // can declare an alternate template filename via `hooksTemplateFile`.
+    const templateFile = reg.hooksTemplateFile ?? 'plugin.ts';
+    const templateContent = this.loadTemplateRaw(templateFile);
     if (templateContent === null) return false;
 
     const resolved = this.injectSharedPluginHelpers(templateContent);
 
     return this.writeManagedFile(
-      path.join(this.projectRoot, reg.hooksTarget),
+      this.resolveAbsoluteTarget("hooks")!,
       resolved,
     );
   }
@@ -973,7 +1171,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.hooksTarget) return false;
 
-    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+    const targetPath = this.resolveAbsoluteTarget("hooks")!;
     let content: string;
     try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
 
@@ -996,6 +1194,9 @@ export class SymbiontInstaller {
   private installPluginPackage(): boolean {
     const reg = this.manifest.registration;
     if (!reg?.pluginPackageTarget) return false;
+    // Plugin deps package.json is a project-local concept (e.g.
+    // opencode's `.opencode/package.json` for Bun-installed deps).
+    if (!this.capabilities.pluginPackage) return false;
 
     const templateContent = this.loadTemplateRaw('package.json');
     if (templateContent === null) return false;
@@ -1017,7 +1218,7 @@ export class SymbiontInstaller {
     const template = this.buildMcpTemplate(this.loadTemplate('mcp'));
     if (!template) return false;
 
-    const targetPath = path.join(this.projectRoot, reg.mcpTarget);
+    const targetPath = this.resolveAbsoluteTarget("mcp")!;
     if (reg.mcpFormat === 'toml') {
       return this.installMcpToml(targetPath, template);
     }
@@ -1076,8 +1277,7 @@ export class SymbiontInstaller {
     }
 
     config[serversKey] = servers;
-    writeJsonFile(targetPath, config);
-    return true;
+    return writeJsonFile(targetPath, config);
   }
 
   /** Write MCP servers to a TOML config file. */
@@ -1090,7 +1290,7 @@ export class SymbiontInstaller {
     }
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, raw, 'utf-8');
+    atomicWriteFileSync(targetPath, raw);
     return true;
   }
 
@@ -1101,14 +1301,30 @@ export class SymbiontInstaller {
    */
   installSkills(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.skillsTarget) return false;
+    if (this.capabilities.flatSkills) {
+      if (!reg?.globalSkillsTarget) return false;
+    } else if (!reg?.skillsTarget) {
+      return false;
+    }
 
     const skillNames = this.listSkillDirs();
     if (skillNames.length === 0) return false;
 
-    this.cleanupLegacySkillSymlinks(skillNames);
-
     const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
+    const agentSkillsDir = this.resolveAbsoluteTarget("skills")!;
+
+    if (this.capabilities.flatSkills) {
+      // No canonical-symlink layer under global scope — the `.agents/skills/`
+      // cross-agent dir is a project-local convention. Symlink each skill
+      // directly under the agent's globalSkillsTarget.
+      fs.mkdirSync(agentSkillsDir, { recursive: true });
+      for (const name of skillNames) {
+        ensureSymlink(path.join(agentSkillsDir, name), path.join(skillsSrc, name));
+      }
+      return true;
+    }
+
+    this.cleanupLegacySkillSymlinks(skillNames);
 
     // Create canonical symlinks: .agents/skills/<name> -> package skills
     const canonicalDir = path.join(this.projectRoot, CANONICAL_SKILLS_DIR);
@@ -1121,7 +1337,6 @@ export class SymbiontInstaller {
     }
 
     // Create agent-specific symlinks if skillsTarget differs from canonical
-    const agentSkillsDir = path.join(this.projectRoot, reg.skillsTarget);
     const canonicalRel = path.relative(agentSkillsDir, canonicalDir);
 
     if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
@@ -1149,7 +1364,7 @@ export class SymbiontInstaller {
     const template = this.loadTemplate('settings');
     if (!template) return false;
 
-    const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const targetPath = this.resolveAbsoluteTarget("settings")!;
     const settingsFormat = reg.settingsFormat ?? 'json';
 
     if (settingsFormat === 'toml') {
@@ -1158,8 +1373,7 @@ export class SymbiontInstaller {
 
     const existing = readJsonFile(targetPath);
     const merged = deepMergeSettings(existing, template);
-    writeJsonFile(targetPath, merged);
-    return true;
+    return writeJsonFile(targetPath, merged);
   }
 
   /**
@@ -1179,7 +1393,7 @@ export class SymbiontInstaller {
     }
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, raw, 'utf-8');
+    atomicWriteFileSync(targetPath, raw);
     return true;
   }
 
@@ -1196,7 +1410,7 @@ export class SymbiontInstaller {
     const template = this.loadTemplate('settings');
     if (!template) return false;
 
-    const targetPath = path.join(this.projectRoot, reg.settingsTarget);
+    const targetPath = this.resolveAbsoluteTarget("settings")!;
     const settingsFormat = reg.settingsFormat ?? 'json';
 
     if (settingsFormat === 'toml') {
@@ -1240,7 +1454,7 @@ export class SymbiontInstaller {
     if (!raw.trim()) {
       try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     } else {
-      fs.writeFileSync(targetPath, raw, 'utf-8');
+      atomicWriteFileSync(targetPath, raw);
     }
     return true;
   }
@@ -1257,7 +1471,7 @@ export class SymbiontInstaller {
 
     if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) return this.uninstallPluginHookFile();
 
-    const targetPath = path.join(this.projectRoot, reg.hooksTarget);
+    const targetPath = this.resolveAbsoluteTarget("hooks")!;
     const settings = readJsonFile(targetPath);
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
     if (Object.keys(existingHooks).length === 0) return false;
@@ -1287,7 +1501,7 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return false;
 
-    const targetPath = path.join(this.projectRoot, reg.mcpTarget);
+    const targetPath = this.resolveAbsoluteTarget("mcp")!;
     if (reg.mcpFormat === 'toml') {
       return this.uninstallMcpToml(targetPath);
     }
@@ -1329,7 +1543,7 @@ export class SymbiontInstaller {
     if (!updated.trim()) {
       try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
     } else {
-      fs.writeFileSync(targetPath, updated + '\n', 'utf-8');
+      atomicWriteFileSync(targetPath, updated + "\n");
     }
     return true;
   }
@@ -1347,11 +1561,11 @@ export class SymbiontInstaller {
     // Remove agent-specific symlinks
     if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
       for (const name of skillNames) {
-        const link = path.join(this.projectRoot, reg.skillsTarget, name);
+        const link = path.join(this.resolveAbsoluteTarget("skills")!, name);
         try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
       }
       // Remove agent skills dir if now empty (rmdirSync fails atomically if non-empty)
-      try { fs.rmdirSync(path.join(this.projectRoot, reg.skillsTarget)); } catch { /* not empty or missing */ }
+      try { fs.rmdirSync(this.resolveAbsoluteTarget("skills")!); } catch { /* not empty or missing */ }
     }
 
     // Remove canonical symlinks

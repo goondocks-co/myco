@@ -2,6 +2,7 @@ name: opencode
 displayName: OpenCode
 binary: opencode
 configDir: .opencode
+detectionDir: ~/.config/opencode
 pluginRootEnvVar: OPENCODE_PLUGIN_ROOT
 resumeCommand: "opencode --session {sessionId}"
 hookFields:
@@ -15,14 +16,18 @@ capture:
 registration:
   # Hooks are delivered as a verbatim TS plugin file, not a JSON merge
   hooksTarget: .opencode/plugins/myco.ts
+  # User-global opencode plugin lives under ~/.config/opencode/plugins/
+  globalHooksTarget: ~/.config/opencode/plugins/myco.ts
   hooksFormat: plugin-file
   # .opencode/package.json declares the plugin SDK dep so opencode's Bun installs it at startup
   pluginPackageTarget: .opencode/package.json
   # opencode.json hosts MCP + permissions under non-standard keys
   mcpTarget: opencode.json
+  globalMcpTarget: ~/.config/opencode/opencode.json
   mcpServersKey: mcp
   settingsTarget: opencode.json
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.config/opencode/skills
   # No instructionsFile — opencode reads AGENTS.md natively
 capabilities:
   sessionStartInjection: true

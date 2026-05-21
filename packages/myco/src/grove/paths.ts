@@ -180,6 +180,48 @@ export function resolveGroveRootsPath(groveId: string, mycoHome = resolveMycoHom
   return path.join(resolveGroveRegistryDir(groveId, mycoHome), GROVE_ROOTS_FILENAME);
 }
 
+/**
+ * `~/.myco/groves/<groveId>/projects/<projectId>/` — the project-scoped
+ * directory under its owning Grove. Hosts per-project artifacts that used to
+ * live in `<projectRoot>/.myco/` (the capture buffer initially; archive
+ * markers, per-project audit files later) so they ride with the Grove rather
+ * than the project tree.
+ *
+ * Both `groveId` and `projectId` flow through their brand asserters before
+ * being joined — Grove-id and project-id traversal attempts (`..`, absolute
+ * paths) are rejected structurally, the same defense-in-depth as the other
+ * Grove path resolvers.
+ */
+export function resolveGroveProjectDir(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): string {
+  return path.join(
+    resolveGroveDir(groveId, mycoHome),
+    'projects',
+    assertGroveEraId(projectId, 'project'),
+  );
+}
+
+/**
+ * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/` — global home for
+ * a project's capture buffer files. One buffer dir per project (the legacy
+ * `<projectRoot>/.myco/buffer/` shape carried over to the global tree).
+ *
+ * Hooks and the daemon's event dispatcher both write here; the reconciler
+ * walks each registered project's buffer dir at startup. The legacy
+ * project-local path remains as a read-side fallback during the brownfield
+ * migration window.
+ */
+export function resolveProjectBufferDir(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): string {
+  return path.join(resolveGroveProjectDir(groveId, projectId, mycoHome), 'buffer');
+}
+
 export function resolveProjectVaultDir(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), '.myco');
 }
@@ -215,8 +257,22 @@ export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): strin
   return path.join(mycoHome, MACHINE_RUNTIME_TMP_DIRNAME);
 }
 
-function expandHome(value: string, homeDir = os.homedir()): string {
-  if (value === '~') return homeDir;
-  if (value.startsWith(`~${path.sep}`)) return path.join(homeDir, value.slice(2));
+/**
+ * Expand a leading `~` to the user's home dir. Pure path-string helper.
+ *
+ * Reads `$HOME` first so tests that override the home dir via
+ * `process.env.HOME` actually take effect — Bun's `os.homedir()` resolves
+ * via `getpwuid_r()` and IGNORES `$HOME` set after process launch, which
+ * would otherwise let test pollution from the developer's real `~/...`
+ * leak into a tmp-dir scoped test.
+ *
+ * Single source of truth for the entire codebase — every `globalXxxTarget`
+ * resolver, every doctor check, every API handler that touches a
+ * `~/...` literal funnels through this.
+ */
+export function expandHome(value: string, homeDir?: string): string {
+  const home = homeDir ?? process.env.HOME ?? os.homedir();
+  if (value === '~') return home;
+  if (value.startsWith(`~${path.sep}`)) return path.join(home, value.slice(2));
   return value;
 }

@@ -1,0 +1,64 @@
+name: antigravity
+displayName: Google Antigravity
+binary: antigravity
+configDir: .agents/plugins/myco
+# Antigravity uses the same ~/.gemini/ user-home directory as the retired
+# Gemini CLI — Google reused the dir under the new product. The detection
+# signal is the user-home dir's presence; existing installs with stale Myco
+# Gemini config are migrated away in Step 16.
+detectionDir: ~/.gemini
+pluginRootEnvVar: ANTIGRAVITY_PLUGIN_ROOT
+# Hook input arrives as JSON on stdin with Antigravity's camelCase metadata:
+# conversationId, transcriptPath, artifactDirectoryPath, workspacePaths.
+# Field names below reflect that contract.
+hookFields:
+  sessionId: conversationId
+  transcriptPath: transcriptPath
+  lastResponse: lastAssistantMessage
+  prompt: prompt
+  toolName: toolName
+  toolInput: toolInput
+  toolOutput: toolOutput
+capture:
+  planDirs:
+    # Antigravity workspace plans land here; user-global plan dir TBD during
+    # dogfood. Mirrors the pattern other symbionts use until verified.
+    - .agents/plugins/myco/plans/
+registration:
+  # Antigravity discovers workspace plugins under .agents/plugins/<name>/.
+  # The hooks file inside that bundle is hooks.json.
+  hooksTarget: .agents/plugins/myco/hooks.json
+  globalHooksTarget: ~/.gemini/config/plugins/myco/hooks.json
+  # Plugin-bundle layout: the hooks file is Myco-owned inside its own bundle
+  # dir, so the installer copies templates/antigravity/hooks.json verbatim
+  # rather than merging into an external user-managed file.
+  hooksFormat: plugin-file
+  hooksTemplateFile: hooks.json
+  # Antigravity hooks emit JSON on stdout; field mapping rebases Myco's
+  # internal HookResponse semantics to Antigravity's response shape.
+  hookResponse:
+    format: json
+    fieldNames:
+      additionalContext: ephemeralMessage
+      continue: continue
+      stopReason: stopReason
+  mcpTarget: .agents/plugins/myco/mcp_config.json
+  globalMcpTarget: ~/.gemini/config/plugins/myco/mcp_config.json
+  # Antigravity loads plugin-local skills from the bundle's skills/ dir,
+  # while ~/.agents/skills remains the cross-agent canonical store for
+  # other symbionts. Antigravity's globalSkillsTarget lives inside the
+  # plugin bundle so the agent picks them up from one place.
+  skillsTarget: .agents/plugins/myco/skills
+  globalSkillsTarget: ~/.gemini/config/plugins/myco/skills
+  # No standalone settings file — Antigravity wires settings through the
+  # plugin bundle's plugin.json.
+capabilities:
+  # Antigravity supports session-start context injection via PreInvocation
+  # with injectSteps + ephemeralMessage. The hook template wires this on
+  # the first PreInvocation per conversationId.
+  sessionStartInjection: true
+  # Antigravity's PreToolUse output is permission-oriented (decision,
+  # reason, permissionOverrides) — NOT Claude-style additionalContext.
+  # Canopy injection routes through PostInvocation instead. Capability
+  # flag stays false to reflect the actual hook contract.
+  preToolUseInjection: false

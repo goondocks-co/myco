@@ -882,18 +882,24 @@ describe('install', () => {
     expect((settings as Record<string, unknown>).coreTools).toContain('ShellTool(myco-dev *)');
   });
 
-  it('is idempotent — running twice produces same result', () => {
+  it('is idempotent — running twice produces same on-disk state, second pass is a no-op', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
 
     const result1 = installer.install();
     const result2 = installer.install();
 
-    // Instructions is false on second run (file already exists — never overwritten)
+    // First run wrote everything; second run is a no-op because the
+    // content-diff gate in writeJsonFile and writeManagedFile detects
+    // unchanged content. Instructions follow the same shape — they're
+    // only ever written once, then preserved.
+    expect(result1.hooks).toBe(true);
+    expect(result1.mcp).toBe(true);
+    expect(result1.settings).toBe(true);
     expect(result1.instructions).toBe(true);
+    expect(result2.hooks).toBe(false);
+    expect(result2.mcp).toBe(false);
+    expect(result2.settings).toBe(false);
     expect(result2.instructions).toBe(false);
-
-    // All other fields should be identical
-    expect({ ...result1, instructions: undefined }).toEqual({ ...result2, instructions: undefined });
 
     // Settings file should be identical
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
@@ -2140,7 +2146,7 @@ describe('old-format hook backward compatibility', () => {
 
 describe('hook template validation', () => {
   it('all hook templates use the guard prefix', () => {
-    const templateDirs = ['claude-code', 'codex', 'cursor', 'gemini', 'vscode-copilot', 'windsurf'];
+    const templateDirs = ['claude-code', 'codex', 'cursor', 'vscode-copilot', 'windsurf'];
     for (const dir of templateDirs) {
       const filePath = path.resolve(`packages/myco/src/symbionts/templates/${dir}/hooks.json`);
       const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

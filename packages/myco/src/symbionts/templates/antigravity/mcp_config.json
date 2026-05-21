@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "myco": {
+      "command": "node",
+      "args": [".agents/myco-cli.cjs", "mcp"],
+      "env": {}
+    }
+  }
+}

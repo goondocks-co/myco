@@ -62,6 +62,42 @@ const KNOWN_HOME_DIRS = new Set(['/root', '/var/root']);
 // segment below any of these is rejected.
 const HOME_PARENT_DIRS = new Set(['/Users', '/home', '/root', '/var/root']);
 
+/**
+ * Boolean variant of `assertSafeProjectRoot` for the hook hot path,
+ * combined with the "real project signal" check from the global-install
+ * plan (Decision 2). A project root is safe AND has a real signal when:
+ *
+ *   1. The basic safety predicate passes (not `$HOME`, not `/`, not a
+ *      well-known home dir or direct child thereof).
+ *   2. Either `.git/` resolves successfully from this path (the
+ *      `resolveRepoRoot` walk), OR one of `MYCO_PROJECT_ROOT` /
+ *      `MYCO_VAULT_DIR` env vars was explicitly set by the symbiont's
+ *      launch config — even an absent `.git` is fine when the agent
+ *      promises the root is correct.
+ *
+ * Returns `false` for cwd-fallback paths so the hook layer no-ops
+ * cleanly: no project gets auto-registered, no buffer is created in an
+ * unexpected location, no Canopy scan kicks off scanning `~`.
+ */
+export function isSafeProjectRoot(projectRoot: string): boolean {
+  try {
+    assertSafeProjectRoot(projectRoot);
+  } catch {
+    return false;
+  }
+  if (process.env.MYCO_PROJECT_ROOT || process.env.MYCO_VAULT_DIR) return true;
+  const resolved = path.resolve(projectRoot);
+  try {
+    const gitCommon = execFileSync(
+      'git', ['rev-parse', '--git-common-dir'],
+      { cwd: resolved, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim();
+    return gitCommon.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function assertSafeProjectRoot(projectRoot: string): void {
   const resolved = path.resolve(projectRoot);
 

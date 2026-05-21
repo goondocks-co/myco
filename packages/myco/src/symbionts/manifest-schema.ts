@@ -116,6 +116,28 @@ const CaptureManifestSchema = z.object({
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   /**
+   * Absolute path (with `~` expansion) where Myco writes hook config when
+   * installing under global scope. May point at a file the agent shares with
+   * user content (e.g. `~/.claude/settings.json`) — settings-merge.ts owns
+   * surgical, marker-bounded replacement of Myco's block. `null` declares that
+   * the symbiont does not expose a global hook surface.
+   */
+  globalHooksTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path (with `~` expansion) where Myco writes MCP server entries
+   * when installing under global scope. May share a file with hook config
+   * (e.g. Codex's `~/.codex/config.toml`). `null` declares no global MCP
+   * support (e.g. Pi, whose tools are wired via the extension itself).
+   */
+  globalMcpTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path (with `~` expansion) where Myco symlinks Myco-shipped
+   * skills under global scope. Symlinks point back into the Myco install so
+   * auto-update rewrites pick up new content. `null` declares no global
+   * skills surface.
+   */
+  globalSkillsTarget: z.string().nullable().optional(),
+  /**
    * Format of the hooks target.
    * - 'json' (default): hooks template is merged into a JSON settings file.
    * - 'plugin-file': the hooks template is a verbatim file (e.g., an opencode TS plugin)
@@ -123,6 +145,13 @@ const RegistrationSchema = z.object({
    *   systems rather than JSON hook entries.
    */
   hooksFormat: z.enum(['json', 'plugin-file']).default('json'),
+  /**
+   * For `hooksFormat: 'plugin-file'`, the basename of the template file
+   * under `packages/myco/src/symbionts/templates/<symbiont>/`. Defaults to
+   * `plugin.ts` (the opencode/pi convention). Antigravity ships a verbatim
+   * `hooks.json` inside its plugin bundle and overrides this field.
+   */
+  hooksTemplateFile: z.string().optional(),
   /** Top-level `version` integer written alongside the `hooks` object. */
   hooksConfigVersion: z.number().optional(),
   /**
@@ -241,6 +270,18 @@ export const SymbiontManifestSchema = z.object({
   displayName: z.string(),
   binary: z.string(),
   configDir: z.string(),
+  /**
+   * User-global directory whose existence signals that this agent is
+   * installed on the machine. The detection function walks the manifest
+   * registry and checks each declared `detectionDir`. Use the canonical
+   * user-home location (e.g. `~/.claude`, `~/.codex`); `~` is expanded by
+   * the consumer. Manifests that have no global surface (or that should be
+   * detected by a different signal) may omit this field. An explicit `null`
+   * means "intentionally no global detection" — used during the Gemini→
+   * Antigravity transition where two manifests share `~/.gemini` but only
+   * Antigravity should claim detection.
+   */
+  detectionDir: z.string().nullable().optional(),
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({

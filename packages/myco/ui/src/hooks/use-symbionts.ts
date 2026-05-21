@@ -17,6 +17,10 @@ export interface SymbiontInfo {
   resumeCommand?: string;
   supportsSessionStartInjection: boolean;
   supportsPromptSubmitInjection: boolean;
+  /** Whether the agent's detectionDir exists on this machine. */
+  detected: boolean;
+  /** Whether Myco's hook block is present in the agent's global config. */
+  globallyInstalled: boolean;
 }
 
 interface SymbiontsResponse {

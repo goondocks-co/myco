@@ -2,6 +2,7 @@ name: codex
 displayName: Codex
 binary: codex
 configDir: .codex
+detectionDir: ~/.codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
 resumeCommand: "codex --resume {sessionId}"
@@ -193,9 +194,16 @@ capture:
     interruptMarker: "<turn_aborted>"
 registration:
   hooksTarget: .codex/hooks.json
+  # Codex hooks live in a dedicated JSON file at both scopes. The plan's
+  # original "consolidate hooks + MCP into config.toml" left the installer
+  # writing JSON over a TOML file, corrupting the user's mcp_servers /
+  # profiles / etc. Hooks go to a separate JSON file; MCP keeps config.toml.
+  globalHooksTarget: ~/.codex/hooks.json
   mcpTarget: .codex/config.toml
   mcpFormat: toml
+  globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.codex/skills
   settingsTarget: .codex/config.toml
   settingsFormat: toml
 capabilities:

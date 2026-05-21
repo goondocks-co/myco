@@ -25,7 +25,7 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   'claude-code': { session: true, prompt: true },
   codex: { session: true, prompt: true },
   cursor: { session: true, prompt: true },
-  gemini: { session: true, prompt: true },
+  antigravity: { session: true, prompt: true },
   opencode: { session: true, prompt: false },
   pi: { session: true, prompt: false },
   'vscode-copilot': { session: true, prompt: true },
@@ -61,7 +61,7 @@ describe('detectSymbiontInjectionSupport', () => {
   it('never lies: templates with `hook session-start` always report supportsSessionStartInjection=true', () => {
     for (const manifest of manifests) {
       const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
-        ? 'plugin.ts'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
         : 'hooks.json';
       const templatePath = path.resolve(
         import.meta.dirname,
@@ -90,7 +90,7 @@ describe('detectSymbiontInjectionSupport', () => {
   it('manifest sessionStartInjection matches the template scan for every symbiont', () => {
     for (const manifest of manifests) {
       const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
-        ? 'plugin.ts'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
         : 'hooks.json';
       const templatePath = path.resolve(
         import.meta.dirname,

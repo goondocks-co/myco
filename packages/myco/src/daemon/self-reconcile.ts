@@ -7,6 +7,7 @@ import {
   type DaemonState,
 } from './service-state.js';
 import { readIntent, clearIntentSection } from './intent.js';
+import { installGlobalLaunchers } from '../grove/launcher-install.js';
 
 export interface ReconcileSelfDeps {
   daemonService: DaemonServiceState;
@@ -14,6 +15,11 @@ export interface ReconcileSelfDeps {
   logger: DaemonLogger;
   requestSupervisorRestart?: () => void;
   installUpdate?: (targetVersion: string) => Promise<void>;
+  /**
+   * Override the launcher-install step for tests; production callers
+   * use the bundled-template-driven default.
+   */
+  refreshLaunchers?: () => void;
   /**
    * Reads the post-install error file (~/.myco/update-error.json) if
    * present. The installer script writes this on npm install failure
@@ -71,6 +77,35 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   writeOrTouchDaemonState(deps.daemonService.statePath, expected);
 
   const intent = readIntent(deps.daemonService);
+
+  if (intent.refresh_launchers) {
+    // Refresh `~/.myco/launcher.cjs` + `~/.myco/mcp-launcher.cjs` from
+    // the bundled template. Always runs on the daemon thread (never on
+    // the hook process) so we don't race a hook script that is currently
+    // exec'ing the file. Clear AFTER the write so an in-flight crash
+    // leaves the intent for the next tick to retry — the write itself
+    // is atomic + idempotent.
+    deps.logger.info(
+      LOG_KINDS.DAEMON_RECONCILE,
+      'Refresh-launchers intent observed; rewriting global launcher files',
+      {
+        requested_at: intent.refresh_launchers.requested_at,
+        reason: intent.refresh_launchers.reason ?? null,
+      },
+    );
+    try {
+      const refresh = deps.refreshLaunchers ?? (() => installGlobalLaunchers());
+      refresh();
+      clearIntentSection(deps.daemonService, 'refresh_launchers');
+    } catch (err) {
+      deps.logger.error(
+        LOG_KINDS.DAEMON_RECONCILE,
+        'Launcher refresh failed; intent retained for next-tick retry',
+        { err: String(err) },
+      );
+    }
+  }
+
   if (intent.restart) {
     deps.logger.info(
       LOG_KINDS.DAEMON_RECONCILE,

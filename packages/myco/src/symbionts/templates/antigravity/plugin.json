@@ -1,0 +1,9 @@
+{
+  "name": "myco",
+  "displayName": "Myco",
+  "description": "Project + team intelligence for Antigravity. Captures session context, surfaces prior decisions via Cortex, and exposes the Myco MCP tool surface.",
+  "version": "0.1.0",
+  "homepage": "https://myco.sh",
+  "hooks": "hooks.json",
+  "mcp": "mcp_config.json"
+}

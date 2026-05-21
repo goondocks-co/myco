@@ -5,7 +5,8 @@ import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
-import { createGroveId, isGroveEraId } from './ids.js';
+import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
+import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
   pathsEquivalent,
   resolveGlobalConfigPath,
@@ -23,7 +24,6 @@ import {
   findRegisteredProjectByBinding as findRegisteredProjectByBindingResolve,
   type RegistryResolvedProject,
 } from './registry-resolve.js';
-import { assertSafeProjectRoot } from '../vault/resolve.js';
 
 export type DaemonVariant = 'service' | 'service-dev';
 
@@ -438,6 +438,72 @@ export function findRegisteredProject(
     return { grove, project };
   }
 
+  return null;
+}
+
+/**
+ * Locate a registered project by its filesystem root, across every Grove
+ * known to the local registry. Returns the owning Grove + project record
+ * when found, or null if the root isn't registered anywhere.
+ *
+ * Used by the capture path (and any other surface that knows the project's
+ * disk location but not its Grove/project IDs) to resolve the global buffer
+ * dir without forcing the caller to walk the Grove tree by hand. Comparison
+ * goes through `pathsEquivalent` (inode-aware) so macOS APFS case-only diffs
+ * and symlink chains both compare equal.
+ */
+/**
+ * Auto-register a project under the machine default Grove when the
+ * hook layer fires from a real project root that isn't yet known.
+ *
+ * Returns the resolved registration so callers (event-dispatch in
+ * particular) can move straight to writing events without an extra
+ * registry walk. Idempotent: an already-registered project returns the
+ * existing record.
+ *
+ * Refuses to register when:
+ *   - the path fails `isSafeProjectRoot` (cwd-fallback paths from a
+ *     misfired hook, $HOME-rooted invocations, etc.); returns `null`.
+ *   - the machine has no default Grove yet (extremely early bootstrap);
+ *     returns `null`.
+ *
+ * Decision 2 of the plan: silent register, no prompt — discovery via
+ * the Groves page in the UI. Per Decision 3, the default Grove is the
+ * owner.
+ */
+export function ensureProjectRegistered(
+  projectRoot: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  const existing = findProjectByRoot(projectRoot, mycoHome);
+  if (existing) return existing;
+  if (!isSafeProjectRoot(projectRoot)) return null;
+  const defaultGroveId = getDefaultGroveId(mycoHome);
+  if (!defaultGroveId) return null;
+  const grove = loadGroveRecord(defaultGroveId, mycoHome);
+  if (!grove) return null;
+  const projectId = createProjectId();
+  const projectName = path.basename(path.resolve(projectRoot));
+  registerProjectInGrove(grove.id, {
+    projectId,
+    projectName,
+    projectRoot,
+  }, mycoHome);
+  return findProjectByRoot(projectRoot, mycoHome);
+}
+
+export function findProjectByRoot(
+  projectRoot: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  if (!projectRoot) return null;
+  for (const grove of listGroves(mycoHome)) {
+    for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+      if (pathsEquivalent(project.root, projectRoot)) {
+        return { grove, project };
+      }
+    }
+  }
   return null;
 }
 
