@@ -291,8 +291,19 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Finish Cortex instruction refresh');
     expect(result.instruction).toContain('`myco_plans`');
     expect(result.instruction).toContain('op: "save"');
-    expect(result.instruction).toContain('do not instruct it to call `myco_skills`');
+    expect(result.instruction).toContain('use the `myco` skill as the fuller workflow reference');
+    expect(result.instruction).toContain('compact always-on version of that workflow');
+    expect(result.instruction).toContain('before creating a new plan or spec');
+    expect(result.instruction).not.toContain('before implementation');
+    expect(result.instruction).toContain('Do not instruct it to call `myco_skills`');
     expect(result.instruction).toContain('Do not mention retired tool names');
+    expect(result.instruction).toContain('before delegating work to another agent, subagent, teammate, worker session, or other spawned process');
+    expect(result.instruction).toContain('myco_cortex({"op":"instructions"})');
+    expect(result.instruction).toContain('include the returned instructions verbatim');
+    expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"instructions"}\'');
+    expect(result.instruction).toContain('Do not assume the returned instructions have any particular heading or section name');
+    expect(result.instruction).toContain('Do not introduce additional tool calls inside recent-workstream prose');
+    expect(result.instruction).toContain('never invent extra `myco_cortex` ops from recent context');
     expect(result.instruction).toContain('[retired Myco tool]');
     expect(result.instruction).not.toContain('myco_recall');
   });
@@ -416,8 +427,8 @@ describe('buildCortexInstructionsInput', () => {
     // CLI fallback — the dual-form phrasing produced "do the same thing twice"
     // sentences in generated instructions and led agents to skip the tool. The
     // CLI launcher is still mentioned elsewhere in the brief (as a portable
-    // tool-surface fallback), but not co-located with this directive.
-    expect(result.instruction).not.toContain('node .agents/myco-cli.cjs tool call myco_cortex --json');
+    // tool-surface fallback), but not as a second canopy_map invocation form.
+    expect(result.instruction).not.toContain('node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"canopy_map"}\'');
   });
 
   it('omits the myco_cortex canopy_map directive when the project has no map yet', async () => {

@@ -148,7 +148,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "list" before implementation when plans or specs may already exist. Use op: "save" when you create or materially revise a plan, and pass status: "in_progress" when you start working through it so the Sessions UI surfaces it as the active plan. Mark it status: "completed" (or "abandoned") when the work concludes. Plans default to status: "active" — that means written-but-not-yet-executing; "in_progress" means execution has begun. Use op: "get" for full plan content returned by search.',
+      guidance: 'Use op: "list" before creating a new plan or spec, or when existing plans may already cover the work. Use op: "get" to read relevant plans in full. Use op: "save" when you create or materially revise a plan, and pass status: "in_progress" when you start working through it so the Sessions UI surfaces it as the active plan. Mark it status: "completed" (or "abandoned") when the work concludes. Plans default to status: "active" — that means written-but-not-yet-executing; "in_progress" means execution has begun.',
       priority: 50,
     },
     inputSchema: {
