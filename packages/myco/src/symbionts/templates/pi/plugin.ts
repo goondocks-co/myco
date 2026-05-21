@@ -1055,7 +1055,7 @@ export default function (pi: ExtensionAPI) {
     description: "List, retrieve, save, or delete implementation plans.",
     promptSnippet: "List, fetch, save, or delete Myco plans",
     promptGuidelines: [
-      "Use myco_plans before implementation when approved plans or specs may already exist.",
+      "Use myco_plans before creating a new plan or spec, or when existing plans may already cover the work.",
       "Use myco_plans op save when you create or materially revise a plan.",
     ],
     parameters: Type.Object({

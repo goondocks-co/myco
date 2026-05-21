@@ -1,10 +1,10 @@
 # Myco CLI Reference
 
-All CLI commands are invoked as:
+In an initialized project, prefer the project-resolved launcher:
 
-    node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js <command> [flags]
+    node .agents/myco-cli.cjs <command> [flags]
 
-Where `${CLAUDE_PLUGIN_ROOT}` resolves to the plugin root directory (set by the agent automatically).
+It honors project and worktree runtime pins. Use a plugin-root `dist/src/cli.js` path only when `.agents/myco-cli.cjs` is unavailable and you are deliberately operating inside an installed plugin bundle.
 
 ---
 
@@ -16,42 +16,30 @@ Initializes a new Myco vault. Skipped automatically if the vault is already init
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--vault <path>` | string | Custom vault directory (supports `~/` expansion) |
-| `--llm-provider <name>` | string | `ollama`, `lm-studio`, or `anthropic` |
-| `--llm-model <name>` | string | Model name |
-| `--llm-url <url>` | string | Provider base URL |
-| `--embedding-provider <name>` | string | `ollama` or `lm-studio` |
+| `--project <path>` | string | Project root to initialize |
+| `--grove <name\|id>` | string | Grove to bind this project to |
+| `--worktree` | boolean | Bootstrap hook files in a git worktree |
+| `--non-interactive` | boolean | Run without prompts |
+| `--embedding-provider <name>` | string | Embedding provider for new vaults |
 | `--embedding-model <name>` | string | Embedding model name |
 | `--embedding-url <url>` | string | Embedding provider base URL |
-| `--user <name>` | string | Username for team-enabled vault |
-| `--team` | boolean | Enable team collaboration mode |
-| `--tiers <csv>` | string | Comma-separated digest tier list (e.g., `1500,3000,5000`) |
-| `--inject-tier <number>` | number | Tier to auto-inject at session start |
-| `--context-window <number>` | number | Context window size for digest operations |
 
 **Example:**
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js init \
-  --llm-provider ollama \
-  --llm-model qwen2.5-coder:14b \
+node .agents/myco-cli.cjs init \
   --embedding-provider ollama \
   --embedding-model bge-m3
 ```
 
 ---
 
-### `setup-llm` — Change LLM and embedding provider settings
+### `setup-llm` — Change embedding provider settings
 
-Reconfigures intelligence backend without reinitializing the vault.
+Reconfigures Grove-tier embedding settings without reinitializing the vault. LLM configuration is managed by the Myco agent harness; `setup-llm` ignores legacy `--llm-*` flags.
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--llm-provider <name>` | string | Provider name (`ollama`, `lm-studio`, `anthropic`) |
-| `--llm-model <name>` | string | Model name |
-| `--llm-url <url>` | string | Provider base URL |
-| `--llm-context-window <number>` | number | Context window in tokens |
-| `--llm-max-tokens <number>` | number | Max output tokens |
 | `--embedding-provider <name>` | string | Embedding provider name |
 | `--embedding-model <name>` | string | Embedding model name |
 | `--embedding-url <url>` | string | Embedding base URL |
@@ -63,52 +51,19 @@ Note: changing the embedding model requires running `rebuild` afterward to re-em
 
 ```sh
 # Show current settings
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-llm --show
+node .agents/myco-cli.cjs setup-llm --show
 
-# Switch to Anthropic
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-llm \
-  --llm-provider anthropic \
-  --llm-model claude-opus-4-5
+# Change embedding model
+node .agents/myco-cli.cjs setup-llm \
+  --embedding-provider ollama \
+  --embedding-model bge-m3
 ```
 
 ---
 
-### `setup-digest` — Configure digest and capture settings
+### `setup-digest` — Deprecated
 
-Controls the continuous reasoning system: metabolism timing, tier configuration, and per-operation token budgets.
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `--enabled <true\|false>` | boolean | Enable or disable digest |
-| `--tiers <csv>` | string | Comma-separated token tier list |
-| `--inject-tier <number\|null>` | number\|null | Auto-inject tier at session start (`null` to disable) |
-| `--provider <name\|null>` | string\|null | Digest-specific provider (`null` = inherit from main LLM) |
-| `--model <name\|null>` | string\|null | Digest-specific model (`null` = inherit) |
-| `--base-url <url\|null>` | string\|null | Digest provider base URL (`null` = inherit) |
-| `--context-window <number>` | number | Context window for digest |
-| `--keep-alive <duration>` | string | Keep model loaded (Ollama only, e.g., `30m`) |
-| `--gpu-kv-cache <true\|false>` | boolean | GPU KV cache offload (LM Studio only) |
-| `--active-interval <seconds>` | number | Metabolism active processing interval |
-| `--dormancy-threshold <seconds>` | number | Time before entering dormancy |
-| `--max-notes <number>` | number | Max substrate notes per digest cycle |
-| `--extraction-tokens <number>` | number | Max tokens for spore extraction |
-| `--summary-tokens <number>` | number | Max tokens for session summaries |
-| `--title-tokens <number>` | number | Max tokens for session titles |
-| `--classification-tokens <number>` | number | Max tokens for artifact classification |
-| `--show` | boolean | Display current settings and exit |
-
-**Example:**
-
-```sh
-# Show current digest config
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest --show
-
-# Use a faster model just for digest, with shorter active interval
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js setup-digest \
-  --model qwen2.5:7b \
-  --active-interval 120 \
-  --dormancy-threshold 600
-```
+Digest and Cortex configuration now live in the normal scoped config/UI surfaces. `setup-digest` prints a deprecation message and points users back to `setup-llm` for embedding settings.
 
 ---
 
@@ -120,16 +75,16 @@ Direct access to vault config via dot-path notation. Values are parsed as JSON f
 
 ```sh
 # Read a value
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config get intelligence.llm.model
+node .agents/myco-cli.cjs config get cortex.instructions.inject_on_session_start
 
 # Write a value
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config set intelligence.llm.model qwen2.5-coder:14b
+node .agents/myco-cli.cjs config set cortex.instructions.inject_on_session_start true
 
 # Write a non-string value (parsed as JSON)
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js config set digest.enabled true
+node .agents/myco-cli.cjs config set cortex.spores.max_per_prompt 3
 ```
 
-Restart the daemon after changes: `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js restart`
+Restart the daemon after changes that affect runtime behavior: `node .agents/myco-cli.cjs restart`
 
 ---
 
@@ -155,12 +110,12 @@ Output is JSON:
 
 ### `verify` — Test LLM and embedding connectivity
 
-Sends a test prompt to the LLM and a test embed to the embedding provider. Exits 0 if both pass, 1 if either fails.
+Sends a test embed to the configured embedding provider. Exits 0 if it passes, 1 if it fails. LLM configuration is managed by the Myco agent harness.
 
 No flags.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js verify
+node .agents/myco-cli.cjs verify
 ```
 
 ---
@@ -172,7 +127,7 @@ Shows session/spore/plan counts, spore type breakdown, vector count, and daemon 
 No flags.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js stats
+node .agents/myco-cli.cjs stats
 ```
 
 Typical output:
@@ -205,13 +160,13 @@ Components: `processor`, `embeddings`, `hooks`, `lifecycle`, `daemon`, `lineage`
 
 ```sh
 # Show last 20 lines
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js logs -n 20
+node .agents/myco-cli.cjs logs -n 20
 
 # Follow errors from the processor
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js logs -f -l error -c processor
+node .agents/myco-cli.cjs logs -f -l error -c processor
 
 # Show logs from a specific window
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js logs \
+node .agents/myco-cli.cjs logs \
   --since 2025-01-01T10:00:00Z \
   --until 2025-01-01T11:00:00Z
 ```
@@ -225,7 +180,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js logs \
 Runs semantic search (primary) with FTS fallback across sessions, spores, and plans.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js search "why did we choose sqlite over postgres"
+node .agents/myco-cli.cjs search "why did we choose sqlite over postgres"
 ```
 
 ---
@@ -235,7 +190,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js search "why did we choose sqlite over
 Shows all results with similarity scores and no threshold filtering. Useful for tuning embedding thresholds.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js vectors "session lifecycle hooks"
+node .agents/myco-cli.cjs vectors "session lifecycle hooks"
 ```
 
 ---
@@ -249,10 +204,10 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js vectors "session lifecycle hooks"
 
 ```sh
 # Show latest session
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js session
+node .agents/myco-cli.cjs session
 
 # Show a specific session by partial ID
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js session ac5220
+node .agents/myco-cli.cjs session ac5220
 ```
 
 ---
@@ -266,7 +221,7 @@ Sends SIGTERM to the running daemon, waits for it to exit, and spawns a fresh in
 No flags.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js restart
+node .agents/myco-cli.cjs restart
 ```
 
 Run this after any daemon code changes to pick up new behavior.
@@ -280,7 +235,7 @@ Re-indexes all records. Superseded and archived spores are skipped.
 No flags.
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js rebuild
+node .agents/myco-cli.cjs rebuild
 ```
 
 Run this after changing the embedding model (via `setup-llm`) to regenerate all embeddings with the new model.
@@ -302,13 +257,13 @@ When `--tier` or `--full` is used, the cycle reads all records (ignoring the las
 
 ```sh
 # Run an incremental cycle (same as what the metabolism timer does)
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest
+node .agents/myco-cli.cjs digest
 
 # Reprocess tier 3000 from scratch
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest --tier 3000
+node .agents/myco-cli.cjs digest --tier 3000
 
 # Full rebuild of all tiers
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js digest --full
+node .agents/myco-cli.cjs digest --full
 ```
 
 ---
@@ -327,10 +282,10 @@ Runs the intelligence agent to process unprocessed session data, extract observa
 
 ```sh
 # Run the default intelligence task
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js agent
+node .agents/myco-cli.cjs agent
 
 # Preview what would be changed
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js agent --dry-run
+node .agents/myco-cli.cjs agent --dry-run
 ```
 
 Note: `--dry-run` still runs LLM calls (to evaluate) — it just skips the writes. Use it to review before running on a vault for the first time.
@@ -350,13 +305,13 @@ Re-reads session transcripts, re-extracts observations with the current LLM, and
 
 ```sh
 # Reprocess all sessions
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess
+node .agents/myco-cli.cjs reprocess
 
 # Reprocess one session
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess --session ac5220
+node .agents/myco-cli.cjs reprocess --session ac5220
 
 # Re-index without re-extracting
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess --index-only
+node .agents/myco-cli.cjs reprocess --index-only
 ```
 
 ---
@@ -366,7 +321,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js reprocess --index-only
 ### `version` — Show plugin version
 
 ```sh
-node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js version
+node .agents/myco-cli.cjs version
 ```
 
 Also available as `--version` or `-v`.

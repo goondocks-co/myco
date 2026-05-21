@@ -59,7 +59,13 @@ mock.module('../../packages/myco/ui/src/components/mycelium/DigestView', () => (
 // useQuery is used directly inside InstructionsTab for cortex-instructions.
 // We avoid bringing in real fetch by stubbing the api module.
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
-  fetchJson: async () => ({ content: '', generatedAt: null, sourceRunId: null, enabled: false, stored: false }),
+  fetchJson: async () => ({
+    content: '## Myco-Enabled Project\n\nStored instructions text.',
+    generatedAt: null,
+    sourceRunId: null,
+    enabled: false,
+    stored: true,
+  }),
   postJson: async () => ({}),
   putJson: async () => ({}),
   deleteJson: async () => ({}),
@@ -93,6 +99,12 @@ describe('Cortex page-level TileTabs (T19)', () => {
     renderPage('/cortex');
     const active = screen.getByRole('tab', { selected: true });
     expect(active.textContent).toContain('Instructions');
+  });
+
+  it('shows stored instructions expanded by default', async () => {
+    renderPage('/cortex');
+    expect(await screen.findByText('Collapse')).toBeTruthy();
+    expect(await screen.findByText('Myco-Enabled Project')).toBeTruthy();
   });
 
   it('marks Digest active when ?tab=digest', () => {

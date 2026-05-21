@@ -40,11 +40,12 @@ Commands:
 `;
 
 const COMMAND_HELP: Record<string, string> = {
-  agent: `Usage: myco agent [--task NAME] [--instruction TEXT]
+  agent: `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
 
 Options:
   --task NAME          Run a specific agent task. Defaults to the configured default task.
   --instruction TEXT  Additional instruction to pass to the agent run.
+  --dry-run           Record intended writes without mutating vault state.
   -h, --help          Show this help
 `,
   task: `Usage: myco task <subcommand> [args]
@@ -54,12 +55,13 @@ Subcommands:
   show <name>                     Show task details and phases
   create <name> --from <template> Copy a task template to your user dir
   delete <name>                   Delete a user task
-  run <name> [--instruction TEXT] Run a task via the agent
+  run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
 `,
-  'task run': `Usage: myco task run <name> [--instruction TEXT]
+  'task run': `Usage: myco task run <name> [--instruction TEXT] [--dry-run]
 
 Options:
   --instruction TEXT  Additional instruction to pass to the agent run.
+  --dry-run           Record intended writes without mutating vault state.
   -h, --help          Show this help
 `,
 };

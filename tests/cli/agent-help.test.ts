@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 
+const postToDaemon = vi.fn(async () => ({ ok: true, data: {} }));
 const connectToDaemon = vi.fn(async () => ({
   get: vi.fn(),
-  post: vi.fn(async () => ({ ok: true, data: {} })),
+  post: postToDaemon,
   delete: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ describe('agent CLI help', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     connectToDaemon.mockClear();
+    postToDaemon.mockClear();
   });
 
   it('prints agent help without connecting to the daemon', async () => {
@@ -30,6 +32,7 @@ describe('agent CLI help', () => {
     await run(['--help'], '/tmp/myco-test-vault');
 
     expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage: myco agent'));
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('--dry-run'));
     expect(connectToDaemon).not.toHaveBeenCalled();
     stdoutSpy.mockRestore();
   });
@@ -57,7 +60,36 @@ describe('agent CLI help', () => {
     await run(['run', '--help'], '/tmp/myco-test-vault');
 
     expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage: myco task run'));
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('--dry-run'));
     expect(connectToDaemon).not.toHaveBeenCalled();
     stdoutSpy.mockRestore();
+  });
+
+  it('forwards --dry-run for myco agent runs', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { run } = await import('@myco/cli/agent-run.js');
+
+    await run(['--task', 'cortex-instructions', '--dry-run'], '/tmp/myco-test-vault');
+
+    expect(postToDaemon).toHaveBeenCalledWith('/api/agent/run', {
+      task: 'cortex-instructions',
+      instruction: undefined,
+      dryRun: true,
+    });
+    logSpy.mockRestore();
+  });
+
+  it('forwards --dry-run for myco task run', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { run } = await import('@myco/cli/agent-tasks.js');
+
+    await run(['run', 'cortex-instructions', '--dry-run'], '/tmp/myco-test-vault');
+
+    expect(postToDaemon).toHaveBeenCalledWith('/api/agent/run', {
+      task: 'cortex-instructions',
+      instruction: undefined,
+      dryRun: true,
+    });
+    logSpy.mockRestore();
   });
 });

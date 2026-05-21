@@ -1,6 +1,6 @@
 ---
 name: myco
-description: Use when making design decisions, debugging non-obvious issues, encountering gotchas, wondering why code is structured a certain way, or when you need context about prior work on the same feature or component. Myco captures the reasoning, trade-offs, and lessons behind the codebase — things the code itself doesn't show. Also use when the user mentions vault, spores, sessions, team knowledge, institutional memory, or prior decisions.
+description: Use when making design decisions, debugging non-obvious issues, encountering gotchas, wondering why code is structured a certain way, delegating work to another agent, or when you need context about prior work on the same feature or component. Myco captures the reasoning, trade-offs, and lessons behind the codebase — things the code itself doesn't show. Also use when the user mentions vault, spores, sessions, team knowledge, institutional memory, or prior decisions.
 ---
 
 # Myco — Collective Agent Intelligence
@@ -15,6 +15,7 @@ Use Myco tools proactively in these situations — don't wait to be asked:
 - **When debugging a non-obvious issue** — search for the error message, component name, or symptom. A prior session may have hit the same problem and documented the root cause.
 - **When wondering why code is structured a certain way** — decisions and trade-offs behind the architecture are captured as spores.
 - **When continuing work on a feature** — check session history and plan progress for context on what's been done and what's pending.
+- **Before delegating work to another agent, subagent, teammate, worker session, or other spawned process** — refresh the current Cortex instructions and pass them along verbatim so delegated work sees the same Myco guidance.
 - **After discovering a gotcha, making a key decision, or fixing a tricky bug** — save it so future sessions benefit from the knowledge.
 - **When starting work on a branch** — context is injected automatically at session start, but you can call `myco_search` and then follow each result's `retrieve` hint for deeper context.
 
@@ -106,6 +107,14 @@ Canopy map:
 node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'
 ```
 
+Current generated instructions:
+
+```bash
+node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"instructions"}'
+```
+
+When delegating work, include the returned instructions verbatim in the delegated prompt alongside the task-specific instructions. Do not assume the returned instructions have a particular heading or section name; they are generated project guidance and may change over time.
+
 Canopy entry returned by search:
 
 ```json
@@ -164,6 +173,8 @@ Session association is derived by the daemon; the MCP client does not pass it.
 ### myco_plans — Manage plans
 
 List plans, retrieve a single plan's full content by ID, save a plan, or delete one.
+
+Before creating a new plan or spec, or when existing plans may already cover the work, list plans and read any relevant ones before drafting something new. You do not need to run a plan lookup before every small implementation edit.
 
 ```json
 { "op": "list", "status": "active" }
@@ -306,7 +317,7 @@ The vault should get sharper over time, not just bigger. Every session should le
 
 1. `myco_cortex` op `"canopy_map"` for project layout, then `myco_search` with your branch and key files
 2. `myco_sessions` filtered by branch to see prior session summaries
-3. `myco_plans` to check if there's an active plan
+3. If you are planning new work or the task may overlap existing specs, use `myco_plans` to check for active plans
 4. `myco_plans` op `"save"` after generating or revising a plan that should persist in Myco
 
 ### After fixing a tricky bug
@@ -323,26 +334,26 @@ The vault should get sharper over time, not just bigger. Every session should le
 
 ## Reconfiguration
 
-To change LLM providers, models, or digest settings on an existing vault, see `references/reconfiguration.md`. It covers the exact CLI commands, flag names, and order of operations (setup-llm → restart → rebuild if needed → verify).
+To change embedding settings or Cortex injection behavior on an existing vault, see `references/reconfiguration.md`. It covers the current CLI commands, flag names, and order of operations (setup-llm → restart → rebuild if needed → verify).
 
 ## Maintenance
 
 For the full CLI reference with all flags, see `references/cli-usage.md`.
 
-All CLI commands use `node` with the CLI script inside the plugin root. Run commands as:
+Prefer the project-resolved launcher from the initialized project root:
 
 ```
-node <plugin-root>/dist/src/cli.js <command> [args]
+node .agents/myco-cli.cjs <command> [args]
 ```
 
-Where `<plugin-root>` is the agent's plugin root environment variable (e.g., the value of `CLAUDE_PLUGIN_ROOT` or `CURSOR_PLUGIN_ROOT`).
+That launcher honors project and worktree runtime pins. Use a plugin-root `dist/src/cli.js` path only when you are deliberately operating inside an installed plugin bundle and `.agents/myco-cli.cjs` is unavailable.
 
 ### Reprocessing sessions
 
 If observations were lost due to a bug, or if you want to re-extract observations with a different LLM, run the `reprocess` command:
 
 ```
-node <plugin-root>/dist/src/cli.js reprocess
+node .agents/myco-cli.cjs reprocess
 ```
 
 This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing spores are preserved — new observations are additive.
@@ -354,9 +365,9 @@ Options:
 ### Digest management
 
 ```
-node <plugin-root>/dist/src/cli.js digest              # Run incremental digest cycle
-node <plugin-root>/dist/src/cli.js digest --tier 3000  # Reprocess a specific tier (clean slate)
-node <plugin-root>/dist/src/cli.js digest --full       # Reprocess all tiers from scratch
+node .agents/myco-cli.cjs digest              # Run incremental digest cycle
+node .agents/myco-cli.cjs digest --tier 3000  # Reprocess a specific tier (clean slate)
+node .agents/myco-cli.cjs digest --full       # Reprocess all tiers from scratch
 ```
 
 ### Vault intelligence
@@ -364,8 +375,8 @@ node <plugin-root>/dist/src/cli.js digest --full       # Reprocess all tiers fro
 Supersession happens automatically on every spore write. For vault-wide cleanup, see `references/cli-usage.md` for full flags:
 
 ```
-node <plugin-root>/dist/src/cli.js agent              # Run the intelligence agent
-node <plugin-root>/dist/src/cli.js agent --dry-run    # Preview without writing
+node .agents/myco-cli.cjs agent              # Run the intelligence agent
+node .agents/myco-cli.cjs agent --dry-run    # Preview without writing
 ```
 
 For patterns on when to manually supersede or consolidate, see `references/wisdom.md`.
@@ -373,10 +384,10 @@ For patterns on when to manually supersede or consolidate, see `references/wisdo
 ### Other maintenance commands
 
 ```
-node <plugin-root>/dist/src/cli.js version     # Check plugin version
-node <plugin-root>/dist/src/cli.js rebuild     # Re-index all records
-node <plugin-root>/dist/src/cli.js stats       # Check vault health
-node <plugin-root>/dist/src/cli.js verify      # Test provider connectivity
-node <plugin-root>/dist/src/cli.js config get intelligence.llm.model
-node <plugin-root>/dist/src/cli.js config set intelligence.llm.model phi4
+node .agents/myco-cli.cjs version     # Check plugin version
+node .agents/myco-cli.cjs rebuild     # Re-index all records
+node .agents/myco-cli.cjs stats       # Check vault health
+node .agents/myco-cli.cjs verify      # Test embedding/provider connectivity
+node .agents/myco-cli.cjs setup-llm --show
+node .agents/myco-cli.cjs setup-llm --embedding-provider ollama --embedding-model bge-m3
 ```
