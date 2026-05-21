@@ -26,6 +26,13 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
    *  Use for fields that are project-only by design (plan dirs, team identity)
    *  or machine-only by design (machine_id overrides etc.). */
   lockScope?: Scope;
+  /**
+   * When false, no Personal pill or promote/reset affordances are rendered.
+   * Edits always land in `defaultScope` (or `lockScope`). Use for embedding
+   * fields or any field that must never have per-machine overrides.
+   * Defaults to `true`.
+   */
+  allowPersonal?: boolean;
   /** When true, flags the page-level restart gate on commit. */
   requiresRestart?: boolean;
   /** Inputs that accept typed text should commit on blur; toggles/selects commit on change. */
@@ -41,12 +48,24 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
+function resolveTierBadge(
+  scopeBadgeOverride: 'personal' | 'project' | 'grove' | undefined,
+  lockScope: Scope | undefined,
+  defaultScope: Scope,
+): 'personal' | 'project' | 'grove' {
+  if (scopeBadgeOverride) return scopeBadgeOverride;
+  if (lockScope === 'local') return 'personal';
+  if (lockScope === 'grove' || defaultScope === 'grove') return 'grove';
+  return 'project';
+}
+
 export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   path,
   label,
   hint,
   defaultScope = 'local',
   lockScope,
+  allowPersonal = true,
   requiresRestart,
   commitOn = 'change',
   parse,
@@ -85,9 +104,8 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
       void setField(path, toWrite, writeScope).then(() => {
         if (requiresRestart) markRestartDirty(path);
       }).catch((err) => {
-        // On failure, snap draft back and surface the error inline. Without
-        // a visible indicator a swallowed write looks identical to a no-op,
-        // which Chris flagged in /simplify review #6.
+        // On failure, snap draft back and surface the error inline; without
+        // a visible indicator a swallowed write looks identical to a no-op.
         setDraft(effectiveRef.current);
         setError(err instanceof Error ? err.message : String(err));
         console.error(`[scoped-field] write failed for ${path}`, err);
@@ -113,19 +131,59 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
     editingRef.current = false;
   }, [commit, commitOn, draft]);
 
-  const indicator = hasLocalOverride ? (
-    <ScopePill
-      onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
-      onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
-    />
-  ) : undefined;
+  // Resolve the badge for the field's default tier, used in both the static
+  // badge (inactive state) and the shared-default pill trigger.
+  const defaultTierBadge = resolveTierBadge(scopeBadgeOverride, lockScope, defaultScope);
+
+  let indicator: ReactNode = undefined;
+  if (!lockScope && allowPersonal) {
+    if (defaultScope === 'local') {
+      // Local-default: pill only appears when a local override exists.
+      // Offers promote (→ project) and reset (→ project) actions.
+      if (hasLocalOverride) {
+        indicator = (
+          <ScopePill
+            mode="local-default"
+            onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
+            onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
+          />
+        );
+      }
+    } else {
+      // Shared-default (grove / project / machine): pill renders always.
+      // No local override → "Save Personal" opt-in writes effective value → local.
+      // Local override present → "Reset" clears local so shared tier takes effect.
+      indicator = (
+        <ScopePill
+          mode="shared-default"
+          hasLocalOverride={hasLocalOverride}
+          defaultScopeBadge={defaultTierBadge === 'personal' ? 'project' : defaultTierBadge}
+          onSavePersonal={() =>
+            setField(path, effectiveRef.current as T, 'local').catch((err) =>
+              console.error('[scoped-field] save-personal failed', err),
+            )
+          }
+          onReset={() =>
+            resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))
+          }
+        />
+      );
+    }
+  }
+
+  // The static badge shown when no pill is rendered (allowPersonal=false, lockScope,
+  // or local-default with no override). When allowPersonal=true and shared-default,
+  // the pill always renders and replaces the static badge.
+  const staticBadge = (allowPersonal && defaultScope !== 'local' && !lockScope)
+    ? undefined  // pill always present, no separate badge needed
+    : defaultTierBadge;
 
   return (
     <div id={configFieldId(path)} data-config-field={path} className="rounded-md transition-all duration-300">
       <FieldShell
         label={label}
         hint={hint}
-        scope={scopeBadgeOverride ?? (lockScope === 'local' ? 'personal' : 'project')}
+        scope={indicator ? undefined : staticBadge}
         scopeIndicator={indicator}
         error={error ?? undefined}
       >

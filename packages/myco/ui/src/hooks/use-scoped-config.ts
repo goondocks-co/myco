@@ -9,8 +9,9 @@ import {
 import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
 import type { ConfigPath } from '../lib/config-paths';
+import { useUpdateGroveConfig } from './use-grove-config';
 
-export type Scope = 'project' | 'local';
+export type Scope = 'project' | 'local' | 'grove';
 
 const MERGED_KEY = ['config', 'merged'] as const;
 const LOCAL_KEY = ['config', 'local'] as const;
@@ -36,6 +37,7 @@ const NOTIFICATIONS_KEY = ['notifications'] as const;
  */
 export function useScopedConfig() {
   const qc = useQueryClient();
+  const updateGroveConfig = useUpdateGroveConfig();
 
   const merged = useQuery({
     queryKey: MERGED_KEY,
@@ -67,7 +69,10 @@ export function useScopedConfig() {
     invalidateNotifications();
   }, [invalidateNotifications, qc]);
   const invalidateForScope = useCallback(
-    (scope: Scope) => (scope === 'local' ? invalidateLocal() : invalidateProject()),
+    (scope: Scope) => {
+      if (scope === 'local') return invalidateLocal();
+      return invalidateProject();
+    },
     [invalidateLocal, invalidateProject],
   );
 
@@ -75,10 +80,15 @@ export function useScopedConfig() {
     async <T,>(path: ConfigPath, value: T, scope: Scope): Promise<void> => {
       const patch: Record<string, unknown> = {};
       setAtPath(patch, path, value);
-      await writeScopedConfig(scope, patch);
-      invalidateForScope(scope);
+      if (scope === 'grove') {
+        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        invalidateNotifications();
+      } else {
+        await writeScopedConfig(scope, patch);
+        invalidateForScope(scope);
+      }
     },
-    [invalidateForScope],
+    [invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   /**
@@ -86,6 +96,9 @@ export function useScopedConfig() {
    * and optionally clears a set of dot-paths — both in a single PUT so
    * coupled transitions can't tear (e.g. Clear Provider unsets the provider
    * and disables the tied task toggles together).
+   *
+   * For grove scope, `clearPaths` is not supported (Grove config has no
+   * local-override layer to clear); any provided clear paths are ignored.
    */
   const setFields = useCallback(
     async (
@@ -97,14 +110,25 @@ export function useScopedConfig() {
       for (const { path, value } of fields) {
         setAtPath(patch, path, value);
       }
-      await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
-      invalidateForScope(scope);
+      if (scope === 'grove') {
+        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        invalidateNotifications();
+      } else {
+        await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
+        invalidateForScope(scope);
+      }
     },
-    [invalidateForScope],
+    [invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   const resetField = useCallback(async (path: ConfigPath): Promise<void> => {
     await clearLocalConfigKeys([path]);
+    invalidateLocal();
+  }, [invalidateLocal]);
+
+  const resetFields = useCallback(async (paths: ConfigPath[]): Promise<void> => {
+    if (paths.length === 0) return;
+    await clearLocalConfigKeys(paths as string[]);
     invalidateLocal();
   }, [invalidateLocal]);
 
@@ -131,6 +155,7 @@ export function useScopedConfig() {
     setField,
     setFields,
     resetField,
+    resetFields,
     promoteField,
   };
 }

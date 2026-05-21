@@ -275,7 +275,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     notify(
       daemonVaultDir,
       { domain: 'daemon', type, title, message, metadata },
-      undefined,
+      liveConfig.current,
       { scope: 'daemon' },
     );
   };

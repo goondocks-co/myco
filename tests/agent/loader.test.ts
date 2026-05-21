@@ -48,7 +48,7 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
     name: 'myco-agent',
     displayName: 'Myco Agent',
     description: 'Test agent',
-    model: 'claude-sonnet-4-20250514',
+    model: 'sonnet',
     maxTurns: 30,
     timeoutSeconds: 300,
     systemPromptPath: '../prompts/agent.md',
@@ -108,7 +108,7 @@ describe('agent loader', () => {
       expect(def.displayName).toBe('Myco Agent');
       expect(typeof def.description).toBe('string');
       expect(def.description.length).toBeGreaterThan(0);
-      expect(def.model).toBe('claude-sonnet-4-20250514');
+      expect(def.model).toBe('sonnet');
       expect(def.maxTurns).toBe(30);
       expect(def.timeoutSeconds).toBe(300);
       expect(def.systemPromptPath).toBe('../prompts/agent.md');
@@ -331,7 +331,7 @@ describe('agent loader', () => {
       const config = resolveEffectiveConfig(def);
 
       expect(config.agentId).toBe('myco-agent');
-      expect(config.model).toBe('claude-sonnet-4-20250514');
+      expect(config.model).toBe('sonnet');
       expect(config.maxTurns).toBe(30);
       expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
@@ -425,7 +425,7 @@ describe('agent loader', () => {
       });
       const config = resolveEffectiveConfig(def, agent);
 
-      expect(config.model).toBe('claude-sonnet-4-20250514');
+      expect(config.model).toBe('sonnet');
       expect(config.maxTurns).toBe(50);
       expect(config.timeoutSeconds).toBe(300);
       expect(config.tools).toEqual(def.tools);
@@ -449,7 +449,7 @@ describe('agent loader', () => {
       expect(agent!.id).toBe(BUILT_IN_AGENT_NAME);
       expect(agent!.name).toBe('Myco Agent');
       expect(agent!.source).toBe('built-in');
-      expect(agent!.model).toBe('claude-sonnet-4-20250514');
+      expect(agent!.model).toBe('sonnet');
       expect(agent!.max_turns).toBe(30);
       expect(agent!.timeout_seconds).toBe(300);
     });

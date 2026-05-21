@@ -10,6 +10,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import YAML from 'yaml';
 
 describe('Config Loader', () => {
   let tmpDir: string;
@@ -127,19 +128,19 @@ intelligence:
   });
 
   it('updateConfig applies transform and persists', () => {
-    const yaml = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`;
+    const yaml = `version: 3\ncapture:\n  buffer_max_events: 500\n`;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
 
     const result = updateConfig(tmpDir, (config) => ({
       ...config,
-      embedding: { ...config.embedding, model: 'nomic-embed-text' },
+      capture: { ...config.capture, buffer_max_events: 999 },
     }));
 
-    expect(result.embedding.model).toBe('nomic-embed-text');
+    expect(result.capture.buffer_max_events).toBe(999);
 
     // Verify it was persisted to disk
     const reloaded = loadConfig(tmpDir);
-    expect(reloaded.embedding.model).toBe('nomic-embed-text');
+    expect(reloaded.capture.buffer_max_events).toBe(999);
   });
 
   it('updateConfig rejects invalid transforms without writing', () => {
@@ -258,6 +259,96 @@ describe('Local config overlay', () => {
   it('loadLocalConfig returns {} when YAML root is an array', () => {
     writeLocal(tmpDir, '- a\n- b\n');
     expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+});
+
+describe('Grove-tier promotion — merge verification', () => {
+  let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
+  // Valid Grove-era id: grove_<32 hex chars>
+  const groveId = 'grove_' + 'a'.repeat(32);
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-grove-merge-'));
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-grove-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
+    invalidateMergedConfigCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousMycoHome;
+    }
+    invalidateMergedConfigCache();
+  });
+
+  function writeGroveConfig(groveYaml: string): void {
+    const groveDir = path.join(mycoHomeDir, 'groves', groveId);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'grove.yaml'), groveYaml);
+  }
+
+  it('Grove-tier agent.model reaches merged config', () => {
+    writeMinimalProject(tmpDir);
+    writeGroveConfig('agent:\n  model: claude-haiku-4-5\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.agent.model).toBe('claude-haiku-4-5');
+  });
+
+  it('Grove-tier embedding.provider and model reach merged config', () => {
+    writeMinimalProject(tmpDir);
+    writeGroveConfig('embedding:\n  provider: ollama\n  model: nomic-embed-text\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.embedding.provider).toBe('ollama');
+    expect(config.embedding.model).toBe('nomic-embed-text');
+  });
+
+  it('legacy agent.provider in myco.yaml is preserved on disk until migration', () => {
+    // Simulate a pre-promotion myco.yaml that still carries agent.provider.
+    // The loader must NOT strip it from disk — runAgentConfigGrovePromotion
+    // needs to find it when it runs. Before the fix, PROJECT_TIER_LEGACY_FIELDS
+    // included agent.provider, causing the loader to erase it on every
+    // loadMergedConfig call (silent data loss). After the fix, the raw project
+    // doc flows through the merge unchanged, so the value is visible in the
+    // merged config AND survives on disk for the migration to lift.
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    fs.writeFileSync(
+      mycoYamlPath,
+      'version: 3\nagent:\n  provider:\n    type: openrouter\n',
+    );
+    // No grove.yaml — Grove defaults apply
+
+    let caughtError: unknown = null;
+    let config: ReturnType<typeof loadMergedConfig> | null = null;
+    try {
+      config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    // Must not throw
+    expect(caughtError).toBeNull();
+
+    // After the fix the raw project doc still has agent.provider, so the sparse
+    // merge surfaces it in the merged config. The migration will own lifting it
+    // to grove.yaml and stripping it from myco.yaml.
+    expect(config!.agent.provider).toEqual({ type: 'openrouter' });
+
+    // Critically: the on-disk myco.yaml must still carry agent.provider so that
+    // the migration can find and lift it. The loader must NOT have written it
+    // back with the agent block removed.
+    const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+    expect((rawOnDisk.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
   });
 });
 

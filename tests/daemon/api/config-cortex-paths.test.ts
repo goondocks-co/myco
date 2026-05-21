@@ -22,7 +22,7 @@ import {
   handleGetMergedConfig,
   handlePutScopedConfig,
 } from '@myco/daemon/api/config';
-import { CORTEX_PATHS, AGENT_PATHS } from '@myco/config/paths';
+import { CORTEX_PATHS, NOTIFICATIONS_PATHS } from '@myco/config/paths';
 import type { MycoConfig } from '@myco/config/schema';
 
 function seedFreshVault(dir: string): void {
@@ -191,14 +191,14 @@ describe('non-cortex paths still work post-v8 (regression check)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('agent.scheduled_tasks_enabled toggles cleanly', async () => {
+  it('notifications.enabled toggles cleanly (agent.* is now Grove-tier)', async () => {
     const res = await handlePutScopedConfig(tmpDir, {
       scope: 'project',
-      patch: patchFromPath(AGENT_PATHS.scheduledTasksEnabled, false),
+      patch: patchFromPath(NOTIFICATIONS_PATHS.enabled, false),
     });
     expect(res.status === undefined || res.status < 400).toBe(true);
     const merged = await handleGetMergedConfig(tmpDir);
-    expect((merged.body as MycoConfig).agent.scheduled_tasks_enabled).toBe(false);
+    expect((merged.body as MycoConfig).notifications.enabled).toBe(false);
   });
 
   it('appearance.theme toggle is unaffected by the cortex move', async () => {

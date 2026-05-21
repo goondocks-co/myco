@@ -132,6 +132,8 @@ export class SymbiontInstaller {
    * reading config from the main repo's shared vault.
    */
   private readonly vaultDir: string;
+  /** Grove id for config loading — undefined triggers a dev-mode warning. */
+  private readonly groveId: string | null | undefined;
 
   constructor(
     private manifest: SymbiontManifest,
@@ -142,8 +144,10 @@ export class SymbiontInstaller {
     // from the packageRoot without inheriting the baked-in copy.
     private suppressBundledTemplates: boolean = false,
     vaultDir?: string,
+    groveId?: string | null,
   ) {
     this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
+    this.groveId = groveId;
   }
 
   /**
@@ -321,7 +325,7 @@ export class SymbiontInstaller {
 
   private loadProjectConfig() {
     try {
-      return loadMergedConfig(this.vaultDir);
+      return loadMergedConfig(this.vaultDir, { groveId: this.groveId });
     } catch {
       return null;
     }

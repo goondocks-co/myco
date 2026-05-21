@@ -31,9 +31,6 @@ const EmbeddingProviderBaseSchema = z.object({
   run_in_deep_sleep: z.boolean().default(true),
 });
 const EmbeddingProviderSchema = EmbeddingProviderBaseSchema;
-const ProjectEmbeddingProviderSchema = EmbeddingProviderBaseSchema.omit({
-  run_in_deep_sleep: true,
-});
 
 const DaemonSchema = z.object({
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -189,9 +186,6 @@ const AgentBaseSchema = z.object({
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 });
 const AgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema);
-const ProjectAgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema.omit({
-  scheduled_tasks_active_window_days: true,
-}));
 
 const BackupRetentionSchema = z.object({
   /** Number of most-recent daily backups to keep per (Grove, machine). */
@@ -503,15 +497,24 @@ const GroveDaemonSchema = z.object({
 const GroveEmbeddingSchema = z.object({
   /** Keep the embedding-reconcile loop running while the Grove sleeps. */
   run_in_deep_sleep: z.boolean().default(true),
+  ...EmbeddingProviderBaseSchema.omit({ run_in_deep_sleep: true }).shape,
 });
-const GroveAgentSchema = z.object({
+const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   /**
    * Cap how recently a project must have been active (sessions or
    * prompt_batches) for scheduled tasks to fire against it. 0 disables
    * cold-project gating.
    */
   scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
-});
+  summary_batch_interval: z.number().int().min(0).default(5),
+  scheduled_tasks_enabled: z.boolean().default(true),
+  event_tasks_enabled: z.boolean().default(true),
+  cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
+  provider: ProviderOverrideSchema.optional(),
+  harness: HarnessIdSchema.optional(),
+  model: z.string().optional(),
+  tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
+}));
 
 export const GroveConfigSchema = z.object({
   daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),
@@ -533,10 +536,8 @@ export const GroveConfigSchema = z.object({
 export const ProjectConfigSchema = z.object({
   version: z.literal(3),
   config_version: z.number().int().nonnegative().default(0),
-  embedding: ProjectEmbeddingProviderSchema.default(() => ProjectEmbeddingProviderSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
-  agent: ProjectAgentSchema.default(() => ProjectAgentSchema.parse({})),
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),
@@ -571,6 +572,11 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['team'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
+  // The 11 agent-config paths promoted to Grove tier (embedding.provider/model/
+  // base_url, agent.provider/harness/model/tasks/summary_batch_interval/
+  // scheduled_tasks_enabled/event_tasks_enabled/cold_project_threshold_days)
+  // are intentionally NOT listed here: the loader must not strip them before
+  // runAgentConfigGrovePromotion runs, or the migration silently loses data.
 ];
 
 export const MycoConfigSchema = z.preprocess(

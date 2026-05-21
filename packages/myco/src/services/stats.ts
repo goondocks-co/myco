@@ -86,6 +86,7 @@ export interface GatherStatsOptions {
   active_sessions?: string[];
   databasePath?: string;
   scope: ProjectScope;
+  groveId?: string | null;
 }
 
 /**
@@ -131,7 +132,7 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
       ? Array.from(new Set([...persistedActiveSessionIds, ...(options.active_sessions ?? [])]))
       : Array.from(persistedActiveSessionIds);
 
-    const config = loadMergedConfig(vaultDir);
+    const config = loadMergedConfig(vaultDir, { groveId: options.groveId });
 
     const counts = countProjectScopedTables(db, scopeArg);
     const canopyScope = projectScopeClause(scopeArg);

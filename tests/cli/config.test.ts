@@ -100,10 +100,10 @@ describe('myco config', () => {
   describe('config set', () => {
     it('sets a nested value and persists to file', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
+      await run(['set', 'capture.buffer_max_events', '750'], tmpDir);
       const config = readConfig(tmpDir);
-      expect((config.embedding as Record<string, unknown>).model).toBe('nomic-embed-text');
-      expect(logged.some((l) => l.includes('Set embedding.model'))).toBe(true);
+      expect((config.capture as Record<string, unknown>).buffer_max_events).toBe(750);
+      expect(logged.some((l) => l.includes('Set capture.buffer_max_events'))).toBe(true);
     });
 
     it('coerces number values via JSON parse', async () => {
@@ -115,10 +115,10 @@ describe('myco config', () => {
 
     it('creates intermediate objects along dot-path', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'embedding.model', 'nomic-embed-text'], tmpDir);
+      await run(['set', 'capture.buffer_max_events', '200'], tmpDir);
       const config = readConfig(tmpDir);
-      const embedding = config.embedding as Record<string, unknown>;
-      expect(embedding.model).toBe('nomic-embed-text');
+      const capture = config.capture as Record<string, unknown>;
+      expect(capture.buffer_max_events).toBe(200);
     });
 
     it('exits 1 on Zod validation failure', async () => {

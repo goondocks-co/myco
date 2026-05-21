@@ -752,7 +752,7 @@ export async function main(): Promise<void> {
               to_version: raw.to_version,
               local_update_ran: raw.local_update_ran ?? false,
             },
-          }, undefined, { scope: 'daemon' });
+          }, liveConfig.current, { scope: 'daemon' });
 
           logger.info(LOG_KINDS.DAEMON_START, 'Version sync restart detected', {
             from: raw.from_version,
@@ -1084,7 +1084,10 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
+  server.registerRoute('GET', '/api/symbionts', async (req) => handleListSymbionts(
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+    req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+  ));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
@@ -1500,11 +1503,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
     const requestVaultDir = taskVaultDir(req);
-    const result = await handleUpdateTaskConfig(req, requestVaultDir);
+    const requestGroveId = req.requestContext?.groveId ?? dataPaths.requestContext.groveId;
+    const result = await handleUpdateTaskConfig(req, requestVaultDir, requestGroveId);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions([`agent.tasks.${req.params.id}`], {
         vaultDir: requestVaultDir,
-        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+        groveId: requestGroveId,
       });
     }
     return result;
@@ -1733,6 +1737,7 @@ export async function main(): Promise<void> {
     return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
       db: runtime.db,
       scope: projectScopeFromRequestContext(req.requestContext),
+      groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
     });
   });
   server.registerRoute('GET', '/api/embedding/details', async (req) => {

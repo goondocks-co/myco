@@ -22,12 +22,12 @@ export interface SymbiontInfo {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function listSymbiontInfos(vaultDir: string): SymbiontInfo[] {
+export function listSymbiontInfos(vaultDir: string, groveId?: string | null): SymbiontInfo[] {
   const manifests = loadManifests();
 
   let enabledNames: Set<string> | null = null;
   try {
-    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir));
+    enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir, { groveId: groveId ?? null }));
   } catch { /* config not loadable */ }
 
   return manifests.map((manifest) => ({
@@ -52,6 +52,6 @@ export function listSymbiontInfos(vaultDir: string): SymbiontInfo[] {
  * When the config lacks a `symbionts` section (pre-existing installs),
  * all manifests default to `enabled: true`.
  */
-export async function handleListSymbionts(vaultDir: string): Promise<RouteResponse> {
-  return { body: { symbionts: listSymbiontInfos(vaultDir) } };
+export async function handleListSymbionts(vaultDir: string, groveId?: string | null): Promise<RouteResponse> {
+  return { body: { symbionts: listSymbiontInfos(vaultDir, groveId) } };
 }

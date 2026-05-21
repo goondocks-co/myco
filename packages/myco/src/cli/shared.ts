@@ -108,11 +108,12 @@ export function registerSymbionts(
   packageRoot: string,
   verb: 'Registered' | 'Updated',
   vaultDir?: string,
+  groveId?: string | null,
 ): number {
   let count = 0;
   for (const manifest of manifests) {
     try {
-      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir);
+      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId);
       const result = installer.install();
 
       const installed = [

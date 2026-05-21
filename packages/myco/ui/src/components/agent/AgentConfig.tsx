@@ -189,7 +189,8 @@ export function AgentConfig() {
           <ScopedField
             path="agent.scheduled_tasks_enabled"
             label="Scheduled Tasks"
-            defaultScope="local"
+            defaultScope="grove"
+            allowPersonal={false}
             hint="runs intelligence/skill-survey/skill-evolve on a cron"
           >
             {({ value, onChange }) => (
@@ -204,7 +205,8 @@ export function AgentConfig() {
           <ScopedField
             path="agent.event_tasks_enabled"
             label="Event-Driven Tasks"
-            defaultScope="local"
+            defaultScope="grove"
+            allowPersonal={false}
             hint="titles + summaries on session end"
           >
             {({ value, onChange }) => (
@@ -229,11 +231,11 @@ export function AgentConfig() {
 
         <div className="border-t border-outline-variant/20" />
 
-        {/* Title & Summary batch interval — project-default (pipeline cadence is team-agreed) */}
+        {/* Title & Summary batch interval — Grove-default (pipeline cadence is Grove-wide) */}
         <ScopedField
           path="agent.summary_batch_interval"
           label="Title & Summary Batch Interval"
-          defaultScope="project"
+          defaultScope="grove"
           commitOn="blur"
           hint="batches between event-driven summary triggers; 0 disables"
         >

@@ -34,6 +34,10 @@ test-results/
 
 .context/
 
+# Test runner output (JUnit XML per phase, written by scripts/run-bun-tests.mjs
+# so failures are programmatically discoverable without scrolling 4,900+ lines)
+target/
+
 # Myco managed (machine-specific)
 .agents/skills/myco-rules
 .agents/skills/myco
@@ -43,9 +47,3 @@ docs/design/
 docs/plans/
 docs/superpowers/handoffs/
 .wrangler/
-.screenshots/
-.smoke/
-
-# Test runner output (JUnit XML per phase, written by scripts/run-bun-tests.mjs
-# so failures are programmatically discoverable without scrolling 4,900+ lines)
-target/

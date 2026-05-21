@@ -23,6 +23,7 @@ import {
   resolveGroveDir,
   resolveMycoHome,
 } from '../grove/paths.js';
+import { loadProjectManifest } from './project-manifest.js';
 
 export const CONFIG_FILENAME = 'myco.yaml';
 export const LOCAL_CONFIG_FILENAME = 'local.yaml';
@@ -175,6 +176,21 @@ export function saveGroveConfig(
   atomicWriteFileSync(filePath, YAML.stringify(validated), 'utf-8');
   groveConfigCache.delete(filePath);
   invalidateMergedConfigCache();
+}
+
+/**
+ * Load → transform → save in one call, matching the `updateConfig` pattern
+ * for the project tier. Returns the saved (Zod-validated) GroveConfig.
+ */
+export function updateGroveConfig(
+  groveId: string,
+  transform: (current: GroveConfig) => GroveConfig,
+  opts?: { mycoHome?: string },
+): GroveConfig {
+  const current = loadGroveConfig(groveId, opts?.mycoHome);
+  const next = transform(current);
+  saveGroveConfig(groveId, next, opts?.mycoHome);
+  return next;
 }
 
 function readRawYamlDoc(filePath: string): Record<string, unknown> {
@@ -598,15 +614,24 @@ export interface LoadMergedConfigOptions {
  * Build the merged runtime config from the four storage tiers in
  * resolution order: machine → grove → project → personal.
  *
- * The legacy single-arg form (`loadMergedConfig(vaultDir)`) is kept for
- * compatibility — it skips the Grove tier (Grove-tier fields fall through
- * to schema defaults). New call sites should pass the Grove id from the
- * request context to get a fully-resolved config.
+ * `groveId` resolves in this order:
+ *   1. `options.groveId` if explicitly passed (including explicit `null` for
+ *      "confirmed: no bound Grove")
+ *   2. The project's bound Grove from `<vaultDir>/.myco/project.toml`
+ *   3. `null` (no Grove tier merged) when neither is available
+ *
+ * Callers in request-handling contexts (daemon API handlers) should pass
+ * `groveId` from the request context — that's the authoritative source when
+ * the user has switched projects via the UI. Callers operating on a single
+ * vault directory (CLI, internal helpers) can omit it and the manifest is
+ * consulted automatically.
  */
 export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOptions = {}): MycoConfig {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   const localPath = localConfigPath(vaultDir);
-  const groveId = options.groveId ?? null;
+  const groveId = options.groveId !== undefined
+    ? options.groveId
+    : (loadProjectManifest(vaultDir)?.grove?.id ?? null);
   const mycoHome = options.mycoHome ?? resolveMycoHome();
 
   const configStat = statOrNull(configPath);
