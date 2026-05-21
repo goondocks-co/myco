@@ -99,7 +99,7 @@ const COLUMN_ORDER: readonly ColumnKey[] = [
 ];
 
 const COLUMN_LABELS: Record<ColumnKey, string> = {
-  harness: 'Harness',
+  harness: 'Runtime',
   reasoning: 'Reasoning',
   model: 'Model',
   status: 'Status',

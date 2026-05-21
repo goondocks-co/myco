@@ -115,7 +115,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
   {
     id: 'agent',
     label: 'Agent',
-    desc: 'Default provider, harness, and scheduled-task gates that drive the agent pipeline.',
+    desc: 'Default provider, runtime, and scheduled-task gates that drive the agent pipeline.',
     category: 'Agent',
     icon: 'Bot',
     fields: [
@@ -172,12 +172,12 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       },
       {
         key: 'agent.harness',
-        label: 'Harness',
+        label: 'Runtime',
         scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
-        note: 'Harness id (e.g. claude-code-sdk, codex-cli). Picked from the installed harness registry.',
+        note: 'Runtime id (e.g. claude-sdk, openai-agents). Picked from the installed runtime registry.',
         customRender: 'card-owns',
       },
     ],

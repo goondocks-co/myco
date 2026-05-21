@@ -7,7 +7,6 @@
  */
 
 import { z } from 'zod';
-import Anthropic from '@anthropic-ai/sdk';
 import { checkLocalProvider } from '../../intelligence/provider-check.js';
 import {
   createLocalOpenAIBackend,
@@ -30,14 +29,8 @@ import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider
 import { getSupportedHarnessesForProviderType } from '@myco/agent/provider-harness.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 
-/** Timeout for the live Anthropic model list query (short -- fall back fast). */
-const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
-
-/** TTL for the cached live Anthropic model list. The list changes rarely
- *  and the SDK call is the slowest part of `/providers`; cache to keep the
- *  endpoint snappy under React Query's 30s stale time. */
-const ANTHROPIC_MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
-let anthropicModelsCache: { ts: number; models: string[] } | null = null;
+/** Timeout for the live remote-provider model list query (OpenAI/OpenRouter). */
+const REMOTE_PROVIDER_MODELS_TIMEOUT_MS = 5000;
 
 /** HTTP status codes. */
 const HTTP_OK = 200;
@@ -90,7 +83,7 @@ export async function handleGetProviders(logger?: DaemonLogger): Promise<RouteRe
     fallback: ProviderInfo;
   }> = [
     {
-      detect: () => detectAnthropic(logger),
+      detect: () => Promise.resolve(detectAnthropic()),
       fallback: fallback('anthropic', { available: false, models: [] }),
     },
     {
@@ -217,54 +210,22 @@ async function detectLocalProviderInfo(
   };
 }
 
-async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
-  // Anthropic is always available — the SDK handles auth internally via OAuth,
-  // API key, Bedrock, Vertex, or Foundry. The daemon can't reliably detect
-  // which method is in use since env vars aren't always inherited.
+function detectAnthropic(): ProviderInfo {
+  // Anthropic is always available — the harness uses @anthropic-ai/claude-agent-sdk,
+  // which spawns the `claude` CLI subprocess and inherits its auth (OAuth, API key,
+  // Bedrock, Vertex, Foundry). The daemon process itself has no Anthropic auth,
+  // so a live `models.list` call from this side isn't reachable.
   //
-  // The live model list is cached with a 10-minute TTL so we don't hit the
-  // SDK on every `/providers` request. On any failure (no API key set in the
-  // daemon's env, no network, OAuth-only auth) we fall back to the hardcoded
-  // ANTHROPIC_MODELS constant so the dropdown is never empty.
-  const now = Date.now();
-  if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
-    return {
-      type: 'anthropic',
-      harness: HARNESS_CLAUDE_SDK,
-      availableHarnesses: getSupportedHarnessesForProviderType('anthropic'),
-      available: true,
-      models: anthropicModelsCache.models,
-    };
-  }
-
-  let models = ANTHROPIC_MODELS;
-  try {
-    const client = new Anthropic();
-    const response = await client.models.list(
-      { limit: 50 },
-      { timeout: ANTHROPIC_MODELS_TIMEOUT_MS },
-    );
-    const liveModels = response.data
-      .map((m) => m.id)
-      .filter((id) => id.startsWith('claude-'));
-    if (liveModels.length > 0) {
-      models = liveModels;
-    }
-  } catch (err) {
-    // Fall through to the hardcoded ANTHROPIC_MODELS list so the dropdown
-    // is never empty, but surface why the live list was unreachable so an
-    // operator can diagnose a missing key / network block without SDK
-    // debug logs.
-    const detail = errorMessage(err);
-    logger?.warn('providers.anthropic.models-unavailable', 'Anthropic model list unavailable', { error: detail });
-  }
-  anthropicModelsCache = { ts: now, models };
+  // Aliases (sonnet/opus/haiku) sidestep the staleness problem the live fetch
+  // tried to solve — Anthropic resolves each to the latest version of the
+  // family at request time. Users who want to pin a specific version can type
+  // a full model ID into the field directly.
   return {
     type: 'anthropic',
     harness: HARNESS_CLAUDE_SDK,
     availableHarnesses: getSupportedHarnessesForProviderType('anthropic'),
     available: true,
-    models,
+    models: ANTHROPIC_MODELS,
   };
 }
 
@@ -281,7 +242,7 @@ async function detectRemoteProviderInfo(
     try {
       // baseUrl is intentionally ignored by fetchRemoteProviderModels for remote
       // providers (always uses the hardcoded default); see SSRF lockdown.
-      models = await fetchRemoteProviderModels(type, undefined, ANTHROPIC_MODELS_TIMEOUT_MS);
+      models = await fetchRemoteProviderModels(type, undefined, REMOTE_PROVIDER_MODELS_TIMEOUT_MS);
       available = true;
     } catch (err) {
       available = false;
