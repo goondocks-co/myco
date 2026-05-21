@@ -57,6 +57,11 @@ runtime.command
 # Grove migration archive — timestamped snapshot of pre-Grove vault data
 # moved aside post-activation. Never committed; recoverable on disk.
 .archive-*/
+
+# Agent-config Grove promotion archive — timestamped snapshot of the
+# embedding/agent fields the migration lifted from project tier to Grove.
+# Local-only forensic safety net per the spec; never committed.
+archive/
 `;
 
 /**
