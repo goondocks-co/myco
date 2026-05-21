@@ -27,16 +27,13 @@ describe('config API', () => {
     const result = await handlePutScopedConfig(vaultDir, {
       scope: 'project',
       patch: {
-        embedding: { provider: 'ollama', model: 'nomic-embed-text' },
         capture: { ignore_plan_dirs_in_git: true },
       },
     });
     expect(result.status).toBeUndefined(); // 200 default
     const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
-      embedding?: { model?: string };
       capture?: { ignore_plan_dirs_in_git?: boolean };
     };
-    expect(saved.embedding?.model).toBe('nomic-embed-text');
     expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
   });
 
@@ -50,11 +47,13 @@ describe('config API', () => {
       patch: { capture: { ignore_plan_dirs_in_git: true } },
     });
     const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
-      embedding?: { model?: string };
+      notifications?: { enabled?: boolean };
       capture?: { ignore_plan_dirs_in_git?: boolean };
     };
-    expect(saved.embedding?.model).toBe('bge-m3');
     expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
+    // Verify another project-tier section is preserved
+    const merged = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8'));
+    expect(merged.version).toBe(3);
   });
 
   it('PUT scoped returns 400 for missing patch', async () => {

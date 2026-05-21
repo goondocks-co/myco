@@ -122,12 +122,17 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
         const nextLocal = deepMergeConfig(
           working,
           patch as Record<string, unknown>,
-        ) as Partial<MycoConfig>;
+        ) as Partial<MycoConfig> & { config_version?: unknown };
         const merged = deepMergeConfig(
           project as Record<string, unknown>,
           nextLocal as Record<string, unknown>,
         );
         MycoConfigSchema.parse(merged);
+        // config_version is a migration-bookkeeping key that belongs to the
+        // project tier, not the personal overlay. Strip it from the persisted
+        // local doc so it never appears in local.yaml as a stale artifact of
+        // a prior migration run.
+        delete nextLocal.config_version;
         return nextLocal;
       });
       return { body: updated };

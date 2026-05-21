@@ -9,6 +9,7 @@ import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
+import { resolveGroveDir } from '../grove/paths.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
@@ -18,6 +19,12 @@ import {
   completeLegacyArchive,
   summarizeImportedRowCount,
 } from '../grove/activation.js';
+import {
+  readMigrationPlan,
+  validateMigrationPlan,
+  executeMigration,
+  type MachineState,
+} from '../migrations/agent-config-grove-promotion.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -159,7 +166,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   }
 
   if (configured.length > 0) {
-    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated');
+    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated', undefined, groveId);
     updatedCount += registered;
   } else {
     console.log('  \u2013 No configured agents found');
@@ -296,6 +303,37 @@ function dashboardUrlForVault(vaultDir: string): string | null {
 }
 
 /**
+ * Run the agent-config Grove promotion migration as the final step of
+ * `runAllProjects`. Read → validate → execute; any failure throws so
+ * the `runAllProjects` caller can surface it alongside per-project
+ * failures and exit non-zero.
+ */
+async function runAgentConfigGrovePromotion(machine: MachineState): Promise<void> {
+  const read = await readMigrationPlan(machine);
+  if (read.errors.length > 0) {
+    console.error('agent-config Grove promotion: pre-flight read failed');
+    for (const e of read.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration aborted (read failure)');
+  }
+
+  const validated = validateMigrationPlan(read.plan);
+  if (!validated.ok) {
+    console.error('agent-config Grove promotion: pre-flight validation failed');
+    for (const e of validated.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration aborted (validation failure)');
+  }
+
+  const result = await executeMigration(read.plan);
+  if (!result.ok) {
+    console.error('agent-config Grove promotion: write phase failed');
+    for (const e of result.errors) console.error(`  ${JSON.stringify(e)}`);
+    throw new Error('migration failed mid-write — manual intervention required');
+  }
+
+  console.log('  ✓ agent-config Grove promotion complete');
+}
+
+/**
  * Iterate every (Grove, project) pair in the registry and run the
  * per-project sync for each. Used by the post-binary-install update
  * script (machine-level binary install kicks one of these per Grove
@@ -310,10 +348,20 @@ async function runAllProjects(): Promise<void> {
   const variant = detectInstallVariant();
   const groves = listGroves(undefined, { servedBy: serviceVariantToDirName(variant) });
   const targets: { groveSlug: string; projectName: string; root: string }[] = [];
+  const machineGroves: MachineState['groves'] = [];
   for (const grove of groves) {
+    let grovePath: string;
+    try {
+      grovePath = resolveGroveDir(grove.id);
+    } catch {
+      continue;
+    }
+    const groveProjects: MachineState['groves'][number]['projects'] = [];
     for (const project of listRegisteredProjects(grove.id)) {
       targets.push({ groveSlug: grove.slug, projectName: project.name, root: project.root });
+      groveProjects.push({ id: project.project_id, vaultDir: path.join(project.root, '.myco') });
     }
+    machineGroves.push({ id: grove.id, grovePath, projects: groveProjects });
   }
 
   if (targets.length === 0) {
@@ -332,6 +380,17 @@ async function runAllProjects(): Promise<void> {
       failures.push({ target, error });
       console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  console.log('');
+  try {
+    await runAgentConfigGrovePromotion({ groves: machineGroves });
+  } catch (error) {
+    failures.push({
+      target: { groveSlug: '(machine)', projectName: 'agent-config Grove promotion', root: '' },
+      error,
+    });
+    console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   console.log('');

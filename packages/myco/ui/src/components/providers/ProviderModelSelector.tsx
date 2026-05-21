@@ -17,8 +17,11 @@ import { SearchableSelect } from '../ui/searchable-select';
 import { defaultBaseUrlForProvider, providerSupportsHarness, type ProviderInfo } from '../../hooks/use-providers';
 import { useModels } from '../../hooks/use-models';
 
+// Display labels for the `agent.harness` field. Keys are the persisted
+// identifier values (kept stable for back-compat with user configs);
+// values are the user-facing strings shown in the runtime dropdown.
 const HARNESS_LABELS: Record<string, string> = {
-  'claude-sdk': 'Claude SDK',
+  'claude-sdk': 'Claude Agents',
   'openai-agents': 'OpenAI Agents',
 };
 
@@ -111,10 +114,10 @@ export function ProviderModelSelector({
     <div className="space-y-3">
       {showHarnessSelector && (
         <div className="space-y-1">
-          <label className="font-sans text-xs text-on-surface-variant">Harness</label>
+          <label className="font-sans text-xs text-on-surface-variant">Runtime</label>
           <Select value={harness} onValueChange={onHarnessChange}>
             <SelectTrigger>
-              <SelectValue placeholder="Select a harness" />
+              <SelectValue placeholder="Select a runtime" />
             </SelectTrigger>
             <SelectContent>
               {Object.entries(HARNESS_LABELS).map(([value, label]) => (

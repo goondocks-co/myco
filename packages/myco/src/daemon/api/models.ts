@@ -16,13 +16,25 @@ const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 const REMOTE_PROVIDER_TIMEOUT_MS = 5000;
 
-/** Well-known Anthropic models — no list API available locally.
- *  Sonnet is first because it's the recommended default for all built-in
- *  tasks, and the UI auto-selects the first model when a provider is picked. */
+/** Anthropic model identifiers exposed in the UI dropdown.
+ *
+ * Uses model-family aliases (sonnet/opus/haiku) instead of versioned IDs so
+ * the daemon never goes stale across Claude releases — Anthropic resolves
+ * each alias to the latest version of that family at request time. The
+ * daemon process itself has no Anthropic auth (the harness uses subprocess
+ * auth via @anthropic-ai/claude-agent-sdk), so a live `models.list` call
+ * isn't reachable from this side — aliases sidestep that entirely.
+ *
+ * See: https://code.claude.com/docs/en/model-config#model-configuration
+ *
+ * Sonnet is first because it's the recommended default for all built-in
+ * tasks, and the UI auto-selects the first model when a provider is picked.
+ * Users who need to pin a specific version can type a full ID (e.g.
+ * `claude-sonnet-4-6`) into the model field — the SDK accepts both shapes. */
 export const ANTHROPIC_MODELS = [
-  'claude-sonnet-4-6',
-  'claude-opus-4-6',
-  'claude-haiku-4-5-20251001',
+  'sonnet',
+  'opus',
+  'haiku',
 ];
 
 /** Patterns that indicate an embedding model (case-insensitive). */

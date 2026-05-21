@@ -8,13 +8,15 @@
 import type { V2Stats } from '../services/stats.js';
 import { gatherStats } from '../services/stats.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
 import { initVaultDb } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
   const cleanup = await initVaultDb(vaultDir);
   let stats: V2Stats;
   try {
-    stats = gatherStats(vaultDir, { scope: ALL_PROJECTS_SCOPE });
+    stats = gatherStats(vaultDir, { scope: ALL_PROJECTS_SCOPE, groveId });
   } catch (err) {
     cleanup();
     console.error('Failed to read vault database:', (err as Error).message);

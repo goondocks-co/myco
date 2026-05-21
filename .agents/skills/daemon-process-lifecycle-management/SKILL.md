@@ -4,10 +4,11 @@ description: |
   Comprehensive procedures for managing Myco daemon process lifecycle including
   startup robustness, unified eviction and restart workflows, process identity
   management, multi-instance coordination, health checking, update application,
-  npm package upgrade handling, daemon binary version mismatch detection, and
-  resource cleanup. Covers operational daemon management patterns from
-  auto-spawn and migration tasks through SIGTERM/SIGKILL sequences to port
-  release verification and cross-runtime coordination. Use when starting,
+  npm package upgrade handling, daemon binary version mismatch detection,
+  event-loop safety patterns, lag monitoring, yield points, and resource cleanup.
+  Covers operational daemon management patterns from auto-spawn and migration tasks
+  through SIGTERM/SIGKILL sequences to port release verification, cross-runtime
+  coordination, and event loop responsiveness protection. Use when starting,
   restarting, updating, or coordinating daemon processes, even if the user
   doesn't explicitly ask for daemon lifecycle management.
 managed_by: myco
@@ -27,6 +28,9 @@ Myco daemon processes require careful lifecycle management to ensure reliable op
 - Basic knowledge of process discovery and PID validation concepts
 - Understanding of grove-scoped resource management
 - **Hub package no longer required** — global daemon replaces Hub functionality
+- Understanding of Node.js event loop fundamentals (libuv, microtasks vs macrotasks)
+- Access to daemon codebase in `packages/myco/src/daemon/`
+- Familiarity with async/await patterns and AbortController usage
 
 ## Procedure A: Daemon Startup and Robustness
 
@@ -41,39 +45,23 @@ async function serviceAwareDaemonControl(action: 'start' | 'restart' | 'stop'): 
   
   switch (action) {
     case 'start':
-      // launchctl will respawn if daemon dies
       await execAsync(`launchctl start ${serviceId}`);
       break;
-      
     case 'restart':
-      // Coordinated service restart - launchd handles respawn
       await execAsync(`launchctl stop ${serviceId}`);
-      await delay(1000); // Allow launchd to detect exit
+      await delay(1000);
       await execAsync(`launchctl start ${serviceId}`);
       break;
-      
     case 'stop':
-      // Permanent service stop
       await execAsync(`launchctl stop ${serviceId}`);
       break;
   }
 }
 ```
 
-**Service control implications:**
-- **Daemon restart** via `myco-dev restart` works through launchd, not direct SIGTERM
-- **Process respawn** is automatic via `KeepAlive=true` if daemon crashes
-- **Update application** must coordinate with launchd to prevent double-spawning
-- **Development workflow** benefits from automatic crash recovery during debugging
-
 ### Global Daemon Auto-Spawn via DaemonClient
 
 Grove architecture uses a global daemon that manages all projects through centralized `DaemonClient`:
-
-```typescript
-// Global daemon spawn - manages all groves
-await spawnDaemon();
-```
 
 **Global startup sequence:**
 1. **Check global daemon health** via `/health` endpoint on global port
@@ -95,47 +83,11 @@ INSTALLED_VERSION=$(myco --version 2>/dev/null | grep -o 'v[0-9.]\+' || echo "un
 
 if [ "$RUNNING_VERSION" != "unknown" ] && [ "$INSTALLED_VERSION" != "unknown" ]; then
   if [ "$RUNNING_VERSION" != "$INSTALLED_VERSION" ]; then
-    echo "Binary version mismatch detected:"
-    echo "  Running daemon: $RUNNING_VERSION"  
-    echo "  Installed binary: $INSTALLED_VERSION"
-    echo "  Restarting daemon to sync versions..."
-    
-    # Force daemon restart to pickup new binary
+    echo "Binary version mismatch detected - restarting daemon to sync versions..."
     myco daemon restart --force-version-sync
   fi
 fi
 ```
-
-**NPM upgrade detection pattern:**
-```typescript
-// Detect when npm install changed the global binary
-async function detectNpmUpgradeVersionMismatch(): Promise<boolean> {
-  const runningVersion = await getDaemonVersion();
-  const installedBinaryVersion = await getInstalledBinaryVersion();
-  
-  if (runningVersion && installedBinaryVersion && 
-      runningVersion !== installedBinaryVersion) {
-    console.warn('NPM upgrade detected - binary version mismatch', {
-      running: runningVersion,
-      installed: installedBinaryVersion
-    });
-    return true;
-  }
-  
-  return false;
-}
-
-// Check on daemon health requests - catch HTML vs JSON response mismatch
-async function validateDaemonResponseFormat(response: Response): Promise<void> {
-  const contentType = response.headers.get('content-type');
-  
-  if (contentType?.includes('text/html') && response.url.includes('/health')) {
-    throw new Error('Daemon serving HTML instead of JSON - likely binary version mismatch from npm upgrade');
-  }
-}
-```
-
-**Trigger points**: Context switch requests returning HTML instead of JSON, health check format inconsistencies, CLI commands failing with unexpected response formats, post-npm-install automatic validation.
 
 ### Grove Runtime Cache Architecture
 
@@ -151,13 +103,11 @@ class GroveRuntimeCache {
   // Tier 2: Recently used handles (LRU eviction)  
   private lruCache = new LRU<string, CachedHandle>(this.MAX_CACHE_SIZE);
   
-  // Pin critical handles to prevent eviction
   pinHandle(groveId: string, handle: CachedHandle): void {
     this.pinnedHandles.set(groveId, handle);
-    this.lruCache.delete(groveId); // Remove from LRU if present
+    this.lruCache.delete(groveId);
   }
   
-  // Unpin handle (moves to LRU tier if still valid)
   unpinHandle(groveId: string): void {
     const handle = this.pinnedHandles.get(groveId);
     if (handle && !this.isExpired(handle)) {
@@ -168,8 +118,6 @@ class GroveRuntimeCache {
 }
 ```
 
-**Cache safety mechanisms**: Bounded eviction (100 entries), pin protection for critical handles, TTL expiration (5 minutes), re-resolution on demand.
-
 ### Grove Boundary Violation Prevention
 
 **Critical pattern**: Prevent grove boundary violations in `forEachGrove()` operations:
@@ -178,31 +126,24 @@ class GroveRuntimeCache {
 // WRONG: Grove boundary violation pattern
 async function dangerousGroveOperation() {
   await forEachGrove(async (grove) => {
-    // Calling external grove binding inside grove iteration
     const binding = await resolveProjectGroveBinding(grove.projectId); // BOUNDARY VIOLATION
-    await grove.manifestOperations(binding); // May corrupt manifests
+    await grove.manifestOperations(binding);
   });
 }
 
 // RIGHT: Resolve bindings before grove iteration
 async function safeGroveOperation() {
-  // Collect all grove contexts first
   const groveContexts = [];
   await forEachGrove(async (grove) => {
     groveContexts.push({ grove: grove, projectId: grove.projectId });
   });
   
-  // Resolve bindings outside of grove iteration
   for (const context of groveContexts) {
     const binding = await resolveProjectGroveBinding(context.projectId);
     await context.grove.manifestOperations(binding); // Safe - proper ownership
   }
 }
 ```
-
-**Grove boundary violation symptoms**: Manifest corruption during multi-grove operations, ownership gaps in grove-specific resources, race conditions in grove state management.
-
-**Prevention pattern**: Always resolve external bindings outside of `forEachGrove()` iterations to maintain proper grove ownership boundaries.
 
 ## Procedure B: Unified Eviction and Restart
 
@@ -224,27 +165,12 @@ async function serviceAwareDaemonEviction(): Promise<void> {
   // 3. Verify process termination
   const daemonState = JSON.parse(fs.readFileSync('~/.myco/daemon.json', 'utf8'));
   if (daemonState.pid && isProcessRunning(daemonState.pid)) {
-    // Direct SIGKILL if launchd stop didn't work
     process.kill(daemonState.pid, 'SIGKILL');
   }
   
   // 4. Clean up daemon.json
   fs.unlinkSync('~/.myco/daemon.json');
 }
-```
-
-### Centralized Global Daemon Eviction
-
-All restart paths use global daemon eviction through centralized management:
-
-```typescript
-// Standard global daemon eviction
-await daemonClient.stopGlobalDaemon({
-  gracePeriodMs: 5000,
-  waitForExit: true,
-  verifyPortRelease: true,
-  coordinated: true // Notify all connected groves
-});
 ```
 
 ### SIGTERM → SIGKILL Sequence
@@ -256,22 +182,6 @@ await daemonClient.stopGlobalDaemon({
 4. **Send SIGKILL** if process still running after grace period
 5. **Verify global port release** to prevent port collision on restart
 6. **Clean up ~/.myco/daemon.json** once process confirmed terminated
-
-```bash
-# Manual global daemon eviction
-DAEMON_PID=$(jq -r '.pid' ~/.myco/daemon.json)
-kill -TERM $DAEMON_PID
-sleep 5
-if kill -0 $DAEMON_PID 2>/dev/null; then
-  kill -KILL $DAEMON_PID
-fi
-```
-
-### Grove-Coordinated Restart Paths
-
-**Common global restart triggers**: `myco restart` CLI command, global daemon health reconciliation, system update application, cross-grove health-check fallback recovery, global version-sync operations, Hub removal cleanup, **MCP bridge reconnect failures** (now auto-resolved).
-
-All use the same grove-aware eviction → spawn cycle for consistency.
 
 ### Five Daemon Restart Failure Modes and Mitigations (All Resolved)
 
@@ -290,14 +200,12 @@ All use the same grove-aware eviction → spawn cycle for consistency.
 **Mitigation**: PID validation via kill -0, cleanup of orphaned processes, daemon.json reconciliation
 
 #### Mode 4: MCP Bridge Reconnect Failure (Session Tool Loss) — **RESOLVED**
-**Previous symptoms**: Agent sessions lose MCP tool access, "myco_remember" and vault tools fail, session must be restarted
 **Resolution**: MCP stdio bridge now includes automatic daemon-restart recovery with indefinite reconnect capability
 
 ```typescript
 // MCP Bridge Auto-Recovery (v0.27.11+)
 class McpStdioBridge {
   private static readonly DAEMON_HEARTBEAT_INTERVAL_MS = 5000;
-  private static readonly RECONNECT_MAX_ATTEMPTS = Infinity; // Indefinite retry
   
   async startDaemonHeartbeat(): Promise<void> {
     setInterval(async () => {
@@ -311,23 +219,15 @@ class McpStdioBridge {
   }
   
   async attemptReconnect(): Promise<void> {
-    // Re-read daemon.json in case daemon restarted with new port
     const newDaemonState = await this.readDaemonState();
     this.daemonPort = newDaemonState.port;
-    
-    // Test reconnection
     await this.validateMcpConnection();
     console.log('MCP bridge reconnected successfully');
   }
 }
 ```
 
-**Recovery behavior**: MCP bridge automatically detects daemon restart, re-reads daemon.json for new port/PID, reconnects stdio transport, restores tool access without session restart required.
-
 #### Mode 5: Self-Update Double-Respawn Race (launchd + Manual Spawn Conflict) — **RESOLVED**
-**Symptoms**: Two daemon processes after self-update, port conflicts, service state inconsistency
-**Root cause**: Self-update triggers manual spawn while launchd `KeepAlive=true` also respawns daemon
-
 **Resolution pattern**:
 ```typescript
 // Self-update with service-aware coordination
@@ -349,10 +249,6 @@ async function selfUpdateWithServiceCoordination(): Promise<void> {
 }
 ```
 
-**Prevention mechanisms**: Temporary launchd service disable during updates, atomic update application, coordinated service restart, race condition detection and cleanup.
-
-All five failure modes now have automated detection and recovery mechanisms in v0.27.11-12.
-
 ## Procedure C: Process Identity and State Management
 
 ### ~/.myco/daemon.json as Global Authority
@@ -370,8 +266,6 @@ All five failure modes now have automated detection and recovery mechanisms in v
 }
 ```
 
-**New fields**: `hubMigrated` indicates Hub state migrated to global daemon, `groveCoordination` indicates grove-aware coordination is active.
-
 ### Global PID Validation Patterns
 
 ```bash
@@ -383,21 +277,9 @@ if ! kill -0 $DAEMON_PID 2>/dev/null; then
 fi
 ```
 
-### Global Port Binding Verification
-
-```bash
-DAEMON_PORT=$(jq -r '.port' ~/.myco/daemon.json)
-if ! lsof -i :$DAEMON_PORT >/dev/null 2>&1; then
-  echo "Global daemon not listening on port $DAEMON_PORT"
-  # Trigger global restart or cleanup
-fi
-```
-
 ## Procedure D: Multi-Instance Coordination
 
 ### Multi-Tenant Single-Port vs Per-Vault Port Design
-
-**Critical architecture decision**: Choose between single-port multi-tenant vs per-vault port allocation:
 
 ```typescript
 // Pattern A: Single-port multi-tenant design (recommended)
@@ -412,30 +294,6 @@ async function singlePortMultiTenant(): Promise<number> {
   
   return GLOBAL_DAEMON_PORT;
 }
-
-// Pattern B: Per-vault hash-based ports (problematic with multi-tenant)
-async function derivePortFromVaultPath(vaultPath: string): Promise<number> {
-  const hash = crypto.createHash('md5').update(vaultPath).digest('hex');
-  const port = 3700 + (parseInt(hash.substring(0, 4), 16) % 100);
-  
-  // ISSUE: Conflicts with single-port design expectations
-  return port;
-}
-```
-
-**Port allocation conflict resolution**: Prefer single-port multi-tenant (one global port 3721 with grove routing), deprecate per-vault ports (hash-based port derivation conflicts with multi-tenant expectations), migrate existing per-vault port allocations to single global port with grove headers.
-
-### Global Process Discovery
-
-```typescript
-// Find global daemon processes
-const globalPorts = [3720, 3721, 3722]; // Global daemon port range
-const listeningPids = findPidsListeningOn(globalPorts);
-
-// Cross-reference with global daemon state
-const activeGlobalDaemons = listeningPids.map(pid =>
-  findGlobalDaemonStateByPid(pid)
-).filter(Boolean);
 ```
 
 ### Global Daemon Conflict Resolution
@@ -456,8 +314,6 @@ When multiple global daemons detected:
 ```typescript
 // 1. /health — Raw Liveness Probe
 app.get('/health', (req, res) => {
-  // Returns immediately with process-level liveness signal
-  // No routed request, no DB scoping, no context validation
   res.json({
     status: 'alive',
     version: process.env.npm_package_version,
@@ -469,18 +325,11 @@ app.get('/health', (req, res) => {
 
 // 2. /ready — Routed Readiness Probe  
 app.get('/ready', async (req, res) => {
-  // Full readiness check with request context validation
   try {
-    // Validate request context propagation
     const groveId = req.headers['x-grove-id'] || 'default';
     
-    // Test database connectivity
     await validateDatabaseConnection(groveId);
-    
-    // Test grove coordination
     await validateGroveCoordination(groveId);
-    
-    // Test critical services
     await validateCriticalServices(groveId);
     
     res.json({
@@ -503,10 +352,6 @@ app.get('/ready', async (req, res) => {
 });
 ```
 
-**Probe usage patterns:**
-- **Liveness probe** (`/health`): Process monitoring, restart decisions, binary version checks
-- **Readiness probe** (`/ready`): Service availability, load balancing, grove-specific health
-
 ### Session Freshness Check with Tool-Use Activity Detection
 
 **Critical fix**: Session freshness checks must account for tool-use activity during long agentic turns:
@@ -514,7 +359,6 @@ app.get('/ready', async (req, res) => {
 ```typescript
 // WRONG: Missing tool-use activity in freshness calculation
 function getSessionLastActivity(session: Session): number {
-  // Only checks explicit user/assistant messages
   return Math.max(
     session.lastUserMessage?.timestamp || 0,
     session.lastAssistantMessage?.timestamp || 0
@@ -528,59 +372,13 @@ function getSessionLastActivityComplete(session: Session): number {
     session.lastAssistantMessage?.timestamp || 0
   );
   
-  // Include tool-use activity during long agentic turns
   const toolActivity = session.activities
     ?.filter(a => a.type === 'tool_use')
     ?.reduce((latest, activity) => Math.max(latest, activity.timestamp), 0) || 0;
   
   return Math.max(messageActivity, toolActivity);
 }
-
-// Session freshness check with tool-use awareness
-async function isSessionFresh(sessionId: string): Promise<boolean> {
-  const session = await getSession(sessionId);
-  const lastActivity = getSessionLastActivityComplete(session);
-  const staleBefore = Date.now() - (30 * 60 * 1000); // 30 minutes
-  
-  return lastActivity > staleBefore;
-}
 ```
-
-**Session freshness bug symptoms**: Sessions marked stale during active agentic workflows, premature session termination in long-running agent tasks, health checks missing ongoing tool-use activity.
-
-### Dual-Probe Health Validation
-
-```bash
-# Liveness check — fast process health
-DAEMON_PORT=$(jq -r '.port' ~/.myco/daemon.json)
-if curl -f -s "http://localhost:$DAEMON_PORT/health" >/dev/null; then
-  echo "Daemon process alive"
-else
-  echo "Daemon process dead - triggering restart"
-  myco daemon restart
-fi
-
-# Readiness check — full service validation
-GROVE_ID="default"
-if curl -f -s -H "x-grove-id: $GROVE_ID" "http://localhost:$DAEMON_PORT/ready" >/dev/null; then
-  echo "Daemon ready for requests"
-else
-  echo "Daemon not ready - investigating service issues"
-  # Continue with detailed diagnostics
-fi
-```
-
-### Grove-Aware Recovery Workflows
-
-**Global daemon recovery workflow:**
-1. **Attempt liveness ping** (`/health`) with reasonable timeout
-2. **Attempt readiness ping** (`/ready`) with grove context
-3. **Check global process existence** if liveness ping fails
-4. **Validate global port binding** if process exists
-5. **Check for Hub process interference** and migrate if needed
-6. **Coordinate grove notification** before eviction
-7. **Evict and restart global daemon** if unresponsive
-8. **Re-establish grove connections** after restart
 
 ## Procedure F: Update Application Workflow
 
@@ -598,33 +396,11 @@ fi
 9. **Re-establish grove connections** and validate successful startup
 10. **Clean up Hub artifacts** after successful migration
 
-### Grove State Preservation
-
-**Critical state to preserve**: Active grove connections and coordination state, per-grove configuration and preferences, cross-grove shared resources and locks, global daemon coordination metadata, Hub migration status and migrated configuration.
-
-```bash
-# Pre-update global state capture
-myco daemon snapshot --output ~/.myco/pre-update-snapshot.json --include-groves --include-hub-migration
-
-# Post-update state restoration with grove coordination
-myco daemon restore --input ~/.myco/pre-update-snapshot.json --coordinate-groves --verify-hub-migration
-```
-
 ## Procedure G: Multi-Environment Isolation and Grove Ownership
 
 ### Grove Ownership Enforcement
 
-Implement ownership filtering and validation to prevent cross-Grove mutations:
-
 ```typescript
-// Add ownership validation to Grove iteration
-forEachGrove((grove) => {
-  if (grove.served_by !== currentDaemonVariant) {
-    return; // Skip groves not owned by this daemon
-  }
-  // Proceed with grove operations
-});
-
 // Ownership validation function
 async function validateOwnership(grove: Grove, operation: string): Promise<void> {
   const currentVariant = daemonVariant(daemonStateDir);
@@ -632,51 +408,246 @@ async function validateOwnership(grove: Grove, operation: string): Promise<void>
     throw new Error(`Cannot ${operation} grove ${grove.id}: owned by ${grove.served_by}, not ${currentVariant}`);
   }
 }
+
+// Add ownership validation to Grove iteration
+forEachGrove((grove) => {
+  if (grove.served_by !== currentDaemonVariant) {
+    return; // Skip groves not owned by this daemon
+  }
+  // Proceed with grove operations
+});
 ```
 
-**Ownership validation patterns:**
-- Ensure every Grove has a `served_by` field matching its daemon variant (`'service'` or `'service-dev'`)
-- Validate variant consistency during Grove loading
-- Reject operations on Groves with mismatched ownership using `validateOwnership()`
+## Procedure H: Event Loop Safety and Responsiveness
 
-### Scope-Aware Daemon Operations
+### Event Loop Lag Monitoring
 
-Implement daemon-scope-aware operations that respect ownership boundaries:
+Set up always-on observability to detect when the event loop becomes unresponsive:
 
 ```typescript
-async function resolveAfterRepair(grove: Grove) {
-  // Add ownership gate using validateOwnership()
-  await validateOwnership(grove, 'repair');
-  // Proceed with repair operation
+export class EventLoopLagProbe {
+  private intervalMs: number;
+  private warnThresholdMs: number;
+  private timerId: NodeJS.Timeout | null = null;
+  private stats = { peakLag: 0, stallCount: 0 };
+
+  constructor(intervalMs = 250, warnThresholdMs = 500) {
+    this.intervalMs = intervalMs;
+    this.warnThresholdMs = warnThresholdMs;
+  }
+
+  start() {
+    this.scheduleNext();
+  }
+
+  private scheduleNext() {
+    const start = Date.now();
+    this.timerId = setTimeout(() => {
+      const lag = Date.now() - start - this.intervalMs;
+      if (lag > this.warnThresholdMs) {
+        logger.warn('daemon.lag', { lagMs: lag });
+        this.stats.stallCount++;
+      }
+      this.stats.peakLag = Math.max(this.stats.peakLag, lag);
+      this.scheduleNext();
+    }, this.intervalMs);
+  }
+
+  stop() {
+    if (this.timerId) clearTimeout(this.timerId);
+  }
+
+  getStats() { return { ...this.stats }; }
 }
 ```
 
-**Ownership gates in shared code paths:**
-- Add ownership checks to vault mutation operations using `validateOwnership()`
-- Validate scope before database writes  
-- Prevent dogfood daemons from mutating production vaults
+**Wire into daemon lifecycle** in `main.ts`:
+```typescript
+const lagProbe = new EventLoopLagProbe();
+lagProbe.start();
+// In shutdown handler: lagProbe.stop();
+```
+
+### Instrumented Fetch with Yield Points
+
+Create fetch wrappers that prevent blocking I/O from starving the event loop:
+
+```typescript
+export function createInstrumentedFetch(options: {
+  component: string;
+  headersTimeoutMs?: number;
+  idleTimeoutMs?: number;
+}): FetchLike {
+  const { component, headersTimeoutMs = 60000, idleTimeoutMs = 30000 } = options;
+  
+  return async function instrumentedFetch(input, init) {
+    const requestId = crypto.randomUUID().slice(0, 8);
+    const url = typeof input === 'string' ? input : input.url;
+    logger.debug('fetch.start', { component, requestId, url: redactUrl(url) });
+
+    const composedSignal = composeAbortSignals([
+      AbortSignal.timeout(headersTimeoutMs),
+      createIdleWatchdog(idleTimeoutMs),
+      init?.signal
+    ]);
+
+    const response = await fetch(input, { ...init, signal: composedSignal });
+    
+    // Wrap body to yield between chunks
+    if (response.body) {
+      response.body = wrapBodyWithYields(response.body, requestId, component);
+    }
+
+    return response;
+  };
+}
+
+function wrapBodyWithYields(body: ReadableStream, requestId: string, component: string) {
+  return new ReadableStream({
+    start(controller) {
+      const reader = body.getReader();
+      let chunkCount = 0;
+
+      function pump() {
+        reader.read().then(({ done, value }) => {
+          if (done) {
+            controller.close();
+            logger.debug('fetch.complete', { component, requestId, chunkCount });
+            return;
+          }
+          chunkCount++;
+          controller.enqueue(value);
+          
+          // Yield to libuv between chunks
+          setImmediate(pump);
+        }).catch(error => {
+          controller.error(error);
+          logger.warn('fetch.abort', { component, requestId, error: error.message });
+        });
+      }
+      pump();
+    }
+  });
+}
+```
+
+### Strategic Yield Points
+
+Insert strategic yield points in sync-heavy async operations:
+
+```typescript
+// Between processing waves
+async function processInWaves<T>(items: T[], waveSize: number, processor: (item: T) => Promise<void>) {
+  for (let i = 0; i < items.length; i += waveSize) {
+    const wave = items.slice(i, i + waveSize);
+    await Promise.allSettled(wave.map(processor));
+    
+    // Yield between waves to allow timers/I/O to fire
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+// In message stream consumption
+for await (const message of messageStream) {
+  await processMessage(message);
+  await new Promise(resolve => setImmediate(resolve)); // Prevent microtask saturation
+}
+```
+
+**Critical locations in Myco daemon:**
+- `agent/harness/claude.ts:117` - Claude SDK message stream consumption
+- `phase-loop.ts:680` - Between wave processing
+- `openai-local-mcp.ts:64` - After MCP tool handler calls
+- `release-provenance/reconcile.ts` - Per row, per ref, every 32 commits
+
+### Event Loop Starvation Diagnosis
+
+**Systematic approach to identify blocking issues:**
+
+1. **Reproduce the starvation**:
+   ```bash
+   # Set up concurrent /health probing
+   watch -n 0.1 'curl -w "%{time_total}s\n" -s localhost:8080/health' &
+   # Run suspected operation and look for timeout/latency spikes
+   ```
+
+2. **Use profiling to identify hot paths**:
+   ```bash
+   # macOS: Sample the process during starvation
+   sudo sample $(pgrep -f myco-daemon) 10 -file daemon-profile.txt
+   ```
+
+3. **Check existing observability**:
+   - Look for `daemon.lag` warnings in logs during starvation window
+   - Check fetch instrumentation logs for stuck requests
+   - Verify component correlation (claude-sdk, release-provenance)
+
+### Event-Loop-Aware Graceful Shutdown
+
+Prevent shutdown hangs that block daemon restarts:
+
+```typescript
+async function runShutdown(signal: string) {
+  logger.info('daemon.shutdown.start', { signal });
+  
+  // Drain in-flight work with timeout
+  await inflightRuns.drain(30000); // 30s grace period
+  
+  // Fast shutdown - replace long keep-alive drain
+  server.closeIdleConnections();
+  await Promise.race([
+    server.stop(),
+    new Promise(resolve => setTimeout(resolve, 100)) // 100ms max wait
+  ]);
+  
+  logger.info('daemon.shutdown.complete');
+}
+```
+
+### Responsiveness Testing
+
+Build verification that ensures changes don't introduce new starvation:
+
+```typescript
+test('daemon maintains responsiveness during heavy async work', async () => {
+  // Start loopback HTTP server for /health simulation
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('ok');
+    }
+  });
+  await new Promise(resolve => server.listen(0, resolve));
+  const port = server.address().port;
+
+  const heavyWork = simulateHeavyAsyncWork();
+  
+  // Probe /health throughout the work
+  const probeResults = [];
+  const probeInterval = setInterval(async () => {
+    const start = Date.now();
+    try {
+      await fetch(`http://localhost:${port}/health`);
+      probeResults.push(Date.now() - start);
+    } catch (error) {
+      probeResults.push(Infinity); // Timeout/error
+    }
+  }, 100);
+
+  await heavyWork;
+  clearInterval(probeInterval);
+  
+  // Assert max latency < 200ms
+  const maxLatency = Math.max(...probeResults);
+  expect(maxLatency).toBeLessThan(200);
+});
+```
 
 ## Cross-Cutting Gotchas
 
 ### Service-Aware Operations
 
-**launchd coordination gotcha**: Always coordinate with launchd service when managing daemon lifecycle to prevent double-spawning:
-
-```bash
-# Wrong - manual kill bypasses launchd
-kill -TERM $(jq -r '.pid' ~/.myco/daemon.json)
-
-# Right - service-aware stop
-launchctl stop co.goondocks.myco-dev
-```
-
-**Prevention**: Use service-aware control functions that coordinate with launchd for all daemon lifecycle operations.
-
-### Global Daemon Race Conditions
-
-**Grove coordination race gotcha**: When restarting global daemon, always coordinate grove shutdown before eviction. Starting immediately without grove coordination can cause grove connection interruption, orphaned grove processes, resource contention.
-
-**Prevention**: Use `coordinated: true` in eviction calls and verify grove notification completion.
+**launchd coordination gotcha**: Always coordinate with launchd service when managing daemon lifecycle to prevent double-spawning. Use service-aware control functions that coordinate with launchd.
 
 ### Grove Cache Performance
 
@@ -697,16 +668,20 @@ try {
 }
 ```
 
-### MCP Bridge Session Dependencies — **RESOLVED**
+### Event Loop Management
 
-**Previous gotcha**: MCP bridge required manual session restart after daemon restart.
+**Microtask vs macrotask confusion**: `setImmediate` yields to libuv (timers, I/O), but `Promise.resolve().then(...)` stays in microtasks. Use `setImmediate` for true yields.
 
-**Current behavior**: MCP stdio bridge automatically recovers from daemon restarts with indefinite reconnect capability. Sessions remain functional without manual intervention.
+**AbortSignal composition**: When adding timeouts to existing AbortSignal-aware APIs, compose signals rather than replacing them. Watch for deadlocks where `reader.read()` doesn't observe AbortSignals directly.
+
+**Yield point granularity**: Too frequent yields hurt performance; too sparse yields don't help responsiveness. Start with logical boundaries (end of message processing, end of row processing) and measure.
+
+**Profiling misdirection**: `posix_spawn` storms in profiles often come from sync shellouts (`runGit`) rather than the async operation you're investigating. Follow the call stacks carefully.
+
+**Shutdown composition**: Multiple large timeout budgets in sequence (30s + 60s) can surprise developers expecting quick restart cycles. Consider fast-shutdown paths for development.
 
 ### Grove Ownership and Multi-Environment Coordination
 
 **Always validate Grove ownership** using `validateOwnership()` before any mutation operation - shared code paths can easily bypass scope boundaries
 
-**Service directory isolation** requires careful path management - ensure environment-specific directories are properly isolated
-
-**Request context propagation gaps** - any database query path without request context creates potential cross-project data leakage in multi-tenant environments. All DB operations must validate and include project scoping to prevent query leaks across project boundaries
+**Request context propagation gaps** - any database query path without request context creates potential cross-project data leakage. All DB operations must validate and include project scoping.

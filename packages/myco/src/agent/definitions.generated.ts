@@ -12,7 +12,7 @@ export const BUNDLED_AGENT_DEFINITION: AgentDefinition = {
   "name": "myco-agent",
   "displayName": "Myco Agent",
   "description": "Default intelligence agent that processes captured session data, extracts observations (spores), manages spore lifecycle, and synthesizes digest extracts.\n",
-  "model": "claude-sonnet-4-20250514",
+  "model": "sonnet",
   "maxTurns": 30,
   "timeoutSeconds": 300,
   "systemPromptPath": "../prompts/agent.md",

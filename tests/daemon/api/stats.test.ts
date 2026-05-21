@@ -142,6 +142,7 @@ describe('createLiveStatsHandler', () => {
     expect(gatherStats).toHaveBeenCalledWith('/tmp/live-vault', {
       active_sessions: ['sess-1', 'sess-2'],
       scope: { kind: 'project', id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      groveId: 'grove-a',
     });
     expect(body.daemon.pid).toBe(process.pid);
     expect(body.daemon.port).toBe(18765);

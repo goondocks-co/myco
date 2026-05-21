@@ -66,7 +66,8 @@ export function EmbeddingCard() {
         <ScopedField
           path="embedding.provider"
           label="Provider"
-          defaultScope="local"
+          defaultScope="grove"
+          allowPersonal={false}
           requiresRestart
         >
           {({ value, onChange }) => (
@@ -88,7 +89,8 @@ export function EmbeddingCard() {
         <ScopedField
           path="embedding.model"
           label="Model"
-          defaultScope="local"
+          defaultScope="grove"
+          allowPersonal={false}
           requiresRestart
           commitOn={embeddingModels.length > 0 ? 'change' : 'blur'}
         >
@@ -122,7 +124,8 @@ export function EmbeddingCard() {
           path="embedding.base_url"
           label="Base URL"
           hint="optional"
-          defaultScope="local"
+          defaultScope="grove"
+          allowPersonal={false}
           requiresRestart
           commitOn="blur"
           parse={(v) => (v === '' ? (undefined as unknown as string) : v)}

@@ -1,10 +1,12 @@
 import { loadMergedConfig } from '../config/loader.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 
 const VERIFY_EMBEDDING_INPUT = 'test';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const config = loadMergedConfig(vaultDir);
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+  const config = loadMergedConfig(vaultDir, { groveId });
   const embeddingConfig = config.embedding;
 
   let embeddingOk = false;

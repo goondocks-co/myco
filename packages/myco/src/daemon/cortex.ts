@@ -156,8 +156,8 @@ export function getCortexInstructionsSnapshot(
   };
 }
 
-function resolvePromptBuilderSymbiont(vaultDir: string, requestedName?: string): SymbiontInfo | null {
-  const enabledSymbionts = listSymbiontInfos(vaultDir).filter((symbiont) => symbiont.enabled);
+function resolvePromptBuilderSymbiont(vaultDir: string, groveId: string | null, requestedName?: string): SymbiontInfo | null {
+  const enabledSymbionts = listSymbiontInfos(vaultDir, groveId).filter((symbiont) => symbiont.enabled);
   if (enabledSymbionts.length === 0) return null;
   if (!requestedName) return enabledSymbionts[0] ?? null;
   return enabledSymbionts.find((symbiont) => symbiont.name === requestedName) ?? null;
@@ -173,9 +173,9 @@ export async function buildCortexPrompt(
   goal: string,
   requestedSymbiont?: string,
 ): Promise<CortexPromptBuilderStartResult> {
-  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestedSymbiont);
-  const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
   const requestContext = resolveRequestContextForVault(vaultDir);
+  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext?.groveId ?? null, requestedSymbiont);
+  const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
   const scope: import('@myco/grove/ids.js').ProjectScope = requestContext?.projectId
     ? { kind: 'project', id: requestContext.projectId }
     : { kind: 'global' };

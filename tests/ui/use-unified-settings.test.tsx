@@ -101,7 +101,7 @@ function findField(key: string): SettingField {
   throw new Error(`Test fixture: missing field for key ${key}`);
 }
 
-const PROJECT_FIELD = findField('agent.provider.context_length');
+const PROJECT_FIELD = findField('notifications.enabled');
 const GROVE_FIELD = findField('maintenance.auto_optimize_interval_hours');
 const MACHINE_FIELD = findField('daemon.log_level');
 
@@ -135,7 +135,7 @@ describe('useUnifiedSettings', () => {
 
   it('readField walks the right config for each scope', () => {
     const { result } = renderHook(() => useUnifiedSettings());
-    expect(result.current.readField(PROJECT_FIELD)).toBe(4096);
+    expect(result.current.readField(PROJECT_FIELD)).toBe(true);
     expect(result.current.readField(GROVE_FIELD)).toBe(10);
     expect(result.current.readField(MACHINE_FIELD)).toBe('info');
   });
@@ -147,17 +147,17 @@ describe('useUnifiedSettings', () => {
     expect(result.current.readField(GROVE_FIELD)).toBeUndefined();
     expect(result.current.readField(MACHINE_FIELD)).toBeUndefined();
     // Project still resolves because its effective view is loaded.
-    expect(result.current.readField(PROJECT_FIELD)).toBe(4096);
+    expect(result.current.readField(PROJECT_FIELD)).toBe(true);
   });
 
   it('writeField(project) delegates to useScopedConfig.setField with project scope', async () => {
     const { result } = renderHook(() => useUnifiedSettings());
     await act(async () => {
-      await result.current.writeField(PROJECT_FIELD, 8192);
+      await result.current.writeField(PROJECT_FIELD, false);
     });
     expect(setFieldMock).toHaveBeenCalledWith(
-      'agent.provider.context_length',
-      8192,
+      'notifications.enabled',
+      false,
       'project',
     );
   });

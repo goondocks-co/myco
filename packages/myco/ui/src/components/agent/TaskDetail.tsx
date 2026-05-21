@@ -278,7 +278,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {execution.harness !== undefined && (
               <div>
-                <p className="font-sans text-xs text-on-surface-variant">Harness</p>
+                <p className="font-sans text-xs text-on-surface-variant">Runtime</p>
                 <p className="font-mono text-sm text-on-surface mt-0.5">{execution.harness}</p>
               </div>
             )}

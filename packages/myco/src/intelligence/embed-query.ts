@@ -31,9 +31,11 @@ export async function tryEmbed(text: string): Promise<number[] | null> {
     const { createEmbeddingProvider } = await import('./llm.js');
     const { loadMergedConfig } = await import('@myco/config/loader.js');
     const { resolveVaultDir } = await import('@myco/vault/resolve.js');
+    const { loadProjectManifest } = await import('@myco/config/project-manifest.js');
 
     const vaultDir = resolveVaultDir();
-    const config = loadMergedConfig(vaultDir);
+    const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+    const config = loadMergedConfig(vaultDir, { groveId });
     if (!config.embedding) return null;
 
     try {

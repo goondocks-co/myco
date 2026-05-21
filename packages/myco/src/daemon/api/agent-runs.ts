@@ -180,7 +180,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
-    const mycoConfig = loadMergedConfig(vaultDir);
+    const mycoConfig = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
     if (!hasConfiguredProvider(mycoConfig, task)) {
       return {
         status: 400,

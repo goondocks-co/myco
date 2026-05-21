@@ -117,12 +117,15 @@ function applyTaskConfigOverrides(
  * @param agentId — agent identifier.
  * @param requestedTask — optional task name from RunOptions.
  * @param vaultDir — absolute path to the vault directory.
+ * @param groveId — Grove id from the request context; null when confirmed
+ *   no Grove is bound; undefined triggers a dev-mode warning.
  * @returns the fully resolved config bundle.
  */
 export function resolveRunConfig(
   agentId: string,
   requestedTask: string | undefined,
   vaultDir: string,
+  groveId?: string | null,
 ): ResolvedRunConfig {
   const definitionsDir = resolveDefinitionsDir();
   const definition = loadAgentDefinition(definitionsDir);
@@ -173,7 +176,7 @@ export function resolveRunConfig(
   let harness: HarnessId = config.execution?.harness
     ?? HARNESS_CLAUDE_SDK;
   try {
-    const mycoConfig = loadMergedConfig(vaultDir);
+    const mycoConfig = loadMergedConfig(vaultDir, { groveId });
 
     // Per-task override takes priority over global
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;

@@ -1,8 +1,5 @@
 version: 3
 config_version: 9
-embedding:
-  provider: ollama
-  model: bge-m3:latest
 capture:
   transcript_paths: []
   plan_dirs:
@@ -39,83 +36,6 @@ release_provenance:
       tag_pattern: refs/tags/myco-collective/v*
     - path_glob: packages/myco-shared/
       tag_pattern: refs/tags/myco-shared/v*
-agent:
-  summary_batch_interval: 5
-  scheduled_tasks_enabled: true
-  event_tasks_enabled: true
-  cold_project_threshold_days: 14
-  provider:
-    type: anthropic
-    model: claude-sonnet-4-6
-  harness: claude-sdk
-  tasks:
-    title-summary-custom:
-      provider:
-        type: ollama
-        base_url: http://localhost:11434
-        model: glm-4.7-flash:latest
-    review-session:
-      provider:
-        type: anthropic
-        model: claude-sonnet-4-6
-    skill-survey:
-      provider:
-        type: anthropic
-      harness: claude-sdk
-      phases:
-        explore:
-          maxTurns: 20
-      schedule:
-        enabled: true
-        runIn:
-          - idle
-    skill-generate:
-      provider:
-        type: anthropic
-      harness: claude-sdk
-      phases:
-        validate:
-          maxTurns: 30
-      schedule:
-        enabled: true
-        runIn:
-          - idle
-    skill-evolve:
-      provider:
-        type: anthropic
-      harness: claude-sdk
-      phases:
-        assess:
-          maxTurns: 30
-      schedule:
-        enabled: true
-        intervalSeconds: 3200
-    canopy-describe:
-      provider:
-        type: lmstudio
-        base_url: http://10.29.13.49:1234
-        model: google/gemma-4-26b-a4b
-        reasoning_map:
-          low: openai/gpt-oss-20b
-          default: google/gemma-4-26b-a4b
-          high: google/gemma-4-31b
-        context_length: 16384
-      harness: openai-agents
-      schedule:
-        enabled: true
-      params:
-        batch_size: 10
-    canopy-map:
-      provider:
-        type: anthropic
-        model: claude-haiku-4-5-20251001
-        reasoning_map:
-          low: claude-haiku-4-5-20251001
-          default: claude-sonnet-4-6
-          high: claude-opus-4-6
-      harness: claude-sdk
-      schedule:
-        enabled: true
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30

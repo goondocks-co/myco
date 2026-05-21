@@ -346,15 +346,15 @@ describe('myco update', () => {
       // Direct mock the registry helpers instead of fixturing the on-disk
       // YAML — quicker to express and isolates this test from registry IO.
       const groveRecord = {
-        id: 'grove_test',
+        id: 'grove_00000000000000000000000000000001',
         name: 'Test',
         slug: 'test',
         mode: 'local' as const,
         created_at: new Date().toISOString(),
       };
       const projects = [
-        { project_id: 'proj_a', name: 'a', root: projectA, created_at: '', updated_at: '' },
-        { project_id: 'proj_b', name: 'b', root: projectB, created_at: '', updated_at: '' },
+        { project_id: 'proj_00000000000000000000000000000001', name: 'a', root: projectA, created_at: '', updated_at: '' },
+        { project_id: 'proj_00000000000000000000000000000002', name: 'b', root: projectB, created_at: '', updated_at: '' },
       ];
 
       mock.module('@myco/grove/registry.js', () => ({
@@ -377,7 +377,7 @@ describe('myco update', () => {
       fs.rmSync(path.join(projectB, '.myco'), { recursive: true, force: true });
 
       const groveRecord = {
-        id: 'grove_test',
+        id: 'grove_00000000000000000000000000000001',
         name: 'Test',
         slug: 'test',
         mode: 'local' as const,
@@ -386,8 +386,8 @@ describe('myco update', () => {
       mock.module('@myco/grove/registry.js', () => ({
         listGroves: () => [groveRecord],
         listRegisteredProjects: () => [
-          { project_id: 'proj_a', name: 'a', root: projectA, created_at: '', updated_at: '' },
-          { project_id: 'proj_b', name: 'b', root: projectB, created_at: '', updated_at: '' },
+          { project_id: 'proj_00000000000000000000000000000001', name: 'a', root: projectA, created_at: '', updated_at: '' },
+          { project_id: 'proj_00000000000000000000000000000002', name: 'b', root: projectB, created_at: '', updated_at: '' },
         ],
       }));
 

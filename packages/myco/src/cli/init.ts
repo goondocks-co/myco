@@ -13,7 +13,7 @@ import {
 } from './shared.js';
 import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
-import { updateConfig, saveConfig } from '../config/loader.js';
+import { updateConfig, saveConfig, updateGroveConfig } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { DEFAULT_OLLAMA_EMBEDDING_MODEL } from '../constants.js';
 import { getPluginVersion } from '../version.js';
@@ -118,7 +118,7 @@ export async function run(args: string[]): Promise<void> {
   // Show existing config summary on re-init
   if (alreadyInitialized && isInteractive) {
     const { loadMergedConfig } = await import('../config/loader.js');
-    const config = loadMergedConfig(vaultDir);
+    const config = loadMergedConfig(vaultDir, { groveId: grove.id });
     const agentProvider = config.agent.provider;
     const embConfig = config.embedding;
 
@@ -142,7 +142,6 @@ export async function run(args: string[]): Promise<void> {
     // provider in Settings, so a no-op "enabled" state is safe.
     const config = withInferredReleaseProvenanceDefaults(MycoConfigSchema.parse({
       version: 3,
-      ...(Object.keys(embeddingFromFlags).length > 0 ? { embedding: embeddingFromFlags } : {}),
     }), projectRoot);
 
     saveConfig(vaultDir, config);
@@ -166,6 +165,16 @@ export async function run(args: string[]): Promise<void> {
   });
   ensureGroveDatabase(grove.id);
 
+  // Write embedding flags to the Grove tier (new vault only). Embedding
+  // config belongs in ~/.myco/groves/<id>/config.yaml, not the project
+  // YAML — ProjectConfigSchema strips those fields on save.
+  if (Object.keys(embeddingFromFlags).length > 0) {
+    updateGroveConfig(grove.id, (c) => ({
+      ...c,
+      embedding: { ...c.embedding, ...embeddingFromFlags },
+    }));
+  }
+
   const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);
   const detectedNames = new Set(detected.map((d) => d.manifest.name));
@@ -176,7 +185,7 @@ export async function run(args: string[]): Promise<void> {
   if (alreadyInitialized) {
     try {
       const { loadMergedConfig } = await import('../config/loader.js');
-      const existing = loadMergedConfig(vaultDir);
+      const existing = loadMergedConfig(vaultDir, { groveId: grove.id });
       existingSymbionts = existing.symbionts;
     } catch { /* config not loadable — skip pre-check */ }
   }
@@ -246,7 +255,7 @@ export async function run(args: string[]): Promise<void> {
         ...config,
         symbionts: symbiontsConfig,
       }));
-      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
+      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered', undefined, grove.id);
     }
   }
 
@@ -340,7 +349,8 @@ async function runWorktreeBootstrap(): Promise<void> {
   // Pull symbiont enablement from the main repo's merged config so we
   // bootstrap exactly the symbionts the user already configured.
   const { loadMergedConfig } = await import('../config/loader.js');
-  const config = loadMergedConfig(mainVaultDir);
+  const mainGroveId = loadProjectManifest(mainVaultDir)?.grove?.id ?? null;
+  const config = loadMergedConfig(mainVaultDir, { groveId: mainGroveId });
   const enabledNames = new Set(
     Object.entries(config.symbionts ?? {})
       .filter(([, value]) => (value as { enabled?: boolean }).enabled)
@@ -361,7 +371,7 @@ async function runWorktreeBootstrap(): Promise<void> {
 
   const pkgRoot = resolvePackageRoot();
   console.log(`Bootstrapping ${selectedManifests.length} symbiont(s) in worktree ${worktreeRoot}`);
-  registerSymbionts(selectedManifests, worktreeRoot, pkgRoot, 'Registered', mainVaultDir);
+  registerSymbionts(selectedManifests, worktreeRoot, pkgRoot, 'Registered', mainVaultDir, mainGroveId);
 
   // Mirror the project-scoped runtime pin into the worktree if one exists.
   // myco-run.cjs walks up from cwd looking for `<dir>/.myco/runtime.command`,

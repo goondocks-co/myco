@@ -155,6 +155,7 @@ export function NotificationSettings() {
                               </span>
                               {personal ? (
                                 <ScopePill
+                                  mode="local-default"
                                   onPromote={() => promoteField(domainPath)}
                                   onReset={() => resetField(domainPath)}
                                 />
