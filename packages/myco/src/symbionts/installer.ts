@@ -227,14 +227,18 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg) return null;
     if (this.installScope === 'global') {
-      // No `globalSettingsTarget` on manifests — settings under the
-      // global install are merged into the same file as hooks (Claude
-      // Code's `~/.claude/settings.json`, Codex's `~/.codex/config.toml`,
-      // etc.). Settings-merge handles the marker-bounded shared write.
+      // Settings under the global install share the agent's hooks file
+      // ONLY when that file is the agent's settings format (JSON config
+      // file Claude Code-style). For plugin-file hook targets (opencode's
+      // TS plugin, antigravity's bundled hooks.json) the hooks file is
+      // the plugin payload — writing the settings template there would
+      // clobber the plugin source. Skip settings in that case; the
+      // agent's actual settings file lives separately at
+      // `globalMcpTarget` or remains project-local.
       const target = field === 'hooks' ? reg.globalHooksTarget
         : field === 'mcp' ? reg.globalMcpTarget
         : field === 'skills' ? reg.globalSkillsTarget
-        : reg.globalHooksTarget;
+        : (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE ? null : reg.globalHooksTarget);
       if (!target) return null;
       return expandHome(target);
     }
@@ -262,11 +266,29 @@ export class SymbiontInstaller {
     if (!reg?.hooksTarget) return false;
     const targetPath = this.resolveAbsoluteTarget('hooks');
     if (!targetPath) return false;
+    let raw: string;
     try {
-      const raw = fs.readFileSync(targetPath, 'utf-8');
-      if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
-        return raw.includes(MYCO_PLUGIN_FILE_MARKER);
-      }
+      raw = fs.readFileSync(targetPath, 'utf-8');
+    } catch {
+      return false;
+    }
+    // Plugin-file targets: prefer the bundle marker (opencode/pi
+    // ship it inline). For plugin-file targets whose template is JSON
+    // (antigravity's hooks.json), the marker comment isn't present;
+    // fall through to the launcher-command substring scan below.
+    if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
+      if (raw.includes(MYCO_PLUGIN_FILE_MARKER)) return true;
+      return /\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/.test(raw);
+    }
+    // JSON path: prefer the structured walk (catches a Myco-marked
+    // group even if the command field gets renamed in a future
+    // template). Fall back to substring detection when the file
+    // isn't strict JSON — Codex's `~/.codex/hooks.json` ships with
+    // a TOML `[features]` footer that JSON.parse rejects but the
+    // agent itself reads happily. An inspector must answer "are we
+    // wired in" correctly across both shapes; the writer (installHooks)
+    // still owns the strict-JSON contract.
+    try {
       const parsed = JSON.parse(raw) as { hooks?: Record<string, unknown[]> };
       const hooks = parsed.hooks ?? {};
       for (const groups of Object.values(hooks)) {
@@ -274,10 +296,10 @@ export class SymbiontInstaller {
           if (isMycoHookGroup(group)) return true;
         }
       }
-      return false;
     } catch {
-      return false;
+      /* fall through to substring scan */
     }
+    return /\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/.test(raw);
   }
 
   /**
@@ -551,12 +573,14 @@ export class SymbiontInstaller {
     if (!reg) return;
 
     if (reg.settingsTarget) {
-      const settingsPath = this.resolveAbsoluteTarget("settings")!;
+      const settingsPath = this.resolveAbsoluteTarget("settings");
       const format = reg.settingsFormat ?? 'json';
-      if (format === 'toml') {
-        this.stripLegacyFromToml(settingsPath);
-      } else {
-        this.stripLegacyFromJson(settingsPath);
+      if (settingsPath) {
+        if (format === 'toml') {
+          this.stripLegacyFromToml(settingsPath);
+        } else {
+          this.stripLegacyFromJson(settingsPath);
+        }
       }
     }
 
@@ -1364,7 +1388,11 @@ export class SymbiontInstaller {
     const template = this.loadTemplate('settings');
     if (!template) return false;
 
-    const targetPath = this.resolveAbsoluteTarget("settings")!;
+    const targetPath = this.resolveAbsoluteTarget("settings");
+    // Plugin-file hook targets don't share their file with settings;
+    // resolveAbsoluteTarget returns null in that case under global
+    // scope so the settings template can't clobber the plugin source.
+    if (!targetPath) return false;
     const settingsFormat = reg.settingsFormat ?? 'json';
 
     if (settingsFormat === 'toml') {
@@ -1410,7 +1438,8 @@ export class SymbiontInstaller {
     const template = this.loadTemplate('settings');
     if (!template) return false;
 
-    const targetPath = this.resolveAbsoluteTarget("settings")!;
+    const targetPath = this.resolveAbsoluteTarget("settings");
+    if (!targetPath) return false;
     const settingsFormat = reg.settingsFormat ?? 'json';
 
     if (settingsFormat === 'toml') {

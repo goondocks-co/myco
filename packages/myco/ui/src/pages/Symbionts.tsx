@@ -51,7 +51,7 @@ export default function Symbionts() {
       <PageHeader
         title="Symbionts"
         description="Every coding agent Myco knows about, with detection and global-install status for this machine."
-        action={
+        actions={
           <Button onClick={redetect} disabled={detecting} variant="outline" size="sm">
             <RefreshCw className={`h-4 w-4 mr-1.5 ${detecting ? 'animate-spin' : ''}`} />
             {detecting ? 'Detecting…' : 'Re-detect now'}
@@ -73,7 +73,7 @@ export default function Symbionts() {
             title="Not detected"
             description="Agents Myco supports but doesn't see on this machine"
             symbionts={notDetected}
-            emptyMessage="Every supported agent is wired in."
+            emptyMessage="Every supported agent is installed on this machine."
             muted
           />
           {lastDetectionAt && (
