@@ -349,7 +349,7 @@ export function writeArchive(project: MigrationProjectState): string | null {
 
   const now = new Date();
   const timestamp = now.toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
-  const archiveDir = path.join(project.vaultDir, 'archive', timestamp);
+  const archiveDir = path.join(project.vaultDir, `.archive-agent-config-${timestamp}`);
   fs.mkdirSync(archiveDir, { recursive: true });
   const archivePath = path.join(archiveDir, 'agent-config-promotion.yaml');
 

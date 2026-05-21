@@ -54,14 +54,11 @@ local.yaml
 # never committed.
 runtime.command
 
-# Grove migration archive — timestamped snapshot of pre-Grove vault data
-# moved aside post-activation. Never committed; recoverable on disk.
+# Migration archives — timestamped snapshots of pre-migration vault state.
+# Covers the prior Grove activation (.archive-pre-grove-*/) and the
+# agent-config Grove promotion (.archive-agent-config-*/). Local-only
+# forensic safety net; never committed.
 .archive-*/
-
-# Agent-config Grove promotion archive — timestamped snapshot of the
-# embedding/agent fields the migration lifted from project tier to Grove.
-# Local-only forensic safety net per the spec; never committed.
-archive/
 `;
 
 /**

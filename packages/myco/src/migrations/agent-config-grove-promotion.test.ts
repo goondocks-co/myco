@@ -377,8 +377,10 @@ describe('writeArchive', () => {
         expect((mycoYaml.agent as Record<string, unknown>).model).toBe('claude-sonnet');
         expect((localYaml.agent as Record<string, unknown>).model).toBe('claude-opus');
 
-        // Archive path is inside vaultDir/archive/<timestamp>/
-        expect(archivePath!).toContain(path.join(project.vaultDir, 'archive'));
+        // Archive path is inside vaultDir/.archive-agent-config-<timestamp>/
+        // — matches the existing VAULT_GITIGNORE `.archive-*/` pattern from
+        // the prior Grove activation migration.
+        expect(archivePath!).toContain(path.join(project.vaultDir, '.archive-agent-config-'));
         expect(path.basename(archivePath!)).toBe('agent-config-promotion.yaml');
       },
     );
@@ -411,9 +413,11 @@ describe('writeArchive', () => {
         const archivePath = writeArchive(project);
         expect(archivePath).toBeNull();
 
-        // No archive directory created.
-        const archiveBase = path.join(project.vaultDir, 'archive');
-        expect(fs.existsSync(archiveBase)).toBe(false);
+        // No archive directory created — vaultDir has no `.archive-agent-config-*` entry.
+        const dirs = fs.existsSync(project.vaultDir)
+          ? fs.readdirSync(project.vaultDir).filter((n) => n.startsWith('.archive-agent-config-'))
+          : [];
+        expect(dirs).toHaveLength(0);
       },
     );
   });
@@ -541,10 +545,12 @@ describe('executeMigration', () => {
         const result1 = await executeMigration(plan1, { mycoHome: handle.mycoHome });
         expect(result1.ok).toBe(true);
 
-        // Count archive dirs after first run.
+        // Count `.archive-agent-config-*` dirs after first run.
         const vaultDir = plan1.groves[0]!.projects[0]!.vaultDir;
-        const archiveBase = path.join(vaultDir, 'archive');
-        const firstRunDirs = fs.existsSync(archiveBase) ? fs.readdirSync(archiveBase) : [];
+        const listArchives = () => fs.existsSync(vaultDir)
+          ? fs.readdirSync(vaultDir).filter((n) => n.startsWith('.archive-agent-config-'))
+          : [];
+        const firstRunDirs = listArchives();
 
         // Second run — re-read (promotedSlices will be empty after strip).
         const { plan: plan2 } = await readMigrationPlan(machine, { mycoHome: handle.mycoHome });
@@ -552,8 +558,7 @@ describe('executeMigration', () => {
         expect(result2.ok).toBe(true);
 
         // No new archive dir created on second run.
-        const secondRunDirs = fs.existsSync(archiveBase) ? fs.readdirSync(archiveBase) : [];
-        expect(secondRunDirs).toHaveLength(firstRunDirs.length);
+        expect(listArchives()).toHaveLength(firstRunDirs.length);
       },
     );
   });
