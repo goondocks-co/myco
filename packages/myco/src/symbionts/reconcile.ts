@@ -19,14 +19,15 @@ export function reconcileConfiguredSymbionts(
   projectRoot: string,
   vaultDir = path.join(projectRoot, '.myco'),
   preloadedConfig?: MycoConfig,
+  groveId?: string | null,
 ): number {
-  const config = preloadedConfig ?? loadMergedConfig(vaultDir);
+  const config = preloadedConfig ?? loadMergedConfig(vaultDir, { groveId });
   const manifests = getConfiguredManifests(projectRoot, config);
   const packageRoot = resolvePackageRoot();
   let updatedCount = 0;
 
   for (const manifest of manifests) {
-    const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId);
     installer.install();
     updatedCount++;
   }

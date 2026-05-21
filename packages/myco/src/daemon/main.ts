@@ -752,7 +752,7 @@ export async function main(): Promise<void> {
               to_version: raw.to_version,
               local_update_ran: raw.local_update_ran ?? false,
             },
-          }, undefined, { scope: 'daemon' });
+          }, liveConfig.current, { scope: 'daemon' });
 
           logger.info(LOG_KINDS.DAEMON_START, 'Version sync restart detected', {
             from: raw.from_version,

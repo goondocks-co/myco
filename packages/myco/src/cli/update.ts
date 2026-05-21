@@ -166,7 +166,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   }
 
   if (configured.length > 0) {
-    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated');
+    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated', undefined, groveId);
     updatedCount += registered;
   } else {
     console.log('  \u2013 No configured agents found');

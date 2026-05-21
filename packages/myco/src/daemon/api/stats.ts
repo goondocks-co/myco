@@ -66,6 +66,7 @@ export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
     const stats = gatherStats(statsVaultDir, {
       active_sessions: deps.registry.sessions,
       scope,
+      groveId: req.requestContext?.groveId ?? null,
     });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
     stats.daemon.pid = process.pid;

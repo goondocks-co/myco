@@ -175,7 +175,7 @@ export async function runAgent(
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
     taskParams: resolvedTaskParams,
-  } = resolveRunConfig(agentId, requestedTask, vaultDir);
+  } = resolveRunConfig(agentId, requestedTask, vaultDir, options?.requestContext?.groveId ?? null);
 
   // Build an effective config for this run by layering per-run overrides
   // on top of the resolved config WITHOUT mutating the resolveRunConfig

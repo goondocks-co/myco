@@ -118,7 +118,7 @@ export async function run(args: string[]): Promise<void> {
   // Show existing config summary on re-init
   if (alreadyInitialized && isInteractive) {
     const { loadMergedConfig } = await import('../config/loader.js');
-    const config = loadMergedConfig(vaultDir);
+    const config = loadMergedConfig(vaultDir, { groveId: grove.id });
     const agentProvider = config.agent.provider;
     const embConfig = config.embedding;
 
@@ -185,7 +185,7 @@ export async function run(args: string[]): Promise<void> {
   if (alreadyInitialized) {
     try {
       const { loadMergedConfig } = await import('../config/loader.js');
-      const existing = loadMergedConfig(vaultDir);
+      const existing = loadMergedConfig(vaultDir, { groveId: grove.id });
       existingSymbionts = existing.symbionts;
     } catch { /* config not loadable — skip pre-check */ }
   }
@@ -255,7 +255,7 @@ export async function run(args: string[]): Promise<void> {
         ...config,
         symbionts: symbiontsConfig,
       }));
-      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
+      registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered', undefined, grove.id);
     }
   }
 
@@ -349,7 +349,8 @@ async function runWorktreeBootstrap(): Promise<void> {
   // Pull symbiont enablement from the main repo's merged config so we
   // bootstrap exactly the symbionts the user already configured.
   const { loadMergedConfig } = await import('../config/loader.js');
-  const config = loadMergedConfig(mainVaultDir);
+  const mainGroveId = loadProjectManifest(mainVaultDir)?.grove?.id ?? null;
+  const config = loadMergedConfig(mainVaultDir, { groveId: mainGroveId });
   const enabledNames = new Set(
     Object.entries(config.symbionts ?? {})
       .filter(([, value]) => (value as { enabled?: boolean }).enabled)
@@ -370,7 +371,7 @@ async function runWorktreeBootstrap(): Promise<void> {
 
   const pkgRoot = resolvePackageRoot();
   console.log(`Bootstrapping ${selectedManifests.length} symbiont(s) in worktree ${worktreeRoot}`);
-  registerSymbionts(selectedManifests, worktreeRoot, pkgRoot, 'Registered', mainVaultDir);
+  registerSymbionts(selectedManifests, worktreeRoot, pkgRoot, 'Registered', mainVaultDir, mainGroveId);
 
   // Mirror the project-scoped runtime pin into the worktree if one exists.
   // myco-run.cjs walks up from cwd looking for `<dir>/.myco/runtime.command`,

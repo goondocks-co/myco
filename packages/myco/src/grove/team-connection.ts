@@ -61,7 +61,7 @@ export function loadTeamConnectionConfig(
   requestContext?: MycoRequestContext,
 ): TeamConfig {
   const store = resolveTeamConnectionStore(fallbackVaultDir, requestContext);
-  if (!store.groveId) return loadMergedConfig(fallbackVaultDir).team;
+  if (!store.groveId) return loadMergedConfig(fallbackVaultDir, { groveId: null }).team;
   const doc = readGroveConfig(store.configPath);
   return parseTeamConfig(doc.team ?? {});
 }
