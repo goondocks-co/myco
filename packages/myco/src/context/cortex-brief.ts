@@ -50,7 +50,7 @@ const CONTENT_PREVIEW_MAX_CHARS = 360;
 const DIGEST_EXCERPT_MAX_CHARS = 1800;
 const JSON_INDENT = 2;
 
-export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use those skills directly when relevant, and do not instruct it to call `myco_skills`.';
+export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use the `myco` skill as the fuller workflow reference for design decisions, non-obvious debugging, prior-project context, plan work, durable knowledge capture, and delegation; keep the explicit tool guidance as the compact always-on version of that workflow. Do not instruct it to call `myco_skills`.';
 export const RETIRED_TOOL_NAMES = [
   'canopy_map',
   'myco_context',
@@ -391,10 +391,12 @@ export async function buildCortexInstructionsInput(
     '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Prefer the project-resolved CLI JSON launcher (`node .agents/myco-cli.cjs tool ...`) as the portable fallback and describe MCP as available when the host exposes it cleanly.',
     '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
+    '- Do not introduce additional tool calls inside recent-workstream prose. Only name tool operations that appear in "Tool guidance to encode" or in the required plan-persistence, delegation, and spore-save guidance; never invent extra `myco_cortex` ops from recent context.',
     `- ${CORTEX_SKILLS_NOTE}`,
     `- ${RETIRED_TOOLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
+    '- Include one delegation sentence: before delegating work to another agent, subagent, teammate, worker session, or other spawned process, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Include the CLI fallback `node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"instructions"}\'` for hosts without MCP. Do not assume the returned instructions have any particular heading or section name.',
     // The recent-plans section is background context, not a task list for
     // the incoming session. The session is launching to do something else;
     // these plans tell the agent what shape of work the project has on file

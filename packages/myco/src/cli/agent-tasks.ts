@@ -8,7 +8,7 @@
  *   task show <name>                     Show a single task with phases
  *   task create <name> --from <template> Copy a template task to user dir
  *   task delete <name>                   Delete a user task
- *   task run <name> [--instruction TEXT] Run a task via the agent
+ *   task run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
  */
 
 import { connectToDaemon, printHelpIfRequested } from './shared.js';
@@ -209,15 +209,16 @@ async function runTask(args: string[], vaultDir: string): Promise<void> {
 
   const name = args[0];
   const instruction = args.find((_, i) => args[i - 1] === '--instruction');
+  const dryRun = args.includes('--dry-run');
 
   if (!name) {
-    console.error('Usage: myco task run <name> [--instruction TEXT]');
+    console.error('Usage: myco task run <name> [--instruction TEXT] [--dry-run]');
     process.exit(1);
   }
 
   const client = await connectToDaemon(vaultDir);
   console.log('Starting agent...');
-  const result = await client.post('/api/agent/run', { task: name, instruction });
+  const result = await client.post('/api/agent/run', { task: name, instruction, ...(dryRun ? { dryRun } : {}) });
 
   if (!result.ok) {
     console.error('Failed to start agent run');
@@ -241,13 +242,14 @@ Subcommands:
   show <name>                     Show task details and phases
   create <name> --from <template> Copy a task template to your user dir
   delete <name>                   Delete a user task
-  run <name> [--instruction TEXT] Run a task via the agent
+  run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
 `;
 
-const TASK_RUN_USAGE = `Usage: myco task run <name> [--instruction TEXT]
+const TASK_RUN_USAGE = `Usage: myco task run <name> [--instruction TEXT] [--dry-run]
 
 Options:
   --instruction TEXT  Additional instruction to pass to the agent run.
+  --dry-run           Record intended writes without mutating vault state.
   -h, --help          Show this help
 `;
 

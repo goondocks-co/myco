@@ -1,92 +1,80 @@
 # Reconfiguration
 
-Workflows for changing LLM providers, models, and digest settings on an existing vault. **Use the AskUserQuestion tool** to ask which settings to change — do not guess.
+Workflows for changing embedding settings and verifying an existing Myco project. Ask the user which setting they want changed; do not guess.
 
-## Changing LLM or Embedding Provider/Model
+## Current Model
 
-Follow this exact order:
+- LLM execution for the Myco agent is managed by the agent harness (currently Claude Agent SDK in dogfood paths), not by `setup-llm`.
+- Embedding configuration is user-configurable and lives at the Grove tier.
+- `setup-llm` configures embedding settings only. Legacy `--llm-*` flags are ignored with a notice.
+- Digest and Cortex settings live in scoped config/UI surfaces; `setup-digest` is deprecated.
 
-```bash
-# 1. Detect what's available
-node <plugin-root>/dist/src/cli.js detect-providers
+## Changing Embedding Provider or Model
 
-# 2. Apply the change (use the correct --llm- or --embedding- prefixed flags)
-node <plugin-root>/dist/src/cli.js setup-llm \
-  --llm-provider <provider> --llm-model <model> \
-  --embedding-provider <provider> --embedding-model <model>
-
-# 3. ALWAYS restart daemon after any config change
-node <plugin-root>/dist/src/cli.js restart
-
-# 4. Only rebuild if the EMBEDDING model changed (not needed for LLM-only changes)
-node <plugin-root>/dist/src/cli.js rebuild
-
-# 5. Verify connectivity
-node <plugin-root>/dist/src/cli.js verify
-```
-
-### Critical Flags
-
-The `setup-llm` command uses `--llm-provider`, `--llm-model`, `--embedding-provider`, `--embedding-model` — NOT `--provider` or `--model`. Only pass flags for settings the user explicitly wants to change.
-
-### Order Matters
-
-1. `setup-llm` writes config
-2. `restart` loads the new config into the daemon
-3. `rebuild` re-embeds with the new embedding model (skip if embedding didn't change)
-4. `verify` confirms everything works
-
-### Embedding Model Warning
-
-If the embedding model changed, tell the user: "Changing the embedding model requires a full vector index rebuild. This may take a few minutes."
-
-## Changing Digest Settings
+Follow this order:
 
 ```bash
-node <plugin-root>/dist/src/cli.js setup-digest \
-  --context-window <number> --inject-tier <tier>
-node <plugin-root>/dist/src/cli.js restart
+# 1. Detect local providers when choosing a local embedding backend
+node .agents/myco-cli.cjs detect-providers
+
+# 2. Show current Grove-tier embedding settings
+node .agents/myco-cli.cjs setup-llm --show
+
+# 3. Apply only the requested embedding changes
+node .agents/myco-cli.cjs setup-llm \
+  --embedding-provider <provider> \
+  --embedding-model <model>
+
+# 4. Restart daemon so runtime reads the new config
+node .agents/myco-cli.cjs restart
+
+# 5. Rebuild vectors if the embedding model changed
+node .agents/myco-cli.cjs rebuild
+
+# 6. Verify embedding connectivity
+node .agents/myco-cli.cjs verify
 ```
 
-For all available `setup-digest` flags (tiers, provider override, metabolism tuning, token budgets), see `cli-usage.md`.
+If only the embedding URL changed and the provider/model stayed the same, restart and verify are enough. If the embedding model changed, tell the user: "Changing the embedding model requires a full vector index rebuild. This may take a few minutes."
 
 ## Viewing Current Settings
 
 ```bash
-node <plugin-root>/dist/src/cli.js setup-llm --show
-node <plugin-root>/dist/src/cli.js setup-digest --show
+node .agents/myco-cli.cjs setup-llm --show
+node .agents/myco-cli.cjs config get cortex.instructions.inject_on_session_start
+node .agents/myco-cli.cjs config get cortex.digest.inject_on_session_start
 ```
+
+Prefer `setup-llm --show` for embedding settings instead of raw config reads; it resolves the Grove tier correctly.
 
 ## Common Scenarios
 
-### "Change my LLM model" (same provider)
+### "Change my embedding model"
 
 ```bash
-node <plugin-root>/dist/src/cli.js setup-llm --llm-model qwen3.5:35b
-node <plugin-root>/dist/src/cli.js restart
-node <plugin-root>/dist/src/cli.js verify
+node .agents/myco-cli.cjs setup-llm --embedding-model bge-m3
+node .agents/myco-cli.cjs restart
+node .agents/myco-cli.cjs rebuild
+node .agents/myco-cli.cjs verify
 ```
 
-No rebuild needed — embedding didn't change.
-
-### "Switch from Ollama to LM Studio"
+### "Switch embedding provider"
 
 ```bash
-node <plugin-root>/dist/src/cli.js detect-providers
-node <plugin-root>/dist/src/cli.js setup-llm \
-  --llm-provider lm-studio --llm-model "qwen/qwen3.5-35b-a3b"
-node <plugin-root>/dist/src/cli.js restart
-node <plugin-root>/dist/src/cli.js verify
+node .agents/myco-cli.cjs detect-providers
+node .agents/myco-cli.cjs setup-llm \
+  --embedding-provider ollama \
+  --embedding-model bge-m3
+node .agents/myco-cli.cjs restart
+node .agents/myco-cli.cjs rebuild
+node .agents/myco-cli.cjs verify
 ```
 
-### "Change everything" (provider, model, and embedding)
+### "Enable or disable Cortex instruction injection"
 
 ```bash
-node <plugin-root>/dist/src/cli.js detect-providers
-node <plugin-root>/dist/src/cli.js setup-llm \
-  --llm-provider ollama --llm-model qwen3.5:35b \
-  --embedding-provider ollama --embedding-model bge-m3
-node <plugin-root>/dist/src/cli.js restart
-node <plugin-root>/dist/src/cli.js rebuild
-node <plugin-root>/dist/src/cli.js verify
+node .agents/myco-cli.cjs config set cortex.instructions.inject_on_session_start true
+node .agents/myco-cli.cjs restart
 ```
+
+Use the Settings UI when possible for scoped config edits; it shows whether a value is machine, Grove, project, or local.

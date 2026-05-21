@@ -97,7 +97,14 @@ phases:
          explaining that Myco provides project memory, prior decisions,
          plans, and retrieval tools for this repository.
 
-      2. A retrieval paragraph structured as two short workflow-framed
+      2. A skill-reference sentence telling the agent to use the `myco`
+         skill as the fuller workflow reference for design decisions,
+         non-obvious debugging, prior-project context, plan work,
+         durable knowledge capture, and delegation; the explicit tool
+         guidance in these instructions is the compact always-on version
+         of that workflow. Do not tell the agent to call `myco_skills`.
+
+      3. A retrieval paragraph structured as two short workflow-framed
          sentences, in this order:
 
          (a) Canopy Map opener — if and only if the tool guidance
@@ -130,21 +137,41 @@ phases:
          sub-bullets) so the reading flow is "default first move →
          situational lookup."
 
-      3. A plan-persistence paragraph naming `myco_plans` with
-         op `"list"`, `"get"`, and `"save"`.
+      4. A plan-persistence paragraph naming `myco_plans` with
+         op `"list"`, `"get"`, and `"save"`. Trigger `op:"list"`
+         around planning, not around every implementation edit: say
+         that before creating a new plan or spec, or when existing
+         plans may already cover the work, the agent should check for
+         existing plans. Do not say "before implementing anything."
 
-      4. A `### Recent workstreams` section that MUST cite at least
+      5. A delegation sentence telling the agent that before delegating
+         work to another agent, subagent, teammate, worker session, or
+         other spawned process, it must refresh the current project
+         instructions with `myco_cortex({"op":"instructions"})` and
+         include the returned instructions verbatim in that agent's
+         prompt, along with the task-specific instructions. Include this
+         CLI fallback in the same sentence for hosts without MCP:
+         `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"instructions"}'`.
+         Do not assume the returned instructions have any particular
+         heading or section name.
+
+      6. A `### Recent workstreams` section that MUST cite at least
          one active plan or recent session BY TITLE from the research
          brief. Frame these as background context — work the project
          has on file, not a task list for the incoming session. The
          new agent is launching to do something else; this section
          helps it avoid duplicating effort or contradicting in-flight
          work when its actual task happens to overlap. If the research
+         brief suggests a tool invocation that is not already present
+         in the required retrieval, plan-persistence, delegation, or
+         spore-save guidance, omit that invocation; recent-workstream
+         prose must not invent additional tool operations or new
+         `myco_cortex` ops. If the research
          brief contains zero hotspots, write "No recent workstreams
          worth flagging right now." verbatim — do not invent, recycle,
          or pad with stale items.
 
-      5. A closing paragraph on `myco_spores` op `"save"` for saving
+      7. A closing paragraph on `myco_spores` op `"save"` for saving
          discoveries during this session. Name 2-3 concrete moments
          that trigger a save — for example, after fixing a non-obvious
          bug, after making a design decision with non-obvious reasoning,
@@ -160,7 +187,7 @@ phases:
 
       Keep the output compact and ready for direct injection. Do not
       restate AGENTS.md. Do not mention `myco_skills`. Do not reorder
-      the five sections. Do not mention retired tool names, even as
+      the seven required items. Do not mention retired tool names, even as
       warnings, migration notes, or historical gotchas.
 
       Report the final markdown via `vault_report` with:

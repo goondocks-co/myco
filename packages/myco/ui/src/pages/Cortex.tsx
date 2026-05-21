@@ -330,7 +330,7 @@ function InstructionsTab() {
   const { effective, isLoading } = useScopedConfig();
   const instructionsQuery = useCortexInstructions();
   const [refreshing, setRefreshing] = useState(false);
-  const [instructionsExpanded, setInstructionsExpanded] = useState(false);
+  const [instructionsExpanded, setInstructionsExpanded] = useState(true);
   const [refreshState, setRefreshState] = useState<CortexRefreshResponse | null>(null);
 
   const refreshInstructions = useCallback(async () => {
