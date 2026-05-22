@@ -6,7 +6,7 @@ import {
   listGroves,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
-import { resolveMycoHome } from '@myco/grove/paths.js';
+import { resolveMycoHome, currentDaemonVariant } from '@myco/grove/paths.js';
 
 /**
  * Time-based orphan threshold. Move/vacuum operations complete in seconds;
@@ -53,7 +53,10 @@ export function resumeOrphanedPauses(
   let resumed = 0;
   let preserved = 0;
 
-  const groves = listGroves(mycoHome);
+  // Pause cleanup is a write-side operation (forceResumeProject below);
+  // scope it to the Groves this daemon serves. Cross-Grove mutation is
+  // forbidden by the same rule that gates SQLite access.
+  const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
   for (const grove of groves) {
     const projects = listRegisteredProjects(grove.id, mycoHome);
     for (const project of projects) {

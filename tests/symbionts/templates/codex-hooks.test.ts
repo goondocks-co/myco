@@ -22,7 +22,14 @@ describe('codex hooks.json template', () => {
     expect(handler.type).toBe('command');
     expect(handler.command).toContain('hook pre-tool-use');
     expect(handler.command).toContain('--symbiont codex');
-    expect(handler.command).toContain('myco-run.cjs');
+    // Template uses the `{{mycoLauncher}}` placeholder; the installer
+    // substitutes it at install time to the project-local or global
+    // launcher path. Either form signals "Myco owns this command."
+    expect(
+      handler.command.includes('{{mycoLauncher}}') ||
+        handler.command.includes('myco-run.cjs') ||
+        handler.command.includes('.myco/launcher.cjs'),
+    ).toBe(true);
   });
 
   it('PreToolUse timeout is short (hot path)', () => {

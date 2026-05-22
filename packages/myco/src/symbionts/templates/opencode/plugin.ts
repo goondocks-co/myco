@@ -56,6 +56,8 @@ const SESSION_IDLE_TAIL_LIMIT_RETRY = 60;
 /** Max size of resume context injection to keep resumed sessions lean. */
 const RESUME_CONTEXT_MAX_CHARS = 4000;
 
+const MYCO_AUTH_HEADER = "x-myco-auth";
+
 const REQUEST_CONTEXT_HEADERS = {
   projectRoot: "x-myco-project-root",
   projectId: "x-myco-project-id",
@@ -225,16 +227,56 @@ function buildRequestContextHeaders(directory: string): Record<string, string> {
 
 function withRequestContextHeaders(directory: string, init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers);
-  for (const [key, value] of Object.entries(buildRequestContextHeaders(directory))) {
+  const ctxHeaders = buildRequestContextHeaders(directory);
+  let hasContextSwitchingHeader = false;
+  for (const [key, value] of Object.entries(ctxHeaders)) {
     if (!headers.has(key)) headers.set(key, value);
+    if (key === REQUEST_CONTEXT_HEADERS.projectId) hasContextSwitchingHeader = true;
+  }
+  // The daemon rejects any request that carries context-switching headers
+  // (x-myco-project-id, etc.) without the daemon-issued bearer token —
+  // see packages/myco/src/tools/request-context.ts. Read the token from
+  // daemon.json (same file we read the port from) and attach it.
+  if (hasContextSwitchingHeader && !headers.has(MYCO_AUTH_HEADER)) {
+    const token = readDaemonAuthTokenFromDisk(resolveDaemonStatePath(directory));
+    if (token) headers.set(MYCO_AUTH_HEADER, token);
   }
   return { ...init, headers };
 }
 
+/**
+ * Read the Grove served_by daemon variant ("service" or "service-dev")
+ * for a project. Returns "service" when grove.toml is missing or
+ * doesn't declare served_by — the conservative default that matches
+ * production single-daemon installs.
+ */
+function resolveGroveServedBy(directory: string): "service" | "service-dev" {
+  try {
+    const projectToml = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    const groveId = readTomlString(projectToml, "grove", "id");
+    if (!groveId) return "service";
+    const groveToml = readFileSync(
+      join(resolveMycoHome(), "groves", groveId, "grove.toml"),
+      "utf-8",
+    );
+    const servedBy = readTomlString(groveToml, "grove", "served_by");
+    return servedBy === "service-dev" ? "service-dev" : "service";
+  } catch {
+    return "service";
+  }
+}
+
 function resolveDaemonStatePath(directory: string): string {
-  return projectUsesGrove(directory)
-    ? join(resolveMycoHome(), "service", "daemon.json")
-    : join(directory, ".myco", "daemon.json");
+  if (!projectUsesGrove(directory)) {
+    return join(directory, ".myco", "daemon.json");
+  }
+  // The plugin runs in opencode's Bun runtime and has no awareness of
+  // which daemon variant owns this project's Grove. Read served_by
+  // from grove.toml to route correctly — without this, a dogfood
+  // grove (served_by: service-dev) silently fails because the plugin
+  // talks to the prod daemon, which refuses cross-Grove access.
+  const variant = resolveGroveServedBy(directory);
+  return join(resolveMycoHome(), variant, "daemon.json");
 }
 
 /** Read the Myco daemon port from project-local or global daemon state. */
@@ -243,6 +285,18 @@ function readDaemonPortFromDisk(statePath: string): number | null {
     const raw = readFileSync(statePath, "utf-8");
     const info = JSON.parse(raw) as { port?: number };
     return typeof info.port === "number" ? info.port : null;
+  } catch {
+    return null;
+  }
+}
+
+function readDaemonAuthTokenFromDisk(statePath: string): string | null {
+  try {
+    const raw = readFileSync(statePath, "utf-8");
+    const info = JSON.parse(raw) as { auth_token?: string };
+    return typeof info.auth_token === "string" && info.auth_token.length > 0
+      ? info.auth_token
+      : null;
   } catch {
     return null;
   }
@@ -694,6 +748,7 @@ function summarizeToolOutput(output: unknown): string {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const MycoPlugin = async ({ client, directory, worktree }: { client: any; directory: string; worktree: string }) => {
+
   // Best-effort init log. Wrapped in try-catch so a future SDK shape change in
   // opencode (e.g. client.app.log moving) cannot prevent the plugin from
   // registering its handlers.

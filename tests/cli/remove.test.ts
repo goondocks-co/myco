@@ -21,7 +21,10 @@ mock.module('@myco/symbionts/installer.js', () => {
   const SymbiontInstaller = vi.fn(function () {
     return { uninstall: vi.fn().mockReturnValue({ hooks: true, mcp: true, skills: true, settings: false, instructions: false }) };
   });
-  return { SymbiontInstaller, MYCO_MCP_SERVER_NAME: 'myco' };
+  // The CLI's `cleanProjectLocalArtifacts` now imports
+  // `removeProjectLaunchers` directly — the mock must expose it.
+  const removeProjectLaunchers = vi.fn().mockReturnValue(false);
+  return { SymbiontInstaller, MYCO_MCP_SERVER_NAME: 'myco', removeProjectLaunchers };
 });
 
 let testVaultDir = '';

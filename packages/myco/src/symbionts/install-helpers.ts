@@ -10,22 +10,50 @@ Rules haven't been defined yet. Use the /myco-rules skill to add durable project
 `;
 
 /**
- * Check if a command string belongs to Myco.
+ * Substring patterns identifying a Myco launcher reference in any
+ * string. Single source of truth for "does this carry a reference to
+ * one of Myco's launcher entry points?" — used by both the hook-
+ * command detector (an existing hook entry) and the plugin-file
+ * detector (a verbatim plugin source file). If the next launcher
+ * rename adds or drops a name, this list is the only place to update.
  *
- * Three legacy shapes we still need to recognize so uninstall / re-install
- * can strip old entries cleanly:
- *   1. `.agents/myco-run.cjs`  — current hook guard entry point
- *   2. `.agents/myco-hook.cjs` — prior cross-platform guard (pre-rename)
- *   3. `myco-run` bare         — published MCP entry point and old shell shim
+ * Three shapes:
+ *   1. `.agents/myco-run.cjs`  — project-local launcher (`myco init --project`).
+ *   2. `.agents/myco-hook.cjs` — legacy cross-platform guard (pre-rename).
+ *   3. `.myco/launcher.cjs`    — user-global launcher (`installScope: 'global'`).
+ *      Substring match catches both the absolute-path form Myco writes at
+ *      install time (`node "/Users/.../.myco/launcher.cjs"`) and any future
+ *      shell-expanded variants (`node "$HOME/.myco/launcher.cjs"`).
+ */
+const MYCO_LAUNCHER_SUBSTRINGS = [
+  '.agents/myco-run.cjs',
+  '.agents/myco-hook.cjs',
+  '.myco/launcher.cjs',
+] as const;
+
+/**
+ * Whether `content` references one of Myco's launcher paths. Operates
+ * on any string — a hook command line or an entire plugin source file.
+ * Pure substring scan, no startsWith semantics.
+ */
+export function containsMycoLauncherReference(content: string): boolean {
+  return MYCO_LAUNCHER_SUBSTRINGS.some((s) => content.includes(s));
+}
+
+/**
+ * Check if a hook command string belongs to Myco.
  *
- * Any of these signals "this is our group, safe to replace on reinstall."
+ * Matches any launcher-substring reference (project-local guard,
+ * legacy guard, or user-global launcher) OR the bare `myco-run`
+ * prefix used by the published MCP entry point and the old shell
+ * shim. The `startsWith` check is hook-command-specific — published-
+ * binary hook commands begin with the bare executable name.
+ *
+ * Missing any of these breaks the merge/uninstall contract: new hooks
+ * append rather than replace, idempotence dies, uninstall leaks.
  */
 export function isMycoHookCommand(command: string): boolean {
-  return (
-    command.includes('.agents/myco-run.cjs') ||
-    command.includes('.agents/myco-hook.cjs') ||
-    command.startsWith('myco-run')
-  );
+  return containsMycoLauncherReference(command) || command.startsWith('myco-run');
 }
 
 /**

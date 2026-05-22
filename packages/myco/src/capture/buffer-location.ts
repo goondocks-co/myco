@@ -15,7 +15,7 @@
  * the resolver always succeeds for live capture.
  */
 
-import { resolveProjectBufferDir, resolveMycoHome } from '../grove/paths.js';
+import { resolveProjectBufferDir, resolveMycoHome, currentDaemonVariant } from '../grove/paths.js';
 import {
   ensureProjectRegistered,
   findProjectByRoot,
@@ -70,8 +70,12 @@ export function resolveProjectBufferDirFromRoot(
  * output stays stable.
  */
 export function listAllProjectBufferDirs(mycoHome = resolveMycoHome()): string[] {
+  // Reconciler scope: only the Groves this daemon serves. The
+  // cross-Grove SQLite gate would block real writes too, but
+  // filtering here keeps the reconciler from enumerating peer
+  // daemons' buffers in the first place.
   const out: string[] = [];
-  for (const grove of listGroves(mycoHome)) {
+  for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       out.push(resolveProjectBufferDir(grove.id, project.project_id, mycoHome));
     }

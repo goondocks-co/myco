@@ -1,7 +1,7 @@
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive, parseStringFlag } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { updateConfig } from '../config/loader.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
@@ -95,11 +95,14 @@ async function runGlobalRemove(purge: boolean): Promise<void> {
     } catch { /* not present */ }
   }
 
-  // --- Clean up project-local artifacts in every registered project
-  //     (users who opted in via `myco init --project`). ---
+  // --- Clean up project-local artifacts in registered projects whose
+  //     Grove this binary owns. Scoping to the binary's daemon variant
+  //     prevents `myco-dev remove` from touching prod-served projects;
+  //     each binary cleans up its own side. ---
   try {
+    const { currentDaemonVariant } = await import('../grove/paths.js');
     const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
-    for (const grove of listGroves(mycoHome)) {
+    for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
       for (const project of listRegisteredProjects(grove.id, mycoHome)) {
         await cleanProjectLocalArtifacts(project.root, pkgRoot);
       }
@@ -134,14 +137,9 @@ async function cleanProjectLocalArtifacts(projectRoot: string, pkgRoot: string):
       }
     } catch { /* per-symbiont failures non-fatal */ }
   }
-  for (const rel of [
-    path.join('.agents', 'myco-run.cjs'),
-    path.join('.agents', 'myco-cli.cjs'),
-    path.join('.agents', 'myco-hook.cjs'),
-    path.join('.myco', 'runtime.command'),
-  ]) {
-    try { fs.unlinkSync(path.join(projectRoot, rel)); } catch { /* not present */ }
-  }
+  // `myco remove` is the full project-local teardown — strip every
+  // launcher artifact including the dev pin.
+  removeProjectLaunchers(projectRoot, { legacy: true, active: true, runtimeCommand: true });
 }
 
 async function runProjectRemove(args: string[]): Promise<void> {

@@ -127,6 +127,9 @@ export function runGlobalBootstrap(
 ): BootstrapResult {
   const launchers = installGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);
+  // Walker scope is enforced inside `runProjectLocalMigration` via its
+  // default `servedBy` arg (sourced from the current daemon variant);
+  // bootstrap doesn't override it.
   const migration = runProjectLocalMigration(packageRoot);
   return { launchers, symbionts, migration };
 }

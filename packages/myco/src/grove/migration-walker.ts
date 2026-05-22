@@ -18,27 +18,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { listGroves, listRegisteredProjects, type RegisteredProject, type GroveRecord } from './registry.js';
-import { resolveMycoHome } from './paths.js';
+import { listGroves, listRegisteredProjects, type DaemonVariant, type RegisteredProject, type GroveRecord } from './registry.js';
+import { resolveMycoHome, currentDaemonVariant } from './paths.js';
 
-// Legacy hook-guard artifact retired in PR #338 — always safe to delete
-// when found, never an opt-in surface.
-const LEGACY_HOOK_GUARD = path.join('.agents', 'myco-hook.cjs');
-
-// Active project-local override surfaces. Deleting them on every tick
-// would erase the deliberate `myco init --project` opt-in (the
-// per-project escape hatch from Decision 5) and the `make
-// dev-link-worktree` dogfood pin. We only remove these when the
-// project's myco.yaml does NOT carry an explicit per-project install
-// (i.e. it's pure brownfield legacy state that the global install
-// supersedes).
-const OPT_IN_PROJECT_LAUNCHERS = [
-  path.join('.agents', 'myco-run.cjs'),
-  path.join('.agents', 'myco-cli.cjs'),
-  path.join('.myco', 'runtime.command'),
-];
+// Project-local cleanup runs through `removeProjectLaunchers`
+// (installer.ts) — the single source of truth for which files count
+// as Myco's project launcher set. The walker opts active launchers
+// + runtime pin in/out via the helper's options shape based on the
+// project's `symbionts:` opt-in.
 
 export interface ProjectMigrationOutcome {
   groveId: string;
@@ -63,17 +52,28 @@ export interface MigrationPassResult {
 }
 
 /**
- * Walk every registered project across every local Grove, cleaning up
- * legacy per-project install artifacts. Returns a pass-result for the
- * audit-log layer to persist; this function never touches the DB itself
- * so it stays unit-testable without a Grove DB fixture.
+ * Walk every registered project in the Groves THIS DAEMON SERVES,
+ * cleaning up legacy per-project install artifacts.
+ *
+ * Hard scope: walker invocations stay inside the Grove-ownership
+ * boundary. Each Grove has one owner via `grove.toml served_by`, and
+ * cross-daemon mutation is forbidden by the same rule that gates
+ * SQLite access. A daemon walks its own projects only.
+ *
+ * `servedBy` defaults to the current process's daemon variant (dev vs
+ * prod); tests and CLI commands run outside a daemon pass it explicitly.
+ *
+ * Returns a pass-result for the audit-log layer to persist; this
+ * function never touches the DB itself so it stays unit-testable
+ * without a Grove DB fixture.
  */
 export function runProjectLocalMigration(
   packageRoot: string = resolvePackageRoot(),
   mycoHome: string = resolveMycoHome(),
+  servedBy: DaemonVariant = currentDaemonVariant(),
 ): MigrationPassResult {
   const manifests = loadManifests();
-  const groves = listGroves(mycoHome);
+  const groves = listGroves(mycoHome, { servedBy });
   const outcomes: ProjectMigrationOutcome[] = [];
   for (const grove of groves) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
@@ -129,33 +129,19 @@ function migrateOneProject(
       }
     }
 
-    // 2) Always-safe legacy artifact: retired pre-runtime.command hook guard.
-    try {
-      fs.unlinkSync(path.join(project.root, LEGACY_HOOK_GUARD));
-      removedFiles.push(LEGACY_HOOK_GUARD);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-
-    // 3) Opt-in project-local launchers + runtime pin. Only remove when
-    //    the project's myco.yaml lacks any per-symbiont enablement,
-    //    treating it as pure brownfield legacy. A project with an
-    //    active `symbionts:` override block is by definition opted in
-    //    via `myco init --project`; deleting its launchers would break
-    //    the documented escape hatch. Likewise the dogfood pin in
-    //    `make dev-link-worktree` survives — it's the deliberate dev
-    //    workflow this walker must not undermine.
-    if (!hasProjectLocalOptIn(project.root)) {
-      for (const rel of OPT_IN_PROJECT_LAUNCHERS) {
-        const abs = path.join(project.root, rel);
-        try {
-          fs.unlinkSync(abs);
-          removedFiles.push(rel);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-        }
-      }
-    }
+    // 2) Project launcher cleanup. Retired artifacts are always
+    //    removed; active launchers + the dev pin are preserved when
+    //    the project has opted into a per-project install via
+    //    `myco init --project` (signaled by a non-empty `symbionts:`
+    //    block in myco.yaml). The shared helper enforces the file
+    //    list — drift between walker, `myco remove`, and uninstall
+    //    is structurally impossible.
+    const optIn = hasProjectLocalOptIn(project.root);
+    removedFiles.push(...removeProjectLaunchers(project.root, {
+      legacy: true,
+      active: !optIn,
+      runtimeCommand: !optIn,
+    }));
 
     return {
       groveId: grove.id,
@@ -183,7 +169,7 @@ function migrateOneProject(
  * On any read/parse failure returns false so the walker treats a
  * malformed or absent vault file as brownfield (the safer default).
  */
-function hasProjectLocalOptIn(projectRoot: string): boolean {
+export function hasProjectLocalOptIn(projectRoot: string): boolean {
   const ymlPath = path.join(projectRoot, '.myco', 'myco.yaml');
   try {
     const raw = fs.readFileSync(ymlPath, 'utf-8');

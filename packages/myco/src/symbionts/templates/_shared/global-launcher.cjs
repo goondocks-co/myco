@@ -40,6 +40,34 @@ const args = process.argv.slice(2);
 const launcherName = path.basename(__filename);
 const overrideName = LAUNCHER_TO_OVERRIDE[launcherName] ?? 'myco-run.cjs';
 
+// Anchor cwd to the project the spawning agent is actually working in,
+// using whatever project-dir env var that agent provides. Required because
+// some agents fire user-level hooks with cwd set to the agent's own dir
+// (e.g. Cursor fires from `~/.cursor/`, not the workspace), and we can't
+// safely prepend `cd "$X" &&` to the hook command — Cursor's hook spawn
+// drops stdin entirely when the command contains shell operators, so the
+// pipeline carrying the JSON payload to node breaks and every handler
+// silently bails on the missing `session_id` check. Doing the chdir
+// inside node-land sidesteps the spawn quirk and keeps every downstream
+// `process.cwd()`-based resolver (vault, project-local override walk,
+// runtime.command pin walk) pointed at the right tree.
+//
+// First-match wins. Agents that don't set a project-dir env var fall
+// through to whatever cwd the spawn handed us — the original behavior
+// for Claude Code, Codex, etc., which always run hooks from the workspace.
+const PROJECT_DIR_ENV_VARS = [
+  'CURSOR_PROJECT_DIR',
+  'CLAUDE_PROJECT_DIR',
+  'WINDSURF_PROJECT_DIR',
+  'MYCO_PROJECT_ROOT',
+];
+for (const name of PROJECT_DIR_ENV_VARS) {
+  const value = process.env[name];
+  if (value && value !== '.') {
+    try { process.chdir(value); break; } catch { /* try next */ }
+  }
+}
+
 // 0. Project-local launcher override.
 // Preserves the dogfood path (`make dev-link-worktree` writes
 // `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and

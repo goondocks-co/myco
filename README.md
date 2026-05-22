@@ -19,6 +19,14 @@
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
+### After installation
+
+Open the dashboard to verify your setup and configure intelligence providers:
+
+```bash
+myco dashboard
+```
+
 That's it — Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically. No `myco init` per project; no per-worktree bootstrap. New project? Just start coding — Myco picks it up the first time your agent fires a hook. Data capture starts immediately, intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, VS Code Copilot, Antigravity, Windsurf, OpenCode, and Pi.
 
 Run `myco init` only as a recovery / refresh — it's idempotent. For a deliberate project-local override (dogfood / regulated repo), use `myco init --project [path]`.

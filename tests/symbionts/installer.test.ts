@@ -2068,21 +2068,21 @@ describe('uninstallHookGuard', () => {
     expect(result).toBe(false);
   });
 
-  it('skips uninstall guard for symbionts without hooksTarget', () => {
-    const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
-    const result = installer.uninstallHookGuard();
-    expect(result).toBe(false);
-  });
-
-  it('uninstall() removes hook guard', () => {
+  // Contract: per-symbiont uninstall must NOT remove the shared
+  // project-level launchers — uninstalling symbiont A must not break
+  // symbiont B. Project-level teardown lives in `removeProjectLaunchers`,
+  // called explicitly by `myco remove` and the migration walker (gated
+  // by the opt-in check) after the per-symbiont loop completes.
+  it('uninstall() preserves the shared project launchers', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
 
     installer.uninstall();
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(false);
+    // Launchers must still be on disk — another symbiont may need them.
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
   });
 });
 
@@ -2145,8 +2145,15 @@ describe('old-format hook backward compatibility', () => {
 // =====================
 
 describe('hook template validation', () => {
-  it('all hook templates use the guard prefix', () => {
+  it('all hook templates use the launcher placeholder', () => {
+    // Templates use `{{mycoLauncher}}`, which the installer substitutes
+    // at install time to either `node .agents/myco-run.cjs` (project) or
+    // `node ".../.myco/launcher.cjs"` (global). The legacy hard-coded
+    // `.agents/myco-run.cjs` form is the bug that caused global-install
+    // hook files to depend on a project-local file existing — the
+    // placeholder is what enforces the scope-correctness invariant.
     const templateDirs = ['claude-code', 'codex', 'cursor', 'vscode-copilot', 'windsurf'];
+    const launcherForm = /\{\{mycoLauncher\}\} /;
     for (const dir of templateDirs) {
       const filePath = path.resolve(`packages/myco/src/symbionts/templates/${dir}/hooks.json`);
       const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -2156,13 +2163,15 @@ describe('hook template validation', () => {
           if (Array.isArray(group.hooks)) {
             for (const hook of group.hooks as Array<{ command?: string }>) {
               if (hook.command) {
-                expect(hook.command).toMatch(/\.agents\/myco-run\.cjs /);
+                expect(hook.command).toMatch(launcherForm);
+                expect(hook.command).not.toMatch(/\.agents\/myco-run\.cjs/);
               }
             }
           }
           // Flat format
           if (typeof group.command === 'string') {
-            expect(group.command).toMatch(/\.agents\/myco-run\.cjs /);
+            expect(group.command).toMatch(launcherForm);
+            expect(group.command).not.toMatch(/\.agents\/myco-run\.cjs/);
           }
         }
       }

@@ -104,6 +104,19 @@ export function isDevServiceMode(): boolean {
   return devServiceMode;
 }
 
+/**
+ * The current daemon variant — `'service'` for a production install,
+ * `'service-dev'` for a contributor's dogfood daemon. Source of truth
+ * for "which Groves does this daemon own?" filters across walker, CLI
+ * cleanup, reconciler, and API handlers. Every consumer that scopes
+ * work to its own Groves MUST call this rather than re-deriving the
+ * ternary in place — that's how a fresh walker last leaked across the
+ * Grove-ownership boundary.
+ */
+export function currentDaemonVariant(): DaemonVariant {
+  return devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
+}
+
 export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonVariant {
   const rel = path.relative(mycoHome, stateDir);
   if (rel === 'service') return 'service';

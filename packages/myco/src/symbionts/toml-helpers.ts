@@ -65,9 +65,17 @@ export function upsertTomlSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx);
-    const separator = before ? '\n\n' : '';
-    return (before + separator + block + after).trimEnd() + '\n';
+    // findTomlSectionEnd returns the index of the next section header;
+    // the slice starts with `[...]`. Normalize so the concatenation
+    // always inserts a blank line between the rewritten block and the
+    // following section header — without this, a section whose body
+    // ends without a trailing newline (a one-liner like `hooks = true`)
+    // collides with the next `[section]` and produces malformed TOML
+    // like `hooks = true[notice.model_migrations]`.
+    const after = raw.slice(endIdx).replace(/^\s+/, '');
+    const beforeSeparator = before ? '\n\n' : '';
+    const afterSeparator = after ? '\n\n' : '';
+    return (before + beforeSeparator + block + afterSeparator + after).trimEnd() + '\n';
   }
 
   const separator = raw.trim() ? '\n\n' : '';
@@ -181,9 +189,17 @@ export function buildTomlMcpSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx);
-    const separator = before ? '\n\n' : '';
-    updated = (before + separator + block + after).trimEnd() + '\n';
+    // findTomlSectionEnd returns the offset of the next section header. Strip
+    // leading whitespace from `after` and insert an explicit blank line between
+    // our rewritten block and that header — otherwise a block whose final line
+    // lacks a trailing newline (the common case here: lines.join('\n') leaves
+    // none) collides with the following `[mcp_servers.x]` and writes invalid
+    // TOML like `url = "..."[mcp_servers.node_repl]`. Same normalization as
+    // upsertTomlSection.
+    const after = raw.slice(endIdx).replace(/^\s+/, '');
+    const beforeSeparator = before ? '\n\n' : '';
+    const afterSeparator = after ? '\n\n' : '';
+    updated = (before + beforeSeparator + block + afterSeparator + after).trimEnd() + '\n';
   } else {
     // Append new section
     const separator = raw.trim() ? '\n\n' : '';

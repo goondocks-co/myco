@@ -138,6 +138,22 @@ const RegistrationSchema = z.object({
    */
   globalSkillsTarget: z.string().nullable().optional(),
   /**
+   * Absolute path (with `~` expansion) where Myco writes the settings
+   * template under global scope. When unset, settings under global scope
+   * share the file with hooks (the historical Claude-Code-style merge:
+   * one settings.json carries hooks + MCP + settings together).
+   *
+   * Required for symbionts whose `settingsFormat` doesn't match the file
+   * shape `globalHooksTarget` expects — most notably Codex, whose hooks
+   * file is JSON (`~/.codex/hooks.json`) but whose settings format is
+   * TOML. Without an explicit `globalSettingsTarget`, the installer's
+   * settings writer drops a `[features]` TOML section into the JSON
+   * hooks file, producing a hybrid file Codex itself appends to on every
+   * launch — and silently invalidating Codex's trust-hash on every
+   * Myco bootstrap pass.
+   */
+  globalSettingsTarget: z.string().nullable().optional(),
+  /**
    * Format of the hooks target.
    * - 'json' (default): hooks template is merged into a JSON settings file.
    * - 'plugin-file': the hooks template is a verbatim file (e.g., an opencode TS plugin)
@@ -311,6 +327,34 @@ export const SymbiontManifestSchema = z.object({
   {
     message: 'capabilities.pathBearingTools must be non-empty when canopyReadTools is non-empty',
     path: ['capabilities', 'pathBearingTools'],
+  },
+).refine(
+  (m) => {
+    // TOML settings cannot share a JSON hooks file. Without an explicit
+    // `globalSettingsTarget`, the installer's settings writer falls back
+    // to `globalHooksTarget` — dropping a `[features]` TOML section into
+    // a JSON hooks file produces a hybrid file the consuming agent
+    // appends to (Codex), invalidating its trust-hash on every Myco
+    // bootstrap pass. The schema-level check makes the bug class
+    // structurally impossible for any new symbiont.
+    const reg = m.registration;
+    if (!reg) return true;
+    if ((reg.settingsFormat ?? 'json') !== 'toml') return true;
+    const hooksTarget = reg.globalHooksTarget;
+    if (!hooksTarget) return true;
+    if (!hooksTarget.endsWith('.json')) return true;
+    const settingsTarget = reg.globalSettingsTarget;
+    return (
+      settingsTarget !== undefined &&
+      settingsTarget !== null &&
+      settingsTarget !== hooksTarget &&
+      !settingsTarget.endsWith('.json')
+    );
+  },
+  {
+    message:
+      'registration.globalSettingsTarget must be set to a non-JSON path when settingsFormat is "toml" and globalHooksTarget is a .json file',
+    path: ['registration', 'globalSettingsTarget'],
   },
 );
 

@@ -205,6 +205,11 @@ registration:
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.codex/skills
   settingsTarget: .codex/config.toml
+  # Settings under global scope MUST land in config.toml (TOML) and
+  # NOT share a path with the JSON hooks file. Required because
+  # settingsFormat is `toml`; the manifest schema's TOML-vs-JSON
+  # refine() enforces this declaration.
+  globalSettingsTarget: ~/.codex/config.toml
   settingsFormat: toml
 capabilities:
   # Hook template registers a session-start hook that fetches Cortex context.

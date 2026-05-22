@@ -110,8 +110,6 @@ symbionts:
     enabled: true
   cursor:
     enabled: true
-  gemini:
-    enabled: true
   opencode:
     enabled: true
   pi:
@@ -119,4 +117,6 @@ symbionts:
   vscode-copilot:
     enabled: true
   windsurf:
+    enabled: true
+  antigravity:
     enabled: true

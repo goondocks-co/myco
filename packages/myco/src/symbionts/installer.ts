@@ -1,5 +1,6 @@
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { installGlobalLaunchers } from '../grove/launcher-install.js';
 import { expandHome } from '../grove/paths.js';
@@ -7,7 +8,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlSectionKeys } from './toml-helpers.js';
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
@@ -99,6 +100,68 @@ const PLUGIN_SHARED_HELPERS_SNIPPET = '_shared/plugin-helpers.ts.snippet';
 const CURSOR_PROJECT_ROOT_PLACEHOLDER = '{{projectRootCd}}';
 const CURSOR_PROJECT_ROOT_CD =
   'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo ${CURSOR_PROJECT_DIR:-.})"';
+
+/**
+ * Placeholder substituted into every hook template's `command` field at
+ * install time. Resolves to the launcher binary that should handle hooks
+ * for the active `installScope`:
+ *
+ *   - `'project'`: `node .agents/myco-run.cjs` — invokes the project-local
+ *     guard, which is what historical templates hard-coded. Templates
+ *     remain meaningful in project-scope installs (e.g. `myco init
+ *     --project`).
+ *   - `'global'`: `node "<home>/.myco/launcher.cjs"` — invokes the shared
+ *     absolute-path launcher installed by `installGlobalLaunchers`. The
+ *     launcher itself layers a project-local override (`<projectRoot>/.agents/
+ *     myco-run.cjs`) before falling through to runtime resolution, so a
+ *     project that happens to ship a dev pin still wins.
+ *
+ * Centralizing the placeholder here means a single edit per scope rewrites
+ * every hook in every template. The legacy "global install writes
+ * project-local launcher path into a global file" bug class is impossible
+ * once every template path runs through this substitution.
+ */
+const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
+const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
+
+/**
+ * Resolve `{{mycoLauncher}}` to the absolute launcher command for the
+ * given scope. `homeDir` is injected so tests can run against a tmpdir
+ * fake-`$HOME`; production callers pass `os.homedir()`.
+ *
+ * The path is emitted UNQUOTED. Symbionts diverge in how they spawn
+ * hook commands: claude-code / codex / antigravity / vscode-copilot
+ * route through a shell (their templates prefix with `cd ... &&` or
+ * the symbiont's runtime defaults to shell), while cursor / windsurf /
+ * pi spawn the command via direct argv split. A quoted path survives
+ * the shell flavor (quotes get stripped) but breaks direct-argv: the
+ * literal `"` characters end up in the file-path argument, and `node`
+ * fails to find a file at `'"/Users/.../launcher.cjs"'`. Unquoted
+ * works in both worlds — provided the home path has no whitespace,
+ * which `assertSafeHomeForUnquotedPath` enforces at install time.
+ */
+function resolveLauncherCmd(scope: InstallScope, homeDir: string): string {
+  if (scope === 'project') return PROJECT_LAUNCHER_CMD;
+  const launcherPath = path.join(homeDir, '.myco', 'launcher.cjs');
+  assertSafeHomeForUnquotedPath(launcherPath);
+  return `node ${launcherPath}`;
+}
+
+/**
+ * Refuse to emit a hook command whose launcher path contains whitespace.
+ * Quoting would survive shell symbionts but break direct-argv symbionts
+ * (cursor / windsurf / pi). Failing loudly at install time beats silent
+ * capture failure after the agent's next launch.
+ */
+function assertSafeHomeForUnquotedPath(launcherPath: string): void {
+  if (!/\s/.test(launcherPath)) return;
+  throw new Error(
+    `Refusing to install global symbiont hooks: launcher path "${launcherPath}" ` +
+    `contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. ` +
+    `Move Myco out of a path with spaces, or run \`myco init --project\` to use the ` +
+    `project-local launcher instead.`,
+  );
+}
 
 /** Marker text used to identify unmodified instruction stubs. */
 const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
@@ -235,10 +298,23 @@ export class SymbiontInstaller {
       // clobber the plugin source. Skip settings in that case; the
       // agent's actual settings file lives separately at
       // `globalMcpTarget` or remains project-local.
+      // Settings under global scope:
+      //   1. If the manifest declares an explicit `globalSettingsTarget`,
+      //      honor it — this is the right surface when settingsFormat
+      //      doesn't share shape with the hooks file (codex: TOML
+      //      settings + JSON hooks). The dedicated path keeps
+      //      installSettingsToml from corrupting a JSON hooks file with
+      //      a TOML section.
+      //   2. Plugin-file hooks: return null — settings template would
+      //      clobber the plugin source if it landed at the hooks path.
+      //   3. Otherwise: share the hooks file (Claude-Code-style merge).
+      const settingsTarget = reg.globalSettingsTarget !== undefined
+        ? reg.globalSettingsTarget
+        : (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE ? null : reg.globalHooksTarget);
       const target = field === 'hooks' ? reg.globalHooksTarget
         : field === 'mcp' ? reg.globalMcpTarget
         : field === 'skills' ? reg.globalSkillsTarget
-        : (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE ? null : reg.globalHooksTarget);
+        : settingsTarget;
       if (!target) return null;
       return expandHome(target);
     }
@@ -278,7 +354,7 @@ export class SymbiontInstaller {
     // fall through to the launcher-command substring scan below.
     if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
       if (raw.includes(MYCO_PLUGIN_FILE_MARKER)) return true;
-      return /\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/.test(raw);
+      return containsMycoLauncherReference(raw);
     }
     // JSON path: prefer the structured walk (catches a Myco-marked
     // group even if the command field gets renamed in a future
@@ -299,7 +375,7 @@ export class SymbiontInstaller {
     } catch {
       /* fall through to substring scan */
     }
-    return /\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/.test(raw);
+    return containsMycoLauncherReference(raw);
   }
 
   /**
@@ -415,26 +491,18 @@ export class SymbiontInstaller {
 
   /**
    * Remove runtime launchers from .agents/.
-   * Also deletes the legacy .agents/myco-hook.cjs if present.
+   *
+   * Thin instance wrapper around the module-level `removeProjectLaunchers`
+   * helper — kept so existing callers (tests, init.ts) don't need to know
+   * about the project-root boundary. New callers should prefer the
+   * module-level helper directly; it makes the project-level scope of
+   * the operation explicit in the call site.
+   *
    * Returns true if any file was removed; false otherwise.
    */
   uninstallHookGuard(): boolean {
-    const reg = this.manifest.registration;
-    if (!reg?.hooksTarget && !this.capabilities.globalLauncher) return false;
-
-    // Global launcher path: the launchers are shared across every symbiont,
-    // so a per-symbiont uninstall must NOT remove them — that's `myco
-    // remove`'s job (Step 15). No-op here.
     if (this.capabilities.globalLauncher) return false;
-
-    let removed = false;
-    for (const relPath of [HOOK_GUARD_PROJECT_PATH, CLI_LAUNCHER_PROJECT_PATH, LEGACY_HOOK_GUARD_PATH]) {
-      try {
-        fs.unlinkSync(path.join(this.projectRoot, relPath));
-        removed = true;
-      } catch { /* not present */ }
-    }
-    return removed;
+    return removeProjectLaunchers(this.projectRoot).length > 0;
   }
 
   /** Load a JSON template file for this symbiont. Returns null if not found. */
@@ -764,7 +832,17 @@ export class SymbiontInstaller {
     };
   }
 
-  /** Remove all Myco registration from this symbiont's project files. */
+  /**
+   * Remove all Myco registration from this symbiont's project files.
+   *
+   * Scope: only this symbiont's own config files. The project-shared
+   * launcher (`.agents/myco-run.cjs` / `myco-cli.cjs`) is NOT removed
+   * here — uninstalling symbiont A must not break symbiont B's hooks.
+   * Callers that want full project-level teardown (`myco remove`, the
+   * migration walker after the opt-in check passes) call
+   * `removeProjectLaunchers(projectRoot)` explicitly after looping
+   * uninstall over every symbiont.
+   */
   uninstall(): InstallResult {
     const reg = this.manifest.registration;
     const result = this.shouldBatchJsonTargets(reg)
@@ -777,8 +855,6 @@ export class SymbiontInstaller {
           instructions: this.capabilities.instructions ? this.uninstallInstructions() : false,
           pluginPackage: false,
         };
-    // Remove hook guard after hooks/settings so the file is cleaned up last
-    this.uninstallHookGuard();
     if (this.capabilities.gitignore) this.cleanGitignore();
     return result;
   }
@@ -1101,10 +1177,25 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Walk a JSON hooks template and substitute the cursor-style project-root
-   * `cd` prefix placeholder. Only cursor emits this placeholder today, but
-   * the substitution is generic so future symbionts can opt in by using
-   * `{{projectRootCd}}` at the head of any command string.
+   * Single substitution pass for the `{{mycoLauncher}}` placeholder.
+   * Both the JSON-template walker below and the plugin-file install
+   * path go through this — one source of truth for scope→launcher
+   * resolution means the two install paths can't drift apart.
+   */
+  private substituteMycoLauncher(content: string): string {
+    if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
+    const launcherCmd = resolveLauncherCmd(this.installScope, os.homedir());
+    return content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
+  }
+
+  /**
+   * Walk a JSON hooks template and substitute install-time placeholders.
+   *
+   * Two placeholders today:
+   *   - `{{projectRootCd}}` (cursor) → cd-to-project-root prefix.
+   *   - `{{mycoLauncher}}` (every template) → scope-resolved launcher
+   *     command, delegated to `substituteMycoLauncher` so the JSON
+   *     path and the plugin-file path share one resolver.
    *
    * Returns a new object — never mutates the input.
    */
@@ -1113,9 +1204,12 @@ export class SymbiontInstaller {
   ): Record<string, unknown> {
     const substitute = (value: unknown): unknown => {
       if (typeof value === 'string') {
-        return value.includes(CURSOR_PROJECT_ROOT_PLACEHOLDER)
-          ? value.split(CURSOR_PROJECT_ROOT_PLACEHOLDER).join(CURSOR_PROJECT_ROOT_CD)
-          : value;
+        let next = value;
+        if (next.includes(CURSOR_PROJECT_ROOT_PLACEHOLDER)) {
+          next = next.split(CURSOR_PROJECT_ROOT_PLACEHOLDER).join(CURSOR_PROJECT_ROOT_CD);
+        }
+        next = this.substituteMycoLauncher(next);
+        return next;
       }
       if (Array.isArray(value)) return value.map(substitute);
       if (value && typeof value === 'object') {
@@ -1146,7 +1240,32 @@ export class SymbiontInstaller {
     const templateContent = this.loadTemplateRaw(templateFile);
     if (templateContent === null) return false;
 
-    const resolved = this.injectSharedPluginHelpers(templateContent);
+    const withHelpers = this.injectSharedPluginHelpers(templateContent);
+
+    // JSON-shaped plugin templates (e.g. antigravity's `hooks.json`)
+    // must substitute placeholders INSIDE string values rather than as
+    // raw bytes — the resolved launcher command contains literal `"`
+    // characters that would invalidate the surrounding JSON if injected
+    // textually. Route through the same JSON walker the JSON-merge
+    // install path uses so escaping is handled by JSON.stringify.
+    // .ts plugin templates (opencode, pi) keep the raw-string path —
+    // TS string literals are tolerant of embedded quotes.
+    let resolved: string;
+    if (templateFile.endsWith('.json')) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(withHelpers) as Record<string, unknown>;
+      } catch (err) {
+        throw new Error(
+          `Plugin-file template ${templateFile} for symbiont ${this.manifest.name} ` +
+          `is declared as a .json file but does not parse as JSON: ${(err as Error).message}`,
+        );
+      }
+      const substituted = this.resolveHookTemplatePlaceholders(parsed);
+      resolved = JSON.stringify(substituted, null, 2) + '\n';
+    } else {
+      resolved = this.substituteMycoLauncher(withHelpers);
+    }
 
     return this.writeManagedFile(
       this.resolveAbsoluteTarget("hooks")!,
@@ -1188,8 +1307,16 @@ export class SymbiontInstaller {
 
   /**
    * Remove a plugin-file hook target.
-   * Only deletes files whose content contains the Myco plugin marker — contributors
-   * who hand-edit the plugin file without removing the marker are protected.
+   *
+   * A file is Myco-owned when it carries the plugin marker OR
+   * references a Myco launcher path — the same contract `isConfigured`
+   * uses for detection. The two predicates MUST stay symmetric: any
+   * file we detect as Myco-wired must also be removable by uninstall,
+   * or it leaks across reinstalls.
+   *
+   * Contributors who hand-edit a plugin file are protected: stripping
+   * ALL of (marker, launcher reference) takes the file out of Myco's
+   * ownership set and uninstall leaves it alone.
    */
   private uninstallPluginHookFile(): boolean {
     const reg = this.manifest.registration;
@@ -1199,7 +1326,12 @@ export class SymbiontInstaller {
     let content: string;
     try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
 
-    if (!content.includes(MYCO_PLUGIN_FILE_MARKER)) return false;
+    // A plugin file counts as Myco-owned when it carries the marker
+    // or references a Myco launcher path. The launcher-name list
+    // lives in `install-helpers.ts` so detection and deletion can't
+    // drift apart on a future rename.
+    const hasMarker = content.includes(MYCO_PLUGIN_FILE_MARKER);
+    if (!hasMarker && !containsMycoLauncherReference(content)) return false;
 
     try {
       fs.unlinkSync(targetPath);
@@ -1626,14 +1758,82 @@ export class SymbiontInstaller {
 }
 
 /**
- * Create agent-specific symlinks for a skill in `.agents/skills/<name>`.
+ * Active project-shared launchers written by `installHookGuard`. Shared
+ * by every symbiont in the project — single-symbiont uninstall must
+ * not remove them.
+ */
+const ACTIVE_PROJECT_LAUNCHERS = [
+  HOOK_GUARD_PROJECT_PATH,
+  CLI_LAUNCHER_PROJECT_PATH,
+] as const;
+
+/** Retired launcher artifact — always safe to remove when found. */
+const LEGACY_PROJECT_LAUNCHERS = [LEGACY_HOOK_GUARD_PATH] as const;
+
+/** Project-relative path of the runtime-binary pin written by `make dev-link`. */
+const PROJECT_RUNTIME_COMMAND_PATH = path.join('.myco', 'runtime.command');
+
+/**
+ * Selection knobs for `removeProjectLaunchers`. The walker uses
+ * `legacy: true, active: !optIn, runtimeCommand: !optIn` so it can
+ * always clean retired artifacts while honoring the project-local
+ * opt-in for active launchers + dev pin. `myco remove` opts into all
+ * three.
+ */
+export interface RemoveProjectLaunchersOptions {
+  /** Remove the retired `.agents/myco-hook.cjs` guard. Default: true. */
+  legacy?: boolean;
+  /** Remove active project launchers (`myco-run.cjs`, `myco-cli.cjs`). Default: true. */
+  active?: boolean;
+  /** Remove `.myco/runtime.command` (the dev pin / opt-in surface). Default: false. */
+  runtimeCommand?: boolean;
+}
+
+/**
+ * Remove project-shared launcher artifacts. Returns the project-
+ * relative paths that were actually unlinked. ENOENT is silent (the
+ * common "nothing to remove" case); any other error is logged and
+ * skipped so a stuck file on one path doesn't abort cleanup of the
+ * rest — the caller's audit log surfaces aggregate state via the
+ * returned list.
+ *
+ * Project-level operation: per-symbiont uninstall must not call
+ * this. Walker and `myco remove` are the canonical callers.
+ */
+export function removeProjectLaunchers(
+  projectRoot: string,
+  options: RemoveProjectLaunchersOptions = {},
+): string[] {
+  const { legacy = true, active = true, runtimeCommand = false } = options;
+  const targets: string[] = [];
+  if (active) targets.push(...ACTIVE_PROJECT_LAUNCHERS);
+  if (legacy) targets.push(...LEGACY_PROJECT_LAUNCHERS);
+  if (runtimeCommand) targets.push(PROJECT_RUNTIME_COMMAND_PATH);
+
+  const removed: string[] = [];
+  for (const rel of targets) {
+    try {
+      fs.unlinkSync(path.join(projectRoot, rel));
+      removed.push(rel);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') continue;
+      // eslint-disable-next-line no-console
+      console.error(`  ⚠ Could not remove ${rel}: ${(err as Error).message}`);
+    }
+  }
+  return removed;
+}
+
+/**
+ * Create or remove agent-specific symlinks for a skill in
+ * `.agents/skills/<name>`.
  *
  * Reads all symbiont manifests to find skillsTarget paths that differ
  * from the canonical `.agents/skills/` directory, then creates relative
- * symlinks from each target to the canonical location.
- *
- * Called by vault_write_skill after writing a generated skill to disk.
- * Also handles removal: when `remove` is true, deletes the symlinks.
+ * symlinks from each target to the canonical location. With
+ * `opts.remove: true`, deletes those symlinks instead. Called by
+ * vault_write_skill after writing a generated skill to disk.
  */
 export function syncSkillSymlinks(
   projectRoot: string,

@@ -148,7 +148,6 @@ import {
   ProjectPowerStateTracker,
   readProjectActivitySeed,
 } from './project-power-state.js';
-import { resolveMycoHome } from '../grove/paths.js';
 import { pauseAwareShouldVisit } from '../grove/registry.js';
 import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';

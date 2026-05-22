@@ -79,17 +79,33 @@ export async function handleListSymbionts(vaultDir: string, groveId?: string | n
 }
 
 /**
- * Trigger an on-demand symbiont detection pass. Runs the same code path
- * as the PowerManager periodic tick — installs Myco's global config
- * into any newly-detected agent, emits notifications, returns per-
- * symbiont status.
+ * Trigger an on-demand symbiont detection + bootstrap pass.
+ *
+ * Routes through `runGlobalBootstrap` — the documented single side-effect
+ * entry point for "wire up Myco's global state." Same code path as the
+ * daemon first-start handler, the PowerManager periodic tick, and the
+ * version-drift handler:
+ *
+ *   - `installGlobalLaunchers`: write `~/.myco/launcher.cjs` +
+ *     `mcp-launcher.cjs` (idempotent; content-diff gated).
+ *   - `runSymbiontDetection`: install Myco's global config into every
+ *     detected symbiont.
+ *   - `runProjectLocalMigration`: walk every registered project and
+ *     strip stale per-project Myco state, honoring the `symbionts:`
+ *     opt-in. Without this step here the UI's "Re-detect now" button
+ *     skipped the walker entirely — a real defect the unit tests
+ *     missed because they hit `runSymbiontDetection` directly.
+ *
+ * Returns `results` (per-symbiont install outcomes) and `migration`
+ * (per-project walker outcomes) so the UI can surface both.
  */
 export async function handleDetectSymbionts(vaultDir: string, groveId?: string | null): Promise<RouteResponse> {
-  const { runSymbiontDetection } = await import('../../cli/bootstrap.js');
-  const results = runSymbiontDetection();
+  const { runGlobalBootstrap } = await import('../../cli/bootstrap.js');
+  const bootstrap = runGlobalBootstrap();
   return {
     body: {
-      results,
+      results: bootstrap.symbionts,
+      migration: bootstrap.migration,
       symbionts: listSymbiontInfos(vaultDir, groveId),
     },
   };

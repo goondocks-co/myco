@@ -392,6 +392,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "globalHooksTarget": "~/.codex/hooks.json",
       "globalMcpTarget": "~/.codex/config.toml",
       "globalSkillsTarget": "~/.codex/skills",
+      "globalSettingsTarget": "~/.codex/config.toml",
       "hooksFormat": "json",
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
@@ -662,11 +663,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "trajectory_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+      "transcriptPath": "tool_info.transcript_path",
+      "lastResponse": "tool_info.response",
+      "prompt": "tool_info.user_prompt",
+      "toolName": "agent_action_name",
+      "toolInput": "tool_info",
       "toolOutput": "tool_output"
     },
     "capture": {

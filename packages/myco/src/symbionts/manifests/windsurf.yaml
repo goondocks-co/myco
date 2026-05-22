@@ -5,9 +5,18 @@ configDir: .windsurf
 detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 hookFields:
+  # Windsurf hook payloads wrap event-specific data in a `tool_info` bag.
+  # The session identity is top-level (`trajectory_id`), but prompt text,
+  # response text, transcript path, and tool input live under `tool_info.*`.
+  # Schema: https://docs.windsurf.com/windsurf/cascade/hooks
   sessionId: trajectory_id
-  transcriptPath: transcript_path
-  lastResponse: last_assistant_message
+  transcriptPath: tool_info.transcript_path
+  lastResponse: tool_info.response
+  # `agent_action_name` IS the hook event name (e.g. "post_run_command") —
+  # Windsurf uses one shape per event rather than a generic tool_name field.
+  toolName: agent_action_name
+  toolInput: tool_info
+  prompt: tool_info.user_prompt
 capture:
   planDirs:
     - ~/.windsurf/plans/

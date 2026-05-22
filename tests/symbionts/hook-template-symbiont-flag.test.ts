@@ -79,9 +79,14 @@ describe('hook template --symbiont flag', () => {
       const parsed = JSON.parse(raw);
       const commands = [...walkCommands(parsed)];
 
-      // Only commands that invoke myco-run.cjs are subject to the flag
-      // check — a template could legitimately host a non-Myco command.
-      const mycoCommands = commands.filter((c) => c.includes('myco-run.cjs'));
+      // Only Myco-owned commands are subject to the flag check — a template
+      // could legitimately host a non-Myco command. Templates now use the
+      // `{{mycoLauncher}}` placeholder (substituted at install time to
+      // either the project-local or global launcher path), so match both
+      // the placeholder form and the legacy direct reference.
+      const mycoCommands = commands.filter(
+        (c) => c.includes('{{mycoLauncher}}') || c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs'),
+      );
 
       it('has at least one Myco hook command', () => {
         expect(mycoCommands.length).toBeGreaterThan(0);
