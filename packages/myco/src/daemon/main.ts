@@ -181,6 +181,7 @@ import {
   handleTaskCompleted, handleCompact,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
+import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
@@ -1008,7 +1009,12 @@ export async function main(): Promise<void> {
   const bufferDirs = listAllProjectBufferDirs();
   const sessionBuffers = new Map<string, EventBuffer>();
 
-  const reconciler = createReconciler({ bufferDirs, logger, projectRoot });
+  const reconciler = createReconciler({
+    bufferDirs,
+    logger,
+    projectRoot,
+    onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
+  });
   reconciler.runStartupReconciliation();
 
   // Runtime migration tasks (vector reindex, file rewrites, etc.) — idempotent,

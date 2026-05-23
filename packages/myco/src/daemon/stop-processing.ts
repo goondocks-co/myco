@@ -135,7 +135,15 @@ function resolvePromptBatchIdForPlanWrite(
 export function enrichTurnsWithToolMetadata(turns: TranscriptTurn[], events: Array<Record<string, unknown>>): void {
   if (events.length === 0 || turns.length === 0) return;
 
-  const toolEvents = events.filter((e) => e.type === 'tool_use');
+  // Buffer events with empty or 'unknown' tool_name don't carry usable
+  // breakdown info — keep the parser-derived turn data instead of
+  // overwriting it with {'': N}.
+  const toolEvents = events.filter((e) => {
+    if (e.type !== 'tool_use') return false;
+    const name = typeof e.tool_name === 'string' ? e.tool_name : '';
+    const legacy = typeof e.tool === 'string' ? e.tool : '';
+    return (name && name !== 'unknown') || (legacy && legacy !== 'unknown');
+  });
   if (toolEvents.length === 0) return;
 
   let cursor = 0;

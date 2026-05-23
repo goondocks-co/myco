@@ -59,6 +59,11 @@ export interface ReconcilerDeps {
   logger: DaemonLogger;
   /** Canonical project root — derived from vaultDir, never cwd. */
   projectRoot: string;
+  /**
+   * Fires once after `reconcileSession` finishes for a session. Wrapped in
+   * try/catch by the reconciler — thrown errors are logged and swallowed.
+   */
+  onSessionReconciled?: (sessionId: string) => void;
 }
 
 export interface Reconciler {
@@ -81,7 +86,7 @@ export interface Reconciler {
  * `reconciledSessions` set so that each session is only reconciled once
  * per daemon lifetime.
  */
-export function createReconciler({ bufferDirs, logger, projectRoot }: ReconcilerDeps): Reconciler {
+export function createReconciler({ bufferDirs, logger, projectRoot, onSessionReconciled }: ReconcilerDeps): Reconciler {
   // Track sessions already reconciled this daemon lifetime to avoid
   // redundant file reads (startup scan + register + event can all fire).
   const reconciledSessions = new Set<string>();
@@ -237,6 +242,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot }: Reconciler
           summaries_recovered: summariesRecovered,
         });
       }
+      tryReEnrich(sessionId);
       return;
     }
 
@@ -292,6 +298,20 @@ export function createReconciler({ bufferDirs, logger, projectRoot }: Reconciler
         prompts_recovered: promptsRecovered,
         activities_recovered: activitiesRecovered,
         duplicates_suppressed: duplicatesSuppressed,
+      });
+    }
+    tryReEnrich(sessionId);
+  }
+
+  /** Invoke `onSessionReconciled` if provided, swallowing + logging any error. */
+  function tryReEnrich(sessionId: string): void {
+    if (!onSessionReconciled) return;
+    try {
+      onSessionReconciled(sessionId);
+    } catch (err) {
+      logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Post-reconcile re-enrichment threw', {
+        session_id: sessionId,
+        error: String(err),
       });
     }
   }

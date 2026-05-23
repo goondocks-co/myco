@@ -320,21 +320,30 @@ export function populateBatchResponses(
   const prefixOf = (s: string | null | undefined) =>
     (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
 
-  const available = batches
-    .filter((b) => b.response_summary == null)
-    .map((b) => ({ id: b.id, key: prefixOf(b.user_prompt) }));
+  // Match every batch (not just NULL-summary ones); the transcript is the
+  // authoritative source so a newer response overwrites stale data from an
+  // earlier Stop in the same logical turn.
+  const available = batches.map((b) => ({
+    id: b.id,
+    key: prefixOf(b.user_prompt),
+    existing: b.response_summary,
+  }));
 
   const update = db.prepare(
-    `UPDATE prompt_batches SET response_summary = ? WHERE id = ? AND response_summary IS NULL`,
+    `UPDATE prompt_batches SET response_summary = ? WHERE id = ?`,
   );
 
   for (const { prompt, response } of turns) {
     const key = prefixOf(prompt);
     if (!key) continue;
+    const trimmed = (response ?? '').trim();
+    if (!trimmed) continue;
     const idx = available.findIndex((b) => b.key === key);
     if (idx === -1) continue;
-    update.run(response, available[idx].id);
+    const target = available[idx]!;
     available.splice(idx, 1);
+    if (target.existing === response) continue;
+    update.run(response, target.id);
   }
 }
 
@@ -755,6 +764,23 @@ export function updateBatchKind(
 export function setBatchPromptNumber(batchId: number, promptNumber: number): void {
   const db = getDatabase();
   db.prepare(`UPDATE prompt_batches SET prompt_number = ? WHERE id = ?`).run(promptNumber, batchId);
+}
+
+/**
+ * Replace `user_prompt` (and reset `kind` to `'initial'`) on a batch only
+ * when its `user_prompt` currently equals {@link RECOVERED_BATCH_SENTINEL}.
+ * Returns true when a row was updated.
+ */
+export function replaceRecoveredBatchUserPrompt(batchId: number, realPrompt: string): boolean {
+  if (!realPrompt) return false;
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE prompt_batches
+       SET user_prompt = ?, kind = ?
+       WHERE id = ?
+         AND user_prompt = ?`,
+  ).run(realPrompt, BATCH_KIND.INITIAL, batchId, RECOVERED_BATCH_SENTINEL);
+  return info.changes > 0;
 }
 
 /**
