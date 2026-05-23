@@ -163,8 +163,20 @@ describe('symbiont manifests', () => {
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.hooksTarget).toBe('.agents/plugins/myco/hooks.json');
     expect(manifest.registration!.mcpTarget).toBe('.agents/plugins/myco/mcp_config.json');
-    expect(manifest.registration!.skillsTarget).toBe('.agents/plugins/myco/skills');
     expect(manifest.registration!.globalHooksTarget).toBe('~/.gemini/config/plugins/myco/hooks.json');
+    // Plugin-bundle marker (Google's plugin loader requires it) lives
+    // beside hooks.json + mcp_config.json — not inside a sub-dir.
+    expect(manifest.registration!.pluginManifestTarget).toBe('.agents/plugins/myco/plugin.json');
+    expect(manifest.registration!.globalPluginManifestTarget).toBe('~/.gemini/config/plugins/myco/plugin.json');
+    // Skills deliberately do NOT live inside the plugin bundle.
+    // Antigravity reads workspace `.agents/skills/` natively (populated
+    // by other cross-agent symbiont installs and Myco's intelligence
+    // pipeline), and the package myco + myco-rules skills go to
+    // Antigravity's user-global skills dir `~/.gemini/antigravity/skills/`.
+    // This keeps the plugin bundle lean — only the hook/MCP/manifest
+    // surface lives there.
+    expect(manifest.registration!.skillsTarget).toBeUndefined();
+    expect(manifest.registration!.globalSkillsTarget).toBe('~/.gemini/antigravity/skills');
   });
 
   it('windsurf manifest has registration without mcpTarget', () => {

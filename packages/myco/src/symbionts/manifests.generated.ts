@@ -19,11 +19,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "hookFields": {
       "sessionId": "conversationId",
       "transcriptPath": "transcriptPath",
-      "lastResponse": "lastAssistantMessage",
+      "lastResponse": "last_assistant_message",
       "prompt": "prompt",
-      "toolName": "toolName",
-      "toolInput": "toolInput",
-      "toolOutput": "toolOutput"
+      "toolName": "toolCall.name",
+      "toolInput": "toolCall.args",
+      "toolOutput": "tool_output"
     },
     "capture": {
       "planDirs": [
@@ -40,21 +40,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.gemini/config/plugins/myco/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.gemini/config/plugins/myco/skills",
+      "globalSkillsTarget": "~/.gemini/antigravity/skills",
+      "pluginManifestTarget": ".agents/plugins/myco/plugin.json",
+      "globalPluginManifestTarget": "~/.gemini/config/plugins/myco/plugin.json",
       "hooksFormat": "plugin-file",
       "hooksTemplateFile": "hooks.json",
       "hookResponse": {
-        "format": "json",
-        "fieldNames": {
-          "additionalContext": "ephemeralMessage",
-          "continue": "continue",
-          "stopReason": "stopReason"
-        }
+        "format": "antigravity-inject-steps"
       },
       "mcpTarget": ".agents/plugins/myco/mcp_config.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
-      "skillsTarget": ".agents/plugins/myco/skills",
       "settingsFormat": "json"
     },
     "capabilities": {

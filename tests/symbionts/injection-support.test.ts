@@ -25,7 +25,10 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   'claude-code': { session: true, prompt: true },
   codex: { session: true, prompt: true },
   cursor: { session: true, prompt: true },
-  antigravity: { session: true, prompt: true },
+  // Antigravity exposes PreInvocation (per model call, not per user prompt)
+  // and Stop. There is no user-prompt-submit equivalent in the live hooks
+  // contract at https://antigravity.google/docs/hooks — `prompt: false`.
+  antigravity: { session: true, prompt: false },
   opencode: { session: true, prompt: false },
   pi: { session: true, prompt: false },
   copilot: { session: true, prompt: true },

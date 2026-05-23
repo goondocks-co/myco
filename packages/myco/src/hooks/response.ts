@@ -31,8 +31,33 @@ export function writeHookResponse(
     case 'plain-text':
       if (response.additionalContext) process.stdout.write(response.additionalContext);
       return;
+    case 'antigravity-inject-steps':
+      process.stdout.write(serializeAntigravityResponse(hookEvent, response));
+      return;
   }
   void hookEvent;
+}
+
+/**
+ * Antigravity response shapes per https://antigravity.google/docs/hooks:
+ *   - PreInvocation: `{ injectSteps: [{ userMessage: "<text>" }] }` (or `{}` when nothing to inject)
+ *   - PostToolUse:   `{}`
+ *   - Stop:          `{ decision: "continue" | "allow" }` — `decision` is required; `"continue"` force-continues.
+ *
+ * `userMessage` is the persistent injection form; `ephemeralMessage` is silently
+ * dropped from the model's trajectory in the AGY CLI surface.
+ */
+function serializeAntigravityResponse(hookEvent: string, response: HookResponse): string {
+  if (hookEvent === 'stop') {
+    return JSON.stringify({ decision: 'allow' });
+  }
+  if (hookEvent === 'session-start' || hookEvent === 'user-prompt-submit') {
+    if (!response.additionalContext) return '{}';
+    return JSON.stringify({
+      injectSteps: [{ userMessage: response.additionalContext }],
+    });
+  }
+  return '{}';
 }
 
 type HookResponseConfig = NonNullable<SymbiontRegistration['hookResponse']>;

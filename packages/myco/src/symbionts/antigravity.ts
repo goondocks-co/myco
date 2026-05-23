@@ -1,21 +1,50 @@
-import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import type { SymbiontAdapter } from './adapter.js';
+import { AntigravityJsonlParser } from './parsers/antigravity-jsonl.js';
 
 /**
- * Google Antigravity — successor to the retired Gemini CLI symbiont.
+ * Google Antigravity symbiont adapter.
  *
- * Antigravity uses a fundamentally different integration model than Gemini CLI:
- *   - Workspace plugin bundles under `.agents/plugins/<name>/` (or
- *     `~/.gemini/config/plugins/<name>/` globally).
- *   - JSON stdin/stdout hook contract with camelCase metadata
- *     (conversationId, transcriptPath, artifactDirectoryPath).
- *   - Hook events: PreInvocation, PostToolUse, PreToolUse, PostInvocation, Stop.
- *
- * Transcript-format and findTranscript() parsing land alongside the dogfood
- * pass in Step 18 — by design Antigravity slots in like Codex/Claude Code,
- * so the adapter shape mirrors them. The body below is a structural stub
- * sufficient for the registry to recognize the symbiont; live parsing
- * lights up when we capture a real Antigravity transcript.
+ * Plugin bundle root (shared across surfaces): `~/.gemini/config/plugins/<name>/`.
+ * Hook contract: JSON stdin/stdout, camelCase fields (`conversationId`,
+ * `transcriptPath`, `artifactDirectoryPath`).
  */
+
+/**
+ * Per-surface conversation roots scanned by {@link findAntigravityTranscript}.
+ * Conversation ID is the directory name. First match wins.
+ */
+export const ANTIGRAVITY_SURFACE_DIRS = [
+  'antigravity-cli',
+  'antigravity',
+  'antigravity-ide',
+] as const;
+
+const TRANSCRIPT_LEAF = path.join('.system_generated', 'logs', 'transcript_full.jsonl');
+
+const antigravityParser = new AntigravityJsonlParser();
+
+/**
+ * Locate `transcript_full.jsonl` for a given Antigravity `conversationId`
+ * under `<baseDir>/<surface>/brain/<conversationId>/`. Returns null when no
+ * surface has the file.
+ */
+export function findAntigravityTranscript(baseDir: string, conversationId: string): string | null {
+  if (!conversationId) return null;
+  for (const surface of ANTIGRAVITY_SURFACE_DIRS) {
+    const candidate = path.join(baseDir, surface, 'brain', conversationId, TRANSCRIPT_LEAF);
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch { /* surface absent or conversation not here */ }
+  }
+  return null;
+}
+
+const ANTIGRAVITY_BASE_DIR = path.join(os.homedir(), '.gemini');
+
 export const antigravityAdapter: SymbiontAdapter = {
   name: 'antigravity',
   displayName: 'Google Antigravity',
@@ -23,18 +52,14 @@ export const antigravityAdapter: SymbiontAdapter = {
   hookFields: {
     sessionId: 'conversationId',
     transcriptPath: 'transcriptPath',
-    lastResponse: 'lastAssistantMessage',
+    lastResponse: 'last_assistant_message',
     prompt: 'prompt',
-    toolName: 'toolName',
-    toolInput: 'toolInput',
-    toolOutput: 'toolOutput',
+    toolName: 'toolCall.name',
+    toolInput: 'toolCall.args',
+    toolOutput: 'tool_output',
   },
 
-  findTranscript(_sessionId: string): string | null {
-    return null;
-  },
+  findTranscript: (conversationId) => findAntigravityTranscript(ANTIGRAVITY_BASE_DIR, conversationId),
 
-  parseTurns(_content: string): TranscriptTurn[] {
-    return [];
-  },
+  parseTurns: (content) => antigravityParser.parseTurns(content),
 };

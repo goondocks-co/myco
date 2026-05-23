@@ -115,27 +115,44 @@ interface HookCommand {
 function firstMycoCommand(manifestName: string, hooksContent: string): HookCommand | null {
   let parsed: unknown;
   try { parsed = JSON.parse(hooksContent); } catch { return null; }
-  const root = (parsed && typeof parsed === 'object' && 'hooks' in parsed)
-    ? (parsed as { hooks?: unknown }).hooks
-    : parsed;
-  if (!root || typeof root !== 'object') return null;
-  const events = root as Record<string, unknown>;
-  for (const groups of Object.values(events)) {
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      if (!group || typeof group !== 'object') continue;
-      // Nested: { hooks: [{ command: '...' }] }
-      if ('hooks' in group && Array.isArray((group as { hooks?: unknown }).hooks)) {
-        for (const h of (group as { hooks: Array<{ command?: string }> }).hooks) {
-          if (typeof h.command === 'string' && h.command.includes(`--symbiont ${manifestName}`)) {
-            return inspect(h.command);
+  // Three top-level shapes in the wild:
+  //   - Claude/Cursor/Codex: { "hooks": { <Event>: [...] } }
+  //   - Windsurf: { <Event>: [...] }
+  //   - Antigravity: { "<bundle>": { <Event>: [...] } }  (named bundles per
+  //     https://antigravity.google/docs/hooks; the event keys live one level
+  //     deeper than the other JSON shapes)
+  if (!parsed || typeof parsed !== 'object') return null;
+  const candidates: Array<Record<string, unknown>> = [];
+  if ('hooks' in parsed && parsed.hooks && typeof parsed.hooks === 'object') {
+    candidates.push((parsed as { hooks: Record<string, unknown> }).hooks);
+  }
+  // Always also try the parsed object itself (covers Windsurf-flat) and any
+  // nested bundle objects (covers Antigravity).
+  candidates.push(parsed as Record<string, unknown>);
+  for (const value of Object.values(parsed as Record<string, unknown>)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      candidates.push(value as Record<string, unknown>);
+    }
+  }
+
+  for (const events of candidates) {
+    for (const groups of Object.values(events)) {
+      if (!Array.isArray(groups)) continue;
+      for (const group of groups) {
+        if (!group || typeof group !== 'object') continue;
+        // Nested: { hooks: [{ command: '...' }] }
+        if ('hooks' in group && Array.isArray((group as { hooks?: unknown }).hooks)) {
+          for (const h of (group as { hooks: Array<{ command?: string }> }).hooks) {
+            if (typeof h.command === 'string' && h.command.includes(`--symbiont ${manifestName}`)) {
+              return inspect(h.command);
+            }
           }
         }
-      }
-      // Flat: { command: '...' }
-      const flatCmd = (group as { command?: unknown }).command;
-      if (typeof flatCmd === 'string' && flatCmd.includes(`--symbiont ${manifestName}`)) {
-        return inspect(flatCmd);
+        // Flat: { command: '...' }
+        const flatCmd = (group as { command?: unknown }).command;
+        if (typeof flatCmd === 'string' && flatCmd.includes(`--symbiont ${manifestName}`)) {
+          return inspect(flatCmd);
+        }
       }
     }
   }

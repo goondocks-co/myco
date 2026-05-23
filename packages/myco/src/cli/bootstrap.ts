@@ -25,6 +25,10 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, type InstallResult } from '../symbionts/installer.js';
 import { installGlobalLaunchers, type InstalledLauncherReport } from '../grove/launcher-install.js';
 import { runProjectLocalMigration, type MigrationPassResult } from '../grove/migration-walker.js';
+import {
+  runGlobalConfigMigration,
+  type GlobalConfigMigrationResult,
+} from '../grove/global-config-migration.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -48,6 +52,8 @@ export interface BootstrapResult {
    * legacy state contribute a `noOp: true` outcome.
    */
   migration: MigrationPassResult;
+  /** Per-pass global-config scrub outcomes (e.g. legacy ~/.gemini state). */
+  globalConfigMigration: GlobalConfigMigrationResult;
 }
 
 /**
@@ -131,5 +137,6 @@ export function runGlobalBootstrap(
   // default `servedBy` arg (sourced from the current daemon variant);
   // bootstrap doesn't override it.
   const migration = runProjectLocalMigration(packageRoot);
-  return { launchers, symbionts, migration };
+  const globalConfigMigration = runGlobalConfigMigration();
+  return { launchers, symbionts, migration, globalConfigMigration };
 }

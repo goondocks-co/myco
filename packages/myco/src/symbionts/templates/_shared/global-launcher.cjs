@@ -68,15 +68,43 @@ for (const name of PROJECT_DIR_ENV_VARS) {
   }
 }
 
+// Antigravity hooks run with cwd set to the plugin bundle dir and provide no
+// project-dir env var; the workspace lives inside the JSON payload on stdin
+// as `workspacePaths[0]`. Read stdin once when `--symbiont antigravity` is
+// in args, chdir to that path, then re-feed the buffered payload to the
+// downstream binary via `execFileSync`'s `input:` option.
+let bufferedAntigravityStdin = null;
+if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'antigravity') {
+  try {
+    bufferedAntigravityStdin = fs.readFileSync(0); // synchronous read of fd 0 to EOF
+    if (bufferedAntigravityStdin.length > 0) {
+      const payload = JSON.parse(bufferedAntigravityStdin.toString('utf-8'));
+      const workspace = Array.isArray(payload?.workspacePaths) ? payload.workspacePaths[0] : null;
+      if (typeof workspace === 'string' && workspace.length > 0) {
+        try { process.chdir(workspace); } catch { /* fall through with original cwd */ }
+      }
+    }
+  } catch { /* unreadable stdin or non-JSON; fall through */ }
+}
+
 // 0. Project-local launcher override.
 // Preserves the dogfood path (`make dev-link-worktree` writes
 // `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and
 // the deliberate per-project escape hatch from `myco init --project`.
 // Walk up from cwd so the check is worktree-aware.
+// If stdin was consumed for the Antigravity workspace lookup, re-feed it via
+// `input:`. Otherwise inherit.
+function spawnOptions() {
+  if (bufferedAntigravityStdin !== null) {
+    return { input: bufferedAntigravityStdin, stdio: ['pipe', 'inherit', 'inherit'] };
+  }
+  return { stdio: 'inherit' };
+}
+
 const override = findProjectLocalOverride(process.cwd(), overrideName);
 if (override) {
   try {
-    execFileSync(process.execPath, [override, ...args], { stdio: 'inherit' });
+    execFileSync(process.execPath, [override, ...args], spawnOptions());
     process.exit(0);
   } catch (err) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') process.exit(0);
@@ -95,7 +123,7 @@ if (!bin) {
 }
 
 try {
-  execFileSync(bin, args, { stdio: 'inherit' });
+  execFileSync(bin, args, spawnOptions());
 } catch (err) {
   if (err && typeof err === 'object' && err.code === 'ENOENT') {
     if (args[0] === 'tool') {

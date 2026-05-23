@@ -1,37 +1,29 @@
 {
-  "_myco_marker": "myco:plugin-marker",
-  "hooks": {
+  "myco": {
     "PreInvocation": [
       {
-        "name": "myco-session-start",
-        "command": "cd \"${ANTIGRAVITY_PROJECT_DIR:-.}\" && {{mycoLauncher}} hook session-start --symbiont antigravity",
-        "timeout": 10000
-      },
-      {
-        "name": "myco-user-prompt-submit",
-        "command": "cd \"${ANTIGRAVITY_PROJECT_DIR:-.}\" && {{mycoLauncher}} hook user-prompt-submit --symbiont antigravity",
-        "timeout": 5000
+        "type": "command",
+        "command": "{{mycoLauncher}} hook session-start --symbiont antigravity",
+        "timeout": 10
       }
     ],
     "PostToolUse": [
       {
-        "name": "myco-post-tool-use",
-        "command": "cd \"${ANTIGRAVITY_PROJECT_DIR:-.}\" && {{mycoLauncher}} hook post-tool-use --symbiont antigravity",
-        "timeout": 5000
-      }
-    ],
-    "PostInvocation": [
-      {
-        "name": "myco-post-invocation",
-        "command": "cd \"${ANTIGRAVITY_PROJECT_DIR:-.}\" && {{mycoLauncher}} hook post-tool-use --symbiont antigravity",
-        "timeout": 5000
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{mycoLauncher}} hook post-tool-use --symbiont antigravity",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "name": "myco-stop",
-        "command": "cd \"${ANTIGRAVITY_PROJECT_DIR:-.}\" && {{mycoLauncher}} hook stop --symbiont antigravity",
-        "timeout": 30000
+        "type": "command",
+        "command": "{{mycoLauncher}} hook stop --symbiont antigravity",
+        "timeout": 30
       }
     ]
   }

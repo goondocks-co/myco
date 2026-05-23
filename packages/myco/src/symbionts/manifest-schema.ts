@@ -195,6 +195,23 @@ const RegistrationSchema = z.object({
    */
   globalSettingsTarget: z.string().nullable().optional(),
   /**
+   * Project-relative path of the agent's plugin-bundle manifest. Plugin-
+   * file symbionts (Antigravity) require a bundle manifest at the root
+   * of their plugin directory — without it, the agent's plugin loader
+   * doesn't discover the bundle. The file is owned by Myco and copied
+   * verbatim from `templates/<symbiont>/plugin.json`. `null`/absent
+   * declares no bundle-manifest requirement (every JSON-merge symbiont).
+   */
+  pluginManifestTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path (with `~` expansion) for the plugin-bundle manifest
+   * under global scope. Mirrors `pluginManifestTarget` but at the user
+   * home location. Plugin-file symbionts that install globally write
+   * the bundle manifest here so the agent's user-home plugin discovery
+   * sees the Myco bundle as a complete plugin.
+   */
+  globalPluginManifestTarget: z.string().nullable().optional(),
+  /**
    * Format of the hooks target.
    * - 'json' (default): hooks template is merged into a JSON settings file.
    * - 'plugin-file': the hooks template is a verbatim file (e.g., an opencode TS plugin)
@@ -217,7 +234,13 @@ const RegistrationSchema = z.object({
    * via `fieldNames` (unmapped fields are dropped).
    */
   hookResponse: z.object({
-    format: z.enum(['plain-text', 'json']),
+    // `antigravity-inject-steps` selects a per-event serializer that
+    // wraps additionalContext in Antigravity's required shape
+    // (`{ injectSteps: [{ ephemeralMessage }] }` for PreInvocation/
+    // PostInvocation, `{}` for PostToolUse, `{ decision }` for Stop).
+    // Distinct from `json` because the field-name mapping isn't a flat
+    // rename — it's a structural wrap.
+    format: z.enum(['plain-text', 'json', 'antigravity-inject-steps']),
     fieldNames: z.record(z.string(), z.string()).optional(),
   }).optional(),
   /**
@@ -344,10 +367,17 @@ export const SymbiontManifestSchema = z.object({
   hookFields: z.object({
     sessionId: z.string(),
     transcriptPath: z.string(),
-    lastResponse: z.string(),
+    /** Symbiont's hook payload key for the final assistant response text.
+     * Defaults to `last_assistant_message`. Symbionts that deliver the response
+     * only through the transcript file (e.g., Antigravity) can keep the default
+     * — the payload won't carry that field and the normalized value stays
+     * undefined. */
+    lastResponse: z.string().default('last_assistant_message'),
     prompt: z.string().default('prompt'),
     toolName: z.string().default('tool_name'),
     toolInput: z.string().default('tool_input'),
+    /** Symbiont's hook payload key for tool output. Defaults to `tool_output`.
+     * Same transcript-only caveat applies as `lastResponse`. */
     toolOutput: z.string().default('tool_output'),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),

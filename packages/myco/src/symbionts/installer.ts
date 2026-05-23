@@ -203,6 +203,14 @@ export interface InstallResult {
    * with `registration.pluginPackageTarget` set. False otherwise.
    */
   pluginPackage: boolean;
+  /**
+   * Plugin-bundle marker file (e.g., antigravity's `plugin.json`). Only
+   * present for agents with `registration.pluginManifestTarget` (or its
+   * global counterpart) set. False otherwise. Distinct from
+   * `pluginPackage`: this is the agent's plugin-discovery marker, not a
+   * runtime dependency declaration.
+   */
+  pluginManifest: boolean;
 }
 
 export type InstallScope = 'project' | 'global';
@@ -568,7 +576,7 @@ export class SymbiontInstaller {
       // create the agent's config dir on its behalf.
       return {
         hooks: false, mcp: false, skills: false, settings: false,
-        instructions: false, pluginPackage: false,
+        instructions: false, pluginPackage: false, pluginManifest: false,
       };
     }
     // Project-content surfaces (AGENTS.md, .gitignore, instruction stubs)
@@ -592,6 +600,7 @@ export class SymbiontInstaller {
           settings: this.installSettings(),
           instructions: this.capabilities.instructions ? this.installInstructions() : false,
           pluginPackage: this.installPluginPackage(),
+          pluginManifest: this.installPluginManifest(),
         };
     if (this.capabilities.gitignore) this.updateGitignore();
     return result;
@@ -884,6 +893,7 @@ export class SymbiontInstaller {
       settings,
       instructions: this.installInstructions(),
       pluginPackage: this.installPluginPackage(),
+      pluginManifest: this.installPluginManifest(),
     };
   }
 
@@ -920,6 +930,13 @@ export class SymbiontInstaller {
             ? this.uninstallInstructions()
             : false,
           pluginPackage: false,
+          // Plugin-bundle marker (e.g., antigravity's `plugin.json`) is
+          // a per-symbiont config file, not project-content. Always
+          // safe to remove on uninstall — even from the walker's
+          // keepProjectContent=true path — because the marker only
+          // means anything when the symbiont's hooks/MCP are also
+          // present, which the walker has just removed.
+          pluginManifest: this.uninstallPluginManifest(),
         };
     if (this.capabilities.gitignore && !keepProjectContent) {
       this.cleanGitignore();
@@ -941,6 +958,7 @@ export class SymbiontInstaller {
         settings: false,
         instructions: this.uninstallInstructions(),
         pluginPackage: false,
+        pluginManifest: false,
       };
     }
 
@@ -997,6 +1015,7 @@ export class SymbiontInstaller {
       settings,
       instructions: this.uninstallInstructions(),
       pluginPackage: false,
+      pluginManifest: false,
     };
   }
 
@@ -1451,6 +1470,60 @@ export class SymbiontInstaller {
       path.join(this.projectRoot, reg.pluginPackageTarget),
       templateContent,
     );
+  }
+
+  /**
+   * Install the plugin-bundle manifest (`plugin.json`) for symbionts
+   * whose plugin loader requires a marker file at the bundle root.
+   * Antigravity is the canonical case — `~/.gemini/config/plugins/<name>/`
+   * is only recognized as a plugin when `plugin.json` is present (per
+   * Google's reference plugins `google-antigravity-sdk` and
+   * `modern-web-guidance-plugin`, which both ship metadata-only
+   * `plugin.json` files alongside their hooks/skills siblings).
+   *
+   * Resolves the target from `pluginManifestTarget` (project scope) or
+   * `globalPluginManifestTarget` (global scope); skips silently when
+   * neither is declared (every JSON-merge symbiont).
+   */
+  private installPluginManifest(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg) return false;
+    const rawTarget = this.installScope === 'global'
+      ? reg.globalPluginManifestTarget
+      : reg.pluginManifestTarget;
+    if (!rawTarget) return false;
+    const targetPath = this.installScope === 'global'
+      ? expandHome(rawTarget)
+      : path.join(this.projectRoot, rawTarget);
+
+    const templateContent = this.loadTemplateRaw('plugin.json');
+    if (templateContent === null) return false;
+
+    return this.writeManagedFile(targetPath, templateContent);
+  }
+
+  /**
+   * Remove the plugin-bundle manifest. Symmetric counterpart to
+   * `installPluginManifest()`. Idempotent — silently no-ops when the
+   * file doesn't exist or the manifest declares no target.
+   */
+  private uninstallPluginManifest(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg) return false;
+    const rawTarget = this.installScope === 'global'
+      ? reg.globalPluginManifestTarget
+      : reg.pluginManifestTarget;
+    if (!rawTarget) return false;
+    const targetPath = this.installScope === 'global'
+      ? expandHome(rawTarget)
+      : path.join(this.projectRoot, rawTarget);
+
+    try {
+      fs.unlinkSync(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

@@ -21,12 +21,7 @@ export interface HookConfigEntry {
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "antigravity": {
     "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "ephemeralMessage",
-        "continue": "continue",
-        "stopReason": "stopReason"
-      }
+      "format": "antigravity-inject-steps"
     }
   },
   "claude-code": {

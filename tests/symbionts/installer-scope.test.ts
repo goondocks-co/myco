@@ -57,7 +57,7 @@ describe('SymbiontInstaller installScope=global', () => {
     const result = installer.install();
     expect(result).toEqual({
       hooks: false, mcp: false, skills: false, settings: false,
-      instructions: false, pluginPackage: false,
+      instructions: false, pluginPackage: false, pluginManifest: false,
     });
     // No `~/.claude/` created on behalf of the agent.
     expect(fs.existsSync(path.join(tmpHome, '.claude'))).toBe(false);

@@ -8,17 +8,28 @@ configDir: .agents/plugins/myco
 # Gemini config are migrated away in Step 16.
 detectionDir: ~/.gemini
 pluginRootEnvVar: ANTIGRAVITY_PLUGIN_ROOT
-# Hook input arrives as JSON on stdin with Antigravity's camelCase metadata:
-# conversationId, transcriptPath, artifactDirectoryPath, workspacePaths.
-# Field names below reflect that contract.
+# Hook input shape per the official Antigravity hooks docs
+# (https://antigravity.google/docs/hooks). Every event includes a common
+# block: conversationId, workspacePaths, transcriptPath, artifactDirectoryPath.
+# Event-specific fields layer on top.
+#
+#   - PreInvocation:  invocationNum, initialNumSteps. NO prompt field —
+#                     the user message lives in the transcript file at
+#                     transcriptPath, not on the hook payload.
+#   - PreToolUse:     toolCall { name, args }, stepIdx.
+#   - PostToolUse:    stepIdx, error (optional). NO result body — the tool
+#                     output also reads from the transcript.
+#   - PostInvocation: same as PreInvocation.
+#   - Stop:           executionNum, terminationReason, error, fullyIdle.
+#
+# We omit `prompt`, `lastResponse`, and `toolOutput` deliberately — none
+# exist in Antigravity's payload schema, and previous mappings here were
+# wrong (read from the spec, not from inference).
 hookFields:
   sessionId: conversationId
   transcriptPath: transcriptPath
-  lastResponse: lastAssistantMessage
-  prompt: prompt
-  toolName: toolName
-  toolInput: toolInput
-  toolOutput: toolOutput
+  toolName: toolCall.name
+  toolInput: toolCall.args
 capture:
   planDirs:
     # Antigravity workspace plans land here; user-global plan dir TBD during
@@ -36,20 +47,63 @@ registration:
   hooksTemplateFile: hooks.json
   # Antigravity hooks emit JSON on stdout; field mapping rebases Myco's
   # internal HookResponse semantics to Antigravity's response shape.
+  # Antigravity's response shape varies per event:
+  #   - PreInvocation/PostInvocation: { injectSteps: [{ ephemeralMessage: "<text>" }] }
+  #   - PostToolUse:                   {}            (empty)
+  #   - Stop:                          { decision: "<continue|allow>", reason?: "<text>" }
+  #     'continue' forces the agent to keep running; any other value
+  #     allows the stop. Myco never force-continues — Stop is a pure
+  #     terminate signal for capture purposes.
+  #
+  # `format: antigravity-inject-steps` selects the dedicated serializer
+  # in src/hooks/response.ts that knows the per-event shapes. The flat
+  # `fieldNames` mapping we used before was wrong — it emitted
+  # `{ ephemeralMessage: "<text>" }` (no injectSteps wrapper), which
+  # Antigravity silently dropped. Caught during the R4 verification
+  # pass by reading the live docs (the prior wisdom spore had the
+  # shape wrong).
   hookResponse:
-    format: json
-    fieldNames:
-      additionalContext: ephemeralMessage
-      continue: continue
-      stopReason: stopReason
+    format: antigravity-inject-steps
   mcpTarget: .agents/plugins/myco/mcp_config.json
   globalMcpTarget: ~/.gemini/config/plugins/myco/mcp_config.json
-  # Antigravity loads plugin-local skills from the bundle's skills/ dir,
-  # while ~/.agents/skills remains the cross-agent canonical store for
-  # other symbionts. Antigravity's globalSkillsTarget lives inside the
-  # plugin bundle so the agent picks them up from one place.
-  skillsTarget: .agents/plugins/myco/skills
-  globalSkillsTarget: ~/.gemini/config/plugins/myco/skills
+  # Antigravity's bundle marker. Without `plugin.json` at the root of
+  # the plugin dir, Antigravity's plugin loader doesn't recognize the
+  # bundle and our hooks/MCP/skills never activate. Google's reference
+  # plugins (google-antigravity-sdk, modern-web-guidance-plugin) both
+  # ship a `plugin.json` with metadata-only fields (name, version,
+  # description, author, license, keywords) — hooks.json and
+  # mcp_config.json are sibling files discovered by convention.
+  pluginManifestTarget: .agents/plugins/myco/plugin.json
+  globalPluginManifestTarget: ~/.gemini/config/plugins/myco/plugin.json
+  # Skills come from three Antigravity-recognized locations
+  # (https://antigravity.google/docs/skills):
+  #   1. workspace `.agents/skills/`     — read natively by Antigravity; Myco's
+  #                                        intelligence pipeline writes the
+  #                                        project's generated knowledge skills
+  #                                        here, and any other Myco-managed
+  #                                        cross-agent symbiont (Copilot,
+  #                                        opencode, pi) already symlinks the
+  #                                        package myco + myco-rules skills
+  #                                        into the same dir. Antigravity
+  #                                        therefore needs no workspace-level
+  #                                        install action from us —
+  #                                        `skillsTarget` deliberately omitted
+  #                                        to keep the install lean and avoid
+  #                                        symlink duplication.
+  #   2. global `~/.gemini/antigravity/skills/` — Antigravity's user-global
+  #                                        skills directory. The package
+  #                                        myco + myco-rules skills land
+  #                                        here so a workspace that only
+  #                                        uses Antigravity (no other
+  #                                        symbiont populating workspace
+  #                                        `.agents/skills/`) still sees
+  #                                        them.
+  #   3. plugin-bundle `<bundle>/skills/` — also supported, but we keep the
+  #                                        bundle lean. The global location
+  #                                        is the more idiomatic home for
+  #                                        package skills (matches how
+  #                                        other symbionts ship theirs).
+  globalSkillsTarget: ~/.gemini/antigravity/skills
   # No standalone settings file — Antigravity wires settings through the
   # plugin bundle's plugin.json.
 capabilities:
