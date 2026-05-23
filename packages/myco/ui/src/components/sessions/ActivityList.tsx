@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
 import { useBatchActivities, type ActivityRow } from '../../hooks/use-sessions';
 import { formatDurationMs as formatDuration } from '../../lib/format';
 import { CanopyToolCallIndicator } from './CanopyToolCallIndicator';
@@ -10,9 +10,101 @@ import { cn } from '../../lib/cn';
 /** Maximum skeleton rows shown during loading. */
 const SKELETON_MAX_ROWS = 3;
 
+const MYCO_INJECTION_LABELS: Record<string, string> = {
+  'myco:inject_cortex': 'Cortex',
+  'myco:inject_spores': 'Spores',
+  'myco:inject_canopy': 'Canopy',
+};
+
+function isMycoInjectionRow(toolName: string): boolean {
+  return toolName.startsWith('myco:inject_');
+}
+
 /* ---------- Sub-components ---------- */
 
+function MycoInjectionItem({ activity }: { activity: ActivityRow }) {
+  const [expanded, setExpanded] = useState(false);
+  const label = MYCO_INJECTION_LABELS[activity.tool_name] ?? activity.tool_name;
+  const hasDetail = Boolean(activity.tool_output_summary || activity.tool_input);
+  const failedFetch = !activity.tool_output_summary;
+
+  return (
+    <div className={cn(
+      'border-l-2 transition-colors',
+      expanded ? 'border-l-secondary/40' : 'border-transparent hover:border-l-secondary/30',
+    )}>
+      <div
+        role="button"
+        tabIndex={0}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-secondary/5 transition-all"
+        onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setExpanded((prev) => !prev);
+          }
+        }}
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
+        )}
+        <Sparkles className="h-3.5 w-3.5 shrink-0 text-secondary" />
+        <span className="font-sans text-xs font-medium text-secondary">
+          {label}
+        </span>
+        <span className="font-sans text-[10px] uppercase tracking-widest text-on-surface-variant/60">
+          injection
+        </span>
+        <span className="shrink-0 ml-auto" />
+        {failedFetch && (
+          <span className="font-sans text-[10px] text-tertiary" title="No content stored — fetch may have failed">
+            no content
+          </span>
+        )}
+      </div>
+
+      <div
+        className="grid transition-[grid-template-rows] duration-150 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <div className="px-8 pb-3 space-y-2">
+            {!hasDetail && (
+              <p className="font-sans text-xs text-on-surface-variant/60 italic py-1">
+                No content recorded for this injection
+              </p>
+            )}
+            {activity.tool_input && (
+              <div>
+                <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Trigger</div>
+                <pre className="font-mono text-xs bg-surface-container-lowest rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
+                  {activity.tool_input}
+                </pre>
+              </div>
+            )}
+            {activity.tool_output_summary && (
+              <div>
+                <div className="font-sans text-xs font-medium text-on-surface-variant mb-1">Injected content</div>
+                <pre className="font-mono text-xs bg-secondary/5 rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all text-on-surface">
+                  {activity.tool_output_summary}
+                </pre>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActivityItem({ activity }: { activity: ActivityRow }) {
+  if (isMycoInjectionRow(activity.tool_name)) {
+    return <MycoInjectionItem activity={activity} />;
+  }
+
   const [expanded, setExpanded] = useState(false);
   const succeeded = activity.success === 1;
   const hasDetail = Boolean(activity.tool_input || activity.tool_output_summary || activity.error_message);
