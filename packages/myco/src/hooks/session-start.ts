@@ -8,6 +8,16 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * True when the raw payload carries `invocationNum` and that value is > 0.
+ * Antigravity's PreInvocation payload includes this; other symbionts do not.
+ */
+export function isNonFirstAntigravityInvocation(raw: Record<string, unknown>): boolean {
+  const value = raw.invocationNum;
+  if (typeof value !== 'number') return false;
+  return value > 0;
+}
+
 export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
@@ -18,6 +28,16 @@ export async function main() {
     symbiont = input.agent;
     if (!input.sessionId) return;
     const { sessionId, transcriptPath } = input;
+
+    // Antigravity fires PreInvocation per-execution, not per-session. The
+    // `invocationNum` field signals which execution this is within the
+    // current session. Only the first one (`0`) is "session-start" in the
+    // Myco sense — skip subsequent invocations to avoid re-injecting the
+    // same Cortex preamble N times per logical session.
+    if (isNonFirstAntigravityInvocation(input.raw)) {
+      writeHookResponse(symbiont, 'session-start');
+      return;
+    }
 
     // Evaluate session_start rules before registering so drops never create
     // a row. Rules that inspect session_meta need the parsed transcript head.
