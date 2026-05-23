@@ -178,7 +178,7 @@ import { startSelfReconcileLoop } from './self-reconcile-wiring.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
-  handleTaskCompleted, handleCompact,
+  handleTaskCompleted, handleCompact, syncTranscriptPromptBatches,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
 import { reEnrichSessionFromTranscript } from './session-reenrich.js';
@@ -1109,6 +1109,25 @@ export async function main(): Promise<void> {
     projectStateTracker,
   });
   server.registerRoute('POST', '/events', eventDispatcher);
+
+  // --- Transcript-prompt sync (Antigravity-class symbionts) ---
+  //
+  // Hooks for symbionts whose payload does not carry the user prompt POST
+  // the full transcript-derived prompt list here; the server inserts only
+  // prompts beyond the count already captured for the session. Count-based
+  // diff makes the call idempotent across repeated PreInvocation fires.
+  server.registerRoute('POST', '/events/sync-transcript-prompts', async (req) => {
+    const body = req.body as { session_id?: unknown; prompts?: unknown };
+    const sessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    const prompts = Array.isArray(body.prompts)
+      ? body.prompts.filter((p): p is string => typeof p === 'string')
+      : [];
+    if (!sessionId) {
+      return { status: 400, body: { error: 'session_id required' } };
+    }
+    const result = syncTranscriptPromptBatches(sessionId, prompts);
+    return { body: result };
+  });
 
   // --- Stop route ---
 

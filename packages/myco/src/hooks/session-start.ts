@@ -4,18 +4,27 @@ import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
+import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+const antigravityParser = new AntigravityJsonlParser();
+
 /**
- * True when the raw payload carries `invocationNum` and that value is > 0.
- * Antigravity's PreInvocation payload includes this; other symbionts do not.
+ * Read AGY `transcript_full.jsonl` and return the user prompts in order. Empty
+ * array on missing/unreadable transcript so callers can no-op.
  */
-export function isNonFirstAntigravityInvocation(raw: Record<string, unknown>): boolean {
-  const value = raw.invocationNum;
-  if (typeof value !== 'number') return false;
-  return value > 0;
+export function readAntigravityPromptsFromTranscript(transcriptPath: string): string[] {
+  try {
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    return antigravityParser
+      .parseTurns(content)
+      .map((t) => t.prompt)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0);
+  } catch {
+    return [];
+  }
 }
 
 export async function main() {
@@ -28,16 +37,6 @@ export async function main() {
     symbiont = input.agent;
     if (!input.sessionId) return;
     const { sessionId, transcriptPath } = input;
-
-    // Antigravity fires PreInvocation per-execution, not per-session. The
-    // `invocationNum` field signals which execution this is within the
-    // current session. Only the first one (`0`) is "session-start" in the
-    // Myco sense — skip subsequent invocations to avoid re-injecting the
-    // same Cortex preamble N times per logical session.
-    if (isNonFirstAntigravityInvocation(input.raw)) {
-      writeHookResponse(symbiont, 'session-start');
-      return;
-    }
 
     // Evaluate session_start rules before registering so drops never create
     // a row. Rules that inspect session_meta need the parsed transcript head.
@@ -64,15 +63,26 @@ export async function main() {
       branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).trim();
     } catch { /* not a git repo */ }
 
-    const [, contextResult] = await Promise.all([
-      client.capturePost('/sessions/register', {
-        session_id: sessionId,
-        agent: symbiont,
-        branch,
-        started_at: new Date().toISOString(),
-      }),
-      client.post('/context', { session_id: sessionId, branch }),
-    ]);
+    // Antigravity has no UserPromptSubmit equivalent — PreInvocation fires
+    // per-execution and the user prompt lives in `transcript_full.jsonl`.
+    // Register the session, drain newly-seen prompts into prompt_batches, then
+    // call /context so Cortex injection attaches to the just-created batch.
+    await client.capturePost('/sessions/register', {
+      session_id: sessionId,
+      agent: symbiont,
+      branch,
+      started_at: new Date().toISOString(),
+    });
+    if (symbiont === 'antigravity' && transcriptPath) {
+      const prompts = readAntigravityPromptsFromTranscript(transcriptPath);
+      if (prompts.length > 0) {
+        await client.post('/events/sync-transcript-prompts', {
+          session_id: sessionId,
+          prompts,
+        });
+      }
+    }
+    const contextResult = await client.post('/context', { session_id: sessionId, branch });
 
     if (contextResult.ok && contextResult.data?.text) {
       if (contextResult.data.source === 'cortex') {

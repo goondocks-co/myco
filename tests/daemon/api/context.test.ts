@@ -167,6 +167,43 @@ describe('createSessionContextHandler', () => {
     expect(body.text).toContain('## Preferred Digest (Tier 5000)');
     expect(body.text).toContain('Digest extract for current project work.');
   });
+
+  it('returns empty text on the second call when a prompt_batches row pins dedup', async () => {
+    // First call: no batch yet → injection record gate falls through and
+    // returns the text. Second call after a batch is opened → dedup gate
+    // fires (UNIQUE on content_hash) and returns empty.
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Cortex preamble.',
+      input_hash: 'hash-dedup',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertSession({
+      id: 'sess-dedup',
+      agent: 'antigravity',
+      started_at: NOW,
+      created_at: NOW,
+    });
+    const handler = createSessionContextHandler(makeDeps());
+
+    insertBatch({
+      session_id: 'sess-dedup',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'hello',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const first = await handler(makeReq({ session_id: 'sess-dedup' }));
+    expect((first.body as { text: string }).text).toContain('Cortex preamble');
+
+    const second = await handler(makeReq({ session_id: 'sess-dedup' }));
+    expect((second.body as { text: string }).text).toBe('');
+  });
 });
 
 describe('createResumeContextHandler', () => {

@@ -23,6 +23,7 @@ import { shouldInjectSessionStartDigest } from '@myco/context/session-start-dige
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
+import { recordInjectionActivity } from '../injection-records.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -143,6 +144,26 @@ export function createSessionContextHandler(deps: ContextDeps) {
           injected_text: contextText,
         },
       );
+
+      // Per-session dedup gate. When a prompt_batches row exists for this
+      // session, record a synthetic `myco:inject_cortex` activity with
+      // content_hash `myco:inject:cortex:<sessionId>`. Re-entry by the same
+      // session (e.g. AGY's per-invocation PreInvocation hook) collides on
+      // the UNIQUE index and returns an empty body. Symbionts that fire
+      // session-start exactly once never have a batch yet → no_batch →
+      // fall through to direct return (legacy behavior preserved).
+      if (session_id) {
+        const record = await recordInjectionActivity({
+          sessionId: session_id,
+          projectId: requestProjectId,
+          injectionType: 'cortex',
+          trigger: { metadata: { source, branch } },
+          fetchContent: async () => ({ text: contextText, metadata: { source } }),
+        });
+        if (record.injected === false && record.reason === 'unique_violation') {
+          return { body: { text: '' } };
+        }
+      }
 
       return {
         body: {

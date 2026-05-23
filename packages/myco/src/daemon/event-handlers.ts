@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, listBatchesBySession, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
@@ -183,6 +183,34 @@ export function handleUserPrompt(
   }
 
   return { batchId: batch.id, promptNumber };
+}
+
+/**
+ * Sync a session's prompt_batches against an ordered list of user prompts
+ * mined from the agent's transcript. Inserts batches for any prompts beyond
+ * the count already captured for the session; existing batches are left
+ * alone. Used by symbionts (Antigravity) whose hook payloads do not carry
+ * the user prompt — the transcript is the authoritative source and the
+ * hook handler reads it on every fire to keep the DB in sync.
+ *
+ * Count-based diff means callers can POST the full prompt list every call;
+ * the server only creates batches for the new tail.
+ */
+export function syncTranscriptPromptBatches(
+  sessionId: string,
+  prompts: string[],
+): { createdBatchCount: number; existingBatchCount: number } {
+  const existing = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+  const existingBatchCount = existing.length;
+  let createdBatchCount = 0;
+
+  for (let i = existingBatchCount; i < prompts.length; i++) {
+    const prompt = prompts[i];
+    if (typeof prompt !== 'string' || prompt.trim().length === 0) continue;
+    handleUserPrompt(sessionId, prompt, { kind: BATCH_KIND.INITIAL });
+    createdBatchCount += 1;
+  }
+  return { createdBatchCount, existingBatchCount };
 }
 
 /**
