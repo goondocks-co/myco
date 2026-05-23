@@ -3,6 +3,7 @@
  * spore search per prompt, and resume summaries for resumed sessions.
  */
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
@@ -352,8 +353,44 @@ export function createPromptContextHandler(deps: ContextDeps) {
       },
     );
 
+    // Per-(session, prompt) dedup gate. Symbionts whose user-prompt hook can
+    // fire more than once for the same prompt (e.g. AGY's PreInvocation
+    // re-entering within one logical turn) collide on the UNIQUE index and
+    // get an empty body. Sessions without an open batch fall through to the
+    // raw text — preserves the legacy direct-return behavior for symbionts
+    // that don't have a batch yet at prompt-submit time.
+    if (text && session_id) {
+      const discriminator = hashPromptDiscriminator(prompt);
+      const record = await recordInjectionActivity({
+        sessionId: session_id,
+        projectId: typeof projectId === 'string' ? projectId : null,
+        injectionType: 'spores',
+        discriminator,
+        trigger: {
+          metadata: {
+            spore_titles: spores.map((s) => s.title),
+            spore_count: spores.length,
+          },
+        },
+        fetchContent: async () => ({ text, metadata: { spore_count: spores.length } }),
+      });
+      if (record.injected === false && record.reason === 'unique_violation') {
+        return { body: { text: '' } };
+      }
+    }
+
     return { body: { text } };
   };
+}
+
+/**
+ * Hash a prompt to a short, deterministic discriminator suitable for
+ * embedding in a `content_hash`. SHA-1 truncated to 16 hex chars — collisions
+ * here would only mean a single user submitting two prompts whose first 64
+ * bits of SHA-1 collide, which is not a real risk.
+ */
+function hashPromptDiscriminator(prompt: string): string {
+  return createHash('sha1').update(prompt).digest('hex').slice(0, 16);
 }
 
 // ---------------------------------------------------------------------------

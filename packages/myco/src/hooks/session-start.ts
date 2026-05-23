@@ -73,6 +73,7 @@ export async function main() {
       branch,
       started_at: new Date().toISOString(),
     });
+    let latestAntigravityPrompt: string | undefined;
     if (symbiont === 'antigravity' && transcriptPath) {
       const prompts = readAntigravityPromptsFromTranscript(transcriptPath);
       if (prompts.length > 0) {
@@ -80,15 +81,32 @@ export async function main() {
           session_id: sessionId,
           prompts,
         });
+        latestAntigravityPrompt = prompts[prompts.length - 1];
       }
     }
     const contextResult = await client.post('/context', { session_id: sessionId, branch });
 
-    if (contextResult.ok && contextResult.data?.text) {
-      if (contextResult.data.source === 'cortex') {
+    // Spore injection for AGY: call /context/prompt with the latest prompt so
+    // semantic spores attach to the just-recorded batch. Other symbionts run
+    // this from user-prompt-submit.ts; AGY has no equivalent hook.
+    let spores = '';
+    if (latestAntigravityPrompt) {
+      const promptResult = await client.post('/context/prompt', {
+        prompt: latestAntigravityPrompt,
+        session_id: sessionId,
+      });
+      if (promptResult.ok && promptResult.data?.text) {
+        spores = promptResult.data.text;
+      }
+    }
+
+    const cortex = contextResult.ok && contextResult.data?.text ? contextResult.data.text : '';
+    const combined = [cortex, spores].filter((s) => s.length > 0).join('\n\n');
+    if (combined) {
+      if (contextResult.ok && contextResult.data?.source === 'cortex') {
         process.stderr.write('[myco] Injecting Myco Cortex instructions\n');
       }
-      writeHookResponse(symbiont, 'session-start', { additionalContext: contextResult.data.text });
+      writeHookResponse(symbiont, 'session-start', { additionalContext: combined });
       return;
     }
 

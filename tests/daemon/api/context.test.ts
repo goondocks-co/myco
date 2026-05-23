@@ -338,6 +338,69 @@ describe('createPromptContextHandler', () => {
       expect(text).toContain('Always validate JWT expiry');
     });
 
+    it('dedups identical prompts within a session — second call returns empty when a batch is open', async () => {
+      const { insertBatch } = await import('@myco/db/queries/batches');
+      upsertSession({
+        id: 's-spore-dedup',
+        agent: 'antigravity',
+        started_at: NOW,
+        created_at: NOW,
+      });
+      insertBatch({
+        session_id: 's-spore-dedup',
+        kind: 'initial',
+        prompt_number: 1,
+        user_prompt: 'auth question',
+        started_at: NOW,
+        created_at: NOW,
+        project_id: TEST_REQUEST_CONTEXT.projectId,
+      });
+
+      const handler = createPromptContextHandler(makeDeps({
+        embeddingManager: mockEmbeddingManager({
+          searchVectors: vi.fn().mockReturnValue([
+            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
+          ]),
+        }),
+      }));
+      const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-dedup' }));
+      expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
+
+      const second = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-dedup' }));
+      expect((second.body as { text: string }).text).toBe('');
+    });
+
+    it('different prompts in the same session both inject (discriminator scopes dedup)', async () => {
+      const { insertBatch } = await import('@myco/db/queries/batches');
+      upsertSession({
+        id: 's-spore-distinct',
+        agent: 'antigravity',
+        started_at: NOW,
+        created_at: NOW,
+      });
+      insertBatch({
+        session_id: 's-spore-distinct',
+        kind: 'initial',
+        prompt_number: 1,
+        user_prompt: 'p1',
+        started_at: NOW,
+        created_at: NOW,
+        project_id: TEST_REQUEST_CONTEXT.projectId,
+      });
+
+      const handler = createPromptContextHandler(makeDeps({
+        embeddingManager: mockEmbeddingManager({
+          searchVectors: vi.fn().mockReturnValue([
+            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
+          ]),
+        }),
+      }));
+      const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-distinct' }));
+      const second = await handler(makeReq({ prompt: 'Different prompt about caching strategies', session_id: 's-spore-distinct' }));
+      expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
+      expect((second.body as { text: string }).text).toContain('Always validate JWT expiry');
+    });
+
     it('respects max spores limit', async () => {
       const vectorResults = Array.from({ length: 6 }, (_, i) => ({
         id: `spore-lim-${i}`,
