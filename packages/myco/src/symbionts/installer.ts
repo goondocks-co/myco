@@ -69,6 +69,20 @@ const LEGACY_BUILTIN_SKILL_NAMES = ['myco-curate', 'rules'];
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
 /**
+ * All top-level JSON keys agents are known to use to hold their MCP
+ * server map. The installer sweeps every entry in this set on every
+ * install/uninstall so that a stale `myco` entry under a previously-
+ * configured key (e.g., a VS Code mcp.json migrated from `mcpServers`
+ * to `servers` when Copilot CLI + VS Code unified under one symbiont)
+ * is cleaned up rather than left behind as orphaned config.
+ *
+ * Keep in sync with every `mcpServersKey` value across the manifest
+ * registry. If a new symbiont introduces a new key, add it here so
+ * future shape migrations clean up old shapes too.
+ */
+const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
+
+/**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
  * Uninstall only deletes plugin files whose content contains this marker, so
  * contributors who hand-edit a plugin file without removing the marker are protected.
@@ -130,7 +144,7 @@ const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
  * fake-`$HOME`; production callers pass `os.homedir()`.
  *
  * The path is emitted UNQUOTED. Symbionts diverge in how they spawn
- * hook commands: claude-code / codex / antigravity / vscode-copilot
+ * hook commands: claude-code / codex / antigravity / copilot
  * route through a shell (their templates prefix with `cd ... &&` or
  * the symbiont's runtime defaults to shell), while cursor / windsurf /
  * pi spawn the command via direct argv split. A quoted path survives
@@ -286,18 +300,10 @@ export class SymbiontInstaller {
    *     field. Returns `null` when the manifest declares no global
    *     surface for that field (explicit `null` per Decision 7).
    */
-  private resolveAbsoluteTarget(field: 'hooks' | 'mcp' | 'skills' | 'settings'): string | null {
+  private resolveAbsoluteTarget(field: 'hooks' | 'skills' | 'settings'): string | null {
     const reg = this.manifest.registration;
     if (!reg) return null;
     if (this.installScope === 'global') {
-      // Settings under the global install share the agent's hooks file
-      // ONLY when that file is the agent's settings format (JSON config
-      // file Claude Code-style). For plugin-file hook targets (opencode's
-      // TS plugin, antigravity's bundled hooks.json) the hooks file is
-      // the plugin payload — writing the settings template there would
-      // clobber the plugin source. Skip settings in that case; the
-      // agent's actual settings file lives separately at
-      // `globalMcpTarget` or remains project-local.
       // Settings under global scope:
       //   1. If the manifest declares an explicit `globalSettingsTarget`,
       //      honor it — this is the right surface when settingsFormat
@@ -312,18 +318,51 @@ export class SymbiontInstaller {
         ? reg.globalSettingsTarget
         : (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE ? null : reg.globalHooksTarget);
       const target = field === 'hooks' ? reg.globalHooksTarget
-        : field === 'mcp' ? reg.globalMcpTarget
         : field === 'skills' ? reg.globalSkillsTarget
         : settingsTarget;
       if (!target) return null;
       return expandHome(target);
     }
     const target = field === 'hooks' ? reg.hooksTarget
-      : field === 'mcp' ? reg.mcpTarget
       : field === 'skills' ? reg.skillsTarget
       : reg.settingsTarget;
     if (!target) return null;
     return path.join(this.projectRoot, target);
+  }
+
+  /**
+   * Resolve every absolute MCP target the active install scope needs
+   * to write. Returns an empty array when the manifest declares no
+   * MCP surface (e.g. Pi, whose tools route through the extension
+   * runtime). Each entry carries its expanded absolute path and the
+   * top-level JSON key it expects (`serversKey`) — required because
+   * one agent runtime can have multiple surfaces with diverging
+   * shapes (Copilot CLI uses `mcpServers`, VS Code Copilot extension
+   * uses `servers` — same `myco` server entry, different parent key).
+   *
+   * `serversKey` falls through manifest.registration.mcpServersKey
+   * (existing field), and finally to `mcpServers` (Claude/standard
+   * MCP convention). Single-target manifests with no override behave
+   * exactly as before.
+   */
+  private resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> {
+    const reg = this.manifest.registration;
+    if (!reg) return [];
+    const defaultKey = reg.mcpServersKey ?? 'mcpServers';
+    if (this.installScope === 'global') {
+      const targets = reg.globalMcpTarget;
+      if (!targets || targets.length === 0) return [];
+      return targets.map((entry) => ({
+        path: expandHome(entry.path),
+        serversKey: entry.serversKey ?? defaultKey,
+      }));
+    }
+    const target = reg.mcpTarget;
+    if (!target) return [];
+    return [{
+      path: path.join(this.projectRoot, target),
+      serversKey: defaultKey,
+    }];
   }
 
   /**
@@ -655,8 +694,12 @@ export class SymbiontInstaller {
     if (reg.mcpTarget && reg.mcpFormat !== 'toml') {
       // MCP server env blocks — cursor writes MYCO_CMD here under
       // `mcp.myco.env` / `mcpServers.myco.env`. TOML MCP targets live
-      // inside the same config.toml already handled above.
-      this.stripLegacyFromJson(this.resolveAbsoluteTarget("mcp")!);
+      // inside the same config.toml already handled above. Multi-target
+      // manifests (Copilot) get the legacy strip applied to every MCP
+      // file they own.
+      for (const target of this.resolveAbsoluteMcpTargets()) {
+        this.stripLegacyFromJson(target.path);
+      }
     }
   }
 
@@ -801,10 +844,22 @@ export class SymbiontInstaller {
       hooks = true;
     }
 
-    // Apply MCP transform
+    // Apply MCP transform — sweep stale entries under historical
+    // server-list keys before writing under the current one, so a
+    // shape migration (mcpServersKey rename) doesn't leave behind a
+    // duplicate `myco` registration under the old key.
     const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
     if (mcpTemplate) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
+      for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
+        if (candidateKey === serversKey) continue;
+        const candidate = data[candidateKey];
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+        const bag = candidate as Record<string, unknown>;
+        if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+        delete bag[MYCO_MCP_SERVER_NAME];
+        if (Object.keys(bag).length === 0) delete data[candidateKey];
+      }
       const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
       for (const [name, def] of Object.entries(mcpTemplate)) {
         servers[name] = def;
@@ -838,13 +893,22 @@ export class SymbiontInstaller {
    * Scope: only this symbiont's own config files. The project-shared
    * launcher (`.agents/myco-run.cjs` / `myco-cli.cjs`) is NOT removed
    * here — uninstalling symbiont A must not break symbiont B's hooks.
-   * Callers that want full project-level teardown (`myco remove`, the
-   * migration walker after the opt-in check passes) call
+   * Callers that want full project-level teardown (`myco remove`) call
    * `removeProjectLaunchers(projectRoot)` explicitly after looping
    * uninstall over every symbiont.
+   *
+   * Project-content surfaces (`.gitignore` Myco block, instruction
+   * stubs) are scrubbed by default, because `myco remove` wants them
+   * gone too. The migration walker passes `keepProjectContent: true`
+   * to retain those — they're project-level concerns that survive a
+   * per-symbiont config cleanup (e.g., plan-capture `.gitignore`
+   * entries stay relevant whether the symbiont install is project- or
+   * global-scoped, and instruction stubs reference AGENTS.md which
+   * outlives any individual symbiont).
    */
-  uninstall(): InstallResult {
+  uninstall(options: { keepProjectContent?: boolean } = {}): InstallResult {
     const reg = this.manifest.registration;
+    const keepProjectContent = options.keepProjectContent === true;
     const result = this.shouldBatchJsonTargets(reg)
       ? this.uninstallBatchedJson(reg!)
       : {
@@ -852,10 +916,14 @@ export class SymbiontInstaller {
           mcp: this.uninstallMcp(),
           skills: this.uninstallSkills(),
           settings: this.uninstallSettings(),
-          instructions: this.capabilities.instructions ? this.uninstallInstructions() : false,
+          instructions: this.capabilities.instructions && !keepProjectContent
+            ? this.uninstallInstructions()
+            : false,
           pluginPackage: false,
         };
-    if (this.capabilities.gitignore) this.cleanGitignore();
+    if (this.capabilities.gitignore && !keepProjectContent) {
+      this.cleanGitignore();
+    }
     return result;
   }
 
@@ -896,14 +964,20 @@ export class SymbiontInstaller {
       }
     }
 
-    // Remove MCP
+    // Remove MCP — sweep every known server-list key so a legacy
+    // entry under a previously-configured `mcpServersKey` is cleaned
+    // up too, not just the current one.
     if (reg.mcpTarget) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
-      const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
-      if (servers[MYCO_MCP_SERVER_NAME]) {
+      const candidateKeys = Array.from(new Set([serversKey, ...KNOWN_MCP_SERVERS_KEYS]));
+      for (const key of candidateKeys) {
+        const bag = data[key];
+        if (!bag || typeof bag !== 'object' || Array.isArray(bag)) continue;
+        const servers = bag as Record<string, unknown>;
+        if (!(MYCO_MCP_SERVER_NAME in servers)) continue;
         delete servers[MYCO_MCP_SERVER_NAME];
-        if (Object.keys(servers).length === 0) delete data[serversKey];
-        else data[serversKey] = servers;
+        if (Object.keys(servers).length === 0) delete data[key];
+        else data[key] = servers;
         mcp = true;
       }
     }
@@ -1033,6 +1107,22 @@ export class SymbiontInstaller {
       try { fs.rmdirSync(this.resolveAbsoluteTarget("skills")!); } catch { /* not empty or missing */ }
     }
     try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
+  }
+
+  /**
+   * Reconcile the Myco-managed `.gitignore` block for the project this
+   * installer is rooted at. Public so the migration walker / detect-
+   * tick can re-assert the block once per project regardless of which
+   * scope the symbiont install lives in — `.gitignore` plan-capture
+   * entries are a project-level concern that must survive even when
+   * per-symbiont configs are uninstalled.
+   *
+   * Idempotent: when the strip-and-rewrite cycle produces identical
+   * content the function returns without writing. Safe to call on
+   * every detect tick.
+   */
+  reconcileProjectGitignore(): void {
+    this.updateGitignore();
   }
 
   /**
@@ -1364,21 +1454,35 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Merge MCP server template into the target config file.
-   * Replaces the `myco` server entry; preserves other servers.
+   * Merge MCP server template into every MCP target the manifest
+   * declares for the active scope. Replaces the `myco` server entry;
+   * preserves other servers. Multi-target manifests (Copilot:
+   * terminal CLI + VS Code extension) get the identical payload
+   * written to every file the schema lists; single-target manifests
+   * iterate exactly once.
+   *
+   * Returns `true` when at least one target accepted the write —
+   * preserves the historical boolean contract used by callers like
+   * `runFullInstall()` and `isConfigured()`.
    */
   installMcp(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.mcpTarget) return false;
+    if (!reg) return false;
+
+    const targets = this.resolveAbsoluteMcpTargets();
+    if (targets.length === 0) return false;
 
     const template = this.buildMcpTemplate(this.loadTemplate('mcp'));
     if (!template) return false;
 
-    const targetPath = this.resolveAbsoluteTarget("mcp")!;
-    if (reg.mcpFormat === 'toml') {
-      return this.installMcpToml(targetPath, template);
+    let anyWritten = false;
+    for (const target of targets) {
+      const written = reg.mcpFormat === 'toml'
+        ? this.installMcpToml(target.path, template)
+        : this.installMcpJson(target.path, template, target.serversKey);
+      if (written) anyWritten = true;
     }
-    return this.installMcpJson(targetPath, template);
+    return anyWritten;
   }
 
   private buildMcpTemplate(
@@ -1417,21 +1521,34 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Write MCP servers to a JSON config file under the manifest-configured key.
-   * Most agents use the canonical `mcpServers` key; opencode uses `mcp`.
+   * Write MCP servers to a JSON config file under the configured key.
+   * Most agents use the canonical `mcpServers`; VS Code's Copilot
+   * extension uses `servers`; opencode uses `mcp`.
    *
-   * The `?? 'mcpServers'` fallback protects against test fixtures that construct
-   * manifests as plain object literals and bypass the schema's default.
+   * Sweep stale entries first: a `myco` server under any other known
+   * MCP-list key (e.g., the previous `mcpServersKey` for this surface)
+   * is deleted before the new entry lands under `serversKey`. This is
+   * the on-upgrade migration path — without it, renaming a symbiont's
+   * server key would leave the old entry behind and produce duplicate
+   * (or shape-mismatched) registrations in the agent's MCP picker.
    */
-  private installMcpJson(targetPath: string, template: Record<string, unknown>): boolean {
-    const serversKey = this.manifest.registration!.mcpServersKey ?? 'mcpServers';
+  private installMcpJson(targetPath: string, template: Record<string, unknown>, serversKey: string): boolean {
     const config = readJsonFile(targetPath);
-    const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
 
+    for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
+      if (candidateKey === serversKey) continue;
+      const candidate = config[candidateKey];
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      const bag = candidate as Record<string, unknown>;
+      if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+      delete bag[MYCO_MCP_SERVER_NAME];
+      if (Object.keys(bag).length === 0) delete config[candidateKey];
+    }
+
+    const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
     for (const [name, def] of Object.entries(template)) {
       servers[name] = def;
     }
-
     config[serversKey] = servers;
     return writeJsonFile(targetPath, config);
   }
@@ -1657,33 +1774,58 @@ export class SymbiontInstaller {
     return true;
   }
 
-  /** Remove Myco MCP server entry from the target config file. */
+  /**
+   * Remove the Myco MCP server entry from every MCP target the manifest
+   * declares for the active scope. Multi-target manifests (Copilot) get
+   * the uninstall applied to every file the schema lists; single-target
+   * manifests iterate exactly once. Returns `true` when at least one
+   * target had a Myco entry to remove.
+   */
   uninstallMcp(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.mcpTarget) return false;
+    if (!reg) return false;
 
-    const targetPath = this.resolveAbsoluteTarget("mcp")!;
-    if (reg.mcpFormat === 'toml') {
-      return this.uninstallMcpToml(targetPath);
+    const targets = this.resolveAbsoluteMcpTargets();
+    if (targets.length === 0) return false;
+
+    let anyRemoved = false;
+    for (const target of targets) {
+      const removed = reg.mcpFormat === 'toml'
+        ? this.uninstallMcpToml(target.path)
+        : this.uninstallMcpJson(target.path, target.serversKey);
+      if (removed) anyRemoved = true;
     }
-    return this.uninstallMcpJson(targetPath);
+    return anyRemoved;
   }
 
-  private uninstallMcpJson(targetPath: string): boolean {
-    // Fallback matches the schema default; protects test fixtures that bypass .parse().
-    const serversKey = this.manifest.registration!.mcpServersKey ?? 'mcpServers';
+  private uninstallMcpJson(targetPath: string, serversKey: string): boolean {
     const config = readJsonFile(targetPath);
-    const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
-    if (!servers[MYCO_MCP_SERVER_NAME]) return false;
 
-    delete servers[MYCO_MCP_SERVER_NAME];
+    // Sweep every known MCP-list key (the configured one plus any
+    // legacy shape this surface may carry from a previous install
+    // under a different `serversKey`). Without the sweep, renaming a
+    // symbiont's server-key field would leave the old entry behind.
+    // The `serversKey` argument is included in the sweep — it's just
+    // the primary target — so this remains the canonical uninstall
+    // path for both single-key and post-migration files.
+    const candidateKeys = Array.from(new Set([serversKey, ...KNOWN_MCP_SERVERS_KEYS]));
 
-    if (Object.keys(servers).length === 0) {
-      delete config[serversKey];
-    } else {
-      config[serversKey] = servers;
+    let removed = false;
+    for (const key of candidateKeys) {
+      const bag = config[key];
+      if (!bag || typeof bag !== 'object' || Array.isArray(bag)) continue;
+      const servers = bag as Record<string, unknown>;
+      if (!(MYCO_MCP_SERVER_NAME in servers)) continue;
+      delete servers[MYCO_MCP_SERVER_NAME];
+      if (Object.keys(servers).length === 0) {
+        delete config[key];
+      } else {
+        config[key] = servers;
+      }
+      removed = true;
     }
 
+    if (!removed) return false;
     writeOrDeleteJsonFile(targetPath, config);
     return true;
   }

@@ -175,9 +175,11 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
   for (const manifest of manifests) {
     if (SKIP_PLUGIN_FILE.has(manifest.name)) continue;
     if (!manifest.registration?.globalHooksTarget) continue;
-    // vscode-copilot's global path is macOS-only; the integration
-    // suite skips it on Linux/Windows and so do we.
-    const skip = manifest.name === 'vscode-copilot' && process.platform !== 'darwin';
+    // copilot's globalMcpTarget array includes the macOS-only VS Code
+    // Library path; the integration suite skips it on Linux/Windows
+    // and so do we (same justification — until per-platform manifest
+    // filtering lands).
+    const skip = manifest.name === 'copilot' && process.platform !== 'darwin';
     const test = skip ? it.skip : it;
 
     test(`${manifest.name}: SessionStart hook reaches the runtime with --symbiont ${manifest.name} and stdin payload`, () => {

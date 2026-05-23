@@ -111,14 +111,22 @@ describe('symbiont manifests', () => {
     expect(manifest.capture).toBeUndefined();
   });
 
-  it('vscode-copilot manifest has registration with github hooks target', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'vscode-copilot.yaml'), 'utf-8');
+  it('copilot manifest has registration with github hooks target and dual MCP targets', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'copilot.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
     expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
     expect(manifest.registration!.settingsTarget).toBe('.vscode/settings.json');
+    // Copilot is the canonical multi-target MCP case: two surfaces of
+    // the same agent runtime with diverging top-level JSON keys. The
+    // schema normalizes the YAML into Array<{path, serversKey?}> so the
+    // installer can write each file under its surface's expected key.
+    expect(manifest.registration!.globalMcpTarget).toEqual([
+      { path: '~/.copilot/mcp-config.json', serversKey: 'mcpServers' },
+      { path: '~/Library/Application Support/Code/User/mcp.json', serversKey: 'servers' },
+    ]);
   });
 
   it('claude-code manifest has settingsTarget', () => {

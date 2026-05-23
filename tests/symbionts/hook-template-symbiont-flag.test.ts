@@ -20,9 +20,9 @@ import { loadManifests } from '@myco/symbionts/detect.js';
  * `hooksTarget` and `hooksFormat: json` (the default). This is
  * deliberately manifest-driven: adding a new symbiont to the project
  * automatically extends the guard, with no hardcoded list to forget
- * to update. A hardcoded list was the exact failure mode that caused
- * an earlier manual verification pass to silently skip vscode-copilot
- * and report everything clean when it wasn't.
+ * to update. A hardcoded list is the exact failure mode this guards
+ * against — any symbiont missing from the list would silently skip
+ * verification.
  *
  * opencode is auto-skipped: its manifest has
  * `hooksFormat: plugin-file`, so the filter drops it. Opencode's

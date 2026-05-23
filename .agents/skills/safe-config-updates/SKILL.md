@@ -1,7 +1,6 @@
 ---
 name: myco:safe-config-updates
-description: |
-  Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through `updateConfig()` in `packages/myco/src/config/loader.ts`, and (2) all React settings forms must spread the original config before overlaying form values in their `formToConfig()` function. Also covers the complete procedure for adding new configurable settings to Myco's three-tier scoped config system (machine/grove/project/personal) including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch `myco.yaml`, add a settings field, modify a settings page, or add new configurable fields, these patterns apply.
+description: "Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through updateConfig() in packages/myco/src/config/loader.ts, and (2) all React settings forms must spread the original config before overlaying form values in their formToConfig() function. Also covers the complete procedure for adding new configurable settings to Myco's three-tier scoped config system (machine/grove/project/personal) including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch myco.yaml, add a settings field, modify a settings page, or add new configurable fields, these patterns apply."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -208,16 +207,14 @@ When adding any new user-configurable behavior, follow these steps to determine 
 
 **Step 1: Apply the tier decision rule**
 - **Machine tier**: Global daemon behavior across all groves (port, logging, global auth)
-- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies)  
+- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, embedding configuration)  
 - **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
-- **Personal tier**: Individual developer experience preferences (UI themes, notification settings)
+- **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
 **Step 2: Reference the classification matrix**
 Use these established patterns as precedent:
 
-*Personal Settings (13 fields):* Per-machine preferences that don't affect team collaboration
-- Agent provider/model selection (`agent.provider`, `agent.model`)
-- Embedding provider configuration (`embedding.provider`)
+*Personal Settings (11 fields):* Per-machine preferences that do not affect team collaboration
 - Daemon operational settings (`daemon.port`, `daemon.log_level`)
 - UI personalization (`appearance.theme`, `appearance.font_size`, `appearance.dark_mode`, `appearance.density`)
 - Notification preferences (`notifications.*`)
@@ -230,10 +227,9 @@ Use these established patterns as precedent:
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
 - Team sync enablement (`sync.enabled`)
 
-*Grove Settings:* Multi-project coordination within a grove
-- Resource sharing policies
-- Grove-wide task scheduling
-- Cross-project knowledge sharing settings
+*Grove Settings (2 fields):* Multi-project coordination within a grove (NEW in PR #353)
+- Agent provider and model selection (`agent.provider`, `agent.model`)
+- Embedding provider configuration (`embedding.provider`)
 
 *Machine Settings:* Global daemon configuration  
 - Global daemon port and networking
@@ -242,6 +238,40 @@ Use these established patterns as precedent:
 
 **Step 3: Document your decision**
 Add the new field to the appropriate tier in comments and update any scope defaults matrices in the UI layer.
+
+### Handle Legacy Config Fields During Tier Migration
+
+When architectural changes move fields between tiers (e.g., PR #353 migrated agent.provider to Grove tier), use the `PROJECT_TIER_LEGACY_FIELDS` pattern in `packages/myco/src/config/schema.ts` to strip fields from outdated locations:
+
+```typescript
+// In schema.ts
+export const PROJECT_TIER_LEGACY_FIELDS = [
+  'agent.provider',  // moved to Grove tier in PR #353
+  'agent.model',     // moved to Grove tier in PR #353
+  'embedding.provider', // moved to Grove tier in PR #353
+];
+
+// During config load, filter legacy fields from Project tier
+if (projectConfig) {
+  for (const legacyPath of PROJECT_TIER_LEGACY_FIELDS) {
+    deepDeleteByPath(projectConfig, legacyPath);
+  }
+}
+```
+
+This silent-strip pattern ensures that when developers pull code with the tier reorganization, old fields in `myco.yaml` do not interfere with new grove-tier values, preventing silent shadowing of grove defaults.
+
+### Two-Layer Config Migration Procedures
+
+When migrating existing projects to a new config architecture, use a two-layer approach:
+
+**Layer 1: Client-side silent strip**
+The client removes legacy fields during `loadConfig()` before merging. This protects against old project-tier fields shadowing new grove-tier defaults.
+
+**Layer 2: Daemon-side reconciliation**
+On next daemon startup after the migration-aware code is deployed, the daemon detects legacy fields in `myco.yaml` and offers a migration guide. This allows teams to understand what changed without breaking existing setups.
+
+Use `loadMergedConfig(vaultDir, { groveId })` to automatically resolve grove-tier settings via the specified grove ID, integrating grove defaults into the final merged config.
 
 ### Add New Scoped Config Fields
 
@@ -253,6 +283,12 @@ Add the new field to the appropriate section in `packages/myco/src/config/schema
 const DaemonSchema = z.object({
   // existing fields...
   new_personal_field: z.string().default("defaultValue"),
+});
+
+// For Grove-scoped field - add to the appropriate schema
+const GroveConfigSchema = z.object({
+  // existing fields...
+  new_grove_field: z.boolean().default(false),
 });
 
 // For Project-scoped field - add to the appropriate schema
@@ -280,6 +316,7 @@ If your field will appear in the daemon UI, update the scope defaults in the app
 const scopeDefaults = {
   'existing.field': 'local' as const,
   'new.personal.field': 'local' as const,
+  'new.grove.field': 'project' as const,
   'new.project.field': 'project' as const,
 };
 ```
@@ -403,6 +440,10 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Config tier migration false positives:** During drift analysis, config property paths like `myco.yaml` and `backup.dir` are configuration property references, not missing file paths. Verify that core config safety functions remain present in the loader module before assuming drift.
 
+**Legacy field shadowing:** When using PROJECT_TIER_LEGACY_FIELDS to silent-strip old fields, ensure the silent-strip happens BEFORE tier merging. If legacy project-tier `agent.provider` exists alongside new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's removed.
+
+**loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` now automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` if present. Pass the groveId at call time to enable grove defaults in the merged result. If groveId is not provided or is undefined, grove-tier settings are skipped.
+
 ---
 
 ## Checklist Before Submitting a Config Change
@@ -419,4 +460,5 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Grove architecture compatibility considered for multi-project coordination
 - [ ] Three-tier merge precedence understood and documented
 - [ ] Config tier migration compatibility verified for grove coordination features
+- [ ] Legacy field handling verified if tier restructuring involved
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss

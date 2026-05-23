@@ -105,6 +105,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 45, migrate: (db) => migrateV44ToV45(db) },
   { version: 46, migrate: (db) => migrateV45ToV46(db) },
   { version: 47, migrate: (db) => migrateV46ToV47(db) },
+  { version: 48, migrate: (db) => migrateV47ToV48(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2944,6 +2945,34 @@ function migrateV46ToV47(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(47, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v47 → v48: vscode-copilot → copilot symbiont rename.
+ *
+ * "VS Code Copilot" and "GitHub Copilot CLI" are two surfaces of the
+ * same agent runtime (VS Code Copilot extension drives Copilot CLI via
+ * the Copilot SDK per Microsoft's unified-agent-experience direction).
+ * One symbiont now covers both surfaces under the `copilot` name with
+ * a multi-target globalMcpTarget. Existing captured sessions tagged
+ * `agent='vscode-copilot'` belong to the same product line and stay
+ * queryable by remapping them to `'copilot'`. Old session data isn't
+ * lost — just relabeled. Mirrors the gemini → antigravity remap.
+ */
+function migrateV47ToV48(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(`UPDATE sessions SET agent = 'copilot' WHERE agent = 'vscode-copilot'`).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(48, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

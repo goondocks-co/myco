@@ -28,7 +28,7 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   antigravity: { session: true, prompt: true },
   opencode: { session: true, prompt: false },
   pi: { session: true, prompt: false },
-  'vscode-copilot': { session: true, prompt: true },
+  copilot: { session: true, prompt: true },
   windsurf: { session: false, prompt: true },
 };
 

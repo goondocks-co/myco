@@ -124,12 +124,53 @@ const RegistrationSchema = z.object({
    */
   globalHooksTarget: z.string().nullable().optional(),
   /**
-   * Absolute path (with `~` expansion) where Myco writes MCP server entries
-   * when installing under global scope. May share a file with hook config
-   * (e.g. Codex's `~/.codex/config.toml`). `null` declares no global MCP
-   * support (e.g. Pi, whose tools are wired via the extension itself).
+   * Absolute path(s) (with `~` expansion) where Myco writes MCP server
+   * entries when installing under global scope. May share a file with hook
+   * config (e.g. Codex's `~/.codex/config.toml`). `null` declares no global
+   * MCP support (e.g. Pi, whose tools are wired via the extension itself).
+   *
+   * Accepts three shapes:
+   *   - A single string: the common case (one MCP file per agent).
+   *   - An array of strings: one agent, multiple surfaces with identical
+   *     JSON shape (e.g. two MCP files that both use `mcpServers` as the
+   *     top-level key).
+   *   - An array of objects with `{ path, serversKey? }`: per-target
+   *     server-key override. Required when surfaces of the same agent
+   *     diverge on top-level key — Copilot is the canonical case: the
+   *     terminal `copilot` CLI reads `~/.copilot/mcp-config.json` keyed
+   *     under `mcpServers`, while the VS Code Copilot extension reads
+   *     `~/Library/Application Support/Code/User/mcp.json` keyed under
+   *     `servers`. The installer threads each target's `serversKey`
+   *     into the JSON write so each surface gets the shape it expects.
+   *
+   * The schema normalizes every form into
+   * `Array<{ path: string; serversKey?: string }> | null` so the
+   * installer always iterates a uniform shape — single-target manifests
+   * don't change behavior, and string entries inside an array inherit
+   * `manifest.registration.mcpServersKey` at install time.
    */
-  globalMcpTarget: z.string().nullable().optional(),
+  globalMcpTarget: z
+    .union([
+      z.string(),
+      z.array(
+        z.union([
+          z.string(),
+          z.object({
+            path: z.string(),
+            serversKey: z.string().optional(),
+          }),
+        ]),
+      ).min(1),
+    ])
+    .nullable()
+    .optional()
+    .transform((value) => {
+      if (value == null) return value;
+      if (typeof value === 'string') return [{ path: value }];
+      return value.map((entry) =>
+        typeof entry === 'string' ? { path: entry } : entry,
+      );
+    }),
   /**
    * Absolute path (with `~` expansion) where Myco symlinks Myco-shipped
    * skills under global scope. Symlinks point back into the Myco install so

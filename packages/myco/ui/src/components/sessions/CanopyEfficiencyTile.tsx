@@ -82,8 +82,8 @@ export interface CanopyEfficiencyTileProps {
  * doesn't have to re-state scope on every session detail page).
  *
  * Always rendered, including when:
- *  - the agent has no PreToolUse injection surface (codex, cursor, gemini,
- *    windsurf, opencode, pi, vscode-copilot — they get zeros today),
+ *  - the agent has no PreToolUse injection surface (codex, cursor,
+ *    antigravity, windsurf, opencode, pi, copilot — they get zeros today),
  *  - the API returns `null` (pre-feature session),
  *  - or every aggregate column is `null`.
  *

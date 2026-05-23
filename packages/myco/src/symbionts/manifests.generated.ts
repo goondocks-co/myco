@@ -35,7 +35,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".agents/plugins/myco/hooks.json",
       "globalHooksTarget": "~/.gemini/config/plugins/myco/hooks.json",
-      "globalMcpTarget": "~/.gemini/config/plugins/myco/mcp_config.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.gemini/config/plugins/myco/mcp_config.json"
+        }
+      ],
       "globalSkillsTarget": "~/.gemini/config/plugins/myco/skills",
       "hooksFormat": "plugin-file",
       "hooksTemplateFile": "hooks.json",
@@ -172,7 +176,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".claude/settings.json",
       "globalHooksTarget": "~/.claude/settings.json",
-      "globalMcpTarget": "~/.claude/settings.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.claude/settings.json"
+        }
+      ],
       "globalSkillsTarget": "~/.claude/skills",
       "hooksFormat": "json",
       "mcpTarget": ".mcp.json",
@@ -390,7 +398,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".codex/hooks.json",
       "globalHooksTarget": "~/.codex/hooks.json",
-      "globalMcpTarget": "~/.codex/config.toml",
+      "globalMcpTarget": [
+        {
+          "path": "~/.codex/config.toml"
+        }
+      ],
       "globalSkillsTarget": "~/.codex/skills",
       "globalSettingsTarget": "~/.codex/config.toml",
       "hooksFormat": "json",
@@ -453,6 +465,126 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     }
   },
   {
+    "name": "copilot",
+    "displayName": "GitHub Copilot",
+    "binary": "copilot",
+    "configDir": ".vscode",
+    "detectionDir": "~/.copilot",
+    "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_response"
+    },
+    "capture": {
+      "planDirs": [],
+      "planTags": [],
+      "rules": []
+    },
+    "registration": {
+      "hooksTarget": ".github/hooks/myco-hooks.json",
+      "globalHooksTarget": "~/.copilot/hooks/myco-hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.copilot/mcp-config.json",
+          "serversKey": "mcpServers"
+        },
+        {
+          "path": "~/Library/Application Support/Code/User/mcp.json",
+          "serversKey": "servers"
+        }
+      ],
+      "globalSkillsTarget": "~/.copilot/skills",
+      "hooksFormat": "json",
+      "mcpTarget": ".vscode/mcp.json",
+      "mcpFormat": "json",
+      "mcpServersKey": "mcpServers",
+      "skillsTarget": ".agents/skills",
+      "settingsTarget": ".vscode/settings.json",
+      "settingsFormat": "json",
+      "instructionsFile": ".github/copilot-instructions.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "canopyReadTools": [
+        {
+          "tool": "read_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "run_in_terminal",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ],
+      "pathBearingTools": [
+        {
+          "tool": "read_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "run_in_terminal",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "replace_string_in_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "create_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "apply_patch",
+          "pathField": "filePath",
+          "pathKind": "file"
+        }
+      ]
+    }
+  },
+  {
     "name": "cursor",
     "displayName": "Cursor",
     "binary": "cursor",
@@ -480,7 +612,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".cursor/hooks.json",
       "globalHooksTarget": "~/.cursor/hooks.json",
-      "globalMcpTarget": "~/.cursor/mcp.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.cursor/mcp.json"
+        }
+      ],
       "globalSkillsTarget": "~/.cursor/skills",
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
@@ -536,7 +672,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".opencode/plugins/myco.ts",
       "globalHooksTarget": "~/.config/opencode/plugins/myco.ts",
-      "globalMcpTarget": "~/.config/opencode/opencode.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.config/opencode/opencode.json"
+        }
+      ],
       "globalSkillsTarget": "~/.config/opencode/skills",
       "hooksFormat": "plugin-file",
       "pluginPackageTarget": ".opencode/package.json",
@@ -613,48 +753,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     }
   },
   {
-    "name": "vscode-copilot",
-    "displayName": "VS Code Copilot",
-    "binary": "code",
-    "configDir": ".vscode",
-    "detectionDir": "~/.copilot",
-    "pluginRootEnvVar": "VSCODE_PLUGIN_ROOT",
-    "hookFields": {
-      "sessionId": "sessionId",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_output"
-    },
-    "capture": {
-      "planDirs": [],
-      "planTags": [],
-      "rules": []
-    },
-    "registration": {
-      "hooksTarget": ".github/hooks/myco-hooks.json",
-      "globalHooksTarget": "~/.copilot/hooks/myco-hooks.json",
-      "globalMcpTarget": "~/Library/Application Support/Code/User/mcp.json",
-      "globalSkillsTarget": "~/.copilot/skills",
-      "hooksFormat": "json",
-      "mcpTarget": ".vscode/mcp.json",
-      "mcpFormat": "json",
-      "mcpServersKey": "mcpServers",
-      "skillsTarget": ".agents/skills",
-      "settingsTarget": ".vscode/settings.json",
-      "settingsFormat": "json",
-      "instructionsFile": ".github/copilot-instructions.md"
-    },
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "canopyReadTools": [],
-      "pathBearingTools": []
-    }
-  },
-  {
     "name": "windsurf",
     "displayName": "Windsurf",
     "binary": "windsurf",
@@ -680,7 +778,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".windsurf/hooks.json",
       "globalHooksTarget": "~/.codeium/windsurf/hooks.json",
-      "globalMcpTarget": "~/.codeium/windsurf/mcp_config.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.codeium/windsurf/mcp_config.json"
+        }
+      ],
       "globalSkillsTarget": "~/.codeium/windsurf/skills",
       "hooksFormat": "json",
       "mcpFormat": "json",

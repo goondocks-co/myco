@@ -109,6 +109,15 @@ function migrateOneProject(
     // 1) Per-symbiont config block removal. Run installer.uninstall()
     //    in PROJECT scope — settings-merge does marker-bounded removal,
     //    leaving user-authored content in shared files intact.
+    //
+    //    `keepProjectContent: true` prevents the walker from scrubbing
+    //    project-content surfaces (`.gitignore` Myco-managed block,
+    //    instruction stubs) on every detect tick. Those surfaces are
+    //    project-level concerns that survive a per-symbiont uninstall
+    //    — `.gitignore` plan-capture entries stay relevant whether the
+    //    install is project- or global-scoped, and instruction stubs
+    //    reference AGENTS.md which outlives any single symbiont. Only
+    //    `myco remove`/`myco remove --purge` ever asks for them gone.
     for (const manifest of manifests) {
       const projectConfigCandidate = manifest.registration?.hooksTarget;
       if (!projectConfigCandidate) continue;
@@ -118,7 +127,7 @@ function migrateOneProject(
         const installer = new SymbiontInstaller(
           manifest, project.root, packageRoot, false, undefined, grove.id, 'project',
         );
-        const result = installer.uninstall();
+        const result = installer.uninstall({ keepProjectContent: true });
         if (result.hooks || result.mcp || result.settings || result.skills) {
           cleanedSymbionts.push(manifest.name);
         }
@@ -129,7 +138,30 @@ function migrateOneProject(
       }
     }
 
-    // 2) Project launcher cleanup. Retired artifacts are always
+    // 2) Reconcile the project-content `.gitignore` Myco block. The
+    //    walker runs every detect tick, so this is the per-project
+    //    forward-correctness path: drift (missing block, stale skill
+    //    entries, hand-deleted lines) self-heals on next tick. Idempotent
+    //    — no write when the existing block already matches desired.
+    //
+    //    Uses the first manifest with a skillsTarget as a sentinel.
+    //    `updateGitignore()` is project-rooted, not symbiont-specific —
+    //    once is enough.
+    const gitignoreManifest = manifests.find((m) => m.registration?.skillsTarget);
+    if (gitignoreManifest) {
+      try {
+        const reconciler = new SymbiontInstaller(
+          gitignoreManifest, project.root, packageRoot, false, undefined, grove.id, 'project',
+        );
+        reconciler.reconcileProjectGitignore();
+      } catch {
+        // Gitignore drift recovery is best-effort — log nothing, retry
+        // next tick. A truly broken project tree surfaces via the
+        // existing launcher-cleanup error path below.
+      }
+    }
+
+    // 3) Project launcher cleanup. Retired artifacts are always
     //    removed; active launchers + the dev pin are preserved when
     //    the project has opted into a per-project install via
     //    `myco init --project` (signaled by a non-empty `symbionts:`

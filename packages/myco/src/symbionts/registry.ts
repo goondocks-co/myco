@@ -4,7 +4,7 @@ import { cursorAdapter } from './cursor.js';
 import { codexAdapter } from './codex.js';
 import { antigravityAdapter } from './antigravity.js';
 import { windsurfAdapter } from './windsurf.js';
-import { vscodeCopilotAdapter } from './vscode-copilot.js';
+import { copilotAdapter } from './copilot.js';
 import fs from 'node:fs';
 
 /**
@@ -18,7 +18,7 @@ const ALL_ADAPTERS: SymbiontAdapter[] = [
   codexAdapter,
   antigravityAdapter,
   windsurfAdapter,
-  vscodeCopilotAdapter,
+  copilotAdapter,
 ];
 
 export class SymbiontRegistry {

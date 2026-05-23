@@ -159,8 +159,8 @@ describe('myco update', () => {
         hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_response', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' },
       },
       {
-        name: 'vscode-copilot', displayName: 'VS Code Copilot', binary: 'code',
-        configDir: '.vscode', pluginRootEnvVar: 'VSCODE_PLUGIN_ROOT',
+        name: 'copilot', displayName: 'GitHub Copilot', binary: 'copilot',
+        configDir: '.vscode', pluginRootEnvVar: 'COPILOT_PLUGIN_ROOT',
         registration: { hooksTarget: '.github/hooks/myco-hooks.json', skillsTarget: '.agents/skills' },
         hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_response', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' },
       },
@@ -172,7 +172,7 @@ describe('myco update', () => {
         'claude-code': { enabled: true },
         cursor: { enabled: true },
         gemini: { enabled: true },
-        'vscode-copilot': { enabled: true },
+        copilot: { enabled: true },
       },
     };
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
@@ -188,7 +188,7 @@ describe('myco update', () => {
 
     expect(SymbiontInstaller).toHaveBeenCalledTimes(4);
     const installedNames = vi.mocked(SymbiontInstaller).mock.calls.map((call) => call[0].name).sort();
-    expect(installedNames).toEqual(['claude-code', 'cursor', 'gemini', 'vscode-copilot']);
+    expect(installedNames).toEqual(['claude-code', 'copilot', 'cursor', 'gemini']);
   });
 
   it('writes last-update-version stamp file after successful update', async () => {

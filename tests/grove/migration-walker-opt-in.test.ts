@@ -95,7 +95,7 @@ symbionts:
     enabled: true
   pi:
     enabled: true
-  vscode-copilot:
+  copilot:
     enabled: true
   windsurf:
     enabled: true

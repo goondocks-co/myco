@@ -178,9 +178,11 @@ function newInstaller(manifest: SymbiontManifest, tmpHome: string): SymbiontInst
  *  them, but their `install()` is a no-op so the matrix assertions wouldn't
  *  exercise anything meaningful. Documented in the manifests. */
 const SKIP_REASONS: Record<string, string> = {
-  // vscode-copilot's globalMcpTarget is currently macOS-only — on Linux/Windows
-  // the path doesn't apply. Skip the integration matrix on non-darwin.
-  ...(process.platform !== 'darwin' ? { 'vscode-copilot': 'macOS-only global MCP path' } : {}),
+  // copilot's globalMcpTarget array includes the VS Code Library MCP path,
+  // which is macOS-only — on Linux/Windows that path doesn't apply. Skip the
+  // integration matrix on non-darwin until the manifest's globalMcpTarget
+  // array gains per-platform filtering.
+  ...(process.platform !== 'darwin' ? { copilot: 'macOS-only VS Code MCP path in target array' } : {}),
 };
 
 /**
@@ -283,7 +285,7 @@ describe('symbiont installer integration matrix (global scope)', () => {
    * the plugin file at install time.
    *
    * For JSON-merge symbionts (claude-code, cursor, codex, windsurf,
-   * vscode-copilot), multiple writers legitimately compose into the
+   * copilot), multiple writers legitimately compose into the
    * same settings/hooks file — that's the merge contract, not a
    * collision. The audit is scoped to plugin-file targets only.
    */

@@ -307,10 +307,23 @@ describe('symbiont installer invariants', () => {
     for (const manifest of manifests) {
       const reg = manifest.registration;
       if (!reg) continue;
+      // Schema normalizes globalMcpTarget into `Array<{path, serversKey?}>`
+      // (multi-target manifests like Copilot land here); other path
+      // fields are still scalar strings. Flatten everything into a
+      // uniform (label, scalar) list for the well-formedness check so
+      // a future surface added to the MCP array gets the same vetting.
       const fields: Array<[string, string | null | undefined]> = [
         ['globalHooksTarget', reg.globalHooksTarget],
-        ['globalMcpTarget', reg.globalMcpTarget],
         ['globalSkillsTarget', reg.globalSkillsTarget],
+        ...(reg.globalMcpTarget ?? []).map(
+          (entry, idx, list) =>
+            [
+              list.length > 1
+                ? `globalMcpTarget[${idx}].path`
+                : 'globalMcpTarget.path',
+              entry.path,
+            ] as [string, string | null | undefined],
+        ),
       ];
       for (const [name, value] of fields) {
         if (value === undefined || value === null) continue;
@@ -336,7 +349,7 @@ describe('symbiont installer invariants', () => {
    * placeholder; no raw `.agents/myco-run.cjs` strings allowed.
    */
   describe('launcher-path scope correctness', () => {
-    const HOOKS_TEMPLATE_DIRS = ['claude-code', 'codex', 'cursor', 'vscode-copilot', 'windsurf', 'antigravity'];
+    const HOOKS_TEMPLATE_DIRS = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf', 'antigravity'];
     for (const dir of HOOKS_TEMPLATE_DIRS) {
       const tplPath = path.join(TEMPLATES_DIR, dir, 'hooks.json');
       if (!fs.existsSync(tplPath)) continue;

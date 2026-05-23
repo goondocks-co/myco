@@ -261,6 +261,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       }
     ]
   },
+  "copilot": {},
   "cursor": {
     "hookResponse": {
       "format": "json",
@@ -276,6 +277,5 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   },
   "opencode": {},
   "pi": {},
-  "vscode-copilot": {},
   "windsurf": {}
 } as const;

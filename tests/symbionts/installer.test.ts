@@ -94,12 +94,12 @@ const GEMINI_MANIFEST: SymbiontManifest = {
   },
 };
 
-const VSCODE_MANIFEST: SymbiontManifest = {
-  name: 'vscode-copilot',
-  displayName: 'VS Code Copilot',
-  binary: 'code',
+const COPILOT_MANIFEST: SymbiontManifest = {
+  name: 'copilot',
+  displayName: 'GitHub Copilot',
+  binary: 'copilot',
   configDir: '.vscode',
-  pluginRootEnvVar: 'VSCODE_PLUGIN_ROOT',
+  pluginRootEnvVar: 'COPILOT_PLUGIN_ROOT',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'sessionId' },
   registration: {
     hooksTarget: '.github/hooks/myco-hooks.json',
@@ -217,12 +217,12 @@ function setupPackageRoot(): void {
   const claudeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/claude-code');
   const cursorTemplateDir = path.join(packageRoot, 'src/symbionts/templates/cursor');
   const codexTemplateDir = path.join(packageRoot, 'src/symbionts/templates/codex');
-  const vscodeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/vscode-copilot');
+  const copilotTemplateDir = path.join(packageRoot, 'src/symbionts/templates/copilot');
   const geminiTemplateDir = path.join(packageRoot, 'src/symbionts/templates/gemini');
   fs.mkdirSync(claudeTemplateDir, { recursive: true });
   fs.mkdirSync(cursorTemplateDir, { recursive: true });
   fs.mkdirSync(codexTemplateDir, { recursive: true });
-  fs.mkdirSync(vscodeTemplateDir, { recursive: true });
+  fs.mkdirSync(copilotTemplateDir, { recursive: true });
   fs.mkdirSync(geminiTemplateDir, { recursive: true });
 
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
@@ -252,13 +252,13 @@ function setupPackageRoot(): void {
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { hooks: true },
   });
-  writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont vscode-copilot', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont vscode-copilot', timeout: 30 }] }],
-    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot', timeout: 5 }] }],
+  writeJson(path.join(copilotTemplateDir, 'hooks.json'), {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont copilot', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont copilot', timeout: 30 }] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot', timeout: 5 }] }],
   });
-  writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
-  writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
+  writeJson(path.join(copilotTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(copilotTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
@@ -508,14 +508,14 @@ describe('installHooks', () => {
   });
 
   it('installs pre-compact hook for VS Code Copilot', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
 
     const settings = readJson(path.join(projectRoot, '.github/hooks/myco-hooks.json'));
     const preCompact = ((settings.hooks as Record<string, unknown[]>).PreCompact as Array<{ hooks: Array<{ command: string }> }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot');
+    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot');
   });
 });
 
@@ -727,7 +727,7 @@ describe('installSettings', () => {
   });
 
   it('writes auto-approve to VS Code settings', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
@@ -782,7 +782,7 @@ describe('installSettings', () => {
       'chat.tools.terminal.autoApprove': { 'other-tool': true },
     });
 
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     const settings = readJson(path.join(settingsDir, 'settings.json'));
@@ -842,7 +842,7 @@ describe('install', () => {
   });
 
   it('runs all steps for VS Code Copilot', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
     expect(result.hooks).toBe(true);
@@ -1580,7 +1580,7 @@ describe('uninstall', () => {
   });
 
   it('removes auto-approve from VS Code settings', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     installer.uninstallSettings();
@@ -1596,7 +1596,7 @@ describe('uninstall', () => {
       'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco': true, 'myco-dev': true },
     });
 
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.uninstallSettings();
 
     const settings = readJson(path.join(settingsDir, 'settings.json'));
@@ -1855,12 +1855,12 @@ describe('installInstructions', () => {
     expect(matches?.length).toBe(1);
   });
 
-  it('creates .github/ directory for VS Code instructions', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+  it('creates .github/ directory for Copilot instructions', () => {
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installInstructions();
     expect(fs.existsSync(path.join(projectRoot, '.github/copilot-instructions.md'))).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.github/copilot-instructions.md'), 'utf-8');
-    expect(content).toContain('VS Code Copilot');
+    expect(content).toContain('GitHub Copilot');
   });
 
   it('creates instruction stub for Gemini CLI', () => {
@@ -2152,7 +2152,7 @@ describe('hook template validation', () => {
     // `.agents/myco-run.cjs` form is the bug that caused global-install
     // hook files to depend on a project-local file existing — the
     // placeholder is what enforces the scope-correctness invariant.
-    const templateDirs = ['claude-code', 'codex', 'cursor', 'vscode-copilot', 'windsurf'];
+    const templateDirs = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf'];
     const launcherForm = /\{\{mycoLauncher\}\} /;
     for (const dir of templateDirs) {
       const filePath = path.resolve(`packages/myco/src/symbionts/templates/${dir}/hooks.json`);
