@@ -167,20 +167,27 @@ describe('resolveBootstrapVaultDir', () => {
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(prodRoot, '.myco'));
   });
 
-  test('variant-pinned greenfield (no registry at all) still throws', () => {
-    // Variant-pinned daemons are supervised by launchd/systemd with a
-    // known Grove ownership — surfacing a config error is better than
-    // silently bringing up a vault-less daemon. The variant-less path
-    // is the one that returns null for the hook-driven auto-create.
+  test('variant-pinned greenfield (no registry at all) returns null for phantom-mode bootstrap', () => {
+    // Production user path: `npm install -g` → postinstall registers a
+    // service → launchd/systemd spawns the daemon with the variant env
+    // set BEFORE any project exists. Throwing here would respawn-loop
+    // the supervisor. The variant safety invariant is preserved by
+    // firstProjectVaultFromRegistry()'s served_by filter: when a Grove
+    // eventually registers, the dev daemon binds only to dev Groves
+    // and the prod daemon binds only to prod Groves.
     process.env.MYCO_SERVICE_VARIANT = 'prod';
     try {
-      expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/variant=/);
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
 
-  test('dev variant fails clearly when no dev Grove exists', () => {
+  test('dev variant in greenfield with prod-only Groves returns null (does not bind to prod)', () => {
+    // The variant filter must hold even when a non-matching Grove is
+    // registered. A dev-variant daemon must not silently bootstrap onto
+    // a prod Grove just because no dev Grove exists yet — the rebind
+    // watcher waits for a dev Grove to appear.
     const prodGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     const prodRoot = makeProject('prod3');
     writeRegistry(prodGrove);
@@ -188,7 +195,21 @@ describe('resolveBootstrapVaultDir', () => {
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
-      expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/service-dev/);
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('variant-pinned greenfield routes through phantom helper without throw', () => {
+    // End-to-end: the daemon's actual startup path. Combined with the
+    // phantom helper, variant-pinned supervisor spawns get a usable
+    // bootstrap dir instead of a respawn loop.
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    try {
+      const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+      expect(result.isPhantom).toBe(true);
+      expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }

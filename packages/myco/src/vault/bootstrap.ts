@@ -4,7 +4,6 @@ import { resolveVaultDir } from './resolve.js';
 import {
   resolveMycoHome,
   PROJECT_MANIFEST_FILENAME,
-  SERVICE_DIRNAME,
   SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects } from '../grove/registry.js';
@@ -39,30 +38,34 @@ import { createProjectId } from '../grove/ids.js';
  *     `served_by = "service-dev"`; prod variant (or unset) uses the
  *     default Grove from the registry.
  *
- * Returns `null` when no enclosing project AND no registered project is
- * found in a variant-less invocation. The daemon's startup path falls
- * back to a phantom MYCO_HOME-scoped scratch dir so the API can come up
- * and hooks can register the first project (Decisions 3 and 14 of the
- * global-symbiont-install plan).
+ * Returns `null` when no enclosing project AND no registered project
+ * matching this daemon's variant is found. The daemon's startup path
+ * falls back to a phantom MYCO_HOME-scoped scratch dir so the API can
+ * come up and hooks can register the first project (Decisions 3 and 14
+ * of the global-symbiont-install plan).
  *
- * Variant-pinned (MYCO_SERVICE_VARIANT set) STILL throws when no
- * registered project matches its Grove. A service supervisor that knows
- * which variant it's running expects a Grove to exist; surfacing a
- * config error there is better than silently bringing up a vault-less
- * daemon that will never bind.
+ * Variant-pinned (MYCO_SERVICE_VARIANT set) ALSO returns null in
+ * greenfield. The production user path is `npm install -g` →
+ * postinstall registers a service → launchd/systemd spawns the daemon
+ * with the variant env set, before any project exists. Throwing here
+ * would respawn-loop the supervisor before the first hook could
+ * register a project. The variant safety invariant is preserved: the
+ * rebind watcher calls back through here, and `firstProjectVaultFromRegistry()`
+ * still filters by `served_by` so a dev daemon binds only to dev Groves
+ * and a prod daemon binds only to prod Groves.
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | null {
   const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
   const cwdVault = resolveVaultDir(cwd);
 
-  // Variant-pinned daemons trust their variant, not their cwd.
+  // Variant-pinned daemons trust their variant, not their cwd. Skip the
+  // cwd-walk: a hook lazy-spawn from inside an unrelated project must
+  // not bootstrap onto that project's vault when the variant pins us
+  // to a specific Grove. firstProjectVaultFromRegistry() already
+  // honors MYCO_SERVICE_VARIANT so the rebind watcher binds to the
+  // right Grove without further plumbing.
   if (variant) {
-    const fromRegistry = firstProjectVaultFromRegistry();
-    if (fromRegistry) return fromRegistry;
-    throw new Error(
-      `Daemon bootstrap failed (variant="${variant}"): no projects registered in a Grove served_by="${variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME}". `
-      + `Run \`myco init --project <path>\` from a project directory first.`,
-    );
+    return firstProjectVaultFromRegistry();
   }
 
   // Variant-less: original cwd-walk-first behavior.
