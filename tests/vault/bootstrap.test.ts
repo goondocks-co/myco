@@ -103,6 +103,12 @@ describe('resolveBootstrapVaultDir', () => {
     const manifestPath = path.join(result.vaultDir, 'project.toml');
     expect(fs.existsSync(manifestPath)).toBe(true);
     expect(fs.readFileSync(manifestPath, 'utf-8')).toMatch(/^\[project\]\nid = "proj_[0-9a-f]{32}"/);
+    // myco.yaml is materialized so loadConfigInternal doesn't throw
+    // "myco.yaml not found" on the first loadMergedConfig call —
+    // greenfield smoke caught this gap before the fix-up.
+    const configPath = path.join(result.vaultDir, 'myco.yaml');
+    expect(fs.existsSync(configPath)).toBe(true);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe('version: 3\n');
   });
 
   test('phantom helper is idempotent — manifest id persists across calls', () => {

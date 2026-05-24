@@ -117,6 +117,7 @@ export function resolveBootstrapVaultDirOrPhantom(cwd: string = process.cwd()): 
   const phantom = resolvePhantomBootstrapVaultDir();
   fs.mkdirSync(phantom, { recursive: true });
   ensurePhantomProjectManifest(phantom);
+  ensurePhantomMycoYaml(phantom);
   return { vaultDir: phantom, isPhantom: true };
 }
 
@@ -138,6 +139,22 @@ function ensurePhantomProjectManifest(phantomVaultDir: string): void {
   const projectId = createProjectId();
   const body = `[project]\nid = "${projectId}"\nname = "myco-bootstrap"\n`;
   fs.writeFileSync(manifestPath, body, { mode: 0o600 });
+}
+
+/**
+ * Write a minimal `myco.yaml` into the phantom vault. The loader throws
+ * (`packages/myco/src/config/loader.ts` `loadConfigInternal`) when this
+ * file is missing — without it the daemon dies on its first
+ * `loadMergedConfig` call. A bare `version: 3` doc parses cleanly and
+ * the `MycoConfigSchema` defaults fill every other section, so the
+ * phantom vault behaves as a config-empty project (no symbionts, no
+ * scheduled tasks, no embedding provider) until the registry watcher
+ * triggers a restart against a real vault.
+ */
+function ensurePhantomMycoYaml(phantomVaultDir: string): void {
+  const configPath = path.join(phantomVaultDir, 'myco.yaml');
+  if (fs.existsSync(configPath)) return;
+  fs.writeFileSync(configPath, 'version: 3\n', { mode: 0o600 });
 }
 
 function hasProjectManifest(vaultDir: string): boolean {
