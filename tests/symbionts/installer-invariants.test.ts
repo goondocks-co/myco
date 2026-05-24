@@ -473,6 +473,20 @@ describe('symbiont installer invariants', () => {
    * run with the agent's cwd (e.g. `~/.cursor/`) instead of the workspace,
    * and project-root resolution would return wrong roots.
    */
+  /**
+   * Copilot intentionally does NOT subscribe to PermissionRequest — that's
+   * an interactive allow/deny hook; Myco is observational. A regression
+   * adding the event without the explicit rationale review would risk
+   * silently suppressing tool calls. See copilot.yaml hook surface doc.
+   */
+  describe('copilot hooks omit PermissionRequest (observational-only)', () => {
+    it('hooks template does not subscribe to PermissionRequest', () => {
+      const tplPath = path.join(TEMPLATES_DIR, 'copilot', 'hooks.json');
+      const parsed = JSON.parse(fs.readFileSync(tplPath, 'utf-8')) as Record<string, unknown>;
+      expect(Object.keys(parsed)).not.toContain('PermissionRequest');
+    });
+  });
+
   describe('global launcher honors per-agent project-dir env vars', () => {
     const LAUNCHER_PATH = path.join(TEMPLATES_DIR, '_shared', 'global-launcher.cjs');
     const REQUIRED_ENV_VARS = ['CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR', 'WINDSURF_PROJECT_DIR', 'MYCO_PROJECT_ROOT'];

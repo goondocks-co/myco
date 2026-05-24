@@ -29,6 +29,36 @@ hookFields:
   toolOutput: tool_response
 capture:
   planDirs: []
+# Hook surface (https://docs.github.com/en/copilot/reference/hooks-reference)
+#
+# Subscribed events (12) — captured in templates/copilot/hooks.json:
+#   SessionStart       — daemon registration + Cortex preamble injection
+#   SessionEnd         — session lifecycle close
+#   UserPromptSubmit   — prompt capture + per-prompt spore injection
+#   PreToolUse         — Canopy injection for read-style tools (Cortex)
+#   PostToolUse        — tool activity row + file_path stamping
+#   PostToolUseFailure — tool failure row (success=false)
+#   ErrorOccurred      — runtime error capture (separate from tool failure)
+#   Notification       — agent-emitted notifications (observability only)
+#   PreCompact         — pre-compact lifecycle event
+#   SubagentStart      — subagent lineage (parent_session_id)
+#   SubagentStop       — subagent completion
+#   Stop               — final transcript mining + reconciliation
+#
+# Skipped event:
+#   PermissionRequest — fires when Copilot needs the user to approve a
+#     tool call (run command, file write, etc.). We do NOT subscribe
+#     because:
+#     1. Permission is a decision the user owns; Myco is observational.
+#        A hook that returns the wrong allow/deny shape would silently
+#        suppress real tool calls — capture risk with no data benefit.
+#     2. The data we'd want (tool name + input) is already captured by
+#        PreToolUse, which fires for tool calls the user approves.
+#     3. Adds round-trip latency to every permission prompt, hurting the
+#        agent's interactive feel for zero observability gain.
+#     If a future feature needs the permission decision itself (e.g.
+#     "show me the tools the user denied"), revisit and design the
+#     response shape with an explicit-allow default before subscribing.
 registration:
   hooksTarget: .github/hooks/myco-hooks.json
   # Both surfaces (terminal CLI + VS Code Copilot extension) read hooks
