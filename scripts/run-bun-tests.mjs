@@ -224,7 +224,14 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/api/team-connect-handlers.test.ts',
       'tests/daemon/api/team-connect-status.test.ts',
       'tests/daemon/api/team-upgrade-worker.test.ts',
-      'tests/daemon/api/update.test.ts',
+      // tests/daemon/api/update.test.ts intentionally omitted — its top-level
+      // `mock.module('@myco/daemon/update-checker.js', ...)` is hoisted by bun
+      // ahead of the `await import(...)` that tries to capture the real module
+      // for afterAll restoration, so the stub leaks for the rest of the bun
+      // process. Mock state from later tests (e.g. `getInstalledVersion`
+      // returning '1.1.0') then poisons the team-connect-status status test
+      // that depends on the real reader. Running it isolated keeps the
+      // mock-induced leak contained to its own bun process.
     ],
   },
   {

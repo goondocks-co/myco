@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { installGlobalLaunchers } from '../grove/launcher-install.js';
-import { expandHome } from '../grove/paths.js';
+import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlSectionKeys } from './toml-helpers.js';
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
@@ -140,8 +140,12 @@ const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
 
 /**
  * Resolve `{{mycoLauncher}}` to the absolute launcher command for the
- * given scope. `homeDir` is injected so tests can run against a tmpdir
- * fake-`$HOME`; production callers pass `os.homedir()`.
+ * given scope. `mycoHome` is the directory `installGlobalLaunchers()`
+ * writes the launcher to (i.e. `resolveMycoHome()` — honors `MYCO_HOME`),
+ * not the OS home dir. Two are aligned so the hook command always
+ * points to a real file: in tests that override `MYCO_HOME`, in
+ * production deployments that override `MYCO_HOME`, and in the default
+ * case where both fall back to `os.homedir() + '/.myco'`.
  *
  * The path is emitted UNQUOTED. Symbionts diverge in how they spawn
  * hook commands: claude-code / codex / antigravity / copilot
@@ -154,9 +158,9 @@ const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
  * works in both worlds — provided the home path has no whitespace,
  * which `assertSafeHomeForUnquotedPath` enforces at install time.
  */
-function resolveLauncherCmd(scope: InstallScope, homeDir: string): string {
+function resolveLauncherCmd(scope: InstallScope, mycoHome: string): string {
   if (scope === 'project') return PROJECT_LAUNCHER_CMD;
-  const launcherPath = path.join(homeDir, '.myco', 'launcher.cjs');
+  const launcherPath = path.join(mycoHome, 'launcher.cjs');
   assertSafeHomeForUnquotedPath(launcherPath);
   return `node ${launcherPath}`;
 }
@@ -1293,7 +1297,17 @@ export class SymbiontInstaller {
    */
   private substituteMycoLauncher(content: string): string {
     if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
-    const launcherCmd = resolveLauncherCmd(this.installScope, os.homedir());
+    // Use `resolveMycoHome()` rather than `os.homedir()` so the embedded
+    // hook command points at the SAME path `installGlobalLaunchers()` wrote
+    // the launcher to. Two cases this aligns:
+    //   - Tests that override `MYCO_HOME` to a tmp vault (Bun's
+    //     `os.homedir()` ignores in-process changes to `$HOME`, so the
+    //     previous `os.homedir()` path embedded the developer's real
+    //     `~/.myco/launcher.cjs` and only passed by accident on machines
+    //     where Myco was dogfooded into that directory).
+    //   - Production users who point `MYCO_HOME` at a custom location —
+    //     the launcher writes there, the hook command should too.
+    const launcherCmd = resolveLauncherCmd(this.installScope, resolveMycoHome());
     return content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
   }
 
