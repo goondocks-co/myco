@@ -101,10 +101,6 @@ function MycoInjectionItem({ activity }: { activity: ActivityRow }) {
 }
 
 function ActivityItem({ activity }: { activity: ActivityRow }) {
-  if (isMycoInjectionRow(activity.tool_name)) {
-    return <MycoInjectionItem activity={activity} />;
-  }
-
   const [expanded, setExpanded] = useState(false);
   const succeeded = activity.success === 1;
   const hasDetail = Boolean(activity.tool_input || activity.tool_output_summary || activity.error_message);

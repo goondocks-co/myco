@@ -1,15 +1,11 @@
 /**
  * Universal Myco injection-record primitive.
  *
- * Every Myco-side injection (Cortex preamble at session-start, spores per
- * user prompt, Canopy entries on tool reads) records itself as a synthetic
- * row in the `activities` table with a deterministic `content_hash`. The
- * existing UNIQUE index on `(project_id, content_hash)` enforces dedup
- * structurally; concurrent racers can't both insert.
+ * Records each Myco-side injection (Cortex, spores, Canopy) as a synthetic
+ * row in `activities` with a deterministic `content_hash`. The UNIQUE
+ * index on `(project_id, content_hash)` enforces dedup structurally.
  *
- * `content_hash` format encodes session into the key so dedup is per-session
- * within a project:
- *
+ * `content_hash` format:
  *   myco:inject:cortex:<sessionId>
  *   myco:inject:spores:<sessionId>:<promptHash>
  *   myco:inject:canopy:<sessionId>:<filePath>
@@ -18,7 +14,6 @@
 import { getDatabase } from '@myco/db/client.js';
 import { insertActivity, type ActivityRow } from '@myco/db/queries/activities.js';
 import { getLatestBatch, incrementActivityCount } from '@myco/db/queries/batches.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { epochSeconds } from '@myco/constants.js';
 
 const INJECTION_OUTPUT_STORE_LIMIT = 8000;
@@ -68,20 +63,23 @@ export function buildInjectionContentHash(
 /**
  * Atomic dedup-gated injection record.
  *
- * 1. Builds `content_hash` from (type, sessionId, discriminator).
- * 2. Attempts INSERT of a placeholder activity row (tool_output_summary NULL).
- *    The UNIQUE index on `(project_id, content_hash)` is the dedup gate —
- *    a duplicate INSERT throws SqliteError `SQLITE_CONSTRAINT_UNIQUE`.
- * 3. On success: calls `fetchContent()`, UPDATEs the same row with the
- *    truncated injected text, returns `{ injected: true, text }`.
- * 4. On UNIQUE violation: returns `{ injected: false, reason: 'already_recorded' }`
- *    without invoking the fetch.
- * 5. If no `prompt_batches` row is open for the session, returns
- *    `{ injected: false, reason: 'no_batch' }` — the caller decides whether
- *    to skip or to create a batch first.
+ * Inserts a placeholder activity row, then UPDATEs it with the fetched
+ * text. The placeholder INSERT is what hits the UNIQUE index — a duplicate
+ * `content_hash` throws SqliteError `SQLITE_CONSTRAINT_UNIQUE` and the
+ * fetch never runs.
  *
- * Note: this function does NOT increment `session.tool_count`. Injection
- * activities are bookkeeping rows, not agent tool usage.
+ * Result shapes:
+ *   { injected: true, text, activityId, metadata }
+ *   { injected: false, reason: 'unique_violation' }  duplicate gate
+ *   { injected: false, reason: 'no_batch' }          session has no open batch
+ *
+ * A `fetchContent()` throw leaves the placeholder row in place
+ * (`tool_output_summary IS NULL`), so a retry collides on the UNIQUE index
+ * rather than refetching. Operators identify failed injections by querying
+ * `myco:*` rows with NULL output_summary.
+ *
+ * Does NOT bump `session.tool_count` — injections are bookkeeping, not
+ * agent tool usage.
  */
 export async function recordInjectionActivity(
   options: RecordInjectionOptions,
@@ -118,21 +116,10 @@ export async function recordInjectionActivity(
   }
 
   // Bump prompt_batches.activity_count so the UI's per-batch Tool Calls
-  // section surfaces the injection row. session.tool_count (the agent's
-  // tool-call budget) is intentionally left alone — injections are
-  // bookkeeping, not agent tool usage.
+  // section surfaces the injection row. session.tool_count stays untouched.
   incrementActivityCount(latestBatch.id);
 
-  let fetched: InjectionFetchResult;
-  try {
-    fetched = await fetchContent();
-  } catch (err) {
-    // Fetch failed AFTER the INSERT — leave the placeholder row in place so
-    // a retry collides on the UNIQUE index rather than refetching. Operators
-    // can identify failed injections by `tool_output_summary IS NULL` on a
-    // `myco:*` activity row.
-    throw err;
-  }
+  const fetched = await fetchContent();
 
   const truncated = (fetched.text ?? '').slice(0, INJECTION_OUTPUT_STORE_LIMIT);
   getDatabase()
@@ -145,6 +132,22 @@ export async function recordInjectionActivity(
     activityId: activity.id,
     metadata: fetched.metadata,
   };
+}
+
+/**
+ * Wraps `recordInjectionActivity` and returns whether the caller should
+ * suppress its response. Suppress only when the UNIQUE gate fired
+ * (`unique_violation`) — that's the dedup we want. `no_batch` falls
+ * through (caller proceeds with the injection text, no activity recorded)
+ * so symbionts whose hook fires before any prompt_batches row exists
+ * still see Cortex / spores on their first tool use.
+ */
+export async function recordInjectionAndShouldSuppress(
+  options: RecordInjectionOptions,
+): Promise<{ suppress: boolean; result: RecordInjectionResult }> {
+  const result = await recordInjectionActivity(options);
+  const suppress = result.injected === false && result.reason === 'unique_violation';
+  return { suppress, result };
 }
 
 /**
@@ -172,6 +175,3 @@ function isUniqueConstraintError(err: unknown): boolean {
   const message = (err as { message?: string }).message ?? '';
   return code.startsWith('SQLITE_CONSTRAINT') && message.includes('UNIQUE');
 }
-
-// ALL_PROJECTS_SCOPE re-export retained for callers that import from this module.
-export { ALL_PROJECTS_SCOPE };

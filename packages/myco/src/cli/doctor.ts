@@ -480,22 +480,18 @@ async function checkDetectedSymbionts(): Promise<DoctorCheck[]> {
 
 /**
  * Detect known broken-edge states across the global symbiont surface.
- * One row per issue found. The four cases tracked here are anti-regression
- * watchposts for bugs that previously took capture silent in production:
+ * Emits one row per issue found, plus a final OK row when nothing matched.
  *
- * 1. cursor-cd-cwd: any hook command in `~/.cursor/settings.json` containing
- *    a shell-cd prefix (Cursor's hook spawn drops stdin on shell operators
- *    — R4.4/R4.8). The fix is in `global-launcher.cjs` chdir chain; if a
- *    user or other tooling re-adds `cd "$X" && …` we go silent.
- * 2. claude-matcher: any hook group in `~/.claude/settings.json` missing
- *    the `matcher` field. Cursor cross-reads this file and rejects all
- *    Claude hooks when one group is malformed (R4.3).
- * 3. hybrid-TOML: `~/.codex/config.toml` whose first non-blank line is JSON
- *    (`{`) instead of TOML. Codex's parser silently disables all hooks for
- *    that project until the file is repaired (R1.4/R3.1).
- * 4. project-local stub: orphan `<project>/.agents/myco-run.cjs` with no
- *    sibling `.myco/myco.yaml` (project was de-init'd but the launcher
- *    pin survived; the global launcher routes hooks into a dead override).
+ * Checks:
+ *   - cursor-cd-cwd: a shell-cd prefix in `~/.cursor/settings.json`
+ *     commands (Cursor's hook spawn drops stdin on shell operators).
+ *   - claude-matcher: hook groups in `~/.claude/settings.json` missing
+ *     the `matcher` field (Cursor cross-reads this file and rejects all
+ *     Claude hooks when one group is malformed).
+ *   - hybrid-TOML: `~/.codex/config.toml` whose first non-blank char is
+ *     `{` instead of TOML (Codex silently disables all hooks).
+ *   - project-local stub: orphan `<project>/.agents/myco-run.cjs` with
+ *     no sibling `.myco/myco.yaml`.
  */
 export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];

@@ -32,7 +32,7 @@ import { composeBlob, blobTokenCost } from '../../canopy/inject/compose.js';
 import { decide, type IntentDecision, type NoInjectionReason } from '../../canopy/inject/filter.js';
 import { recordPendingInjection } from '../../canopy/inject/pending.js';
 import { symbiontHasCapability } from '../../symbionts/capabilities.js';
-import { recordInjectionActivity } from '../injection-records.js';
+import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 
 export interface CanopyInjectDeps {
   liveConfig: { current: MycoConfig };
@@ -135,13 +135,11 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const blob = composeBlob(decision.entry);
     const injectionTokens = blobTokenCost(blob);
 
-    // Per-(session, file) dedup gate. UNIQUE on content_hash
-    // `myco:inject:canopy:<sessionId>:<filePath>` blocks a second injection
-    // of the same file within the same session — once the agent has seen
-    // the Canopy entry, re-injecting wastes tokens. `no_batch` (PreToolUse
-    // fired before any user_prompt landed) falls through to the original
-    // behavior; we still serve the blob, just don't record an activity.
-    const record = await recordInjectionActivity({
+    // Per-(session, file) dedup gate. UNIQUE on
+    // `myco:inject:canopy:<sessionId>:<filePath>` blocks a second
+    // injection of the same file within the same session. `no_batch`
+    // falls through and still serves the blob.
+    const { suppress } = await recordInjectionAndShouldSuppress({
       sessionId,
       projectId,
       injectionType: 'canopy',
@@ -155,7 +153,7 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
       },
       fetchContent: async () => ({ text: blob, metadata: { tokens: injectionTokens, path: decision.entry.path } }),
     });
-    if (record.injected === false && record.reason === 'unique_violation') {
+    if (suppress) {
       const body: InjectResponseBody = { inject: false, reason: 'already_injected' };
       return { body };
     }

@@ -68,12 +68,21 @@ function patchFromPath(dotted: string, value: unknown): Record<string, unknown> 
 
 describe('PUT /api/config/scoped — cortex paths land at the v8 shape', () => {
   let tmpDir: string;
+  let prevMycoHome: string | undefined;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cortex-paths-'));
     seedFreshVault(tmpDir);
+    // The v8 merged-config loader walks Grove tiers anchored at MYCO_HOME;
+    // without a sandbox it picks up the dev machine's Grove(s) and the
+    // project tier disappears from the merge.
+    prevMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmpDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = prevMycoHome;
   });
 
   /** Each entry: a path string, a non-default value to patch, and the expected return type. */
@@ -183,12 +192,18 @@ describe('PUT /api/config/scoped — cortex paths land at the v8 shape', () => {
 
 describe('non-cortex paths still work post-v8 (regression check)', () => {
   let tmpDir: string;
+  let prevMycoHome: string | undefined;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-non-cortex-'));
     seedFreshVault(tmpDir);
+    prevMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmpDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = prevMycoHome;
   });
 
   it('notifications.enabled toggles cleanly (agent.* is now Grove-tier)', async () => {

@@ -6,9 +6,10 @@
  */
 
 import path from 'node:path';
+import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, listBatchesBySession, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
@@ -200,16 +201,48 @@ export function syncTranscriptPromptBatches(
   sessionId: string,
   prompts: string[],
 ): { createdBatchCount: number; existingBatchCount: number } {
-  const existing = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
-  const existingBatchCount = existing.length;
-  let createdBatchCount = 0;
-
-  for (let i = existingBatchCount; i < prompts.length; i++) {
-    const prompt = prompts[i];
-    if (typeof prompt !== 'string' || prompt.trim().length === 0) continue;
-    handleUserPrompt(sessionId, prompt, { kind: BATCH_KIND.INITIAL });
-    createdBatchCount += 1;
+  // countBatchesBySession is a SELECT COUNT(*); listBatchesBySession caps
+  // at BATCHES_DEFAULT_LIMIT and would saturate at 200 — then re-insert
+  // prompts[200..N] as duplicates on every hook fire.
+  const existingBatchCount = countBatchesBySession(sessionId);
+  if (existingBatchCount >= prompts.length) {
+    return { createdBatchCount: 0, existingBatchCount };
   }
+
+  // Insert the new tail in a single transaction — N user prompts at AGY
+  // session cold-start could otherwise pay N fsyncs. Direct
+  // insertBatchStateless skips handleUserPrompt's closeOpenBatches step,
+  // which would collapse turn boundaries when N synthetic batches are
+  // written in one sweep.
+  const now = epochSeconds();
+  let createdBatchCount = 0;
+  const machineId = getTeamMachineId();
+
+  const insertTail = getDatabase().transaction(() => {
+    for (let i = existingBatchCount; i < prompts.length; i++) {
+      const prompt = prompts[i];
+      if (typeof prompt !== 'string' || prompt.trim().length === 0) continue;
+      const batch = insertBatchStateless({
+        session_id: sessionId,
+        user_prompt: prompt,
+        started_at: now,
+        created_at: now,
+        machine_id: machineId,
+        kind: BATCH_KIND.INITIAL,
+        parent_prompt_batch_id: null,
+      });
+      try {
+        const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
+        createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
+      } catch { /* lineage best-effort */ }
+      if (batch.prompt_number !== undefined) {
+        updateSession(sessionId, { prompt_count: batch.prompt_number }, ALL_PROJECTS_SCOPE);
+      }
+      createdBatchCount += 1;
+    }
+  });
+  insertTail();
+
   return { createdBatchCount, existingBatchCount };
 }
 

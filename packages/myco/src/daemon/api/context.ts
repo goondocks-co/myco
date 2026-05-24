@@ -24,7 +24,7 @@ import { shouldInjectSessionStartDigest } from '@myco/context/session-start-dige
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
-import { recordInjectionActivity } from '../injection-records.js';
+import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -142,28 +142,24 @@ export function createSessionContextHandler(deps: ContextDeps) {
           source_run_id: sourceRunId,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
-          injected_text: contextText,
         },
       );
 
-      // Per-session dedup gate. When a prompt_batches row exists for this
-      // session, record a synthetic `myco:inject_cortex` activity with
-      // content_hash `myco:inject:cortex:<sessionId>`. Re-entry by the same
-      // session (e.g. AGY's per-invocation PreInvocation hook) collides on
-      // the UNIQUE index and returns an empty body. Symbionts that fire
-      // session-start exactly once never have a batch yet → no_batch →
-      // fall through to direct return (legacy behavior preserved).
+      // Per-(session) dedup gate. UNIQUE on
+      // `myco:inject:cortex:<sessionId>` blocks re-entry within the same
+      // session. `no_batch` (session has no prompt_batches row yet) falls
+      // through and serves the text without recording — preserves the
+      // single-shot session-start behavior for symbionts that don't
+      // re-fire (Claude Code, Codex, Cursor).
       if (session_id) {
-        const record = await recordInjectionActivity({
+        const { suppress } = await recordInjectionAndShouldSuppress({
           sessionId: session_id,
           projectId: requestProjectId,
           injectionType: 'cortex',
           trigger: { metadata: { source, branch } },
           fetchContent: async () => ({ text: contextText, metadata: { source } }),
         });
-        if (record.injected === false && record.reason === 'unique_violation') {
-          return { body: { text: '' } };
-        }
+        if (suppress) return { body: { text: '' } };
       }
 
       return {
@@ -241,7 +237,6 @@ export function createResumeContextHandler(deps: ContextDeps) {
           branch: resolvedBranch ?? undefined,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
-          injected_text: contextText,
         },
       );
 
@@ -349,23 +344,18 @@ export function createPromptContextHandler(deps: ContextDeps) {
         spore_titles: titles,
         scores: spores.map((s) => s.score.toFixed(3)),
         estimated_tokens: promptTokens,
-        injected_text: text,
       },
     );
 
-    // Per-(session, prompt) dedup gate. Symbionts whose user-prompt hook can
-    // fire more than once for the same prompt (e.g. AGY's PreInvocation
-    // re-entering within one logical turn) collide on the UNIQUE index and
-    // get an empty body. Sessions without an open batch fall through to the
-    // raw text — preserves the legacy direct-return behavior for symbionts
-    // that don't have a batch yet at prompt-submit time.
+    // Per-(session, prompt) dedup gate. UNIQUE on
+    // `myco:inject:spores:<sessionId>:<promptHash>` blocks a second
+    // injection for the same prompt content. `no_batch` falls through.
     if (text && session_id) {
-      const discriminator = hashPromptDiscriminator(prompt);
-      const record = await recordInjectionActivity({
+      const { suppress } = await recordInjectionAndShouldSuppress({
         sessionId: session_id,
         projectId: typeof projectId === 'string' ? projectId : null,
         injectionType: 'spores',
-        discriminator,
+        discriminator: hashPromptDiscriminator(prompt),
         trigger: {
           metadata: {
             spore_titles: spores.map((s) => s.title),
@@ -374,9 +364,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
         },
         fetchContent: async () => ({ text, metadata: { spore_count: spores.length } }),
       });
-      if (record.injected === false && record.reason === 'unique_violation') {
-        return { body: { text: '' } };
-      }
+      if (suppress) return { body: { text: '' } };
     }
 
     return { body: { text } };

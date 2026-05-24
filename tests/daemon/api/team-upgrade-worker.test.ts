@@ -60,14 +60,23 @@ function makeDeps(vaultDir: string, globalPrefix: string | null) {
 describe('handleUpgradeWorker', () => {
   let tempDir: string;
   let vaultDir: string;
+  let originalMycoHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-upgrade-worker-'));
     vaultDir = makeVault(tempDir);
+    // Sandbox MYCO_HOME so the post-upgrade reinit's loadTeamConnectionConfig
+    // call walks an empty Grove tier and merges the project-tier `team:`
+    // block correctly.
+    originalMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tempDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
   });
 
   afterEach(() => {
     vi.resetModules();
+    if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = originalMycoHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

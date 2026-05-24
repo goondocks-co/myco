@@ -39,11 +39,10 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   const ids = rawSessions.map((s) => s.id);
   const states = releaseStateAnnotationMap('sessions', ids, scope);
   const activityBuckets = getSessionActivityBuckets(ids);
-  // Authoritative counts derived from row scans in a single GROUP BY query
-  // each, paired with the detail endpoint's per-session derivation. The
-  // cached `sessions.prompt_count` / `tool_count` columns can drift if a
-  // writer missed the bump — R4.18 audit picks derived as the single
-  // source of truth for the user-facing surface.
+  // Derived counts from a single GROUP BY each — the cached
+  // `sessions.prompt_count` / `tool_count` columns can drift if a writer
+  // missed the bump, and the detail endpoint already derives, so the
+  // list endpoint matches.
   const promptCounts = countBatchesBySessions(ids);
   const toolCounts = countActivitiesBySessions(ids);
   const sessions = rawSessions.map((s) => ({
