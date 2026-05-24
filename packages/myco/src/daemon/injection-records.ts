@@ -17,7 +17,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { insertActivity, type ActivityRow } from '@myco/db/queries/activities.js';
-import { getLatestBatch } from '@myco/db/queries/batches.js';
+import { getLatestBatch, incrementActivityCount } from '@myco/db/queries/batches.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { epochSeconds } from '@myco/constants.js';
 
@@ -116,6 +116,12 @@ export async function recordInjectionActivity(
     }
     throw err;
   }
+
+  // Bump prompt_batches.activity_count so the UI's per-batch Tool Calls
+  // section surfaces the injection row. session.tool_count (the agent's
+  // tool-call budget) is intentionally left alone — injections are
+  // bookkeeping, not agent tool usage.
+  incrementActivityCount(latestBatch.id);
 
   let fetched: InjectionFetchResult;
   try {

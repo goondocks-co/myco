@@ -56,7 +56,7 @@ describe('recordInjectionActivity', () => {
 
   it('records the activity and returns the fetched text on first call', async () => {
     const sessionId = seedSession({ id: 's-first', agent: 'antigravity' });
-    withOpenBatch(sessionId);
+    const { batchId } = withOpenBatch(sessionId);
 
     let fetchCalls = 0;
     const result = await recordInjectionActivity({
@@ -83,6 +83,12 @@ describe('recordInjectionActivity', () => {
     expect(activities[0]!.content_hash).toBe('myco:inject:cortex:s-first');
     expect(activities[0]!.tool_output_summary).toBe('fake cortex preamble');
     expect(JSON.parse(activities[0]!.tool_input!)).toEqual({ source: 'unit-test' });
+
+    // activity_count on the batch is bumped so the UI's per-batch Tool Calls
+    // section surfaces injection rows.
+    const { getBatchById } = await import('@myco/db/queries/batches.js');
+    const batch = getBatchById(batchId, ALL_PROJECTS_SCOPE);
+    expect(batch!.activity_count).toBe(1);
   });
 
   it('returns already_recorded on the second call and never invokes the fetch', async () => {
