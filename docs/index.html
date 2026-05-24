@@ -67,7 +67,7 @@
   </svg>
 
   <div class="hero-inner">
-    <span class="hero-badge"><span class="dot"></span><span id="hero-version">Loading latest release…</span> · MIT licensed</span>
+    <span class="hero-badge"><span class="dot"></span><span id="hero-version">Loading latest release…</span> · Apache 2.0 licensed</span>
     <h1 class="hero-title">The intelligence layer <em>beneath</em><br>your projects and team</h1>
     <p class="hero-sub">Capture what your team learns. Turn it into <strong>skills your agents follow</strong>. Evolve them as your code does.</p>
     <div class="hero-actions">
@@ -75,7 +75,7 @@
       <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">View on GitHub</a>
     </div>
     <div class="hero-meta">
-      <span><span class="k">Works with</span> Claude Code · Cursor · Codex · Copilot · Gemini · Windsurf</span>
+      <span><span class="k">Works with</span> Claude Code · Cursor · Codex · Copilot · Antigravity · Windsurf · OpenCode · Pi</span>
     </div>
   </div>
 
@@ -96,7 +96,8 @@
     <div class="sec-head center">
       <span class="eyebrow no-bar"><span class="dot"></span>One command</span>
       <h2 class="sec-title">Install in <em>sixty seconds</em></h2>
-      <p class="sec-lede">One install, any agent. Myco auto-detects the coding agents you already use and installs hooks for each.</p>
+      <p class="sec-lede">One install, every project. Myco auto-detects the coding agents on your machine, installs hooks at each agent's global config, registers a background service, and starts the daemon — no per-project setup.</p>
+
     </div>
 
     <div class="install-shell">
@@ -118,17 +119,16 @@
               <span class="line"><span class="prompt">$</span><span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="str">https://myco.sh/install.sh</span> | <span class="cmd">sh</span></span>
               <span class="blank"></span>
               <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon binary linked to ~/.myco/bin</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">service registered (launchd / systemd-user)</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="prompt">$</span><span class="cmd">cd</span> your-project &amp;&amp; <span class="cmd">myco</span> init</span>
-              <span class="blank"></span>
-              <span class="line"><span class="out">detected agents:</span></span>
+              <span class="line"><span class="out">global symbiont install:</span></span>
               <span class="indent"><span class="out-ok">✓</span> <span class="out">claude-code</span> <span class="comment">(hooks, mcp, skills)</span></span>
               <span class="indent"><span class="out-ok">✓</span> <span class="out">cursor</span>      <span class="comment">(hooks, skills)</span></span>
-              <span class="indent"><span class="out-warn">·</span> <span class="out">codex</span>       <span class="comment">(optional)</span></span>
+              <span class="indent"><span class="out-warn">·</span> <span class="out">codex</span>       <span class="comment">(detected)</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started on :7337</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">dashboard →</span> <span class="str">http://localhost:7337</span><span class="caret"></span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">dashboard ready —</span> <span class="cmd">myco</span> open<span class="caret"></span></span>
+              <span class="line"><span class="comment"># projects auto-register on first agent hook</span></span>
             </div>
           </div>
         </div>
@@ -143,8 +143,10 @@
               <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">irm</span> <span class="str">https://myco.sh/install.ps1</span> | <span class="cmd">iex</span></span>
               <span class="blank"></span>
               <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">service registered</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">cd</span> your-project ; <span class="cmd">myco</span> init<span class="caret"></span></span>
+              <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">myco</span> open<span class="caret"></span></span>
             </div>
           </div>
         </div>
@@ -160,8 +162,9 @@
               <span class="blank"></span>
               <span class="line"><span class="out-ok">+</span> <span class="out">@goondocks/myco</span></span>
               <span class="line"><span class="out">added 1 package in 3s</span></span>
+              <span class="line"><span class="comment"># postinstall: service registered, daemon started</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> init<span class="caret"></span></span>
+              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> open<span class="caret"></span></span>
             </div>
           </div>
         </div>
@@ -270,7 +273,7 @@
       <div class="showcase-frame">
         <div class="showcase-frame-chrome">
           <div class="dots"><span></span><span></span><span></span></div>
-          <span class="url">localhost:7337/dashboard</span>
+          <span class="url">localhost/dashboard</span>
         </div>
         <img src="assets/myco-dashboard.png" alt="Myco dashboard showing session pods, stats, and a mycelial network graph">
       </div>
@@ -536,7 +539,7 @@
           <span class="agent-mark">cx</span>
           <div>
             <div class="agent-name">Codex</div>
-            <div class="agent-sub">hooks · .agents/</div>
+            <div class="agent-sub">hooks · mcp</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -545,18 +548,18 @@
         <div class="top">
           <span class="agent-mark">vs</span>
           <div>
-            <div class="agent-name">VS Code Copilot</div>
-            <div class="agent-sub">hooks · .agents/</div>
+            <div class="agent-name">Copilot</div>
+            <div class="agent-sub">CLI + IDE · hooks · mcp</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
         <div class="top">
-          <span class="agent-mark">gm</span>
+          <span class="agent-mark">ag</span>
           <div>
-            <div class="agent-name">Gemini CLI</div>
-            <div class="agent-sub">hooks · .agents/</div>
+            <div class="agent-name">Antigravity</div>
+            <div class="agent-sub">CLI · IDE · app</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -576,7 +579,7 @@
           <span class="agent-mark">oc</span>
           <div>
             <div class="agent-name">OpenCode</div>
-            <div class="agent-sub">hooks · .agents/</div>
+            <div class="agent-sub">hooks · mcp</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -667,7 +670,7 @@
 <section class="cta-band">
   <div class="cta-band-bg"></div>
   <div class="cta-inner">
-    <span class="eyebrow no-bar"><span class="dot"></span>Local-first · MIT licensed</span>
+    <span class="eyebrow no-bar"><span class="dot"></span>Local-first · Apache 2.0 licensed</span>
     <h2 class="cta-title">Install once. Let the <em>forest floor</em> do the rest.</h2>
     <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Layer team sync and a Collective on top when you're ready.</p>
     <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top: 10px;">
@@ -707,7 +710,7 @@
         <h5>Community</h5>
         <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub ↗</a>
         <a href="https://github.com/goondocks-co/myco/issues" target="_blank" rel="noopener">Issues</a>
-        <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+        <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE" target="_blank" rel="noopener">Apache 2.0 license</a>
       </div>
     </div>
     <div class="footer-meta">
