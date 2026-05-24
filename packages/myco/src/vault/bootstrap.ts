@@ -9,6 +9,7 @@ import {
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects } from '../grove/registry.js';
 import { serviceVariantToDirName } from '../service/labels.js';
+import { createProjectId } from '../grove/ids.js';
 
 /**
  * Resolve the bootstrap vault directory for daemon startup.
@@ -38,11 +39,19 @@ import { serviceVariantToDirName } from '../service/labels.js';
  *     `served_by = "service-dev"`; prod variant (or unset) uses the
  *     default Grove from the registry.
  *
- * Throws if neither path yields a vault dir (no enclosing project AND no
- * Grove with at least one registered project). The error message instructs
- * the user to run `myco init --project <path>` from a project directory.
+ * Returns `null` when no enclosing project AND no registered project is
+ * found in a variant-less invocation. The daemon's startup path falls
+ * back to a phantom MYCO_HOME-scoped scratch dir so the API can come up
+ * and hooks can register the first project (Decisions 3 and 14 of the
+ * global-symbiont-install plan).
+ *
+ * Variant-pinned (MYCO_SERVICE_VARIANT set) STILL throws when no
+ * registered project matches its Grove. A service supervisor that knows
+ * which variant it's running expects a Grove to exist; surfacing a
+ * config error there is better than silently bringing up a vault-less
+ * daemon that will never bind.
  */
-export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
+export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | null {
   const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
   const cwdVault = resolveVaultDir(cwd);
 
@@ -62,10 +71,73 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
   const fromRegistry = firstProjectVaultFromRegistry();
   if (fromRegistry) return fromRegistry;
 
-  throw new Error(
-    `Daemon bootstrap failed: no enclosing project at ${cwdVault}, and no projects registered in the default Grove (served_by="${SERVICE_DIRNAME}"). `
-    + `Run \`myco init --project <path>\` from a project directory first.`,
-  );
+  // Greenfield: no enclosing project, no registered project. The daemon
+  // bootstraps in vault-less mode and waits for a hook to register the
+  // first project. See `resolveBootstrapVaultDirOrPhantom` for the
+  // phantom scratch-dir fallback that daemon-internal scaffolding
+  // (logger, machine id, secrets) keeps using.
+  return null;
+}
+
+/**
+ * Filesystem location of the phantom bootstrap vault used in greenfield
+ * mode. Lives under MYCO_HOME so it never collides with a real project
+ * vault and so its contents (machine_id cache, secrets fallbacks) move
+ * with the rest of Myco's user state.
+ *
+ * The dir is created on first use. It is NOT a real Myco vault:
+ *  - it has no `project.toml`, so `loadProjectManifest()` returns null;
+ *  - it has no SQLite database, so any read scoped to it is empty;
+ *  - any handler that requires a Grove binding will refuse to run.
+ *
+ * This is intentional. Project-scoped queries return empty until a
+ * real project registers via the hook-driven auto-Grove-create flow;
+ * the registry watcher then triggers a daemon restart so the next
+ * boot finds the project through `firstProjectVaultFromRegistry()`.
+ */
+export function resolvePhantomBootstrapVaultDir(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, '_bootstrap');
+}
+
+/**
+ * Either the resolved bootstrap vault (when a project exists) or the
+ * phantom MYCO_HOME-scoped scratch dir (greenfield). Callers that
+ * cannot deal with a `null` vault — daemon scaffolding for the logger,
+ * machine id, secrets, daemon-state — use this helper. Callers that
+ * MUST refuse to operate without a real vault (Grove-scoped DB
+ * handlers, manifest readers) use `resolveBootstrapVaultDir()`
+ * directly and short-circuit on null.
+ */
+export function resolveBootstrapVaultDirOrPhantom(cwd: string = process.cwd()): {
+  vaultDir: string;
+  isPhantom: boolean;
+} {
+  const resolved = resolveBootstrapVaultDir(cwd);
+  if (resolved) return { vaultDir: resolved, isPhantom: false };
+  const phantom = resolvePhantomBootstrapVaultDir();
+  fs.mkdirSync(phantom, { recursive: true });
+  ensurePhantomProjectManifest(phantom);
+  return { vaultDir: phantom, isPhantom: true };
+}
+
+/**
+ * Write a minimal `project.toml` into the phantom vault so the daemon's
+ * manifest-aware paths (`loadProjectManifest`, `requestContextFromEnvironment`)
+ * have a non-null shape to work against. The id is a real Grove-era
+ * project id (`proj_<32hex>`) so it satisfies `assertGroveProjectId`, but
+ * the manifest has no `grove` block — the daemon's `assertGroveBound`
+ * path is skipped in phantom mode, so the unbound state is intentional.
+ *
+ * Persisted across boots so the phantom id stays stable; the daemon
+ * restarts to a real vault as soon as the first project registers via
+ * the hook-driven auto-Grove-create flow.
+ */
+function ensurePhantomProjectManifest(phantomVaultDir: string): void {
+  const manifestPath = path.join(phantomVaultDir, PROJECT_MANIFEST_FILENAME);
+  if (fs.existsSync(manifestPath)) return;
+  const projectId = createProjectId();
+  const body = `[project]\nid = "${projectId}"\nname = "myco-bootstrap"\n`;
+  fs.writeFileSync(manifestPath, body, { mode: 0o600 });
 }
 
 function hasProjectManifest(vaultDir: string): boolean {

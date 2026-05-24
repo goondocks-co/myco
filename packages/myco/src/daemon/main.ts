@@ -568,8 +568,9 @@ export async function main(): Promise<void> {
   // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
   // case (a) handlers move to a dedicated daemon-paths struct. Until then,
   // do NOT use this value as a stand-in for the request-scoped vault.
-  const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
-  const bootstrapVaultDir = resolveBootstrapVaultDir();
+  const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
+  const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
+    resolveBootstrapVaultDirOrPhantom();
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   const machineId = getMachineId(bootstrapVaultDir);
@@ -603,16 +604,25 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  const projectRoot = resolveProjectRoot(bootstrapVaultDir);
+  // In greenfield (phantom) mode there is no project on disk yet — anchor
+  // plan watch to MYCO_HOME so the watcher has a real directory but no
+  // false-positive matches. The registry watcher below restarts the
+  // daemon as soon as a real project registers.
+  const projectRoot = bootstrapIsPhantom ? resolveMycoHome() : resolveProjectRoot(bootstrapVaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
-  assertGroveBound(bootstrapVaultDir, {
-    requestContext: dataPaths.requestContext,
-    env: process.env,
-  });
+  // Skip the Grove-binding assertion in greenfield: the phantom vault
+  // intentionally has no manifest. The first hook-driven registration
+  // triggers a restart that re-runs this path against a real vault.
+  if (!bootstrapIsPhantom) {
+    assertGroveBound(bootstrapVaultDir, {
+      requestContext: dataPaths.requestContext,
+      env: process.env,
+    });
+  }
   const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -2111,6 +2121,43 @@ export async function main(): Promise<void> {
     });
   }
 
+  // Greenfield rebind: when the daemon booted without a vault (phantom
+  // bootstrap), poll the Grove registry every 5s. The first hook-driven
+  // auto-Grove-create writes a project under the default Grove; once a
+  // registered project shows up, restart so the next boot resolves a
+  // real vault via `firstProjectVaultFromRegistry()` and brings up the
+  // full Grove-bound surface (sqlite, embeddings, scope iteration).
+  let phantomRebindWatcher: ReturnType<typeof setInterval> | null = null;
+  if (bootstrapIsPhantom) {
+    const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
+    logger.info(LOG_KINDS.DAEMON_START, 'Greenfield daemon — bootstrapped with phantom vault, watching registry for first project', {
+      phantom_vault: bootstrapVaultDir,
+    });
+    const rebindShutdown = scheduleShutdownWithAttribution('phantom-rebind', logger);
+    phantomRebindWatcher = setInterval(() => {
+      try {
+        const resolved = resolveBootstrapVaultDir();
+        if (!resolved) return;
+        logger.info(LOG_KINDS.DAEMON_START, 'Greenfield rebind — first project registered, restarting to bind', {
+          resolved_vault: resolved,
+        });
+        if (phantomRebindWatcher) {
+          clearInterval(phantomRebindWatcher);
+          phantomRebindWatcher = null;
+        }
+        rebindShutdown();
+      } catch (err) {
+        // Variant-pinned throws would never happen here (we are by definition
+        // in the variant-less greenfield branch), but log if the registry
+        // read itself blew up so the watcher is observable.
+        logger.warn(LOG_KINDS.DAEMON_START, 'Phantom-rebind registry probe failed', {
+          error: errorMessage(err),
+        });
+      }
+    }, 5000);
+    if (typeof phantomRebindWatcher.unref === 'function') phantomRebindWatcher.unref();
+  }
+
   powerManager.start();
   eventLoopLagProbe.start();
 
@@ -2137,6 +2184,10 @@ export async function main(): Promise<void> {
     selfReconcileLoop.stop();
     powerManager.stop();
     eventLoopLagProbe.stop();
+    if (phantomRebindWatcher) {
+      clearInterval(phantomRebindWatcher);
+      phantomRebindWatcher = null;
+    }
     // Wait for any active stop processing to finish before shutting down
     const activeStopProcessing = stopProcessor.getActiveProcessing();
     if (activeStopProcessing) {

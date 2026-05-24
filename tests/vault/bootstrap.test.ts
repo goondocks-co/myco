@@ -2,7 +2,11 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBootstrapVaultDir } from '../../packages/myco/src/vault/bootstrap';
+import {
+  resolveBootstrapVaultDir,
+  resolveBootstrapVaultDirOrPhantom,
+  resolvePhantomBootstrapVaultDir,
+} from '../../packages/myco/src/vault/bootstrap';
 
 let originalHome: string | undefined;
 let tmpHome: string;
@@ -80,8 +84,40 @@ describe('resolveBootstrapVaultDir', () => {
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(goodRoot, '.myco'));
   });
 
-  test('throws when neither cwd nor registry yields a project', () => {
-    expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/no enclosing project.*no projects registered/i);
+  test('returns null on greenfield (no enclosing project, no registry)', () => {
+    // Greenfield contract: the variant-less daemon must come up so hooks
+    // can register the first project. Throwing here would re-create the
+    // chicken-and-egg that blocked publication.
+    expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+  });
+
+  test('phantom helper falls back to MYCO_HOME scratch dir on greenfield', () => {
+    const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    expect(result.isPhantom).toBe(true);
+    expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
+    // Dir is created so callers (machine-id, logger) can write into it
+    // immediately.
+    expect(fs.existsSync(result.vaultDir)).toBe(true);
+    // Manifest is materialized so loadProjectManifest / request-context
+    // resolution don't blow up against a vault-less dir.
+    const manifestPath = path.join(result.vaultDir, 'project.toml');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    expect(fs.readFileSync(manifestPath, 'utf-8')).toMatch(/^\[project\]\nid = "proj_[0-9a-f]{32}"/);
+  });
+
+  test('phantom helper is idempotent — manifest id persists across calls', () => {
+    const first = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    const firstBody = fs.readFileSync(path.join(first.vaultDir, 'project.toml'), 'utf-8');
+    const second = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    const secondBody = fs.readFileSync(path.join(second.vaultDir, 'project.toml'), 'utf-8');
+    expect(secondBody).toBe(firstBody);
+  });
+
+  test('phantom helper passes through real vault when one resolves', () => {
+    const projRoot = makeProject('phantom-passthrough');
+    const result = resolveBootstrapVaultDirOrPhantom(projRoot);
+    expect(result.isPhantom).toBe(false);
+    expect(result.vaultDir).toBe(path.join(projRoot, '.myco'));
   });
 
   function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
@@ -123,6 +159,19 @@ describe('resolveBootstrapVaultDir', () => {
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
     // MYCO_SERVICE_VARIANT unset — should pick prod
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(prodRoot, '.myco'));
+  });
+
+  test('variant-pinned greenfield (no registry at all) still throws', () => {
+    // Variant-pinned daemons are supervised by launchd/systemd with a
+    // known Grove ownership — surfacing a config error is better than
+    // silently bringing up a vault-less daemon. The variant-less path
+    // is the one that returns null for the hook-driven auto-create.
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/variant=/);
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
   });
 
   test('dev variant fails clearly when no dev Grove exists', () => {
