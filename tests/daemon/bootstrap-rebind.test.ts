@@ -2,8 +2,10 @@
  * Greenfield daemon → first-project rebind invariant.
  *
  * Task #1 (commit 30fbad6e) added phantom-bootstrap mode: the daemon
- * starts in `~/.myco/_bootstrap/` against a synthetic project manifest
- * so the API surface can come up before any real project is registered.
+ * starts in the directory returned by `resolvePhantomBootstrapVaultDir()`
+ * (currently `~/.myco/_unbound-bootstrap/`, renamed in 357f9125) against
+ * a synthetic project manifest so the API surface can come up before
+ * any real project is registered.
  * A registry-poll watcher (every 5s) detects the first hook-driven
  * `myco init` and triggers a graceful restart — the next boot resolves
  * a real vault via `firstProjectVaultFromRegistry()`.
@@ -19,9 +21,9 @@
  *   2. The phantom path must NOT leak into anything project-scoped once
  *      a real project is reachable. `resolveBootstrapVaultDirOrPhantom()`
  *      flipping back to `isPhantom: false` is the contract; any persisted
- *      artifact whose path string starts with `~/.myco/_bootstrap/` after
- *      a rebind would mean a write happened against a scope that no
- *      longer represents a project.
+ *      artifact whose path string starts with the resolver's output
+ *      after a rebind would mean a write happened against a scope that
+ *      no longer represents a project.
  *
  * Tests #1 (phantom-mode startup) and #4 (variant-pinned throws) from
  * the original spec are already covered in
@@ -49,8 +51,6 @@ import {
   resolveBootstrapVaultDirOrPhantom,
   resolvePhantomBootstrapVaultDir,
 } from '../../packages/myco/src/vault/bootstrap';
-
-const PHANTOM_DIRNAME = '_bootstrap';
 
 let originalHome: string | undefined;
 let originalVariant: string | undefined;
@@ -138,9 +138,9 @@ describe('greenfield phantom → real-project rebind transition', () => {
   });
 
   test('phantom helper flips isPhantom=true → false across the rebind without intermediate state', () => {
-    // First call lands in phantom mode and materializes the
-    // _bootstrap scratch dir. The daemon's `bootstrapIsPhantom` branch
-    // off this result is what enables the rebind watcher in main.ts.
+    // First call lands in phantom mode and materializes the phantom
+    // scratch dir. The daemon's `bootstrapIsPhantom` branch off this
+    // result is what enables the rebind watcher in main.ts.
     const before = resolveBootstrapVaultDirOrPhantom(tmpCwd);
     expect(before.isPhantom).toBe(true);
     expect(before.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
@@ -159,11 +159,11 @@ describe('greenfield phantom → real-project rebind transition', () => {
       expect(after.isPhantom).toBe(false);
       expect(after.vaultDir).toBe(path.join(projRoot, '.myco'));
       // The flipped vault MUST NOT be inside the phantom scratch dir.
-      // That's the leak invariant — even if `_bootstrap/` still exists
-      // on disk (it's persisted intentionally so the synthetic project
-      // id stays stable for the in-flight phantom mode), the resolver
-      // hands out the real path.
-      expect(after.vaultDir.startsWith(path.join(tmpHome, PHANTOM_DIRNAME))).toBe(false);
+      // That's the leak invariant — even if the phantom dir still
+      // exists on disk (it's persisted intentionally so the synthetic
+      // project id stays stable for the in-flight phantom mode), the
+      // resolver hands out the real path.
+      expect(after.vaultDir.startsWith(resolvePhantomBootstrapVaultDir(tmpHome))).toBe(false);
     } finally {
       fs.rmSync(projRoot, { recursive: true, force: true });
     }
@@ -171,10 +171,10 @@ describe('greenfield phantom → real-project rebind transition', () => {
 });
 
 describe('no phantom leak after rebind', () => {
-  test('post-rebind resolver does NOT return any path under MYCO_HOME/_bootstrap', () => {
-    // Land in phantom mode first to ensure the _bootstrap dir exists
-    // on disk — the leak risk is having a stale path string that
-    // points into a dir that *still exists*.
+  test('post-rebind resolver does NOT return any path under the phantom dir', () => {
+    // Land in phantom mode first to ensure the phantom dir exists on
+    // disk — the leak risk is having a stale path string that points
+    // into a dir that *still exists*.
     const phantom = resolveBootstrapVaultDirOrPhantom(tmpCwd);
     expect(phantom.isPhantom).toBe(true);
     expect(fs.existsSync(phantom.vaultDir)).toBe(true);
@@ -197,7 +197,7 @@ describe('no phantom leak after rebind', () => {
         const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
         expect(result.isPhantom).toBe(false);
         expect(result.vaultDir).toBe(path.join(projRoot, '.myco'));
-        expect(result.vaultDir.startsWith(path.join(tmpHome, PHANTOM_DIRNAME))).toBe(false);
+        expect(result.vaultDir.startsWith(resolvePhantomBootstrapVaultDir(tmpHome))).toBe(false);
       }
     } finally {
       fs.rmSync(projRoot, { recursive: true, force: true });
@@ -208,7 +208,7 @@ describe('no phantom leak after rebind', () => {
     // This locks in the design choice from bootstrap.ts:130-141:
     // "Persisted across boots so the phantom id stays stable; the
     // daemon restarts to a real vault as soon as the first project
-    // registers." We do NOT delete `_bootstrap/` after rebind — but
+    // registers." We do NOT delete the phantom dir after rebind — but
     // the resolver must stop returning it.
     const phantomPath = resolvePhantomBootstrapVaultDir(tmpHome);
     // Force materialization of the phantom dir.
