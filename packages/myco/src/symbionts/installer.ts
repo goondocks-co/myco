@@ -5,7 +5,7 @@ import path from 'node:path';
 import { installGlobalLaunchers } from '../grove/launcher-install.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlSectionKeys } from './toml-helpers.js';
+import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
@@ -1741,23 +1741,112 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Per-symbiont audit file recording the (section, key) pairs Myco actually
+   * mutated when writing its settings template. Used at uninstall time to
+   * strip only what Myco wrote, never user-pre-existing values that happened
+   * to overlap with the template (the data-loss bug the audit closes).
+   *
+   * Stored under Myco's own state dir so removal of the symbiont's config
+   * directory doesn't lose the audit, and one path per (symbiont, scope) so
+   * project and global installs track independently.
+   */
+  private getSettingsAuditPath(): string {
+    const stateRoot = this.installScope === 'global' ? resolveMycoHome() : this.vaultDir;
+    const scopeTag = this.installScope === 'global' ? 'global' : 'project';
+    return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-${scopeTag}-settings.json`);
+  }
+
+  /** Read the audit list of section.key entries Myco wrote, or [] if absent. */
+  private readSettingsAudit(): string[] {
+    const auditPath = this.getSettingsAuditPath();
+    try {
+      const raw = fs.readFileSync(auditPath, 'utf-8');
+      const parsed = JSON.parse(raw) as { wroteKeys?: unknown };
+      if (!Array.isArray(parsed.wroteKeys)) return [];
+      return parsed.wroteKeys.filter((k): k is string => typeof k === 'string');
+    } catch {
+      return [];
+    }
+  }
+
+  /** Persist the audit list. Creates parent dir as needed. */
+  private writeSettingsAudit(wroteKeys: string[]): void {
+    const auditPath = this.getSettingsAuditPath();
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    atomicWriteFileSync(auditPath, JSON.stringify({ schema: 1, wroteKeys }, null, 2) + '\n');
+  }
+
+  /** Remove the audit file after a successful uninstall. */
+  private deleteSettingsAudit(): void {
+    try { fs.unlinkSync(this.getSettingsAuditPath()); } catch { /* not present */ }
+  }
+
+  /**
    * Merge a settings template into a TOML config file.
-   * Each top-level key in the template becomes a [section] header, with its
-   * children written as scalar key = value lines. Existing sections and keys
-   * outside the template (including unrelated sections like [mcp_servers.*])
-   * are preserved.
+   *
+   * Sibling-safe: only the (section, key) pairs the template declares are
+   * touched; any other keys the user has added to a Myco-managed section
+   * (e.g. user-added flags under `[features]`) are preserved.
+   *
+   * Records each key Myco actually mutated in a per-symbiont audit file so
+   * uninstall can strip exactly what Myco wrote — never a value the user
+   * pre-set that happened to match the template.
    */
   private installSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
     let raw = '';
     try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
+    const audit = new Set(this.readSettingsAudit());
+    const templateKeys = new Set<string>();
+
     for (const [sectionName, values] of Object.entries(template)) {
       if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
-      raw = upsertTomlSection(raw, sectionName, values as Record<string, unknown>);
+      const sectionValues = values as Record<string, unknown>;
+
+      const mutate: Record<string, unknown> = {};
+      for (const [key, templateVal] of Object.entries(sectionValues)) {
+        const auditKey = `${sectionName}.${key}`;
+        templateKeys.add(auditKey);
+        const currentVal = readTomlSectionKey(raw, sectionName, key);
+        const equal = currentVal !== undefined && String(currentVal) === String(templateVal);
+        if (!equal) {
+          mutate[key] = templateVal;
+          audit.add(auditKey);
+        }
+        // If the value already matches but we previously recorded ownership,
+        // keep the audit entry so uninstall still strips on Myco's behalf.
+      }
+
+      if (Object.keys(mutate).length > 0) {
+        raw = upsertTomlSectionKeys(raw, sectionName, mutate);
+      }
+    }
+
+    // Sweep stale audit entries — keys Myco used to own but the current
+    // template no longer claims (e.g. a template-rename migration). Strip
+    // the value from the file and drop the audit record so uninstall stays
+    // consistent with the live template surface.
+    const staleEntries = Array.from(audit).filter((e) => !templateKeys.has(e));
+    if (staleEntries.length > 0) {
+      const bySection = new Map<string, string[]>();
+      for (const entry of staleEntries) {
+        const dot = entry.indexOf('.');
+        if (dot < 0) continue;
+        const section = entry.slice(0, dot);
+        const key = entry.slice(dot + 1);
+        const bucket = bySection.get(section) ?? [];
+        bucket.push(key);
+        bySection.set(section, bucket);
+      }
+      for (const [section, keys] of bySection) {
+        raw = removeTomlSectionKeys(raw, section, keys);
+      }
+      for (const entry of staleEntries) audit.delete(entry);
     }
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     atomicWriteFileSync(targetPath, raw);
+    this.writeSettingsAudit(Array.from(audit).sort());
     return true;
   }
 
@@ -1793,20 +1882,45 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Remove template-defined keys from TOML settings file.
-   * For each section in the template, deletes only the keys the template owns;
-   * other keys and unrelated sections stay intact. Empty sections are stripped.
-   * Deletes the file entirely if no TOML content remains.
+   * Remove Myco-owned keys from a TOML settings file.
+   *
+   * Consults the per-symbiont audit recorded at install time; only keys Myco
+   * actually wrote are stripped. Without an audit (no recorded Myco install)
+   * the uninstall is a no-op — protecting any user value that pre-dated Myco
+   * and happened to overlap with the template. Deletes the file entirely if
+   * no TOML content remains, and clears the audit on success.
    */
   private uninstallSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
+    const audit = this.readSettingsAudit();
+    if (audit.length === 0) return false;
+
     let raw = '';
-    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
-    if (!raw.trim()) return false;
+    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* file gone — clear audit below */ }
+
+    // Only strip audit entries whose section is actually declared by the
+    // current template. This guards against a stale audit from a previous
+    // template version naming a section the manifest no longer manages.
+    const templateSections = new Set<string>();
+    for (const [sectionName, values] of Object.entries(template)) {
+      if (values && typeof values === 'object' && !Array.isArray(values)) {
+        templateSections.add(sectionName);
+      }
+    }
+
+    const bySection = new Map<string, string[]>();
+    for (const entry of audit) {
+      const dot = entry.indexOf('.');
+      if (dot < 0) continue;
+      const section = entry.slice(0, dot);
+      const key = entry.slice(dot + 1);
+      if (!templateSections.has(section)) continue;
+      const bucket = bySection.get(section) ?? [];
+      bucket.push(key);
+      bySection.set(section, bucket);
+    }
 
     let changed = false;
-    for (const [sectionName, values] of Object.entries(template)) {
-      if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
-      const keys = Object.keys(values as Record<string, unknown>);
+    for (const [sectionName, keys] of bySection) {
       const next = removeTomlSectionKeys(raw, sectionName, keys);
       if (next !== raw) {
         raw = next;
@@ -1814,14 +1928,16 @@ export class SymbiontInstaller {
       }
     }
 
-    if (!changed) return false;
-
-    if (!raw.trim()) {
-      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-    } else {
-      atomicWriteFileSync(targetPath, raw);
+    if (changed) {
+      if (!raw.trim()) {
+        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+      } else {
+        atomicWriteFileSync(targetPath, raw);
+      }
     }
-    return true;
+
+    this.deleteSettingsAudit();
+    return changed;
   }
 
   /**

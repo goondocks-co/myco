@@ -89,7 +89,7 @@ describe('global launcher — project-local override delegation', () => {
     fs.mkdirSync(overrideDir, { recursive: true });
     fs.writeFileSync(
       path.join(overrideDir, 'myco-run.cjs'),
-      "#!/usr/bin/env node\nprocess.stdout.write('override-hook:' + process.argv.slice(2).join(',') + '\\n');\n",
+      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('override-hook:' + process.argv.slice(2).join(',') + '\\n');\n",
       { mode: 0o755 },
     );
 
@@ -103,7 +103,7 @@ describe('global launcher — project-local override delegation', () => {
     fs.mkdirSync(overrideDir, { recursive: true });
     fs.writeFileSync(
       path.join(overrideDir, 'myco-cli.cjs'),
-      "#!/usr/bin/env node\nprocess.stdout.write('override-cli:' + process.argv.slice(2).join(',') + '\\n');\n",
+      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('override-cli:' + process.argv.slice(2).join(',') + '\\n');\n",
       { mode: 0o755 },
     );
 
@@ -117,7 +117,7 @@ describe('global launcher — project-local override delegation', () => {
     fs.mkdirSync(overrideDir, { recursive: true });
     fs.writeFileSync(
       path.join(overrideDir, 'myco-run.cjs'),
-      "#!/usr/bin/env node\nprocess.stdout.write('found\\n');\n",
+      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('found\\n');\n",
       { mode: 0o755 },
     );
     const nested = path.join(projectRoot, 'a', 'b', 'c');

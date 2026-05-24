@@ -1293,17 +1293,26 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('hooks = true');
   });
 
-  it('reconciles dropped template keys out of a Myco-managed section', () => {
-    // Regression: install must replace the body of each Myco-managed TOML
-    // section with the template's current keys. A previous template wrote
-    // `codex_hooks = true` to `[features]`; the new template writes
-    // `hooks = true`. Reconciling drops the stale key without requiring a
-    // separate migration.
+  it('reconciles dropped template keys via the install audit', () => {
+    // When a previous Myco template wrote a key the new template no longer
+    // claims (here: `codex_hooks` → `hooks`), install consults the audit and
+    // strips the now-stale Myco-owned key. The audit makes this a real
+    // ownership transfer rather than the old whole-section-rewrite hack
+    // (which also nuked unrelated sibling keys the user had added).
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
       '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n\n[features]\ncodex_hooks = true\n',
+    );
+    // Pre-seed the audit as if an older Myco had recorded ownership of the
+    // now-renamed key. This is what every upgrading user's machine looks
+    // like after a previous install/init cycle.
+    const auditDir = path.join(projectRoot, '.myco', 'installer-audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'codex-project-settings.json'),
+      JSON.stringify({ schema: 1, wroteKeys: ['features.codex_hooks'] }) + '\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
@@ -1314,6 +1323,43 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('[features]');
     expect(content).toContain('hooks = true');
     expect(content).toContain('[mcp_servers.myco]');
+  });
+
+  it('preserves user-added sibling keys inside a Myco-managed section', () => {
+    // Data-preservation regression: install must not nuke user keys that
+    // happen to live in the same TOML section Myco writes to. Codex users
+    // commonly add their own `[features]` flags; those must survive.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[features]\nmy_user_flag = true\nother_flag = "yes"\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('my_user_flag = true');
+    expect(content).toContain('other_flag = "yes"');
+    expect(content).toContain('hooks = true');
+  });
+
+  it('records audit only for keys it actually mutated', () => {
+    // When the user already has [features].hooks = true, install is a no-op
+    // on disk and the audit must not claim ownership of that key. This is
+    // what makes the uninstall path safe: an uninstall that runs after this
+    // install will leave the user's pre-existing value alone.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const auditPath = path.join(projectRoot, '.myco', 'installer-audit', 'codex-project-settings.json');
+    const audit = JSON.parse(fs.readFileSync(auditPath, 'utf-8'));
+    expect(audit.wroteKeys).not.toContain('features.hooks');
   });
 });
 
@@ -1327,10 +1373,11 @@ describe('uninstallSettings (TOML)', () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n\n[features]\nhooks = true\n',
+      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     const result = installer.uninstallSettings();
 
     expect(result).toBe(true);
@@ -1345,10 +1392,11 @@ describe('uninstallSettings (TOML)', () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[features]\nsome_other_flag = true\nhooks = true\n',
+      '[features]\nsome_other_flag = true\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     installer.uninstallSettings();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
@@ -1360,22 +1408,48 @@ describe('uninstallSettings (TOML)', () => {
   it('deletes file when no TOML content remains', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     installer.uninstallSettings();
 
     expect(fs.existsSync(path.join(codexDir, 'config.toml'))).toBe(false);
   });
 
-  it('returns false when template key is already absent', () => {
+  it('returns false when no Myco install is on record', () => {
+    // No prior install → no audit → uninstall must be a no-op. This is the
+    // safe-default behavior that prevents data loss for users whose config
+    // pre-dates Myco entirely (their pre-existing [features].hooks survives).
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[mcp_servers.other]\ncommand = "other"\n');
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     const result = installer.uninstallSettings();
     expect(result).toBe(false);
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('hooks = true');
+  });
+
+  it('preserves pre-existing user [features].hooks across install + uninstall', () => {
+    // Smoke-test regression (live repro 2026-05-24): a user whose codex
+    // config already enabled hooks lost the setting entirely on `myco
+    // remove`. The fix: install detects the value already matches and
+    // refuses to claim ownership; uninstall therefore leaves the key alone.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const userOriginal = '[user]\nsome_existing_setting = true\n\n[features]\nhooks = true\n';
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), userOriginal);
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[user]');
+    expect(content).toContain('some_existing_setting = true');
+    expect(content).toContain('[features]');
+    expect(content).toContain('hooks = true');
   });
 
   it('full install then uninstall leaves legacy MYCO_CMD stripped', () => {
