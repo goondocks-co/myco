@@ -357,3 +357,23 @@ export function countActivities(sessionId: string): number {
 
   return row.count as number;
 }
+
+/**
+ * Bulk derived activity counts for a list of session ids — single GROUP BY
+ * scan, paired with `countBatchesBySessions` for the sessions list endpoint.
+ *
+ * Returns a Map keyed by session id; sessions with zero activities are
+ * absent (caller treats missing as 0). R4.18 audit.
+ */
+export function countActivitiesBySessions(sessionIds: readonly string[]): Map<string, number> {
+  const result = new Map<string, number>();
+  if (sessionIds.length === 0) return result;
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  const rows = getDatabase().prepare(
+    `SELECT session_id, COUNT(*) AS n FROM activities
+     WHERE session_id IN (${placeholders})
+     GROUP BY session_id`,
+  ).all(...sessionIds) as Array<{ session_id: string; n: number }>;
+  for (const row of rows) result.set(row.session_id, row.n);
+  return result;
+}

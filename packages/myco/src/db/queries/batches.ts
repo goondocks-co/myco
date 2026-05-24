@@ -819,3 +819,28 @@ export function countBatchesBySession(sessionId: string): number {
   ).get(sessionId) as { count: number };
   return row.count;
 }
+
+/**
+ * Bulk derived prompt counts for a list of session ids — authoritative count
+ * via a single GROUP BY scan, suitable for the sessions list endpoint where
+ * per-session COUNT(*) would be an N+1 anti-pattern.
+ *
+ * Returns a Map keyed by session id. Sessions with zero batches are absent
+ * from the map (caller should treat missing as 0).
+ *
+ * R4.18 audit. Pairs with `sessions.prompt_count` (cached column) — readers
+ * that need authoritative numbers should consult this helper; the cached
+ * column can drift if a batch insert ran without bumping the session row.
+ */
+export function countBatchesBySessions(sessionIds: readonly string[]): Map<string, number> {
+  const result = new Map<string, number>();
+  if (sessionIds.length === 0) return result;
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  const rows = getDatabase().prepare(
+    `SELECT session_id, COUNT(*) AS n FROM prompt_batches
+     WHERE session_id IN (${placeholders})
+     GROUP BY session_id`,
+  ).all(...sessionIds) as Array<{ session_id: string; n: number }>;
+  for (const row of rows) result.set(row.session_id, row.n);
+  return result;
+}

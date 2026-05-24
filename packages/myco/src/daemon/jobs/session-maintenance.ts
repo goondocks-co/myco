@@ -78,8 +78,14 @@ export function completeStaleActiveSessions(
  *   1. Its status is NOT 'active' (prevents racing with a session that's
  *      currently running — active sessions get swept by the stale-session
  *      step first when truly idle).
- *   2. Its prompt_count is at most DEAD_SESSION_MAX_PROMPTS (default 0,
- *      meaning only empty "registered but never used" sessions qualify).
+ *   2. Its actual `prompt_batches` row count is at most DEAD_SESSION_MAX_PROMPTS
+ *      (default 0, meaning only empty "registered but never used" sessions
+ *      qualify).
+ *
+ * Counts derive from `prompt_batches` directly rather than `sessions.prompt_count`
+ * — the cached column can drift low if a batch insert ran without the matching
+ * `sessions.prompt_count` bump, and a low-drifted cache would falsely qualify a
+ * session that actually has prompts. R4.18 audit.
  *
  * Also excludes currently-registered in-memory sessions as a defense-in-depth
  * guard against TOCTOU between the status check and the delete.
@@ -88,15 +94,18 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
   const db = getDatabase();
 
   const excludePlaceholders = registeredSessionIds.length > 0
-    ? `AND id NOT IN (${registeredSessionIds.map(() => '?').join(', ')})`
+    ? `AND s.id NOT IN (${registeredSessionIds.map(() => '?').join(', ')})`
     : '';
 
   const params: unknown[] = [DEAD_SESSION_MAX_PROMPTS, ...registeredSessionIds];
 
   const rows = db.prepare(
-    `SELECT id FROM sessions
-     WHERE prompt_count <= ?
-       AND status != 'active'
+    `SELECT s.id FROM sessions s
+     LEFT JOIN (
+       SELECT session_id, COUNT(*) AS n FROM prompt_batches GROUP BY session_id
+     ) pb ON pb.session_id = s.id
+     WHERE COALESCE(pb.n, 0) <= ?
+       AND s.status != 'active'
        ${excludePlaceholders}`,
   ).all(...params) as { id: string }[];
 

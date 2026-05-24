@@ -31,12 +31,24 @@ function seedSession(id: string, opts: {
     prompt_count: opts.promptCount ?? 0,
   });
 
-  if (opts.batchStartedAt !== undefined) {
-    const db = getDatabase();
-    db.prepare(
-      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
-       VALUES (?, ?, ?, ?, 'active')`,
-    ).run(id, 1, opts.batchStartedAt, now);
+  // findDeadSessionIds (R4.18) derives the count from prompt_batches rows
+  // directly, not from the cached sessions.prompt_count column. Seed real
+  // rows so the helper's intent ("this session has N prompts") holds for
+  // both the cached column and the derived count.
+  const db = getDatabase();
+  const insert = db.prepare(
+    `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+     VALUES (?, ?, ?, ?, 'active')`,
+  );
+  const promptCount = opts.promptCount ?? 0;
+  const baseStart = opts.batchStartedAt ?? opts.startedAt ?? now;
+  for (let i = 1; i <= promptCount; i++) {
+    insert.run(id, i, baseStart, now);
+  }
+  // Even when promptCount=0, callers may set batchStartedAt to assert the
+  // stale-active path on a session that had a single in-progress batch.
+  if (opts.batchStartedAt !== undefined && promptCount === 0) {
+    insert.run(id, 1, opts.batchStartedAt, now);
   }
 }
 
@@ -169,6 +181,35 @@ describe('findDeadSessionIds', () => {
     const ids = findDeadSessionIds(['reg-dead']);
 
     expect(ids).not.toContain('reg-dead');
+  });
+
+  it('R4.18: derives count from prompt_batches, ignoring a stale-low cached prompt_count', () => {
+    // Drift scenario: a real session has prompt_batches rows but
+    // sessions.prompt_count was never bumped (writer-side bug, partial
+    // backfill, etc). Before R4.18 this was deleted as "dead" because
+    // findDeadSessionIds read the cached column. After the audit it reads
+    // a LEFT JOIN'd COUNT(*) and the session is preserved.
+    upsertSession({
+      id: 'drift-stale-cache',
+      agent: 'test-agent',
+      started_at: epochNow(),
+      created_at: epochNow(),
+      status: 'completed',
+      prompt_count: 0, // ← stale cache claims zero
+    });
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, ?, ?, 'active')`,
+    ).run('drift-stale-cache', 1, epochNow(), epochNow());
+    db.prepare(
+      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, ?, ?, 'active')`,
+    ).run('drift-stale-cache', 2, epochNow(), epochNow());
+
+    const ids = findDeadSessionIds([]);
+
+    expect(ids).not.toContain('drift-stale-cache');
   });
 
   it('regression: 1-prompt session that made real changes survives cleanup (opencode test case)', () => {
