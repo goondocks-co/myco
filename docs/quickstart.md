@@ -50,9 +50,11 @@ That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync
 
 ## That's it — global by default
 
-Once Myco is installed, the per-user daemon starts automatically and walks every detected coding agent on your machine, wiring Myco's hooks, MCP entries, and skills into each one's user-global config. New project? Just start coding — Myco picks it up the first time your agent fires a hook. New agent? Install it, and Myco wires it in on the next periodic detection tick (or on demand via the dashboard's Symbionts page).
+Once Myco is installed, the per-user daemon starts automatically and walks every detected coding agent on your machine, wiring Myco's hooks, MCP entries, and skills into each one's user-global config. If you have no projects registered yet, the daemon enters **phantom mode** — it serves the dashboard from a temporary vault at `~/.myco/_unbound-bootstrap/` and polls the registry every 5 seconds. The first time any agent fires a hook from a project directory, Myco auto-creates the project record, binds it to your default Grove, and gracefully restarts onto the real Grove vault. You don't need to run `myco init`.
 
-If you specifically want a project-local override (dogfood / dev pin / regulated repo where the Myco wiring should be git-committed alongside the code), run `myco init --project [path]`. That writes `.agents/myco-run.cjs` + `.agents/myco-cli.cjs` files alongside the global launchers, and Myco's runtime prefers the project-local copy when invoked inside that project. For everything else, you don't need to run `init`.
+New agent installed later? Myco wires it in on the next periodic detection tick, or on demand via the dashboard's Symbionts page.
+
+If you specifically want a project-local override (dogfood / dev pin / regulated repo where the Myco wiring should be git-committed alongside the code), run `myco init --project [path]`. That writes `.agents/myco-run.cjs` + `.agents/myco-cli.cjs` files, and Myco's runtime prefers the project-local copy when invoked inside that project. The bare `myco init` form is gone — global install is the only happy path.
 
 The Myco Agent pipeline is **off by default** after install. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section.
 
@@ -108,7 +110,7 @@ The dashboard lets you:
 - **Monitor** daemon health, power state, and system stats
 - **View logs** in real-time with level filtering
 
-All settings are saved to `myco.yaml` and take effect after a daemon restart (the dashboard handles this automatically).
+All settings are saved through Myco's three-tier scoped config (machine / Grove / project / personal) — the Settings page shows the scope per field. Changes take effect on the next daemon restart, which the dashboard triggers automatically for settings that require it.
 
 ## MCP tools
 
@@ -147,12 +149,15 @@ myco doctor --fix
 
 ### Daemon not starting
 
-The daemon spawns automatically on session start. If it fails:
+The daemon is installed as a per-user service (launchd on macOS, systemd-user on Linux) and starts at login. If it fails:
 
 ```bash
 myco restart    # Manual restart
 myco stats      # Check status
+myco logs       # Tail the daemon log
 ```
+
+If the daemon is up but no project is registered, you'll see `No project bound; polling registry from unbound bootstrap` — that's phantom mode, and it resolves automatically the first time you run any agent inside a project directory.
 
 ### No observations being captured
 
@@ -171,6 +176,15 @@ curl http://localhost:11434/api/tags
 # For LM Studio
 curl http://localhost:1234/v1/models
 ```
+
+## Uninstall
+
+```bash
+myco remove           # remove Myco's contributions from every agent's global config
+myco remove --purge   # additionally remove ~/.myco/ itself
+```
+
+`myco remove` preserves user-pre-existing keys in shared agent config files (for example, a `[features].hooks` entry you added to `~/.codex/config.toml` yourself).
 
 ## Optional Operator CLIs
 
