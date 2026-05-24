@@ -38,7 +38,7 @@ export class SystemdUserServiceManager implements ServiceManager {
   readonly supported = true;
   readonly platformName = 'systemd --user';
   private readonly runner: SystemctlRunner;
-  private readonly unitDir: string;
+  readonly unitDir: string;
 
   constructor(opts: SystemdManagerOptions = {}) {
     this.runner = opts.runner ?? new RealSystemctlRunner();

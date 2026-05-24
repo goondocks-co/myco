@@ -40,7 +40,7 @@ export class LaunchdServiceManager implements ServiceManager {
   readonly supported = true;
   readonly platformName = 'launchd';
   private readonly runner: LaunchctlRunner;
-  private readonly agentsDir: string;
+  readonly agentsDir: string;
   private readonly uid: number;
 
   constructor(opts: LaunchdManagerOptions = {}) {

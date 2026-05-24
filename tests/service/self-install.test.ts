@@ -1,8 +1,11 @@
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureSelfInstalledAsService } from '../../packages/myco/src/service/self-install';
+import { LaunchdServiceManager, type LaunchctlRunner } from '../../packages/myco/src/service/launchd';
+import { getServiceManager } from '../../packages/myco/src/service/manager';
+import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
 
 // Local alias matches the legacy test naming. The shared fake exposes the
@@ -29,11 +32,21 @@ function fakeBinary(): string {
 
 let tmpHome: string;
 let originalHome: string | undefined;
+let originalAgentsDir: string | undefined;
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
   originalHome = process.env.MYCO_HOME;
+  originalAgentsDir = process.env[SERVICE_UNIT_DIR_ENV];
   process.env.MYCO_HOME = tmpHome;
+  delete process.env[SERVICE_UNIT_DIR_ENV];
+});
+
+afterEach(() => {
+  if (originalHome === undefined) delete process.env.MYCO_HOME;
+  else process.env.MYCO_HOME = originalHome;
+  if (originalAgentsDir === undefined) delete process.env[SERVICE_UNIT_DIR_ENV];
+  else process.env[SERVICE_UNIT_DIR_ENV] = originalAgentsDir;
 });
 
 describe('ensureSelfInstalledAsService', () => {
@@ -110,5 +123,51 @@ describe('ensureSelfInstalledAsService', () => {
     expect(mgr.installCalls).toHaveLength(0);
     expect(logger.warns).toHaveLength(1);
     expect(String(logger.warns[0].meta?.error)).toMatch(/script-runner|standalone daemon binary/);
+  });
+
+  // Regression guard: a sandboxed `myco init` (HOME=/tmp/sandbox-…) must not
+  // write the plist into the real user's ~/Library/LaunchAgents/. The default
+  // `getServiceManager()` MUST pick up MYCO_LAUNCH_AGENTS_DIR so the plist
+  // lands in the sandbox and the launchd label gets a sandbox-distinct suffix.
+  test('sandbox install: plist is written to MYCO_LAUNCH_AGENTS_DIR, never to real ~/Library/LaunchAgents', async () => {
+    if (process.platform !== 'darwin') return; // launchd only
+    const sandboxAgentsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sandbox-launchagents-'));
+    process.env[SERVICE_UNIT_DIR_ENV] = sandboxAgentsDir;
+
+    const launchctlCalls: string[][] = [];
+    const runner: LaunchctlRunner = {
+      async run(args) { launchctlCalls.push(args); return { stdout: '', exitCode: 0 }; },
+    };
+    // Use the real getServiceManager() to prove the wiring; swap the runner
+    // so we don't actually shell out to launchctl.
+    const built = getServiceManager({ platform: 'darwin' }) as LaunchdServiceManager;
+    expect(built.agentsDir).toBe(sandboxAgentsDir);
+    const mgr = new LaunchdServiceManager({ agentsDir: built.agentsDir, runner, uid: 501 });
+    const logger = new CapturingLogger();
+
+    const realLaunchAgentsBefore = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    const realBefore = fs.existsSync(realLaunchAgentsBefore)
+      ? new Set(fs.readdirSync(realLaunchAgentsBefore))
+      : new Set<string>();
+
+    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+
+    // Sandbox dir got the plist.
+    const sandboxPlists = fs.readdirSync(sandboxAgentsDir).filter((f) => f.endsWith('.plist'));
+    expect(sandboxPlists.length).toBeGreaterThan(0);
+    // Plist name carries the sandbox label suffix so two parallel sandboxes
+    // can't race for the same launchd registration.
+    expect(sandboxPlists[0]).toMatch(/^co\.goondocks\.myco\.sandbox-[0-9a-f]{8}\.plist$/);
+
+    // Real ~/Library/LaunchAgents/ was not mutated.
+    const realAfter = fs.existsSync(realLaunchAgentsBefore)
+      ? new Set(fs.readdirSync(realLaunchAgentsBefore))
+      : new Set<string>();
+    expect([...realAfter]).toEqual([...realBefore]);
+
+    // launchctl bootstrap target uses the sandbox plist path, not the real one.
+    const bootstrapCall = launchctlCalls.find((c) => c[0] === 'bootstrap');
+    expect(bootstrapCall).toBeDefined();
+    expect(bootstrapCall![2].startsWith(sandboxAgentsDir)).toBe(true);
   });
 });
