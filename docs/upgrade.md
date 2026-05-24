@@ -104,9 +104,9 @@ The legacy archive is never auto-deleted — it stays in place so this rollback 
 
 ## Common failure modes
 
-### "No myco.yaml found in <vault>. Run 'myco init' first."
+### "No myco.yaml found in <vault>."
 
-`myco update` was invoked outside any Myco project. Either `cd` into a project that has `.myco/myco.yaml`, pass `--project <path>`, or use `--all-projects` to operate on the registry.
+`myco update` was invoked outside any Myco project. Either `cd` into a project that has `.myco/myco.yaml`, pass `--project <path>`, or use `--all-projects` to operate on the registry. If the target project should have a project-local Myco install, opt it in with `myco init --project <path>`.
 
 ### "Project already registered in Grove X; refusing migration into Grove Y"
 

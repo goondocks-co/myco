@@ -395,7 +395,7 @@ function tryBuildVaultFallback(
     return {
       kind: 'legacy',
       vaultDir,
-      reason: `No Grove project id available for vault ${vaultDir}. Run \`myco init\` to activate a Grove for this project.`,
+      reason: `No Grove project id available for vault ${vaultDir}. Run \`myco init --project ${path.dirname(vaultDir)}\` to opt this project in.`,
     };
   }
   const projectRoot = resolveProjectRoot(vaultDir);

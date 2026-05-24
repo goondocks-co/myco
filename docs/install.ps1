@@ -48,9 +48,10 @@ npm install -g $Package
 Write-Host ""
 Write-Host "Myco installed successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Next: cd into your project and run:"
+Write-Host "  The Myco daemon is starting and will detect every coding agent on your machine."
+Write-Host "  Open the dashboard to confirm setup and configure intelligence providers:"
 Write-Host ""
-Write-Host "    myco init"
+Write-Host "    myco dashboard"
 Write-Host ""
 Write-Host "  Optional operator CLIs:"
 Write-Host "    npm install -g @goondocks/myco-team        # https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md"

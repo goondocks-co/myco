@@ -235,7 +235,7 @@ export function syncTranscriptPromptBatches(
         const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
       } catch { /* lineage best-effort */ }
-      if (batch.prompt_number !== undefined) {
+      if (batch.prompt_number != null) {
         updateSession(sessionId, { prompt_count: batch.prompt_number }, ALL_PROJECTS_SCOPE);
       }
       createdBatchCount += 1;

@@ -120,14 +120,14 @@ if (override && hasLauncherProtocolSentinel(override)) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') process.exit(0);
     process.exit((err && typeof err.status === 'number') ? err.status : 1);
   }
-} else if (override) {
-  // Stub present but unsentineled → brownfield orphan. Queue the
-  // project root for walker cleanup and fall through to the global
-  // resolution chain. Best-effort: any failure (read-only ~/.myco/,
-  // disk full, etc.) is silent so the hook stays fast and capture
-  // continues to work.
-  try { queueLegacyLauncherCleanup(path.dirname(path.dirname(override))); } catch { /* best effort */ }
 }
+// An unsentineled `.agents/myco-run.cjs` is a pre-upgrade brownfield
+// stub. Refuse delegation and fall through to the global resolution
+// chain — capture still works. Cleanup happens via the migration
+// walker on daemon first-start / auto-Grove-create, or explicitly
+// through `myco doctor --fix` when the audit log shows the project
+// stuck. No queue write — failures surface in the migration audit
+// log instead.
 
 const bin = resolveBinary();
 if (!bin) {
@@ -182,18 +182,6 @@ function hasLauncherProtocolSentinel(stubPath) {
       try { fs.closeSync(fd); } catch { /* already closed */ }
     }
   } catch { return false; }
-}
-
-// Append project root to ~/.myco/intents/legacy-launcher-cleanup.txt so
-// the next walker pass cleans up the orphan project-local artifacts.
-// Best-effort, single-syscall path — duplicate lines are tolerated and
-// drained by the walker.
-function queueLegacyLauncherCleanup(projectRoot) {
-  const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
-  const intentsDir = path.join(home, 'intents');
-  try { fs.mkdirSync(intentsDir, { recursive: true }); } catch { /* exists or unwritable */ }
-  const line = path.resolve(projectRoot) + '\n';
-  fs.appendFileSync(path.join(intentsDir, 'legacy-launcher-cleanup.txt'), line);
 }
 
 function readPinFile(filePath) {

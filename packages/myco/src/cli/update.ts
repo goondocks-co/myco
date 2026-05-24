@@ -99,7 +99,9 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
     // Surface as an error rather than process.exit so --all-projects can
     // continue past a broken project and aggregate failures at the end.
-    throw new Error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
+    throw new Error(
+      `No myco.yaml found in ${vaultDir}. Run \`myco init --project ${projectRoot ?? '<path>'}\` first.`,
+    );
   }
 
   console.log(`Updating Myco vault at ${vaultDir}\n`);

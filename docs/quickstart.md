@@ -7,7 +7,7 @@ Myco is a collective agent intelligence plugin that captures session knowledge �
 - **Node.js 22+**
 - **At least one supported coding agent** — Claude Code, Cursor, Codex, VS Code Copilot, Google Antigravity, Windsurf, OpenCode, or Pi
 
-Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after init.
+Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after install.
 
 When you're ready to enable intelligence features, you'll need:
 
@@ -52,21 +52,13 @@ That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync
 
 Once Myco is installed, the per-user daemon starts automatically and walks every detected coding agent on your machine, wiring Myco's hooks, MCP entries, and skills into each one's user-global config. New project? Just start coding — Myco picks it up the first time your agent fires a hook. New agent? Install it, and Myco wires it in on the next periodic detection tick (or on demand via the dashboard's Symbionts page).
 
-You only run `myco init` manually as a recovery / refresh:
-
-```bash
-myco init
-```
-
-This is idempotent — re-running rewrites the global launchers, re-detects agents, and emits notifications for anything newly wired in. There's no per-project step, no per-worktree bootstrap.
-
-If you specifically want a project-local override (dogfood / dev pin / regulated repo with a different launcher), use `myco init --project [path]` — that writes today's `.agents/myco-run.cjs` + `.agents/myco-cli.cjs` files alongside the global launchers, and Myco's runtime prefers the project-local copy when invoked inside that project.
+If you specifically want a project-local override (dogfood / dev pin / regulated repo where the Myco wiring should be git-committed alongside the code), run `myco init --project [path]`. That writes `.agents/myco-run.cjs` + `.agents/myco-cli.cjs` files alongside the global launchers, and Myco's runtime prefers the project-local copy when invoked inside that project. For everything else, you don't need to run `init`.
 
 The Myco Agent pipeline is **off by default** after install. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section.
 
 ### Configure Providers in the Dashboard
 
-After init, the dashboard opens to the Settings page. Two cards are at the top:
+Open the dashboard to the Settings page. Two cards are at the top:
 
 - **Myco Agent** — pick Anthropic, Ollama, or LM Studio. The dropdown lists detected models. Click **Save** to enable the intelligence pipeline.
 - **Embedding** — pick Ollama or an OpenAI-compatible endpoint. Embedding models are filtered automatically.
@@ -92,7 +84,7 @@ Doctor warns (rather than errors) when provider config is absent — data-collec
 
 ## What Happens Next
 
-Once installed and initialized, Myco works automatically:
+Once installed, Myco works automatically:
 
 - **Session start**: Myco injects a digest extract and relevant spores into the conversation
 - **During the session**: Activity (prompts, tool calls, responses) is captured in the vault

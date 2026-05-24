@@ -1,19 +1,24 @@
 /**
- * Global bootstrap + symbiont detection — the shared code path the daemon's
- * first-start auto-bootstrap, the PowerManager periodic tick, the
- * version-drift handler, the on-demand UI/CLI re-detect trigger, and the
- * manual `myco init` (no flag) all invoke.
+ * Global bootstrap + symbiont detection.
  *
- * Two functions:
+ * Two functions, split by *when* migration runs:
  *
- *   - `runGlobalBootstrap()` — write the global launchers and run a
- *     detection pass. Used for greenfield first-start + the manual CLI
- *     entry point.
- *   - `runSymbiontDetection()` — walk the manifest registry, install the
- *     global Myco config into each agent whose `detectionDir` exists,
- *     emit a notification for each newly-detected symbiont. Idempotent:
- *     a symbiont already installed (settings-merge produces a no-diff
- *     write) is reported as `already-configured`.
+ *   - `runGlobalBootstrap()` — write launchers, run a detection pass,
+ *     AND walk every registered project for legacy per-project install
+ *     artifacts. Migration is fire-once-per-project: it runs at daemon
+ *     first-start and on auto-Grove-create when a fresh project
+ *     registers. Explicit retry happens via `myco doctor --fix`. This
+ *     entry MUST NOT be called on the hourly tick — re-running the
+ *     migration walker every hour normalizes failure as ongoing
+ *     operational state. Failures land in the bounded migration audit
+ *     log and surface as doctor warnings.
+ *   - `runSymbiontDetection()` — walk the manifest registry, install
+ *     the global Myco config into each agent whose `detectionDir`
+ *     exists. Idempotent: a symbiont already installed (settings-merge
+ *     produces a no-diff write) is reported as `already-configured`.
+ *     This is the detection-only entry the hourly PowerManager tick
+ *     calls — new agents installed on the machine since the last tick
+ *     are a legitimately ongoing concern.
  *
  * Both functions are deliberately side-effect-free for an absent
  * `detectionDir` — Myco NEVER creates an agent's config dir on its
@@ -117,12 +122,15 @@ export function runSymbiontDetection(
  * walker runs last (it operates on already-registered projects and
  * doesn't depend on launcher state).
  *
- * Single side-effect entry point — the CLI, the daemon's first-start
- * bootstrap, the PowerManager periodic tick, the version-drift handler,
- * and the on-demand `/api/symbionts/detect` route all invoke this same
- * function. Orchestrators are thin wrappers that route the result to
- * console / logger / notification channels; no orchestrator adds or
- * drops side effects.
+ * Migration is fire-once-per-project. Call sites:
+ *   - daemon first-start (greenfield bootstrap)
+ *   - auto-Grove-create when a fresh project registers
+ *   - explicit `myco doctor --fix` retry for previously-failed projects
+ *
+ * The hourly PowerManager tick MUST call `runSymbiontDetection()`
+ * directly (plus its own launcher refresh) rather than this function —
+ * re-running the walker every hour treats failures as retry-next-hour
+ * instead of failures to fix.
  *
  * Idempotent — a re-invocation against a populated `~/.myco/` returns
  * `launchers.written === []`, per-symbiont `'already-configured'`

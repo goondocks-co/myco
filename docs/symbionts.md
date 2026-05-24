@@ -1,16 +1,14 @@
 # Supported Agents
 
-Myco integrates with coding agents through **symbionts** — a term inspired by [mycorrhizal symbiosis](https://en.wikipedia.org/wiki/Mycorrhizal_network), the relationship between fungi and their host trees. Each symbiont installs hooks, an MCP server, skills, and permission settings into its agent's native config files. Everything is idempotent — running `myco init` or `myco update` again safely updates existing configuration.
+Myco integrates with coding agents through **symbionts** — a term inspired by [mycorrhizal symbiosis](https://en.wikipedia.org/wiki/Mycorrhizal_network), the relationship between fungi and their host trees. Each symbiont installs hooks, an MCP server, skills, and permission settings into its agent's native config files. Symbiont wiring is idempotent — Myco re-applies it safely on every detection tick.
 
 ## Quick start
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
-cd your-project
-myco init
 ```
 
-`myco init` shows all available agents and lets you choose which to configure. Detected agents are pre-checked.
+After install, the daemon detects every coding agent on your machine and wires Myco into each one's user-global config automatically. The Symbionts page in the dashboard shows current state and lets you review per-agent installation, override per-project, or trigger an immediate re-detection.
 
 ## What gets installed
 

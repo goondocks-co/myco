@@ -207,7 +207,7 @@ When adding any new user-configurable behavior, follow these steps to determine 
 
 **Step 1: Apply the tier decision rule**
 - **Machine tier**: Global daemon behavior across all groves (port, logging, global auth)
-- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, embedding configuration)  
+- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)  
 - **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
@@ -220,15 +220,16 @@ Use these established patterns as precedent:
 - Notification preferences (`notifications.*`)
 - Maintenance automation (`maintenance.auto_optimize`)
 
-*Project Settings (7 fields):* Shared team configuration affecting workflow behavior
-- Task configuration (`tasks.*`)
+*Project Settings (6 fields):* Shared team configuration affecting workflow behavior
 - Symbiont manifest (`symbionts.*`)
 - Agent operational limits (`agent.timeout`, `agent.context_window`)
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
 - Team sync enablement (`sync.enabled`)
 
-*Grove Settings (2 fields):* Multi-project coordination within a grove (NEW in PR #353)
+*Grove Settings (5 fields):* Multi-project coordination within a grove (NEW in PR #353)
 - Agent provider and model selection (`agent.provider`, `agent.model`)
+- Agent harness configuration (`agent.harness`)
+- Task configuration overlays (`agent.tasks.*`)
 - Embedding provider configuration (`embedding.provider`)
 
 *Machine Settings:* Global daemon configuration  
@@ -442,7 +443,7 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Legacy field shadowing:** When using PROJECT_TIER_LEGACY_FIELDS to silent-strip old fields, ensure the silent-strip happens BEFORE tier merging. If legacy project-tier `agent.provider` exists alongside new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's removed.
 
-**loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` now automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` if present. Pass the groveId at call time to enable grove defaults in the merged result. If groveId is not provided or is undefined, grove-tier settings are skipped.
+**loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` when groveId is provided. When groveId is not provided, it auto-resolves from `loadProjectManifest(vaultDir)` to detect the project's grove association. If groveId is undefined and the project manifest contains no grove association, grove-tier settings are skipped.
 
 ---
 

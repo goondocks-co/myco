@@ -15,7 +15,6 @@ import { createBackup, listBackups, pruneBackups } from './backup.js';
 import { resolveGroveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
-import { getDatabase } from '@myco/db/client.js';
 import { notify } from '@myco/notifications/notify.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import {
@@ -490,14 +489,20 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  // Periodic symbiont detection + project-local → global migration walk.
-  // Walks the manifest registry, installs Myco's global config into any
-  // agent whose `detectionDir` appeared since the last tick, and sweeps
-  // every registered project for legacy per-project install artifacts.
+  // Periodic symbiont detection. Walks the manifest registry and installs
+  // Myco's global config into any agent whose `detectionDir` appeared
+  // since the last tick. Also refreshes the global launchers (cheap,
+  // self-healing via the refresh-launchers intent when content drifts).
   // Throttled to a 1-hour cadence so newly-installed agents land within
   // the hour without burning ticks on a stable system. Newly-detected
-  // symbionts emit a notification; the migration walker emits a single
-  // pass-completion notification when projects actually changed.
+  // symbionts emit a notification.
+  //
+  // NB: this tick does NOT run the project-local → global migration
+  // walker. Migration is fire-once-per-project: daemon first-start
+  // sweeps every registered project, auto-Grove-create sweeps the new
+  // project, and `myco doctor --fix` retries failed projects. Re-running
+  // the walker hourly would normalize failure as ongoing operational
+  // state.
   let lastSymbiontDetectionAt = 0;
   const SYMBIONT_DETECTION_INTERVAL_MS = 60 * 60 * 1000;
   powerManager.register({
@@ -508,14 +513,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
       lastSymbiontDetectionAt = now;
       try {
-        // Single side-effect entry point — runGlobalBootstrap writes
-        // launchers, runs detection, AND walks projects for legacy
-        // artifacts. This tick is just an orchestrator over channels
-        // (notify + log) — the WHAT lives in cli/bootstrap.ts.
-        const { runGlobalBootstrap } = await import('../cli/bootstrap.js');
-        const { recordMigrationPass } = await import('../db/queries/migration-log.js');
-        const result = runGlobalBootstrap();
-        const newlyInstalled = result.symbionts.filter((r) => r.status === 'installed');
+        const { runSymbiontDetection } = await import('../cli/bootstrap.js');
+        const { installGlobalLaunchers } = await import('../grove/launcher-install.js');
+        installGlobalLaunchers();
+        const symbionts = runSymbiontDetection();
+        const newlyInstalled = symbionts.filter((r) => r.status === 'installed');
         if (newlyInstalled.length > 0) {
           logger.info(LOG_KINDS.DAEMON_START, 'Symbiont detection wired in new agent(s)', {
             installed: newlyInstalled.map((r) => r.symbiont),
@@ -529,28 +531,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
             );
           }
         }
-        for (const r of result.symbionts.filter((s) => s.status === 'error')) {
+        for (const r of symbionts.filter((s) => s.status === 'error')) {
           logger.warn(LOG_KINDS.DAEMON_START, 'Symbiont detection install failed', {
             symbiont: r.symbiont, error: r.error,
           });
-        }
-        recordMigrationPass(getDatabase(), result.migration);
-        if (result.migration.projectsCleaned > 0 || result.migration.projectsErrored > 0) {
-          notifyDaemon(
-            'daemon.migration_pass',
-            result.migration.projectsErrored > 0
-              ? `Migrated ${result.migration.projectsCleaned} project(s); ${result.migration.projectsErrored} failed`
-              : `Migrated ${result.migration.projectsCleaned} project(s) to global install`,
-            result.migration.projectsErrored > 0
-              ? 'See myco doctor for the per-project error details.'
-              : 'Legacy per-project install files removed; global launchers in place.',
-            {
-              pass_id: result.migration.passId,
-              projects_visited: result.migration.projectsVisited,
-              projects_cleaned: result.migration.projectsCleaned,
-              projects_errored: result.migration.projectsErrored,
-            },
-          );
         }
       } catch (err) {
         logger.error(LOG_KINDS.DAEMON_START, 'Symbiont detection tick failed', {

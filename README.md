@@ -27,9 +27,9 @@ Open the dashboard to verify your setup and configure intelligence providers:
 myco dashboard
 ```
 
-That's it — Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically. No `myco init` per project; no per-worktree bootstrap. New project? Just start coding — Myco picks it up the first time your agent fires a hook. Data capture starts immediately, intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, VS Code Copilot, Antigravity, Windsurf, OpenCode, and Pi.
+That's it — Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically. No per-project setup; no per-worktree bootstrap. New project? Just start coding — Myco picks it up the first time your agent fires a hook. Data capture starts immediately, intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, VS Code Copilot, Antigravity, Windsurf, OpenCode, and Pi.
 
-Run `myco init` only as a recovery / refresh — it's idempotent. For a deliberate project-local override (dogfood / regulated repo), use `myco init --project [path]`.
+For a deliberate project-local override (dogfood / regulated repo where Myco wiring should live in the repo), run `myco init --project [path]`.
 
 ## Upgrade path
 
@@ -119,7 +119,7 @@ A local web dashboard provides configuration and operations management. Manage i
 
 ### Symbionts
 
-Myco integrates with coding agents through **symbionts** — named for the mycorrhizal symbiotic relationship between fungi and their host trees. `myco init` detects available agents and lets you choose which to configure. Registration is project-local — hooks, MCP servers, skills, and auto-approve settings are written directly to each agent's config files.
+Myco integrates with coding agents through **symbionts** — named for the mycorrhizal symbiotic relationship between fungi and their host trees. The daemon detects every agent on your machine and wires each one into its user-global config automatically — hooks, MCP servers, skills, and auto-approve settings. Use the dashboard's Symbionts page to see current state or override per-project.
 
 | Agent | Hooks | MCP | Skills | Auto-Approve | Plans |
 |-------|-------|-----|--------|-------------|-------|

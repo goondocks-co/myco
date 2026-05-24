@@ -40,7 +40,7 @@ import { serviceVariantToDirName } from '../service/labels.js';
  *
  * Throws if neither path yields a vault dir (no enclosing project AND no
  * Grove with at least one registered project). The error message instructs
- * the user to run `myco init` from a project directory.
+ * the user to run `myco init --project <path>` from a project directory.
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
   const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
@@ -52,7 +52,7 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
     if (fromRegistry) return fromRegistry;
     throw new Error(
       `Daemon bootstrap failed (variant="${variant}"): no projects registered in a Grove served_by="${variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME}". `
-      + `Run \`myco init\` from a project directory first.`,
+      + `Run \`myco init --project <path>\` from a project directory first.`,
     );
   }
 
@@ -64,7 +64,7 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
 
   throw new Error(
     `Daemon bootstrap failed: no enclosing project at ${cwdVault}, and no projects registered in the default Grove (served_by="${SERVICE_DIRNAME}"). `
-    + `Run \`myco init\` from a project directory first.`,
+    + `Run \`myco init --project <path>\` from a project directory first.`,
   );
 }
 

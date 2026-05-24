@@ -11,7 +11,7 @@ activateDevBuildModeIfDetected();
 const USAGE = `Usage: myco <command> [args]
 
 Commands:
-  init [options]           Initialize a new vault
+  init --project <path>    Opt a project in to git-committed Myco config
   grove <subcommand>       Manage local Groves
   backup <subcommand>      Snapshot and restore a project's Grove data
   update                   Update vault files and agent registration
@@ -39,7 +39,26 @@ Commands:
   daemon                   Start the daemon for the current project
 `;
 
+// init USAGE is duplicated here because cli.ts intercepts `--help`
+// before dispatching to init.ts; keep this string in sync with
+// cli/init.ts's USAGE constant.
 const COMMAND_HELP: Record<string, string> = {
+  init: `Usage: myco init --project <path> [options]
+
+Sets up per-project git-committed Myco config. Optional — Myco runs globally
+by default and the daemon wires every detected agent automatically. Use this
+when you want a project's Myco wiring versioned in the repo (regulated
+environments, onboarding contributors, etc.).
+
+Options:
+  --project <path>                 Project root (required)
+  --grove <name|id>                Grove to bind this project to
+  --non-interactive                Run without prompts
+  --embedding-provider <provider>  Embedding provider for new vaults
+  --embedding-model <model>        Embedding model for new vaults
+  --embedding-url <url>            Embedding base URL for new vaults
+  -h, --help                       Show this help
+`,
   agent: `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
 
 Options:
@@ -131,7 +150,9 @@ async function main(): Promise<void> {
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
+    console.error(
+      `No myco.yaml found in ${vaultDir}. Run \`myco init --project <path>\` to opt this project in.`,
+    );
     process.exit(1);
   }
 

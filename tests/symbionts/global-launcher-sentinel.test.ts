@@ -14,8 +14,10 @@ import os from 'node:os';
  *   - sentineled: a current-template stub (dogfood, `myco init --project`).
  *     The launcher delegates, preserving the dev pin / opt-in path.
  *   - unsentineled: a pre-upgrade brownfield leftover. The launcher
- *     refuses to delegate AND queues the project for walker cleanup by
- *     appending its root to `~/.myco/intents/legacy-launcher-cleanup.txt`.
+ *     refuses to delegate and falls through to the global resolution
+ *     chain. Cleanup happens through the migration walker on daemon
+ *     first-start / auto-Grove-create, or explicitly via `myco doctor
+ *     --fix`.
  *
  * Without this discrimination, post-upgrade first-hook-fire silently
  * routes through a stale stub and capture diverges from the new payload
@@ -91,10 +93,6 @@ function runLauncher(fix: Fixture, ...args: string[]): { stdout: string; status:
   }
 }
 
-function intentPath(fix: Fixture): string {
-  return path.join(fix.mycoHome, 'intents', 'legacy-launcher-cleanup.txt');
-}
-
 let fix: Fixture;
 beforeEach(() => { fix = makeFixture(); });
 afterEach(() => { fs.rmSync(fix.tmpRoot, { recursive: true, force: true }); });
@@ -112,11 +110,9 @@ console.log('OVERRIDE:' + process.argv.slice(2).join(' '));
     const { stdout, status } = runLauncher(fix, 'hook', 'session-start');
     expect(status).toBe(0);
     expect(stdout.trim()).toBe('OVERRIDE:hook session-start');
-    // No cleanup queued — sentinel was honored.
-    expect(fs.existsSync(intentPath(fix))).toBe(false);
   });
 
-  it('refuses to delegate when sentinel is missing, runs global flow, queues cleanup', () => {
+  it('refuses to delegate when sentinel is missing and falls through to the global flow', () => {
     writeStub(
       fix.projectRoot,
       `#!/usr/bin/env node
@@ -127,36 +123,11 @@ console.log('SHOULD-NOT-RUN');
 
     const { stdout, status } = runLauncher(fix, 'hook', 'session-start');
     expect(status).toBe(0);
-    // Fell through to the global runtime.command pin.
+    // Fell through to the global runtime.command pin — capture stays
+    // online while the migration walker cleans the legacy stub on its
+    // next pass (or via `myco doctor --fix`).
     expect(stdout.trim()).toBe('GLOBAL:hook session-start');
-    // Project root queued for cleanup.
-    const queued = fs.readFileSync(intentPath(fix), 'utf-8').trim().split('\n');
-    expect(queued).toEqual([fs.realpathSync(fix.projectRoot)]);
-  });
-
-  it('appends, not overwrites, when launcher fires multiple times from different projects', () => {
-    writeStub(fix.projectRoot, `#!/usr/bin/env node\n// no sentinel\n`);
-    runLauncher(fix, 'hook', 'session-start');
-
-    // Second project, same MYCO_HOME, separate hook fire.
-    const second = path.join(fix.tmpRoot, 'second-project');
-    fs.mkdirSync(path.join(second, '.agents'), { recursive: true });
-    fs.writeFileSync(path.join(second, '.agents', 'myco-run.cjs'), `#!/usr/bin/env node\n// no sentinel\n`);
-    execFileSync(process.execPath, [fix.launcherCopy, 'hook', 'stop'], {
-      cwd: second,
-      env: {
-        ...process.env,
-        MYCO_HOME: fix.mycoHome,
-        CURSOR_PROJECT_DIR: '',
-        CLAUDE_PROJECT_DIR: '',
-        WINDSURF_PROJECT_DIR: '',
-        MYCO_PROJECT_ROOT: '',
-        MYCO_AGENT_SESSION: '',
-      },
-    });
-
-    const queued = fs.readFileSync(intentPath(fix), 'utf-8').trim().split('\n');
-    expect(queued).toContain(fs.realpathSync(fix.projectRoot));
-    expect(queued).toContain(fs.realpathSync(second));
+    // No queue file is written — the legacy intent queue is retired.
+    expect(fs.existsSync(path.join(fix.mycoHome, 'intents', 'legacy-launcher-cleanup.txt'))).toBe(false);
   });
 });

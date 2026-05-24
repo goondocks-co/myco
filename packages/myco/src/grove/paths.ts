@@ -265,37 +265,6 @@ export function resolveMachineRuntimeDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_DIRNAME);
 }
 
-/**
- * `~/.myco/intents/legacy-launcher-cleanup.txt` — append-only queue of
- * project roots the global launcher discovered carrying a pre-upgrade
- * `.agents/myco-run.cjs` stub (no `MYCO_LAUNCHER_PROTOCOL=v2` sentinel)
- * but which the registry hasn't seen yet.
- *
- * Brownfield projects sit on disk with legacy launcher artifacts but
- * never reach the migration walker, because the walker only iterates
- * registered projects and registration is lazy — it happens on the
- * first hook fire under the new global launcher. The launcher writes
- * to this file the moment it refuses to delegate to an orphan stub, so
- * the next walker pass (next `myco init`, periodic detection tick, or
- * version-drift refresh) can clean the project up by absolute path.
- *
- * Newline-separated, one project root per line. Dedup happens at drain
- * time, not append time, so the launcher's append path stays a single
- * syscall — important because the launcher runs on every hook fire and
- * keeping it cheap is the only reason capture stays responsive.
- */
-export const LEGACY_LAUNCHER_CLEANUP_INTENT_FILENAME = 'legacy-launcher-cleanup.txt';
-export const INTENTS_DIRNAME = 'intents';
-
-export function resolveIntentsDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, INTENTS_DIRNAME);
-}
-
-export function resolveLegacyLauncherCleanupIntentPath(
-  mycoHome = resolveMycoHome(),
-): string {
-  return path.join(resolveIntentsDir(mycoHome), LEGACY_LAUNCHER_CLEANUP_INTENT_FILENAME);
-}
 
 /** `~/.myco/runtime.tmp/` — staging dir for atomic runtime swap on update. */
 export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): string {

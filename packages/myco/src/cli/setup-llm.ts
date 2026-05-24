@@ -24,7 +24,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   if (args.includes('--show')) {
     const showGroveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
     if (!showGroveId) {
-      console.error('Error: project is not bound to a Grove. Run `myco init` first.');
+      console.error('Error: project is not bound to a Grove. Run `myco init --project <path>` to opt this project in.');
       return;
     }
     const showGroveConfig = loadGroveConfig(showGroveId);
@@ -62,7 +62,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
   if (!groveId) {
-    console.error('Error: project is not bound to a Grove. Run `myco init` first.');
+    console.error('Error: project is not bound to a Grove. Run `myco init --project <path>` to opt this project in.');
     return;
   }
 

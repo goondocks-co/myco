@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runGlobalBootstrap, runSymbiontDetection } from '@myco/cli/bootstrap.js';
+import { createGrove, registerProjectInGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -113,5 +114,43 @@ describe('runSymbiontDetection', () => {
     expect(names.has('codex')).toBe(true);
     expect(names.has('antigravity')).toBe(true);
     for (const r of results) expect(['installed', 'already-configured', 'not-detected', 'error']).toContain(r.status);
+  });
+
+  // Migration is fire-once-per-project (first-start + auto-Grove-create
+  // + explicit `myco doctor --fix`). Running it on every PowerManager
+  // tick would normalize failure as ongoing operational state. Lock the
+  // boundary by seeding a registered project with a legacy
+  // project-local launcher and asserting `runSymbiontDetection()`
+  // leaves it intact.
+  it('does not invoke the migration walker — legacy project-local launchers survive a detection pass', () => {
+    clearGroveRegistryCaches();
+    const prevServiceDevMode = process.env.MYCO_SERVICE_DEV_MODE;
+    process.env.MYCO_SERVICE_DEV_MODE = '1';
+    try {
+      const grove = createGrove('default', path.join(tmpHome, '.myco'), { servedBy: 'service-dev' });
+      const projectRoot = fs.mkdtempSync(path.join(tmpHome, 'legacy-proj-'));
+      fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });
+      const legacyLauncher = path.join(projectRoot, '.agents', 'myco-run.cjs');
+      fs.writeFileSync(legacyLauncher, '// legacy stub\n', 'utf-8');
+      fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectRoot, '.myco', 'myco.yaml'),
+        `version: 3\nconfig_version: 9\n`,
+        'utf-8',
+      );
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_legacy_detection',
+        projectName: 'legacy-detection-fixture',
+        projectRoot,
+      }, path.join(tmpHome, '.myco'));
+
+      runSymbiontDetection(PKG_ROOT);
+
+      expect(fs.existsSync(legacyLauncher)).toBe(true);
+    } finally {
+      if (prevServiceDevMode === undefined) delete process.env.MYCO_SERVICE_DEV_MODE;
+      else process.env.MYCO_SERVICE_DEV_MODE = prevServiceDevMode;
+      clearGroveRegistryCaches();
+    }
   });
 });

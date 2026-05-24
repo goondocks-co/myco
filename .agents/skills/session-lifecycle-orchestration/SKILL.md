@@ -1,7 +1,6 @@
 ---
 name: myco:session-lifecycle-orchestration
-description: |
-  Comprehensive procedures for managing Myco session lifecycle from creation through intelligence processing and agent runtime orchestration. Covers session initialization with project scoping, hook transport and capture coordination, agent harness abstraction and pluggable runtime systems, status transitions and lifecycle management, and runtime boundary validation with error classification. Use this skill when creating new sessions, coordinating agent execution, managing session state transitions, debugging runtime issues, or implementing new agent types, even if the user doesn't explicitly ask for session lifecycle management.
+description: Comprehensive procedures for managing Myco session lifecycle from creation through intelligence processing and agent runtime orchestration. Covers session initialization with project scoping, hook transport and capture coordination, agent harness abstraction and pluggable runtime systems, status transitions and lifecycle management, and runtime boundary validation with error classification. Use this skill when creating new sessions, coordinating agent execution, managing session state transitions, debugging runtime issues, or implementing new agent types, even if the user doesn't explicitly ask for session lifecycle management.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -107,6 +106,30 @@ This skill covers the complete operational domain of session management and agen
 3. **Runtime boundary establishment**: Set up agent execution boundaries during daemon startup
 4. **Health check coordination**: Verify all runtime components are operational
 
+### Cortex Delegation and Instructions Chain
+
+The lead (top-level agent orchestrator) must establish a Cortex instructions context before delegating work to sub-agents. This prevents inconsistent or divergent behavior across the delegation hierarchy.
+
+1. **Instructions acquisition**: Lead agent calls `myco_cortex({op:"instructions"})` to fetch current task instructions and constraints
+   - Must happen BEFORE any agent delegation to sub-agents
+   - Ensures all delegates inherit consistent task scope and rules
+   - Failure to call leaves sub-agents without explicit task context
+   
+2. **Context propagation**: Pass acquired instructions through delegation chain
+   - Include Cortex instructions in agent initialization context
+   - Sub-agents validate they received explicit instructions before proceeding
+   - Prevents sub-agents from inferring task scope from implicit cues
+   
+3. **Consistency validation**: Verify all delegates are operating under same instruction set
+   - Compare instruction hash/version across delegation boundaries
+   - Detect and remediate divergent task interpretations
+   - Log instruction propagation for audit trail
+   
+4. **Remediation on missing context**: If delegation proceeds without instructions
+   - Sub-agent must fail-fast rather than proceeding with inferred scope
+   - Lead receives error indicating missing instructions context
+   - Session is paused pending explicit context establishment
+
 ## Procedure D: Session Status Transitions and Lifecycle Management
 
 ### Refined Status Progression Model
@@ -203,6 +226,12 @@ Intelligence processing tasks must gate on session-terminal state to prevent pro
 - Never assume session data is immutable - agents can modify sessions during CAPTURING phase
 - Use database transactions for multi-step status changes to ensure atomicity
 - The refined CAPTURING → PROCESSING → COMPLETE model prevents intelligence tasks from processing incomplete sessions
+
+### Cortex Instructions Requirement
+- Lead agent MUST call `myco_cortex({op:"instructions"})` before delegating to sub-agents - this is not optional
+- Delegation without instructions context causes sub-agents to operate with inconsistent or missing task scope
+- Instructions context is not inherited implicitly - explicit propagation through delegation chain is required
+- Missing instructions should trigger fail-fast behavior, not silent scope divergence
 
 ### Cross-Platform Hook Deployment
 - The `.agents/myco-run.cjs` guard handles OSS contributor safety across platforms

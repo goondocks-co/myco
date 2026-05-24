@@ -46,7 +46,7 @@ Everything Myco captures lives in your project's `.myco/` directory:
 | `buffer/` | Per-session event buffers (ephemeral) |
 | `tasks/` | User-defined agent task YAMLs (optional) |
 
-`myco.db` and `vectors.db` should be **not** committed to git — they're local state that rebuilds from session captures. Myco's own `.gitignore` entries are added automatically by `myco init`.
+`myco.db` and `vectors.db` should be **not** committed to git — they're local state that rebuilds from session captures. Myco manages its own `.gitignore` entries automatically.
 
 ## Context injection
 

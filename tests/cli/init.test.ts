@@ -93,8 +93,23 @@ describe('myco init', () => {
     stdoutSpy.mockRestore();
   });
 
+  it('bare `myco init` prints the explainer and does not create a vault', async () => {
+    // Global install is the default — bare init is no longer a setup
+    // command. It must exit cleanly without touching the filesystem.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await run([]);
+
+    expect(fs.existsSync(vault)).toBe(false);
+    expect(openDatabase).not.toHaveBeenCalled();
+    const printed = consoleSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(printed).toContain('myco doctor');
+    expect(printed).toContain('myco init --project');
+    consoleSpy.mockRestore();
+  });
+
   it('creates vault with config and gitignore', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(vault, 'project.toml'))).toBe(true);
@@ -102,7 +117,7 @@ describe('myco init', () => {
   });
 
   it('does not create a legacy vault-local myco.db', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     // Post-Grove projects route DB access through the Grove DB at
     // ~/.myco/groves/<id>/myco.db. A vault-local myco.db at .myco/myco.db
@@ -117,7 +132,7 @@ describe('myco init', () => {
   });
 
   it('initializes the Grove database under the global Myco home', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const groveDbCall = vi.mocked(openDatabase).mock.calls.find(([dbPath]) =>
       typeof dbPath === 'string' && dbPath.includes(`${path.sep}groves${path.sep}`),
@@ -128,7 +143,7 @@ describe('myco init', () => {
   });
 
   it('creates all required subdirectories', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const dirs = ['buffer', 'attachments', 'logs', 'migration', 'tasks'];
     for (const dir of dirs) {
@@ -137,7 +152,7 @@ describe('myco init', () => {
   });
 
   it('writes project manifest and registers into the default Grove', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const manifest = parseToml(fs.readFileSync(path.join(vault, 'project.toml'), 'utf-8')) as Record<string, any>;
     expect(manifest.project.id).toStartWith('proj_');
@@ -210,7 +225,7 @@ describe('myco init', () => {
       bindingId: 'gbind_bound',
     }, home);
 
-    await expect(run(['--grove', 'other', '--non-interactive']))
+    await expect(run(['--project', testDir, '--grove', 'other', '--non-interactive']))
       .rejects.toThrow(/belongs to Grove Work/);
 
     expect(initDatabase).not.toHaveBeenCalled();
@@ -218,8 +233,10 @@ describe('myco init', () => {
 
   it('writes valid v3 config with explicit values', async () => {
     await run([
+      '--project', testDir,
       '--embedding-provider', 'ollama',
       '--embedding-model', 'bge-m3',
+      '--non-interactive',
     ]);
 
     const yaml = fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8');
@@ -235,7 +252,12 @@ describe('myco init', () => {
   });
 
   it('uses correct base_url when explicitly passed', async () => {
-    await run(['--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
+    await run([
+      '--project', testDir,
+      '--embedding-model', 'bge-m3',
+      '--embedding-url', 'http://localhost:11434',
+      '--non-interactive',
+    ]);
 
     const groveId = loadProjectManifest(vault)?.grove?.id;
     expect(groveId).toBeDefined();
@@ -244,7 +266,7 @@ describe('myco init', () => {
   });
 
   it('is idempotent — does not overwrite user-set values on re-init', async () => {
-    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const groveId = loadProjectManifest(vault)?.grove?.id;
     expect(groveId).toBeDefined();
@@ -255,7 +277,7 @@ describe('myco init', () => {
     // user's stored choice — the idempotency guard at `hasEmbeddingFlags &&
     // !alreadyInitialized` prevents it.
     const consoleSpy = vi.spyOn(console, 'log');
-    await run(['--embedding-model', 'other', '--non-interactive']);
+    await run(['--project', testDir, '--embedding-model', 'other', '--non-interactive']);
 
     const afterModel = loadGroveConfig(groveId!).embedding.model;
     expect(afterModel).toBe('bge-m3');
@@ -263,7 +285,7 @@ describe('myco init', () => {
   });
 
   it('writes .gitignore excluding runtime artifacts', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const gitignore = fs.readFileSync(path.join(vault, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('myco.db');
@@ -281,7 +303,7 @@ describe('myco init', () => {
   });
 
   it('initializes plan_dirs as empty array (agent-specific dirs come from symbiont manifests)', async () => {
-    await run(['--embedding-model', 'bge-m3']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.capture.plan_dirs).toEqual([]);
@@ -298,13 +320,91 @@ describe('myco init', () => {
       { manifest: vi.mocked(loadManifests)()[0], binaryFound: true, configDirFound: false },
     ]);
 
-    // --non-interactive so init doesn't open the inquirer checkbox when
-    // stdin is a TTY (which it is on some dev terminals even under
-    // `bun test`). Without it, init hangs waiting for the prompt.
-    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
+    await run(['--project', testDir, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.symbionts).toBeDefined();
     expect(config.symbionts['claude-code']).toEqual({ enabled: true });
+  });
+
+  it('`--project` writes the full artifact set and `remove` clears it', async () => {
+    // Project-local install is the deliberate per-project opt-in (regulated
+    // repos, contributor onboarding). The bare `myco init` (no flag) runs
+    // the global bootstrap and is being retired; this test pins the artifact
+    // contract that `--project` must continue to honor.
+
+    const { loadManifests, detectSymbionts, resolvePackageRoot } = await import('@myco/symbionts/detect.js');
+    const { SymbiontManifestSchema } = await import('@myco/symbionts/manifest-schema.js');
+    const { SymbiontInstaller, removeProjectLaunchers } = await import('@myco/symbionts/installer.js');
+
+    // Load the real claude-code manifest from disk so the installer sees a
+    // full `registration` block (hooksTarget, mcpTarget, settingsTarget,
+    // instructionsFile). Using a hand-rolled minimal manifest would skip
+    // every artifact this test is asserting on.
+    const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
+    const manifestYaml = fs.readFileSync(
+      path.join(PKG_ROOT, 'src', 'symbionts', 'manifests', 'claude-code.yaml'),
+      'utf-8',
+    );
+    const claudeManifest = SymbiontManifestSchema.parse(YAML.parse(manifestYaml));
+
+    vi.mocked(loadManifests).mockReturnValue([claudeManifest]);
+    vi.mocked(detectSymbionts).mockReturnValue([
+      { manifest: claudeManifest, binaryFound: true, configDirFound: true },
+    ]);
+    vi.mocked(resolvePackageRoot).mockReturnValue(PKG_ROOT);
+
+    // Create the project root + the agent's configDir so the installer's
+    // detection gate (isAvailableForScope under 'project' scope) passes.
+    const target = path.join(testDir, 'project-install');
+    fs.mkdirSync(path.join(target, '.claude'), { recursive: true });
+    // Re-point the vault-dir resolver at the per-project vault so init's
+    // pre-existing config check (and any project-manifest reads downstream)
+    // hit the right tree.
+    const targetVault = path.join(target, '.myco');
+    vi.mocked(resolveVaultDir).mockReturnValue(targetVault);
+
+    await run(['--project', target, '--embedding-model', 'bge-m3', '--non-interactive']);
+
+    // --- Vault + project-content artifacts ---
+    expect(fs.existsSync(path.join(targetVault, 'myco.yaml'))).toBe(true);
+    expect(fs.existsSync(path.join(targetVault, '.gitignore'))).toBe(true);
+    expect(fs.existsSync(path.join(target, 'AGENTS.md'))).toBe(true);
+    expect(fs.existsSync(path.join(target, 'CLAUDE.md'))).toBe(true);
+
+    // --- Project-local launchers (the project-scope hook guard pair) ---
+    expect(fs.existsSync(path.join(target, '.agents', 'myco-run.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(target, '.agents', 'myco-cli.cjs'))).toBe(true);
+
+    // --- Per-agent project-local config files for claude-code ---
+    const settingsPath = path.join(target, '.claude', 'settings.json');
+    expect(fs.existsSync(settingsPath)).toBe(true);
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    expect(settings.hooks).toBeDefined();
+    expect(fs.existsSync(path.join(target, '.mcp.json'))).toBe(true);
+
+    // --- Symbionts block in myco.yaml lists every detected symbiont enabled ---
+    const config = YAML.parse(fs.readFileSync(path.join(targetVault, 'myco.yaml'), 'utf-8'));
+    expect(config.symbionts).toBeDefined();
+    expect(config.symbionts['claude-code']).toEqual({ enabled: true });
+
+    // --- Negative-assert: `--project` install must NOT pin the dev binary.
+    // `.myco/runtime.command` is written only by `make dev-link` (and the
+    // beta-channel installer) so the binary pin stays narrow.
+    expect(fs.existsSync(path.join(targetVault, 'runtime.command'))).toBe(false);
+
+    // --- Inverse: per-project teardown matches `runProjectRemove`. ---
+    const installer = new SymbiontInstaller(claudeManifest, target, PKG_ROOT);
+    installer.uninstall();
+    removeProjectLaunchers(target, { legacy: true, active: true, runtimeCommand: true });
+
+    expect(fs.existsSync(path.join(target, '.agents', 'myco-run.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(target, '.agents', 'myco-cli.cjs'))).toBe(false);
+    // settings.json may persist (other content); Myco's hook block must be gone.
+    if (fs.existsSync(settingsPath)) {
+      const afterSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      const hookJson = JSON.stringify(afterSettings.hooks ?? {});
+      expect(hookJson).not.toContain('myco');
+    }
   });
 });

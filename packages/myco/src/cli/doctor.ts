@@ -74,7 +74,7 @@ async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
   if (!fs.existsSync(databasePath)) {
     const hint = usingGrove
       ? `Grove DB not found at ${databasePath}`
-      : `${DB_FILENAME} not found — run \`myco init\``;
+      : `${DB_FILENAME} not found — start the Myco daemon to initialize it (\`myco service start\`)`;
     return { name: 'Database', status: 'fail', detail: hint, fixable: false };
   }
   try {
@@ -98,7 +98,7 @@ async function checkIntelligence(config: import('../config/schema.js').MycoConfi
     const provider = config.agent.provider;
 
     if (!provider) {
-      return { name: 'Intelligence', status: 'warn', detail: 'No agent provider configured — run `myco init` to set up', fixable: false };
+      return { name: 'Intelligence', status: 'warn', detail: 'No agent provider configured — open the Myco dashboard and configure under Settings', fixable: false };
     }
 
     const label = `${provider.type}${provider.model ? ` / ${provider.model}` : ''}`;
@@ -422,7 +422,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());
   checks.push(...await checkSymbiontEdgeCases());
-  checks.push(await checkMigrationStatus(vaultDir));
+  checks.push(...await checkMigrationStatus(vaultDir));
 
   return checks;
 }
@@ -432,7 +432,9 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
  * `~/.myco/mcp-launcher.cjs` exist and are non-empty. Their absence is
  * the signal that drives the daemon's first-start auto-bootstrap; once
  * the daemon has come up at least once they must be present, so a
- * missing launcher here is a real failure mode (recover via `myco init`).
+ * missing launcher here is a real failure mode (recover by restarting
+ * the daemon, which re-runs the first-start bootstrap and rewrites the
+ * launchers).
  */
 async function checkGlobalLaunchers(): Promise<DoctorCheck> {
   const { resolveMycoHome } = await import('../grove/paths.js');
@@ -447,7 +449,7 @@ async function checkGlobalLaunchers(): Promise<DoctorCheck> {
   return {
     name: 'Launchers',
     status: 'fail',
-    detail: 'Global launchers missing. Run `myco init` to re-write them.',
+    detail: 'Global launchers missing. Restart the daemon (`myco restart`) to re-write them.',
     fixable: false,
   };
 }
@@ -521,7 +523,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
       }
     }
     if (commands.some((cmd) => /cd\s+"\$\{[A-Z_]+:-\.\}"\s*&&/.test(cmd))) {
-      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Run \`myco init\` to rewrite.`);
+      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Run \`myco doctor --fix\` to rewrite.`);
     }
   } catch { /* file absent or malformed */ }
 
@@ -537,7 +539,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
       }
     }
     if (missing.length > 0) {
-      emit('fail', `Claude hook groups missing \`matcher\` field (Cursor cross-parser rejects whole file): ${missing.join(', ')}. Run \`myco init\` to rewrite.`);
+      emit('fail', `Claude hook groups missing \`matcher\` field (Cursor cross-parser rejects whole file): ${missing.join(', ')}. Run \`myco doctor --fix\` to rewrite.`);
     }
   } catch { /* missing or malformed — checkAgents covers parse failure */ }
 
@@ -546,7 +548,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   try {
     const raw = fs.readFileSync(codexConfig, 'utf-8').trim();
     if (raw.startsWith('{')) {
-      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Run \`myco init\` to rewrite.`);
+      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Run \`myco doctor --fix\` to rewrite.`);
     }
   } catch { /* absent — fine */ }
 
@@ -571,29 +573,6 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
     }
   } catch { /* registry unavailable — silent */ }
 
-  // 5. brownfield orphans queued by the global launcher. When the
-  // launcher walks up from a hook fire and finds a `.agents/myco-run.cjs`
-  // stub without the `MYCO_LAUNCHER_PROTOCOL=v2` sentinel, it appends the
-  // project root to `~/.myco/intents/legacy-launcher-cleanup.txt`. The
-  // next walker pass drains the file and cleans them up. Until that
-  // pass runs (e.g., the daemon is offline, or the user wants visibility
-  // before `myco init`), surface the queue here so users see what's
-  // waiting.
-  try {
-    const { resolveLegacyLauncherCleanupIntentPath } = await import('../grove/paths.js');
-    const intentPath = resolveLegacyLauncherCleanupIntentPath();
-    const raw = fs.readFileSync(intentPath, 'utf-8');
-    const queued = Array.from(new Set(
-      raw.split('\n').map((s) => s.trim()).filter(Boolean),
-    ));
-    if (queued.length > 0) {
-      emit(
-        'warn',
-        `Brownfield projects queued for launcher cleanup (legacy \`.agents/myco-run.cjs\`): ${queued.join(', ')}. Run \`myco init\` to drain the queue and clean up.`,
-      );
-    }
-  } catch { /* file absent or unreadable — steady state */ }
-
   if (checks.length === 0) {
     checks.push({ name: 'Edge cases', status: 'ok', detail: 'No known broken-edge states detected.', fixable: false });
   }
@@ -601,45 +580,85 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
 }
 
 /**
- * Migration walker status. Reports the last pass's summary plus any
- * per-project errors retained in the bounded audit log.
+ * Migration walker status. Migration is fire-once-per-project; failures
+ * persist in the bounded audit log until either (a) a successful retry
+ * via `myco doctor --fix` clears them, or (b) the project is
+ * unregistered. Emits one per-project warning per unresolved error so
+ * the user can see exactly which root needs attention.
+ *
+ * Returns an array — the caller spreads into the doctor check list.
  */
-async function checkMigrationStatus(vaultDir: string): Promise<DoctorCheck> {
+export async function checkMigrationStatus(vaultDir: string): Promise<DoctorCheck[]> {
+  const { getDatabase, initDatabase, closeDatabase } = await import('../db/client.js');
+  const { latestMigrationSummary, listMigrationErrors } = await import('../db/queries/migration-log.js');
+  // Prefer an already-initialized DB connection (test harness via
+  // `withDatabase`). Fall back to opening the daemon's DB by path when
+  // the CLI is invoked cold and no connection is registered.
+  let db: ReturnType<typeof getDatabase>;
+  let openedHere = false;
   try {
-    const { getDatabase } = await import('../db/client.js');
-    const { latestMigrationSummary, listMigrationErrors } = await import('../db/queries/migration-log.js');
-    const db = getDatabase();
+    db = getDatabase();
+  } catch {
+    const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
+    let databasePath: string;
+    try {
+      ({ databasePath } = resolveDaemonDataPaths(vaultDir));
+    } catch {
+      return [{ name: 'Migration', status: 'ok', detail: 'No migration walker passes yet (greenfield install).', fixable: false }];
+    }
+    if (!fs.existsSync(databasePath)) {
+      return [{ name: 'Migration', status: 'ok', detail: 'No migration walker passes yet (greenfield install).', fixable: false }];
+    }
+    db = initDatabase(databasePath);
+    openedHere = true;
+  }
+  try {
     const summary = latestMigrationSummary(db);
     const errors = listMigrationErrors(db);
+    if (openedHere) closeDatabase();
     if (!summary && errors.length === 0) {
-      return { name: 'Migration', status: 'ok', detail: 'No migration walker passes yet (greenfield install).', fixable: false };
+      return [{ name: 'Migration', status: 'ok', detail: 'No migration walker passes yet (greenfield install).', fixable: false }];
     }
     if (errors.length > 0) {
-      const names = errors.map((e) => e.affected_project_id ?? '<unknown>').join(', ');
-      return {
-        name: 'Migration',
-        status: 'fail',
-        detail: `${errors.length} project(s) with migration errors: ${names}`,
-        fixable: false,
-      };
+      const out: DoctorCheck[] = [];
+      let isFirst = true;
+      for (const row of errors) {
+        const root = row.project_root ?? row.affected_project_id ?? '<unknown>';
+        let message = 'Unknown error.';
+        try {
+          const parsed = JSON.parse(row.details) as { error?: string };
+          if (typeof parsed.error === 'string' && parsed.error.trim().length > 0) {
+            message = parsed.error;
+          }
+        } catch { /* malformed row — fall through with default message */ }
+        out.push({
+          name: isFirst ? 'Migration' : '',
+          status: 'warn',
+          detail: `Migration failed for project ${root}: ${message}. Retry with \`myco doctor --fix\`.`,
+          fixable: true,
+        });
+        isFirst = false;
+      }
+      return out;
     }
     if (summary) {
       const details = JSON.parse(summary.details) as { projects_visited: number; projects_cleaned: number };
-      return {
+      return [{
         name: 'Migration',
         status: 'ok',
         detail: `Last pass cleaned ${details.projects_cleaned}/${details.projects_visited} project(s).`,
         fixable: false,
-      };
+      }];
     }
-    return { name: 'Migration', status: 'ok', detail: 'No issues recorded.', fixable: false };
+    return [{ name: 'Migration', status: 'ok', detail: 'No issues recorded.', fixable: false }];
   } catch (err) {
-    return {
+    if (openedHere) { try { closeDatabase(); } catch { /* ignore */ } }
+    return [{
       name: 'Migration',
       status: 'warn',
       detail: `Could not read migration log: ${err instanceof Error ? err.message : String(err)}`,
       fixable: false,
-    };
+    }];
   }
 }
 
@@ -682,9 +701,50 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
       );
     }
 
-    // Advise on database issues
+    // Advise on database issues — the daemon initializes the DB on
+    // first start, so restarting it is the canonical recovery path.
     if (check.name === 'Database' && check.status === 'fail') {
-      actions.push('Run `myco init` to initialize the database');
+      actions.push('Start the Myco daemon (`myco service start`) to initialize the database');
+    }
+  }
+
+  // Migration retry — re-run the project-local → global walker. The
+  // walker is the same code path the daemon's first-start bootstrap
+  // uses; the audit-log writer deduplicates so previously-erroring
+  // projects that now succeed have their error rows dropped, and
+  // projects still failing get their error rows refreshed in place.
+  //
+  // Driven by the presence of any fixable Migration check (surfaced by
+  // checkMigrationStatus). Walks the full set rather than per-project
+  // so the audit log stays consistent — a project that succeeds this
+  // pass has its prior error row removed, not preserved alongside the
+  // new outcome.
+  const migrationChecks = checks.filter((c) => c.name === 'Migration' && c.fixable);
+  if (migrationChecks.length > 0) {
+    try {
+      const { runProjectLocalMigration } = await import('../grove/migration-walker.js');
+      const { recordMigrationPass } = await import('../db/queries/migration-log.js');
+      const { getDatabase } = await import('../db/client.js');
+      const beforeRoots = new Set<string>();
+      for (const c of migrationChecks) {
+        const match = c.detail.match(/project ([^:]+):/);
+        if (match) beforeRoots.add(match[1]!);
+      }
+      const result = runProjectLocalMigration();
+      recordMigrationPass(getDatabase(), result);
+      const errorsByRoot = new Map<string, string>();
+      for (const outcome of result.outcomes) {
+        if (outcome.error) errorsByRoot.set(outcome.project.root, outcome.error);
+      }
+      for (const root of beforeRoots) {
+        if (errorsByRoot.has(root)) {
+          actions.push(`Retried migration for ${root}: still failing: ${errorsByRoot.get(root)}`);
+        } else {
+          actions.push(`Retried migration for ${root}: succeeded`);
+        }
+      }
+    } catch (err) {
+      actions.push(`Migration retry failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

@@ -1,7 +1,6 @@
 import {
   resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError,
 } from '../vault/resolve.js';
-import { runGlobalBootstrap } from './bootstrap.js';
 import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
 import { ensureGroveDatabase } from '../grove/database.js';
@@ -23,24 +22,20 @@ import path from 'node:path';
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs', 'migration', 'tasks'] as const;
 
-const USAGE = `Usage: myco init [options]
+const USAGE = `Usage: myco init --project <path> [options]
 
-With no flags, runs the global bootstrap: writes the per-user launchers
-at ~/.myco/launcher.cjs and ~/.myco/mcp-launcher.cjs, then detects every
-installed agent and wires Myco into each one's user-global config.
-Idempotent; safe to re-run as a recovery or refresh.
-
-Project-local install (the deliberate per-project opt-in) runs when
-any project-install flag is present, or when --project is passed
-explicitly.
+Sets up per-project git-committed Myco config. Optional — Myco runs globally
+by default and the daemon wires every detected agent automatically. Use this
+when you want a project's Myco wiring versioned in the repo (regulated
+environments, onboarding contributors, etc.).
 
 Options:
-  --project <path>                 Project root for a project-local install
-  --grove <name|id>                Grove to bind this project to (implies --project)
-  --non-interactive                Run without prompts (implies --project)
-  --embedding-provider <provider>  Embedding provider for new vaults (implies --project)
-  --embedding-model <model>        Embedding model for new vaults (implies --project)
-  --embedding-url <url>            Embedding base URL for new vaults (implies --project)
+  --project <path>                 Project root (required)
+  --grove <name|id>                Grove to bind this project to
+  --non-interactive                Run without prompts
+  --embedding-provider <provider>  Embedding provider for new vaults
+  --embedding-model <model>        Embedding model for new vaults
+  --embedding-url <url>            Embedding base URL for new vaults
   -h, --help                       Show this help
 `;
 
@@ -64,14 +59,15 @@ export async function run(args: string[]): Promise<void> {
       '\nmyco init --worktree: retired. Under the global install Myco\'s\n' +
       'launchers live at ~/.myco/launcher.cjs and ~/.myco/mcp-launcher.cjs,\n' +
       'shared across every git worktree without per-worktree bootstrap. Run\n' +
-      '`myco init` (no flag) to (re-)write them.\n',
+      '`myco doctor` to verify they\'re in place.\n',
     );
     process.exit(1);
   }
 
-  // Mode selection: any project-install-specific flag routes to the
-  // project-local install path. Bare `myco init` runs the global
-  // bootstrap — the dominant invocation under the global model.
+  // Project-local install is the deliberate per-project opt-in. Any flag in
+  // PROJECT_INSTALL_FLAGS routes here; bare `myco init` is no longer a
+  // command — the daemon's first-start path runs the global bootstrap
+  // automatically, and `myco doctor` is the user-facing diagnostic.
   const PROJECT_INSTALL_FLAGS = [
     '--project', '--grove', '--embedding-provider',
     '--embedding-model', '--embedding-url', '--non-interactive',
@@ -80,30 +76,15 @@ export async function run(args: string[]): Promise<void> {
 
   if (!wantsProjectInstall) {
     printBanner();
-    const result = runGlobalBootstrap();
-    if (result.launchers.written.length > 0) {
-      console.log(`  ✓ Wrote ${result.launchers.written.length} global launcher(s)`);
-    } else {
-      console.log(`  – Global launchers already current`);
-    }
-    let installed = 0, alreadyConfigured = 0, notDetected = 0, errored = 0;
-    for (const r of result.symbionts) {
-      if (r.status === 'installed') { installed++; console.log(`  ✓ Installed ${r.symbiont}`); }
-      else if (r.status === 'already-configured') { alreadyConfigured++; }
-      else if (r.status === 'not-detected') { notDetected++; }
-      else if (r.status === 'error') { errored++; console.error(`  ✗ ${r.symbiont}: ${r.error}`); }
-    }
-    console.log(
-      `\nDetected agents: ${installed + alreadyConfigured}; ` +
-      `newly installed: ${installed}; already configured: ${alreadyConfigured}; ` +
-      `not detected: ${notDetected}${errored ? `; errors: ${errored}` : ''}.`,
-    );
-    if (result.migration.projectsCleaned > 0 || result.migration.projectsErrored > 0) {
-      console.log(
-        `Migration walker: ${result.migration.projectsCleaned} project(s) cleaned, ` +
-        `${result.migration.projectsErrored} errored.`,
-      );
-    }
+    console.log('  Myco is installed globally — no per-user setup command is needed.');
+    console.log('  The daemon wires every detected agent into its user-global');
+    console.log('  config automatically on first start.');
+    console.log('');
+    console.log('  Run `myco doctor` to verify the global install is healthy.');
+    console.log('  Run `myco init --project <path>` for the deliberate per-project');
+    console.log('  opt-in (committed Myco config in regulated repos, contributor');
+    console.log('  onboarding, etc.).');
+    console.log('');
     return;
   }
 
