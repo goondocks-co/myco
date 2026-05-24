@@ -170,4 +170,46 @@ describe('ensureSelfInstalledAsService', () => {
     expect(bootstrapCall).toBeDefined();
     expect(bootstrapCall![2].startsWith(sandboxAgentsDir)).toBe(true);
   });
+
+  // Variant-pinned regression for the canonical-plist hijack. Repro from the
+  // smoke matrix: `MYCO_SERVICE_VARIANT=dev` explicitly set on the parent
+  // daemon, which then bootstraps the sandbox plist; launchd's RunAtLoad
+  // immediately spawns a child daemon from that plist. If the plist
+  // EnvironmentVariables block does NOT carry MYCO_LAUNCH_AGENTS_DIR, the
+  // child resolves to the real `~/Library/LaunchAgents/`, computes the
+  // canonical (un-suffixed) label, and overwrites the user's real
+  // co.goondocks.myco-dev.plist with sandbox MYCO_HOME paths.
+  test('sandbox install with variant=dev writes a plist whose env propagates MYCO_LAUNCH_AGENTS_DIR (no canonical-plist hijack via supervisor-spawned child)', async () => {
+    if (process.platform !== 'darwin') return;
+    const sandboxAgentsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sandbox-launchagents-dev-'));
+    process.env[SERVICE_UNIT_DIR_ENV] = sandboxAgentsDir;
+
+    let capturedSpec: { env: Record<string, string>; label: string } | null = null;
+    const launchctlCalls: string[][] = [];
+    const runner: LaunchctlRunner = {
+      async run(args) { launchctlCalls.push(args); return { stdout: '', exitCode: 0 }; },
+    };
+    const built = getServiceManager({ platform: 'darwin' }) as LaunchdServiceManager;
+    const mgr = new LaunchdServiceManager({ agentsDir: built.agentsDir, runner, uid: 501 });
+    // Intercept install so we can assert the rendered spec's env block.
+    const origInstall = mgr.install.bind(mgr);
+    mgr.install = async (spec, opts) => {
+      capturedSpec = { env: { ...spec.env }, label: spec.label };
+      return origInstall(spec, opts);
+    };
+
+    const logger = new CapturingLogger();
+    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'dev', executable: fakeBinary() });
+
+    expect(capturedSpec).not.toBeNull();
+    // Sandbox-suffixed label.
+    expect(capturedSpec!.label).toMatch(/^co\.goondocks\.myco-dev\.sandbox-[0-9a-f]{8}$/);
+    // The plist env block MUST carry MYCO_LAUNCH_AGENTS_DIR so the supervisor-
+    // spawned child daemon inherits the sandbox isolation and does NOT fall
+    // back to the real ~/Library/LaunchAgents/.
+    expect(capturedSpec!.env[SERVICE_UNIT_DIR_ENV]).toBe(sandboxAgentsDir);
+    // Sanity: the standard env block is intact.
+    expect(capturedSpec!.env.MYCO_SERVICE_VARIANT).toBe('dev');
+    expect(capturedSpec!.env.MYCO_HOME).toContain(path.basename(process.env.MYCO_HOME ?? '.myco'));
+  });
 });
