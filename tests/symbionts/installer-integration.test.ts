@@ -514,6 +514,110 @@ describe('symbiont installer integration matrix (global scope)', () => {
    * absent → no hooks, but cursor reads empty `{}` → "hooks were defined,
    * none of them match" which surfaces in its UI panel).
    */
+  /**
+   * Write-ordering invariant — the launchers (`~/.myco/launcher.cjs` and
+   * `~/.myco/mcp-launcher.cjs`) MUST be on disk BEFORE any agent's global
+   * hook config is written referencing them. The docstring on
+   * `packages/myco/src/grove/launcher-install.ts` calls this out:
+   *
+   *   > Hook config that points at a not-yet-existent launcher leaves
+   *   > a multi-second window where every hook fires ENOENT and capture
+   *   > goes silent.
+   *
+   * The regression this guards against: a future refactor reorders
+   * `install()` so `installHooks()` runs before `installHookGuard()`,
+   * or so `installHookGuard()` becomes async/deferred. Either way, the
+   * symptom is the same — first-run hooks fail silently until the
+   * launcher write catches up.
+   *
+   * Captured via a write-order spy: every fs.renameSync (the atomic
+   * publish step) and fs.writeFileSync records the moment the target
+   * lands. At the moment ANY agent's global hook target lands, we
+   * snapshot whether the launcher file exists on disk. If a hook
+   * write was recorded before the launcher landed, fail.
+   */
+  describe('write ordering: launchers exist before any agent hook config references them', () => {
+    for (const manifest of manifests) {
+      const reg = manifest.registration;
+      if (!reg?.globalHooksTarget) continue;
+      const skip = SKIP_REASONS[manifest.name];
+      const test = skip ? it.skip : it;
+      test(`${manifest.name}: launcher.cjs exists at the instant the global hooks file is written`, () => {
+        const fake = setupFakeHome();
+        // Each recorded write captures: path written + whether the
+        // launcher existed on disk at that exact moment. The
+        // launcher-existence snapshot must come from `fs.existsSync`
+        // INSIDE the patched writer (post-rename, pre-return), not
+        // after-the-fact — by `install()`'s return, every write has
+        // landed and the test would be meaningless.
+        interface OrderedWrite { path: string; launcherExistedAtWriteTime: boolean }
+        const writes: OrderedWrite[] = [];
+        const mycoHome = process.env.MYCO_HOME!;
+        const launcherPath = path.join(mycoHome, 'launcher.cjs');
+
+        const realWriteFileSync = fs.writeFileSync;
+        const realRenameSync = fs.renameSync;
+        (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((
+          file: fs.PathOrFileDescriptor,
+          data: string | NodeJS.ArrayBufferView,
+          options?: fs.WriteFileOptions,
+        ) => {
+          realWriteFileSync(file, data, options);
+          if (typeof file === 'string' && !path.basename(file).startsWith('.tmp-')) {
+            writes.push({ path: file, launcherExistedAtWriteTime: fs.existsSync(launcherPath) });
+          }
+        }) as typeof fs.writeFileSync;
+        (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((
+          from: fs.PathLike,
+          to: fs.PathLike,
+        ) => {
+          realRenameSync(from, to);
+          if (typeof to === 'string' && !path.basename(to).startsWith('.tmp-')) {
+            writes.push({ path: to, launcherExistedAtWriteTime: fs.existsSync(launcherPath) });
+          }
+        }) as typeof fs.renameSync;
+
+        try {
+          ensureDetectionDir(manifest, fake.tmpHome);
+          const installer = newInstaller(manifest, fake.tmpHome);
+          installer.install();
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const hooksPath = (installer as any).resolveAbsoluteTarget('hooks') as string | null;
+          if (!hooksPath) return; // No global hooks surface — invariant vacuous.
+
+          // Sanity: the launcher itself must have been written at some
+          // point during the install. If it wasn't, the assertion below
+          // would trivially pass for the wrong reason.
+          const launcherWriteCount = writes.filter((w) => w.path === launcherPath).length;
+          expect(launcherWriteCount).toBeGreaterThan(0);
+
+          // The actual invariant: every write to the agent's global hooks
+          // target must have happened AFTER the launcher landed on disk.
+          // Multiple writes to the same path are fine (atomic publish +
+          // post-process re-write); we just need every one of them to
+          // see the launcher present.
+          const hookWrites = writes.filter((w) => w.path === hooksPath);
+          expect(hookWrites.length).toBeGreaterThan(0);
+          for (const w of hookWrites) {
+            if (!w.launcherExistedAtWriteTime) {
+              throw new Error(
+                `${manifest.name}: hook config write at ${w.path} happened ` +
+                `BEFORE launcher.cjs landed on disk. Multi-second ENOENT ` +
+                `window — capture would silently fail until the next ` +
+                `daemon reconcile pass. Write order: ${writes.map((x) => path.basename(x.path)).join(' → ')}`,
+              );
+            }
+          }
+        } finally {
+          (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWriteFileSync;
+          (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = realRenameSync;
+          fake.cleanup();
+        }
+      });
+    }
+  });
+
   describe('empty-config cleanup: uninstall removes files installer created', () => {
     for (const manifest of manifests) {
       const skip = SKIP_REASONS[manifest.name];

@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { installGlobalLaunchers } from '@myco/grove/launcher-install.js';
+import {
+  installGlobalLaunchers,
+  bindDaemonForLauncherRefresh,
+  unbindDaemonForLauncherRefresh,
+} from '@myco/grove/launcher-install.js';
+import type { DaemonServiceState } from '@myco/daemon/service-state.js';
 
 describe('installGlobalLaunchers', () => {
   let mycoHome: string;
@@ -159,5 +164,98 @@ describe('global launcher — project-local override delegation', () => {
     const result = spawnLauncher('launcher.cjs', ['hook', 'stop']);
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('pin:hook,stop');
+  });
+});
+
+/**
+ * Regression coverage for the daemon-bound bypass path.
+ *
+ * `installGlobalLaunchers()` checks the module-level `daemonIntentContext`
+ * binding and, when set, raises a `refresh-launchers` intent instead of
+ * writing — so the daemon's reconciler thread is the single writer. The
+ * reconciler ITSELF then calls `installGlobalLaunchers(undefined,
+ * { skipIntent: true })`. Without `skipIntent`, the reconciler would
+ * observe the same binding it owns and raise a new intent every tick —
+ * an infinite re-queue with no actual launcher files ever landing on
+ * disk. That bug (commit 56b5bc9a) made every agent hook ENOENT and
+ * silently broke capture across the global-symbiont-install branch.
+ *
+ * These tests lock the bypass contract: with the binding active,
+ *   - `skipIntent: true`  ⇒ files written, NO intent file produced.
+ *   - default (no opts)   ⇒ intent file produced, files NOT written.
+ */
+describe('installGlobalLaunchers — daemon-bound intent bypass', () => {
+  let mycoHome: string;
+  let stateDir: string;
+  let daemonService: DaemonServiceState;
+
+  beforeEach(() => {
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-launcher-bypass-'));
+    // The intent writer atomicWrites into `daemonService.stateDir`, so
+    // it must exist on disk. Co-locate under `mycoHome/service` to
+    // mirror the real layout.
+    stateDir = path.join(mycoHome, 'service');
+    fs.mkdirSync(stateDir, { recursive: true });
+    daemonService = {
+      scope: 'global',
+      stateDir,
+      // `statePath` and `lockPath` aren't read by the intent writer, but
+      // the field is required by the DaemonServiceState type.
+      statePath: path.join(stateDir, 'daemon.json') as DaemonServiceState['statePath'],
+      lockPath: path.join(stateDir, 'daemon.lock'),
+      canonicalPort: 0,
+    };
+    bindDaemonForLauncherRefresh(daemonService);
+  });
+  afterEach(() => {
+    unbindDaemonForLauncherRefresh();
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+  });
+
+  it('skipIntent: true writes launchers directly even with daemonIntentContext bound', () => {
+    const report = installGlobalLaunchers(mycoHome, { skipIntent: true });
+
+    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+    expect(report.written).toEqual([launcherPath, mcpLauncherPath]);
+    expect(report.unchanged).toEqual([]);
+
+    // Files actually exist on disk with executable bits set.
+    expect(fs.existsSync(launcherPath)).toBe(true);
+    expect(fs.existsSync(mcpLauncherPath)).toBe(true);
+    expect(fs.statSync(launcherPath).mode & 0o100).toBe(0o100);
+    expect(fs.statSync(mcpLauncherPath).mode & 0o100).toBe(0o100);
+
+    // Content matches the template (sanity — substring lifted from the
+    // global-launcher.cjs header).
+    expect(fs.readFileSync(launcherPath, 'utf-8')).toContain('Myco global launcher');
+
+    // And NO intent file was written — bypass means we skipped the queue.
+    const intentPath = path.join(stateDir, 'intent.refresh-launchers.toml');
+    expect(fs.existsSync(intentPath)).toBe(false);
+  });
+
+  it('default (no skipIntent) raises the refresh-launchers intent and does NOT write the launchers', () => {
+    const report = installGlobalLaunchers(mycoHome);
+
+    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+
+    // Both launchers reported as `unchanged` (pending the reconciler's
+    // bypass-write pass — the contract documented in launcher-install.ts).
+    expect(report.written).toEqual([]);
+    expect(report.unchanged).toContain(launcherPath);
+    expect(report.unchanged).toContain(mcpLauncherPath);
+
+    // Launcher files were NOT written directly — the intent path owns it.
+    expect(fs.existsSync(launcherPath)).toBe(false);
+    expect(fs.existsSync(mcpLauncherPath)).toBe(false);
+
+    // Intent file IS on disk for the reconciler to drain.
+    const intentPath = path.join(stateDir, 'intent.refresh-launchers.toml');
+    expect(fs.existsSync(intentPath)).toBe(true);
+    const intentContent = fs.readFileSync(intentPath, 'utf-8');
+    expect(intentContent).toContain('requested_at');
+    expect(intentContent).toContain('detection-tick');
   });
 });
