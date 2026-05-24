@@ -20,8 +20,9 @@ import path from 'node:path';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { listGroves, listRegisteredProjects, type DaemonVariant, type RegisteredProject, type GroveRecord } from './registry.js';
-import { resolveMycoHome, currentDaemonVariant } from './paths.js';
+import { listGroves, listRegisteredProjects, findProjectByRoot, type DaemonVariant, type RegisteredProject, type GroveRecord } from './registry.js';
+import { resolveMycoHome, currentDaemonVariant, resolveLegacyLauncherCleanupIntentPath, pathsEquivalent } from './paths.js';
+import { assertSafeProjectRoot } from '../vault/resolve.js';
 
 // Project-local cleanup runs through `removeProjectLaunchers`
 // (installer.ts) — the single source of truth for which files count
@@ -75,11 +76,50 @@ export function runProjectLocalMigration(
   const manifests = loadManifests();
   const groves = listGroves(mycoHome, { servedBy });
   const outcomes: ProjectMigrationOutcome[] = [];
+  const visited = new Set<string>();
   for (const grove of groves) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       outcomes.push(migrateOneProject(grove, project, manifests, packageRoot));
+      visited.add(path.resolve(project.root));
     }
   }
+
+  // Brownfield orphan pass. The global launcher writes legacy stub
+  // discoveries into `~/.myco/intents/legacy-launcher-cleanup.txt` so
+  // projects that pre-date the global-install rollout — and therefore
+  // were never auto-registered — still reach the walker. Drain the file,
+  // synthesize per-root walker entries, then call the same
+  // `migrateOneProject` path with a `null` Grove (no Grove binding
+  // exists for an unregistered project; `SymbiontInstaller` accepts
+  // `null` group-id and its config lookup fails closed).
+  const brownfieldRoots = drainLegacyLauncherCleanupIntent(mycoHome);
+  for (const root of brownfieldRoots) {
+    const resolved = path.resolve(root);
+    if (visited.has(resolved)) continue;
+    // Skip if the project IS registered (race between hook fire and a
+    // later `ensureProjectRegistered`); a registered project will be
+    // walked through the registry path on the next tick anyway.
+    if (findProjectByRoot(resolved, mycoHome)) continue;
+    // Defense in depth: refuse to walk obviously-dangerous roots ($HOME, /,
+    // a direct child of /Users) even if the launcher queued one — the
+    // launcher does its own safety check, but a hostile or buggy hook
+    // payload could still land here. The git-signal check from
+    // `isSafeProjectRoot` is NOT applied because the walker is performing
+    // cleanup, not registration; a brownfield project rarely has `.git`
+    // resolvable from a daemon process running with a sanitized PATH.
+    try { assertSafeProjectRoot(resolved); } catch { continue; }
+    if (!fs.existsSync(path.join(resolved, '.agents', 'myco-run.cjs'))) continue;
+    const synthetic: RegisteredProject = {
+      project_id: '',
+      name: path.basename(resolved),
+      root: resolved,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    outcomes.push(migrateOneProject(null, synthetic, manifests, packageRoot));
+    visited.add(resolved);
+  }
+
   return {
     passId: cryptoRandomId(),
     passedAt: Math.floor(Date.now() / 1000),
@@ -90,12 +130,62 @@ export function runProjectLocalMigration(
   };
 }
 
+/**
+ * Read and clear `~/.myco/intents/legacy-launcher-cleanup.txt`. Returns
+ * the deduped, trimmed list of project roots the global launcher has
+ * queued for walker cleanup since the last drain.
+ *
+ * Returns an empty array when the intent file is absent or unreadable —
+ * the launcher always treats writes as best-effort, so an absent file
+ * is the steady state. Unlinking the file rather than truncating avoids
+ * the truncate-vs-append race on a launcher firing during the drain:
+ * any append between read and unlink lands in a re-created file the
+ * NEXT pass will see, instead of being silently overwritten.
+ */
+export function drainLegacyLauncherCleanupIntent(
+  mycoHome: string = resolveMycoHome(),
+): string[] {
+  const intentPath = resolveLegacyLauncherCleanupIntentPath(mycoHome);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(intentPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    return [];
+  }
+  try { fs.unlinkSync(intentPath); } catch { /* concurrent drain — acceptable */ }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const resolved = path.resolve(trimmed);
+    // Dedup using inode equivalence so two textual variants of the same
+    // path (symlink chain, APFS case differences) collapse to one entry.
+    let alreadySeen = false;
+    for (const prior of out) {
+      if (pathsEquivalent(prior, resolved)) { alreadySeen = true; break; }
+    }
+    if (alreadySeen) continue;
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
+  }
+  return out;
+}
+
 function migrateOneProject(
-  grove: GroveRecord,
+  grove: GroveRecord | null,
   project: RegisteredProject,
   manifests: SymbiontManifest[],
   packageRoot: string,
 ): ProjectMigrationOutcome {
+  // A null `grove` marks a brownfield orphan: a project not registered
+  // in any Grove, queued for cleanup via the launcher cleanup intent
+  // file. The cleanup steps below all operate at the project-root level
+  // — they read no Grove-scoped state — so the null path is safe; the
+  // outcome's `groveId` falls back to an empty string for the audit log.
+  const groveId = grove?.id ?? '';
   const cleanedSymbionts: string[] = [];
   const removedFiles: string[] = [];
   try {
@@ -103,7 +193,7 @@ function migrateOneProject(
       // Registered root was deleted off-disk — treat as no-op rather
       // than erroring; the project entry itself is orphaned at this
       // point and a separate cleanup task handles it.
-      return { groveId: grove.id, project, cleanedSymbionts, removedFiles, noOp: true };
+      return { groveId, project, cleanedSymbionts, removedFiles, noOp: true };
     }
 
     // 1) Per-symbiont config block removal. Run installer.uninstall()
@@ -125,7 +215,7 @@ function migrateOneProject(
       if (!fs.existsSync(projectConfigPath)) continue;
       try {
         const installer = new SymbiontInstaller(
-          manifest, project.root, packageRoot, false, undefined, grove.id, 'project',
+          manifest, project.root, packageRoot, false, undefined, grove?.id ?? null, 'project',
         );
         const result = installer.uninstall({ keepProjectContent: true });
         if (result.hooks || result.mcp || result.settings || result.skills) {
@@ -176,7 +266,7 @@ function migrateOneProject(
     }));
 
     return {
-      groveId: grove.id,
+      groveId,
       project,
       cleanedSymbionts,
       removedFiles,
@@ -184,7 +274,7 @@ function migrateOneProject(
     };
   } catch (err) {
     return {
-      groveId: grove.id,
+      groveId,
       project,
       cleanedSymbionts,
       removedFiles,

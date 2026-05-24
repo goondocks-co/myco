@@ -571,6 +571,29 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
     }
   } catch { /* registry unavailable — silent */ }
 
+  // 5. brownfield orphans queued by the global launcher. When the
+  // launcher walks up from a hook fire and finds a `.agents/myco-run.cjs`
+  // stub without the `MYCO_LAUNCHER_PROTOCOL=v2` sentinel, it appends the
+  // project root to `~/.myco/intents/legacy-launcher-cleanup.txt`. The
+  // next walker pass drains the file and cleans them up. Until that
+  // pass runs (e.g., the daemon is offline, or the user wants visibility
+  // before `myco init`), surface the queue here so users see what's
+  // waiting.
+  try {
+    const { resolveLegacyLauncherCleanupIntentPath } = await import('../grove/paths.js');
+    const intentPath = resolveLegacyLauncherCleanupIntentPath();
+    const raw = fs.readFileSync(intentPath, 'utf-8');
+    const queued = Array.from(new Set(
+      raw.split('\n').map((s) => s.trim()).filter(Boolean),
+    ));
+    if (queued.length > 0) {
+      emit(
+        'warn',
+        `Brownfield projects queued for launcher cleanup (legacy \`.agents/myco-run.cjs\`): ${queued.join(', ')}. Run \`myco init\` to drain the queue and clean up.`,
+      );
+    }
+  } catch { /* file absent or unreadable — steady state */ }
+
   if (checks.length === 0) {
     checks.push({ name: 'Edge cases', status: 'ok', detail: 'No known broken-edge states detected.', fixable: false });
   }

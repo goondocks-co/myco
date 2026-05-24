@@ -92,6 +92,16 @@ if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'ant
 // `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and
 // the deliberate per-project escape hatch from `myco init --project`.
 // Walk up from cwd so the check is worktree-aware.
+//
+// Pre-upgrade brownfield projects also have a `.agents/myco-run.cjs`
+// stub left over from old myco. Those stubs DO NOT carry the
+// `MYCO_LAUNCHER_PROTOCOL=v2` sentinel that newer templates embed, so
+// they cannot be trusted to handle the current payload shape. When the
+// sentinel is missing we (a) refuse the delegation — fall through to the
+// global flow so capture still works — and (b) append the project root
+// to the launcher cleanup intent file so the next walker pass deletes
+// the orphan artifacts. Combined defense: launcher refuses bad delegates,
+// walker performs the cleanup, doctor surfaces queued items.
 // If stdin was consumed for the Antigravity workspace lookup, re-feed it via
 // `input:`. Otherwise inherit.
 function spawnOptions() {
@@ -102,7 +112,7 @@ function spawnOptions() {
 }
 
 const override = findProjectLocalOverride(process.cwd(), overrideName);
-if (override) {
+if (override && hasLauncherProtocolSentinel(override)) {
   try {
     execFileSync(process.execPath, [override, ...args], spawnOptions());
     process.exit(0);
@@ -110,6 +120,13 @@ if (override) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') process.exit(0);
     process.exit((err && typeof err.status === 'number') ? err.status : 1);
   }
+} else if (override) {
+  // Stub present but unsentineled → brownfield orphan. Queue the
+  // project root for walker cleanup and fall through to the global
+  // resolution chain. Best-effort: any failure (read-only ~/.myco/,
+  // disk full, etc.) is silent so the hook stays fast and capture
+  // continues to work.
+  try { queueLegacyLauncherCleanup(path.dirname(path.dirname(override))); } catch { /* best effort */ }
 }
 
 const bin = resolveBinary();
@@ -146,6 +163,37 @@ function findProjectLocalOverride(startDir, basename) {
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+// Read just enough of the stub to find the protocol sentinel. New
+// templates embed `MYCO_LAUNCHER_PROTOCOL=v2` in the file header (well
+// inside the first 2 KB); pre-upgrade brownfield stubs do not. Anything
+// we can't read is treated as missing — fall back to the safe path
+// (refuse delegation) rather than risking exec of an unknown file.
+function hasLauncherProtocolSentinel(stubPath) {
+  try {
+    const fd = fs.openSync(stubPath, 'r');
+    try {
+      const buf = Buffer.alloc(2048);
+      const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+      const head = buf.slice(0, bytes).toString('utf-8');
+      return head.includes('MYCO_LAUNCHER_PROTOCOL=v2');
+    } finally {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
+  } catch { return false; }
+}
+
+// Append project root to ~/.myco/intents/legacy-launcher-cleanup.txt so
+// the next walker pass cleans up the orphan project-local artifacts.
+// Best-effort, single-syscall path — duplicate lines are tolerated and
+// drained by the walker.
+function queueLegacyLauncherCleanup(projectRoot) {
+  const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  const intentsDir = path.join(home, 'intents');
+  try { fs.mkdirSync(intentsDir, { recursive: true }); } catch { /* exists or unwritable */ }
+  const line = path.resolve(projectRoot) + '\n';
+  fs.appendFileSync(path.join(intentsDir, 'legacy-launcher-cleanup.txt'), line);
 }
 
 function readPinFile(filePath) {
