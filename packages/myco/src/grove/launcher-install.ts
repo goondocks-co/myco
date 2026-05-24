@@ -72,9 +72,16 @@ export interface InstalledLauncherReport {
  * Idempotent — a file with content matching the template is skipped.
  * Returns the set of paths actually written and the set skipped so callers
  * (and tests) can assert exactly what happened.
+ *
+ * When a daemon is running, this routes through the `refresh-launchers`
+ * intent so the daemon's main thread does the write — single
+ * self-mutation discipline per PR #305. Callers running INSIDE the
+ * daemon's reconciler (where the write must actually happen) pass
+ * `skipIntent: true` to bypass the intent path and write directly.
  */
 export function installGlobalLaunchers(
   mycoHome = resolveMycoHome(),
+  options: { skipIntent?: boolean } = {},
 ): InstalledLauncherReport {
   const template = BUNDLED_TEMPLATES[LAUNCHER_TEMPLATE_KEY];
   if (!template) {
@@ -103,7 +110,10 @@ export function installGlobalLaunchers(
   // thread. atomicWriteFileSync already protects against torn reads,
   // but the intent path also serializes against concurrent restart /
   // update intents — single self-mutation discipline (PR #305).
-  if (daemonIntentContext) {
+  // Callers running INSIDE the reconciler pass `skipIntent: true`
+  // (otherwise the reconciler raises a new intent every time it
+  // observes the old one, and the launcher files never get written).
+  if (daemonIntentContext && !options.skipIntent) {
     // Defer the import so this module stays loadable in CLI contexts
     // that never touch the daemon state surface.
     // eslint-disable-next-line @typescript-eslint/no-require-imports

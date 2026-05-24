@@ -99,7 +99,11 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       },
     );
     try {
-      const refresh = deps.refreshLaunchers ?? (() => installGlobalLaunchers());
+      // skipIntent: true forces the actual write — otherwise the
+      // default daemon-bound `installGlobalLaunchers` would observe
+      // its own daemonIntentContext and raise yet another intent
+      // instead of writing, leaving launchers absent on disk forever.
+      const refresh = deps.refreshLaunchers ?? (() => installGlobalLaunchers(undefined, { skipIntent: true }));
       refresh();
       clearIntentSection(deps.daemonService, 'refresh_launchers');
     } catch (err) {
