@@ -641,6 +641,15 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+  if (bootstrapIsPhantom) {
+    logger.info(LOG_KINDS.DAEMON_START, 'No project bound; polling registry from unbound bootstrap', {
+      unbound_vault: bootstrapVaultDir,
+    });
+  } else {
+    logger.info(LOG_KINDS.DAEMON_START, 'Bound to project vault', {
+      vault: bootstrapVaultDir,
+    });
+  }
 
   // The sole capability for mutating daemon.json. Constructed once and
   // threaded into every subsystem that writes state (server, self-

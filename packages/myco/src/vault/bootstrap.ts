@@ -96,7 +96,7 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | 
  * boot finds the project through `firstProjectVaultFromRegistry()`.
  */
 export function resolvePhantomBootstrapVaultDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, '_bootstrap');
+  return path.join(mycoHome, '_unbound-bootstrap');
 }
 
 /**
