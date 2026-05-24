@@ -153,6 +153,15 @@ export const LifecycleLock = {
     const release = (): void => {
       if (released) return;
       released = true;
+      // Truncate the lockfile in-place before releasing the flock so the
+      // hook-discovery lock-tier fallback (readLockHolder) doesn't return
+      // a dead holder's PID + port to a fresh hook process. The next
+      // acquirer's writeHolderMetadata starts from an empty file. The
+      // truncate happens while we still hold the lock — readers using
+      // readLockHolder are racing with us regardless, and they handle a
+      // zero-length file as "no holder" (returns null and falls through
+      // to /health discovery).
+      try { fs.ftruncateSync(fd, 0); } catch { /* fd may already be closed */ }
       try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
       try { fs.closeSync(fd); } catch { /* idem */ }
     };

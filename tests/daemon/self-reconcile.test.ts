@@ -11,8 +11,17 @@ import {
 import type {
   DaemonServiceState,
   DaemonState,
+  DaemonStatePath,
 } from '../../packages/myco/src/daemon/service-state.js';
+import {
+  createDaemonStateAuthority,
+  type DaemonStateAuthority,
+} from '../../packages/myco/src/daemon/daemon-state-authority.js';
 import type { DaemonLogger } from '../../packages/myco/src/daemon/logger.js';
+
+function makeAuthority(daemonService: DaemonServiceState): DaemonStateAuthority {
+  return createDaemonStateAuthority(daemonService, { info: () => {} });
+}
 
 const RESTART_INTENT_FILE = 'intent.restart.toml';
 const UPDATE_INTENT_FILE = 'intent.update.toml';
@@ -33,7 +42,11 @@ function makeDaemonService(dir: string): DaemonServiceState {
   return {
     scope: 'global',
     stateDir: dir,
-    statePath: join(dir, 'daemon.json'),
+    // Tests construct DaemonServiceState directly; the brand on
+    // statePath documents that mutations should flow through the
+    // authority (which we wire via `makeAuthority` above).
+    statePath: join(dir, 'daemon.json') as DaemonStatePath,
+    lockPath: join(dir, 'daemon.lock'),
     canonicalPort: 20915,
   };
 }
@@ -72,7 +85,7 @@ describe('reconcileSelf', () => {
     const logger = makeLogger();
 
     expect(existsSync(daemonService.statePath)).toBe(false);
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     expect(existsSync(daemonService.statePath)).toBe(true);
 
     const parsed = JSON.parse(readFileSync(daemonService.statePath, 'utf-8'));
@@ -88,13 +101,13 @@ describe('reconcileSelf', () => {
     const state = makeState();
     const logger = makeLogger();
 
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     expect(existsSync(daemonService.statePath)).toBe(true);
 
     unlinkSync(daemonService.statePath);
     expect(existsSync(daemonService.statePath)).toBe(false);
 
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     expect(existsSync(daemonService.statePath)).toBe(true);
     const parsed = JSON.parse(readFileSync(daemonService.statePath, 'utf-8'));
     expect(parsed.pid).toBe(process.pid);
@@ -106,12 +119,12 @@ describe('reconcileSelf', () => {
     const state = makeState();
     const logger = makeLogger();
 
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     const mtime1 = statSync(daemonService.statePath).mtimeMs;
 
     await new Promise((r) => setTimeout(r, 1100));
 
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     const mtime2 = statSync(daemonService.statePath).mtimeMs;
     expect(mtime2).toBeGreaterThan(mtime1);
 
@@ -134,6 +147,7 @@ describe('reconcileSelf', () => {
     let restartCalls = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       requestSupervisorRestart: () => { restartCalls += 1; },
@@ -163,6 +177,7 @@ describe('reconcileSelf', () => {
     await expect(
       reconcileSelf({
         daemonService,
+        stateAuthority: makeAuthority(daemonService),
         currentState: () => state,
         logger,
         requestSupervisorRestart: () => {
@@ -184,6 +199,7 @@ describe('reconcileSelf', () => {
     let restartCalls = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       requestSupervisorRestart: () => { restartCalls += 1; },
@@ -204,6 +220,7 @@ describe('reconcileSelf', () => {
     await expect(
       reconcileSelf({
         daemonService,
+        stateAuthority: makeAuthority(daemonService),
         currentState: () => state,
         logger,
         requestSupervisorRestart: () => { restartCalls += 1; },
@@ -223,7 +240,7 @@ describe('reconcileSelf', () => {
       reason: 'test',
     });
 
-    await expect(reconcileSelf({ daemonService, currentState: () => state, logger })).resolves.toBeUndefined();
+    await expect(reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger })).resolves.toBeUndefined();
     expect(existsSync(join(dir, RESTART_INTENT_FILE))).toBe(false);
   });
 
@@ -243,6 +260,7 @@ describe('reconcileSelf', () => {
     let refreshes = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       refreshLaunchers: () => { refreshes++; },
@@ -266,6 +284,7 @@ describe('reconcileSelf', () => {
 
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       refreshLaunchers: () => { throw new Error('disk full'); },
@@ -282,11 +301,11 @@ describe('reconcileSelf', () => {
     const logger = makeLogger();
 
     const foreign: DaemonState = { ...state, pid: state.pid + 99999 };
-    await reconcileSelf({ daemonService, currentState: () => foreign, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => foreign, logger });
     const foreignWrite = JSON.parse(readFileSync(daemonService.statePath, 'utf-8'));
     expect(foreignWrite.pid).toBe(foreign.pid);
 
-    await reconcileSelf({ daemonService, currentState: () => state, logger });
+    await reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger });
     const final = JSON.parse(readFileSync(daemonService.statePath, 'utf-8'));
     expect(final.pid).toBe(state.pid);
     expect(logger.calls.some((c) => c.message.includes('Re-asserting'))).toBe(true);
@@ -309,6 +328,7 @@ describe('reconcileSelf update intent', () => {
     const installerCalls: string[] = [];
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       installUpdate: async (target) => { installerCalls.push(target); },
@@ -342,6 +362,7 @@ describe('reconcileSelf update intent', () => {
     let installerCalls = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       installUpdate: async () => { installerCalls += 1; },
@@ -367,6 +388,7 @@ describe('reconcileSelf update intent', () => {
     let installerCalls = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       installUpdate: async () => { installerCalls += 1; },
@@ -392,6 +414,7 @@ describe('reconcileSelf update intent', () => {
     let consumed = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       installUpdate: async () => { installerCalls += 1; },
@@ -425,6 +448,7 @@ describe('reconcileSelf update intent', () => {
     let installerCalls = 0;
     await reconcileSelf({
       daemonService,
+      stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
       installUpdate: async () => {
@@ -458,7 +482,7 @@ describe('reconcileSelf update intent', () => {
     });
 
     await expect(
-      reconcileSelf({ daemonService, currentState: () => state, logger }),
+      reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger }),
     ).resolves.toBeUndefined();
 
     expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);

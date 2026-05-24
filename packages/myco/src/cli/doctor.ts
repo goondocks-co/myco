@@ -10,6 +10,10 @@ import path from 'node:path';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
+import {
+  createDaemonStateAuthority,
+  type StateMutationLogger,
+} from '../daemon/daemon-state-authority.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { isProcessAlive } from './shared.js';
@@ -619,22 +623,40 @@ async function checkMigrationStatus(vaultDir: string): Promise<DoctorCheck> {
 /** Auto-repair fixable issues. Returns descriptions of actions taken. */
 export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<string[]> {
   const actions: string[] = [];
+  const service = resolveDaemonServiceState(vaultDir, { env: process.env });
+  const authority = createDaemonStateAuthority(service, doctorLogger());
 
   for (const check of checks) {
     if (!check.fixable || check.status === 'ok') continue;
 
-    // Fix stale daemon.json
+    // Fix stale daemon.json — re-read under the authority and only
+    // unlink if the recorded pid still matches the pid we observed as
+    // dead. If a concurrent successor wrote into the gap, the unlink
+    // is a no-op and the file is preserved.
     if (check.name === 'Daemon' && check.detail.includes('Stale')) {
-      const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
-      fs.unlinkSync(daemonFile);
-      actions.push('Removed stale daemon state');
+      const staleMatch = check.detail.match(/PID (\d+) not running/);
+      const stalePid = staleMatch ? Number(staleMatch[1]) : NaN;
+      if (Number.isFinite(stalePid)) {
+        const outcome = authority.deleteIfOwnedBy(stalePid, { reason: 'doctor:stale' });
+        actions.push(
+          outcome === 'deleted'
+            ? `Removed stale daemon state (PID ${stalePid})`
+            : `Daemon state already refreshed by a successor (was PID ${stalePid}) — no action`,
+        );
+      }
     }
 
-    // Fix malformed daemon.json
+    // Fix malformed daemon.json — by definition the file was unparseable
+    // when the check ran. The authority re-reads under the same
+    // discipline: if a successor refreshed the file between detection
+    // and fix, leave it alone.
     if (check.name === 'Daemon' && check.detail.includes('parse error')) {
-      const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
-      fs.unlinkSync(daemonFile);
-      actions.push('Removed malformed daemon state');
+      const outcome = authority.deleteIfMalformed({ reason: 'doctor:malformed' });
+      actions.push(
+        outcome === 'deleted'
+          ? 'Removed malformed daemon state'
+          : 'Daemon state already refreshed by a successor — no action',
+      );
     }
 
     // Advise on database issues
@@ -644,6 +666,19 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
   }
 
   return actions;
+}
+
+/** Console-bound logger shim for doctor invocations. The authority's
+ *  structured mutation events are only useful at debug time; surface
+ *  them on stderr so a `--fix` run reports what it did without
+ *  requiring the daemon logger machinery. */
+function doctorLogger(): StateMutationLogger {
+  return {
+    info: (event, message, meta) => {
+      const detail = meta ? ` ${JSON.stringify(meta)}` : '';
+      console.error(`[doctor] ${event} ${message}${detail}`);
+    },
+  };
 }
 
 // --- Output formatting ---

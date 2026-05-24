@@ -1,16 +1,21 @@
 import type { DaemonLogger } from './logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
-  readDaemonState,
-  writeOrTouchDaemonState,
   type DaemonServiceState,
   type DaemonState,
 } from './service-state.js';
+import type { DaemonStateAuthority } from './daemon-state-authority.js';
 import { readIntent, clearIntentSection } from './intent.js';
 import { installGlobalLaunchers } from '../grove/launcher-install.js';
 
 export interface ReconcileSelfDeps {
   daemonService: DaemonServiceState;
+  /**
+   * Capability for mutating daemon.json. The reconciler's heartbeat
+   * write goes through this; raw `writeOrTouchDaemonState` is no longer
+   * accessible.
+   */
+  stateAuthority: DaemonStateAuthority;
   currentState: () => DaemonState;
   logger: DaemonLogger;
   requestSupervisorRestart?: () => void;
@@ -63,7 +68,7 @@ export interface ReconcileSelfDeps {
  */
 export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   const expected = deps.currentState();
-  const observed = readDaemonState(deps.daemonService.statePath);
+  const observed = deps.stateAuthority.read();
   if (!observed || observed.pid !== expected.pid || observed.port !== expected.port) {
     deps.logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Re-asserting daemon.json from live state', {
       had_file: observed !== null,
@@ -74,7 +79,7 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       observed_port: observed?.port ?? null,
     });
   }
-  writeOrTouchDaemonState(deps.daemonService.statePath, expected);
+  deps.stateAuthority.writeOrTouch(expected, { reason: 'self-reconcile:heartbeat' });
 
   const intent = readIntent(deps.daemonService);
 

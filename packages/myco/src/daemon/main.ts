@@ -175,6 +175,7 @@ import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
 import { startSelfReconcileLoop } from './self-reconcile-wiring.js';
+import { createDaemonStateAuthority } from './daemon-state-authority.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -193,7 +194,6 @@ import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type My
 import {
   daemonStateMtimeMs,
   readDaemonState,
-  removeDaemonState,
   assertGroveBound,
   resolveDaemonLogDir,
   resolveDaemonServiceState,
@@ -272,14 +272,28 @@ export interface ReconcileDeps {
  *   exits cleanly. This is what stops the concurrent-spawn cascade where each
  *   new process SIGTERMs the last one standing.
  * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM, poll for
- *   exit, escalate to SIGKILL if needed, and only `removeDaemonState` once
- *   the pid is confirmed dead. If the pid survives both signals, log an
- *   error and return 'step-aside' WITHOUT unlinking — leaving the file in
- *   place is structurally safer than orphaning a live daemon.
+ *   exit, escalate to SIGKILL if needed. If the pid survives both signals,
+ *   log an error and return 'step-aside' — leaving the file in place is
+ *   structurally safer than orphaning a live daemon.
  *
- * Cleanup ownership inversion: this function is the SOLE production path
- * that may remove daemon.json. `stop()` and `killDaemon()` no longer unlink.
+ * **Succession via atomic overwrite, not delete-then-write.** When this
+ * function returns 'ok' the caller proceeds to `server.start()`, whose
+ * `listen` callback atomically rewrites daemon.json with the successor's
+ * state. The atomic rename inside `atomicWriteFileSync` means readers
+ * see either the predecessor's contents or the successor's — never an
+ * absent file. We therefore do NOT delete the predecessor's record here.
+ *
+ * History: the prior shape unlinked daemon.json in all four take-over
+ * branches, opening a multi-second absence window that masked capture
+ * regressions until the self-reconciler caught up. The deletion was
+ * never structurally necessary — the successor's write already overwrites
+ * — and removing it closes the window without weakening any invariant.
+ * Stale state in the rare server-start-failure case is recovered by the
+ * next daemon-startup pass through this same function.
+ *
  * Self-mutation-discipline tenet: pid alive ⇔ daemon.json exists.
+ * Enforcement lives in `daemon-state-authority.ts` (Phase 4: drop raw
+ * unlink access entirely).
  */
 export async function reconcileExistingDaemon(
   daemonService: DaemonServiceState,
@@ -312,8 +326,10 @@ export async function reconcileExistingDaemon(
   // Is the recorded process actually alive? Use the dependency-injected
   // probe so tests can simulate "still alive after SIGKILL".
   if (!alive(info.pid)) {
-    // Dead — clean up and take over.
-    removeDaemonState(daemonJsonPath);
+    // Dead — succeed it via the caller's upcoming server.start() write.
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor pid dead; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -356,16 +372,17 @@ export async function reconcileExistingDaemon(
   }
 
   // Stale, unhealthy, or version mismatch: take over. We MUST confirm the
-  // predecessor pid is dead before unlinking daemon.json — otherwise a
-  // wedged shutdown leaves a live daemon with no discoverable state file
-  // (the orphan-zombie failure mode the tenet prohibits).
+  // predecessor pid is dead before proceeding — otherwise a wedged
+  // shutdown leaves a live daemon racing the new one for the port.
   try {
     kill(info.pid, 'SIGTERM');
     logger.info(LOG_KINDS.DAEMON_RECONCILE, 'SIGTERM sent to stale daemon', { pid: info.pid });
   } catch { /* already dead between alive() and kill() */ }
 
   if (await waitForExit(info.pid, alive, sigtermGraceMs, pollMs)) {
-    removeDaemonState(daemonJsonPath);
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on SIGTERM; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -378,7 +395,9 @@ export async function reconcileExistingDaemon(
   } catch { /* already dead */ }
 
   if (await waitForExit(info.pid, alive, sigkillGraceMs, pollMs)) {
-    removeDaemonState(daemonJsonPath);
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on SIGKILL; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -411,7 +430,8 @@ export async function reconcileExistingDaemon(
         sigkill_grace_ms: sigkillGraceMs,
       },
     );
-    removeDaemonState(daemonJsonPath);
+    // Recycled foreign pid: the upcoming server.start() write will
+    // overwrite the stale record atomically. No delete needed.
     return 'ok';
   }
 
@@ -611,6 +631,12 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+
+  // The sole capability for mutating daemon.json. Constructed once and
+  // threaded into every subsystem that writes state (server, self-
+  // reconciler). See `daemon-state-authority.ts` for the structural
+  // invariant this encapsulates.
+  const daemonStateAuthority = createDaemonStateAuthority(daemonService, logger);
 
   // Self-install as a managed OS service so launchd / systemd starts the
   // daemon at every login. Idempotent: no-ops when the unit is already
@@ -980,7 +1006,7 @@ export async function main(): Promise<void> {
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
     logger,
-    daemonStatePath: daemonService.statePath,
+    daemonStateAuthority,
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
@@ -2009,6 +2035,7 @@ export async function main(): Promise<void> {
   });
   const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,
+    stateAuthority: daemonStateAuthority,
     server,
     daemonVaultDir: bootstrapVaultDir,
     projectRoot,

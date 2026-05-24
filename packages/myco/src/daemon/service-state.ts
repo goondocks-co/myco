@@ -44,7 +44,6 @@ import {
   resolveServiceDir,
 } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
-import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { readJsonFile } from '../utils/json.js';
 import { derivePort } from './port.js';
 
@@ -59,6 +58,19 @@ export class GroveBindingRequiredError extends Error {
 }
 
 export type DaemonServiceScope = 'global';
+
+/**
+ * Brand for the daemon-state file path.
+ *
+ * Marks the canonical `daemon.json` location as a privileged value:
+ * mutations must go through `DaemonStateAuthority`. The brand is
+ * structurally a string subtype (so consumers can still read it for
+ * logging or pass it to `readDaemonState`), but constructing one
+ * requires `resolveDaemonServiceState()` — any direct `fs.unlinkSync`
+ * against this value from outside the authority module shows up as an
+ * `as string` cast at the call site, making the discipline grep-able.
+ */
+export type DaemonStatePath = string & { readonly __brand: 'DaemonStatePath' };
 
 export interface DaemonState {
   pid: number;
@@ -80,7 +92,9 @@ export interface DaemonState {
 export interface DaemonServiceState {
   scope: DaemonServiceScope;
   stateDir: string;
-  statePath: string;
+  /** Canonical `daemon.json` path; branded — mutate only via
+   *  `DaemonStateAuthority`. */
+  statePath: DaemonStatePath;
   /** `<stateDir>/daemon.lock` — held open by the lifecycle-lock owner
    *  for its entire lifetime. Carries pid+port+authToken once
    *  `server.start()` has bound; readable by hooks as a fallback when
@@ -103,7 +117,7 @@ export function resolveDaemonServiceState(
   options: ResolveDaemonServiceStateOptions = {},
 ): DaemonServiceState {
   const mycoHome = resolveMycoHome({ env: options.env as NodeJS.ProcessEnv | undefined });
-  const statePath = resolveServiceDaemonStatePath(mycoHome);
+  const statePath = resolveServiceDaemonStatePath(mycoHome) as DaemonStatePath;
   const stateDir = path.dirname(statePath);
   return {
     scope: 'global',
@@ -157,76 +171,23 @@ export function readDaemonPort(vaultDir: string, options: ResolveDaemonServiceSt
   return readDaemonState(resolveDaemonServiceState(vaultDir, options).statePath)?.port ?? null;
 }
 
-export function writeDaemonState(statePath: string, state: DaemonState): void {
-  const dir = path.dirname(statePath);
-  fs.mkdirSync(dir, { recursive: true });
-  // 0o700 on the service dir so a same-user attacker can't enumerate
-  // `~/.myco/service/` to discover sibling files: intent.update.toml
-  // (requested install target), update-error.json (failure detail),
-  // logs/ (may include bearer fragments). The 0o600 on daemon.json
-  // below protects its bytes; 0o700 on the dir protects directory
-  // listing. chmod is unconditional but best-effort — non-POSIX
-  // filesystems no-op.
-  try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX; ignore */ }
-  // 0o600 because daemon.json carries the daemon-issued bearer token
-  // (G4); leaking it would let other local users redirect
-  // context-switching requests at any registered Grove. The atomic
-  // helper opens the tempfile with O_EXCL and the requested mode so the
-  // final path never lands at the default umask.
-  atomicWriteFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
-}
-
 /**
- * SELF_RECONCILE-friendly write: if the on-disk state already matches
- * `expected`, refresh mtime via utimesSync instead of rewriting the file.
- * The mtime is a freshness signal for watchers (and humans) — every tick
- * touches it even when the JSON is identical — but identical content
- * doesn't need a fresh atomic-rename through tmpfile + fsync. Falls back
- * to a full atomic write on any drift or read failure.
+ * Mutation helpers are intentionally NOT exported from this module.
+ *
+ * `daemon.json` mutations go exclusively through `DaemonStateAuthority`
+ * (`./daemon-state-authority.ts`), which:
+ *   - encapsulates the path so consumers can't form the unlink argument
+ *     against it directly,
+ *   - requires a `reason` on every mutation for log observability,
+ *   - exposes `replace()` (succession via atomic overwrite) instead of
+ *     `delete-then-write`, eliminating the absence window that masked
+ *     v0.27.x capture regressions,
+ *   - exposes `deleteIfOwnedBy()` as the only conditional deletion path.
+ *
+ * This file exports only the typed-data helpers needed to construct an
+ * authority (`DaemonState`, `readDaemonState`, `daemonStateMtimeMs`) and
+ * the service-dir resolution (`resolveDaemonServiceState`).
  */
-export function writeOrTouchDaemonState(statePath: string, expected: DaemonState): void {
-  const observed = readDaemonState(statePath);
-  if (observed && daemonStateEqual(observed, expected)) {
-    try {
-      const now = new Date();
-      fs.utimesSync(statePath, now, now);
-      return;
-    } catch {
-      // utime failed (deleted under us?) — fall through to full write.
-    }
-  }
-  writeDaemonState(statePath, expected);
-}
-
-function daemonStateEqual(a: DaemonState, b: DaemonState): boolean {
-  return a.pid === b.pid
-    && a.port === b.port
-    && (a.command ?? null) === (b.command ?? null)
-    && (a.started ?? undefined) === (b.started ?? undefined)
-    && (a.version ?? undefined) === (b.version ?? undefined)
-    && (a.auth_token ?? undefined) === (b.auth_token ?? undefined)
-    && stringArraysEqual(a.sessions, b.sessions);
-}
-
-function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
-  if (a === b) return true;
-  if (!a || !b) return (a?.length ?? 0) === (b?.length ?? 0);
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-export function removeDaemonState(statePath: string, ownerPid?: number): void {
-  try {
-    if (ownerPid !== undefined) {
-      const info = readDaemonState(statePath);
-      if (info?.pid !== ownerPid) return;
-    }
-    fs.unlinkSync(statePath);
-  } catch {
-    // Already gone or unreadable.
-  }
-}
 
 export function daemonStateMtimeMs(statePath: string): number | null {
   try {
