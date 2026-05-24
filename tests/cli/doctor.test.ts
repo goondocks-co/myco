@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type DoctorCheck, isSymbiontRegistered, runChecks } from '@myco/cli/doctor';
+import { type DoctorCheck, checkSymbiontEdgeCases, isSymbiontRegistered, runChecks } from '@myco/cli/doctor';
 import { loadManifests } from '@myco/symbionts/detect';
 
 function findManifest(name: string) {
@@ -27,6 +27,67 @@ describe('runChecks', () => {
     expect(names).toContain('Embeddings');
     expect(names).toContain('Agents');
     expect(names).toContain('Daemon');
+  });
+});
+
+describe('Edge-case detector (R4.7)', () => {
+  function withFakeHome<T>(fn: (home: string) => T): T {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-edge-'));
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return fn(home);
+    } finally {
+      if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it('flags cursor settings containing a shell-cd prefix', async () => {
+    await withFakeHome(async (home) => {
+      const cursor = path.join(home, '.cursor', 'settings.json');
+      fs.mkdirSync(path.dirname(cursor), { recursive: true });
+      fs.writeFileSync(cursor, JSON.stringify({
+        hooks: { sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node /Users/me/.myco/launcher.cjs hook session-start --symbiont cursor' }] },
+      }), 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const fails = rows.filter((c) => c.status === 'fail');
+      expect(fails.some((c) => c.detail.includes('shell-cd prefix'))).toBe(true);
+    });
+  });
+
+  it('flags claude hook groups missing a matcher field', async () => {
+    await withFakeHome(async (home) => {
+      const claude = path.join(home, '.claude', 'settings.json');
+      fs.mkdirSync(path.dirname(claude), { recursive: true });
+      fs.writeFileSync(claude, JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ command: 'node x' }] }] }, // missing matcher
+      }), 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const fails = rows.filter((c) => c.status === 'fail');
+      expect(fails.some((c) => c.detail.includes('missing `matcher`'))).toBe(true);
+    });
+  });
+
+  it('flags hybrid-TOML codex config (file starts with JSON brace)', async () => {
+    await withFakeHome(async (home) => {
+      const codex = path.join(home, '.codex', 'config.toml');
+      fs.mkdirSync(path.dirname(codex), { recursive: true });
+      fs.writeFileSync(codex, '{\n  "hooks": {}\n}\n', 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const fails = rows.filter((c) => c.status === 'fail');
+      expect(fails.some((c) => c.detail.includes('starts with JSON'))).toBe(true);
+    });
+  });
+
+  it('emits ok row when no edge cases are present', async () => {
+    await withFakeHome(async () => {
+      const rows = await checkSymbiontEdgeCases();
+      expect(rows.length).toBeGreaterThan(0);
+      // First (and likely only) row when nothing is wrong: the ok summary.
+      expect(rows[0]!.status).toBe('ok');
+      expect(rows[0]!.detail).toContain('No known broken-edge states');
+    });
   });
 });
 

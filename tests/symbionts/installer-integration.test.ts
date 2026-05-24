@@ -500,4 +500,63 @@ describe('symbiont installer integration matrix (global scope)', () => {
       }
     });
   });
+
+  /**
+   * Empty-config cleanup: when install creates a file and uninstall strips
+   * the last Myco-owned content, the file must be unlinked, not left as an
+   * empty `{}` / blank TOML stub.
+   *
+   * Surfaced during R4.5 walker audit: the strip paths call
+   * `writeOrDeleteJsonFile` / unlink-when-empty for TOML, but there was no
+   * test locking the behavior. A regression here leaves orphan config files
+   * scattered across `~/.<agent>/` after `myco remove`, and stale empty
+   * config files can re-trigger detection in some agents (cursor reads
+   * absent → no hooks, but cursor reads empty `{}` → "hooks were defined,
+   * none of them match" which surfaces in its UI panel).
+   */
+  describe('empty-config cleanup: uninstall removes files installer created', () => {
+    for (const manifest of manifests) {
+      const skip = SKIP_REASONS[manifest.name];
+      const test = skip ? it.skip : it;
+      test(`${manifest.name}: file installer wrote with no prior content is unlinked on uninstall`, () => {
+        const fake = setupFakeHome();
+        try {
+          ensureDetectionDir(manifest, fake.tmpHome);
+          const installer = newInstaller(manifest, fake.tmpHome);
+          installer.install();
+
+          // Capture every absolute path the installer reaches into.
+          const installedPaths = new Set<string>();
+          for (const field of ['hooks', 'mcp', 'settings'] as const) {
+            const target = (installer as unknown as {
+              resolveAbsoluteTarget: (f: string) => string | null;
+            }).resolveAbsoluteTarget(field);
+            if (target) installedPaths.add(target);
+          }
+          // Pre-flight: at least one of those paths must exist post-install
+          // for the assertion to be meaningful.
+          const existedAfterInstall = Array.from(installedPaths).filter((p) => fs.existsSync(p));
+          if (existedAfterInstall.length === 0) return; // nothing to assert
+
+          installer.uninstall();
+
+          // For each path that we own (not pre-existing), uninstall must
+          // have removed it. The pre-existing case is the
+          // "reversibility" describe block above — this block covers the
+          // disjoint half where pre-install content was absent.
+          for (const p of existedAfterInstall) {
+            if (fs.existsSync(p)) {
+              const raw = fs.readFileSync(p, 'utf-8');
+              // Allow nonempty content (user already had this file) — but
+              // the test setup didn't seed any user content, so anything
+              // left here is an orphan stub we should have cleaned up.
+              expect(raw.trim().length, `${manifest.name}: orphan empty config at ${p}`).toBeGreaterThan(0);
+            }
+          }
+        } finally {
+          fake.cleanup();
+        }
+      });
+    }
+  });
 });

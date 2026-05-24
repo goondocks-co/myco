@@ -417,6 +417,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(checkBinaryVersionSkew());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());
+  checks.push(...await checkSymbiontEdgeCases());
   checks.push(await checkMigrationStatus(vaultDir));
 
   return checks;
@@ -475,6 +476,105 @@ async function checkDetectedSymbionts(): Promise<DoctorCheck[]> {
     });
   }
   return rows;
+}
+
+/**
+ * Detect known broken-edge states across the global symbiont surface.
+ * One row per issue found. The four cases tracked here are anti-regression
+ * watchposts for bugs that previously took capture silent in production:
+ *
+ * 1. cursor-cd-cwd: any hook command in `~/.cursor/settings.json` containing
+ *    a shell-cd prefix (Cursor's hook spawn drops stdin on shell operators
+ *    — R4.4/R4.8). The fix is in `global-launcher.cjs` chdir chain; if a
+ *    user or other tooling re-adds `cd "$X" && …` we go silent.
+ * 2. claude-matcher: any hook group in `~/.claude/settings.json` missing
+ *    the `matcher` field. Cursor cross-reads this file and rejects all
+ *    Claude hooks when one group is malformed (R4.3).
+ * 3. hybrid-TOML: `~/.codex/config.toml` whose first non-blank line is JSON
+ *    (`{`) instead of TOML. Codex's parser silently disables all hooks for
+ *    that project until the file is repaired (R1.4/R3.1).
+ * 4. project-local stub: orphan `<project>/.agents/myco-run.cjs` with no
+ *    sibling `.myco/myco.yaml` (project was de-init'd but the launcher
+ *    pin survived; the global launcher routes hooks into a dead override).
+ */
+export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const home = process.env.HOME ?? '/';
+  let isFirst = true;
+  const emit = (status: DoctorCheck['status'], detail: string): void => {
+    checks.push({ name: isFirst ? 'Edge cases' : '', status, detail, fixable: false });
+    isFirst = false;
+  };
+
+  // 1. cursor-cd-cwd
+  const cursorHooks = path.join(home, '.cursor', 'settings.json');
+  try {
+    const raw = fs.readFileSync(cursorHooks, 'utf-8');
+    const parsed = JSON.parse(raw) as { hooks?: Record<string, Array<{ command?: unknown; hooks?: Array<{ command?: unknown }> }>> };
+    const commands: string[] = [];
+    for (const groups of Object.values(parsed.hooks ?? {})) {
+      for (const group of groups) {
+        if (typeof group.command === 'string') commands.push(group.command);
+        for (const inner of group.hooks ?? []) {
+          if (typeof inner.command === 'string') commands.push(inner.command);
+        }
+      }
+    }
+    if (commands.some((cmd) => /cd\s+"\$\{[A-Z_]+:-\.\}"\s*&&/.test(cmd))) {
+      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Run \`myco init\` to rewrite.`);
+    }
+  } catch { /* file absent or malformed */ }
+
+  // 2. claude-matcher
+  const claudeSettings = path.join(home, '.claude', 'settings.json');
+  try {
+    const raw = fs.readFileSync(claudeSettings, 'utf-8');
+    const parsed = JSON.parse(raw) as { hooks?: Record<string, Array<Record<string, unknown>>> };
+    const missing: string[] = [];
+    for (const [event, groups] of Object.entries(parsed.hooks ?? {})) {
+      for (let i = 0; i < groups.length; i++) {
+        if (!('matcher' in groups[i]!)) missing.push(`${event}[${i}]`);
+      }
+    }
+    if (missing.length > 0) {
+      emit('fail', `Claude hook groups missing \`matcher\` field (Cursor cross-parser rejects whole file): ${missing.join(', ')}. Run \`myco init\` to rewrite.`);
+    }
+  } catch { /* missing or malformed — checkAgents covers parse failure */ }
+
+  // 3. hybrid-TOML in codex
+  const codexConfig = path.join(home, '.codex', 'config.toml');
+  try {
+    const raw = fs.readFileSync(codexConfig, 'utf-8').trim();
+    if (raw.startsWith('{')) {
+      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Run \`myco init\` to rewrite.`);
+    }
+  } catch { /* absent — fine */ }
+
+  // 4. project-local stub orphans — walk registered project roots and
+  // surface any whose `.agents/myco-run.cjs` exists without a sibling
+  // `.myco/myco.yaml`. Bounded to projects the registry already tracks
+  // so we don't scan the filesystem.
+  try {
+    const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
+    const orphans: string[] = [];
+    for (const grove of listGroves()) {
+      for (const project of listRegisteredProjects(grove.id)) {
+        const stub = path.join(project.root, '.agents', 'myco-run.cjs');
+        const vaultConfig = path.join(project.root, '.myco', 'myco.yaml');
+        if (fs.existsSync(stub) && !fs.existsSync(vaultConfig)) {
+          orphans.push(project.root);
+        }
+      }
+    }
+    if (orphans.length > 0) {
+      emit('warn', `Orphan project-local launcher stubs (no \`.myco/myco.yaml\`): ${orphans.join(', ')}. Run \`myco remove --project <root>\` to clean up.`);
+    }
+  } catch { /* registry unavailable — silent */ }
+
+  if (checks.length === 0) {
+    checks.push({ name: 'Edge cases', status: 'ok', detail: 'No known broken-edge states detected.', fixable: false });
+  }
+  return checks;
 }
 
 /**

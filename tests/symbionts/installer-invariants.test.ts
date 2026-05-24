@@ -428,4 +428,66 @@ describe('symbiont installer invariants', () => {
       });
     }
   });
+
+  /**
+   * Project-dir resolution lives in the global launcher, NOT in shell-cd
+   * prefixes. R4.4 surfaced that Cursor's hook spawn drops stdin entirely
+   * when the command contains a shell operator (`cd "$X" && node …`), so
+   * the JSON payload never reaches our handlers and capture goes silent.
+   *
+   * Fix: launcher reads the per-agent project-dir env var (or AGY's
+   * `workspacePaths[0]` from stdin) and calls `process.chdir()` inside
+   * node before delegating. Templates carry plain command lines.
+   *
+   * Anti-regression: every hook template EXCEPT claude-code must be free of
+   * the `cd "${...}" && ` pattern. Claude-code keeps the prefix because its
+   * spawn handles it correctly and historical commands depend on it; the
+   * launcher env-var fallback covers it as belt-and-suspenders.
+   */
+  describe('shell-cd prefix is absent (cursor stdin-drop anti-regression)', () => {
+    const SHELL_CD_PATTERN = /cd\s+"\$\{[A-Z_]+:-\.\}"\s*&&/;
+    const ALLOWED_WITH_CD = new Set(['claude-code']);
+    const TEMPLATE_DIRS = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf', 'antigravity'];
+    for (const dir of TEMPLATE_DIRS) {
+      const tplPath = path.join(TEMPLATES_DIR, dir, 'hooks.json');
+      if (!fs.existsSync(tplPath)) continue;
+      it(`${dir}/hooks.json: ${ALLOWED_WITH_CD.has(dir) ? 'keeps' : 'must not introduce'} a shell-cd prefix`, () => {
+        const parsed = JSON.parse(fs.readFileSync(tplPath, 'utf-8'));
+        const commands = collectHookCommands(parsed);
+        expect(commands.length).toBeGreaterThan(0);
+        for (const cmd of commands) {
+          if (ALLOWED_WITH_CD.has(dir)) {
+            expect(cmd, `${dir} command lost its shell-cd prefix: ${cmd}`).toMatch(SHELL_CD_PATTERN);
+          } else {
+            expect(cmd, `${dir} command grew a shell-cd prefix (Cursor stdin-drop risk): ${cmd}`).not.toMatch(SHELL_CD_PATTERN);
+          }
+        }
+      });
+    }
+  });
+
+  /**
+   * Global launcher must list the per-agent project-dir env vars. Acts as a
+   * structural lock on the chdir-fallback chain — if a future change drops
+   * one of these names, the corresponding symbiont's hooks would silently
+   * run with the agent's cwd (e.g. `~/.cursor/`) instead of the workspace,
+   * and project-root resolution would return wrong roots.
+   */
+  describe('global launcher honors per-agent project-dir env vars', () => {
+    const LAUNCHER_PATH = path.join(TEMPLATES_DIR, '_shared', 'global-launcher.cjs');
+    const REQUIRED_ENV_VARS = ['CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR', 'WINDSURF_PROJECT_DIR', 'MYCO_PROJECT_ROOT'];
+    for (const name of REQUIRED_ENV_VARS) {
+      it(`global-launcher.cjs lists ${name} in its chdir chain`, () => {
+        const content = fs.readFileSync(LAUNCHER_PATH, 'utf-8');
+        expect(content).toContain(`'${name}'`);
+      });
+    }
+    it('global-launcher.cjs reads workspacePaths from stdin for Antigravity', () => {
+      const content = fs.readFileSync(LAUNCHER_PATH, 'utf-8');
+      // The AGY branch buffers stdin and pulls workspacePaths[0] out of the
+      // JSON payload — it's the only project-dir signal AGY provides.
+      expect(content).toContain('workspacePaths');
+      expect(content).toContain("'antigravity'");
+    });
+  });
 });
