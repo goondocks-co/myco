@@ -34,6 +34,17 @@ Myco captures project memory in a local vault and serves it back through context
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
+- License is **Apache 2.0** (relicensed from MIT on 2026-04-29). New files must carry the Apache header; do not introduce GPL- or AGPL-licensed dependencies.
+
+## Global Install Architecture
+
+Myco installs once at the per-user/global level for every symbiont; project-local files are an opt-in override, not the default.
+
+- All symbionts install at the agent's global config location (e.g. `~/.claude/settings.json`, `~/.codex/config.toml`). Per-project `.agents/` folders are no longer required.
+- Two global launchers — `~/.myco/launcher.cjs` (hooks) and `~/.myco/mcp-launcher.cjs` (MCP) — bridge every agent to the daemon. Project-local launchers override per-project when present.
+- Settings-merge for shared agent config files is required: Myco's hook/MCP/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) must be preserved across install/uninstall cycles. Use audit-tracked TOML writes for Codex; atomic writes for every other agent.
+- Per-project overrides live in the dashboard's **Symbionts** page, not in CLI flags or hand-edited config.
+- Capture buffer lives under `~/.myco/buffer/<grove>/`. Do not reintroduce `.agents/myco-buffer/`; the migration walker archives any residue.
 
 ## Actors and Boundaries
 
@@ -68,7 +79,9 @@ Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of pr
 - One global daemon serves many Groves, and each Grove owns its own SQLite DB. Do not assume the daemon is single-project. Code that opens a database must resolve the path through the request context, not from `vaultDir` alone.
 - Reads must pass a `ProjectScope` (the discriminated union over Grove/project tenancy). API handlers, query helpers, and tools take `ProjectScope` so the right database, project_id, and machine_id are bound for the call.
 - Config is a three-tier scoped system: **machine** (`~/.myco/config.yaml`), **grove** (`~/.myco/groves/<id>/config.yaml`), **project** (`<project>/.myco/myco.yaml`), and **personal** (`<project>/.myco/local.yaml`) overlays merge in that order. Use the `safe-config-updates` skill when adding a new configurable field — it covers scope assignment, Zod schema extension, and the `ScopedField` UI wiring.
-- Explicit vault provisioning is a precondition for any project-scoped vault operation. The global daemon auto-detects projects, but new code paths must not silently bootstrap a project-local vault from cwd; require an explicit project-local opt-in (`myco init --project <path>`) and surface a clear error otherwise. Bootstrap-from-cwd in `daemon/main.ts` is a transitional concept (see `bootstrapVaultDir`).
+- Project registration is automatic on first agent hook (auto-Grove-create), but new code paths must not silently materialize a project-local vault from cwd. The daemon binds to a registered Grove or runs in **phantom mode** at `~/.myco/_unbound-bootstrap/`; it never invents a project from a bare cwd. Project-local override requires explicit opt-in (`myco init --project <path>`). The bare `myco init` form is gone.
+- All `~/.myco/service/daemon.json` mutations go through `DaemonStateAuthority`. Do not call `writeOrTouchDaemonState` directly; the capability is the only sanctioned write path and logs reason, caller PID, and before/after PID for every change.
+- Variant-aware rebind is strict. `MYCO_SERVICE_VARIANT=service-dev` daemons bind only to Groves with `served_by="service-dev"`; `MYCO_SERVICE_VARIANT=service` daemons bind only to `served_by="service"`. No fall-through; do not add a default-Grove escape hatch.
 - Power state is per-project. Scheduled work iterates Grove scopes; do not collapse multiple projects into one power loop or assume a single PowerManager owns all projects.
 - After changing daemon code, run `make build` and then `myco-dev restart`. Restart is per-machine (one daemon serves all Groves), not per-project.
 
