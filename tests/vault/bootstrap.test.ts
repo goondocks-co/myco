@@ -153,6 +153,27 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 
+  test('prod variant refuses to bind a default Grove with served_by=service-dev (task #9)', () => {
+    // The cross-variant escape hatch: a user sets a dev Grove as
+    // default_grove_id and then installs the prod daemon. Before
+    // task #9 the prod daemon would silently bind to the dev Grove
+    // via the default-Grove fast-path, ignoring served_by. The fix
+    // makes the prod variant skip a dev-owned default and fall
+    // through to the served_by-filtered loop (which finds nothing
+    // here), returning null so the rebind watcher keeps waiting.
+    const devGrove = 'grove_2222222222222222222222222222222a';
+    const devRoot = makeProject('escape-hatch-dev');
+    writeRegistry(devGrove); // default points at a dev Grove
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
   test('prod variant (default) still picks the default Grove', () => {
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';

@@ -6,7 +6,7 @@ import {
   PROJECT_MANIFEST_FILENAME,
   SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
-import { listGroves, getDefaultGroveId, listRegisteredProjects } from '../grove/registry.js';
+import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord } from '../grove/registry.js';
 import { serviceVariantToDirName } from '../service/labels.js';
 import { createProjectId } from '../grove/ids.js';
 
@@ -178,13 +178,28 @@ function firstProjectVaultFromRegistry(): string | null {
     return null;
   }
 
-  // Prod variant (or unset): prefer the default Grove (even if it has no
-  // grove.toml — the old behavior allowed this). Then fall through to any
-  // Grove with served_by = "service".
+  // Prod variant (or unset): prefer the default Grove unless it is
+  // explicitly served by the dev daemon, then fall through to any
+  // other prod Grove. The served_by filter exists to close the
+  // cross-variant escape hatch: a user who set a dev Grove as
+  // default_grove_id and then installed the prod daemon must NOT
+  // have the prod daemon silently bind to the dev Grove. That's
+  // the exact cross-variant violation the variant-pinned design
+  // exists to prevent.
+  //
+  // Groves without a grove.toml at all can't be bound either way —
+  // `listRegisteredProjects` short-circuits on a missing record —
+  // so the loadGroveRecord check below also filters them out, which
+  // matches the pre-fix behavior (a Grove with no grove.toml never
+  // contributed projects, the prior "legacy carve-out" comment was
+  // misleading).
   const defaultId = getDefaultGroveId(mycoHome);
   if (defaultId) {
-    const vault = firstVaultFromGrove(defaultId, mycoHome);
-    if (vault) return vault;
+    const defaultRecord = loadGroveRecord(defaultId, mycoHome);
+    if (defaultRecord && defaultRecord.served_by !== 'service-dev') {
+      const vault = firstVaultFromGrove(defaultId, mycoHome);
+      if (vault) return vault;
+    }
   }
   for (const grove of listGroves(mycoHome, { servedBy: 'service' })) {
     if (grove.id === defaultId) continue; // already tried above

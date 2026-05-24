@@ -373,16 +373,12 @@ describe('variant-pinned daemons phantom-bootstrap + bind only to matching-varia
 
   test('prod variant rebinds to a prod Grove, NOT a non-default dev Grove registered alongside it', () => {
     // Symmetric to the dev case via the served_by-filtered fallback
-    // path. NOTE: the prod-variant fast-path prefers the registry's
-    // *default Grove* regardless of its `served_by` — see
-    // `firstProjectVaultFromRegistry()` in vault/bootstrap.ts:184.
-    // That default-Grove fallback is intentional (preserves old
-    // behavior when grove.toml is absent) but means a dev Grove set
-    // as `default_grove_id` WOULD be bound by a prod daemon. To test
-    // the variant filter without colliding with that fast-path, the
-    // default Grove here is the PROD one — the test asserts that an
-    // additional registered dev Grove (non-default) is ignored by
-    // prod variant via the served_by filter.
+    // path. The default-Grove fast-path in `firstProjectVaultFromRegistry()`
+    // now honors `served_by`: a legacy default Grove with no
+    // `grove.toml` (or no `served_by` field) still binds to prod, but
+    // an explicit `served_by = "service-dev"` default Grove is skipped.
+    // Phase 1 below asserts the post-fix skip-on-dev behavior; phase 2
+    // asserts the standard prod-default bind.
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
     const prodRoot = makeProjectOnDisk('symm-prod');
@@ -398,25 +394,13 @@ describe('variant-pinned daemons phantom-bootstrap + bind only to matching-varia
       writeRegistry(devGrove);
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
-      // KNOWN GAP: this currently FAILS — the default-Grove
-      // fast-path in firstProjectVaultFromRegistry() ignores
-      // served_by for the registry's default_grove_id. Surfaced
-      // here, not fixed (team-lead instruction: "if leak path
-      // found, surface but do not fix source"). When that gap is
-      // closed, this expect uncomments and the test goes green
-      // without further changes.
-      //
-      // expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
-      //
-      // Until then, document the asymmetry: dev variant strict-
-      // filters; prod variant has a default-Grove escape hatch.
-      const phase1 = resolveBootstrapVaultDir(tmpCwd);
-      // Either null (post-fix) or the dev vault (current behavior).
-      // We don't want the test to be a tombstone for the gap, so
-      // assert the bound on the cross-variant *miss* case in phase 2
-      // below — that path doesn't depend on the default-Grove
-      // escape hatch.
-      void phase1;
+      // Task #9 closed the default-Grove escape hatch: when the
+      // registry's default_grove_id points to a Grove with
+      // `served_by = "service-dev"`, the prod daemon now refuses to
+      // bind it and falls through to wait for a prod-served Grove.
+      // Phase 1 here asserts the post-fix behavior — the dev default
+      // is invisible to the prod variant.
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
       // Phase 2: prod Grove registered AS DEFAULT, alongside the
       // non-default dev Grove. Prod watcher fires, binds to the
