@@ -10,6 +10,8 @@ Token-spend on speculative reads is one of the largest invisible costs in agent 
 
 **Tool-call rows — injection indicator.** Each Read tool call that received a Canopy injection shows a small badge with the injection cost. Click it to see the exact anatomy blob the agent saw at that moment — verbatim, no summarization. Full transparency.
 
+**Injection activity rows.** Canopy, Cortex preamble, and per-prompt spore injections all flow through one unified records helper, so the session timeline renders every injection as a `myco:inject_canopy`, `myco:inject_cortex`, or `myco:inject_spores` row with distinct styling. Duplicate injections for the same key are de-duplicated at the database level.
+
 **Session list — lifetime rollup.** A rollup tile across all sessions shows total tokens saved, average per session, and how often the agent chose to skip after injection.
 
 **Cortex tab — your Canopy command deck.** The dashboard's Cortex tab gives you three views over the same index: an **Overview** with status and savings, an **Entries** browser (sortable, free-text searchable, with a slide-out detail panel and a one-click **Re-describe** for any file), and the **Map** sub-panel that holds the project's architectural overview. Refresh and Rebuild buttons are right there when you want to push the index forward.
