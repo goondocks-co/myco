@@ -20,6 +20,17 @@ export async function main() {
     const sessionId = input.sessionId;
     if (!sessionId) return;
 
+    // Drop PostToolUse fires that carry no tool name. Some symbionts
+    // (notably Antigravity) emit PostToolUse for non-tool steps where
+    // the field-mapped `toolCall.name` resolves to undefined — sending
+    // those to the daemon produces blank activity rows that clutter
+    // the Sessions UI with no useful data. The agent's real tool
+    // invocations always carry a name.
+    if (typeof input.toolName !== 'string' || input.toolName.length === 0) {
+      process.stderr.write(`[myco] post-tool-use dropped (no tool_name) symbiont=${symbiont ?? '?'} session=${sessionId}\n`);
+      return;
+    }
+
     const client = createHookDaemonClient(VAULT_DIR, { sessionId });
 
     // Capture writes use service-aware recovery on transport failure, then

@@ -27,6 +27,22 @@ export function readAntigravityPromptsFromTranscript(transcriptPath: string): st
   }
 }
 
+/**
+ * Read with one retry. Antigravity IDE writes the transcript file
+ * asynchronously after PreInvocation fires — the first read often
+ * returns zero prompts because the file doesn't exist yet. A single
+ * short retry catches the common case without holding the hook
+ * response past the 10s timeout. Antigravity CLI writes the file
+ * before firing the hook and hits the first attempt every time.
+ */
+const ANTIGRAVITY_TRANSCRIPT_RETRY_MS = 1500;
+async function readAntigravityPromptsWithRetry(transcriptPath: string): Promise<string[]> {
+  const first = readAntigravityPromptsFromTranscript(transcriptPath);
+  if (first.length > 0) return first;
+  await new Promise((resolve) => setTimeout(resolve, ANTIGRAVITY_TRANSCRIPT_RETRY_MS));
+  return readAntigravityPromptsFromTranscript(transcriptPath);
+}
+
 export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
@@ -75,7 +91,12 @@ export async function main() {
     });
     let latestAntigravityPrompt: string | undefined;
     if (symbiont === 'antigravity' && transcriptPath) {
-      const prompts = readAntigravityPromptsFromTranscript(transcriptPath);
+      // Antigravity IDE writes transcript_full.jsonl asynchronously —
+      // the file is typically not on disk when PreInvocation fires for
+      // the first turn. Retry once with a short delay. The CLI flavor
+      // hits the happy path on the first attempt; only the IDE pays
+      // the retry cost, and only on the first turn per session.
+      const prompts = await readAntigravityPromptsWithRetry(transcriptPath);
       if (prompts.length > 0) {
         await client.post('/events/sync-transcript-prompts', {
           session_id: sessionId,
