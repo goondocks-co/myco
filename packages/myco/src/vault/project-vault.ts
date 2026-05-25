@@ -11,8 +11,8 @@ import {
 import {
   loadConfig,
   updateConfig,
-  type MycoConfig,
 } from '@myco/config/loader.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import {
   resolveProjectLocalManifestPath,
   resolveProjectManifestPath,
@@ -202,6 +202,7 @@ export class ProjectVault {
         id: opts.grove.id,
         slug: opts.grove.slug,
         name: opts.grove.name,
+        mode: 'local',
       },
     });
     wrote.push(this.rel(resolveProjectManifestPath(this.vaultDir)));
