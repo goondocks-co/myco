@@ -73,6 +73,8 @@ import {
 import {
   createProjectBackupHandler,
   createProjectRestoreHandler,
+  createCommitToRepoHandler,
+  createUncommitFromRepoHandler,
 } from './api/projects.js';
 import {
   handleListSessions,
@@ -97,7 +99,12 @@ import { createSessionContextHandler, createPromptContextHandler, createResumeCo
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
-import { handleListSymbionts, handleDetectSymbionts } from './api/symbionts.js';
+import {
+  handleListSymbionts,
+  handleDetectSymbionts,
+  handleDrainMigration,
+  createProjectSymbiontsPatchHandler,
+} from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
 import {
@@ -1218,6 +1225,7 @@ export async function main(): Promise<void> {
     req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
     req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
   ));
+  server.registerRoute('POST', '/api/symbionts/drain-migration', async () => handleDrainMigration());
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
@@ -1393,6 +1401,9 @@ export async function main(): Promise<void> {
   server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
+  server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/projects/:projectId/commit-to-repo', createCommitToRepoHandler(groveDaemonStateDir));
+  server.registerRoute('DELETE', '/api/projects/:projectId/commit-to-repo', createUncommitFromRepoHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 

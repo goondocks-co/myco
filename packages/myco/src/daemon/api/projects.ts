@@ -19,7 +19,14 @@ import {
   resolveProjectVaultDir,
   resolveServiceDirName,
 } from '@myco/grove/paths.js';
-import { findRegisteredProject, isProjectPaused } from '@myco/grove/registry.js';
+import {
+  findRegisteredProject,
+  isProjectPaused,
+  loadGroveRecord,
+} from '@myco/grove/registry.js';
+import { assertSafeProjectRoot } from '@myco/vault/resolve.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { resolveProjectManifestPath } from '@myco/grove/paths.js';
 import { createBackup, readSnapshotHeader, restoreBackup } from '../backup.js';
 import { getMachineId } from '../machine-id.js';
 import type { RouteHandler } from '../router.js';
@@ -179,5 +186,148 @@ export function createProjectRestoreHandler(
     } finally {
       db.close();
     }
+  };
+}
+
+export interface CommitToRepoBody {
+  /**
+   * Reserved for the launcher-write toggle: when true, also writes
+   * `.agents/myco-run.cjs` + `.agents/myco-cli.cjs`. Not implemented in
+   * this stub — the launcher-write path lands with the Wave 2 UI work.
+   */
+  write_launchers?: boolean;
+  /**
+   * Reserved for the runtime-pin toggle: when set, writes
+   * `.myco/runtime.command` with this absolute path. Not implemented
+   * in this stub.
+   */
+  runtime_command?: string;
+}
+
+/**
+ * Write `<projectRoot>/.myco/project.toml` with the project's Grove
+ * identity so teammates cloning the repo resolve to the same logical
+ * Grove on their own machines. Idempotent: re-writing with the same
+ * identity is a no-op from the file's perspective (the manifest writer
+ * merges).
+ *
+ * The launcher-write and runtime-pin flags are accepted but deferred —
+ * the API surface is reserved here so Wave 2's UI doesn't have to
+ * version-bump the contract. Returns `not_implemented_flags` listing
+ * any flags the caller set that aren't yet honored.
+ */
+export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => {
+    const projectId = req.params.projectId;
+    const mycoHome = resolveMycoHome();
+    const found = findRegisteredProject({ projectId }, mycoHome);
+    if (!found) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+    const variant = resolveServiceDirName(daemonStateDir, mycoHome);
+    if (found.grove.served_by !== variant) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+
+    const projectRoot = path.resolve(found.project.root);
+    try {
+      assertSafeProjectRoot(projectRoot);
+    } catch (err) {
+      return { status: 400, body: errorBody('unsafe_project_root', (err as Error).message) };
+    }
+
+    const grove = loadGroveRecord(found.grove.id, mycoHome);
+    if (!grove) {
+      return {
+        status: 500,
+        body: errorBody('grove_record_missing', `Grove ${found.grove.id} record could not be loaded`),
+      };
+    }
+
+    const projectVaultDir = resolveProjectVaultDir(projectRoot);
+    try {
+      saveProjectManifest(projectVaultDir, {
+        project: {
+          id: assertGroveProjectId(projectId),
+          name: found.project.name,
+        },
+        grove: {
+          id: grove.id,
+          slug: grove.slug,
+          name: grove.name,
+        },
+      });
+    } catch (err) {
+      return { status: 500, body: errorBody('manifest_write_failed', (err as Error).message) };
+    }
+
+    const body = (req.body ?? {}) as CommitToRepoBody;
+    const deferred: string[] = [];
+    if (body.write_launchers === true) deferred.push('write_launchers');
+    if (typeof body.runtime_command === 'string' && body.runtime_command.length > 0) deferred.push('runtime_command');
+
+    return {
+      body: {
+        ok: true,
+        project_id: projectId,
+        grove_id: grove.id,
+        manifest_path: resolveProjectManifestPath(projectVaultDir),
+        ...(deferred.length > 0 ? { not_implemented_flags: deferred } : {}),
+      },
+    };
+  };
+}
+
+/**
+ * Remove `<projectRoot>/.myco/project.toml`. The project stays
+ * auto-registered — the registry binding lives at `~/.myco/groves/`
+ * and is independent of the committed file. Idempotent: deleting an
+ * already-absent file returns ok.
+ */
+export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => {
+    const projectId = req.params.projectId;
+    const mycoHome = resolveMycoHome();
+    const found = findRegisteredProject({ projectId }, mycoHome);
+    if (!found) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+    const variant = resolveServiceDirName(daemonStateDir, mycoHome);
+    if (found.grove.served_by !== variant) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+
+    const projectVaultDir = resolveProjectVaultDir(path.resolve(found.project.root));
+    const manifestPath = resolveProjectManifestPath(projectVaultDir);
+    let removed = false;
+    if (fs.existsSync(manifestPath)) {
+      try {
+        fs.unlinkSync(manifestPath);
+        removed = true;
+      } catch (err) {
+        return { status: 500, body: errorBody('manifest_delete_failed', (err as Error).message) };
+      }
+    }
+
+    return {
+      body: {
+        ok: true,
+        project_id: projectId,
+        manifest_path: manifestPath,
+        removed,
+      },
+    };
   };
 }
