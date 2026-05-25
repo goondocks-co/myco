@@ -286,7 +286,37 @@ export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): strin
  */
 export function expandHome(value: string, homeDir?: string): string {
   const home = homeDir ?? process.env.HOME ?? os.homedir();
+  assertSandboxedHome(home);
   if (value === '~') return home;
   if (value.startsWith(`~${path.sep}`)) return path.join(home, value.slice(2));
   return value;
+}
+
+/**
+ * Smoke-test sandbox enforcement. When `MYCO_SANDBOX_ROOT` is set, the
+ * caller is claiming "this whole process is running inside an isolated
+ * filesystem root." In that case `HOME` MUST resolve to a path inside
+ * the sandbox — otherwise a smoke test that sandboxed `MYCO_HOME` (the
+ * launcher state dir) but forgot to set `HOME` would write to the real
+ * `~/.claude/settings.json`, `~/.cursor/hooks.json`, etc. via
+ * manifest globalHooksTarget paths. That escape produced 30+ orphan
+ * hook entries across five real symbiont config files — the bug this
+ * gate exists to prevent recurring.
+ *
+ * Production calls (no MYCO_SANDBOX_ROOT) are unaffected.
+ */
+function assertSandboxedHome(home: string): void {
+  const sandboxRoot = process.env.MYCO_SANDBOX_ROOT;
+  if (!sandboxRoot) return;
+  const resolvedRoot = path.resolve(sandboxRoot);
+  const resolvedHome = path.resolve(home);
+  const sep = path.sep;
+  if (resolvedHome !== resolvedRoot && !resolvedHome.startsWith(resolvedRoot + sep)) {
+    throw new Error(
+      `MYCO_SANDBOX_ROOT=${sandboxRoot} is set but HOME=${home} resolves outside it. ` +
+      `Smoke tests must point HOME inside MYCO_SANDBOX_ROOT so manifest `
+      + `globalHooksTarget paths (~/.claude/settings.json, ~/.cursor/hooks.json, ...) `
+      + `stay sandboxed alongside MYCO_HOME.`,
+    );
+  }
 }

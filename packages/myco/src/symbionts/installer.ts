@@ -15,7 +15,7 @@ import {
   type JsonSettingsAudit,
 } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, markGroupAsMyco } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
@@ -857,8 +857,11 @@ export class SymbiontInstaller {
         const nonMyco = (groups as Array<Record<string, unknown>>).filter((g) => !isMycoHookGroup(g));
         if (nonMyco.length > 0) mergedHooks[event] = nonMyco;
       }
+      // Stamp the identity marker so future reinstalls strip this
+      // block by ownership rather than launcher-path substring scan.
       for (const [event, groups] of Object.entries(hooksTemplate)) {
-        mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
+        const tagged = (groups as Array<Record<string, unknown>>).map((g) => markGroupAsMyco({ ...g }));
+        mergedHooks[event] = [...(mergedHooks[event] ?? []), ...tagged];
       }
       data.hooks = mergedHooks;
       hooks = true;
@@ -1297,9 +1300,12 @@ export class SymbiontInstaller {
       }
     }
 
-    // Add template hooks
+    // Add template hooks, stamping each Myco-owned group with the
+    // identity marker so future reinstalls can strip it by ownership
+    // (not by substring scan of the launcher path).
     for (const [event, groups] of Object.entries(template)) {
-      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
+      const tagged = (groups as Array<Record<string, unknown>>).map((g) => markGroupAsMyco({ ...g }));
+      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...tagged];
     }
 
     settings.hooks = mergedHooks;
