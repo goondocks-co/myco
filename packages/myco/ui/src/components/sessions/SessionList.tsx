@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { Row } from '../ui/row';
@@ -160,6 +160,7 @@ export function SessionList({
   filterInputRef,
 }: SessionListProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
@@ -207,11 +208,19 @@ export function SessionList({
   const didAutoSelect = useRef(false);
   useEffect(() => {
     if (didAutoSelect.current) return;
+    // Skip auto-select when a deep-link has applied filters via query
+    // string — e.g. `/sessions?agent=claude-code&has_plan=true` from
+    // the Symbionts page. Jumping to the first session would unmount
+    // the route and lose the filter state on remount.
+    if (location.search.length > 0) {
+      didAutoSelect.current = true;
+      return;
+    }
     if (!selectedId && !isLoading && sessions.length > 0) {
       didAutoSelect.current = true;
       navigate(`/sessions/${sessions[0].id}`, { replace: true });
     }
-  }, [selectedId, isLoading, sessions, navigate]);
+  }, [selectedId, isLoading, sessions, navigate, location.search]);
 
   const nav = useListKeyboardNav({
     items: sessions,
