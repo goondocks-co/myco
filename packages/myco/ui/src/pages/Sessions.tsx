@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { EmptyDetailHint } from '../components/ui/empty-detail-hint';
 import { ListFilterBar, type FilterDefinition } from '../components/ui/list-filter-bar';
@@ -18,10 +18,29 @@ const STATUS_FILTER: FilterDefinition = {
   ],
 };
 
+const PLAN_FILTER: FilterDefinition = {
+  key: 'has_plan',
+  label: 'Plans',
+  options: [
+    { value: FILTER_ALL, label: 'All sessions' },
+    { value: 'true', label: 'With a plan' },
+  ],
+};
+
 export default function Sessions() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const filterInputRef = useRef<HTMLInputElement>(null);
+
+  // Seed filters from URL once so deep-links like `/sessions?has_plan=true`
+  // (from the Symbionts page Plans chip) land with the dropdown pre-set.
+  const initialFilters = useMemo(() => ({
+    status: searchParams.get('status') ?? FILTER_ALL,
+    agent: searchParams.get('agent') ?? FILTER_ALL,
+    has_plan: searchParams.get('has_plan') === 'true' ? 'true' : FILTER_ALL,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
 
   const {
     searchInput,
@@ -32,9 +51,7 @@ export default function Sessions() {
     handleSearchChange,
     handleFilterChange,
     activeFilter,
-  } = useListFilters({
-    initialFilters: { status: FILTER_ALL, agent: FILTER_ALL },
-  });
+  } = useListFilters({ initialFilters });
 
   const { data: symbiontsData } = useSymbionts();
 
@@ -51,11 +68,12 @@ export default function Sessions() {
         ...enabledSymbionts.map((s) => ({ value: s.name, label: s.displayName })),
       ],
     };
-    return [STATUS_FILTER, symbiontFilter];
+    return [STATUS_FILTER, symbiontFilter, PLAN_FILTER];
   }, [symbiontsData]);
 
   const activeStatus = activeFilter('status');
   const activeAgent = activeFilter('agent');
+  const activeHasPlan = activeFilter('has_plan') === 'true';
 
   return (
     <div className="flex flex-col h-full gap-4 p-4">
@@ -80,6 +98,7 @@ export default function Sessions() {
               search={debouncedSearch}
               statusFilter={activeStatus}
               agentFilter={activeAgent}
+              hasPlanFilter={activeHasPlan}
               offset={offset}
               onOffsetChange={setOffset}
               filterInputRef={filterInputRef}

@@ -31,9 +31,10 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   const status = req.query.status || undefined;
   const agent = req.query.agent || undefined;
   const search = req.query.search || undefined;
+  const hasPlan = req.query.has_plan === 'true' ? true : undefined;
   const scope = projectScopeFromRequestContext(req.requestContext);
 
-  const filterOpts = { scope, status, agent, search };
+  const filterOpts = { scope, status, agent, search, hasPlan };
 
   const rawSessions = listSessions({ ...filterOpts, limit, offset });
   const ids = rawSessions.map((s) => s.id);

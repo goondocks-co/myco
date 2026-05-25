@@ -140,6 +140,7 @@ export interface SessionListProps {
   /** Active filter values from the page-level filter bar (undefined = all). */
   statusFilter?: string;
   agentFilter?: string;
+  hasPlanFilter?: boolean;
   /** Pagination state (owned by the page so it resets when filters change). */
   offset: number;
   onOffsetChange: (offset: number) => void;
@@ -153,6 +154,7 @@ export function SessionList({
   search,
   statusFilter,
   agentFilter,
+  hasPlanFilter,
   offset,
   onOffsetChange,
   filterInputRef,
@@ -182,6 +184,7 @@ export function SessionList({
     offset,
     status: statusFilter,
     agent: agentFilter,
+    hasPlan: hasPlanFilter,
     search,
   });
 

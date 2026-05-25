@@ -134,6 +134,12 @@ export interface ListSessionsOptions {
    * Defaults permissive so UI listings keep showing in-flight sessions.
    */
   includeActive?: boolean;
+  /**
+   * When true, restrict to sessions that produced at least one plan
+   * (EXISTS join against `plans.session_id`). The Symbionts page uses
+   * this to scope its "Plans" capability deep-link.
+   */
+  hasPlan?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +367,10 @@ function buildSessionsWhere(
   // to avoid picking up in-flight work; UI/CLI leave it unset.
   if (options.includeActive === false && options.status === undefined) {
     conditions.push(`status != 'active'`);
+  }
+
+  if (options.hasPlan === true) {
+    conditions.push(`EXISTS (SELECT 1 FROM plans p WHERE p.session_id = sessions.id)`);
   }
 
   return {
