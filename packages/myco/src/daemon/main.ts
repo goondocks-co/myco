@@ -564,10 +564,11 @@ export async function main(): Promise<void> {
   //       global handlers or singleton subsystems that haven't been
   //       Grove-aware-ified yet).
   //
-  // Once `myco init` is universally required and every handler/subsystem
-  // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
-  // case (a) handlers move to a dedicated daemon-paths struct. Until then,
-  // do NOT use this value as a stand-in for the request-scoped vault.
+  // Once every handler/subsystem takes a ProjectScope (auto-registered
+  // at first hook), the bootstrap fallback in case (b) goes away and
+  // case (a) handlers move to a dedicated daemon-paths struct. Until
+  // then, do NOT use this value as a stand-in for the request-scoped
+  // vault.
   const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
   const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
     resolveBootstrapVaultDirOrPhantom();

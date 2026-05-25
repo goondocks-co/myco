@@ -139,7 +139,7 @@ describe('removeProjectLaunchers (single source of truth for project launcher se
 
   it('preserves .myco/runtime.command by default', () => {
     // .myco/runtime.command is the `make dev-link-worktree` /
-    // `myco init --project` pin. It survives a per-symbiont teardown.
+    // dashboard commit-to-repo pin. It survives a per-symbiont teardown.
     const pin = writeFile('.myco/runtime.command', '/usr/local/bin/myco-dev');
     removeProjectLaunchers(tmpProject);
     expect(fs.existsSync(pin)).toBe(true);

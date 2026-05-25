@@ -122,8 +122,8 @@ const CURSOR_PROJECT_ROOT_CD =
  *
  *   - `'project'`: `node .agents/myco-run.cjs` — invokes the project-local
  *     guard, which is what historical templates hard-coded. Templates
- *     remain meaningful in project-scope installs (e.g. `myco init
- *     --project`).
+ *     remain meaningful in project-scope installs (the dashboard
+ *     commit-to-repo opt-in).
  *   - `'global'`: `node "<home>/.myco/launcher.cjs"` — invokes the shared
  *     absolute-path launcher installed by `installGlobalLaunchers`. The
  *     launcher itself layers a project-local override (`<projectRoot>/.agents/
@@ -176,8 +176,8 @@ function assertSafeHomeForUnquotedPath(launcherPath: string): void {
   throw new Error(
     `Refusing to install global symbiont hooks: launcher path "${launcherPath}" ` +
     `contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. ` +
-    `Move Myco out of a path with spaces, or run \`myco init --project\` to use the ` +
-    `project-local launcher instead.`,
+    `Move Myco out of a path with spaces, or commit Myco config to the repo ` +
+    `via the dashboard's Symbionts page to use the project-local launcher instead.`,
   );
 }
 
@@ -437,8 +437,8 @@ export class SymbiontInstaller {
    * agent's dir" rule).
    *
    * Always returns true for `installScope: 'project'` — project-local
-   * installs are explicitly opted into by `myco init --project`, so the
-   * gate doesn't apply.
+   * installs are explicitly opted into via the dashboard's commit-to-repo
+   * affordance, so the gate doesn't apply.
    */
   isAvailableForScope(): boolean {
     if (this.installScope !== 'global') return true;

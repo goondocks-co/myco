@@ -100,7 +100,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     // Surface as an error rather than process.exit so --all-projects can
     // continue past a broken project and aggregate failures at the end.
     throw new Error(
-      `No myco.yaml found in ${vaultDir}. Run \`myco init --project ${projectRoot ?? '<path>'}\` first.`,
+      `No myco.yaml found in ${vaultDir}. Open the project in a supported agent so Myco auto-registers it, or commit Myco config to the repo via the dashboard's Symbionts page first.`,
     );
   }
 

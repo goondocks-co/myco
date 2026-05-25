@@ -6,9 +6,9 @@ import path from 'node:path';
  *
  * Default behavior: `~/Library/LaunchAgents` on macOS, `~/.config/systemd/user`
  * on Linux. Sandbox/test installs MUST set this to a sandbox-scoped path so
- * `myco init` (and any other code path that invokes
- * `ensureSelfInstalledAsService`) does not write into the real user's
- * LaunchAgents dir and hijack the running daemon's plist.
+ * `ensureSelfInstalledAsService` (and any other install-time code path)
+ * does not write into the real user's LaunchAgents dir and hijack the
+ * running daemon's plist.
  */
 export const SERVICE_UNIT_DIR_ENV = 'MYCO_LAUNCH_AGENTS_DIR';
 
@@ -21,7 +21,7 @@ export interface ServiceUnitDirOptions {
 /**
  * Resolve the directory where the daemon should write its launchd plist or
  * systemd user-unit file. Honors `MYCO_LAUNCH_AGENTS_DIR` so sandboxed
- * `myco init` runs never touch the real `~/Library/LaunchAgents/`.
+ * install runs never touch the real `~/Library/LaunchAgents/`.
  */
 export function resolveServiceUnitDir(options: ServiceUnitDirOptions = {}): string {
   const env = options.env ?? process.env;

@@ -2034,7 +2034,7 @@ describe('uninstallInstructions', () => {
   });
 
   it('removes prepended reference block, preserves user content', () => {
-    // Simulate: user had custom rules, then myco init prepended the reference
+    // Simulate: user had custom rules, then the installer prepended the reference
     fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installInstructions(); // Prepends reference

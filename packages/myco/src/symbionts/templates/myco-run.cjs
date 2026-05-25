@@ -17,7 +17,7 @@
 // Bumping the version (v2 → v3) requires teaching the global launcher
 // to accept the new value.
 //
-// Managed by: myco init / myco update
+// Managed by: myco update / dashboard Symbionts page (commit-to-repo opt-in)
 // Safe to delete: myco remove
 'use strict';
 

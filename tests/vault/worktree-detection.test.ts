@@ -1,9 +1,9 @@
 /**
  * Tests for the worktree-detection helpers in `@myco/vault/resolve`.
  *
- * `isInsideWorktree` underpins `myco init --worktree`: the worktree
- * bootstrap path only fires when cwd is in a real git worktree, not in
- * the main checkout or outside git entirely.
+ * `isInsideWorktree` gates the worktree-bootstrap path: it only fires
+ * when cwd is in a real git worktree, not in the main checkout or
+ * outside git entirely.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';

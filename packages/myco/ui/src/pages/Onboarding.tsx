@@ -9,14 +9,11 @@ export default function Onboarding() {
           <Terminal className="h-5 w-5" />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold text-on-surface">Initialize a project</h1>
+          <h1 className="text-2xl font-semibold text-on-surface">No projects yet</h1>
           <p className="mt-2 max-w-xl text-sm text-on-surface-variant">
-            This daemon has no registered Grove projects yet. Initialize a repository from its project directory to make it available here.
+            This daemon hasn't seen a project yet. Open any git repository in a supported agent (Claude Code, Cursor, Codex, Copilot, Antigravity, Windsurf, OpenCode, or Pi) — Myco registers the project automatically on the first hook and it will appear here.
           </p>
         </div>
-        <pre className="overflow-x-auto rounded-md border border-outline-variant/30 bg-surface-container p-4 text-sm text-on-surface">
-          <code>myco init</code>
-        </pre>
       </div>
     </PageContainer>
   );

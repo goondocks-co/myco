@@ -31,23 +31,22 @@ export function resolveProjectRoot(vaultDir: string): string {
  * Refuse to treat dangerously-broad paths as a project root.
  *
  * A project root is meant to be a single repo or workspace directory. When
- * `myco init` (or any other registration site) is handed `$HOME`, `/`, or
- * a direct child of `/Users` / `/home` / `/root`, the user almost certainly
- * ran the command from the wrong cwd. Letting it through registers a
- * "project" that owns the entire home directory — which then poisons
- * downstream tools like the canopy scanner, which try to walk every file
- * under the project root.
+ * any registration site is handed `$HOME`, `/`, or a direct child of
+ * `/Users` / `/home` / `/root`, an agent hook almost certainly fired from
+ * the wrong cwd. Letting it through registers a "project" that owns the
+ * entire home directory — which then poisons downstream tools like the
+ * canopy scanner, which try to walk every file under the project root.
  *
  * Throws `UnsafeProjectRootError` with a message that explains both what
  * was rejected and the likely fix. Call from every project-creation entry
- * point: `myco init`, MCP register tools, and `registerProjectInGrove`
- * (defense in depth).
+ * point: auto-registration on hook, MCP register tools, and
+ * `registerProjectInGrove` (defense in depth).
  */
 export class UnsafeProjectRootError extends Error {
   constructor(public readonly projectRoot: string, public readonly reason: string) {
     super(
       `Refusing to use ${projectRoot} as a project root: ${reason}. ` +
-      `Run \`myco init\` from inside a specific project directory ` +
+      `Open Myco-aware agents from inside a specific project directory ` +
       `(e.g., a checked-out git repo), not from your home directory or filesystem root.`,
     );
     this.name = 'UnsafeProjectRootError';
@@ -176,8 +175,9 @@ export function resolveMainRepoRoot(cwd: string = process.cwd()): string {
  * (`.claude/settings.json`, `.agents/myco-run.cjs`, optionally
  * `.myco/runtime.command`) as untracked or gitignored — so a freshly
  * created worktree has none of them and capture silently goes dark
- * until they're written. `myco init --worktree` is the supported
- * recovery path; this helper is what it uses to gate behavior.
+ * until they're written. The dashboard's commit-to-repo opt-in is
+ * the supported recovery path; this helper is what it uses to gate
+ * behavior.
  */
 export function isInsideWorktree(cwd: string = process.cwd()): boolean {
   const worktreeRoot = resolveWorktreeRoot(cwd);

@@ -283,9 +283,10 @@ function manifestState(project: RegisteredProject): GroveProjectSummary['manifes
     manifest = loadProjectManifest(resolveProjectVaultDir(project.root));
   } catch {
     // Distinguish "file is malformed" from "file is absent". Returning
-    // 'missing' for a parse error sends the user to `myco init`, which
-    // would happily overwrite the broken file without surfacing what
-    // was wrong; 'invalid' gives the UI a clear path to "open and fix".
+    // 'missing' for a parse error would send the user down the
+    // auto-registration path, which would happily overwrite the broken
+    // file without surfacing what was wrong; 'invalid' gives the UI a
+    // clear path to "open and fix".
     return 'invalid';
   }
   if (!manifest) return 'missing';

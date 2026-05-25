@@ -13,8 +13,9 @@
 // See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
 //
 // Degraded-mode safety: this extension ships committed inside any project that has
-// run `myco init` — the file lives at .pi/extensions/myco/index.ts in that project's
-// repo. When a teammate clones such a project WITHOUT having Myco installed
+// used the dashboard's commit-to-repo opt-in — the file lives at
+// .pi/extensions/myco/index.ts in that project's repo. When a teammate clones
+// such a project WITHOUT having Myco installed
 // locally, pi will still load this extension. Every path that would contact the
 // Myco daemon gracefully no-ops when `.myco/daemon.json` is absent or the daemon
 // is unreachable, so the extension becomes invisible rather than throwing.

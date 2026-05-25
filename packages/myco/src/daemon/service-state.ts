@@ -51,7 +51,7 @@ export class GroveBindingRequiredError extends Error {
   constructor(vaultDir: string) {
     super(
       `Grove binding required at ${vaultDir}: project.toml has no [grove].binding_id. `
-      + `Run \`myco init\` to bind this project to a Grove. There is no per-vault daemon fallback.`,
+      + `Open this project in any supported agent so Myco auto-registers it. There is no per-vault daemon fallback.`,
     );
     this.name = 'GroveBindingRequiredError';
   }

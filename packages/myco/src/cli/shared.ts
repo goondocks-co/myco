@@ -95,12 +95,11 @@ export function collapseHomePath(absPath: string): string {
 
 /**
  * Run the SymbiontInstaller for each symbiont manifest and log results.
- * Shared between myco init and myco update.
  *
  * `vaultDir` overrides where the installer reads project config from.
- * Defaults to `<projectRoot>/.myco`. The worktree-bootstrap path in
- * `myco init --worktree` uses this to point config reads at the main
- * repo's shared vault while writing hook files into the worktree.
+ * Defaults to `<projectRoot>/.myco`. The worktree-bootstrap path uses
+ * this to point config reads at the main repo's shared vault while
+ * writing hook files into the worktree.
  */
 export function registerSymbionts(
   manifests: SymbiontManifest[],

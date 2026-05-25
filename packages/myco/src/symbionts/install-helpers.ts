@@ -18,7 +18,7 @@ Rules haven't been defined yet. Use the /myco-rules skill to add durable project
  * rename adds or drops a name, this list is the only place to update.
  *
  * Three shapes:
- *   1. `.agents/myco-run.cjs`  — project-local launcher (`myco init --project`).
+ *   1. `.agents/myco-run.cjs`  — project-local launcher (per-project commit-to-repo opt-in).
  *   2. `.agents/myco-hook.cjs` — legacy cross-platform guard (pre-rename).
  *   3. `.myco/launcher.cjs`    — user-global launcher (`installScope: 'global'`).
  *      Substring match catches both the absolute-path form Myco writes at

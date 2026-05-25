@@ -165,11 +165,11 @@ function migrateOneProject(
 
     // 3) Project launcher cleanup. Retired artifacts are always
     //    removed; active launchers + the dev pin are preserved when
-    //    the project has opted into a per-project install via
-    //    `myco init --project` (signaled by a non-empty `symbionts:`
-    //    block in myco.yaml). The shared helper enforces the file
-    //    list — drift between walker, `myco remove`, and uninstall
-    //    is structurally impossible.
+    //    the project has opted into a per-project install via the
+    //    dashboard's commit-to-repo affordance (signaled by a
+    //    non-empty `symbionts:` block in myco.yaml). The shared
+    //    helper enforces the file list — drift between walker,
+    //    `myco remove`, and uninstall is structurally impossible.
     const optIn = hasProjectLocalOptIn(project.root);
     removedFiles.push(...removeProjectLaunchers(project.root, {
       legacy: true,
@@ -199,9 +199,10 @@ function migrateOneProject(
 /**
  * Detect a deliberate project-local install. Reads
  * `<projectRoot>/.myco/myco.yaml` and returns true when it carries a
- * non-empty `symbionts:` mapping — the marker for `myco init --project`.
- * On any read/parse failure returns false so the walker treats a
- * malformed or absent vault file as brownfield (the safer default).
+ * non-empty `symbionts:` mapping — the marker for the dashboard's
+ * commit-to-repo opt-in. On any read/parse failure returns false so
+ * the walker treats a malformed or absent vault file as brownfield
+ * (the safer default).
  */
 export function hasProjectLocalOptIn(projectRoot: string): boolean {
   const ymlPath = path.join(projectRoot, '.myco', 'myco.yaml');

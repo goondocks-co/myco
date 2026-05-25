@@ -46,9 +46,10 @@ const LAUNCHER_FILENAMES = ['launcher.cjs', 'mcp-launcher.cjs'] as const;
  * through the `refresh-launchers` intent — the daemon's self-reconcile
  * loop drains the intent on its own thread, serializing self-mutation
  * with every other intent (update, restart). Established as a context
- * binding rather than a per-call argument so the CLI path
- * (`runGlobalBootstrap` from `myco init`) doesn't need to know about
- * the daemon's intent surface; only the daemon binds the context.
+ * binding rather than a per-call argument so the install-time bootstrap
+ * path (`runGlobalBootstrap` at first daemon start) doesn't need to
+ * know about the daemon's intent surface; only the daemon binds the
+ * context.
  */
 let daemonIntentContext: DaemonServiceState | null = null;
 

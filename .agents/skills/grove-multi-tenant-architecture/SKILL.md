@@ -1,7 +1,6 @@
 ---
 name: myco:grove-multi-tenant-architecture
-description: |
-  Comprehensive procedures for implementing and managing Myco's Grove multi-tenant architecture with request context management. Covers request context threading through transport boundaries, project identity binding via .myco/project.toml, multi-tenant database schema design, context enforcement across six layers, MCP transport unification, Grove registry management, and comprehensive importer architecture. Use when implementing multi-tenant features, setting up Grove projects, debugging context propagation issues, or ensuring request context isolation.
+description: Comprehensive procedures for implementing and managing Myco's Grove multi-tenant architecture with request context management. Covers request context threading through transport boundaries, project identity binding via .myco/project.toml, multi-tenant database schema design, context enforcement across six layers, MCP transport unification, Grove registry management, and comprehensive importer architecture. Use when implementing multi-tenant features, setting up Grove projects, debugging context propagation issues, or ensuring request context isolation.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -56,9 +55,9 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 }
 ```
 
-## Procedure B: Project Identity Binding via .myco/project.toml
+## Procedure B: Project Identity Binding via .myco/project.toml and Config Resolution
 
-Establish project identity layer with Grove binding metadata.
+Establish project identity layer with Grove binding metadata and understand config scope inheritance.
 
 ### Project Identity File Structure
 
@@ -99,6 +98,93 @@ function resolveProjectIdentity(workingDir: string) {
   return { projectId: config.project.id, groveBinding: config.grove.binding_id };
 }
 ```
+
+### loadMergedConfig Auto-Resolution from Project Manifest
+
+**Critical update (commit 17e3e923)**: `loadMergedConfig()` now automatically resolves Grove identity from the current project's `.myco/project.toml`, eliminating the need for explicit Grove parameter passing at call sites.
+
+**Old pattern** (pre-17e3e923):
+```typescript
+// Caller had to explicitly provide Grove context
+const groveId = resolveGroveIdFromEnvironment();
+const config = await loadMergedConfig(projectPath, { groveId });
+```
+
+**New pattern** (post-17e3e923):
+```typescript
+// loadMergedConfig auto-resolves Grove from project.toml binding_id
+const config = await loadMergedConfig(projectPath);
+```
+
+Internal implementation:
+```typescript
+// packages/myco/src/config/loader.ts
+export async function loadMergedConfig(projectPath: string, options?: LoadMergedConfigOptions) {
+  // Auto-resolve Grove from project manifest
+  const projectConfig = await readProjectConfig(projectPath);
+  const groveId = await resolveGroveIdFromBinding(projectConfig.grove.binding_id);
+  
+  const machineConfig = await loadMachineConfig();
+  const groveConfig = await loadGroveConfig(groveId);
+  const projectConfig = await loadLocalConfig(projectPath);
+  
+  return deepMergeConfig(machineConfig, groveConfig, projectConfig);
+}
+```
+
+**Five call-site rethreading** impact:
+- CLI bootstrap in `packages/myco/src/cli/tool.ts` — removed explicit Grove resolution
+- Config API handler in `packages/myco/src/daemon/api/config.ts` — simplified Grove discovery
+- Symbiont initialization in `packages/myco/src/symbiont-bridge.ts` — auto-resolution enabled
+- Test harness setup in `test/integration/config.test.ts` — Grove context implicit
+- Agent runtime in `packages/myco/src/agent/runtime.ts` — simplified context threading
+
+**Migration**: If you have existing code that explicitly passes Grove context to `loadMergedConfig()`, remove the explicit `{ groveId }` parameter. The function now resolves it from the project manifest.
+
+### Embedding and Agent Configuration Fields Now Grove-Scoped
+
+**Critical scope boundary change**: The following configuration fields have been promoted from project-scoped to Grove-scoped to enable consistent behavior across all projects in a Grove:
+
+```yaml
+# These fields are NOW GROVE-SCOPED (read from .myco/grove-config.yaml)
+# Previous project location: .myco/config.yaml (project tier)
+
+grove:
+  embedding:
+    provider: "ollama"
+    model: "all-minilm-l6-v2"
+    run_in_deep_sleep: true
+    concurrency: 4
+  
+  agent:
+    provider: "claude"
+    model: "claude-3-5-sonnet-20241022"
+    timeout_ms: 30000
+    scheduled_tasks_active_window_days: 7
+```
+
+**Why Grove-scoped**: These settings control system-wide behavior that should be uniform across projects in a Grove. Individual project overrides are no longer supported for these fields — they inherit from Grove configuration.
+
+**Legacy migration**: If you have existing projects with project-level `embedding.*` or `agent.*` configuration:
+
+```yaml
+# OLD (project-scoped, no longer used)
+project:
+  embedding:
+    provider: "ollama"
+  agent:
+    model: "claude-3-5-sonnet-20241022"
+```
+
+**Automatic migration**: Running `myco update` automatically lifts these fields to Grove tier:
+```bash
+$ myco update --all-projects
+Migrating embedding.run_in_deep_sleep from project to grove config
+Migrating agent.scheduled_tasks_active_window_days from project to grove config
+Successfully migrated 2 project settings to grove tier
+```
+
+After migration, these settings are read from Grove config and will apply uniformly to all projects in the Grove. If you need per-project overrides for these fields, coordinate through Grove configuration.
 
 ## Procedure C: Multi-Tenant Database Schema Design
 
@@ -443,3 +529,7 @@ async function createTable(ddl: string) {
 **Tool Call Metrics Team Sync Leakage**: Session-scoped tool call aggregation metrics contain sensitive usage patterns and must be excluded from team sync. Always set `exclude_team_sync: true` for tool usage metrics to prevent cross-project data leakage.
 
 **Schema Mutation Without Process Identity**: Performing database schema mutations without daemon process identity validation creates race conditions. Always validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER TABLE, or DROP TABLE operations.
+
+**loadMergedConfig Grove Auto-Resolution**: After commit 17e3e923, `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
+
+**Embedding and Agent Configuration Inheritance**: After the scope boundary change, embedding and agent settings are read-only at the project level — they inherit from Grove configuration. If you need to customize these for a specific project, request Grove configuration changes or implement project-level environment variable overrides at the application level, not through config files.

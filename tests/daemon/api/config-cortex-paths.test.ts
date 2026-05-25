@@ -27,7 +27,7 @@ import type { MycoConfig } from '@myco/config/schema';
 
 function seedFreshVault(dir: string): void {
   // Minimal myco.yaml — schema defaults fill in everything else, just
-  // like a real `myco init` output.
+  // like a real install-bootstrap output.
   fs.writeFileSync(
     path.join(dir, 'myco.yaml'),
     `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`,

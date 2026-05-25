@@ -7,8 +7,8 @@
  * a synthetic project manifest so the API surface can come up before
  * any real project is registered.
  * A registry-poll watcher (every 5s) detects the first hook-driven
- * `myco init` and triggers a graceful restart — the next boot resolves
- * a real vault via `firstProjectVaultFromRegistry()`.
+ * project auto-registration and triggers a graceful restart — the next
+ * boot resolves a real vault via `firstProjectVaultFromRegistry()`.
  *
  * Two failure modes are the focus here:
  *

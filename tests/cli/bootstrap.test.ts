@@ -2,7 +2,7 @@
  * Step 5 — runGlobalBootstrap + runSymbiontDetection.
  *
  * Validates the shared code path the daemon's first-start auto-bootstrap,
- * PowerManager tick, version-drift handler, and CLI `myco init` (no flag)
+ * PowerManager tick, version-drift handler, and the postinstall script
  * all invoke. Asserts launcher writes, detection gate enforcement, and
  * idempotency on a second pass.
  */

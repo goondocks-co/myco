@@ -63,10 +63,10 @@ runtime.command
 
 /**
  * Write `<vaultDir>/.gitignore` to the canonical body if it's missing or
- * stale. Called from `myco init`, `myco update`, and the Grove activation
- * pipeline so users never have to wait for the next update tick to keep
- * machine-local files out of git. Idempotent — exits without writing
- * when the file already matches.
+ * stale. Called from `myco update`, the Grove activation pipeline, and
+ * project-manifest writes so users never have to wait for the next
+ * update tick to keep machine-local files out of git. Idempotent —
+ * exits without writing when the file already matches.
  */
 export function ensureVaultGitignoreCurrent(vaultDir: string): boolean {
   const gitignorePath = path.join(vaultDir, '.gitignore');

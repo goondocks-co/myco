@@ -125,7 +125,7 @@ describe('ensureSelfInstalledAsService', () => {
     expect(String(logger.warns[0].meta?.error)).toMatch(/script-runner|standalone daemon binary/);
   });
 
-  // Regression guard: a sandboxed `myco init` (HOME=/tmp/sandbox-…) must not
+  // Regression guard: a sandboxed install (HOME=/tmp/sandbox-…) must not
   // write the plist into the real user's ~/Library/LaunchAgents/. The default
   // `getServiceManager()` MUST pick up MYCO_LAUNCH_AGENTS_DIR so the plist
   // lands in the sandbox and the launchd label gets a sandbox-distinct suffix.

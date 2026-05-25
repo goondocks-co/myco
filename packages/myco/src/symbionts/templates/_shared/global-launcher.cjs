@@ -9,9 +9,9 @@
 // The launcher distinguishes its mode from `path.basename(__filename)` and
 // honors a layered project-local override before doing anything else: when
 // a project ships its own `.agents/myco-run.cjs` / `.agents/myco-cli.cjs`
-// (the dogfood / dev pin written by `make dev-link-worktree` and by
-// `myco init --project`), this launcher delegates to it. Every other
-// invocation falls through to the runtime-resolution chain.
+// (the dogfood / dev pin written by `make dev-link-worktree` and by the
+// dashboard's commit-to-repo opt-in), this launcher delegates to it. Every
+// other invocation falls through to the runtime-resolution chain.
 //
 // Runtime resolution chain (first match wins):
 //   1. Project-local `<projectRoot>/.myco/runtime.command` (highest)
@@ -19,9 +19,8 @@
 //   3. `<core>/vendor/resolved.json` via package-root walk from process.execPath
 //   4. PATH `myco` (last resort; may not be on PATH under launchd / GUI agents)
 //
-// Managed by: myco init / myco update (writes here are owned by the daemon's
-// self-reconcile loop via the `intent.refresh-launchers.toml` intent path —
-// never edit by hand).
+// Managed by the daemon's self-reconcile loop via the
+// `intent.refresh-launchers.toml` intent path — never edit by hand.
 'use strict';
 
 if (process.env.MYCO_AGENT_SESSION) process.exit(0);
@@ -90,7 +89,8 @@ if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'ant
 // 0. Project-local launcher override.
 // Preserves the dogfood path (`make dev-link-worktree` writes
 // `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and
-// the deliberate per-project escape hatch from `myco init --project`.
+// the deliberate per-project escape hatch from the dashboard's
+// commit-to-repo opt-in.
 // Walk up from cwd so the check is worktree-aware.
 //
 // Pre-upgrade brownfield projects also have a `.agents/myco-run.cjs`

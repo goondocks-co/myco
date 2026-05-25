@@ -13,8 +13,9 @@
 // See https://opencode.ai/docs/plugins/
 //
 // Degraded-mode safety: this plugin ships committed inside any project that has
-// run `myco init` — the file lives at .opencode/plugins/myco.ts in that project's
-// repo. When a teammate clones such a project WITHOUT having Myco installed
+// used the dashboard's commit-to-repo opt-in — the file lives at
+// .opencode/plugins/myco.ts in that project's repo. When a teammate clones such
+// a project WITHOUT having Myco installed
 // locally, opencode will still load this plugin (the file is right there in the
 // cloned repo). To stay invisible in that case, the plugin has NO external
 // runtime imports — only node:fs and node:path, which are always available in

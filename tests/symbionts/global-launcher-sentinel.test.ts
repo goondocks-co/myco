@@ -11,7 +11,7 @@ import os from 'node:os';
  * stub — UNLESS the stub lacks the `MYCO_LAUNCHER_PROTOCOL=v2` sentinel.
  *
  * The sentinel discriminates two states:
- *   - sentineled: a current-template stub (dogfood, `myco init --project`).
+ *   - sentineled: a current-template stub (dogfood, dashboard commit-to-repo opt-in).
  *     The launcher delegates, preserving the dev pin / opt-in path.
  *   - unsentineled: a pre-upgrade brownfield leftover. The launcher
  *     refuses to delegate and falls through to the global resolution
