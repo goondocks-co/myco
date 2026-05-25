@@ -21,6 +21,18 @@ export interface SymbiontInfo {
   detected: boolean;
   /** Whether Myco's hook block is present in the agent's global config. */
   globallyInstalled: boolean;
+
+  // Capability profile — populated by the daemon from the symbiont
+  // manifest, consumed by `capability-map.ts` to render chips on the
+  // Symbionts page.
+  supportsSessions: boolean;
+  supportsCanopyInjection: boolean;
+  supportsPlanCapture: boolean;
+  supportsSkills: boolean;
+  supportsMcp: boolean;
+  /** Recent Myco MCP tool calls observed (last 7 days). Omitted when
+   *  `supportsMcp === false`. */
+  mcpActive?: boolean;
 }
 
 interface SymbiontsResponse {
