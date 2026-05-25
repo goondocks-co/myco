@@ -18,6 +18,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-power-query', () => ({
 
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: (...args: unknown[]) => fetchJsonMock(...args),
+  postJson: async () => ({}),
+  putJson: async () => ({}),
+  patchJson: async () => ({}),
+  deleteJson: async () => ({}),
 }));
 
 const fixture: TeamMembersResponse = {

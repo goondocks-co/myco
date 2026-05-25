@@ -35,8 +35,12 @@ import {
 import {
   loadProjectLocalManifest,
   loadProjectManifest,
+  saveProjectLocalManifest,
+  saveProjectManifest,
 } from '@myco/config/project-manifest.js';
 import { loadConfig } from '@myco/config/loader.js';
+import { hasProjectLocalOptIn } from '@myco/grove/migration-walker.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { RouteHandler, RouteResponse } from '@myco/daemon/router.js';
 
 let testDir: string;
@@ -319,5 +323,158 @@ describe('POST /api/symbionts/drain-migration', () => {
     expect(typeof body.migration.passedAt).toBe('number');
     expect(typeof body.migration.projectsVisited).toBe('number');
     expect(Array.isArray(body.migration.outcomes)).toBe(true);
+  });
+});
+
+describe('Regression coverage for /code-review high-effort fixes', () => {
+  it('Fix #1: hasProjectLocalOptIn recognizes project.toml as the opt-in marker', () => {
+    // Walker would delete launchers if commit-to-repo's only artifact
+    // (project.toml) did not flip the opt-in gate. Verify the gate
+    // honors project.toml even when myco.yaml has no symbionts: block.
+    const { projectRoot } = seededProject();
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'project.toml'), '[project]\nid = "x"\n');
+    expect(hasProjectLocalOptIn(projectRoot)).toBe(true);
+  });
+
+  it('Fix #2: commit-to-repo writes .myco/.gitignore', async () => {
+    const { projectId, projectRoot } = seededProject();
+    await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId } },
+    );
+    const gitignorePath = path.join(resolveProjectVaultDir(projectRoot), '.gitignore');
+    expect(fs.existsSync(gitignorePath)).toBe(true);
+    const body = fs.readFileSync(gitignorePath, 'utf-8');
+    // Verify the per-machine files we now write are covered.
+    expect(body).toMatch(/project\.local\.toml|local\.yaml/);
+  });
+
+  it('Fix #3: uncommit sweeps the retired .agents/myco-hook.cjs guard', async () => {
+    const { projectId, projectRoot } = seededProject();
+    // Plant a legacy guard alongside the modern launchers.
+    fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'), '// legacy\n');
+    await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId }, body: { write_launchers: true } },
+    );
+    expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'))).toBe(true);
+
+    const response = await call(
+      createUncommitFromRepoHandler(daemonStateDir),
+      { params: { projectId } },
+    );
+    const body = response.body as { removed: string[] };
+    expect(body.removed).toContain(path.join('.agents', 'myco-hook.cjs'));
+    expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'))).toBe(false);
+  });
+
+  it('Fix #5: commit-to-repo refuses to overwrite a foreign committed project.id', async () => {
+    const { projectId, projectRoot } = seededProject();
+    // Plant an existing project.toml whose project.id belongs to
+    // somebody else (e.g. a teammate committed it from another machine).
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const foreignId = 'proj_ffffffffffffffffffffffffffffffff';
+    saveProjectManifest(vaultDir, {
+      project: { id: assertGroveProjectId(foreignId), name: 'remote' },
+      grove: { slug: 'whatever' },
+    });
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId } },
+    );
+    expect(response.status).toBe(409);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('project_id_mismatch');
+    // Original file untouched.
+    const after = loadProjectManifest(vaultDir);
+    expect(after?.project.id).toBe(foreignId);
+  });
+
+  it('Fix #7: PATCH symbionts writes .myco/.gitignore alongside myco.yaml', async () => {
+    const { projectId, projectRoot } = seededProject();
+    await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': { enabled: false } } },
+      },
+    );
+    const gitignorePath = path.join(resolveProjectVaultDir(projectRoot), '.gitignore');
+    expect(fs.existsSync(gitignorePath)).toBe(true);
+  });
+
+  it('Fix #8: commit-to-repo preserves an existing grove_binding.mode', async () => {
+    const { projectId, projectRoot } = seededProject();
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    saveProjectLocalManifest(vaultDir, {
+      grove_binding: { binding_id: 'gbind_preexisting1234', mode: 'local' as const },
+    });
+    await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId } },
+    );
+    const local = loadProjectLocalManifest(vaultDir);
+    // binding_id must be preserved exactly, and mode must remain whatever
+    // was there before — the handler must never silently downgrade.
+    expect(local?.grove_binding?.binding_id).toBe('gbind_preexisting1234');
+    expect(local?.grove_binding?.mode).toBe('local');
+  });
+
+  it('Fix #9: PATCH symbionts rejects non-object entries with invalid_entry', async () => {
+    const { projectId } = seededProject();
+    // Raw boolean — the old handler crashed on `.enabled` or silently
+    // wrote `enabled: true` via the `?? true` fallback.
+    const response = await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': false } },
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('invalid_entry');
+  });
+
+  it('Fix #9b: PATCH symbionts rejects non-boolean enabled values', async () => {
+    const { projectId } = seededProject();
+    const response = await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': { enabled: 'yes' } } },
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('invalid_entry');
+  });
+
+  it('Fix #9c: PATCH symbionts still accepts null entries as deletes', async () => {
+    const { projectId, projectRoot } = seededProject();
+    // Seed with a per-project override, then clear it.
+    await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': { enabled: false } } },
+      },
+    );
+    expect(loadConfig(resolveProjectVaultDir(projectRoot)).symbionts?.['claude-code']?.enabled).toBe(false);
+
+    const response = await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': null } },
+      },
+    );
+    expect(response.status).toBeUndefined();
+    expect(loadConfig(resolveProjectVaultDir(projectRoot)).symbionts?.['claude-code']).toBeUndefined();
   });
 });

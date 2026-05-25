@@ -8,6 +8,7 @@ import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { findRegisteredProject } from '@myco/grove/registry.js';
 import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
 import { runProjectLocalMigration } from '@myco/grove/migration-walker.js';
+import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
 import { errorBody } from './error-envelope.js';
 
 // ---------------------------------------------------------------------------
@@ -125,9 +126,26 @@ export async function handleDetectSymbionts(vaultDir: string, groveId?: string |
  * as an explicit UI button so users don't have to wait for the next
  * tick when they've just committed Myco config to a repo or rebound
  * a project between Groves.
+ *
+ * Mirrors the audit-log call from `daemon/main.ts`: every walker
+ * invocation persists a pass-summary row so `myco doctor` and the
+ * Operations page can surface per-project errors. A UI-triggered sweep
+ * that errored on a project is exactly the signal the audit log
+ * exists to capture; skipping it here would silently break that
+ * invariant.
  */
 export async function handleDrainMigration(): Promise<RouteResponse> {
   const pass = runProjectLocalMigration();
+  try {
+    const { getDatabase } = await import('../../db/client.js');
+    const { recordMigrationPass } = await import('../../db/queries/migration-log.js');
+    recordMigrationPass(getDatabase(), pass);
+  } catch {
+    // Audit-log write is best-effort here: the walker outcome still
+    // returns to the caller. The daemon-startup path logs failures
+    // explicitly; this handler is exercised from the dashboard where
+    // the response already carries the same data the audit row would.
+  }
   return { body: { migration: pass } };
 }
 
@@ -161,12 +179,12 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
       };
     }
 
-    const body = (req.body ?? {}) as { symbionts?: Record<string, { enabled?: boolean }> };
+    const body = (req.body ?? {}) as { symbionts?: Record<string, unknown> };
     const incoming = body.symbionts;
-    if (!incoming || typeof incoming !== 'object') {
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
       return {
         status: 400,
-        body: errorBody('invalid_body', 'Body must include a `symbionts` object: { <name>: { enabled: boolean } }'),
+        body: errorBody('invalid_body', 'Body must include a `symbionts` object: { <name>: { enabled: boolean } | null }'),
       };
     }
 
@@ -179,21 +197,57 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
       };
     }
 
+    // Per-entry shape check. Each value must be `null` (delete the
+    // override) or a plain object with an optional boolean `enabled`.
+    // Raw booleans, strings, or numbers slip past the outer object
+    // guard but would either crash on `.enabled` deref or silently
+    // invert the caller's intent via `?? true` in the merge below.
+    const sanitized: Record<string, { enabled?: boolean } | null> = {};
+    for (const [name, entry] of Object.entries(incoming)) {
+      if (entry === null) {
+        sanitized[name] = null;
+        continue;
+      }
+      if (typeof entry !== 'object' || Array.isArray(entry)) {
+        return {
+          status: 400,
+          body: errorBody(
+            'invalid_entry',
+            `symbionts.${name} must be an object { enabled?: boolean } or null`,
+          ),
+        };
+      }
+      const enabledRaw = (entry as { enabled?: unknown }).enabled;
+      if (enabledRaw !== undefined && typeof enabledRaw !== 'boolean') {
+        return {
+          status: 400,
+          body: errorBody(
+            'invalid_entry',
+            `symbionts.${name}.enabled must be a boolean if provided`,
+          ),
+        };
+      }
+      sanitized[name] = enabledRaw === undefined ? {} : { enabled: enabledRaw };
+    }
+
     const projectVaultDir = resolveProjectVaultDir(found.project.root);
     // A project that's only auto-registered may not have a myco.yaml
     // yet — this PATCH is itself the first reason to create one. Seed
     // a minimal version-3 doc so `loadConfig` succeeds; schema defaults
-    // fill every other section.
+    // fill every other section. Pair the file creation with a gitignore
+    // refresh so per-machine state (daemon.json, project.local.toml,
+    // buffer/) can't be staged on the user's next `git add .myco`.
     const configPath = path.join(projectVaultDir, 'myco.yaml');
     if (!fs.existsSync(configPath)) {
       fs.mkdirSync(projectVaultDir, { recursive: true });
       fs.writeFileSync(configPath, 'version: 3\n', { mode: 0o600 });
     }
+    ensureVaultGitignoreCurrent(projectVaultDir);
     try {
       const updated = updateConfig(projectVaultDir, (config) => {
         const next = { ...config };
         const symbionts = { ...(config.symbionts ?? {}) };
-        for (const [name, entry] of Object.entries(incoming)) {
+        for (const [name, entry] of Object.entries(sanitized)) {
           if (entry === null) {
             delete symbionts[name];
             continue;

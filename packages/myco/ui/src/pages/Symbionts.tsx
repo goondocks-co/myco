@@ -239,6 +239,8 @@ function CommitToRepoCard() {
 
   const [writeLaunchers, setWriteLaunchers] = useState(false);
   const [runtimeCommand, setRuntimeCommand] = useState('');
+  const [preserveLaunchers, setPreserveLaunchers] = useState(false);
+  const [preserveRuntimeCommand, setPreserveRuntimeCommand] = useState(false);
 
   if (!selection) return null;
 
@@ -256,7 +258,10 @@ function CommitToRepoCard() {
   };
 
   const onUncommit = () => {
-    uncommit.mutate({});
+    const body: { remove_launchers?: boolean; remove_runtime_command?: boolean } = {};
+    if (preserveLaunchers) body.remove_launchers = false;
+    if (preserveRuntimeCommand) body.remove_runtime_command = false;
+    uncommit.mutate(body);
   };
 
   return (
@@ -337,25 +342,50 @@ function CommitToRepoCard() {
       )}
 
       {committed && (
-        <div className="flex items-center gap-2 pt-2">
-          <Button onClick={onUncommit} disabled={uncommit.isPending} variant="outline" size="sm">
-            {uncommit.isPending ? (
-              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4 mr-1.5" />
+        <div className="space-y-3 pt-2">
+          <details className="text-xs">
+            <summary className="cursor-pointer text-on-surface-variant select-none">
+              Advanced (dogfood/dev)
+            </summary>
+            <div className="space-y-3 pt-3 pl-4">
+              <label className="flex items-center gap-2">
+                <Switch checked={preserveLaunchers} onCheckedChange={setPreserveLaunchers} />
+                <span className="text-on-surface">
+                  Preserve project-local launchers
+                  <span className="text-on-surface-variant">
+                    {' '}— keep <code>.agents/myco-run.cjs</code> + <code>myco-cli.cjs</code>
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-center gap-2">
+                <Switch checked={preserveRuntimeCommand} onCheckedChange={setPreserveRuntimeCommand} />
+                <span className="text-on-surface">
+                  Preserve binary pin
+                  <span className="text-on-surface-variant"> — keep <code>.myco/runtime.command</code></span>
+                </span>
+              </label>
+            </div>
+          </details>
+          <div className="flex items-center gap-2">
+            <Button onClick={onUncommit} disabled={uncommit.isPending} variant="outline" size="sm">
+              {uncommit.isPending ? (
+                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-1.5" />
+              )}
+              Remove from repo
+            </Button>
+            {uncommit.isError && (
+              <span className="text-xs text-red-700">
+                {(uncommit.error as Error)?.message ?? 'Remove failed'}
+              </span>
             )}
-            Remove from repo
-          </Button>
-          {uncommit.isError && (
-            <span className="text-xs text-red-700">
-              {(uncommit.error as Error)?.message ?? 'Remove failed'}
-            </span>
-          )}
-          {uncommit.data && (
-            <span className="text-xs text-on-surface-variant">
-              Removed {uncommit.data.removed.length} file{uncommit.data.removed.length === 1 ? '' : 's'}.
-            </span>
-          )}
+            {uncommit.data && (
+              <span className="text-xs text-on-surface-variant">
+                Removed {uncommit.data.removed.length} file{uncommit.data.removed.length === 1 ? '' : 's'}.
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>

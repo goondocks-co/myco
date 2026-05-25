@@ -197,14 +197,23 @@ function migrateOneProject(
 }
 
 /**
- * Detect a deliberate project-local install. Reads
- * `<projectRoot>/.myco/myco.yaml` and returns true when it carries a
- * non-empty `symbionts:` mapping — the marker for the dashboard's
- * commit-to-repo opt-in. On any read/parse failure returns false so
- * the walker treats a malformed or absent vault file as brownfield
- * (the safer default).
+ * Detect a deliberate project-local install. Two markers count, either
+ * one is sufficient:
+ *
+ *   1. `<projectRoot>/.myco/project.toml` exists — the dashboard's
+ *      commit-to-repo affordance writes it. The artifact's presence
+ *      IS the opt-in; subsequent walker passes must preserve any
+ *      launchers + runtime.command pin the user also chose to commit.
+ *   2. `<projectRoot>/.myco/myco.yaml` carries a non-empty `symbionts:`
+ *      mapping — historical marker from the per-project `myco init`
+ *      era. Retained so brownfield projects that opted in via the
+ *      old CLI surface still survive the walker.
+ *
+ * On any read/parse failure returns false so the walker treats a
+ * malformed or absent vault file as brownfield (the safer default).
  */
 export function hasProjectLocalOptIn(projectRoot: string): boolean {
+  if (fs.existsSync(path.join(projectRoot, '.myco', 'project.toml'))) return true;
   const ymlPath = path.join(projectRoot, '.myco', 'myco.yaml');
   try {
     const raw = fs.readFileSync(ymlPath, 'utf-8');

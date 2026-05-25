@@ -27,6 +27,7 @@ import {
 import { assertSafeProjectRoot } from '@myco/vault/resolve.js';
 import {
   loadProjectLocalManifest,
+  loadProjectManifest,
   saveProjectLocalManifest,
   saveProjectManifest,
 } from '@myco/config/project-manifest.js';
@@ -35,6 +36,7 @@ import {
   resolveProjectLocalManifestPath,
   resolveProjectManifestPath,
 } from '@myco/grove/paths.js';
+import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
 import { BUNDLED_TEMPLATES } from '@myco/symbionts/templates.generated.js';
 import { removeProjectLaunchers } from '@myco/symbionts/installer.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
@@ -288,6 +290,29 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
     }
 
     const projectVaultDir = resolveProjectVaultDir(projectRoot);
+
+    // Refuse to overwrite a foreign project.id. A teammate clones a repo
+    // committed by Alice (project.id = proj_alice), their local registry
+    // auto-registers under proj_bob, then they re-commit — we'd silently
+    // rewrite the portable identity. Block the conflict and surface the
+    // observed mismatch; the user can decide whether to claim/rename
+    // their local project to match.
+    let existingCommittedManifest;
+    try {
+      existingCommittedManifest = loadProjectManifest(projectVaultDir);
+    } catch {
+      existingCommittedManifest = null;
+    }
+    if (existingCommittedManifest && existingCommittedManifest.project.id !== projectId) {
+      return {
+        status: 409,
+        body: errorBody(
+          'project_id_mismatch',
+          `Committed project.toml binds id ${existingCommittedManifest.project.id}; this project is locally registered as ${projectId}. Reconcile before re-committing.`,
+        ),
+      };
+    }
+
     const wrote: string[] = [];
     try {
       saveProjectManifest(projectVaultDir, {
@@ -305,13 +330,20 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
 
       // Per-machine binding lives in local.toml (gitignored), not project.toml.
       // Without it, the daemon's `assertGroveBound` refuses to start against
-      // this vault on subsequent boots. Preserve any existing binding the
-      // user already has; otherwise mint a fresh one.
+      // this vault on subsequent boots. Preserve the existing binding_id +
+      // mode if present; otherwise mint a fresh local-mode binding.
       const existingLocal = loadProjectLocalManifest(projectVaultDir);
       const bindingId = existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
+      const mode = existingLocal?.grove_binding?.mode ?? 'local';
       saveProjectLocalManifest(projectVaultDir, {
-        grove_binding: { binding_id: bindingId, mode: 'local' },
+        grove_binding: { binding_id: bindingId, mode },
       });
+
+      // Idempotent gitignore guarantee. Without this, a greenfield vault
+      // freshly materialized by commit-to-repo has no .myco/.gitignore,
+      // so the per-machine binding_id, daemon.json, and buffer files are
+      // eligible to be staged on the user's next `git add`.
+      ensureVaultGitignoreCurrent(projectVaultDir);
     } catch (err) {
       return { status: 500, body: errorBody('manifest_write_failed', (err as Error).message) };
     }
@@ -414,14 +446,17 @@ export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHand
       }
     }
 
-    if (removeLaunchers || removeRuntime) {
-      const swept = removeProjectLaunchers(projectRoot, {
-        legacy: false,
-        active: removeLaunchers,
-        runtimeCommand: removeRuntime,
-      });
-      removed.push(...swept);
-    }
+    // Always sweep the retired `.agents/myco-hook.cjs` guard even when
+    // the caller asks to preserve active launchers — the retired file
+    // is never something a deliberate dogfood workflow wants to keep,
+    // and leaving it behind defeats the walker invariant that retired
+    // artifacts are always cleaned.
+    const swept = removeProjectLaunchers(projectRoot, {
+      legacy: true,
+      active: removeLaunchers,
+      runtimeCommand: removeRuntime,
+    });
+    removed.push(...swept);
 
     return {
       body: {

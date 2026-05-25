@@ -68,6 +68,7 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
   }),
   postJson: async () => ({}),
   putJson: async () => ({}),
+  patchJson: async () => ({}),
   deleteJson: async () => ({}),
 }));
 
