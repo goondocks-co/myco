@@ -225,26 +225,22 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
           ),
         };
       }
-      sanitized[name] = enabledRaw === undefined ? {} : { enabled: enabledRaw };
+      // `null` entries already handled above. Translate object entries
+      // into the capability's SymbiontOverride shape. The batch method
+      // runs ONE updateConfig for the whole patch, preserving the
+      // atomicity contract the pre-capability handler relied on.
+      sanitized[name] = { enabled: enabledRaw ?? true };
     }
 
-    // All vault mutations route through the capability. Each
-    // `setSymbiontEnabled` / `clearSymbiontOverride` call internally
-    // ensures myco.yaml + .myco/.gitignore exist before mutating the
-    // symbionts: block — no callsite has to remember the invariant.
     const vault = new ProjectVault(found.project.root);
     let updated;
     try {
-      for (const [name, entry] of Object.entries(sanitized)) {
-        if (entry === null) {
-          updated = vault.clearSymbiontOverride(name);
-          continue;
-        }
-        updated = vault.setSymbiontEnabled(name, entry.enabled ?? true);
-      }
+      updated = vault.patchSymbiontOverrides(
+        sanitized as Record<string, { enabled: boolean } | null>,
+      );
     } catch (err) {
       return { status: 500, body: errorBody('patch_failed', (err as Error).message) };
     }
-    return { body: { symbionts: updated?.symbionts ?? {} } };
+    return { body: { symbionts: updated.symbionts ?? {} } };
   };
 }

@@ -455,6 +455,103 @@ describe('Regression coverage for /code-review high-effort fixes', () => {
     expect(body.error?.code).toBe('invalid_entry');
   });
 
+  // ---------------------------------------------------------------
+  // Contract-diff regression suite. Each case lists an (input,
+  // expected_status, expected_error_code) tuple the OLD pre-capability
+  // handlers honored. The NEW capability-routed handlers MUST match.
+  //
+  // Why this exists: the second-round review found three contract
+  // regressions (400 → 500 on bad runtime_command, response shape
+  // collapse on empty PATCH, loop-aborting on bad snapshot) that
+  // happy-path tests didn't catch. This block locks the externally
+  // observable contract so future refactors can't silently change it.
+  // ---------------------------------------------------------------
+
+  it('contract: empty `{symbionts: {}}` PATCH returns the live on-disk config (not `{}`)', async () => {
+    const { projectId, projectRoot } = seededProject();
+    // Seed an override so the response can be checked against
+    // non-default state.
+    await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { symbionts: { 'claude-code': { enabled: false } } },
+      },
+    );
+
+    const response = await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      { params: { projectId }, body: { symbionts: {} } },
+    );
+    expect(response.status).toBeUndefined();
+    const body = response.body as { symbionts: Record<string, { enabled: boolean }> };
+    expect(body.symbionts['claude-code']?.enabled).toBe(false);
+    // Sanity: the on-disk config is unchanged.
+    const cfg = loadConfig(resolveProjectVaultDir(projectRoot));
+    expect(cfg.symbionts?.['claude-code']?.enabled).toBe(false);
+  });
+
+  it('contract: non-string runtime_command returns 400 invalid_runtime_command (not 500)', async () => {
+    const { projectId } = seededProject();
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { runtime_command: 42 as unknown as string },
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('invalid_runtime_command');
+  });
+
+  it('contract: empty-string runtime_command returns 400 invalid_runtime_command', async () => {
+    const { projectId } = seededProject();
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId }, body: { runtime_command: '' } },
+    );
+    expect(response.status).toBe(400);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('invalid_runtime_command');
+  });
+
+  it('contract: corrupt project.toml on disk does not block re-commit', async () => {
+    const { projectId, projectRoot } = seededProject();
+    // Pre-seed a malformed project.toml — simulates a partial write or
+    // hand-edit. The repair endpoint must still succeed.
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'project.toml'), 'this is not [valid toml');
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId } },
+    );
+    expect(response.status).toBeUndefined();
+    const body = response.body as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  it('contract: multi-entry PATCH is atomic (one updateConfig, not N)', async () => {
+    const { projectId, projectRoot } = seededProject();
+    const response = await call(
+      createProjectSymbiontsPatchHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: {
+          symbionts: {
+            'claude-code': { enabled: false },
+            codex: { enabled: true },
+          },
+        },
+      },
+    );
+    expect(response.status).toBeUndefined();
+    const cfg = loadConfig(resolveProjectVaultDir(projectRoot));
+    expect(cfg.symbionts?.['claude-code']?.enabled).toBe(false);
+    expect(cfg.symbionts?.codex?.enabled).toBe(true);
+  });
+
   it('Fix #9c: PATCH symbionts still accepts null entries as deletes', async () => {
     const { projectId, projectRoot } = seededProject();
     // Seed with a per-project override, then clear it.

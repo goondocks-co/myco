@@ -650,17 +650,34 @@ function restoreProjectManifests(snapshotProjectManifestsDir: string): void {
     const snapshotLocal = path.join(projectSnapshotDir, PROJECT_LOCAL_MANIFEST_FILENAME);
     if (!fs.existsSync(snapshotManifest)) continue;
     // Restore goes through ProjectVault so the snapshot is validated by
-    // the schema (no corrupted-snapshot landings) and the gitignore +
-    // mtime cache stay coherent. A raw fs.copyFileSync would bypass
-    // both — exactly the bug class the capability exists to close.
-    const manifest = parseProjectManifest(fs.readFileSync(snapshotManifest, 'utf-8'));
-    const localManifest = fs.existsSync(snapshotLocal)
-      ? ProjectLocalManifestSchema.parse(parse(fs.readFileSync(snapshotLocal, 'utf-8')))
-      : undefined;
-    new ProjectVault(projectRoot).writeIdentity({
-      manifest,
-      ...(localManifest ? { localManifest } : { preserveLocalManifest: false }),
-    });
+    // the schema and the gitignore stays coherent. A raw fs.copyFileSync
+    // would bypass both. Per-project try/catch keeps the loop tolerant:
+    // a single malformed snapshot warns and is skipped, every other
+    // project is still restored. (The function's docstring promises
+    // "skips any project... does not fail the release.")
+    try {
+      const manifest = parseProjectManifest(fs.readFileSync(snapshotManifest, 'utf-8'));
+      const localManifest = fs.existsSync(snapshotLocal)
+        ? ProjectLocalManifestSchema.parse(parse(fs.readFileSync(snapshotLocal, 'utf-8')))
+        : undefined;
+      const vault = new ProjectVault(projectRoot);
+      if (localManifest) {
+        vault.writeIdentity({ manifest, localManifest });
+      } else {
+        // No local manifest in the snapshot → the project was unbound
+        // pre-claim. Delete any claim-era project.local.toml on disk so
+        // we don't leak the claim-period binding_id back to the user's
+        // restored vault.
+        vault.writeIdentity({ manifest, mode: 'manifest-only' });
+        const claimEraLocal = path.join(vaultDir, PROJECT_LOCAL_MANIFEST_FILENAME);
+        if (fs.existsSync(claimEraLocal)) fs.unlinkSync(claimEraLocal);
+      }
+    } catch (err) {
+      process.stderr.write(
+        `warn: snapshot for project ${projectId} could not be restored ` +
+        `(${(err as Error).message}); skipping\n`,
+      );
+    }
   }
 }
 

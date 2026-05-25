@@ -9,6 +9,7 @@ import {
   type ProjectManifest,
 } from '@myco/config/project-manifest.js';
 import {
+  loadConfig,
   updateConfig,
   type MycoConfig,
 } from '@myco/config/loader.js';
@@ -148,13 +149,50 @@ export class ProjectVault {
    * and binding_id are refreshed on every call.
    */
   commitToRepo(opts: CommitToRepoOptions): CommitResult {
-    const existing = this.readManifest();
+    // Defensive read: a corrupt project.toml shouldn't block the repair
+    // endpoint. If parse/Zod fails, treat as no-existing-manifest and
+    // proceed to overwrite — the user's only recovery path. Both the
+    // capability's read AND the underlying primitive's merge-read can
+    // throw on bad bytes, so when we hit a parse error we also unlink
+    // the file so the primitive starts fresh.
+    let existing: ProjectManifest | null;
+    try {
+      existing = this.readManifest();
+    } catch {
+      existing = null;
+      const manifestPath = resolveProjectManifestPath(this.vaultDir);
+      if (fs.existsSync(manifestPath)) {
+        try { fs.unlinkSync(manifestPath); } catch { /* best effort */ }
+      }
+    }
     if (existing && existing.project.id !== opts.project.id) {
       throw new ProjectIdMismatchError(existing.project.id, opts.project.id);
     }
 
+    // Validate runtime_command BEFORE any disk writes — keeps the
+    // partial-failure surface tight. path.isAbsolute throws on non-string
+    // input, so guard the type first.
+    if (opts.runtimeCommand !== undefined) {
+      if (typeof opts.runtimeCommand !== 'string' || opts.runtimeCommand.length === 0) {
+        throw new InvalidRuntimeCommandError(String(opts.runtimeCommand));
+      }
+      if (!path.isAbsolute(opts.runtimeCommand)) {
+        throw new InvalidRuntimeCommandError(opts.runtimeCommand);
+      }
+    }
+
+    // Pre-resolve the binding_id so a later writer can't change it. The
+    // existing binding is preserved (re-commit is stable); absence mints
+    // a fresh one.
+    const existingLocal = this.readLocalManifest();
+    const bindingId =
+      existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
+
     const wrote: string[] = [];
 
+    // project.toml is portable (committed). Per-machine companions go
+    // through `_writePerMachineFile` so the gitignore covering them is
+    // structurally guaranteed to hit disk before they do.
     saveProjectManifest(this.vaultDir, {
       project: {
         id: assertGroveProjectId(opts.project.id),
@@ -168,15 +206,10 @@ export class ProjectVault {
     });
     wrote.push(this.rel(resolveProjectManifestPath(this.vaultDir)));
 
-    // Per-machine binding lives in project.local.toml. Without it the
-    // daemon refuses to bind to this vault. Preserve any existing
-    // binding_id (so re-commit is stable) and otherwise mint a fresh
-    // local-mode binding.
-    const existingLocal = this.readLocalManifest();
-    const bindingId =
-      existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
-    saveProjectLocalManifest(this.vaultDir, {
-      grove_binding: { binding_id: bindingId, mode: 'local' },
+    this._writePerMachineFile(resolveProjectLocalManifestPath(this.vaultDir), () => {
+      saveProjectLocalManifest(this.vaultDir, {
+        grove_binding: { binding_id: bindingId, mode: 'local' },
+      });
     });
 
     if (opts.writeLaunchers) {
@@ -186,22 +219,22 @@ export class ProjectVault {
       fs.mkdirSync(agentsDir, { recursive: true });
       for (const rel of LAUNCHER_FILES) {
         const absPath = path.join(this.projectRoot, rel);
-        atomicWriteFileSync(absPath, template);
+        this._writePerMachineFile(absPath, () => {
+          atomicWriteFileSync(absPath, template);
+        });
         wrote.push(rel);
       }
     }
 
     if (opts.runtimeCommand !== undefined) {
-      if (!path.isAbsolute(opts.runtimeCommand)) {
-        throw new InvalidRuntimeCommandError(opts.runtimeCommand);
-      }
       const absPath = path.join(this.projectRoot, RUNTIME_COMMAND_REL);
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      atomicWriteFileSync(absPath, `${opts.runtimeCommand.trim()}\n`);
+      this._writePerMachineFile(absPath, () => {
+        atomicWriteFileSync(absPath, `${opts.runtimeCommand!.trim()}\n`);
+      });
       wrote.push(RUNTIME_COMMAND_REL);
     }
 
-    this.ensureGitignore();
     return { wrote, bindingId };
   }
 
@@ -249,34 +282,48 @@ export class ProjectVault {
   // -------------------------------------------------------------------
 
   /**
-   * Patch the project's `symbionts.<name>.enabled` flag in myco.yaml.
-   * Auto-creates myco.yaml (and the gitignore) if the project is
-   * auto-registered but hasn't been written before. Routes through
-   * `updateConfig()` per the single-config-write-path invariant.
+   * Patch the project's `symbionts:` block atomically. Each entry in
+   * `patch` is either `{ enabled }` (set the override) or `null` (clear
+   * the override). The whole batch runs through ONE `updateConfig` call,
+   * so a partial failure means no entries land — restoring the
+   * atomicity contract the pre-capability handler relied on.
+   *
+   * Always returns the post-write config (fresh read), so an empty
+   * patch returns the current on-disk state instead of an empty
+   * surrogate.
    */
-  setSymbiontEnabled(name: string, enabled: boolean): MycoConfig {
+  patchSymbiontOverrides(patch: Record<string, SymbiontOverride>): MycoConfig {
     this.ensureMinimalConfig();
-    this.ensureGitignore();
+    this._ensureGitignore();
+    if (Object.keys(patch).length === 0) {
+      // Empty patch: nothing to write, but the response must still
+      // reflect the current on-disk state so an empty PATCH body
+      // surfaces the live config rather than `{}`.
+      return loadConfig(this.vaultDir);
+    }
     return updateConfig(this.vaultDir, (config) => {
       const next = { ...config };
       const symbionts = { ...(config.symbionts ?? {}) };
-      symbionts[name] = { ...symbionts[name], enabled };
+      for (const [name, entry] of Object.entries(patch)) {
+        if (entry === null) {
+          delete symbionts[name];
+        } else {
+          symbionts[name] = { ...symbionts[name], enabled: entry.enabled };
+        }
+      }
       next.symbionts = symbionts;
       return next;
     });
   }
 
-  /** Remove the per-project override for `name`, falling back to the higher-tier default. */
+  /** Single-entry helper. Routes through {@link patchSymbiontOverrides} for atomicity parity. */
+  setSymbiontEnabled(name: string, enabled: boolean): MycoConfig {
+    return this.patchSymbiontOverrides({ [name]: { enabled } });
+  }
+
+  /** Single-entry helper. Routes through {@link patchSymbiontOverrides}. */
   clearSymbiontOverride(name: string): MycoConfig {
-    this.ensureMinimalConfig();
-    this.ensureGitignore();
-    return updateConfig(this.vaultDir, (config) => {
-      const next = { ...config };
-      const symbionts = { ...(config.symbionts ?? {}) };
-      delete symbionts[name];
-      next.symbionts = symbionts;
-      return next;
-    });
+    return this.patchSymbiontOverrides({ [name]: null });
   }
 
   // -------------------------------------------------------------------
@@ -285,42 +332,92 @@ export class ProjectVault {
   // -------------------------------------------------------------------
 
   /**
-   * Write a pre-constructed manifest pair atomically. The local
-   * manifest's binding_id is preserved when present; otherwise a fresh
-   * local-mode binding is minted. Always refreshes the gitignore.
+   * Write a pre-constructed manifest pair. The local manifest's
+   * binding_id is preserved when present; otherwise a fresh local-mode
+   * binding is minted. Gitignore is structurally guaranteed via
+   * `_writePerMachineFile`.
    *
-   * Used by code paths (activation, binding, move, claim) that have
-   * domain-specific logic to construct the manifest before persisting.
+   * Three modes, controlled by opts.mode (default 'both'):
+   *   - 'both' (default): write project.toml AND project.local.toml
+   *   - 'manifest-only': write project.toml, do not touch local.toml
+   *   - 'local-only': skip project.toml, write only the per-machine binding
+   *
+   * The asymmetric modes exist because activation's repair branch
+   * (manifest present on disk but binding missing) and similar legacy
+   * flows need to restore the binding without overwriting a possibly-
+   * hand-edited manifest.
    */
   writeIdentity(opts: WriteIdentityOptions): WriteIdentityResult {
-    saveProjectManifest(this.vaultDir, opts.manifest);
+    const mode = opts.mode ?? 'both';
+
+    if (mode !== 'local-only') {
+      saveProjectManifest(this.vaultDir, opts.manifest);
+    }
+
     let bindingId: string | null = null;
+
+    if (mode === 'manifest-only') {
+      // Caller asked to preserve the on-disk local manifest. Still
+      // refresh the gitignore in case a previous writer skipped it.
+      this._ensureGitignore();
+      return { bindingId };
+    }
+
     if (opts.localManifest) {
-      saveProjectLocalManifest(this.vaultDir, opts.localManifest);
+      this._writePerMachineFile(resolveProjectLocalManifestPath(this.vaultDir), () => {
+        saveProjectLocalManifest(this.vaultDir, opts.localManifest!);
+      });
       bindingId = opts.localManifest.grove_binding?.binding_id ?? null;
-    } else if (opts.preserveLocalManifest !== false) {
+    } else {
       const existing = this.readLocalManifest();
       if (!existing?.grove_binding) {
         bindingId = createGroveBindingId();
-        saveProjectLocalManifest(this.vaultDir, {
-          grove_binding: { binding_id: bindingId, mode: 'local' },
+        this._writePerMachineFile(resolveProjectLocalManifestPath(this.vaultDir), () => {
+          saveProjectLocalManifest(this.vaultDir, {
+            grove_binding: { binding_id: bindingId!, mode: 'local' },
+          });
         });
       } else {
         bindingId = existing.grove_binding.binding_id;
+        // No write needed; existing local.toml is fine. Still ensure
+        // gitignore covers it.
+        this._ensureGitignore();
       }
     }
-    this.ensureGitignore();
     return { bindingId };
   }
 
   /**
-   * Idempotent gitignore refresh. Used by `myco update`'s vault sweep
-   * and as the internal pairing call for every mutating operation in
-   * this capability. Direct callers (i.e. anything outside this class)
-   * should be rare — usually the per-operation methods already invoke
-   * this for you.
+   * Public gitignore-refresh entry point. Used by `myco update`'s vault
+   * sweep — the one external caller that legitimately writes nothing
+   * else but still wants the gitignore current.
    */
   ensureGitignore(): boolean {
+    return this._ensureGitignore();
+  }
+
+  // -------------------------------------------------------------------
+  // Structural per-machine-write guarantee
+  // -------------------------------------------------------------------
+
+  /**
+   * **Structural** invariant: every per-machine bytes write goes
+   * through this helper, which guarantees the canonical
+   * `.myco/.gitignore` exists on disk BEFORE the per-machine file does.
+   * If the wrapped write throws, the gitignore is already there — so
+   * the partial state is still safe to `git status`.
+   *
+   * This replaces the historical "remember to call ensureGitignore"
+   * convention, which produced gitignore-skipping bug classes whenever
+   * an entry point forgot the pairing or put the call in the wrong
+   * order.
+   */
+  private _writePerMachineFile(_absPath: string, write: () => void): void {
+    this._ensureGitignore();
+    write();
+  }
+
+  private _ensureGitignore(): boolean {
     return ensureVaultGitignoreCurrent(this.vaultDir);
   }
 
@@ -392,14 +489,20 @@ export interface WriteIdentityOptions {
   /** Explicit local manifest override (e.g., when migrating from a combined manifest). */
   localManifest?: ProjectLocalManifest;
   /**
-   * When true (default), the local manifest's binding_id is preserved
-   * across the call (a fresh one is minted only when absent). Set to
-   * false to skip the local manifest write entirely — used by code
-   * paths that write the local manifest separately (e.g.
-   * `migrateCombinedManifest` constructs it from legacy combined shape).
+   * Which files to write. Defaults to `'both'`.
+   *   - `'both'`: write project.toml AND project.local.toml (default)
+   *   - `'manifest-only'`: write project.toml, leave local.toml alone
+   *   - `'local-only'`: skip project.toml, write only the per-machine binding
+   *
+   * The asymmetric modes exist for legacy flows (activation repair,
+   * snapshot restore, migrate-combined-manifest) where the symmetric
+   * write would clobber state the caller wants to preserve.
    */
-  preserveLocalManifest?: boolean;
+  mode?: 'both' | 'manifest-only' | 'local-only';
 }
+
+/** Symbiont override patch entry: `{ enabled }` to set, `null` to clear. */
+export type SymbiontOverride = { enabled: boolean } | null;
 
 export interface WriteIdentityResult {
   bindingId: string | null;

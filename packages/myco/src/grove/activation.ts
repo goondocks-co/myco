@@ -245,19 +245,29 @@ export function activateProjectMigration(
     // from the marker rather than silently letting the daemon fall back
     // to legacy mode and create a divergent database.
     if (!input.dryRun) {
-      // Repair re-entry path: re-attach the marker-anchored identity
-      // through ProjectVault so manifest + binding + gitignore stay in
-      // lockstep. writeIdentity is idempotent against the same manifest.
+      // Repair re-entry: re-attach the marker-anchored identity through
+      // ProjectVault so manifest + binding + gitignore stay in lockstep.
+      //
+      // Three sub-cases match the old activation contract exactly:
+      //   1. No manifest on disk → write both files
+      //   2. Manifest present, binding missing → write ONLY the local
+      //      manifest. The on-disk manifest may carry user edits the
+      //      marker doesn't know about; preserve it.
+      //   3. Manifest + binding both present → no writes; just refresh
+      //      the gitignore.
       const vault = new ProjectVault(projectRoot);
-      if (!existingManifest || !existingManifest.grove?.binding_id) {
+      if (!existingManifest) {
         vault.writeIdentity({
           manifest: identity.manifest,
           localManifest: identity.localManifest,
         });
+      } else if (!existingManifest.grove?.binding_id) {
+        vault.writeIdentity({
+          manifest: identity.manifest,
+          localManifest: identity.localManifest,
+          mode: 'local-only',
+        });
       } else {
-        // Manifest + binding already on disk — just refresh the
-        // gitignore to absorb any new entries that have been added to
-        // the canonical template since this vault was last written.
         vault.ensureGitignore();
       }
       const registered = findRegisteredProject({

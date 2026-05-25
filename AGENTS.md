@@ -96,7 +96,13 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 | `myco.yaml` (every tier) | `updateConfig()` / `saveConfig()` (`packages/myco/src/config/loader.ts`) — runs Zod validation; see also the `safe-config-updates` skill. |
 | Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries, and per-agent skill symlinks. |
 
-**Meta-rule.** When new shared state emerges — a file written by more than one caller, an invariant maintained by convention across helpers, a multi-file coordination contract — add a capability that owns it BEFORE adding the second writer. Discipline-by-convention is a bug class, not an architecture. Every row in the table above started as duplication-by-discipline that produced regressions until the capability was added.
+**Meta-rule (single writers).** When new shared state emerges — a file written by more than one caller, an invariant maintained by convention across helpers, a multi-file coordination contract — add a capability that owns it BEFORE adding the second writer. Discipline-by-convention is a bug class, not an architecture. Every row in the table above started as duplication-by-discipline that produced regressions until the capability was added.
+
+**Meta-rule (structural invariants).** A capability is not done when it compiles; it is done when there is no callable sequence that can violate its invariants. Invariants encoded as *procedure* (call A, then B, then C in this order) are fragile — an exception in B can skip C, an empty input can skip the loop, a future maintainer can reorder the body. Encode invariants *structurally*:
+- Wrap per-state-class writes in a helper that runs the invariant guard FIRST (e.g. `_writePerMachineFile(fn)` calls `_ensureGitignore()` before invoking `fn`).
+- Compute responses from a FRESH read of the resource, not by piggy-backing the response on the last write's return value (an empty batch must still return the live state).
+- When refactoring a function that had defensive try/catch or validation, audit each removed line for the question *"what input or filesystem state was this defending against?"* — the answer is almost always load-bearing, not cleanup.
+- Pin externally observable behavior with contract-diff regression tests: every (input → status, error code, response shape) tuple the old code honored must survive the refactor. Happy-path tests catch zero of these regressions.
 
 ## Working Style
 

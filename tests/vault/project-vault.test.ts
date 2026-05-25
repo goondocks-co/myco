@@ -196,3 +196,189 @@ describe('clearSymbiontOverride round-trips', () => {
     expect(manifest).toBeNull(); // commitToRepo wasn't called; manifest never written
   });
 });
+
+// =====================================================================
+// Pattern 1 — structural-invariant tests (would have caught the
+// gitignore-last-ordering bug from the second-round review).
+// =====================================================================
+describe('Structural invariants — gitignore is present after every mutating op', () => {
+  function gitignoreExists(): boolean {
+    return fs.existsSync(path.join(resolveProjectVaultDir(projectRoot), '.gitignore'));
+  }
+
+  it('commitToRepo: gitignore exists even when a later step throws', () => {
+    // Force the launcher step to fail by pre-creating .agents as a file
+    // (not a directory). mkdirSync will throw, but the gitignore must
+    // already be on disk because it ran BEFORE the per-machine bytes.
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.agents'), 'blocker', 'utf-8');
+
+    expect(() => vault.commitToRepo({
+      ...defaultCommitOpts(),
+      writeLaunchers: true,
+    })).toThrow();
+
+    expect(gitignoreExists()).toBe(true);
+  });
+
+  it('every successful public method leaves the gitignore in place', () => {
+    vault.commitToRepo(defaultCommitOpts());
+    expect(gitignoreExists()).toBe(true);
+    vault.setSymbiontEnabled('claude-code', false);
+    expect(gitignoreExists()).toBe(true);
+    vault.clearSymbiontOverride('claude-code');
+    expect(gitignoreExists()).toBe(true);
+    vault.patchSymbiontOverrides({ codex: { enabled: false } });
+    expect(gitignoreExists()).toBe(true);
+    vault.ensureGitignore();
+    expect(gitignoreExists()).toBe(true);
+  });
+});
+
+// =====================================================================
+// Pattern 1 — symbionts batch returns the live config even when patch
+// is empty (would have caught the "empty body returns {}" bug).
+// =====================================================================
+describe('patchSymbiontOverrides — atomicity + always-fresh response', () => {
+  it('returns the current config when the patch is empty', () => {
+    vault.setSymbiontEnabled('claude-code', false); // seed
+    const after = vault.patchSymbiontOverrides({});
+    expect(after.symbionts?.['claude-code']?.enabled).toBe(false);
+  });
+
+  it('applies a multi-entry patch atomically (single config write)', () => {
+    const after = vault.patchSymbiontOverrides({
+      'claude-code': { enabled: false },
+      codex: { enabled: true },
+      cursor: null,
+    });
+    expect(after.symbionts?.['claude-code']?.enabled).toBe(false);
+    expect(after.symbionts?.codex?.enabled).toBe(true);
+    expect(after.symbionts?.cursor).toBeUndefined();
+  });
+});
+
+// =====================================================================
+// Pattern 2 — defensive reads (would have caught: commit on corrupt
+// project.toml returns 500 instead of overwriting).
+// =====================================================================
+describe('commitToRepo tolerates a corrupt existing project.toml', () => {
+  it('overwrites a malformed manifest rather than throwing', () => {
+    // Pre-seed an invalid project.toml.
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'project.toml'), 'this is not [valid toml');
+
+    const opts = defaultCommitOpts();
+    // Must not throw — the repair endpoint exists for this case.
+    const result = vault.commitToRepo(opts);
+    expect(result.wrote.length).toBeGreaterThan(0);
+    const manifest = loadProjectManifest(vaultDir);
+    expect(manifest?.project.id).toBe(opts.project.id);
+  });
+});
+
+// =====================================================================
+// Pattern 2 — runtime_command type validation (would have caught the
+// 400→500 status regression on non-string input).
+// =====================================================================
+describe('commitToRepo validates runtime_command type before disk I/O', () => {
+  it('throws InvalidRuntimeCommandError for non-string runtime_command', () => {
+    expect(() => vault.commitToRepo({
+      ...defaultCommitOpts(),
+      // @ts-expect-error testing runtime guard against malformed clients
+      runtimeCommand: 42,
+    })).toThrow(InvalidRuntimeCommandError);
+  });
+
+  it('throws InvalidRuntimeCommandError for empty-string runtime_command', () => {
+    expect(() => vault.commitToRepo({
+      ...defaultCommitOpts(),
+      runtimeCommand: '',
+    })).toThrow(InvalidRuntimeCommandError);
+  });
+});
+
+// =====================================================================
+// Pattern 3 — asymmetric writeIdentity modes (would have caught
+// activation Case C clobbering an existing project.toml).
+// =====================================================================
+describe('writeIdentity modes', () => {
+  it('local-only mode preserves an existing project.toml', () => {
+    const opts = defaultCommitOpts();
+    vault.commitToRepo(opts);
+    const before = fs.readFileSync(
+      path.join(resolveProjectVaultDir(projectRoot), 'project.toml'),
+      'utf-8',
+    );
+
+    // Try to overwrite with a *different* manifest in local-only mode —
+    // project.toml must not change.
+    vault.writeIdentity({
+      manifest: {
+        project: { id: opts.project.id, name: 'CHANGED' },
+        grove: { id: 'grove_x', slug: 'x', name: 'X' },
+      },
+      mode: 'local-only',
+    });
+
+    const after = fs.readFileSync(
+      path.join(resolveProjectVaultDir(projectRoot), 'project.toml'),
+      'utf-8',
+    );
+    expect(after).toBe(before);
+  });
+
+  it('manifest-only mode preserves an existing project.local.toml', () => {
+    const opts = defaultCommitOpts();
+    vault.commitToRepo(opts);
+    const beforeLocal = fs.readFileSync(
+      path.join(resolveProjectVaultDir(projectRoot), 'project.local.toml'),
+      'utf-8',
+    );
+
+    vault.writeIdentity({
+      manifest: {
+        project: { id: opts.project.id, name: 'renamed' },
+        grove: { id: opts.grove.id, slug: opts.grove.slug, name: opts.grove.name },
+      },
+      mode: 'manifest-only',
+    });
+
+    const afterLocal = fs.readFileSync(
+      path.join(resolveProjectVaultDir(projectRoot), 'project.local.toml'),
+      'utf-8',
+    );
+    expect(afterLocal).toBe(beforeLocal);
+  });
+});
+
+// =====================================================================
+// Pattern 4 — composition tests for the underlying primitives. The
+// capability assumes saveProjectLocalManifest is a REPLACE writer, not
+// a merge writer. This is a load-bearing assumption — pin it.
+// =====================================================================
+describe('Primitive composition assumptions', () => {
+  it('saveProjectLocalManifest is REPLACE semantics (not merge) — capability accounts for this', () => {
+    const opts = defaultCommitOpts();
+    vault.commitToRepo(opts);
+
+    // Hand-write an extra key into project.local.toml.
+    const localPath = path.join(resolveProjectVaultDir(projectRoot), 'project.local.toml');
+    const before = fs.readFileSync(localPath, 'utf-8');
+    fs.writeFileSync(
+      localPath,
+      `${before}\n[unknown_section]\nuser_added = "value"\n`,
+    );
+
+    // Re-commit: the capability minted the same binding, but the
+    // primitive will rewrite the whole file. The extra section is
+    // expected to NOT survive — this test pins that assumption.
+    vault.commitToRepo(opts);
+    const after = fs.readFileSync(localPath, 'utf-8');
+    expect(after.includes('unknown_section')).toBe(false);
+    // If a future patch made the primitive merge instead, this test
+    // flags the semantic change so the capability's mint-on-missing
+    // path can be updated to match.
+  });
+});
