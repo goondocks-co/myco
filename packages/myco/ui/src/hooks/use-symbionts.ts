@@ -33,6 +33,9 @@ export interface SymbiontInfo {
   /** Recent Myco MCP tool calls observed (last 7 days). Omitted when
    *  `supportsMcp === false`. */
   mcpActive?: boolean;
+  /** Explicit project-level override. Omitted when no override is set
+   *  — the effective `enabled` value then comes from the global default. */
+  projectOverride?: { enabled: boolean };
 }
 
 interface SymbiontsResponse {

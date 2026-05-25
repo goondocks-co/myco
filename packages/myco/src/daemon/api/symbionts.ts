@@ -1,5 +1,5 @@
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
-import { loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
+import { loadConfig, loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -62,6 +62,15 @@ export interface SymbiontInfo {
    *   - omitted — `supportsMcp === false`.
    */
   mcpActive?: boolean;
+
+  /**
+   * Per-project override block, when the project's `myco.yaml`
+   * explicitly sets `symbionts.<name>`. Absent when the project has no
+   * override (the effective `enabled` value comes from the global
+   * default). The UI uses this to render an "override active" affordance
+   * + the reset action.
+   */
+  projectOverride?: { enabled: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +84,16 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
   let enabledNames: Set<string> | null = null;
   try {
     enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir, { groveId: groveId ?? null }));
+  } catch { /* config not loadable */ }
+
+  // Project-only view (no merge) — used to detect which symbionts have
+  // an explicit project override. A symbiont without an entry here gets
+  // its effective `enabled` from the global default; one with an entry
+  // shows the reset affordance.
+  let projectOverrides: Record<string, { enabled: boolean }> = {};
+  try {
+    const projectCfg = loadConfig(vaultDir);
+    projectOverrides = (projectCfg.symbionts ?? {}) as Record<string, { enabled: boolean }>;
   } catch { /* config not loadable */ }
 
   // MCP live status is computed once per request and applied to every
@@ -113,6 +132,9 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
       supportsSkills,
       supportsMcp,
       ...(supportsMcp ? { mcpActive: mcpActiveByAgent.get(manifest.name) ?? false } : {}),
+      ...(projectOverrides[manifest.name]
+        ? { projectOverride: { enabled: !!projectOverrides[manifest.name].enabled } }
+        : {}),
     };
   });
 }

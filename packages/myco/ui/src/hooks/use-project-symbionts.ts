@@ -66,6 +66,33 @@ export function usePatchProjectSymbionts() {
   });
 }
 
+/**
+ * Set the per-project override for a symbiont — `{ enabled: false }`
+ * is the canonical opt-out value the Symbionts page writes when the
+ * user turns the toggle off.
+ */
+export function useSetSymbiontOverride() {
+  const patch = usePatchProjectSymbionts();
+  return {
+    ...patch,
+    mutate: (name: string, enabled: boolean) => patch.mutate({ symbionts: { [name]: { enabled } } }),
+    mutateAsync: (name: string, enabled: boolean) => patch.mutateAsync({ symbionts: { [name]: { enabled } } }),
+  };
+}
+
+/**
+ * Clear the per-project override for a symbiont — sending `null`
+ * removes the block so the symbiont reverts to the global default.
+ */
+export function useResetSymbiontOverride() {
+  const patch = usePatchProjectSymbionts();
+  return {
+    ...patch,
+    mutate: (name: string) => patch.mutate({ symbionts: { [name]: null } }),
+    mutateAsync: (name: string) => patch.mutateAsync({ symbionts: { [name]: null } }),
+  };
+}
+
 export function useCommitToRepo() {
   const qc = useQueryClient();
   const selection = useActiveProjectSelection();
