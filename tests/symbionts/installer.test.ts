@@ -466,29 +466,27 @@ describe('installHooks', () => {
     expect(result).toBe(false);
   });
 
-  it('stamps every Myco-written group with the _mycoOwner identity marker', () => {
+  it('stamps every Myco-written group with the _meta.owner identity marker', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
     const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
     const hooks = settings.hooks as Record<string, Array<Record<string, unknown>>>;
     for (const groups of Object.values(hooks)) {
       for (const group of groups) {
-        expect(group._mycoOwner).toBe('myco');
+        const meta = group._meta as Record<string, unknown> | undefined;
+        expect(meta?.owner).toBe('myco');
       }
     }
   });
 
-  it('strips orphan groups whose launcher path is OUTSIDE canonical dirs (the smoke-test escape shape)', () => {
-    // Simulate the bug: previous install left an orphan entry pointing at
-    // /tmp/.../launcher.cjs (a sandboxed smoke-test path that doesn't
-    // contain `.myco/`, `.agents/myco-run.cjs`, or `.agents/myco-hook.cjs`).
+  it('strips a previous Myco install (canonical-path legacy) and replaces with marker-tagged group', () => {
+    // Previous install used the legacy launcher path convention — no
+    // marker yet, but the substring scan recognizes it.
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
     writeJson(settingsPath, {
       hooks: {
         SessionStart: [
-          { hooks: [{ type: 'command', command: 'node /tmp/myco-X-smoke-Y/home/launcher.cjs hook session-start --symbiont claude-code', timeout: 5 }] },
-          { hooks: [{ type: 'command', command: 'node /tmp/myco-X-smoke-Y/home/launcher.cjs hook session-start --symbiont claude-code', timeout: 5 }] },
-          { hooks: [{ type: 'command', command: 'node /tmp/myco-X-smoke-Y/home/launcher.cjs hook session-start --symbiont claude-code', timeout: 5 }] },
+          { hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook session-start --symbiont claude-code', timeout: 5 }] },
           { hooks: [{ type: 'command', command: '/Users/x/Library/Application Support/GitKrakenCLI/gk ai hook run --host claude-code' }] },
         ],
       },
@@ -497,14 +495,39 @@ describe('installHooks', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
     const settings = readJson(settingsPath);
-    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }>; command?: string }>>).SessionStart;
-    // After reinstall: exactly one canonical Myco group (with marker) +
-    // the GitKraken third-party group preserved.
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }>; command?: string; _meta?: { owner: string } }>>).SessionStart;
     expect(groups).toHaveLength(2);
     const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
     expect(commands.some((c) => c.includes('GitKrakenCLI'))).toBe(true);
-    expect(commands.some((c) => c.includes('/tmp/myco-X-smoke-Y'))).toBe(false);
     expect(commands.some((c) => c.includes('myco-run.cjs hook session-start --symbiont claude-code'))).toBe(true);
+    // The new canonical Myco group carries the marker.
+    const mycoGroup = groups.find((g) => g._meta?.owner === 'myco');
+    expect(mycoGroup).toBeDefined();
+  });
+
+  it('PRESERVES user-authored hooks that invoke Myco from a non-canonical launcher path', () => {
+    // User's own hook calls Myco's launcher from a wrapper they own.
+    // Without the marker, Myco MUST treat it as a third-party tenant
+    // entry and leave it intact on reinstall — the substring scan is
+    // intentionally strict (canonical paths only) so user wrappers
+    // are not falsely claimed.
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: 'node /opt/me/launcher.cjs --symbiont claude-code && my-wrapper', timeout: 5 }] },
+        ],
+      },
+    });
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+    const settings = readJson(settingsPath);
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).SessionStart;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // User's hook survives untouched.
+    expect(commands.some((c) => c.includes('/opt/me/launcher.cjs'))).toBe(true);
+    // Myco's canonical hook is also added alongside.
+    expect(commands.some((c) => c.includes('.agents/myco-run.cjs hook session-start'))).toBe(true);
   });
 
   it('reinstall after marker landed is idempotent — repeated installs do not accumulate groups', () => {

@@ -8,9 +8,15 @@
 // timestamps; that's what we want collapsed.
 //
 // Run with --apply to write; default writes nothing.
+// ONE-SHOT RECOVERY — see README.md in this directory.
 import fs from 'node:fs';
+import os from 'node:os';
 
 const BUFFER = '/Users/chris/.myco/groves/grove_b7e9d7eb502816dafb8ae9eebe5bfa25/projects/proj_ecfd2c27e50729848003a856c1c3747e/buffer/90f7ca3f-9835-47b6-803a-1ec82316dc13.jsonl';
+if (os.userInfo().username !== 'chris' || !fs.existsSync(BUFFER)) {
+  console.error('One-shot recovery script — hardcoded for the original developer machine. See README.md.');
+  process.exit(1);
+}
 const APPLY = process.argv.includes('--apply');
 
 const raw = fs.readFileSync(BUFFER, 'utf8');

@@ -1,8 +1,26 @@
+// ONE-SHOT RECOVERY — see README.md in this directory. Hardcoded for
+// the developer's machine. Refuses to run anywhere else.
 import { Database } from 'bun:sqlite';
+import os from 'node:os';
+import fs from 'node:fs';
 const DB_PATH = '/Users/chris/.myco/groves/grove_b7e9d7eb502816dafb8ae9eebe5bfa25/myco.db';
 const SESSION_ID = '90f7ca3f-9835-47b6-803a-1ec82316dc13';
+if (os.userInfo().username !== 'chris' || !fs.existsSync(DB_PATH)) {
+  console.error('This is a one-shot recovery script hardcoded for the original developer machine.');
+  console.error(`Expected user=chris and DB at ${DB_PATH}; got user=${os.userInfo().username}.`);
+  console.error('See ./README.md. Do not modify paths to "generalize" — see the structural fix instead.');
+  process.exit(1);
+}
+// Cross-checks that the session and batch row also exist before we
+// touch anything. If a future-Chris cleans state and accidentally
+// runs this, the script no-ops rather than corrupting a healthy DB.
 const APPLY = process.argv.includes('--apply');
 const db = new Database(DB_PATH);
+const sanityCheck = db.prepare('SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id=?').get(SESSION_ID).n;
+if (sanityCheck === 0) {
+  console.log('Session not present in DB — nothing to recover. Exiting.');
+  process.exit(0);
+}
 console.log(`mode: ${APPLY ? 'APPLY' : 'DRY-RUN'}`);
 
 const before = {
@@ -73,7 +91,11 @@ try {
   db.prepare(`CREATE TEMP TABLE renumber AS
     SELECT id, ROW_NUMBER() OVER (ORDER BY id ASC) AS new_pn
     FROM prompt_batches WHERE session_id = ?`).run(SESSION_ID);
-  db.prepare(`UPDATE prompt_batches SET prompt_number = -prompt_number WHERE session_id = ?`).run(SESSION_ID);
+  // Stage prompt_numbers at -id (guaranteed unique because id is the
+  // primary key) so any UNIQUE (session_id, prompt_number) index does
+  // not collide mid-update if the corruption itself produced duplicate
+  // prompt_numbers in the same session.
+  db.prepare(`UPDATE prompt_batches SET prompt_number = -id WHERE session_id = ?`).run(SESSION_ID);
   const renum = db.prepare(`UPDATE prompt_batches
     SET prompt_number = (SELECT new_pn FROM renumber WHERE renumber.id = prompt_batches.id)
     WHERE session_id = ?`).run(SESSION_ID);

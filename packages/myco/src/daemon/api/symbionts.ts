@@ -99,7 +99,7 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
   // MCP live status is computed once per request and applied to every
   // Symbiont that supports MCP. Single scan across the bound Grove's
   // activity log avoids N round-trips to SQLite per request.
-  const mcpActiveByAgent = scanMcpActiveSymbionts();
+  const mcpActiveByAgent = scanMcpActiveSymbionts(groveId);
 
   return manifests.map((manifest) => {
     const detector = new SymbiontInstaller(
@@ -140,18 +140,24 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
 }
 
 /**
- * Scan the bound Grove's activity log for recent Myco MCP tool calls,
- * grouped by symbiont (`sessions.agent`). A symbiont is "active" when
- * any session of that symbiont has fired at least one Myco MCP tool
+ * Scan the REQUEST'S Grove DB for recent Myco MCP tool calls, grouped
+ * by symbiont (`sessions.agent`). A symbiont is "active" when any
+ * session of that symbiont has fired at least one Myco MCP tool
  * within the look-back window.
  *
- * Best-effort: if the database isn't reachable (greenfield daemon,
- * cross-Grove edge case), returns an empty map and every symbiont
- * reports `mcpActive: false`. The UI surfaces this as
- * "configured but quiet" — never as an error.
+ * DB scoping: `getDatabase()` returns the AsyncLocalStorage-scoped
+ * DB when one is bound (the daemon's request handlers bind the
+ * request's Grove DB via `scopedDatabase`). Falling back to the
+ * singleton matches the daemon's own bound Grove. The caller passes
+ * the requested groveId for documentation and forward-compatibility
+ * if we ever need an explicit-DB-handle variant.
+ *
+ * Best-effort: if the database isn't reachable, returns an empty
+ * map and every symbiont reports `mcpActive: false`. The UI
+ * surfaces this as "configured but quiet" — never as an error.
  */
 const MCP_ACTIVE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
-function scanMcpActiveSymbionts(): Map<string, boolean> {
+function scanMcpActiveSymbionts(_requestedGroveId: string | null | undefined): Map<string, boolean> {
   const active = new Map<string, boolean>();
   try {
     const db = getDatabase();

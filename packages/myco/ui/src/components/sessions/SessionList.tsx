@@ -208,14 +208,17 @@ export function SessionList({
   const didAutoSelect = useRef(false);
   useEffect(() => {
     if (didAutoSelect.current) return;
-    // Skip auto-select when a deep-link has applied filters via query
-    // string — e.g. `/sessions?agent=claude-code&has_plan=true` from
-    // the Symbionts page. Jumping to the first session would unmount
-    // the route and lose the filter state on remount.
-    if (location.search.length > 0) {
-      didAutoSelect.current = true;
-      return;
-    }
+    // Skip auto-select when a deep-link has applied a SPECIFIC filter
+    // we know about (status / agent / has_plan). Jumping to the first
+    // session would unmount the route and lose the filter on remount.
+    // Important: only latch `didAutoSelect` when an auto-select
+    // actually fires — skipping here without latching keeps the
+    // effect alive so that clearing the filters in the same mount
+    // (via the dropdowns) restores auto-select on the next render.
+    const params = new URLSearchParams(location.search);
+    const hasDeepLinkFilter =
+      params.has('status') || params.has('agent') || params.has('has_plan');
+    if (hasDeepLinkFilter) return;
     if (!selectedId && !isLoading && sessions.length > 0) {
       didAutoSelect.current = true;
       navigate(`/sessions/${sessions[0].id}`, { replace: true });

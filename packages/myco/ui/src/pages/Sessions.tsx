@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { EmptyDetailHint } from '../components/ui/empty-detail-hint';
@@ -33,14 +33,17 @@ export default function Sessions() {
   const [searchParams] = useSearchParams();
   const filterInputRef = useRef<HTMLInputElement>(null);
 
-  // Seed filters from URL once so deep-links like `/sessions?has_plan=true`
-  // (from the Symbionts page Plans chip) land with the dropdown pre-set.
-  const initialFilters = useMemo(() => ({
+  // Filter values are derived from URL query params on EVERY render —
+  // not seeded once. That keeps the dropdown in sync when the user
+  // deep-links to /sessions?agent=X from one chip, then clicks another
+  // chip (e.g. switches to /sessions?agent=Y) while the page is still
+  // mounted. Earlier useMemo([]) approach captured initialFilters once
+  // and went stale on intra-mount URL changes.
+  const urlFilters = useMemo(() => ({
     status: searchParams.get('status') ?? FILTER_ALL,
     agent: searchParams.get('agent') ?? FILTER_ALL,
     has_plan: searchParams.get('has_plan') === 'true' ? 'true' : FILTER_ALL,
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), []);
+  }), [searchParams]);
 
   const {
     searchInput,
@@ -51,7 +54,17 @@ export default function Sessions() {
     handleSearchChange,
     handleFilterChange,
     activeFilter,
-  } = useListFilters({ initialFilters });
+  } = useListFilters({ initialFilters: urlFilters });
+
+  // Keep in-component filter state in sync when the URL changes.
+  // Without this, useListFilters' local state diverges from the URL
+  // after the first mount and same-route URL transitions.
+  useEffect(() => {
+    for (const [key, value] of Object.entries(urlFilters)) {
+      if (filterValues[key] !== value) handleFilterChange(key, value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlFilters]);
 
   const { data: symbiontsData } = useSymbionts();
 

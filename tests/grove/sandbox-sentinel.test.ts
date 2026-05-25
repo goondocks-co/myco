@@ -52,11 +52,21 @@ describe('expandHome — MYCO_SANDBOX_ROOT enforcement', () => {
     expect(() => expandHome('~/.claude/settings.json')).toThrow(/outside/);
   });
 
-  it('does not throw for non-~ paths even when sandbox mismatches', () => {
+  it('does NOT throw for absolute non-~ paths even when sandbox mismatches', () => {
     process.env.MYCO_SANDBOX_ROOT = sandbox;
     process.env.HOME = '/Users/someone-else';
-    // Absolute non-~ paths skip the assertion — they're explicit, not user-relative.
-    expect(() => expandHome('/etc/passwd')).toThrow(); // assertion still fires because HOME is read regardless
+    // Absolute, non-tilde paths require no home expansion, so the
+    // sandbox sentinel has nothing to enforce — passing them through
+    // verbatim keeps a leaked MYCO_SANDBOX_ROOT from poisoning
+    // unrelated code paths.
+    expect(expandHome('/etc/passwd')).toBe('/etc/passwd');
+    expect(expandHome('/absolute/no-tilde')).toBe('/absolute/no-tilde');
+  });
+
+  it('does NOT throw for relative non-~ paths either', () => {
+    process.env.MYCO_SANDBOX_ROOT = sandbox;
+    process.env.HOME = '/Users/someone-else';
+    expect(expandHome('relative/path')).toBe('relative/path');
   });
 
   it('honors explicit homeDir argument over env when provided (still verified against sandbox)', () => {

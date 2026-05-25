@@ -18,6 +18,14 @@
  *   3. Non-Myco entries (GitKraken, Superset, etc.) are untouched.
  */
 import fs from 'node:fs';
+import os from 'node:os';
+
+// ONE-SHOT RECOVERY — see README.md in this directory. Hardcoded for
+// the original developer machine. Refuses to run anywhere else.
+if (os.userInfo().username !== 'chris') {
+  console.error('One-shot recovery script — hardcoded for the original developer machine. See README.md.');
+  process.exit(1);
+}
 
 const TARGETS = [
   { path: '/Users/chris/.cursor/hooks.json',                shape: 'flat'   },
@@ -28,6 +36,20 @@ const TARGETS = [
 
 const CANONICAL = '/Users/chris/.myco/launcher.cjs';
 const APPLY = process.argv.includes('--apply');
+
+// Backup every target before writing — critical because we're editing
+// the user's real co-tenant settings files in place. A `.bak` sits
+// alongside the target so the operator has an immediate restore path
+// if anything goes wrong.
+if (APPLY) {
+  for (const t of TARGETS) {
+    if (fs.existsSync(t.path)) {
+      const bak = `${t.path}.myco-bak-${Date.now()}`;
+      fs.copyFileSync(t.path, bak);
+      console.log(`backup: ${bak}`);
+    }
+  }
+}
 
 function isMycoCmd(cmd) {
   if (typeof cmd !== 'string') return false;

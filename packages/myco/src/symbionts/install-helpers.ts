@@ -10,26 +10,39 @@ Rules haven't been defined yet. Use the /myco-rules skill to add durable project
 `;
 
 /**
- * Marker field stamped onto every Myco-written hook group. The presence
- * of this field is the AUTHORITATIVE signal of Myco ownership — the
- * launcher-substring scan below is a soft legacy fallback for groups
- * written before the marker existed.
+ * Marker stamped onto every Myco-written hook group. Identity is
+ * recorded by the writer, not inferred from the command string — that's
+ * what makes reinstall atomic and idempotent for co-tenant JSON files
+ * (Claude, Cursor, Codex, Copilot, Windsurf) where we share the file
+ * with third-party tenants. The marker survives launcher path changes,
+ * sandbox relocations, and reinstalls.
  *
- * The marker survives across launcher path changes, sandbox relocations,
- * and reinstalls because identity is recorded by the writer, not
- * inferred from the command string. That's what makes reinstall atomic
- * and idempotent for co-tenant JSON files (Claude, Cursor, Codex,
- * Copilot, Windsurf) where we share the file with third-party tenants.
+ * Stored under the `_meta` namespace rather than a top-level key so
+ * future tenants that enforce strict schema validation on hook groups
+ * can opt to ignore `_meta` (the conventional metadata sidecar pattern)
+ * instead of rejecting the whole file. Shape:
+ *   { ...group, _meta: { owner: 'myco' } }
  */
-export const MYCO_OWNER_MARKER_KEY = '_mycoOwner';
-export const MYCO_OWNER_MARKER_VALUE = 'myco';
+export const MYCO_META_KEY = '_meta';
+export const MYCO_OWNER_FIELD = 'owner';
+export const MYCO_OWNER_VALUE = 'myco';
+
+interface MycoMeta {
+  [MYCO_OWNER_FIELD]?: string;
+  [k: string]: unknown;
+}
 
 /**
  * Tag a hook group as Myco-owned. Mutates in place and returns the
- * same reference so callers can chain. Idempotent.
+ * same reference so callers can chain. Idempotent — re-marking a
+ * group preserves any other `_meta` fields a future writer might
+ * have added.
  */
 export function markGroupAsMyco<T extends Record<string, unknown>>(group: T): T {
-  group[MYCO_OWNER_MARKER_KEY as keyof T] = MYCO_OWNER_MARKER_VALUE as T[keyof T];
+  const existing = (group as { _meta?: MycoMeta })[MYCO_META_KEY];
+  const meta: MycoMeta = existing && typeof existing === 'object' ? existing : {};
+  meta[MYCO_OWNER_FIELD] = MYCO_OWNER_VALUE;
+  (group as Record<string, unknown>)[MYCO_META_KEY] = meta;
   return group;
 }
 
@@ -39,7 +52,9 @@ export function markGroupAsMyco<T extends Record<string, unknown>>(group: T): T 
  * must be removed before the new template is appended.
  */
 export function hasMycoOwnerMarker(group: Record<string, unknown>): boolean {
-  return group[MYCO_OWNER_MARKER_KEY] === MYCO_OWNER_MARKER_VALUE;
+  const meta = group[MYCO_META_KEY];
+  if (!meta || typeof meta !== 'object') return false;
+  return (meta as MycoMeta)[MYCO_OWNER_FIELD] === MYCO_OWNER_VALUE;
 }
 
 /**
@@ -78,28 +93,27 @@ export function containsMycoLauncherReference(content: string): boolean {
  *
  * Matches in priority order:
  *   1. A canonical launcher-substring reference (project-local guard,
- *      legacy guard, or user-global launcher).
- *   2. The `launcher.cjs` filename combined with the Myco-specific
- *      `--symbiont` flag — catches relocated / sandboxed launcher paths
- *      (e.g. orphan smoke-test entries under `/tmp/`) that don't sit
- *      under a canonical Myco directory. Safe because no other tenant
- *      uses both that filename AND that flag.
- *   3. The bare `myco-run` prefix used by the published MCP entry
+ *      legacy guard, or user-global launcher) — the strict identity
+ *      signal for groups written before the `_mycoOwner` marker existed.
+ *   2. The bare `myco-run` prefix used by the published MCP entry
  *      point and the old shell shim.
  *
- * Missing any of these breaks the merge/uninstall contract: new hooks
- * append rather than replace, idempotence dies, uninstall leaks. The
- * `_mycoOwner` marker (see `hasMycoOwnerMarker`) takes precedence over
- * this substring scan for groups Myco wrote after the marker landed.
+ * The `_mycoOwner` marker (see `hasMycoOwnerMarker`) takes precedence
+ * over this substring scan for groups Myco wrote after the marker
+ * landed. Anything not matching either signal is treated as a
+ * non-Myco co-tenant entry and preserved on reinstall — critical
+ * because the user is allowed to write their own hooks that legitimately
+ * invoke Myco's launcher from a wrapper script, and the substring scan
+ * cannot distinguish "Myco wrote this" from "user wrote a hook that
+ * happens to call our launcher."
+ *
+ * The smoke-test escape that produced sandboxed `/tmp/.../launcher.cjs`
+ * orphans is closed structurally by the marker + `MYCO_SANDBOX_ROOT`
+ * sentinel — no widened substring fallback needed.
  */
 export function isMycoHookCommand(command: string): boolean {
   if (containsMycoLauncherReference(command)) return true;
   if (command.startsWith('myco-run')) return true;
-  // Relocated-launcher fallback — catches sandboxed/orphaned launchers
-  // whose path doesn't sit under a canonical Myco directory. The flag
-  // pair is distinctive enough that a false positive against a
-  // third-party launcher would require deliberate spoofing.
-  if (command.includes('launcher.cjs') && command.includes('--symbiont')) return true;
   return false;
 }
 

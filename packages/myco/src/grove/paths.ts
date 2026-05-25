@@ -285,11 +285,18 @@ export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): strin
  * `~/...` literal funnels through this.
  */
 export function expandHome(value: string, homeDir?: string): string {
+  // Non-`~` paths are returned verbatim — no home resolution happens,
+  // so the sandbox sentinel has nothing to enforce. Returning early
+  // here keeps stray MYCO_SANDBOX_ROOT settings from poisoning
+  // unrelated call paths that pass already-absolute values.
+  const needsExpansion = value === '~' || value.startsWith(`~${path.sep}`) || value.startsWith('~/');
+  if (!needsExpansion) return value;
   const home = homeDir ?? process.env.HOME ?? os.homedir();
   assertSandboxedHome(home);
   if (value === '~') return home;
-  if (value.startsWith(`~${path.sep}`)) return path.join(home, value.slice(2));
-  return value;
+  // Accept both `~/foo` (POSIX shape, what every manifest target uses)
+  // and `~\foo` on Windows.
+  return path.join(home, value.slice(2));
 }
 
 /**

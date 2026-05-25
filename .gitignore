@@ -27,6 +27,7 @@ packages/myco/*.tgz
 .playwright-mcp/
 .playwright-cli/
 test-results/
+.myco-recovery*/
 
 # Specs and plans — captured in Myco vault, not the repo
 .superpowers/

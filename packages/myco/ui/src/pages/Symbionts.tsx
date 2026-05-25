@@ -21,17 +21,13 @@ import { SymbiontRow } from '../components/symbionts/SymbiontRow';
 import { fetchJson } from '../lib/api';
 import { useSymbionts } from '../hooks/use-symbionts';
 import { useActiveProjectSelection } from '../hooks/use-project-selection';
-import {
-  useSetSymbiontOverride,
-  useResetSymbiontOverride,
-} from '../hooks/use-project-symbionts';
+import { usePatchProjectSymbionts } from '../hooks/use-project-symbionts';
 
 export default function Symbionts() {
   const { data, isLoading, refetch } = useSymbionts();
   const queryClient = useQueryClient();
   const projectSelection = useActiveProjectSelection();
-  const setOverride = useSetSymbiontOverride();
-  const resetOverride = useResetSymbiontOverride();
+  const patchSymbionts = usePatchProjectSymbionts();
   const [detecting, setDetecting] = useState(false);
 
   const symbionts = data?.symbionts ?? [];
@@ -50,11 +46,12 @@ export default function Symbionts() {
   }
 
   // The override toggle only makes sense when the user has a project
-  // selected — that's the scope the override writes to. Without a
-  // selected project, the row still renders (capability chips remain
-  // useful), but the toggle is hidden via `disableOverrideUi`.
-  const disableOverrideUi = !projectSelection;
-  const busy = setOverride.isPending || resetOverride.isPending;
+  // selected — that's the scope the override writes to. When no project
+  // is selected the row still renders (capability chips remain useful)
+  // but the toggle is rendered DISABLED with a tooltip explaining why,
+  // rather than silently no-opping the click.
+  const noProject = !projectSelection;
+  const busy = patchSymbionts.isPending;
 
   return (
     <PageContainer>
@@ -84,13 +81,11 @@ export default function Symbionts() {
                   key={s.name}
                   symbiont={s}
                   busy={busy}
+                  overrideDisabled={noProject}
+                  overrideDisabledReason={noProject ? 'Select a project to override this symbiont per-project.' : undefined}
                   onSetOverride={(enabled) => {
-                    if (disableOverrideUi) return;
-                    setOverride.mutate(s.name, enabled);
-                  }}
-                  onResetOverride={() => {
-                    if (disableOverrideUi) return;
-                    resetOverride.mutate(s.name);
+                    if (noProject) return;
+                    patchSymbionts.mutate({ symbionts: { [s.name]: { enabled } } });
                   }}
                 />
               ))
@@ -106,7 +101,6 @@ export default function Symbionts() {
                     key={s.name}
                     symbiont={s}
                     onSetOverride={() => {}}
-                    onResetOverride={() => {}}
                   />
                 ))}
               </Surface>

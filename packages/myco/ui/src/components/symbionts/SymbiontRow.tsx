@@ -29,36 +29,34 @@ function describeStatus(s: SymbiontInfo): { label: string; tone: 'sage' | 'ochre
 
 export interface SymbiontRowProps {
   symbiont: SymbiontInfo;
-  /** Per-project override toggle handlers — passed from the page so the
-   *  row stays free of mutation-hook wiring. */
+  /** Per-project override toggle handler — passed from the page so
+   *  the row stays free of mutation-hook wiring. */
   onSetOverride: (enabled: boolean) => void;
-  onResetOverride: () => void;
+  /** When true, the toggle is rendered disabled and a tooltip explains
+   *  that overrides require a selected project. Avoids the silent
+   *  no-op UX where a click appears to do nothing. */
+  overrideDisabled?: boolean;
+  /** Reason for the disabled state — used as the tooltip / sr-only text. */
+  overrideDisabledReason?: string;
   busy?: boolean;
 }
 
-export function SymbiontRow({ symbiont, onSetOverride, onResetOverride, busy = false }: SymbiontRowProps) {
+export function SymbiontRow({ symbiont, onSetOverride, overrideDisabled = false, overrideDisabledReason, busy = false }: SymbiontRowProps) {
   const status = describeStatus(symbiont);
   const projectPath = useProjectPathBuilder();
   const chips = useMemo(() => buildCapabilityChips(symbiont), [symbiont]);
 
-  // Toggle reflects the EFFECTIVE state. Clicking it acts as follows:
-  //   - currently ON, user toggles off  -> write { enabled: false } (opt out).
-  //   - currently OFF (override = false), user toggles on -> clear the
-  //     override so it falls back to the global default.
-  // The latter is "reset" rather than "write enabled: true" because the
-  // global default is the right answer 99% of the time, and not pinning
-  // `true` here keeps the project file from accumulating stale entries.
+  // Toggle reflects the EFFECTIVE state. Clicking always writes the
+  // explicit project override matching the user's intent — never
+  // "reset to global default" — because the user clicked a toggle,
+  // not a reset action, and they expect the state to stick. When the
+  // global default is also the user's target value, the override is
+  // technically redundant but harmless and makes the user's intent
+  // explicit. A separate "reset to default" affordance (not on the
+  // toggle) can be added later if project-config cleanliness becomes
+  // a concern.
   function handleToggle(next: boolean) {
-    if (next && symbiont.projectOverride && symbiont.projectOverride.enabled === false) {
-      onResetOverride();
-    } else if (!next) {
-      onSetOverride(false);
-    } else {
-      // Edge: no override and user wants ON, but effective is OFF for
-      // some reason (e.g. global default disabled). Pin an explicit
-      // override of true so the symbiont runs in this project.
-      onSetOverride(true);
-    }
+    onSetOverride(next);
   }
 
   return (
@@ -97,11 +95,14 @@ export function SymbiontRow({ symbiont, onSetOverride, onResetOverride, busy = f
         {/* Override toggle is only meaningful for detected symbionts.
             For not-detected entries, hide the toggle entirely. */}
         {symbiont.detected && (
-          <div className="flex items-center gap-2 shrink-0">
+          <div
+            className="flex items-center gap-2 shrink-0"
+            title={overrideDisabled ? overrideDisabledReason : undefined}
+          >
             <Switch
               checked={symbiont.enabled}
               onCheckedChange={handleToggle}
-              disabled={busy}
+              disabled={busy || overrideDisabled}
             />
           </div>
         )}
