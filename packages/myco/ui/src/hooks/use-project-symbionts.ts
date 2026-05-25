@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { deleteJson, fetchJson, patchJson, postJson } from '../lib/api';
-import { useProjectSelection } from './use-project-selection';
+import { useActiveProjectSelection } from './use-project-selection';
 
 /**
  * Hooks for the per-project Symbiont page surface — toggling enabled
@@ -51,7 +51,7 @@ interface DrainMigrationResponse {
 
 export function usePatchProjectSymbionts() {
   const qc = useQueryClient();
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   return useMutation({
     mutationFn: async (patch: PatchSymbiontsBody) => {
       if (!selection) throw new Error('No project selected');
@@ -68,7 +68,7 @@ export function usePatchProjectSymbionts() {
 
 export function useCommitToRepo() {
   const qc = useQueryClient();
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   return useMutation({
     mutationFn: async (body: CommitToRepoBody = {}) => {
       if (!selection) throw new Error('No project selected');
@@ -85,7 +85,7 @@ export function useCommitToRepo() {
 
 export function useUncommitFromRepo() {
   const qc = useQueryClient();
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   return useMutation({
     mutationFn: async (body: UncommitFromRepoBody = {}) => {
       if (!selection) throw new Error('No project selected');

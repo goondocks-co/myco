@@ -31,7 +31,7 @@ import { Switch } from '../components/ui/switch';
 import { Input } from '../components/ui/input';
 import { fetchJson } from '../lib/api';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
-import { useProjectSelection } from '../hooks/use-project-selection';
+import { useActiveProjectSelection } from '../hooks/use-project-selection';
 import { useGroves } from '../hooks/use-groves';
 import {
   usePatchProjectSymbionts,
@@ -43,7 +43,7 @@ import {
 export default function Symbionts() {
   const { data, isLoading, refetch } = useSymbionts();
   const queryClient = useQueryClient();
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   const [detecting, setDetecting] = useState(false);
   const [lastDetectionAt, setLastDetectionAt] = useState<Date | null>(null);
 
@@ -174,7 +174,7 @@ function SymbiontRow({ symbiont }: { symbiont: SymbiontInfo }) {
 }
 
 function ProjectOverridesSection({ detectedSymbionts }: { detectedSymbionts: SymbiontInfo[] }) {
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   if (!selection) return null;
 
   return (
@@ -232,7 +232,7 @@ function ProjectSymbiontRow({ symbiont }: { symbiont: SymbiontInfo }) {
 }
 
 function CommitToRepoCard() {
-  const selection = useProjectSelection();
+  const selection = useActiveProjectSelection();
   const { data: groves } = useGroves();
   const commit = useCommitToRepo();
   const uncommit = useUncommitFromRepo();
