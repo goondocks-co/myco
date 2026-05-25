@@ -25,7 +25,7 @@ That single command installs the npm package, registers the per-user service, an
 myco dashboard
 ```
 
-Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically — no per-project files, no per-worktree bootstrap. New project? Just start coding — Myco picks it up on the first agent hook, auto-registering the project into your default Grove. Data capture starts immediately; intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, VS Code Copilot, Antigravity, Windsurf, OpenCode, and Pi.
+Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically — no per-project files, no per-worktree bootstrap. New project? Just start coding — Myco picks it up on the first agent hook, auto-registering the project into your default Grove. Data capture starts immediately; intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, Copilot, Antigravity, Windsurf, OpenCode, and Pi.
 
 For a deliberate project-local override (dogfood / regulated repo where Myco wiring should live in the repo), run `myco init --project [path]`. The bare `myco init` form is gone — global install is the only happy path.
 
