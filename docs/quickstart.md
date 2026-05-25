@@ -50,7 +50,7 @@ That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync
 
 ## That's it — global by default
 
-Once Myco is installed, the per-user daemon starts automatically and walks every detected coding agent on your machine, wiring Myco's hooks, MCP entries, and skills into each one's user-global config. If you have no projects registered yet, the daemon enters **phantom mode** — it serves the dashboard from a temporary vault at `~/.myco/_unbound-bootstrap/` and polls the registry every 5 seconds. The first time any agent fires a hook from a project directory, Myco auto-creates the project record, binds it to your default Grove, and gracefully restarts onto the real Grove vault. You don't need to run `myco init`.
+Once Myco is installed, the per-user daemon starts automatically. On first boot it creates a **default Grove** to hold your captured sessions, then walks every detected coding agent on your machine and wires Myco's hooks, MCP entries, and skills into each one's user-global config. The first time any agent fires a hook from a project directory (must be a real git repo), Myco auto-registers that project into your default Grove. You don't need to run `myco init`. The dashboard is available immediately — you can configure intelligence providers, create additional Groves, or move projects between Groves before you've fired your first hook.
 
 New agent installed later? Myco wires it in on the next periodic detection tick, or on demand via the dashboard's Symbionts page.
 
@@ -157,7 +157,7 @@ myco stats      # Check status
 myco logs       # Tail the daemon log
 ```
 
-If the daemon is up but no project is registered, you'll see `No project bound; polling registry from unbound bootstrap` — that's phantom mode, and it resolves automatically the first time you run any agent inside a project directory.
+If the daemon is up but no projects are registered yet, just fire an agent hook from any git-tracked project — Myco will auto-register that project into your default Grove and capture starts immediately. If the daemon log shows `No project bound; polling registry from unbound bootstrap`, the default Grove couldn't be created at first start (rare; usually a disk or registry-write issue). Run `myco doctor` to diagnose.
 
 ### No observations being captured
 

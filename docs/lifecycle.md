@@ -8,12 +8,13 @@ The daemon is installed as a per-user service the first time the npm package lan
 
 When the service starts:
 
-1. **Find the registry.** The daemon reads `~/.myco/registry.json` to discover registered projects and Groves.
-2. **Phantom mode if empty.** If no projects are registered yet, the daemon enters **phantom mode**: it binds to a temporary vault at `~/.myco/_unbound-bootstrap/`, serves the dashboard, and polls the registry every 5 seconds. Startup logs read `No project bound; polling registry from unbound bootstrap`.
-3. **Auto-Grove-create on first hook.** The first time any agent fires a hook from a directory not in the registry, Myco creates the project record and binds it to the machine's default Grove automatically. A graceful supervisor restart picks up the new binding without losing buffered events.
-4. **Bound state.** Once at least one project is bound, the daemon serves that Grove. Each Grove owns its own SQLite database under `~/.myco/groves/<id>/`. Startup logs read `Bound to vault: <path>`.
+1. **Ensure the default Grove.** The daemon runs the global bootstrap, which creates the default Grove for its variant if one doesn't exist (`default` for prod, `default-dev` for dev). The Grove holds the SQLite database that captured events land in.
+2. **Install launchers + symbionts.** The two global launchers (`~/.myco/launcher.cjs` + `~/.myco/mcp-launcher.cjs`) are written, then every detected coding agent gets Myco's hooks, MCP entries, and skills installed into its user-global config.
+3. **Auto-register projects on first hook.** The first time any agent fires a hook from a directory that's a real git repo, Myco auto-registers that project into the default Grove. No `myco init` step. Each Grove owns its own SQLite database under `~/.myco/groves/<id>/`.
 
-This means a fresh `npm install -g @goondocks/myco` produces a working daemon and dashboard before you've opened a single project. Capture begins on the first agent invocation.
+This means a fresh `npm install -g @goondocks/myco` produces a working daemon, default Grove, and dashboard before you've opened a single project. Capture begins on the first agent invocation.
+
+If something delays Grove creation (registry write fails, disk full, race during initial install), the daemon keeps the dashboard up via an internal unbound-bootstrap fallback and polls the registry every 5 seconds — this is a defensive safety net, not a normal user-facing state.
 
 ## Variant-aware daemons
 
@@ -25,7 +26,7 @@ Variant-aware rebind is strict:
 - A daemon with `MYCO_SERVICE_VARIANT=service` binds **only** to Groves with `served_by = "service"`.
 - There is no fall-through. The previous prod escape hatch (default Grove regardless of `served_by`) is closed.
 
-This guarantees the two daemons never collide and never serve each other's Groves. Variant-pinned daemons that find no matching Grove also enter phantom mode rather than failing.
+This guarantees the two daemons never collide and never serve each other's Groves. Each variant's daemon also creates its own default Grove with the matching `served_by` on first boot.
 
 ## Session capture
 
@@ -76,7 +77,7 @@ Myco data lives in two places: a per-user global tree and per-Grove databases.
 | `~/.myco/buffer/` | Per-Grove capture buffers (ephemeral; archives legacy `.agents/myco-buffer/`) |
 | `~/.myco/service/daemon.json` | Running daemon state (PID, port, bound vault) |
 | `~/.myco/groves/<id>/` | Per-Grove databases and state |
-| `~/.myco/_unbound-bootstrap/` | Phantom-mode vault when no projects are registered |
+| `~/.myco/_unbound-bootstrap/` | Internal defensive fallback when the default Grove can't be ensured; safely ignore in normal operation |
 
 ### Per Grove
 

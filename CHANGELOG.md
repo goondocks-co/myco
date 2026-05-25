@@ -20,13 +20,13 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 - New manifest fields: `detectionDir`, `globalHooksTarget`, `globalMcpTarget` (string or string[]), `globalSettingsTarget`.
 - Settings-merge for shared agent config files: Myco's hook/mcp/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) are preserved across install/uninstall cycles.
 
-#### Greenfield + variant-aware phantom-bootstrap
+#### Default Grove + auto-register projects
 
-- Daemon boots cleanly with no registered projects — into a "phantom" vault at `~/.myco/_unbound-bootstrap/`.
-- A 5-second registry poll triggers a graceful supervisor restart when the first project registers.
-- Variant-pinned daemons (`MYCO_SERVICE_VARIANT=dev` / `service`) also enter phantom mode rather than throwing. Strict variant-aware rebind: dev daemons bind only to Groves with `served_by="service-dev"`; prod daemons bind only to `served_by="service"`. The previous prod escape hatch (default Grove regardless of `served_by`) is closed.
-- Auto-Grove-create on first hook: hooks fired from a project that isn't yet in the registry create the project + default Grove automatically.
-- Startup logs the bound vault path, or "No project bound; polling registry from unbound bootstrap" when in phantom mode.
+- **The daemon ensures a default Grove exists at first start** via `runGlobalBootstrap()`. No user setup. Dev and prod variants each get their own default Grove (`default` and `default-dev`) so they coexist without stepping on each other.
+- **Projects auto-register into the default Grove on first agent hook** — no `myco init` step. The hook's project root must be a real git repo (`isSafeProjectRoot` gate); paths that fail this check (cwd-fallback misfires from $HOME, etc.) are silently skipped.
+- Users can later create new Groves via the dashboard and reassign projects between them through the UI.
+- **Variant-aware Grove binding**: dev daemons resolve project vaults only from Groves with `served_by="service-dev"`; prod daemons only from `served_by="service"`. The previous prod-side escape hatch (default Grove regardless of `served_by`) is closed — variant safety is symmetric.
+- **Daemon recovers from a missing default Grove** through an internal unbound-bootstrap fallback that serves the dashboard from `~/.myco/_unbound-bootstrap/` while a 5-second registry poll waits for one to appear. This path should not fire in practice — `runGlobalBootstrap()` creates the Grove before anything else — but the daemon won't crash if the registry write somehow fails or is interrupted.
 
 #### Antigravity symbiont (Gemini IDE successor)
 
