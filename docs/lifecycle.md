@@ -14,8 +14,6 @@ When the service starts:
 
 This means a fresh `npm install -g @goondocks/myco` produces a working daemon, default Grove, and dashboard before you've opened a single project. Capture begins on the first agent invocation.
 
-If something delays Grove creation (registry write fails, disk full, race during initial install), the daemon keeps the dashboard up via an internal unbound-bootstrap fallback and polls the registry every 5 seconds — this is a defensive safety net, not a normal user-facing state.
-
 ## Variant-aware daemons
 
 A machine can run multiple daemons at the same time — for example, a contributor's dogfood daemon alongside the released production daemon. Each daemon is pinned to a **variant** via `MYCO_SERVICE_VARIANT` (default: `service`).
@@ -77,7 +75,6 @@ Myco data lives in two places: a per-user global tree and per-Grove databases.
 | `~/.myco/buffer/` | Per-Grove capture buffers (ephemeral; archives legacy `.agents/myco-buffer/`) |
 | `~/.myco/service/daemon.json` | Running daemon state (PID, port, bound vault) |
 | `~/.myco/groves/<id>/` | Per-Grove databases and state |
-| `~/.myco/_unbound-bootstrap/` | Internal defensive fallback when the default Grove can't be ensured; safely ignore in normal operation |
 
 ### Per Grove
 

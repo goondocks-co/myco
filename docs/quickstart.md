@@ -157,7 +157,7 @@ myco stats      # Check status
 myco logs       # Tail the daemon log
 ```
 
-If the daemon is up but no projects are registered yet, just fire an agent hook from any git-tracked project — Myco will auto-register that project into your default Grove and capture starts immediately. If the daemon log shows `No project bound; polling registry from unbound bootstrap`, the default Grove couldn't be created at first start (rare; usually a disk or registry-write issue). Run `myco doctor` to diagnose.
+If the daemon is up but no projects are registered yet, just fire an agent hook from any git-tracked project — Myco auto-registers that project into your default Grove and capture starts immediately.
 
 ### No observations being captured
 

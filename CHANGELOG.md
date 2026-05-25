@@ -22,11 +22,9 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 
 #### Default Grove + auto-register projects
 
-- **The daemon ensures a default Grove exists at first start** via `runGlobalBootstrap()`. No user setup. Dev and prod variants each get their own default Grove (`default` and `default-dev`) so they coexist without stepping on each other.
-- **Projects auto-register into the default Grove on first agent hook** — no `myco init` step. The hook's project root must be a real git repo (`isSafeProjectRoot` gate); paths that fail this check (cwd-fallback misfires from $HOME, etc.) are silently skipped.
-- Users can later create new Groves via the dashboard and reassign projects between them through the UI.
-- **Variant-aware Grove binding**: dev daemons resolve project vaults only from Groves with `served_by="service-dev"`; prod daemons only from `served_by="service"`. The previous prod-side escape hatch (default Grove regardless of `served_by`) is closed — variant safety is symmetric.
-- **Daemon recovers from a missing default Grove** through an internal unbound-bootstrap fallback that serves the dashboard from `~/.myco/_unbound-bootstrap/` while a 5-second registry poll waits for one to appear. This path should not fire in practice — `runGlobalBootstrap()` creates the Grove before anything else — but the daemon won't crash if the registry write somehow fails or is interrupted.
+- **A default Grove is created at install.** Projects auto-register into it on first agent hook — no `myco init` step. Hooks fired from non-git directories (cwd-fallback misfires) are silently skipped.
+- Users can create additional Groves and reassign projects between them through the dashboard.
+- **Variant-aware Grove binding**: dev daemons (`MYCO_SERVICE_VARIANT=dev`) bind only to Groves with `served_by="service-dev"`; prod daemons only to `served_by="service"`. Dev and prod can coexist on the same machine — each gets its own default Grove. The previous prod-side escape hatch (default Grove regardless of `served_by`) is closed.
 
 #### Antigravity symbiont (Gemini IDE successor)
 
@@ -71,7 +69,7 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 
 #### Tests
 
-- New invariant test suites: launcher write-ordering, daemon-bound intent bypass, phantom-bootstrap rebind, variant-aware rebind filter, canonical-plist-no-hijack.
+- New invariant test suites: launcher write-ordering, daemon-bound intent bypass, daemon rebind on first project, variant-aware rebind filter, canonical-plist-no-hijack, greenfield default-Grove + first-hook auto-register end-to-end.
 - `MYCO_LAUNCH_AGENTS_DIR` propagation regression tests in `tests/service/`.
 - Test isolation hardened: `--isolate` runner enforcement, MYCO_HOME sandboxing in `beforeEach` for relevant suites.
 
