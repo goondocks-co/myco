@@ -1653,6 +1653,35 @@ describe('uninstall', () => {
     expect(settingsAfter.permissions).toBeUndefined();
   });
 
+  it('audit-track: install + uninstall preserves a value-collision Bash(myco *) entry (Claude Code)', () => {
+    // User already had `Bash(myco *)` in their permissions.allow
+    // before installing Myco (maybe they hand-allowed it for some
+    // workflow). Install dedupes — no array-append happens for that
+    // entry, so the audit doesn't claim ownership. Uninstall must
+    // preserve it.
+    const settingsDir = path.join(projectRoot, '.claude');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      permissions: { allow: ['Bash(myco *)', 'Bash(user-custom *)'] },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json')) as {
+      permissions?: { allow: string[] };
+    };
+    const allow = settings.permissions?.allow ?? [];
+    // User's pre-existing entries survive.
+    expect(allow).toContain('Bash(myco *)');
+    expect(allow).toContain('Bash(user-custom *)');
+    // Myco's other additions (myco:*, myco-dev *, myco-dev:*) are gone.
+    expect(allow).not.toContain('Bash(myco:*)');
+    expect(allow).not.toContain('Bash(myco-dev *)');
+    expect(allow).not.toContain('Bash(myco-dev:*)');
+  });
+
   it('removes auto-approve from VS Code settings', () => {
     const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
@@ -1678,6 +1707,40 @@ describe('uninstall', () => {
     expect(autoApprove['other-tool']).toBe(true);
     expect(autoApprove['myco']).toBeUndefined();
     expect(autoApprove['myco-dev']).toBeUndefined();
+  });
+
+  // -----------------------------------------------------------------
+  // Stewardship audit regression — value-collision case
+  //
+  // The data-loss bug the audit closes: user already had a setting
+  // whose value happens to MATCH Myco's template (e.g. they enabled
+  // `chat.tools.terminal.autoApprove.myco-dev = true` themselves
+  // before installing Myco). Install is a no-op on disk; if uninstall
+  // used value-match removal it would silently strip the user's
+  // setting. With the audit, install records only changes Myco
+  // actually made — so this user-pre-existing value survives.
+  // -----------------------------------------------------------------
+  it('audit-track: install + uninstall preserves a value-collision user setting (Copilot/VS Code)', () => {
+    const settingsDir = path.join(projectRoot, '.vscode');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    // User has pre-set `myco-dev: true` independently — value matches
+    // Myco's template by coincidence.
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco-dev': true },
+    });
+
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json')) as Record<string, unknown>;
+    const autoApprove = settings['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
+    // The user's pre-existing value survives.
+    expect(autoApprove['myco-dev']).toBe(true);
+    // Myco's own additions are gone (myco: true was Myco-only).
+    expect(autoApprove['myco']).toBeUndefined();
+    // The user's other key is untouched.
+    expect(autoApprove['other-tool']).toBe(true);
   });
 
   it('removes coreTools entries from Gemini settings', () => {
@@ -1887,6 +1950,31 @@ describe('Windsurf install', () => {
     expect(allowList).toContain('other-cmd');
     expect(allowList).not.toContain('myco');
     expect(allowList).not.toContain('myco-dev');
+  });
+
+  it('audit-track: install + uninstall preserves a value-collision allowlist entry (Windsurf)', () => {
+    // User had `myco-dev` in their allowlist BEFORE installing Myco
+    // (some other tool happens to use the same name, or they typed it
+    // themselves). Install is a no-op for that array entry — audit
+    // does NOT claim ownership. Uninstall preserves it.
+    const settingsDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'windsurf.cascadeCommandsAllowList': ['user-cmd', 'myco-dev'],
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allowList = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
+    // User's pre-existing entry survives.
+    expect(allowList).toContain('myco-dev');
+    // User's other entry is untouched.
+    expect(allowList).toContain('user-cmd');
+    // Myco's own additions (just `myco`) are gone.
+    expect(allowList).not.toContain('myco');
   });
 });
 

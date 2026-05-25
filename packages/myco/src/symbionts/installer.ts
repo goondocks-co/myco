@@ -6,7 +6,14 @@ import { installGlobalLaunchers } from '../grove/launcher-install.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
-import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
+import {
+  deepMergeSettings,
+  deepMergeSettingsWithAudit,
+  deepRemoveSettings,
+  emptyJsonAudit,
+  removeAuditedSettings,
+  type JsonSettingsAudit,
+} from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
@@ -881,10 +888,17 @@ export class SymbiontInstaller {
       mcp = true;
     }
 
-    // Apply settings transform
+    // Apply settings transform with audit-tracking. Same discipline as
+    // `installSettings` — uninstall must be able to strip only what
+    // Myco wrote, never user-pre-existing values that overlap the
+    // template.
     const settingsTemplate = reg.settingsTarget ? this.loadTemplate('settings') : null;
     if (settingsTemplate) {
-      data = deepMergeSettings(data, settingsTemplate);
+      const audit = emptyJsonAudit();
+      data = deepMergeSettingsWithAudit(data, settingsTemplate, audit);
+      if (audit.scalars.length > 0 || audit.arrayEntries.length > 0) {
+        this.writeJsonSettingsAudit(audit);
+      }
       settings = true;
     }
 
@@ -1004,10 +1018,16 @@ export class SymbiontInstaller {
       }
     }
 
-    // Remove settings
+    // Remove settings — audit-track path. Same precedence as the
+    // unbatched uninstall: use the JSON audit when present, fall back
+    // to value-match `deepRemoveSettings` for legacy installs.
     const settingsTemplate = reg.settingsTarget ? this.loadTemplate('settings') : null;
     if (settingsTemplate) {
-      settings = deepRemoveSettings(data, settingsTemplate);
+      const audit = this.readJsonSettingsAudit();
+      settings = audit
+        ? removeAuditedSettings(data, audit)
+        : deepRemoveSettings(data, settingsTemplate);
+      if (settings && audit) this.deleteSettingsAudit();
     }
 
     writeOrDeleteJsonFile(targetPath, data);
@@ -1736,8 +1756,42 @@ export class SymbiontInstaller {
     }
 
     const existing = readJsonFile(targetPath);
-    const merged = deepMergeSettings(existing, template);
-    return writeJsonFile(targetPath, merged);
+    // Audit-track every leaf Myco actually changes on disk so uninstall
+    // can strip only what we wrote, never a user-pre-existing value
+    // that happened to overlap with the template. Parity with the TOML
+    // `installSettingsToml` audit.
+    const audit = emptyJsonAudit();
+    const merged = deepMergeSettingsWithAudit(existing, template, audit);
+    const wrote = writeJsonFile(targetPath, merged);
+    if (audit.scalars.length > 0 || audit.arrayEntries.length > 0) {
+      // Merge with any pre-existing audit so re-installs accumulate
+      // ownership claims (different template versions may legitimately
+      // touch different paths over time). Paths are arrays; key on the
+      // JSON-stringified form to avoid false-distinct paths.
+      const existingAudit = this.readJsonSettingsAudit();
+      if (existingAudit) {
+        const seenScalarPaths = new Set(audit.scalars.map((s) => JSON.stringify(s.path)));
+        for (const s of existingAudit.scalars) {
+          if (!seenScalarPaths.has(JSON.stringify(s.path))) audit.scalars.push(s);
+        }
+        const arrayByPath = new Map(audit.arrayEntries.map((e) => [JSON.stringify(e.path), e]));
+        for (const e of existingAudit.arrayEntries) {
+          const key = JSON.stringify(e.path);
+          const current = arrayByPath.get(key);
+          if (current) {
+            const seen = new Set(current.values.map((v) => JSON.stringify(v)));
+            for (const v of e.values) {
+              if (!seen.has(JSON.stringify(v))) current.values.push(v);
+            }
+          } else {
+            audit.arrayEntries.push(e);
+            arrayByPath.set(key, e);
+          }
+        }
+      }
+      this.writeJsonSettingsAudit(audit);
+    }
+    return wrote;
   }
 
   /**
@@ -1756,12 +1810,19 @@ export class SymbiontInstaller {
     return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-${scopeTag}-settings.json`);
   }
 
-  /** Read the audit list of section.key entries Myco wrote, or [] if absent. */
+  /**
+   * Read the audit list of section.key entries Myco wrote (TOML
+   * settings only — schema 1). Returns [] when the audit is absent or
+   * carries a non-TOML schema. The reader is tolerant of the JSON-
+   * schema-2 audit (used for JSON settings) and silently ignores it
+   * here; the JSON path has its own reader below.
+   */
   private readSettingsAudit(): string[] {
     const auditPath = this.getSettingsAuditPath();
     try {
       const raw = fs.readFileSync(auditPath, 'utf-8');
-      const parsed = JSON.parse(raw) as { wroteKeys?: unknown };
+      const parsed = JSON.parse(raw) as { schema?: unknown; wroteKeys?: unknown };
+      if (parsed.schema !== 1) return [];
       if (!Array.isArray(parsed.wroteKeys)) return [];
       return parsed.wroteKeys.filter((k): k is string => typeof k === 'string');
     } catch {
@@ -1769,11 +1830,49 @@ export class SymbiontInstaller {
     }
   }
 
-  /** Persist the audit list. Creates parent dir as needed. */
+  /** Persist the TOML audit list. Creates parent dir as needed. */
   private writeSettingsAudit(wroteKeys: string[]): void {
     const auditPath = this.getSettingsAuditPath();
     fs.mkdirSync(path.dirname(auditPath), { recursive: true });
     atomicWriteFileSync(auditPath, JSON.stringify({ schema: 1, wroteKeys }, null, 2) + '\n');
+  }
+
+  /**
+   * Read the JSON audit (schema 2) recording the exact leaves Myco
+   * mutated in a co-tenant JSON settings file. Returns `null` when no
+   * audit exists (legacy install pre-dating audit tracking, OR the
+   * symbiont uses the TOML audit path).
+   */
+  private readJsonSettingsAudit(): JsonSettingsAudit | null {
+    const auditPath = this.getSettingsAuditPath();
+    try {
+      const raw = fs.readFileSync(auditPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Partial<JsonSettingsAudit>;
+      if (parsed.schema !== 2) return null;
+      if (parsed.format !== 'json') return null;
+      return {
+        schema: 2,
+        format: 'json',
+        scalars: Array.isArray(parsed.scalars)
+          ? parsed.scalars.filter((s): s is { path: string[]; value: unknown } =>
+            !!s && Array.isArray(s.path) && s.path.every((seg) => typeof seg === 'string'))
+          : [],
+        arrayEntries: Array.isArray(parsed.arrayEntries)
+          ? parsed.arrayEntries.filter((s): s is { path: string[]; values: unknown[] } =>
+            !!s && Array.isArray(s.path) && s.path.every((seg) => typeof seg === 'string')
+            && Array.isArray(s.values))
+          : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist the JSON audit. Creates parent dir as needed. */
+  private writeJsonSettingsAudit(audit: JsonSettingsAudit): void {
+    const auditPath = this.getSettingsAuditPath();
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    atomicWriteFileSync(auditPath, JSON.stringify(audit, null, 2) + '\n');
   }
 
   /** Remove the audit file after a successful uninstall. */
@@ -1874,10 +1973,18 @@ export class SymbiontInstaller {
     const settings = readJsonFile(targetPath);
     if (Object.keys(settings).length === 0) return false;
 
-    const changed = deepRemoveSettings(settings, template);
+    // Prefer the audit-track path: removes only leaves Myco recorded
+    // writing. Legacy installs pre-date the JSON audit, in which case
+    // fall back to the value-match `deepRemoveSettings` (the original
+    // behavior — safe by coincidence for current templates).
+    const audit = this.readJsonSettingsAudit();
+    const changed = audit
+      ? removeAuditedSettings(settings, audit)
+      : deepRemoveSettings(settings, template);
     if (!changed) return false;
 
     writeOrDeleteJsonFile(targetPath, settings);
+    if (audit) this.deleteSettingsAudit();
     return true;
   }
 
@@ -2244,13 +2351,19 @@ const LOCAL_SKILLS_GITIGNORE = `# Myco-managed symlinks — generated skills are
 `;
 
 /**
- * Write a .gitignore inside an agent's skills directory that ignores all
- * symlinks Myco creates there. Idempotent — skips if already present.
+ * Bootstrap a .gitignore inside an agent's skills directory so the
+ * symlinks Myco creates there don't end up in the user's next `git
+ * add`. Write-once: if ANY file already exists at this path — even
+ * one the user has hand-edited — leave it untouched. The agent skills
+ * dir is created by Myco but the file at this path is a stewardship
+ * surface (the user may have added their own ignore patterns there).
+ *
+ * If `LOCAL_SKILLS_GITIGNORE` ever needs to evolve, contributors must
+ * either (a) provide a migration that preserves user-added lines or
+ * (b) accept that pre-existing user files keep their old content.
  */
 function ensureLocalSkillsGitignore(agentSkillsDir: string): void {
   const gitignorePath = path.join(agentSkillsDir, '.gitignore');
-  try {
-    if (fs.readFileSync(gitignorePath, 'utf-8') === LOCAL_SKILLS_GITIGNORE) return;
-  } catch { /* doesn't exist — proceed */ }
+  if (fs.existsSync(gitignorePath)) return;
   fs.writeFileSync(gitignorePath, LOCAL_SKILLS_GITIGNORE, 'utf-8');
 }
