@@ -156,12 +156,12 @@ describe('POST /api/projects/:projectId/commit-to-repo', () => {
       project_id: string;
       grove_id: string;
       manifest_path: string;
-      not_implemented_flags?: string[];
+      wrote: string[];
     };
     expect(body.ok).toBe(true);
     expect(body.project_id).toBe(projectId);
     expect(body.grove_id).toBe(grove.id);
-    expect(body.not_implemented_flags).toBeUndefined();
+    expect(body.wrote).toEqual([path.join('.myco', 'project.toml')]);
 
     const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
     expect(manifest?.project.id).toBe(projectId);
@@ -169,17 +169,52 @@ describe('POST /api/projects/:projectId/commit-to-repo', () => {
     expect(manifest?.grove?.slug).toBe(grove.slug);
   });
 
-  it('echoes deferred flags from the request body', async () => {
+  it('writes project-local launchers when write_launchers=true', async () => {
+    const { projectId, projectRoot } = seededProject();
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId }, body: { write_launchers: true } },
+    );
+    expect(response.status).toBeUndefined();
+    const body = response.body as { wrote: string[] };
+    expect(body.wrote).toContain(path.join('.agents', 'myco-run.cjs'));
+    expect(body.wrote).toContain(path.join('.agents', 'myco-cli.cjs'));
+
+    const runCjs = fs.readFileSync(path.join(projectRoot, '.agents', 'myco-run.cjs'), 'utf-8');
+    const cliCjs = fs.readFileSync(path.join(projectRoot, '.agents', 'myco-cli.cjs'), 'utf-8');
+    expect(runCjs).toContain('MYCO_LAUNCHER_PROTOCOL=v2');
+    expect(cliCjs).toEqual(runCjs);
+  });
+
+  it('writes runtime.command pin when runtime_command is set', async () => {
+    const { projectId, projectRoot } = seededProject();
+    const response = await call(
+      createCommitToRepoHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { runtime_command: '/usr/local/bin/myco-dev' },
+      },
+    );
+    expect(response.status).toBeUndefined();
+    const body = response.body as { wrote: string[] };
+    expect(body.wrote).toContain(path.join('.myco', 'runtime.command'));
+
+    const pin = fs.readFileSync(path.join(projectRoot, '.myco', 'runtime.command'), 'utf-8');
+    expect(pin.trim()).toBe('/usr/local/bin/myco-dev');
+  });
+
+  it('rejects relative runtime_command', async () => {
     const { projectId } = seededProject();
     const response = await call(
       createCommitToRepoHandler(daemonStateDir),
       {
         params: { projectId },
-        body: { write_launchers: true, runtime_command: '/usr/local/bin/myco-dev' },
+        body: { runtime_command: 'myco-dev' },
       },
     );
-    const body = response.body as { not_implemented_flags?: string[] };
-    expect(body.not_implemented_flags).toEqual(['write_launchers', 'runtime_command']);
+    expect(response.status).toBe(400);
+    const body = response.body as { error?: { code?: string } };
+    expect(body.error?.code).toBe('invalid_runtime_command');
   });
 
   it('returns 404 for an unregistered project', async () => {
@@ -192,33 +227,64 @@ describe('POST /api/projects/:projectId/commit-to-repo', () => {
 });
 
 describe('DELETE /api/projects/:projectId/commit-to-repo', () => {
-  it('removes a previously written project.toml', async () => {
+  it('removes project.toml + launchers + runtime.command by default', async () => {
     const { projectId, projectRoot } = seededProject();
-    await call(createCommitToRepoHandler(daemonStateDir), { params: { projectId } });
+    await call(
+      createCommitToRepoHandler(daemonStateDir),
+      {
+        params: { projectId },
+        body: { write_launchers: true, runtime_command: '/usr/local/bin/myco-dev' },
+      },
+    );
     const manifestPath = resolveProjectManifestPath(resolveProjectVaultDir(projectRoot));
+    const runCjs = path.join(projectRoot, '.agents', 'myco-run.cjs');
+    const pin = path.join(projectRoot, '.myco', 'runtime.command');
     expect(fs.existsSync(manifestPath)).toBe(true);
+    expect(fs.existsSync(runCjs)).toBe(true);
+    expect(fs.existsSync(pin)).toBe(true);
 
     const response = await call(
       createUncommitFromRepoHandler(daemonStateDir),
       { params: { projectId } },
     );
     expect(response.status).toBeUndefined();
-    const body = response.body as { ok: boolean; removed: boolean };
+    const body = response.body as { ok: boolean; removed: string[] };
     expect(body.ok).toBe(true);
-    expect(body.removed).toBe(true);
+    expect(body.removed).toContain(path.join('.myco', 'project.toml'));
+    expect(body.removed).toContain(path.join('.agents', 'myco-run.cjs'));
+    expect(body.removed).toContain(path.join('.agents', 'myco-cli.cjs'));
+    expect(body.removed).toContain(path.join('.myco', 'runtime.command'));
     expect(fs.existsSync(manifestPath)).toBe(false);
+    expect(fs.existsSync(runCjs)).toBe(false);
+    expect(fs.existsSync(pin)).toBe(false);
   });
 
-  it('is idempotent when project.toml is already absent', async () => {
+  it('preserves launchers when remove_launchers=false', async () => {
+    const { projectId, projectRoot } = seededProject();
+    await call(
+      createCommitToRepoHandler(daemonStateDir),
+      { params: { projectId }, body: { write_launchers: true } },
+    );
+    const runCjs = path.join(projectRoot, '.agents', 'myco-run.cjs');
+    expect(fs.existsSync(runCjs)).toBe(true);
+
+    await call(
+      createUncommitFromRepoHandler(daemonStateDir),
+      { params: { projectId }, body: { remove_launchers: false } },
+    );
+    expect(fs.existsSync(runCjs)).toBe(true);
+  });
+
+  it('is idempotent when nothing has been committed', async () => {
     const { projectId } = seededProject();
     const response = await call(
       createUncommitFromRepoHandler(daemonStateDir),
       { params: { projectId } },
     );
     expect(response.status).toBeUndefined();
-    const body = response.body as { ok: boolean; removed: boolean };
+    const body = response.body as { ok: boolean; removed: string[] };
     expect(body.ok).toBe(true);
-    expect(body.removed).toBe(false);
+    expect(body.removed).toEqual([]);
   });
 });
 

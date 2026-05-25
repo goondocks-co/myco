@@ -27,6 +27,9 @@ import {
 import { assertSafeProjectRoot } from '@myco/vault/resolve.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectManifestPath } from '@myco/grove/paths.js';
+import { BUNDLED_TEMPLATES } from '@myco/symbionts/templates.generated.js';
+import { removeProjectLaunchers } from '@myco/symbionts/installer.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { createBackup, readSnapshotHeader, restoreBackup } from '../backup.js';
 import { getMachineId } from '../machine-id.js';
 import type { RouteHandler } from '../router.js';
@@ -191,18 +194,28 @@ export function createProjectRestoreHandler(
 
 export interface CommitToRepoBody {
   /**
-   * Reserved for the launcher-write toggle: when true, also writes
-   * `.agents/myco-run.cjs` + `.agents/myco-cli.cjs`. Not implemented in
-   * this stub — the launcher-write path lands with the Wave 2 UI work.
+   * Write the project-local launchers at `.agents/myco-run.cjs` +
+   * `.agents/myco-cli.cjs`. Both use the bundled `myco-run.cjs`
+   * template — the file resolves its mode from its own basename, so
+   * the two filenames are content-identical and a single template
+   * powers both.
    */
   write_launchers?: boolean;
   /**
-   * Reserved for the runtime-pin toggle: when set, writes
-   * `.myco/runtime.command` with this absolute path. Not implemented
-   * in this stub.
+   * Write `.myco/runtime.command` with the supplied absolute path,
+   * pinning the project to a specific Myco binary (the dogfood / beta-
+   * channel use case). The path is validated as absolute; non-absolute
+   * paths are rejected so the pin can't depend on the caller's PATH.
    */
   runtime_command?: string;
 }
+
+/** Project-relative paths of the active runtime launchers. */
+const PROJECT_LAUNCHER_PATHS = [
+  path.join('.agents', 'myco-run.cjs'),
+  path.join('.agents', 'myco-cli.cjs'),
+] as const;
+const PROJECT_RUNTIME_COMMAND_REL = path.join('.myco', 'runtime.command');
 
 /**
  * Write `<projectRoot>/.myco/project.toml` with the project's Grove
@@ -211,10 +224,10 @@ export interface CommitToRepoBody {
  * identity is a no-op from the file's perspective (the manifest writer
  * merges).
  *
- * The launcher-write and runtime-pin flags are accepted but deferred —
- * the API surface is reserved here so Wave 2's UI doesn't have to
- * version-bump the contract. Returns `not_implemented_flags` listing
- * any flags the caller set that aren't yet honored.
+ * Optional flags `write_launchers` and `runtime_command` install the
+ * project-local launcher override and binary pin. Returns the
+ * relative paths actually written in `wrote` so the UI can surface
+ * exactly what landed on disk.
  */
 export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
@@ -250,7 +263,24 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
       };
     }
 
+    const body = (req.body ?? {}) as CommitToRepoBody;
+    if (body.runtime_command !== undefined) {
+      if (typeof body.runtime_command !== 'string' || body.runtime_command.length === 0) {
+        return {
+          status: 400,
+          body: errorBody('invalid_runtime_command', 'runtime_command must be a non-empty string'),
+        };
+      }
+      if (!path.isAbsolute(body.runtime_command)) {
+        return {
+          status: 400,
+          body: errorBody('invalid_runtime_command', 'runtime_command must be an absolute path'),
+        };
+      }
+    }
+
     const projectVaultDir = resolveProjectVaultDir(projectRoot);
+    const wrote: string[] = [];
     try {
       saveProjectManifest(projectVaultDir, {
         project: {
@@ -263,14 +293,34 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
           name: grove.name,
         },
       });
+      wrote.push(path.relative(projectRoot, resolveProjectManifestPath(projectVaultDir)));
     } catch (err) {
       return { status: 500, body: errorBody('manifest_write_failed', (err as Error).message) };
     }
 
-    const body = (req.body ?? {}) as CommitToRepoBody;
-    const deferred: string[] = [];
-    if (body.write_launchers === true) deferred.push('write_launchers');
-    if (typeof body.runtime_command === 'string' && body.runtime_command.length > 0) deferred.push('runtime_command');
+    if (body.write_launchers === true) {
+      const template = BUNDLED_TEMPLATES['myco-run.cjs'];
+      if (!template) {
+        return {
+          status: 500,
+          body: errorBody('launcher_template_missing', 'Bundled myco-run.cjs template is unavailable'),
+        };
+      }
+      const agentsDir = path.join(projectRoot, '.agents');
+      fs.mkdirSync(agentsDir, { recursive: true });
+      for (const rel of PROJECT_LAUNCHER_PATHS) {
+        const absPath = path.join(projectRoot, rel);
+        atomicWriteFileSync(absPath, template);
+        wrote.push(rel);
+      }
+    }
+
+    if (typeof body.runtime_command === 'string' && body.runtime_command.length > 0) {
+      const absPath = path.join(projectRoot, PROJECT_RUNTIME_COMMAND_REL);
+      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      atomicWriteFileSync(absPath, `${body.runtime_command.trim()}\n`);
+      wrote.push(PROJECT_RUNTIME_COMMAND_REL);
+    }
 
     return {
       body: {
@@ -278,17 +328,34 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
         project_id: projectId,
         grove_id: grove.id,
         manifest_path: resolveProjectManifestPath(projectVaultDir),
-        ...(deferred.length > 0 ? { not_implemented_flags: deferred } : {}),
+        wrote,
       },
     };
   };
 }
 
+export interface UncommitFromRepoBody {
+  /**
+   * Also remove `.agents/myco-run.cjs` + `.agents/myco-cli.cjs`. Defaults
+   * to true so DELETE is symmetric with the corresponding POST (a clean
+   * "uncommit" leaves no Myco artifacts behind in the project tree).
+   * Set explicitly to false to keep the launchers in place — e.g. for
+   * dogfood workflows that still want the project pinned to a dev binary
+   * even after the Grove identity is unbound.
+   */
+  remove_launchers?: boolean;
+  /**
+   * Also remove `.myco/runtime.command`. Defaults to true for symmetry.
+   */
+  remove_runtime_command?: boolean;
+}
+
 /**
- * Remove `<projectRoot>/.myco/project.toml`. The project stays
+ * Remove `<projectRoot>/.myco/project.toml` and (by default) the
+ * project-local launchers + runtime-command pin. The project stays
  * auto-registered — the registry binding lives at `~/.myco/groves/`
- * and is independent of the committed file. Idempotent: deleting an
- * already-absent file returns ok.
+ * and is independent of the committed file. Idempotent: deleting
+ * already-absent files returns ok with `removed: []`.
  */
 export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
@@ -309,16 +376,31 @@ export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHand
       };
     }
 
-    const projectVaultDir = resolveProjectVaultDir(path.resolve(found.project.root));
+    const body = (req.body ?? {}) as UncommitFromRepoBody;
+    const removeLaunchers = body.remove_launchers !== false;
+    const removeRuntime = body.remove_runtime_command !== false;
+
+    const projectRoot = path.resolve(found.project.root);
+    const projectVaultDir = resolveProjectVaultDir(projectRoot);
     const manifestPath = resolveProjectManifestPath(projectVaultDir);
-    let removed = false;
+    const removed: string[] = [];
+
     if (fs.existsSync(manifestPath)) {
       try {
         fs.unlinkSync(manifestPath);
-        removed = true;
+        removed.push(path.relative(projectRoot, manifestPath));
       } catch (err) {
         return { status: 500, body: errorBody('manifest_delete_failed', (err as Error).message) };
       }
+    }
+
+    if (removeLaunchers || removeRuntime) {
+      const swept = removeProjectLaunchers(projectRoot, {
+        legacy: false,
+        active: removeLaunchers,
+        runtimeCommand: removeRuntime,
+      });
+      removed.push(...swept);
     }
 
     return {

@@ -6,7 +6,7 @@ export interface GroveProjectSummary {
   binding_id: string | null;
   created_at: string;
   updated_at: string;
-  manifest_state: 'present' | 'missing' | 'mismatch';
+  manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
 }
 
 export interface GroveSummary {
