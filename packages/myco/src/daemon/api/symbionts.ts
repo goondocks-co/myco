@@ -7,6 +7,7 @@ import { findRegisteredProject } from '@myco/grove/registry.js';
 import { resolveMycoHome, resolveServiceDirName } from '@myco/grove/paths.js';
 import { runProjectLocalMigration } from '@myco/grove/migration-walker.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
+import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,34 @@ export interface SymbiontInfo {
    * `globalHooksTarget` file contains a Myco hook entry.
    */
   globallyInstalled: boolean;
+
+  // -------------------------------------------------------------------
+  // Capability profile — drives the chip set on the Symbionts page.
+  // Each field maps to a single Myco feature: the UI is purely
+  // declarative over these booleans (see capability-map.ts).
+  // Derived from the manifest at request time; not stored.
+  // -------------------------------------------------------------------
+
+  /** Records prompts/tool-uses/responses (Sessions feature). */
+  supportsSessions: boolean;
+  /** Canopy file-read context injection on PreToolUse hooks. */
+  supportsCanopyInjection: boolean;
+  /** Plans the symbiont writes are picked up automatically. */
+  supportsPlanCapture: boolean;
+  /** Myco's skills are exposed inside the symbiont. */
+  supportsSkills: boolean;
+  /** Myco's MCP server is reachable from the symbiont. */
+  supportsMcp: boolean;
+
+  /**
+   * Live MCP status. Only present when `supportsMcp === true`.
+   *   - `true` — at least one Myco MCP tool call observed from a
+   *     session of this symbiont in the last 7 days (per-machine,
+   *     aggregated across the daemon's Groves).
+   *   - `false` — MCP wired but no recent traffic.
+   *   - omitted — `supportsMcp === false`.
+   */
+  mcpActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,12 +77,27 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
     enabledNames = getEnabledSymbiontNames(loadMergedConfig(vaultDir, { groveId: groveId ?? null }));
   } catch { /* config not loadable */ }
 
+  // MCP live status is computed once per request and applied to every
+  // Symbiont that supports MCP. Single scan across the bound Grove's
+  // activity log avoids N round-trips to SQLite per request.
+  const mcpActiveByAgent = scanMcpActiveSymbionts();
+
   return manifests.map((manifest) => {
     const detector = new SymbiontInstaller(
       manifest, '/', pkgRoot, false, undefined, null, 'global',
     );
     const detected = detector.isAvailableForScope();
     const globallyInstalled = detected && detector.isConfigured();
+
+    const reg = manifest.registration;
+    const supportsSessions = !!reg?.hooksTarget || !!reg?.globalHooksTarget;
+    const supportsCanopyInjection =
+      (manifest.capabilities?.preToolUseInjection ?? false)
+      && ((manifest.capabilities?.canopyReadTools?.length ?? 0) > 0);
+    const supportsPlanCapture = (manifest.capture?.planDirs?.length ?? 0) > 0;
+    const supportsSkills = !!reg?.skillsTarget || !!reg?.globalSkillsTarget;
+    const supportsMcp = !!reg?.mcpTarget || !!reg?.globalMcpTarget;
+
     return {
       name: manifest.name,
       displayName: manifest.displayName,
@@ -63,8 +107,49 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
       globallyInstalled,
       ...(manifest.resumeCommand ? { resumeCommand: manifest.resumeCommand } : {}),
       ...detectSymbiontInjectionSupport(manifest),
+      supportsSessions,
+      supportsCanopyInjection,
+      supportsPlanCapture,
+      supportsSkills,
+      supportsMcp,
+      ...(supportsMcp ? { mcpActive: mcpActiveByAgent.get(manifest.name) ?? false } : {}),
     };
   });
+}
+
+/**
+ * Scan the bound Grove's activity log for recent Myco MCP tool calls,
+ * grouped by symbiont (`sessions.agent`). A symbiont is "active" when
+ * any session of that symbiont has fired at least one Myco MCP tool
+ * within the look-back window.
+ *
+ * Best-effort: if the database isn't reachable (greenfield daemon,
+ * cross-Grove edge case), returns an empty map and every symbiont
+ * reports `mcpActive: false`. The UI surfaces this as
+ * "configured but quiet" — never as an error.
+ */
+const MCP_ACTIVE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+function scanMcpActiveSymbionts(): Map<string, boolean> {
+  const active = new Map<string, boolean>();
+  try {
+    const db = getDatabase();
+    const cutoff = Math.floor(Date.now() / 1000) - MCP_ACTIVE_WINDOW_SECONDS;
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT s.agent
+           FROM activities a
+           JOIN sessions s ON s.id = a.session_id
+          WHERE a.tool_name LIKE 'myco_%'
+            AND a.timestamp > ?`,
+      )
+      .all(cutoff) as Array<{ agent: string }>;
+    for (const row of rows) active.set(row.agent, true);
+  } catch {
+    // No DB or query failed — fall through; every MCP-capable symbiont
+    // reports `mcpActive: false`. Acceptable degradation: "configured
+    // but quiet" reads the same to the user.
+  }
+  return active;
 }
 
 // ---------------------------------------------------------------------------
