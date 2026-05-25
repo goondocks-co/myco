@@ -11,7 +11,6 @@ activateDevBuildModeIfDetected();
 const USAGE = `Usage: myco <command> [args]
 
 Commands:
-  init --project <path>    Opt a project in to git-committed Myco config
   grove <subcommand>       Manage local Groves
   backup <subcommand>      Snapshot and restore a project's Grove data
   update                   Update vault files and agent registration
@@ -37,28 +36,14 @@ Commands:
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
   daemon                   Start the daemon for the current project
+
+Myco installs globally and registers projects automatically on first agent
+hook. There is no \`myco init\` command — project setup is fully automatic.
+To commit per-project Myco config to a repo (portable Grove identity,
+dogfood binary pinning) use the dashboard's Symbionts page.
 `;
 
-// init USAGE is duplicated here because cli.ts intercepts `--help`
-// before dispatching to init.ts; keep this string in sync with
-// cli/init.ts's USAGE constant.
 const COMMAND_HELP: Record<string, string> = {
-  init: `Usage: myco init --project <path> [options]
-
-Sets up per-project git-committed Myco config. Optional — Myco runs globally
-by default and the daemon wires every detected agent automatically. Use this
-when you want a project's Myco wiring versioned in the repo (regulated
-environments, onboarding contributors, etc.).
-
-Options:
-  --project <path>                 Project root (required)
-  --grove <name|id>                Grove to bind this project to
-  --non-interactive                Run without prompts
-  --embedding-provider <provider>  Embedding provider for new vaults
-  --embedding-model <model>        Embedding model for new vaults
-  --embedding-url <url>            Embedding base URL for new vaults
-  -h, --help                       Show this help
-`,
   agent: `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
 
 Options:
@@ -102,7 +87,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === 'init') return (await import('./cli/init.js')).run(args);
+  if (cmd === 'init') {
+    console.error(
+      '`myco init` was removed in v0.26. Global install registers projects automatically on first agent hook.\n' +
+      'To commit per-project Myco config to a repo, use the dashboard\'s Symbionts page (`myco open`).',
+    );
+    process.exit(1);
+  }
   if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
   if (cmd === 'backup') return (await import('./cli/backup.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
@@ -151,7 +142,8 @@ async function main(): Promise<void> {
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
     console.error(
-      `No myco.yaml found in ${vaultDir}. Run \`myco init --project <path>\` to opt this project in.`,
+      `No myco.yaml found in ${vaultDir}. ` +
+      `Open the dashboard (\`myco open\`) and commit Myco config to this project from the Symbionts page.`,
     );
     process.exit(1);
   }

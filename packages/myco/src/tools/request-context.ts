@@ -395,7 +395,7 @@ function tryBuildVaultFallback(
     return {
       kind: 'legacy',
       vaultDir,
-      reason: `No Grove project id available for vault ${vaultDir}. Run \`myco init --project ${path.dirname(vaultDir)}\` to opt this project in.`,
+      reason: `No Grove project id available for vault ${vaultDir}. Open the dashboard and commit Myco config to this project from the Symbionts page.`,
     };
   }
   const projectRoot = resolveProjectRoot(vaultDir);

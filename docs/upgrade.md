@@ -106,7 +106,7 @@ cat ~/.myco/service/daemon.json | jq .port
 
 ### A symbiont's hooks aren't firing in a new worktree
 
-Worktrees inherit no `.claude/settings.json` or project-local launcher. The global install model expects hooks to live in each agent's user-global config, where they apply to every worktree automatically. If you've created project-local overrides, re-run `myco init --project <path>` in the worktree.
+Worktrees inherit no `.claude/settings.json` or project-local launcher. The global install model expects hooks to live in each agent's user-global config, where they apply to every worktree automatically. If you've committed project-local overrides on the main checkout and need them in a worktree, recreate them through the dashboard's Symbionts page for that worktree.
 
 ### `myco doctor` flags hybrid-TOML or missing matchers
 

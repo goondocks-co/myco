@@ -88,7 +88,7 @@ Myco data lives in two places: a per-user global tree and per-Grove databases.
 
 ### Per project (optional)
 
-A project's `.myco/` directory carries project-local override files only — `myco.yaml` for project-scoped config, `secrets.env` for API keys, and (rarely) project-local launchers if you opted in with `myco init --project <path>`. The capture buffer no longer lives here.
+A project's `.myco/` directory carries project-local override files only — `myco.yaml` for project-scoped config, `secrets.env` for API keys, and (rarely) project-local launchers if you committed them through the dashboard's Symbionts page. The capture buffer no longer lives here.
 
 `myco.db` and `vectors.db` are local state that rebuilds from session captures. Myco manages its own `.gitignore` entries automatically.
 

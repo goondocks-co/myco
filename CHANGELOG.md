@@ -85,8 +85,7 @@ All notable changes to Myco are documented here. Format follows [Keep a Changelo
 
 ### Removed
 
-- `myco init` (bare invocation). Replaced by automatic install + auto-Grove-create.
-  - `myco init --project <path>` is retained for explicit ad-hoc registration.
+- `myco init` CLI command — entirely. Both the bare invocation and the `--project <path>` form. Project setup is fully automatic on global install; per-project overrides (portable Grove identity, dogfood binary pinning, project-local launcher) move to the dashboard's Symbionts page.
 - `--worktree` flag.
 - Per-project `.agents/myco-buffer/` location (replaced by `~/.myco/buffer/`, with migration archive in each project).
 

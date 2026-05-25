@@ -50,11 +50,11 @@ That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync
 
 ## That's it — global by default
 
-Once Myco is installed, the per-user daemon starts automatically. On first boot it creates a **default Grove** to hold your captured sessions, then walks every detected coding agent on your machine and wires Myco's hooks, MCP entries, and skills into each one's user-global config. The first time any agent fires a hook from a project directory (must be a real git repo), Myco auto-registers that project into your default Grove. You don't need to run `myco init`. The dashboard is available immediately — you can configure intelligence providers, create additional Groves, or move projects between Groves before you've fired your first hook.
+Once Myco is installed, the per-user daemon starts automatically. On first boot it creates a **default Grove** to hold your captured sessions, then walks every detected coding agent on your machine and wires Myco's hooks, MCP entries, and skills into each one's user-global config. The first time any agent fires a hook from a project directory (must be a real git repo), Myco auto-registers that project into your default Grove. No CLI invocation required. The dashboard is available immediately — you can configure intelligence providers, create additional Groves, or move projects between Groves before you've fired your first hook.
 
 New agent installed later? Myco wires it in on the next periodic detection tick, or on demand via the dashboard's Symbionts page.
 
-If you specifically want a project-local override (dogfood / dev pin / regulated repo where the Myco wiring should be git-committed alongside the code), run `myco init --project [path]`. That writes `.agents/myco-run.cjs` + `.agents/myco-cli.cjs` files, and Myco's runtime prefers the project-local copy when invoked inside that project. The bare `myco init` form is gone — global install is the only happy path.
+If you want a project's Myco wiring committed to the repo (portable Grove identity for teammates, dogfood binary pinning, project-local launcher overrides), open the dashboard's **Symbionts page** and use the **Commit Myco config to this repo** affordance. The `myco init` CLI command is removed — project-level setup is fully automatic, and per-project overrides are UI-driven.
 
 The Myco Agent pipeline is **off by default** after install. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section.
 

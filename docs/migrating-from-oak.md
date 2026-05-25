@@ -13,7 +13,7 @@ This guide covers the one-time import: pull your OAK history into a Myco vault s
 - A project that has either:
   - A live OAK install with `<project>/.oak/ci/activities.db`, **or**
   - At least one OAK backup file under `<project>/oak/history/<machine-id>.sql`.
-- Myco installed and running. The global install (`npm install -g @goondocks/myco` or the install script) is sufficient — the daemon auto-registers projects into your default Grove the first time an agent fires a hook. If you want the import to land in a project-local vault rather than the Grove's database, opt in explicitly with `myco init --project <path>` in that project first.
+- Myco installed and running. The global install (`npm install -g @goondocks/myco` or the install script) is sufficient — the daemon auto-registers projects into your default Grove the first time an agent fires a hook. If you want a project's Myco wiring committed to the repo (portable Grove identity for teammates, dogfood binary pinning), open the dashboard's Symbionts page and use the **Commit Myco config to this repo** affordance.
 
 You don't need to remove OAK before running the import. OAK and Myco coexist — they each manage their own hooks, MCP servers, and configuration, and neither touches the other's. You can clean up OAK whenever you like (see "Cleaning up OAK" below).
 
