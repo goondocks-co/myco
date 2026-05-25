@@ -34,6 +34,7 @@ import {
   runGlobalConfigMigration,
   type GlobalConfigMigrationResult,
 } from '../grove/global-config-migration.js';
+import { ensureDefaultGrove, type GroveRecord } from '../grove/registry.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -47,6 +48,12 @@ export interface DetectionResult {
 }
 
 export interface BootstrapResult {
+  /**
+   * The default Grove for this daemon's variant. Created on first
+   * bootstrap; idempotent thereafter. Projects auto-register into this
+   * Grove on first hook (Decision 3).
+   */
+  defaultGrove: GroveRecord;
   /** Whether the launchers were written (true) or already current (false). */
   launchers: InstalledLauncherReport;
   /** Per-symbiont detection outcomes. */
@@ -113,14 +120,35 @@ export function runSymbiontDetection(
 }
 
 /**
- * Write the global launchers, run a symbiont detection pass, then walk
- * every registered project for legacy per-project install artifacts.
+ * Ensure the machine is in a state where projects can auto-register on
+ * first hook. Specifically:
  *
- * Order matters per the Decision 8 write-ordering invariant: launchers
- * MUST exist before any agent's hook config points at them. Symbiont
- * installs only run after the launcher install completes. The migration
- * walker runs last (it operates on already-registered projects and
- * doesn't depend on launcher state).
+ *   1. The default Grove for this daemon's variant exists.
+ *   2. The two global launchers (`~/.myco/launcher.cjs` +
+ *      `~/.myco/mcp-launcher.cjs`) are present and current.
+ *   3. Every detected agent has the global Myco config installed.
+ *   4. Any per-project legacy install artifacts left over from
+ *      pre-global-install Myco are migrated.
+ *
+ * Order is load-bearing:
+ *
+ *   - **Default Grove FIRST.** Hooks that fire before the Grove exists
+ *     would call `ensureProjectRegistered`, which silently returns null
+ *     when no default Grove is set (capture loss). Creating the Grove
+ *     before installing launchers + symbionts guarantees the receiving
+ *     end is ready by the time any agent sends its first hook.
+ *   - Launchers SECOND per the Decision 8 write-ordering invariant:
+ *     launchers must exist on disk before any agent's hook config
+ *     points at them.
+ *   - Symbiont installs THIRD — they write the hook configs that
+ *     reference the launcher paths.
+ *   - Migration walker LAST — it operates on already-registered
+ *     projects and doesn't depend on launcher state.
+ *
+ * Variant-aware: `MYCO_SERVICE_VARIANT=dev` produces a `default-dev`
+ * Grove with `served_by=service-dev`; unset or `service` produces
+ * `default` / `service`. Dev and prod daemons can coexist on the same
+ * machine — each has its own default Grove.
  *
  * Migration is fire-once-per-project. Call sites:
  *   - daemon first-start (greenfield bootstrap)
@@ -133,12 +161,15 @@ export function runSymbiontDetection(
  * instead of failures to fix.
  *
  * Idempotent — a re-invocation against a populated `~/.myco/` returns
- * `launchers.written === []`, per-symbiont `'already-configured'`
- * results, and `migration.projectsCleaned === 0`.
+ * the same `defaultGrove`, `launchers.written === []`, per-symbiont
+ * `'already-configured'` results, and `migration.projectsCleaned === 0`.
  */
 export function runGlobalBootstrap(
   packageRoot: string = resolvePackageRoot(),
 ): BootstrapResult {
+  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
+  const servedBy = variant === 'dev' ? 'service-dev' : 'service';
+  const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
   const launchers = installGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);
   // Walker scope is enforced inside `runProjectLocalMigration` via its
@@ -146,5 +177,5 @@ export function runGlobalBootstrap(
   // bootstrap doesn't override it.
   const migration = runProjectLocalMigration(packageRoot);
   const globalConfigMigration = runGlobalConfigMigration();
-  return { launchers, symbionts, migration, globalConfigMigration };
+  return { defaultGrove, launchers, symbionts, migration, globalConfigMigration };
 }

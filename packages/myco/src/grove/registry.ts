@@ -289,21 +289,62 @@ function uniqueSlug(base: string, mycoHome: string): string {
   throw new Error(`Unable to allocate unique Grove slug from base ${base}`);
 }
 
-export function ensureDefaultGrove(mycoHome = resolveMycoHome()): GroveRecord {
-  const defaultId = getDefaultGroveId(mycoHome);
-  if (defaultId) {
-    const existing = loadGroveRecord(defaultId, mycoHome);
-    if (existing) return existing;
+/**
+ * Ensure a default Grove exists matching the requested variant.
+ *
+ * Variant-aware: dev daemons and prod daemons each need their own
+ * default Grove with the matching `served_by` so the cross-variant
+ * walker boundary (R3.0) and rebind filter both keep working. A single
+ * machine can host both — they get distinct slugs (`default` for prod,
+ * `default-dev` for dev) so they coexist in the registry.
+ *
+ * The pointer `default_grove_id` always names the variant's own
+ * default — for a dev daemon, it's the dev Grove; for prod, it's the
+ * prod Grove. Variant lookup is filtered by `served_by`, NOT by the
+ * pointer, so the pointer can safely co-exist between variants.
+ *
+ * Called from `runGlobalBootstrap()` — fires at daemon first-start so
+ * the default Grove is guaranteed to exist before any hook tries to
+ * register a project into it. Idempotent: an existing matching default
+ * Grove is returned unchanged.
+ */
+export function ensureDefaultGrove(
+  mycoHome = resolveMycoHome(),
+  options: { servedBy?: 'service' | 'service-dev' } = {},
+): GroveRecord {
+  const servedBy = options.servedBy ?? 'service';
+  const slug = servedBy === 'service-dev' ? 'default-dev' : 'default';
+
+  // 1. Honor an explicit default pointer when it names a Grove matching
+  //    the current variant. Users can `setDefaultGrove(non-default-slug)`
+  //    and have that decision survive across daemon restarts.
+  const pointedId = getDefaultGroveId(mycoHome);
+  if (pointedId) {
+    const pointed = loadGroveRecord(pointedId, mycoHome);
+    if (pointed && pointed.served_by === servedBy) return pointed;
   }
 
-  const existingDefault = listGroves(mycoHome).find((grove) => grove.slug === 'default');
-  if (existingDefault) {
-    setDefaultGrove(existingDefault.id, mycoHome);
-    return existingDefault;
+  // 2. No pointer (or it names a wrong-variant Grove) — look for a
+  //    variant-matching Grove by its canonical slug.
+  const matching = listGroves(mycoHome, { servedBy }).find(
+    (grove) => grove.slug === slug,
+  );
+  if (matching) {
+    // Promote to the default pointer when there's no pointer at all,
+    // OR the existing pointer is for a different variant (preserves
+    // intentional cross-variant pointer assignment).
+    const pointedRecord = pointedId ? loadGroveRecord(pointedId, mycoHome) : null;
+    if (!pointedRecord || pointedRecord.served_by !== servedBy) {
+      setDefaultGrove(matching.id, mycoHome);
+    }
+    return matching;
   }
 
-  const created = createGrove('default', mycoHome);
-  setDefaultGrove(created.id, mycoHome);
+  // 3. No matching Grove yet — create it.
+  const created = createGrove(slug, mycoHome, { servedBy });
+  // Claim the pointer only if nothing claims it yet. Don't overwrite a
+  // pointer that names a different-variant Grove.
+  if (!pointedId) setDefaultGrove(created.id, mycoHome);
   return created;
 }
 

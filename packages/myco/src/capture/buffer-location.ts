@@ -43,8 +43,13 @@ export interface ProjectBufferLocation {
  *     misfired hook, $HOME-rooted invocations) — `ensureProjectRegistered`
  *     refuses these structurally, so no Canopy storm / no orphan
  *     project entries; or
- *   - the machine has no default Grove yet (extremely early
- *     bootstrap before `runGlobalBootstrap` lands).
+ *   - the machine has no default Grove yet — only possible if a hook
+ *     fires BEFORE `runGlobalBootstrap()` has run (daemon first-start
+ *     ordering). In practice this should never happen on a healthy
+ *     daemon: `runGlobalBootstrap()` is the first thing the daemon
+ *     does on startup, and it calls `ensureDefaultGrove()` before
+ *     anything else. If you see a null from this path on a running
+ *     daemon, it indicates startup-order corruption.
  *
  * There is NO fallback path. Callers handle null by logging + skipping
  * the buffer write — capture loss in the rare null case is the
