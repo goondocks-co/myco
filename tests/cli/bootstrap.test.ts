@@ -19,8 +19,10 @@ import {
   registerProjectInGrove,
   clearGroveRegistryCaches,
   listGroves,
+  listRegisteredProjects,
   getDefaultGroveId,
   loadGroveRecord,
+  findProjectByRoot,
 } from '@myco/grove/registry.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 
@@ -271,11 +273,70 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     runGlobalBootstrap(PKG_ROOT);
 
     // Now a hook fires (simulated via the same helper the hook path
-    // uses): ensureProjectRegistered should succeed, the project should
-    // auto-register into the default Grove, and a buffer dir should
-    // resolve under the global Grove tree.
+    // uses): ensureProjectRegistered should succeed and the project
+    // should auto-register into the default Grove.
+    const defaultGrove = loadGroveRecord(getDefaultGroveId(path.join(tmpHome, '.myco'))!, path.join(tmpHome, '.myco'))!;
+    expect(listRegisteredProjects(defaultGrove.id, path.join(tmpHome, '.myco'))).toEqual([]);
+
     const postBootstrap = resolveProjectBufferDirFromRoot(projectRoot, path.join(tmpHome, '.myco'));
+
+    // Explicit registration assertion — the test's reason for existing
+    // is that the prior implementation silently no-op'd here. Asserting
+    // the buffer dir alone is not enough; verify the registry state
+    // actually changed.
     expect(postBootstrap).not.toBeNull();
-    expect(postBootstrap?.bufferDir).toContain(path.join(tmpHome, '.myco', 'groves'));
+    const registered = findProjectByRoot(projectRoot, path.join(tmpHome, '.myco'));
+    expect(registered).not.toBeNull();
+    expect(registered?.grove.id).toBe(defaultGrove.id);
+    expect(listRegisteredProjects(defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
+    expect(postBootstrap?.groveId).toBe(defaultGrove.id);
+    expect(postBootstrap?.bufferDir).toContain(path.join(tmpHome, '.myco', 'groves', defaultGrove.id));
+  });
+
+  it('multi-variant: dev+prod coexist + first hook registers into the daemon variant Grove, never cross-variant', () => {
+    // Critical correctness invariant. The variant-blind default-Grove
+    // pointer is shared between dev and prod on the same machine; if
+    // ensureProjectRegistered read the pointer directly, a hook from
+    // a prod-daemon-served project could silently register into the
+    // dev Grove (or vice versa) when the pointer is "stuck" pointing
+    // at the wrong variant. Asserts both directions.
+
+    // Phase 1: dev daemon boots first, gets the pointer.
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    clearGroveRegistryCaches();
+    const devBootstrap = runGlobalBootstrap(PKG_ROOT);
+    expect(devBootstrap.defaultGrove.served_by).toBe('service-dev');
+
+    // Phase 2: prod daemon boots second on the same machine.
+    delete process.env.MYCO_SERVICE_VARIANT;
+    clearGroveRegistryCaches();
+    const prodBootstrap = runGlobalBootstrap(PKG_ROOT);
+    expect(prodBootstrap.defaultGrove.served_by).toBe('service');
+    expect(prodBootstrap.defaultGrove.id).not.toBe(devBootstrap.defaultGrove.id);
+
+    // Phase 3: a prod hook fires from a fresh project. It must
+    // register into the PROD Grove, never the dev Grove — regardless
+    // of which variant's Grove the registry pointer happens to name.
+    const prodProjectRoot = fs.mkdtempSync(path.join(tmpHome, 'prod-proj-'));
+    execFileSync('git', ['init', '--quiet'], { cwd: prodProjectRoot, stdio: 'pipe' });
+    delete process.env.MYCO_SERVICE_VARIANT;
+    clearGroveRegistryCaches();
+    const prodBuffer = resolveProjectBufferDirFromRoot(prodProjectRoot, path.join(tmpHome, '.myco'));
+    expect(prodBuffer?.groveId).toBe(prodBootstrap.defaultGrove.id);
+    expect(prodBuffer?.groveId).not.toBe(devBootstrap.defaultGrove.id);
+    expect(listRegisteredProjects(prodBootstrap.defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
+    expect(listRegisteredProjects(devBootstrap.defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(0);
+
+    // Phase 4: same in reverse — a dev hook fires from a different
+    // project. It must register into the DEV Grove.
+    const devProjectRoot = fs.mkdtempSync(path.join(tmpHome, 'dev-proj-'));
+    execFileSync('git', ['init', '--quiet'], { cwd: devProjectRoot, stdio: 'pipe' });
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    clearGroveRegistryCaches();
+    const devBuffer = resolveProjectBufferDirFromRoot(devProjectRoot, path.join(tmpHome, '.myco'));
+    expect(devBuffer?.groveId).toBe(devBootstrap.defaultGrove.id);
+    expect(devBuffer?.groveId).not.toBe(prodBootstrap.defaultGrove.id);
+    expect(listRegisteredProjects(devBootstrap.defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
+    expect(listRegisteredProjects(prodBootstrap.defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
   });
 });
