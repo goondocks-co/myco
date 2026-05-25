@@ -56,6 +56,9 @@ import {
   setGroveServedBy,
 } from './registry.js';
 import { readMarkerJson } from './marker.js';
+import { parseProjectManifest, ProjectLocalManifestSchema } from '@myco/config/project-manifest.js';
+import { parse } from 'smol-toml';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 
 export type ClaimPhase = 'claimed' | 'flipped';
 export type ReleasePhase = 'restored' | 'registry-restored' | 'flipped' | 'archived';
@@ -645,12 +648,19 @@ function restoreProjectManifests(snapshotProjectManifestsDir: string): void {
     }
     const snapshotManifest = path.join(projectSnapshotDir, PROJECT_MANIFEST_FILENAME);
     const snapshotLocal = path.join(projectSnapshotDir, PROJECT_LOCAL_MANIFEST_FILENAME);
-    if (fs.existsSync(snapshotManifest)) {
-      fs.copyFileSync(snapshotManifest, resolveProjectManifestPath(vaultDir));
-    }
-    if (fs.existsSync(snapshotLocal)) {
-      fs.copyFileSync(snapshotLocal, resolveProjectLocalManifestPath(vaultDir));
-    }
+    if (!fs.existsSync(snapshotManifest)) continue;
+    // Restore goes through ProjectVault so the snapshot is validated by
+    // the schema (no corrupted-snapshot landings) and the gitignore +
+    // mtime cache stay coherent. A raw fs.copyFileSync would bypass
+    // both — exactly the bug class the capability exists to close.
+    const manifest = parseProjectManifest(fs.readFileSync(snapshotManifest, 'utf-8'));
+    const localManifest = fs.existsSync(snapshotLocal)
+      ? ProjectLocalManifestSchema.parse(parse(fs.readFileSync(snapshotLocal, 'utf-8')))
+      : undefined;
+    new ProjectVault(projectRoot).writeIdentity({
+      manifest,
+      ...(localManifest ? { localManifest } : { preserveLocalManifest: false }),
+    });
   }
 }
 

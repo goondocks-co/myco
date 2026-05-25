@@ -1,14 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
-import { loadMergedConfig, getEnabledSymbiontNames, updateConfig } from '../../config/loader.js';
+import { loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { findRegisteredProject } from '@myco/grove/registry.js';
-import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
+import { resolveMycoHome, resolveServiceDirName } from '@myco/grove/paths.js';
 import { runProjectLocalMigration } from '@myco/grove/migration-walker.js';
-import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 import { errorBody } from './error-envelope.js';
 
 // ---------------------------------------------------------------------------
@@ -230,36 +228,23 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
       sanitized[name] = enabledRaw === undefined ? {} : { enabled: enabledRaw };
     }
 
-    const projectVaultDir = resolveProjectVaultDir(found.project.root);
-    // A project that's only auto-registered may not have a myco.yaml
-    // yet — this PATCH is itself the first reason to create one. Seed
-    // a minimal version-3 doc so `loadConfig` succeeds; schema defaults
-    // fill every other section. Pair the file creation with a gitignore
-    // refresh so per-machine state (daemon.json, project.local.toml,
-    // buffer/) can't be staged on the user's next `git add .myco`.
-    const configPath = path.join(projectVaultDir, 'myco.yaml');
-    if (!fs.existsSync(configPath)) {
-      fs.mkdirSync(projectVaultDir, { recursive: true });
-      fs.writeFileSync(configPath, 'version: 3\n', { mode: 0o600 });
-    }
-    ensureVaultGitignoreCurrent(projectVaultDir);
+    // All vault mutations route through the capability. Each
+    // `setSymbiontEnabled` / `clearSymbiontOverride` call internally
+    // ensures myco.yaml + .myco/.gitignore exist before mutating the
+    // symbionts: block — no callsite has to remember the invariant.
+    const vault = new ProjectVault(found.project.root);
+    let updated;
     try {
-      const updated = updateConfig(projectVaultDir, (config) => {
-        const next = { ...config };
-        const symbionts = { ...(config.symbionts ?? {}) };
-        for (const [name, entry] of Object.entries(sanitized)) {
-          if (entry === null) {
-            delete symbionts[name];
-            continue;
-          }
-          symbionts[name] = { ...symbionts[name], enabled: entry.enabled ?? true };
+      for (const [name, entry] of Object.entries(sanitized)) {
+        if (entry === null) {
+          updated = vault.clearSymbiontOverride(name);
+          continue;
         }
-        next.symbionts = symbionts;
-        return next;
-      });
-      return { body: { symbionts: updated.symbionts ?? {} } };
+        updated = vault.setSymbiontEnabled(name, entry.enabled ?? true);
+      }
     } catch (err) {
       return { status: 500, body: errorBody('patch_failed', (err as Error).message) };
     }
+    return { body: { symbionts: updated?.symbionts ?? {} } };
   };
 }

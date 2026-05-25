@@ -1,5 +1,6 @@
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
-import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
+import { registerSymbionts } from './shared.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, updateConfig, getEnabledSymbiontNames } from '../config/loader.js';
@@ -120,14 +121,12 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   let updatedCount = 0;
 
   // --- Update .gitignore to match current template ---
+  // Routes through ProjectVault so the helper's contract (atomic write,
+  // schema, idempotency) stays the single source of truth. A direct
+  // `fs.writeFileSync` against `<vaultDir>/.gitignore` is the historical
+  // bug class we're closing \u2014 every shared vault path has one writer.
 
-  const gitignorePath = path.join(vaultDir, '.gitignore');
-  const currentGitignore = fs.existsSync(gitignorePath)
-    ? fs.readFileSync(gitignorePath, 'utf-8')
-    : '';
-
-  if (currentGitignore !== VAULT_GITIGNORE) {
-    fs.writeFileSync(gitignorePath, VAULT_GITIGNORE, 'utf-8');
+  if (new ProjectVault(path.dirname(vaultDir)).ensureGitignore()) {
     console.log('  \u2713 Updated .gitignore');
     updatedCount++;
   } else {

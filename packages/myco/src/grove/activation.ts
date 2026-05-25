@@ -3,10 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   loadProjectManifest,
-  saveProjectManifest,
-  saveProjectLocalManifest,
   type ProjectManifest,
 } from '@myco/config/project-manifest.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 import { openDatabase, openReadonly, SQLITE_DB_FILE, vaultDbPath, type Database } from '@myco/db/client.js';
 import {
   listImportMappingsForMigration,
@@ -34,7 +33,6 @@ import {
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import { slugifyGroveName } from '@myco/grove/ids.js';
-import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
 
 export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
 
@@ -247,12 +245,20 @@ export function activateProjectMigration(
     // from the marker rather than silently letting the daemon fall back
     // to legacy mode and create a divergent database.
     if (!input.dryRun) {
-      ensureVaultGitignoreCurrent(projectVaultDir);
-      if (!existingManifest) {
-        saveProjectManifest(projectVaultDir, identity.manifest);
-      }
-      if (!existingManifest?.grove?.binding_id) {
-        saveProjectLocalManifest(projectVaultDir, identity.localManifest);
+      // Repair re-entry path: re-attach the marker-anchored identity
+      // through ProjectVault so manifest + binding + gitignore stay in
+      // lockstep. writeIdentity is idempotent against the same manifest.
+      const vault = new ProjectVault(projectRoot);
+      if (!existingManifest || !existingManifest.grove?.binding_id) {
+        vault.writeIdentity({
+          manifest: identity.manifest,
+          localManifest: identity.localManifest,
+        });
+      } else {
+        // Manifest + binding already on disk — just refresh the
+        // gitignore to absorb any new entries that have been added to
+        // the canonical template since this vault was last written.
+        vault.ensureGitignore();
       }
       const registered = findRegisteredProject({
         projectId: existingMarker.project_id,
@@ -337,13 +343,15 @@ export function activateProjectMigration(
     // BEFORE the marker write means the next run repeats those FS
     // writes and tries again from a still-empty Grove DB.
     if (!input.dryRun) {
-      // Refresh `.myco/.gitignore` BEFORE writing project.toml or the marker
-      // so they're never untracked-but-stageable. A user committing them
-      // leaks per-machine grove bindings and machine-local paths from the
-      // activation run.
-      ensureVaultGitignoreCurrent(projectVaultDir);
-      saveProjectManifest(projectVaultDir, identity.manifest);
-      saveProjectLocalManifest(projectVaultDir, identity.localManifest);
+      // Atomic identity write via ProjectVault: gitignore refresh +
+      // project.toml + project.local.toml in lockstep, so the per-
+      // machine binding cannot leak to git regardless of which file
+      // hits disk first. writeIdentity is the single sanctioned path
+      // for grove activation, move, claim, and binding repairs.
+      new ProjectVault(projectRoot).writeIdentity({
+        manifest: identity.manifest,
+        localManifest: identity.localManifest,
+      });
       registerProjectInGrove(grove.id, {
         projectId: identity.projectId,
         projectName: identity.projectName,

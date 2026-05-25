@@ -1,17 +1,6 @@
 ---
 name: myco:author-harness-task
-description: |
-  Use this skill when designing, writing, configuring, or debugging a new phased
-  executor task for the Myco agent harness — even if the user doesn't explicitly
-  ask for a "task authoring" guide. Applies when adding a new intelligence task,
-  modifying phase structure, tuning turn budgets or model routing, adjusting
-  scheduling triggers or session-gating, designing a tool surface, or debugging
-  silent phase failures or budget exhaustion. Covers: YAML task anatomy and
-  registration; phase decomposition and the judgment/recipe gradient; model
-  selection via the advisor pattern; turn budget calibration including
-  local-model multipliers; scheduling triggers and session-gating; tool surface
-  design and readOnly enforcement; Grove scope iteration patterns; per-project
-  lifecycle management; and observability via the agent_runs audit table.
+description: "Use this skill when designing, writing, configuring, or debugging a new phased executor task for the Myco agent harness — even if the user doesn't explicitly ask for a \"task authoring\" guide. Applies when adding a new intelligence task, modifying phase structure, tuning turn budgets or model routing, adjusting scheduling triggers or session-gating, designing a tool surface, or debugging silent phase failures or budget exhaustion. Covers: YAML task anatomy and registration; phase decomposition and the judgment/recipe gradient; model selection via the advisor pattern; turn budget calibration including local-model multipliers; scheduling triggers and session-gating; tool surface design and readOnly enforcement; Grove scope iteration patterns; per-project lifecycle management; session lifecycle orchestration and agent runtime coordination; and observability via the agent_runs audit table."
 managed_by: myco
 user-invocable: true
 allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
@@ -19,13 +8,14 @@ allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
 
 # Myco Agent Harness Task Authoring
 
-The Myco agent harness is a phased executor running inside the daemon. Each task is an ordered sequence of phases — each phase is a single LLM invocation with a bounded tool surface and a turn budget. This skill covers the full authoring lifecycle: designing the phase sequence, writing the task config, selecting models, calibrating budgets, configuring triggers, designing tool surfaces, and debugging when things go wrong.
+The Myco agent harness is a phased executor running inside the daemon. Each task is an ordered sequence of phases — each phase is a single LLM invocation with a bounded tool surface and a turn budget. This skill covers the full authoring lifecycle: designing the phase sequence, writing the task config, selecting models, calibrating budgets, configuring triggers, designing tool surfaces, managing session lifecycle coordination, and debugging when things go wrong.
 
 ## Prerequisites
 
 - Daemon is running and `agent.enabled: true` in `.myco/myco.yaml`.
 - You have read at least one existing task YAML (`packages/myco/src/agent/definitions/tasks/vault-evolve.yaml`) to understand the config shape.
 - You can describe the new task's purpose in one sentence and identify which vault state it reads and writes.
+- Familiarity with session lifecycle states (CAPTURING, PROCESSING, COMPLETE) and agent runtime coordination.
 
 ## Procedure 1: Design the Phase Sequence
 
@@ -68,13 +58,13 @@ Use `mode: map` for bulk operations with identical per-item logic. The harness o
   name: 'process_items',
   mode: 'map',
   systemPrompt: ITEM_PROCESSING_PROMPT,
-  turnBudget: 3,           // Per-item budget, keep tight
-  tools: ITEM_TOOLS,       // Constrained surface per item
+  turnBudget: 3,
+  tools: ITEM_TOOLS,
   fetchConfig: {
     tool: 'canopy_get_entries',
     params: { limit: 20, types: ['file'] },
-    itemField: 'entries',  // Array field in tool response
-    emptySkip: true,       // Skip phase if no items
+    itemField: 'entries',
+    emptySkip: true,
   },
 }
 ```
@@ -83,35 +73,11 @@ Use `mode: map` for bulk operations with identical per-item logic. The harness o
 
 **Contract violations**: Map-phase harness strips sink_schema and injects argMap. Phase handlers checking `args.sink_schema` will fail.
 
-**Accelerator configuration**:
-```yaml
-accelerator:
-  strategy: adaptive
-  initial_batch_size: 5
-  max_batch_size: 20
-  ramp_factor: 1.5
-  success_threshold: 0.85
-```
+**Accelerator configuration** and **Cost optimization** patterns implemented for long-running operations.
 
-**Cost optimization**: Use provider metadata consolidation (600x+ speedup observed) and cost-aware batch sizing:
-```javascript
-function calculateOptimalBatchSize(inputSize, costModel) {
-  const memoryConstraint = Math.floor(availableMemory / avgItemMemory);
-  const costConstraint = Math.floor(maxBatchCost / estimatedItemCost);
-  return Math.min(memoryConstraint, costConstraint, inputSize);
-}
-```
+**Runtime optimization**: Agent instance pooling, tool surface templates, resource monitoring.
 
-**Runtime optimization**: Implement agent instance pooling, tool surface templates, and resource monitoring for long-running operations.
-
-**Fault tolerance**:
-```yaml
-retry:
-  max_attempts: 3
-  backoff: exponential
-  recoverable_errors: ["rate_limit", "timeout", "temporary_failure"]
-  permanent_errors: ["auth_error", "invalid_input"]
-```
+**Fault tolerance**: Retry mechanisms with exponential backoff and error classification.
 
 ## Procedure 2: Write the Task Config
 
@@ -119,11 +85,11 @@ Tasks live in `packages/myco/src/agent/definitions/tasks/`. Each task exports a 
 
 ```ts
 export const myNewTask: TaskDefinition = {
-  name: 'my-new-task',          // kebab-case, unique across all tasks
-  isDefault: false,              // true = fires on settled session; false = manual/cron only
+  name: 'my-new-task',
+  isDefault: false,
   phases: [ /* see below */ ],
   triggers: {
-    schedule: '0 */4 * * *',    // omit for event-only tasks
+    schedule: '0 */4 * * *',
     requireSettledSessions: true,
     settledSessionIdleMinutes: 5,
   },
@@ -141,7 +107,7 @@ Grove introduces multi-project management. Tasks must handle scope iteration acr
 ```ts
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from '../../../daemon/scope-iteration';
 
-// Iterate across all groves (highest level)
+// Iterate across all groves
 await forEachGrove(async (grove) => {
   // Grove-level processing
 });
@@ -153,42 +119,15 @@ await forEachRegisteredProject(async (projectContext) => {
 });
 ```
 
-**Project lifecycle management**: Use `ProjectPowerStateTracker` to respect project sleep/wake state:
-
-```ts
-import { ProjectPowerStateTracker } from '../../../daemon/project-power-state';
-
-const powerTracker = new ProjectPowerStateTracker();
-if (!powerTracker.isProjectAwake(projectId)) {
-  // Skip or defer task for sleeping project
-}
-```
+**Project lifecycle management**: Use `ProjectPowerStateTracker` to respect project sleep/wake state.
 
 ### Handle safety with Grove runtime cache
 
-Use `GroveRuntimeCache` for safe cross-project state management:
-
-```ts
-import { GroveRuntimeCache } from '../../../daemon/grove-runtime-cache';
-
-const cache = new GroveRuntimeCache();
-const projectHandle = cache.getProjectHandle(projectId);
-// Use handle for thread-safe operations across grove
-```
+Use `GroveRuntimeCache` for safe cross-project state management.
 
 ### Daemon notification integration
 
-Tasks should emit notifications for multi-project visibility:
-
-```ts
-// Emit task completion notifications
-await notificationService.emit({
-  domain: 'agent',
-  event: 'task_completed',
-  projectId,
-  data: { taskName: 'my-new-task', phase: 'completion' }
-});
-```
+Tasks should emit notifications for multi-project visibility.
 
 ## Procedure 3: Select Models with the Advisor Pattern
 
@@ -196,7 +135,7 @@ Use `advisor` field per-phase for optimal model routing:
 
 | Tag | Best for |
 |-----|----------|
-| `cloud-reasoning` | Open-ended judgment phases (extraction, synthesis) |
+| `cloud-reasoning` | Open-ended judgment phases |
 | `cloud-fast` | Recipe phases where speed matters |
 | `local-draft` | Cost-sensitive judgment phases |
 
@@ -212,19 +151,29 @@ Use `advisor` field per-phase for optimal model routing:
 
 **Fix unbounded input**: Cap the input size, not the budget. Use bounded instruction builders with `MAX_BATCHES = 20`.
 
-**Batch optimization**: Recent findings show 8–12 items per batch often outperforms 15–20 items for complex reasoning.
-
 ## Procedure 5: Configure Scheduling and Session Gating
 
-### Session State Machine
+### Session Lifecycle Phases for Task Orchestration
 
-```
-active  ──(SessionEnd hook or idle threshold)──►  completed
-  ▲                                                    │
-  └──────────(SessionStart on same session)────────────┘
-```
+Tasks must understand the three-phase session lifecycle that ensures data stability during intelligence processing:
 
-**Settlement conditions**: SessionEnd hook OR `last_prompt_at` older than `settledSessionIdleMinutes`.
+1. **CAPTURING** (`active`): Session actively capturing content from agent interactions
+   - All capture operations valid and expected
+   - Agent operations can modify session state
+   - Session remains in this state until agent work complete
+   - Transitions to PROCESSING when agent finishes
+
+2. **PROCESSING** (`completed`): Session work finished, intelligence processing begins
+   - No new captures accepted — session sealed for processing
+   - Intelligence tasks (skill-survey, full-intelligence) can now safely process session
+   - Session data is stable and won't be modified by agent operations
+   - Prevents feedback loops where intelligence tasks process incomplete sessions
+   - Transitions to COMPLETE after intelligence processing finishes
+
+3. **COMPLETE** (`processed`): Intelligence extraction complete, session archived
+   - Session read-only for historical reference and lineage tracking
+   - All derived spores and insights extracted and stored
+   - Can be reopened for follow-up work if needed
 
 ### Session gating (critical)
 
@@ -235,9 +184,32 @@ triggers: {
 }
 ```
 
-Any task reading session transcripts **must** gate on settled sessions to prevent stale artifacts.
+Any task reading session transcripts **must** gate on settled sessions to prevent stale artifacts. Intelligence tasks only process sessions with `completed` or `processed` status, ensuring session data is stable and won't be modified during analysis.
 
-**Vault read surfaces**: All surfaces (`vault_unprocessed`, `vault_spores`, `vault_sessions`, `vault_search_fts`, `vault_search_semantic`) automatically honor the gate.
+**Vault read surfaces**: All surfaces automatically honor the gate.
+
+**Settlement conditions**: SessionEnd hook OR `last_prompt_at` older than `settledSessionIdleMinutes`.
+
+### Cortex Instructions Requirement
+
+The lead (top-level agent orchestrator) must establish Cortex instructions context before delegating work to sub-agents:
+
+1. **Instructions acquisition**: Lead agent calls `myco_cortex({op:"instructions"})` BEFORE delegating to sub-agents
+2. **Context propagation**: Pass acquired instructions through delegation chain
+3. **Consistency validation**: Verify all delegates operating under same instruction set
+4. **Fail-fast**: Sub-agents must fail if delegation proceeds without instructions
+
+This prevents inconsistent or divergent behavior across the delegation hierarchy.
+
+### Harness-Task Session Coordination
+
+Tasks coordinate with session lifecycle to ensure proper state transitions:
+
+1. **Validate session state before processing**: Ensure session has completed capture phase and is ready for intelligence processing
+2. **Respect session gating**: Only process sessions that have settled (idle for configured minutes) to ensure no new captures arrive
+3. **Preserve session boundaries**: Tasks must not modify session status directly — that's the session orchestration layer's role
+4. **Handle runtime boundaries**: Enforce tool access and resource limits within session context
+5. **Error isolation**: Contain task failures within session scope to prevent cascade effects
 
 ## Procedure 6: Design the Tool Surface
 
@@ -275,7 +247,7 @@ Every phase execution writes to `agent_runs`:
 ### Silent failure patterns
 
 | Symptom | Likely cause |
-|---------|--------------|
+|---------|--------------
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly |
 | `turn_count = 1`, empty `tool_output_summary` | Malformed prompt or injected context |
 | Task never appears in `agent_runs` | TaskDefinition export malformed |
@@ -293,7 +265,7 @@ Every phase execution writes to `agent_runs`:
 
 - Register in central harness for discoverability
 - Use registry-based agent resolution for dynamic assignment
-- Implement config caching patterns (reduce initialization overhead)
+- Implement config caching patterns
 - Design for minimal resource consumption during idle periods
 
 ## Procedure 9: Cost Models and Performance Optimization
@@ -328,6 +300,46 @@ Every phase execution writes to `agent_runs`:
 - Design state contracts that survive restarts
 - Implement state validation and migration patterns
 
+## Procedure 11: Session Lifecycle Orchestration for Tasks
+
+### Session initialization and validation
+
+1. **Generate session ID**: Use deterministic UUID generation based on timestamp and project context
+2. **Validate project binding**: Ensure session is created within valid project scope
+3. **Initialize session record**: Create database entry with proper status (`active`)
+4. **Set initial metadata**: Project ID, machine ID, agent context, creation timestamp
+5. **Verify project root**: Session must be created within valid Myco project using `resolveVaultDir()`
+6. **Check vault permissions**: Ensure write access to `.myco/` directory
+7. **Validate agent identity**: Confirm agent has permission to create sessions in this project
+
+### Hook transport and capture coordination
+
+1. **Scan for installed agents**: Check agent-specific hook configurations in `.myco/`
+2. **Validate hook implementations**: Check that hook files exist and are executable
+3. **Cross-platform deployment**: Use `.agents/myco-run.cjs` for cross-platform hook guard
+4. **Transport protocol setup**: Configure capture channels based on agent type
+5. **Scope validation**: Ensure captured content belongs to current project
+6. **Permission checks**: Verify agent has capture rights for target files/directories
+7. **Content filtering**: Apply exclusion rules for sensitive or irrelevant content
+8. **Size limits**: Enforce capture size boundaries to prevent resource exhaustion
+
+### Runtime boundary validation
+
+1. **Error boundary enforcement**: Prevent task errors from affecting other sessions
+2. **Resource protection**: Guard against resource exhaustion attacks
+3. **Data validation**: Ensure captured content meets quality standards
+4. **Permission enforcement**: Block unauthorized operations consistently
+5. **Failure classification**: Categorize failures as transient, configuration, system, or agent-level for proper recovery
+6. **Recovery procedures**: Implement session recovery, task restart, and data repair workflows
+
+### Multi-agent coordination within sessions
+
+1. **Concurrent execution management**: Manage multiple agents operating on same project
+2. **Task serialization**: Sequence dependent operations to avoid conflicts
+3. **Resource sharing**: Coordinate shared vault and database access
+4. **Result synchronization**: Merge results from parallel agent operations
+5. **Isolation setup**: Configure runtime boundaries between concurrent agents
+
 ## Cross-Cutting Gotchas
 
 - **TaskDefinition export malformed** → task never runs, no error. Verify export structure and check `agent_runs`.
@@ -346,3 +358,8 @@ Every phase execution writes to `agent_runs`:
 - **Cross-project state corruption** → Use `GroveRuntimeCache` for thread-safe handle management.
 - **Missing daemon notifications** → Grove multi-project visibility requires notification emission.
 - **Migration path reference error** → Migrations are in single file `packages/myco/src/db/migrations.ts`, not directory.
+- **Session gating prevents intelligence feedback loops** → Tasks reading transcripts must gate on settled sessions (completed/processed status) to ensure session data is stable during analysis and prevent processing incomplete sessions.
+- **Session state consistency** → Always validate session status before operations — intelligence tasks must gate on session-terminal state (completed/processed) as active sessions produce stale artifacts.
+- **Cortex instructions requirement** → Lead agent MUST call `myco_cortex({op:"instructions"})` before delegating to sub-agents — delegation without instructions causes sub-agents to operate with inconsistent scope.
+- **Cross-platform hook deployment** → The `.agents/myco-run.cjs` guard handles OSS contributor safety across platforms. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
+- **Runtime resource management** → Agent harness execution consumes resources — implement proper cleanup. Concurrent sessions must coordinate vault database access to prevent corruption.

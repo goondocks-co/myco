@@ -30,6 +30,10 @@ mock.module('@myco/symbionts/installer.js', () => ({
     };
   }),
   MYCO_MCP_SERVER_NAME: 'myco',
+  // ProjectVault imports removeProjectLaunchers transitively via the
+  // vault module. Provide a no-op stub so the import resolves; tests
+  // here don't exercise the cleanup path.
+  removeProjectLaunchers: vi.fn().mockReturnValue([]),
 }));
 
 const ensureRunningMock = vi.fn();

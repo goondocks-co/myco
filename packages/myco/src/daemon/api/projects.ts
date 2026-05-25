@@ -26,20 +26,11 @@ import {
 } from '@myco/grove/registry.js';
 import { assertSafeProjectRoot } from '@myco/vault/resolve.js';
 import {
-  loadProjectLocalManifest,
-  loadProjectManifest,
-  saveProjectLocalManifest,
-  saveProjectManifest,
-} from '@myco/config/project-manifest.js';
-import { createGroveBindingId } from '@myco/grove/ids.js';
-import {
-  resolveProjectLocalManifestPath,
-  resolveProjectManifestPath,
-} from '@myco/grove/paths.js';
-import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
-import { BUNDLED_TEMPLATES } from '@myco/symbionts/templates.generated.js';
-import { removeProjectLaunchers } from '@myco/symbionts/installer.js';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+  InvalidRuntimeCommandError,
+  ProjectIdMismatchError,
+  ProjectVault,
+  VaultWriteError,
+} from '@myco/vault/project-vault.js';
 import { createBackup, readSnapshotHeader, restoreBackup } from '../backup.js';
 import { getMachineId } from '../machine-id.js';
 import type { RouteHandler } from '../router.js';
@@ -220,24 +211,16 @@ export interface CommitToRepoBody {
   runtime_command?: string;
 }
 
-/** Project-relative paths of the active runtime launchers. */
-const PROJECT_LAUNCHER_PATHS = [
-  path.join('.agents', 'myco-run.cjs'),
-  path.join('.agents', 'myco-cli.cjs'),
-] as const;
-const PROJECT_RUNTIME_COMMAND_REL = path.join('.myco', 'runtime.command');
-
 /**
  * Write `<projectRoot>/.myco/project.toml` with the project's Grove
  * identity so teammates cloning the repo resolve to the same logical
  * Grove on their own machines. Idempotent: re-writing with the same
- * identity is a no-op from the file's perspective (the manifest writer
- * merges).
+ * identity is a no-op from the file's perspective.
  *
- * Optional flags `write_launchers` and `runtime_command` install the
- * project-local launcher override and binary pin. Returns the
- * relative paths actually written in `wrote` so the UI can surface
- * exactly what landed on disk.
+ * All vault mutations route through `ProjectVault` — the single
+ * capability that owns `<projectRoot>/.myco/` and pairs every write
+ * with its gitignore + binding-manifest invariant. Handler does
+ * registration lookup + envelope mapping only.
  */
 export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
@@ -274,102 +257,27 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
     }
 
     const body = (req.body ?? {}) as CommitToRepoBody;
-    if (body.runtime_command !== undefined) {
-      if (typeof body.runtime_command !== 'string' || body.runtime_command.length === 0) {
-        return {
-          status: 400,
-          body: errorBody('invalid_runtime_command', 'runtime_command must be a non-empty string'),
-        };
-      }
-      if (!path.isAbsolute(body.runtime_command)) {
-        return {
-          status: 400,
-          body: errorBody('invalid_runtime_command', 'runtime_command must be an absolute path'),
-        };
-      }
-    }
 
-    const projectVaultDir = resolveProjectVaultDir(projectRoot);
-
-    // Refuse to overwrite a foreign project.id. A teammate clones a repo
-    // committed by Alice (project.id = proj_alice), their local registry
-    // auto-registers under proj_bob, then they re-commit — we'd silently
-    // rewrite the portable identity. Block the conflict and surface the
-    // observed mismatch; the user can decide whether to claim/rename
-    // their local project to match.
-    let existingCommittedManifest;
+    const vault = new ProjectVault(projectRoot);
+    let result;
     try {
-      existingCommittedManifest = loadProjectManifest(projectVaultDir);
-    } catch {
-      existingCommittedManifest = null;
-    }
-    if (existingCommittedManifest && existingCommittedManifest.project.id !== projectId) {
-      return {
-        status: 409,
-        body: errorBody(
-          'project_id_mismatch',
-          `Committed project.toml binds id ${existingCommittedManifest.project.id}; this project is locally registered as ${projectId}. Reconcile before re-committing.`,
-        ),
-      };
-    }
-
-    const wrote: string[] = [];
-    try {
-      saveProjectManifest(projectVaultDir, {
-        project: {
-          id: assertGroveProjectId(projectId),
-          name: found.project.name,
-        },
-        grove: {
-          id: grove.id,
-          slug: grove.slug,
-          name: grove.name,
-        },
+      result = vault.commitToRepo({
+        project: { id: projectId, name: found.project.name },
+        grove: { id: grove.id, slug: grove.slug, name: grove.name },
+        writeLaunchers: body.write_launchers === true,
+        runtimeCommand: body.runtime_command,
       });
-      wrote.push(path.relative(projectRoot, resolveProjectManifestPath(projectVaultDir)));
-
-      // Per-machine binding lives in local.toml (gitignored), not project.toml.
-      // Without it, the daemon's `assertGroveBound` refuses to start against
-      // this vault on subsequent boots. Preserve the existing binding_id +
-      // mode if present; otherwise mint a fresh local-mode binding.
-      const existingLocal = loadProjectLocalManifest(projectVaultDir);
-      const bindingId = existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
-      const mode = existingLocal?.grove_binding?.mode ?? 'local';
-      saveProjectLocalManifest(projectVaultDir, {
-        grove_binding: { binding_id: bindingId, mode },
-      });
-
-      // Idempotent gitignore guarantee. Without this, a greenfield vault
-      // freshly materialized by commit-to-repo has no .myco/.gitignore,
-      // so the per-machine binding_id, daemon.json, and buffer files are
-      // eligible to be staged on the user's next `git add`.
-      ensureVaultGitignoreCurrent(projectVaultDir);
     } catch (err) {
+      if (err instanceof ProjectIdMismatchError) {
+        return { status: 409, body: errorBody('project_id_mismatch', err.message) };
+      }
+      if (err instanceof InvalidRuntimeCommandError) {
+        return { status: 400, body: errorBody('invalid_runtime_command', err.message) };
+      }
+      if (err instanceof VaultWriteError) {
+        return { status: 500, body: errorBody('manifest_write_failed', err.message) };
+      }
       return { status: 500, body: errorBody('manifest_write_failed', (err as Error).message) };
-    }
-
-    if (body.write_launchers === true) {
-      const template = BUNDLED_TEMPLATES['myco-run.cjs'];
-      if (!template) {
-        return {
-          status: 500,
-          body: errorBody('launcher_template_missing', 'Bundled myco-run.cjs template is unavailable'),
-        };
-      }
-      const agentsDir = path.join(projectRoot, '.agents');
-      fs.mkdirSync(agentsDir, { recursive: true });
-      for (const rel of PROJECT_LAUNCHER_PATHS) {
-        const absPath = path.join(projectRoot, rel);
-        atomicWriteFileSync(absPath, template);
-        wrote.push(rel);
-      }
-    }
-
-    if (typeof body.runtime_command === 'string' && body.runtime_command.length > 0) {
-      const absPath = path.join(projectRoot, PROJECT_RUNTIME_COMMAND_REL);
-      fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      atomicWriteFileSync(absPath, `${body.runtime_command.trim()}\n`);
-      wrote.push(PROJECT_RUNTIME_COMMAND_REL);
     }
 
     return {
@@ -377,8 +285,8 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
         ok: true,
         project_id: projectId,
         grove_id: grove.id,
-        manifest_path: resolveProjectManifestPath(projectVaultDir),
-        wrote,
+        manifest_path: path.join(vault.vaultDir, 'project.toml'),
+        wrote: result.wrote,
       },
     };
   };
@@ -427,43 +335,28 @@ export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHand
     }
 
     const body = (req.body ?? {}) as UncommitFromRepoBody;
-    const removeLaunchers = body.remove_launchers !== false;
-    const removeRuntime = body.remove_runtime_command !== false;
-
     const projectRoot = path.resolve(found.project.root);
-    const projectVaultDir = resolveProjectVaultDir(projectRoot);
-    const manifestPath = resolveProjectManifestPath(projectVaultDir);
-    const localManifestPath = resolveProjectLocalManifestPath(projectVaultDir);
-    const removed: string[] = [];
+    const vault = new ProjectVault(projectRoot);
 
-    for (const target of [manifestPath, localManifestPath]) {
-      if (!fs.existsSync(target)) continue;
-      try {
-        fs.unlinkSync(target);
-        removed.push(path.relative(projectRoot, target));
-      } catch (err) {
-        return { status: 500, body: errorBody('manifest_delete_failed', (err as Error).message) };
+    let result;
+    try {
+      result = vault.uncommitFromRepo({
+        removeLaunchers: body.remove_launchers,
+        removeRuntimeCommand: body.remove_runtime_command,
+      });
+    } catch (err) {
+      if (err instanceof VaultWriteError) {
+        return { status: 500, body: errorBody('manifest_delete_failed', err.message) };
       }
+      return { status: 500, body: errorBody('manifest_delete_failed', (err as Error).message) };
     }
-
-    // Always sweep the retired `.agents/myco-hook.cjs` guard even when
-    // the caller asks to preserve active launchers — the retired file
-    // is never something a deliberate dogfood workflow wants to keep,
-    // and leaving it behind defeats the walker invariant that retired
-    // artifacts are always cleaned.
-    const swept = removeProjectLaunchers(projectRoot, {
-      legacy: true,
-      active: removeLaunchers,
-      runtimeCommand: removeRuntime,
-    });
-    removed.push(...swept);
 
     return {
       body: {
         ok: true,
         project_id: projectId,
-        manifest_path: manifestPath,
-        removed,
+        manifest_path: path.join(vault.vaultDir, 'project.toml'),
+        removed: result.removed,
       },
     };
   };

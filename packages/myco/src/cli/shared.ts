@@ -82,7 +82,11 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 // (`cli/init.ts`, `cli/update.ts`) keep their imports unchanged. The
 // canonical body lives there so activation/grove code can import it
 // without dragging in cli-level transitive dependencies.
-export { VAULT_GITIGNORE, ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
+// Vault gitignore is now owned by ProjectVault — see
+// `@myco/vault/project-vault.ts`. Callers that need to refresh
+// `<projectRoot>/.myco/.gitignore` go through
+// `new ProjectVault(projectRoot).ensureGitignore()`; the helper isn't
+// re-exported here to keep the single-writer contract honest.
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
 export function collapseHomePath(absPath: string): string {

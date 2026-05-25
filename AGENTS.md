@@ -80,10 +80,23 @@ Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of pr
 - Reads must pass a `ProjectScope` (the discriminated union over Grove/project tenancy). API handlers, query helpers, and tools take `ProjectScope` so the right database, project_id, and machine_id are bound for the call.
 - Config is a three-tier scoped system: **machine** (`~/.myco/config.yaml`), **grove** (`~/.myco/groves/<id>/config.yaml`), **project** (`<project>/.myco/myco.yaml`), and **personal** (`<project>/.myco/local.yaml`) overlays merge in that order. Use the `safe-config-updates` skill when adding a new configurable field — it covers scope assignment, Zod schema extension, and the `ScopedField` UI wiring.
 - Project registration is automatic on first agent hook. The default Grove for the daemon's variant is ensured by `runGlobalBootstrap()` at first start; hooks fired from a git project then call `ensureProjectRegistered()` which auto-registers the project into the default Grove. New code paths must not silently materialize a project-local vault from cwd — registration goes through `isSafeProjectRoot()` (git-repo gate) and never invents a project from a bare cwd. Project-local commit (writing `<projectRoot>/.myco/project.toml` for portable Grove identity, plus optional launcher/binary overrides) is UI-driven through the dashboard's Symbionts page. The `myco init` CLI command — both bare and `--project` forms — is removed; the CLI is install/diagnostic/uninstall only.
-- All `~/.myco/service/daemon.json` mutations go through `DaemonStateAuthority`. Do not call `writeOrTouchDaemonState` directly; the capability is the only sanctioned write path and logs reason, caller PID, and before/after PID for every change.
+- Shared state goes through capabilities — see [Capabilities](#capabilities-single-writers-for-shared-state) below. `daemon.json`, `<projectRoot>/.myco/`, `myco.yaml`, and symbiont agent config each have exactly one sanctioned writer; bypassing produces silent drift.
 - Variant-aware rebind is strict. `MYCO_SERVICE_VARIANT=service-dev` daemons bind only to Groves with `served_by="service-dev"`; `MYCO_SERVICE_VARIANT=service` daemons bind only to `served_by="service"`. No fall-through; do not add a default-Grove escape hatch.
 - Power state is per-project. Scheduled work iterates Grove scopes; do not collapse multiple projects into one power loop or assume a single PowerManager owns all projects.
 - After changing daemon code, run `make build` and then `myco-dev restart`. Restart is per-machine (one daemon serves all Groves), not per-project.
+
+## Capabilities (single writers for shared state)
+
+Every shared resource below has exactly one sanctioned writer. Adding a second entry point that bypasses the capability is Myco's dominant historical bug class — silent drift between writers produced repeated bugs in gitignore coverage, missing companion files, and schema bypass. When the resource you're writing appears here, route through its capability. MUST NOT call the lower-level primitives directly from new code.
+
+| Resource | Capability |
+|---|---|
+| `~/.myco/service/daemon.json` | `DaemonStateAuthority` (`packages/myco/src/daemon/daemon-state-authority.ts`) — logs reason, caller PID, before/after PID for every change. |
+| `<projectRoot>/.myco/` + `<projectRoot>/.agents/myco-*.cjs` | `ProjectVault` (`packages/myco/src/vault/project-vault.ts`) — pairs every manifest write with `project.local.toml` + `.gitignore`; refuses cross-identity overwrites; sweeps retired launchers on remove. |
+| `myco.yaml` (every tier) | `updateConfig()` / `saveConfig()` (`packages/myco/src/config/loader.ts`) — runs Zod validation; see also the `safe-config-updates` skill. |
+| Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries, and per-agent skill symlinks. |
+
+**Meta-rule.** When new shared state emerges — a file written by more than one caller, an invariant maintained by convention across helpers, a multi-file coordination contract — add a capability that owns it BEFORE adding the second writer. Discipline-by-convention is a bug class, not an architecture. Every row in the table above started as duplication-by-discipline that produced regressions until the capability was added.
 
 ## Working Style
 
