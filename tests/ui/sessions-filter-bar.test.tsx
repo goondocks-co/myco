@@ -115,13 +115,14 @@ describe('Sessions page-level filter bar (T12)', () => {
     expect(masterDetail!.contains(filterBar)).toBe(false);
   });
 
-  it('passes status + symbiont filters into the bar', async () => {
+  it('passes status + symbiont + plans filters into the bar', async () => {
     renderPage('/sessions');
     await waitFor(() => expect(screen.getByTestId('list-filter-bar')).toBeTruthy());
     const bar = screen.getByTestId('list-filter-bar');
-    expect(bar.getAttribute('data-filter-count')).toBe('2');
+    expect(bar.getAttribute('data-filter-count')).toBe('3');
     expect(screen.getByTestId('filter-status').textContent).toBe('Status');
     expect(screen.getByTestId('filter-agent').textContent).toBe('Symbiont');
+    expect(screen.getByTestId('filter-has_plan').textContent).toBe('Plans');
   });
 
   it('threads search input through to useSessions as the `search` query option', async () => {
