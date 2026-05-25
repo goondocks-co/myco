@@ -281,4 +281,51 @@ describe('resolveBootstrapVaultDir', () => {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
+
+  test('sandbox-mode daemon refuses to bind to a real project via cwd-walk', () => {
+    // Smoke-test daemons are spawned with MYCO_LAUNCH_AGENTS_DIR set
+    // and an isolated MYCO_HOME under /tmp. Their cwd usually lands
+    // inside the developer's real repo (the foreground spawn starts
+    // from a project tree). Without this guard, the cwd-walk branch
+    // would happily bind the sandbox daemon's vault to the real
+    // project's `.myco/`, writing the real `.myco/myco.db` from a
+    // sandbox-locked daemon. Confirmed in the wild: a sandbox smoke
+    // daemon (lock under /tmp/myco-smoke2-xxx) had the developer's
+    // real `Repos/myco/.myco/myco.db` open for writes.
+    //
+    // The guard: when MYCO_LAUNCH_AGENTS_DIR is set, skip cwd-walk
+    // entirely. Registry path only; sandbox HOME has an empty registry
+    // so we fall through to null → phantom-bootstrap.
+    const realProject = makeProject('real-repo');
+    process.env.MYCO_LAUNCH_AGENTS_DIR = path.join(tmpHome, 'Library', 'LaunchAgents');
+    try {
+      // Cwd inside the real project — without the guard, this would
+      // return the real project's .myco/ vault, escaping the sandbox.
+      expect(resolveBootstrapVaultDir(realProject)).toBeNull();
+    } finally {
+      delete process.env.MYCO_LAUNCH_AGENTS_DIR;
+    }
+  });
+
+  test('sandbox-mode + sandbox-registry still binds to sandbox-internal projects', () => {
+    // Sandbox-mode guard MUST NOT block legitimate sandbox project
+    // resolution. If the sandbox's own registry has a project (e.g.
+    // a smoke test that registered one during setup), the daemon
+    // binds to it.
+    const sandboxGrove = 'grove_99999999999999999999999999999999';
+    const sandboxProject = makeProject('sandbox-internal');
+    writeRegistry(sandboxGrove);
+    writeGroveToml(sandboxGrove, 'service');
+    writeProjectsToml(sandboxGrove, [{ id: 'proj_sandbox', root: sandboxProject }]);
+
+    const realProject = makeProject('real-but-cwd');
+    process.env.MYCO_LAUNCH_AGENTS_DIR = path.join(tmpHome, 'Library', 'LaunchAgents');
+    try {
+      // Even though cwd is the real project, sandbox mode goes
+      // straight to the registry and finds the sandbox-internal one.
+      expect(resolveBootstrapVaultDir(realProject)).toBe(path.join(sandboxProject, '.myco'));
+    } finally {
+      delete process.env.MYCO_LAUNCH_AGENTS_DIR;
+    }
+  });
 });

@@ -56,6 +56,7 @@ import { createProjectId } from '../grove/ids.js';
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | null {
   const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
+  const sandboxMode = (process.env.MYCO_LAUNCH_AGENTS_DIR?.trim() ?? '') !== '';
   const cwdVault = resolveVaultDir(cwd);
 
   // Variant-pinned daemons trust their variant, not their cwd. Skip the
@@ -68,7 +69,18 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | 
     return firstProjectVaultFromRegistry();
   }
 
-  // Variant-less: original cwd-walk-first behavior.
+  // Sandbox mode (MYCO_LAUNCH_AGENTS_DIR set) skips cwd-walk too.
+  // A sandbox daemon's cwd is typically inside the developer's real
+  // checkout (the smoke test starts the daemon from a project tree),
+  // and cwd-walk would let it escape its sandbox by binding to the
+  // real project's vault — defeating the whole point of running
+  // sandboxed. Force the registry path; sandbox HOME's registry is
+  // empty, so this falls through to phantom-bootstrap.
+  if (sandboxMode) {
+    return firstProjectVaultFromRegistry();
+  }
+
+  // Variant-less, production: original cwd-walk-first behavior.
   if (hasProjectManifest(cwdVault)) return cwdVault;
 
   const fromRegistry = firstProjectVaultFromRegistry();
