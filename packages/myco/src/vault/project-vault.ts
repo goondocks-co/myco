@@ -327,6 +327,40 @@ export class ProjectVault {
     return this.patchSymbiontOverrides({ [name]: null });
   }
 
+  /**
+   * Toggle project-level symbiont customization as a whole.
+   *
+   *   `enabled: true`  — ensure the `symbionts:` block exists.  Pre-
+   *                      populates it from `seed` so every detected
+   *                      symbiont has a row the UI can render with a
+   *                      toggle.  Idempotent — re-enabling without a
+   *                      seed leaves any current entries untouched.
+   *   `enabled: false` — REMOVE the block entirely.  The project then
+   *                      follows the global defaults again.  Atomic.
+   *
+   * Same single-write contract as `patchSymbiontOverrides`.
+   */
+  setProjectCustomization(enabled: boolean, seed?: string[]): MycoConfig {
+    this.ensureMinimalConfig();
+    this._ensureGitignore();
+    return updateConfig(this.vaultDir, (config) => {
+      const next = { ...config };
+      if (!enabled) {
+        delete next.symbionts;
+        return next;
+      }
+      const existing = config.symbionts ?? {};
+      if (Object.keys(existing).length > 0) {
+        next.symbionts = existing;
+        return next;
+      }
+      const populated: Record<string, { enabled: boolean }> = {};
+      for (const name of seed ?? []) populated[name] = { enabled: true };
+      next.symbionts = populated;
+      return next;
+    });
+  }
+
   // -------------------------------------------------------------------
   // Lower-level operations (used by the registry / activation / move /
   // claim paths that already construct a manifest in flight)

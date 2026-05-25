@@ -104,6 +104,7 @@ import {
   handleDetectSymbionts,
   handleDrainMigration,
   createProjectSymbiontsPatchHandler,
+  createProjectSymbiontsCustomizationHandler,
 } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
@@ -1402,6 +1403,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
+  server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/commit-to-repo', createCommitToRepoHandler(groveDaemonStateDir));
   server.registerRoute('DELETE', '/api/projects/:projectId/commit-to-repo', createUncommitFromRepoHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));

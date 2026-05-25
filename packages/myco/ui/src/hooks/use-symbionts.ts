@@ -40,6 +40,10 @@ export interface SymbiontInfo {
 
 interface SymbiontsResponse {
   symbionts: SymbiontInfo[];
+  /** When true, the project's myco.yaml has an explicit `symbionts:` block
+   *  and per-symbiont toggles are meaningful. When false, the project follows
+   *  global defaults — the page-level customization toggle is OFF. */
+  projectCustomizationActive?: boolean;
 }
 
 /* ---------- Hook ---------- */

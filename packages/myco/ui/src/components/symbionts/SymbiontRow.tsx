@@ -75,11 +75,6 @@ export function SymbiontRow({ symbiont, onSetOverride, overrideDisabled = false,
               <span className="font-mono text-[10px] text-on-surface-variant">
                 · {status.label}
               </span>
-              {symbiont.projectOverride && (
-                <span className="font-mono text-[10px] text-ochre">
-                  · project override
-                </span>
-              )}
             </div>
 
             {chips.length > 0 && (

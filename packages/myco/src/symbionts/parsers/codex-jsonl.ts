@@ -10,6 +10,35 @@ function parseDataUrl(url: string): { mediaType: string; data: string } | null {
 }
 
 /**
+ * Render the JSON arguments of Codex's `update_plan` function-call tool as
+ * markdown so the existing tag-extraction pipeline can persist it as a
+ * Plan record. `arguments` is a JSON string of shape:
+ *   { "plan": [ { "step": "...", "status": "pending"|"in_progress"|"completed" }, ... ] }
+ *
+ * Returns null when the args fail to parse or carry no plan steps —
+ * caller skips the wrap so no empty plan envelopes are emitted.
+ */
+function synthesizeUpdatePlanMarkdown(rawArgs: unknown): string | null {
+  if (typeof rawArgs !== 'string' || rawArgs.length === 0) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(rawArgs); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const planRaw = (parsed as { plan?: unknown }).plan;
+  if (!Array.isArray(planRaw) || planRaw.length === 0) return null;
+  const lines: string[] = ['## Plan', ''];
+  for (const item of planRaw) {
+    if (!item || typeof item !== 'object') continue;
+    const step = String((item as { step?: unknown }).step ?? '').trim();
+    if (!step) continue;
+    const status = String((item as { status?: unknown }).status ?? 'pending');
+    const box = status === 'completed' ? '[x]' : status === 'in_progress' ? '[~]' : '[ ]';
+    lines.push(`- ${box} ${step}`);
+  }
+  if (lines.length <= 2) return null;
+  return lines.join('\n');
+}
+
+/**
  * Codex Desktop wraps user prompts with file-mention preambles when screenshots
  * are attached, and injects <image> wrapper tags around image blocks. Strip both
  * so the captured prompt contains only the user's actual text.
@@ -66,9 +95,26 @@ export class CodexJsonlParser implements TranscriptParser {
       const payloadType = payload.type as string;
       const timestamp = (entry.timestamp as string) ?? '';
 
-      // Function calls are separate entries — count them as tool use
+      // Function calls are separate entries — count them as tool use.
+      // The `update_plan` tool is special: it carries Codex's plan-mode
+      // updates as structured JSON, the analog of Claude Code's plan
+      // mode writing markdown to ~/.claude/plans/. Synthesize an
+      // `<update_plan>...</update_plan>` envelope and append it to the
+      // current turn's aiResponse so the shared `extractTaggedPlans`
+      // pass in stop-processing picks it up (planTags entry below).
       if (payloadType === 'function_call') {
-        if (current) current.toolCount++;
+        if (current) {
+          current.toolCount++;
+          if (payload.name === 'update_plan') {
+            const markdown = synthesizeUpdatePlanMarkdown(payload.arguments);
+            if (markdown) {
+              const wrapped = `<update_plan>\n${markdown}\n</update_plan>`;
+              current.aiResponse = current.aiResponse
+                ? `${current.aiResponse}\n\n${wrapped}`
+                : wrapped;
+            }
+          }
+        }
         continue;
       }
 

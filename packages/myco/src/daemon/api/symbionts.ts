@@ -113,7 +113,14 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
     const supportsCanopyInjection =
       (manifest.capabilities?.preToolUseInjection ?? false)
       && ((manifest.capabilities?.canopyReadTools?.length ?? 0) > 0);
-    const supportsPlanCapture = (manifest.capture?.planDirs?.length ?? 0) > 0;
+    // Plans surface counts either mechanism: filesystem watch (`planDirs`)
+    // or transcript tag extraction (`planTags`). Codex emits no on-disk
+    // plans but ships an `update_plan` function-call tool whose JSON args
+    // the Codex parser synthesizes into a `<update_plan>` envelope —
+    // captured via the `planTags` path.
+    const supportsPlanCapture =
+      (manifest.capture?.planDirs?.length ?? 0) > 0
+      || (manifest.capture?.planTags?.length ?? 0) > 0;
     const supportsSkills = !!reg?.skillsTarget || !!reg?.globalSkillsTarget;
     const supportsMcp = !!reg?.mcpTarget || !!reg?.globalMcpTarget;
 
@@ -193,7 +200,17 @@ function scanMcpActiveSymbionts(_requestedGroveId: string | null | undefined): M
  * all manifests default to `enabled: true`.
  */
 export async function handleListSymbionts(vaultDir: string, groveId?: string | null): Promise<RouteResponse> {
-  return { body: { symbionts: listSymbiontInfos(vaultDir, groveId) } };
+  const symbionts = listSymbiontInfos(vaultDir, groveId);
+  // Project-level customization is active when the project's myco.yaml
+  // carries an explicit `symbionts:` block (any entry). When inactive,
+  // the project follows global defaults and per-symbiont overrides are
+  // not meaningful — surfaced to the UI as a page-level toggle.
+  let projectCustomizationActive = false;
+  try {
+    const projectCfg = loadConfig(vaultDir);
+    projectCustomizationActive = !!projectCfg.symbionts && Object.keys(projectCfg.symbionts).length > 0;
+  } catch { /* config not loadable */ }
+  return { body: { symbionts, projectCustomizationActive } };
 }
 
 /**
@@ -355,5 +372,49 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
       return { status: 500, body: errorBody('patch_failed', (err as Error).message) };
     }
     return { body: { symbionts: updated.symbionts ?? {} } };
+  };
+}
+
+/**
+ * Toggle per-project symbiont customization as a whole.
+ *
+ *   PUT /projects/:projectId/symbionts-customization
+ *   Body: { "enabled": true | false }
+ *
+ *   true  — ensure the project's myco.yaml has a `symbionts:` block,
+ *           pre-populated with every detected symbiont set to enabled.
+ *           Per-symbiont toggles in the UI then become meaningful.
+ *   false — REMOVE the `symbionts:` block entirely. Project follows
+ *           global defaults. Idempotent.
+ */
+export function createProjectSymbiontsCustomizationHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => {
+    const projectId = req.params.projectId;
+    const mycoHome = resolveMycoHome();
+    const found = findRegisteredProject({ projectId }, mycoHome);
+    if (!found) {
+      return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`) };
+    }
+    const variant = resolveServiceDirName(daemonStateDir, mycoHome);
+    if (found.grove.served_by !== variant) {
+      return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`) };
+    }
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== 'boolean') {
+      return { status: 400, body: errorBody('invalid_body', 'Body must include `enabled: boolean`') };
+    }
+    const seed = body.enabled ? loadManifests().map((m) => m.name) : undefined;
+    const vault = new ProjectVault(found.project.root);
+    try {
+      const updated = vault.setProjectCustomization(body.enabled, seed);
+      return {
+        body: {
+          projectCustomizationActive: !!updated.symbionts && Object.keys(updated.symbionts).length > 0,
+          symbionts: updated.symbionts ?? {},
+        },
+      };
+    } catch (err) {
+      return { status: 500, body: errorBody('customization_failed', (err as Error).message) };
+    }
   };
 }

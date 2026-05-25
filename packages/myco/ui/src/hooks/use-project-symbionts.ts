@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { deleteJson, fetchJson, patchJson, postJson } from '../lib/api';
+import { deleteJson, fetchJson, patchJson, postJson, putJson } from '../lib/api';
 import { useActiveProjectSelection } from './use-project-selection';
 
 /**
@@ -47,6 +47,35 @@ interface DrainMigrationResponse {
     projectsErrored: number;
     outcomes: unknown[];
   };
+}
+
+/**
+ * Toggle per-project symbiont customization as a whole. Body shape is
+ * `{ enabled: boolean }`.
+ *
+ *   `enabled: true`  — ensure the project's `symbionts:` block exists,
+ *                      pre-populated with every detected symbiont so
+ *                      per-symbiont toggles in the UI become meaningful.
+ *   `enabled: false` — REMOVE the block entirely; the project follows
+ *                      global defaults again.
+ *
+ * Uses the canonical TanStack `mutate(variables, options)` shape.
+ */
+export function useSetProjectSymbiontCustomization() {
+  const qc = useQueryClient();
+  const selection = useActiveProjectSelection();
+  return useMutation({
+    mutationFn: async (body: { enabled: boolean }) => {
+      if (!selection) throw new Error('No project selected');
+      return putJson<{ projectCustomizationActive: boolean; symbionts: Record<string, { enabled: boolean }> }>(
+        `/projects/${selection.project.project_id}/symbionts-customization`,
+        body,
+      );
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['symbionts'] });
+    },
+  });
 }
 
 export function usePatchProjectSymbionts() {
