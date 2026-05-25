@@ -32,7 +32,10 @@ import {
   createGrove,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import {
+  loadProjectLocalManifest,
+  loadProjectManifest,
+} from '@myco/config/project-manifest.js';
 import { loadConfig } from '@myco/config/loader.js';
 import type { RouteHandler, RouteResponse } from '@myco/daemon/router.js';
 
@@ -167,6 +170,11 @@ describe('POST /api/projects/:projectId/commit-to-repo', () => {
     expect(manifest?.project.id).toBe(projectId);
     expect(manifest?.grove?.id).toBe(grove.id);
     expect(manifest?.grove?.slug).toBe(grove.slug);
+    // binding_id is per-machine (lives in project.local.toml). Without it,
+    // the daemon's `assertGroveBound` refuses to start against this vault.
+    const local = loadProjectLocalManifest(resolveProjectVaultDir(projectRoot));
+    expect(local?.grove_binding?.binding_id).toMatch(/^gbind_[a-f0-9]+$/);
+    expect(local?.grove_binding?.mode).toBe('local');
   });
 
   it('writes project-local launchers when write_launchers=true', async () => {
@@ -227,7 +235,7 @@ describe('POST /api/projects/:projectId/commit-to-repo', () => {
 });
 
 describe('DELETE /api/projects/:projectId/commit-to-repo', () => {
-  it('removes project.toml + launchers + runtime.command by default', async () => {
+  it('removes project.toml + local.toml + launchers + runtime.command by default', async () => {
     const { projectId, projectRoot } = seededProject();
     await call(
       createCommitToRepoHandler(daemonStateDir),
@@ -236,10 +244,13 @@ describe('DELETE /api/projects/:projectId/commit-to-repo', () => {
         body: { write_launchers: true, runtime_command: '/usr/local/bin/myco-dev' },
       },
     );
-    const manifestPath = resolveProjectManifestPath(resolveProjectVaultDir(projectRoot));
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    const manifestPath = resolveProjectManifestPath(vaultDir);
+    const localManifestPath = path.join(vaultDir, 'project.local.toml');
     const runCjs = path.join(projectRoot, '.agents', 'myco-run.cjs');
     const pin = path.join(projectRoot, '.myco', 'runtime.command');
     expect(fs.existsSync(manifestPath)).toBe(true);
+    expect(fs.existsSync(localManifestPath)).toBe(true);
     expect(fs.existsSync(runCjs)).toBe(true);
     expect(fs.existsSync(pin)).toBe(true);
 
@@ -251,10 +262,12 @@ describe('DELETE /api/projects/:projectId/commit-to-repo', () => {
     const body = response.body as { ok: boolean; removed: string[] };
     expect(body.ok).toBe(true);
     expect(body.removed).toContain(path.join('.myco', 'project.toml'));
+    expect(body.removed).toContain(path.join('.myco', 'project.local.toml'));
     expect(body.removed).toContain(path.join('.agents', 'myco-run.cjs'));
     expect(body.removed).toContain(path.join('.agents', 'myco-cli.cjs'));
     expect(body.removed).toContain(path.join('.myco', 'runtime.command'));
     expect(fs.existsSync(manifestPath)).toBe(false);
+    expect(fs.existsSync(localManifestPath)).toBe(false);
     expect(fs.existsSync(runCjs)).toBe(false);
     expect(fs.existsSync(pin)).toBe(false);
   });

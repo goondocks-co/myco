@@ -25,8 +25,16 @@ import {
   loadGroveRecord,
 } from '@myco/grove/registry.js';
 import { assertSafeProjectRoot } from '@myco/vault/resolve.js';
-import { saveProjectManifest } from '@myco/config/project-manifest.js';
-import { resolveProjectManifestPath } from '@myco/grove/paths.js';
+import {
+  loadProjectLocalManifest,
+  saveProjectLocalManifest,
+  saveProjectManifest,
+} from '@myco/config/project-manifest.js';
+import { createGroveBindingId } from '@myco/grove/ids.js';
+import {
+  resolveProjectLocalManifestPath,
+  resolveProjectManifestPath,
+} from '@myco/grove/paths.js';
 import { BUNDLED_TEMPLATES } from '@myco/symbionts/templates.generated.js';
 import { removeProjectLaunchers } from '@myco/symbionts/installer.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
@@ -294,6 +302,16 @@ export function createCommitToRepoHandler(daemonStateDir: string): RouteHandler 
         },
       });
       wrote.push(path.relative(projectRoot, resolveProjectManifestPath(projectVaultDir)));
+
+      // Per-machine binding lives in local.toml (gitignored), not project.toml.
+      // Without it, the daemon's `assertGroveBound` refuses to start against
+      // this vault on subsequent boots. Preserve any existing binding the
+      // user already has; otherwise mint a fresh one.
+      const existingLocal = loadProjectLocalManifest(projectVaultDir);
+      const bindingId = existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
+      saveProjectLocalManifest(projectVaultDir, {
+        grove_binding: { binding_id: bindingId, mode: 'local' },
+      });
     } catch (err) {
       return { status: 500, body: errorBody('manifest_write_failed', (err as Error).message) };
     }
@@ -383,12 +401,14 @@ export function createUncommitFromRepoHandler(daemonStateDir: string): RouteHand
     const projectRoot = path.resolve(found.project.root);
     const projectVaultDir = resolveProjectVaultDir(projectRoot);
     const manifestPath = resolveProjectManifestPath(projectVaultDir);
+    const localManifestPath = resolveProjectLocalManifestPath(projectVaultDir);
     const removed: string[] = [];
 
-    if (fs.existsSync(manifestPath)) {
+    for (const target of [manifestPath, localManifestPath]) {
+      if (!fs.existsSync(target)) continue;
       try {
-        fs.unlinkSync(manifestPath);
-        removed.push(path.relative(projectRoot, manifestPath));
+        fs.unlinkSync(target);
+        removed.push(path.relative(projectRoot, target));
       } catch (err) {
         return { status: 500, body: errorBody('manifest_delete_failed', (err as Error).message) };
       }
