@@ -9,7 +9,9 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
+import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
@@ -109,6 +111,69 @@ export function ensureOpenBatch(sessionId: string): void {
     kind: BATCH_KIND.RECOVERED,
     parent_prompt_batch_id: null,
   });
+}
+
+const antigravityParser = new AntigravityJsonlParser();
+
+/**
+ * Best-effort recovery of an Antigravity session's user prompt(s)
+ * from the transcript file, accounting for two pieces of existing
+ * state the Antigravity integration already keeps:
+ *
+ *   - The first batch may be the {@link RECOVERED_BATCH_SENTINEL}
+ *     placeholder written by {@link ensureOpenBatch}. When the IDE
+ *     finally flushes its transcript, this routine REPLACES the
+ *     sentinel with the real first-turn prompt via
+ *     {@link replaceRecoveredBatchUserPrompt} (idempotent — bails
+ *     when the row is no longer the sentinel).
+ *
+ *   - Injection records (cortex / spores / canopy) live in
+ *     `injection-records.ts` keyed by `(sessionId, content_hash)`.
+ *     This routine does NOT trigger re-injection — it only
+ *     reconciles the visible prompt text. The injection step
+ *     already self-deduplicates if a later code path retriggers it.
+ *
+ * Called on every tool_use for Antigravity. Cheap when the
+ * transcript hasn't changed: a stat-and-fast-bail design would be
+ * marginal — the parser cost on a real session transcript is
+ * sub-millisecond, and the early-exit when no sentinel exists
+ * already trims the hot path.
+ */
+function selfHealAntigravityPromptFromTranscript(
+  sessionId: string,
+  transcriptPath: string,
+): void {
+  // Cheap precondition: only proceed when this session still has a
+  // sentinel batch sitting at the head. If it doesn't, the prompt
+  // is already correct and nothing to heal.
+  const earliest = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE, limit: 1 });
+  if (earliest.length === 0) return;
+  if (earliest[0].user_prompt !== RECOVERED_BATCH_SENTINEL) return;
+
+  let content: string;
+  try { content = fs.readFileSync(transcriptPath, 'utf-8'); }
+  catch { return; }
+
+  const prompts = antigravityParser
+    .parseTurns(content)
+    .map((t) => t.prompt)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
+  if (prompts.length === 0) return;
+
+  // Replace the sentinel with the first real prompt. Idempotent —
+  // returns false if the row has already been healed by another
+  // event (e.g. a parallel post-tool-use, or session-reenrich at
+  // Stop). Either path leaves the user with the right answer.
+  replaceRecoveredBatchUserPrompt(earliest[0].id, prompts[0]);
+
+  // If the transcript advanced beyond the sentinel turn while no
+  // user_prompt hook ever fired for the tail (Antigravity does not
+  // have a per-prompt hook), reuse syncTranscriptPromptBatches to
+  // append the missing batches. Idempotent via its count check.
+  if (prompts.length > 1) {
+    try { syncTranscriptPromptBatches(sessionId, prompts); }
+    catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -258,10 +323,24 @@ export function handleToolUse(
   toolInput: unknown,
   toolOutput: string | undefined,
   projectRoot: string,
+  transcriptPath?: string,
 ): void {
   const now = epochSeconds();
 
   ensureOpenBatch(sessionId);
+
+  // Daemon-side self-heal: when a `RECOVERED_BATCH_SENTINEL` placeholder
+  // exists for this session AND the event carries a transcript path,
+  // re-read the transcript and overwrite the sentinel with the real
+  // user prompt. The Antigravity IDE writes its transcript file
+  // asynchronously after the PreInvocation hook fires, so the initial
+  // session-start sync can miss the prompt — every subsequent
+  // tool_use is a chance to heal. Idempotent: bails immediately when
+  // no sentinel batch exists for this session.
+  if (transcriptPath && agent === 'antigravity') {
+    try { selfHealAntigravityPromptFromTranscript(sessionId, transcriptPath); }
+    catch { /* best-effort heal */ }
+  }
 
   const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;

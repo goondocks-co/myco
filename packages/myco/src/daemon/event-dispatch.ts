@@ -558,6 +558,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
           requestFilesystemRoot,
+          typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });

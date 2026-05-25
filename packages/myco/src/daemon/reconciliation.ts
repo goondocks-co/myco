@@ -136,6 +136,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
         event.tool_input,
         typeof event.output_preview === 'string' ? event.output_preview : undefined,
         projectRoot,
+        typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
       );
       return 'activity';
     }
