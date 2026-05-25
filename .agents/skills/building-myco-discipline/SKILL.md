@@ -1,5 +1,5 @@
 ---
-name: myco:building-myco-discipline
+name: building-myco-discipline
 description: >-
   Use this skill when building any non-trivial change in Myco — new features,
   refactors, capability work, anything touching shared state, or anything
@@ -11,7 +11,6 @@ description: >-
   just asks for "a small change" — the discipline is what keeps small
   changes from compounding into the bug classes that this codebase has
   fought through three migrations.
-managed_by: myco
 version: 1
 user-invocable: true
 ---
