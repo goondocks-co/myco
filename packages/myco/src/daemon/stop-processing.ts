@@ -36,7 +36,7 @@ import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.j
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
 import { SessionRegistry } from './lifecycle.js';
-import { ensureSession } from './session-lifecycle.js';
+import { ensureSession, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -698,7 +698,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           startedAt: new Date().toISOString(),
           registry,
           logger,
-          source: 'stop',
+          source: ENSURE_SESSION_SOURCE.STOP,
         });
         logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', {
           session_id: sessionId,

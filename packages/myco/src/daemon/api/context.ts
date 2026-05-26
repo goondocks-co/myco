@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
-import { ensureSessionRowExists } from '../session-lifecycle.js';
+import { ensureSessionRowExists, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import {
   EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
@@ -167,7 +167,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
             projectRoot: req.requestContext?.projectRoot ?? null,
             machineId: req.requestContext?.machineId ?? 'local',
             logger,
-            source: 'context',
+            source: ENSURE_SESSION_SOURCE.CONTEXT,
           });
         } catch { /* defensive — never block the cortex serve */ }
         const { suppress } = await recordInjectionAndShouldSuppress({

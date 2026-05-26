@@ -46,7 +46,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
-import { ensureSession, ensureSessionRowExists } from './session-lifecycle.js';
+import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -327,7 +327,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           startedAt: event.timestamp,
           registry,
           logger,
-          source: event.type === 'user_prompt' ? 'user_prompt' : 'tool_use',
+          source: event.type === 'user_prompt' ? ENSURE_SESSION_SOURCE.USER_PROMPT : ENSURE_SESSION_SOURCE.TOOL_USE,
         });
         logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
         const autoRegisterScope = projectScopeFromRequestContext(req.requestContext);
@@ -431,7 +431,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             projectRoot: requestProjectRoot,
             machineId: requestMachineId,
             logger,
-            source: 'user_prompt',
+            source: ENSURE_SESSION_SOURCE.USER_PROMPT,
           });
           const kind = typeof event.kind === 'string' ? event.kind : 'initial';
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
@@ -549,7 +549,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           projectRoot: requestProjectRoot,
           machineId: requestMachineId,
           logger,
-          source: 'tool_use',
+          source: ENSURE_SESSION_SOURCE.TOOL_USE,
         });
         handleToolUse(
           event.session_id,
