@@ -846,7 +846,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
   console.log('Setting team configuration...');
   try {
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
-    const creatorMachineId = await getMachineId(vaultDir);
+    const creatorMachineId = getMachineId();
     await fetch(`${workerUrl}/config`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
