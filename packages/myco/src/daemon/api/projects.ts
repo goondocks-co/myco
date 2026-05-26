@@ -77,7 +77,7 @@ export function createProjectBackupHandler(
     const backupDir = path.join(resolveBackupsRoot(options.backupsRoot), slug);
     fs.mkdirSync(backupDir, { recursive: true });
 
-    const machineId = getMachineId(resolveProjectVaultDir(found.project.root));
+    const machineId = getMachineId();
     const dbPath = resolveGroveDbPath(found.grove.id, mycoHome);
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const db = openDatabase(dbPath);

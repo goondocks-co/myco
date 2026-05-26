@@ -338,7 +338,10 @@ export async function buildCortexInstructionsInput(
   }
   const projectId = requestContext.projectId;
   const scope = projectScopeFromRequestContext(requestContext);
-  const machineId = getMachineId(vaultDir);
+  // Request context carries the machine id when the caller knows it
+  // (tests, /sessions/register paths, MCP requests). Fall back to the
+  // global cache so non-request-driven call sites still resolve.
+  const machineId = requestContext.machineId ?? getMachineId();
   const mapRow = readCanopyMap(projectId, machineId);
   const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
 

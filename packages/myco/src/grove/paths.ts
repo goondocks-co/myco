@@ -86,6 +86,32 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
 }
 
 /**
+ * Resolve the canonical path for the cached machine identity. One file
+ * per machine, shared across every Grove and every project — the value
+ * was previously cached per-project at `<projectVaultDir>/machine_id`,
+ * which produced one identity per vault and forced every team-sync /
+ * backup-dedup consumer to re-resolve when crossing projects.
+ *
+ * Post-global-install: `~/.myco/machine_id` is the single source. The
+ * value moves on first read after the global-install migration runs
+ * (the migration step propagates an existing project-vault value when
+ * the global file is absent — see plan §5).
+ */
+export function resolveMachineIdPath(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, 'machine_id');
+}
+
+/**
+ * Resolve the canonical path for the last-update version stamp.
+ * Written by `myco update` after each successful pass — informational
+ * marker only, not a migration gate. Per-machine bookkeeping; lives
+ * alongside the launchers it tracks rather than in any single project.
+ */
+export function resolveLastUpdateVersionPath(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, 'last-update-version');
+}
+
+/**
  * Process-level switch routing the daemon to `service-dev/` instead of
  * `service/` so a contributor's dogfood daemon coexists with a production
  * daemon on the same machine (different paths → different derived ports).

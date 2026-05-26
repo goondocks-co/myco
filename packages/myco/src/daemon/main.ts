@@ -582,7 +582,7 @@ export async function main(): Promise<void> {
     resolveBootstrapVaultDirOrPhantom();
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
-  const machineId = getMachineId(bootstrapVaultDir);
+  const machineId = getMachineId();
   const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
@@ -1468,7 +1468,7 @@ export async function main(): Promise<void> {
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
     resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
-    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(bootstrapVaultDir),
+    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction, fire

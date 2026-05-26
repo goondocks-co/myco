@@ -224,7 +224,7 @@ export function moveProjectBetweenGroves(
   const sourceDbPath = resolveGroveDbPath(sourceGroveId, mycoHome);
   const targetDbPath = resolveGroveDbPath(targetGroveId, mycoHome);
 
-  const machineId = getMachineId(vaultDir);
+  const machineId = getMachineId();
   const snapshotsRoot = resolveBackupsRoot(options.snapshotsRoot);
   const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
   fs.mkdirSync(snapshotDir, { recursive: true });

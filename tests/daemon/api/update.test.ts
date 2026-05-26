@@ -811,9 +811,17 @@ describe('handleUpdateStatus — restart_required', () => {
 
 describe('handleUpdateStatus — runLocalUpdate stamp gating', () => {
   let tmpVaultDir: string;
+  let tmpMycoHome: string;
+  let priorMycoHome: string | undefined;
 
   beforeEach(() => {
     tmpVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-stamp-'));
+    // Stamp now lives at `~/.myco/last-update-version` (per-machine,
+    // shared across all projects). Route MYCO_HOME at a tmp dir so the
+    // test owns the read/write path without touching the real ~/.myco.
+    tmpMycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-stamp-home-'));
+    priorMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = tmpMycoHome;
     vi.mocked(isUpdateExempt).mockReturnValue(false);
     vi.mocked(readCachedCheck).mockReturnValue(null);
     vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
@@ -829,10 +837,13 @@ describe('handleUpdateStatus — runLocalUpdate stamp gating', () => {
 
   afterEach(() => {
     fs.rmSync(tmpVaultDir, { recursive: true, force: true });
+    fs.rmSync(tmpMycoHome, { recursive: true, force: true });
+    if (priorMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = priorMycoHome;
   });
 
   function writeStamp(version: string): void {
-    fs.writeFileSync(path.join(tmpVaultDir, 'last-update-version'), version, 'utf-8');
+    fs.writeFileSync(path.join(tmpMycoHome, 'last-update-version'), version, 'utf-8');
   }
 
   // Regression: pre-fix this returned runLocalUpdate=false because the stamp

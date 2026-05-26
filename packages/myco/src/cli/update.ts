@@ -6,11 +6,10 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, updateConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { getPluginVersion } from '../version.js';
-import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
-import { resolveGroveDir } from '../grove/paths.js';
+import { resolveGroveDir, resolveLastUpdateVersionPath } from '../grove/paths.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
@@ -115,7 +114,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   ensureGroveActivation(vaultDir, resolvedProjectRoot);
   const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
 
-  const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
+  const stampPath = resolveLastUpdateVersionPath();
   const currentVersion = getPluginVersion();
 
   let updatedCount = 0;
@@ -175,7 +174,12 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
 
   // --- Write version stamp ---
   // Informational marker of the last-updated version; not a migration gate.
+  // Lives at `~/.myco/last-update-version` — per-machine bookkeeping, not
+  // per-project state. The parent dir always exists when the daemon's
+  // already running, but `myco update` can be a first-touch path, so we
+  // mkdirSync defensively before writing.
   try {
+    fs.mkdirSync(path.dirname(stampPath), { recursive: true });
     fs.writeFileSync(stampPath, currentVersion, 'utf-8');
   } catch {
     // Non-fatal — stamp write failure shouldn't break the update

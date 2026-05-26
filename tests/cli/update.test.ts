@@ -206,7 +206,7 @@ describe('myco update', () => {
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    const stampPath = path.join(vaultDir, 'last-update-version');
+    const stampPath = path.join(mycoHome, 'last-update-version');
     expect(fs.existsSync(stampPath)).toBe(true);
     const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
     expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
@@ -224,7 +224,7 @@ describe('myco update', () => {
     };
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
     fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(vaultDir, 'last-update-version'), '0.21.0', 'utf-8');
+    fs.writeFileSync(path.join(mycoHome, 'last-update-version'), '0.21.0', 'utf-8');
 
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
@@ -247,12 +247,12 @@ describe('myco update', () => {
     };
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
     fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(vaultDir, 'last-update-version'), '0.21.0', 'utf-8');
+    fs.writeFileSync(path.join(mycoHome, 'last-update-version'), '0.21.0', 'utf-8');
 
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    const stamp = fs.readFileSync(path.join(vaultDir, 'last-update-version'), 'utf-8').trim();
+    const stamp = fs.readFileSync(path.join(mycoHome, 'last-update-version'), 'utf-8').trim();
     expect(stamp).not.toBe('0.21.0');
     expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
   });
@@ -369,9 +369,9 @@ describe('myco update', () => {
       const { run } = await import('@myco/cli/update.js');
       await run(['--all-projects']);
 
-      // Each project gets its update stamp written.
-      expect(fs.existsSync(path.join(projectA, '.myco', 'last-update-version'))).toBe(true);
-      expect(fs.existsSync(path.join(projectB, '.myco', 'last-update-version'))).toBe(true);
+      // The update stamp is per-machine, not per-project — one file at
+      // ~/.myco/last-update-version covers every project on this host.
+      expect(fs.existsSync(path.join(mycoHome, 'last-update-version'))).toBe(true);
 
       groveSpy.mockRestore();
     });
@@ -403,8 +403,8 @@ describe('myco update', () => {
       const { run } = await import('@myco/cli/update.js');
       await expect(run(['--all-projects'])).rejects.toThrow(/process\.exit\(1\)/);
 
-      // Project A still got its stamp despite project B failing.
-      expect(fs.existsSync(path.join(projectA, '.myco', 'last-update-version'))).toBe(true);
+      // The machine-level stamp lands even when one project errors mid-pass.
+      expect(fs.existsSync(path.join(mycoHome, 'last-update-version'))).toBe(true);
 
       exitSpy.mockRestore();
     });

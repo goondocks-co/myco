@@ -303,7 +303,7 @@ export function activateProjectMigration(
   }
 
   const migrationId = input.migrationId ?? createMigrationId();
-  const targetMachineId = input.targetMachineId ?? getMachineId(projectVaultDir);
+  const targetMachineId = input.targetMachineId ?? getMachineId();
   const sourceSnapshot = openMigratedSourceSnapshot(sourceDbPath, targetMachineId);
   const targetDb = openDatabase(targetDbInfo.dbPath);
   let importResult: ImportProjectCoreResult | null = null;
