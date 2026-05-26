@@ -30,6 +30,59 @@ Comprehensive procedures for managing Myco's binary dispatch system, runtime env
 - Knowledge of Grove registration and project binding patterns
 - Understanding of machine-scoped opt-in model and global capture hooks
 
+## Procedure C: Safe Sandbox Environment for Global Smoke Runs
+
+### The non-negotiable rule
+
+When a smoke run may touch **global symbiont config** (`~/.claude/settings.json`, `~/.cursor/hooks.json`, etc.), never sandbox only `MYCO_HOME`. That was the historical escape hatch that wrote temp launchers like `/tmp/myco-*-smoke-*/home/launcher.cjs` into the developer's real global agent config.
+
+The four env vars must move together:
+
+- `MYCO_SANDBOX_ROOT`
+- `HOME`
+- `MYCO_HOME`
+- `MYCO_LAUNCH_AGENTS_DIR`
+
+### Preferred helper
+
+Use the committed helper instead of hand-rolling exports:
+
+```bash
+eval "$(scripts/dev/smoke-sandbox-env.sh subagent-smoke)"
+```
+
+This emits a fresh temp sandbox root and exports:
+
+- `MYCO_SANDBOX_ROOT=<tmp>`
+- `HOME=<tmp>/home`
+- `MYCO_HOME=<tmp>/home/.myco`
+- `MYCO_LAUNCH_AGENTS_DIR=<tmp>/launchagents`
+
+The helper exists because manual smoke runs on `global-symbiont-install` used temp homes such as `myco-subagent-smoke`, `myco-final-smoke`, and `myco-wave2-smoke`, but left `HOME` pointing at the real user home. Manifest `globalHooksTarget` expansion then escaped into real files under `~/.claude/`, `~/.cursor/`, `~/.codex/`, `~/.copilot/`, and `~/.codeium/windsurf/`.
+
+### Why `MYCO_SANDBOX_ROOT` matters
+
+`packages/myco/src/grove/paths.ts` now enforces a sandbox sentinel: when `MYCO_SANDBOX_ROOT` is set, `expandHome('~/...')` throws unless `HOME` resolves inside that sandbox. The helper codifies the safe shape so ad hoc smoke commands don't have to remember the contract.
+
+### Practical pattern
+
+```bash
+eval "$(scripts/dev/smoke-sandbox-env.sh qa-smoke)"
+MYCO_SERVICE_VARIANT=dev \
+  packages/myco-darwin-arm64/bin/myco doctor
+```
+
+If the smoke run also needs a temp repo or worktree fixture, create it UNDER `"$MYCO_SANDBOX_ROOT"` or another temp path — but keep `HOME`, `MYCO_HOME`, and `MYCO_LAUNCH_AGENTS_DIR` anchored to the helper's exported root.
+
+### Never do this
+
+```bash
+# WRONG — leaks globalHooksTarget writes into the real home
+MYCO_HOME=/tmp/myco-something packages/myco-darwin-arm64/bin/myco update
+```
+
+That shape is exactly what created the stale escaped global hook entries the one-shot scrub now repairs.
+
 ## Procedure D: Dogfood Routing via Dev-Build Self-Detection
 
 ### Development Binary Self-Detection Chain
