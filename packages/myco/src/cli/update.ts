@@ -173,6 +173,27 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     console.log('  \u2013 No detected agents on this machine');
   }
 
+  // --- Heal known escaped global config artifacts ---
+  // Historical smoke runs could write temp `/tmp/myco-*-smoke-*/home/launcher.cjs`
+  // commands into real global agent config files when HOME wasn't sandboxed.
+  // Installer ownership detection intentionally preserves non-canonical paths,
+  // so update runs the one-shot global scrub explicitly after symbiont install.
+  try {
+    const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
+    const globalConfigMigration = runGlobalConfigMigration();
+    const repaired = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
+    const failed = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
+    for (const outcome of repaired) {
+      console.log(`  ✓ Scrubbed ${outcome.entriesRemoved} stale global hook group${outcome.entriesRemoved === 1 ? '' : 's'}: ${outcome.filePath}`);
+      updatedCount++;
+    }
+    for (const outcome of failed) {
+      console.log(`  !! Failed to scrub stale global hook groups from ${outcome.filePath}: ${outcome.error}`);
+    }
+  } catch (err) {
+    console.log(`  !! Global config scrub failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // --- Per-project one-shot global-install migration ---
   //
   // Iterate every known project on this machine and run the one-shot

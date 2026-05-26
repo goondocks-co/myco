@@ -503,8 +503,8 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const home = process.env.HOME ?? '/';
   let isFirst = true;
-  const emit = (status: DoctorCheck['status'], detail: string): void => {
-    checks.push({ name: isFirst ? 'Edge cases' : '', status, detail, fixable: false });
+  const emit = (status: DoctorCheck['status'], detail: string, fixable = false): void => {
+    checks.push({ name: isFirst ? 'Edge cases' : '', status, detail, fixable });
     isFirst = false;
   };
 
@@ -543,7 +543,17 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
     }
   } catch { /* missing or malformed — checkAgents covers parse failure */ }
 
-  // 3. hybrid-TOML in codex
+  // 3. stale escaped smoke-launcher hooks in global agent config
+  try {
+    const { listEscapedSmokeLauncherTargets, scrubEscapedSmokeLaunchers } = await import('../grove/global-config-migration.js');
+    for (const target of listEscapedSmokeLauncherTargets(home)) {
+      const outcome = scrubEscapedSmokeLaunchers(target, { apply: false });
+      if (outcome.error || outcome.entriesRemoved === 0) continue;
+      emit('warn', `Stale escaped smoke-launcher hooks in ${target} (${outcome.entriesRemoved} group(s)). Run \`myco doctor --fix\` to scrub them.`, true);
+    }
+  } catch { /* best effort */ }
+
+  // 4. hybrid-TOML in codex
   const codexConfig = path.join(home, '.codex', 'config.toml');
   try {
     const raw = fs.readFileSync(codexConfig, 'utf-8').trim();
@@ -552,7 +562,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
     }
   } catch { /* absent — fine */ }
 
-  // 4. project-local stub orphans — walk registered project roots and
+  // 5. project-local stub orphans — walk registered project roots and
   // surface any whose `.agents/myco-run.cjs` exists without a sibling
   // `.myco/myco.yaml`. Bounded to projects the registry already tracks
   // so we don't scan the filesystem.
@@ -719,6 +729,29 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
   // so the audit log stays consistent — a project that succeeds this
   // pass has its prior error row removed, not preserved alongside the
   // new outcome.
+  const staleSmokeChecks = checks.filter(
+    (c) => c.fixable && c.detail.includes('Stale escaped smoke-launcher hooks'),
+  );
+  if (staleSmokeChecks.length > 0) {
+    try {
+      const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
+      const result = runGlobalConfigMigration();
+      const repaired = result.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
+      const failed = result.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
+      for (const outcome of repaired) {
+        actions.push(`Scrubbed ${outcome.entriesRemoved} stale smoke-launcher hook group(s) from ${outcome.filePath}`);
+      }
+      for (const outcome of failed) {
+        actions.push(`Failed to scrub stale smoke-launcher hooks from ${outcome.filePath}: ${outcome.error}`);
+      }
+      if (repaired.length === 0 && failed.length === 0) {
+        actions.push('No stale smoke-launcher hooks remained to scrub');
+      }
+    } catch (err) {
+      actions.push(`Smoke-launcher scrub failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const migrationChecks = checks.filter((c) => c.name === 'Migration' && c.fixable);
   if (migrationChecks.length > 0) {
     try {

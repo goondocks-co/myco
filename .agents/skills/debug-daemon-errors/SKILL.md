@@ -1,6 +1,6 @@
 ---
 name: myco:debug-daemon-errors
-description: >
+description: |
   Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically fixing daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design.
 managed_by: myco
 user-invocable: true
@@ -278,6 +278,65 @@ export async function reconcileExistingDaemon(existingRecord: DaemonRecord): Pro
 }
 ```
 
+### daemon.json Deletion Via Third-Contender Reconciliation: ownerPid Guard Fix
+
+**Problem:** During concurrent daemon startup, a third-contender scenario can occur where:
+1. Two daemons (A and B) start concurrently
+2. Daemon A finds daemon.json with pid X
+3. Daemon A signals pid X (kills it)
+4. Daemon B independently kills the same pid X
+5. Both A and B attempt to delete daemon.json, creating a race
+
+This causes spurious "no daemon found" errors during restart even when processes are coordinating cleanly.
+
+**Root cause:** `removeDaemonState()` doesn't verify that the process being killed actually owned daemon.json before deletion.
+
+**Fix pattern:** Verify ownerPid before deletion:
+
+```typescript
+// In packages/myco/src/daemon/service-state.ts
+export async function removeDaemonState(
+  currentDaemonRecord: DaemonRecord
+): Promise<{ deleted: boolean; reason?: string }> {
+  const daemonJsonPath = ServicePaths.getDaemonJsonPath();
+  
+  // Critical: Only delete if the PID we own matches what's in daemon.json
+  // This prevents third-contender race where daemon B deletes A's daemon.json
+  const existingRecord = await readDaemonJson();
+  
+  if (existingRecord && existingRecord.ownerPid !== currentDaemonRecord.ownerPid) {
+    // Another daemon owns this daemon.json, don't touch it
+    logger.warn(`daemon.json owned by different process (${existingRecord.ownerPid}), skipping deletion`);
+    return { deleted: false, reason: 'owned-by-different-process' };
+  }
+
+  try {
+    await fs.promises.unlink(daemonJsonPath);
+    logger.info(`Removed daemon.json at ${daemonJsonPath}`);
+    return { deleted: true };
+  } catch (err) {
+    if ((err as any).code === 'ENOENT') {
+      // Already deleted by another contender, that's fine
+      logger.info(`daemon.json already missing (deleted by concurrent process)`);
+      return { deleted: true, reason: 'already-deleted' };
+    }
+    throw err;
+  }
+}
+
+// Ensure ownerPid is set when creating daemon.json
+export async function createDaemonRecord(): Promise<DaemonRecord> {
+  return {
+    id: generateId(),
+    pid: process.pid,
+    ownerPid: process.pid,  // Critical: track which process owns this record
+    port: config.port,
+    createdAt: Date.now(),
+    healthyAt: Date.now()
+  };
+}
+```
+
 ### Daemon Restart Failure Mode 4 — MCP Bridge Indefinite Reconnect
 
 **Problem:** During daemon restart, if the MCP bridge connection fails to establish cleanly, it can enter an indefinite reconnect loop where the daemon appears to start successfully but the bridge never becomes functional.
@@ -479,100 +538,167 @@ export async function cleanupStaleActiveSessions() {
 
 ---
 
-## Step 9 — Self-Mutation Discipline: Intent + Reconciliation Patterns
+## Step 9 — Self-Mutation Discipline: DaemonStateAuthority + Intent + Reconciliation
 
 **When:** Daemon operations that modify Myco's own state, configuration, or process identity create inconsistencies.
 
-### Self-Mutation Discipline Principles
+### The DaemonStateAuthority Pattern: Structural Invariant Enforcement
 
-**Core Tenet:** No normal Myco operation may leave Myco's process, state, configuration, or data in an inconsistent or unrecoverable state — under any failure mode, including interruption, signal loss, network failure, or partial completion.
+**Core Pattern:** Rather than documenting a discipline-based rule ("don't touch daemon.json outside this module"), make the invariant **structural** through a single capability module that is the ONLY place in the codebase that mutates daemon.json.
 
-**Problem Class:** Myco performs self-mutating operations non-transactionally:
-- Restart deletes state then maybe-closes
-- Update rewrites config then maybe-validates
-- Configuration changes alter active state without coordination
+**Problem it solves:** The production codebase previously had discipline-based documentation ("never call fs.unlinkSync on daemon.json except in shutdown"), but discipline erodes over time. Contributors added mutation sites that weren't caught until runtime. The structural approach is immune to this class of bugs.
 
-### Intent + Reconciliation Pattern
-
-Implement two-phase operations where intent is declared first, then reconciled atomically:
+**Implementation:**
 
 ```typescript
-// Phase 1: Declare intent atomically
-export async function declareRestartIntent(targetState: DaemonState) {
-  const intentRecord = {
+// packages/myco/src/daemon/daemon-state-authority.ts
+// This module makes the invariant structural:
+//   1. It is the ONLY module that calls fs.unlinkSync (or variants) on daemon.json
+//   2. The CI test gate verifies no other module imports fs.unlinkSync/unlink on the daemon path
+//   3. Branded types (DaemonStateToken) prevent accidental daemon.json mutations elsewhere
+
+export type DaemonStateToken = Brand<'DaemonStateToken', {}>;
+
+/**
+ * Daemon state authority — the only place that can delete daemon.json.
+ * All other modules must import from this module if they need mutation capability.
+ */
+export class DaemonStateAuthority {
+  /**
+   * Only this method modifies daemon.json. Branded return type ensures
+   * other modules cannot accidently acquire the capability elsewhere.
+   */
+  static async acquireToken(): Promise<DaemonStateToken> {
+    return { __brand: 'DaemonStateToken' } as DaemonStateToken;
+  }
+
+  /**
+   * Atomic replace of daemon.json with ownerPid guard.
+   * Prevents third-contender race where daemon B deletes daemon A's record.
+   */
+  static async atomicReplace(
+    newRecord: DaemonRecord,
+    token: DaemonStateToken
+  ): Promise<void> {
+    // Verify token (compiler ensures it came from acquireToken)
+    if (!token || !token.__brand) {
+      throw new Error('Invalid DaemonStateToken: unauthorized daemon.json mutation');
+    }
+
+    const daemonJsonPath = ServicePaths.getDaemonJsonPath();
+    const tempPath = `${daemonJsonPath}.tmp.${Date.now()}`;
+
+    // Write to temp file first
+    const serialized = JSON.stringify(newRecord, null, 2);
+    await fs.promises.writeFile(tempPath, serialized, { mode: 0o600 });
+
+    // Atomic rename
+    await fs.promises.rename(tempPath, daemonJsonPath);
+  }
+
+  /**
+   * Remove daemon.json with ownerPid verification.
+   */
+  static async removeDaemonState(
+    currentPid: number,
+    token: DaemonStateToken
+  ): Promise<{ deleted: boolean; reason?: string }> {
+    if (!token || !token.__brand) {
+      throw new Error('Invalid DaemonStateToken: unauthorized daemon.json mutation');
+    }
+
+    const daemonJsonPath = ServicePaths.getDaemonJsonPath();
+    const existingRecord = await readDaemonJson();
+
+    if (existingRecord && existingRecord.ownerPid !== currentPid) {
+      logger.warn(`daemon.json owned by different process, skipping deletion`);
+      return { deleted: false, reason: 'owned-by-different-process' };
+    }
+
+    try {
+      await fs.promises.unlink(daemonJsonPath);
+      return { deleted: true };
+    } catch (err) {
+      if ((err as any).code === 'ENOENT') {
+        return { deleted: true, reason: 'already-deleted' };
+      }
+      throw err;
+    }
+  }
+}
+```
+
+### Usage Pattern: Intent + Reconciliation via Authority
+
+```typescript
+// In daemon startup/shutdown code
+export async function startDaemonWithIntentPattern() {
+  // Step 1: Acquire the structural token
+  const token = await DaemonStateAuthority.acquireToken();
+
+  // Step 2: Declare intent by creating daemon.json
+  const daemonRecord = {
     id: generateId(),
-    type: 'restart',
-    targetState,
-    declaredAt: new Date(),
-    status: 'declared'
+    pid: process.pid,
+    ownerPid: process.pid,  // ownerPid guard for third-contender protection
+    port: config.port,
+    createdAt: Date.now()
   };
-  
-  await db.insert(daemonIntents).values(intentRecord);
-  return intentRecord.id;
+
+  await DaemonStateAuthority.atomicReplace(daemonRecord, token);
+
+  // Step 3: Continue with daemon startup
+  // If any error occurs after this point, the next daemon startup
+  // will see daemon.json and attempt to reconcile
 }
 
-// Phase 2: Reconcile intent atomically
-export async function reconcileRestartIntent(intentId: string) {
-  const intent = await db.select()
-    .from(daemonIntents)
-    .where(eq(daemonIntents.id, intentId))
-    .get();
+export async function shutdownDaemonWithIntentPattern(token: DaemonStateToken) {
+  // Step 1: Clean internal state
+  await performCleanShutdown();
 
-  if (!intent || intent.status !== 'declared') {
-    throw new Error(`Invalid intent state: ${intent?.status}`);
+  // Step 2: Remove daemon.json (structural authority enforces only we can do this)
+  const result = await DaemonStateAuthority.removeDaemonState(process.pid, token);
+  
+  if (!result.deleted) {
+    logger.warn(`Could not remove daemon.json: ${result.reason}`);
   }
 
-  await performRestartOperation(intent.targetState);
-  
-  await db.update(daemonIntents)
-    .set({ 
-      status: 'reconciled',
-      reconciledAt: new Date()
-    })
-    .where(eq(daemonIntents.id, intentId));
+  process.exit(0);
 }
 ```
 
-### daemon.json Lifecycle Discipline
-
-**Problem:** Two shutdown bugs both produce "no daemon" false positives:
-1. **Race condition**: `daemon stop` deletes daemon.json then tries to stop process, but if stop fails, daemon.json is gone but process still running
-2. **Cleanup ownership inversion**: Daemon deletes its own daemon.json during shutdown, but external signals can interrupt this
-
-**Solution:** Apply intent + reconciliation to daemon.json lifecycle:
+### CI Test Gate: Verify Structural Invariant
 
 ```typescript
-// External supervisor manages daemon.json lifecycle
-export async function shutdownDaemonWithIntentPattern() {
-  // 1. Supervisor declares shutdown intent
-  const shutdownIntent = await declareShutdownIntent();
-  
-  // 2. Signal daemon to shutdown cleanly (daemon never touches daemon.json)
-  await signalDaemonProcess('SIGTERM');
-  
-  // 3. Wait for process to exit
-  const exited = await waitForProcessExit(daemonPid, { timeoutMs: 30000 });
-  
-  // 4. Supervisor cleans daemon.json only after process confirms exit
-  if (exited) {
-    await cleanupDaemonJson();
-    await markIntentReconciled(shutdownIntent.id);
-  } else {
-    await markIntentFailed(shutdownIntent.id, 'Daemon failed to exit cleanly');
-  }
-}
-
-// Daemon process never mutates daemon.json during its own lifecycle
-export function startDaemonWithCleanup() {
-  // Daemon runs but never modifies its own process record
-  process.on('SIGTERM', async () => {
-    await performCleanShutdown(); // Clean internal state only
-    process.exit(0); // Exit without touching daemon.json
+// In tests/invariant/daemon-state-authority.test.ts
+describe('DaemonStateAuthority Invariant', () => {
+  it('should be the ONLY module calling fs.unlinkSync on daemon.json paths', async () => {
+    const sourceFiles = await glob('src/**/*.ts', { ignore: 'src/daemon/daemon-state-authority.ts' });
+    
+    for (const file of sourceFiles) {
+      const content = await fs.promises.readFile(file, 'utf-8');
+      
+      // Scan for direct fs.unlinkSync/unlink calls on daemon paths
+      const forbiddenPatterns = [
+        /fs\.unlinkSync\s*\(\s*.*daemon\.json/,
+        /fs\.promises\.unlink\s*\(\s*.*daemon\.json/,
+      ];
+      
+      for (const pattern of forbiddenPatterns) {
+        expect(content).not.toMatch(pattern);
+      }
+    }
   });
-}
+});
 ```
 
-**Usage:** Apply self-mutation discipline to any operation where Myco modifies its own state. Always use intent + reconciliation patterns and avoid self-mutation by the target process.
+### Gotchas in Self-Mutation Discipline
+
+**Token escaping gotcha:** The branded type prevents accidental mutation, but a malicious module could still import DaemonStateAuthority. Use the CI test gate to catch this.
+
+**ownerPid race gotcha:** Even with the DaemonStateAuthority pattern, verify ownerPid before deleting to prevent third-contender races. The guard is the critical safeguard against concurrent startup scenarios.
+
+**Backup and recovery gotcha:** The self-mutation discipline pattern works best when combined with daemon restart resilience — always have recovery code ready in case daemon.json gets corrupted.
 
 ---
 
@@ -637,3 +763,4 @@ export async function resolveStartupResourceConflicts() {
 | MCP bridge indefinite reconnect loop | Mode 4 restart failure - bridge never establishes | Stop daemon, clean bridge state, restart with bridge health verification |
 | "Database is locked" during startup | FTS rebuild before port-claim allows orphan operations | Move port-claim check before expensive database operations |
 | Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |
+| daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority with ownerPid guard in removeDaemonState |

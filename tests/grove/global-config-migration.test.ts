@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { scrubGeminiTrustedHooks } from '@myco/grove/global-config-migration.js';
+import {
+  scrubEscapedSmokeLaunchers,
+  scrubGeminiTrustedHooks,
+} from '@myco/grove/global-config-migration.js';
 
 function withTmpFile<T>(fn: (filePath: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-global-config-mig-'));
@@ -108,6 +111,72 @@ describe('scrubGeminiTrustedHooks', () => {
       expect(out.error).toBe('invalid JSON');
       // File untouched.
       expect(fs.readFileSync(file, 'utf-8')).toBe('{ not valid json');
+    });
+  });
+});
+
+describe('scrubEscapedSmokeLaunchers', () => {
+  it('removes stale /tmp/myco-*-smoke launchers from nested Claude-style hook groups but preserves co-tenants', () => {
+    withTmpFile((file) => {
+      fs.writeFileSync(file, JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [
+            { matcher: '', hooks: [{ type: 'command', command: '"/Applications/GitKraken.app/Contents/MacOS/gk" ai hook run --host claude-code' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-final-smoke-AAAA/home/launcher.cjs hook user-prompt-submit --symbiont claude-code', timeout: 5 }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/chris/.myco/launcher.cjs hook user-prompt-submit --symbiont claude-code', timeout: 5 }] },
+          ],
+        },
+      }, null, 2), 'utf-8');
+
+      const out = scrubEscapedSmokeLaunchers(file);
+      expect(out.entriesRemoved).toBe(1);
+      expect(out.rewritten).toBe(true);
+
+      const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      expect(after.hooks.UserPromptSubmit).toHaveLength(2);
+      expect(after.hooks.UserPromptSubmit[0].hooks[0].command).toContain('GitKraken');
+      expect(after.hooks.UserPromptSubmit[1].hooks[0].command).toContain('/Users/chris/.myco/launcher.cjs');
+    });
+  });
+
+  it('removes stale /tmp/myco-*-smoke launchers from flat Cursor/Windsurf hook entries', () => {
+    withTmpFile((file) => {
+      fs.writeFileSync(file, JSON.stringify({
+        hooks: {
+          sessionStart: [
+            { command: 'node /tmp/myco-wave2-smoke-BBBB/home/launcher.cjs hook session-start --symbiont cursor' },
+            { command: 'node /Users/chris/.myco/launcher.cjs hook session-start --symbiont cursor' },
+            { command: 'echo user-hook' },
+          ],
+        },
+      }, null, 2), 'utf-8');
+
+      const out = scrubEscapedSmokeLaunchers(file);
+      expect(out.entriesRemoved).toBe(1);
+      expect(out.rewritten).toBe(true);
+
+      const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      expect(after.hooks.sessionStart).toHaveLength(2);
+      expect(after.hooks.sessionStart[0].command).toContain('/Users/chris/.myco/launcher.cjs');
+      expect(after.hooks.sessionStart[1].command).toBe('echo user-hook');
+    });
+  });
+
+  it('supports dry-run inspection via apply:false', () => {
+    withTmpFile((file) => {
+      const raw = JSON.stringify({
+        hooks: {
+          Stop: [
+            { matcher: '', hooks: [{ type: 'command', command: 'cd . && node /tmp/myco-cap-smoke-CCCC/home/launcher.cjs hook stop --symbiont claude-code' }] },
+          ],
+        },
+      }, null, 2);
+      fs.writeFileSync(file, raw, 'utf-8');
+
+      const out = scrubEscapedSmokeLaunchers(file, { apply: false });
+      expect(out.entriesRemoved).toBe(1);
+      expect(out.rewritten).toBe(false);
+      expect(fs.readFileSync(file, 'utf-8')).toBe(raw);
     });
   });
 });

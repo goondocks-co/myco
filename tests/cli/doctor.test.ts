@@ -35,12 +35,12 @@ describe('runChecks', () => {
 });
 
 describe('Edge-case detector (R4.7)', () => {
-  function withFakeHome<T>(fn: (home: string) => T): T {
+  async function withFakeHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-edge-'));
     const prev = process.env.HOME;
     process.env.HOME = home;
     try {
-      return fn(home);
+      return await fn(home);
     } finally {
       if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
       fs.rmSync(home, { recursive: true, force: true });
@@ -81,6 +81,24 @@ describe('Edge-case detector (R4.7)', () => {
       const rows = await checkSymbiontEdgeCases();
       const fails = rows.filter((c) => c.status === 'fail');
       expect(fails.some((c) => c.detail.includes('starts with JSON'))).toBe(true);
+    });
+  });
+
+  it('flags stale escaped smoke-launcher hooks as fixable', async () => {
+    await withFakeHome(async (home) => {
+      const claude = path.join(home, '.claude', 'settings.json');
+      fs.mkdirSync(path.dirname(claude), { recursive: true });
+      fs.writeFileSync(claude, JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-final-smoke-AAAA/home/launcher.cjs hook user-prompt-submit --symbiont claude-code' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/test/.myco/launcher.cjs hook user-prompt-submit --symbiont claude-code' }] },
+          ],
+        },
+      }), 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const warnings = rows.filter((c) => c.status === 'warn');
+      expect(warnings.some((c) => c.fixable && c.detail.includes('Stale escaped smoke-launcher hooks'))).toBe(true);
     });
   });
 
@@ -174,6 +192,49 @@ describe('checkMigrationStatus', () => {
       const detailsByRoot = new Map(rows.map((r) => [r.detail.match(/project (\/[^:]+):/)?.[1] ?? '', r.detail]));
       expect(detailsByRoot.get('/tmp/locked-proj')).toContain('EBUSY');
       expect(detailsByRoot.get('/tmp/denied-proj')).toContain('EACCES');
+    });
+  });
+});
+
+describe('doctor --fix stale smoke-launcher scrub', () => {
+  async function withFakeHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-fix-smoke-'));
+    const prev = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return await fn(home);
+    } finally {
+      if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it('scrubs stale escaped smoke-launcher hooks from global settings files', async () => {
+    await withFakeHome(async (home) => {
+      const claude = path.join(home, '.claude', 'settings.json');
+      fs.mkdirSync(path.dirname(claude), { recursive: true });
+      fs.writeFileSync(claude, JSON.stringify({
+        hooks: {
+          Stop: [
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-wave2-smoke-BBBB/home/launcher.cjs hook stop --symbiont claude-code' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/test/.myco/launcher.cjs hook stop --symbiont claude-code' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'echo user-tenant' }] },
+          ],
+        },
+      }), 'utf-8');
+
+      const actions = await fix('/tmp/unused', [{
+        name: 'Edge cases',
+        status: 'warn',
+        detail: `Stale escaped smoke-launcher hooks in ${claude} (1 group(s)). Run \`myco doctor --fix\` to scrub them.`,
+        fixable: true,
+      }]);
+
+      expect(actions.some((action) => action.includes('Scrubbed 1 stale smoke-launcher hook group'))).toBe(true);
+      const after = JSON.parse(fs.readFileSync(claude, 'utf-8'));
+      expect(after.hooks.Stop).toHaveLength(2);
+      expect(after.hooks.Stop[0].hooks[0].command).toContain('/Users/test/.myco/launcher.cjs');
+      expect(after.hooks.Stop[1].hooks[0].command).toBe('echo user-tenant');
     });
   });
 });

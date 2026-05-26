@@ -12,16 +12,25 @@ co-tenant-hook orphan accumulation bug (PR #355). They hardcode:
 Each script has a machine guard at the top that exits non-zero on any
 other machine. Do not run on a different host. Do not modify the paths
 to "make them generic" — the right tool for ongoing recovery is the
-installer's `_meta.owner` ownership scheme + sandbox sentinel, which
-together prevent the bug class structurally.
+canonical-launcher ownership detector + sandbox sentinel + global-config
+scrub path in `myco update` / `myco doctor --fix`, which together close
+the bug class structurally.
 
 Kept in-tree as evidence of the recovery, not as a runtime utility.
 
 The structural fixes that close the bug class:
 
-- `_meta.owner` marker stamped onto every Myco-written hook group
-  (`packages/myco/src/symbionts/install-helpers.ts`,
-  `packages/myco/src/symbionts/installer.ts`).
+- Canonical launcher-path ownership detection in
+  `packages/myco/src/symbionts/install-helpers.ts` — steady-state
+  reinstall/update removes only canonical Myco-owned hook entries and
+  preserves co-tenant hooks.
 - `MYCO_SANDBOX_ROOT` sentinel in `expandHome`
   (`packages/myco/src/grove/paths.ts`) — refuses to expand `~` when a
   sandbox is declared but `HOME` falls outside it.
+- Targeted escaped-smoke scrub in
+  `packages/myco/src/grove/global-config-migration.ts`, wired into
+  `myco update` and `myco doctor --fix`, for old `/tmp/myco-*-smoke`
+  launcher entries already written into real global agent config.
+- Safe smoke bootstrap helper `scripts/dev/smoke-sandbox-env.sh` so
+  future manual smoke runs export `MYCO_SANDBOX_ROOT`, `HOME`,
+  `MYCO_HOME`, and `MYCO_LAUNCH_AGENTS_DIR` together.
