@@ -42,10 +42,30 @@ export const MYCO_LAUNCHER_SUBSTRINGS = [
 /**
  * Whether `content` references one of Myco's launcher paths. Operates
  * on any string — a hook command line or an entire plugin source file.
- * Pure substring scan, no startsWith semantics.
+ *
+ * Intentionally STRICT — only matches the canonical install paths
+ * above plus the standalone `mcp-launcher.cjs` filename (unique to
+ * Myco's MCP entry point). A user can legitimately author a hook of
+ * their own that calls Myco's launcher from a non-canonical wrapper
+ * (e.g. `node /opt/me/launcher.cjs --symbiont claude-code && my-step`);
+ * see `installer.test.ts` "PRESERVES user-authored hooks that invoke
+ * Myco from a non-canonical launcher path". Treating any `launcher.cjs
+ * + --symbiont` pair as Myco-owned would claim and overwrite those
+ * user entries on every `myco update`.
+ *
+ * /code-review finding C12 flagged the fragility (a hypothetical
+ * historical Myco install at `/opt/myco/launcher.cjs` would NOT match
+ * and would orphan on reinstall). The trade-off is intentional:
+ * prefer leaving a stale entry behind (recoverable by deletion) over
+ * claiming a user's legitimate wrapper (data-loss-shaped). A future
+ * `manifests/<agent>.yaml: extraLauncherSubstrings` opt-in could give
+ * packagers an explicit way to widen the set without crossing into
+ * user-content territory.
  */
 export function containsMycoLauncherReference(content: string): boolean {
-  return MYCO_LAUNCHER_SUBSTRINGS.some((s) => content.includes(s));
+  if (MYCO_LAUNCHER_SUBSTRINGS.some((s) => content.includes(s))) return true;
+  if (content.includes('mcp-launcher.cjs')) return true;
+  return false;
 }
 
 /**
