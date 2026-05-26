@@ -105,17 +105,43 @@ capabilities:
   #   read_file       — direct file read; absolute path on filePath.
   #   run_in_terminal — shell invocation; extract the path argument
   #                     from `command` for known read-style commands.
+  # Two flavors share this symbiont:
+  #   - VS Code Copilot extension: `read_file` / `run_in_terminal` /
+  #     `replace_string_in_file` / `create_file` / `apply_patch`.
+  #   - Copilot CLI (`copilot` binary): per
+  #     https://docs.github.com/en/copilot/reference/hooks-reference
+  #     uses `view` for reads, `bash` / `powershell` for shell,
+  #     `edit` / `create` for writes, plus `grep` / `glob` / `task` /
+  #     `web_fetch` / `ask_user`.
+  # The list below is the UNION so canopy fires regardless of which
+  # surface produced the tool call. Both pathField names are valid
+  # (the daemon's `extractToolFilePath` checks the declared field).
   canopyReadTools:
+    # VS Code Copilot extension shape
     - tool: read_file
       pathField: filePath
     - tool: run_in_terminal
       pathField: command
       extract: shell-arg
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    # Copilot CLI shape
+    - tool: view
+      pathField: path
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: powershell
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl, Get-Content, gc]
+    - tool: grep
+      pathField: path
   # Broader superset for capture's activities.file_path stamping —
   # repeats every canopyReadTools entry and adds Copilot's write-side
   # file mutators so the FTS index stays accurate on edits too.
   pathBearingTools:
+    # VS Code Copilot extension shape
     - tool: read_file
       pathField: filePath
     - tool: run_in_terminal
@@ -128,3 +154,20 @@ capabilities:
       pathField: filePath
     - tool: apply_patch
       pathField: filePath
+    # Copilot CLI shape
+    - tool: view
+      pathField: path
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: powershell
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl, Get-Content, gc]
+    - tool: edit
+      pathField: path
+    - tool: create
+      pathField: path
+    - tool: grep
+      pathField: path
