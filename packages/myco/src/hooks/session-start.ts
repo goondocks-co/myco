@@ -122,12 +122,17 @@ export async function main() {
     }
 
     const cortex = contextResult.ok && contextResult.data?.text ? contextResult.data.text : '';
-    const combined = [cortex, spores].filter((s) => s.length > 0).join('\n\n');
-    if (combined) {
+    // Pass cortex and spores as SEPARATE injection blocks so symbionts
+    // that support per-block rendering (Antigravity → separate
+    // `injectSteps`) display them as distinct events. Plain-text
+    // symbionts get them joined via the fallback path in response.ts,
+    // so existing behavior there is preserved.
+    const steps = [cortex, spores].filter((s) => s.length > 0);
+    if (steps.length > 0) {
       if (contextResult.ok && contextResult.data?.source === 'cortex') {
         process.stderr.write('[myco] Injecting Myco Cortex instructions\n');
       }
-      writeHookResponse(symbiont, 'session-start', { additionalContext: combined });
+      writeHookResponse(symbiont, 'session-start', { additionalSteps: steps });
       return;
     }
 

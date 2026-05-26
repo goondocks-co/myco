@@ -4,6 +4,20 @@ import { symbiontHasCapability } from '../symbionts/capabilities.js';
 
 export interface HookResponse {
   additionalContext?: string;
+  /**
+   * Multiple distinct injection blocks, in display order. Used by
+   * symbionts whose hook response format supports rendering each as
+   * its own visible event (currently Antigravity, where they map to
+   * separate `injectSteps[]` entries — the agent and the user see
+   * them as separate cards instead of one concatenated block).
+   *
+   * Format-level fallback: agents whose response shape carries only
+   * a single block (plain-text) join the entries with a blank line.
+   * When both fields are populated, `additionalSteps` wins for
+   * formats that support it; `additionalContext` is the single-block
+   * legacy field other paths still consume.
+   */
+  additionalSteps?: string[];
   continue?: boolean;
   stopReason?: string;
   userMessage?: string;
@@ -28,9 +42,17 @@ export function writeHookResponse(
     case 'json':
       process.stdout.write(serializeJson(response, config.fieldNames ?? {}));
       return;
-    case 'plain-text':
-      if (response.additionalContext) process.stdout.write(response.additionalContext);
+    case 'plain-text': {
+      // Plain-text format carries only a single block. Prefer
+      // additionalSteps when present (joining with a blank line so
+      // boundaries stay visible); fall back to the single-string
+      // legacy field.
+      const text = response.additionalSteps && response.additionalSteps.length > 0
+        ? response.additionalSteps.filter((s) => s && s.length > 0).join('\n\n')
+        : response.additionalContext;
+      if (text) process.stdout.write(text);
       return;
+    }
     case 'antigravity-inject-steps':
       process.stdout.write(serializeAntigravityResponse(hookEvent, response));
       return;
@@ -52,9 +74,20 @@ function serializeAntigravityResponse(hookEvent: string, response: HookResponse)
     return JSON.stringify({ decision: 'allow' });
   }
   if (hookEvent === 'session-start' || hookEvent === 'user-prompt-submit') {
-    if (!response.additionalContext) return '{}';
+    // Prefer per-block additionalSteps so distinct payloads (e.g.
+    // Cortex instructions vs prompt-time spores) render as separate
+    // injectSteps in the Antigravity UI. Falls back to the legacy
+    // single-block additionalContext for callers that haven't
+    // adopted the new field.
+    const blocks =
+      response.additionalSteps && response.additionalSteps.length > 0
+        ? response.additionalSteps.filter((s) => s && s.length > 0)
+        : response.additionalContext
+          ? [response.additionalContext]
+          : [];
+    if (blocks.length === 0) return '{}';
     return JSON.stringify({
-      injectSteps: [{ userMessage: response.additionalContext }],
+      injectSteps: blocks.map((text) => ({ userMessage: text })),
     });
   }
   return '{}';
