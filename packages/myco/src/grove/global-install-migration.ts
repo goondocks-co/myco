@@ -265,6 +265,24 @@ export function migrateProjectToGlobalInstall(
   fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
   fs.writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + '\n', 'utf-8');
 
+  // Step 7 — reconcile project-level `.gitignore` for bundled skill dirs +
+  // configured plan dirs + wrangler cache. The walker that used to keep
+  // this in sync was retired; running it here covers the first-event /
+  // hot-path entry, while `runGlobalInstallMigrationPass` covers
+  // subsequent `myco update` cycles for already-migrated projects.
+  // /code-review finding C10.
+  if (manifests.length > 0) {
+    try {
+      const installer = new SymbiontInstaller(
+        manifests[0], projectRoot, packageRoot, false, undefined, null, 'project',
+      );
+      installer.reconcileProjectGitignore();
+    } catch {
+      // Best-effort. Failures don't roll back the sentinel — the user's
+      // capture is the priority; .gitignore noise is recoverable.
+    }
+  }
+
   return {
     alreadyDone: false,
     noLegacyArtifacts,
@@ -529,6 +547,23 @@ export function runGlobalInstallMigrationPass(
       }
       try {
         const result = migrateProjectToGlobalInstall(project.root, { manifests, packageRoot });
+        // Reconcile project-level `.gitignore` for skills + plan dirs on
+        // every pass (not just first migration). Idempotent — no-op when
+        // content matches. /code-review finding C10: the walker that
+        // used to keep this in sync was retired; without this call, new
+        // bundled skills + user plan_dirs config changes never propagate
+        // to the project's .gitignore.
+        if (manifests.length > 0) {
+          try {
+            const installer = new SymbiontInstaller(
+              manifests[0], project.root, packageRoot, false, undefined, null, 'project',
+            );
+            installer.reconcileProjectGitignore();
+          } catch {
+            // Best-effort. The next pass retries; the user's git status
+            // gets noisier in the meantime, which is recoverable.
+          }
+        }
         outcomes.push({
           groveId: grove.id,
           projectId: project.project_id,

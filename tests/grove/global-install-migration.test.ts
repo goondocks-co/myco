@@ -221,6 +221,42 @@ describe('migrateProjectToGlobalInstall', () => {
     expect(fs.existsSync(path.join(archiveDir, 'machine_id'))).toBe(false);
     expect(fs.existsSync(path.join(archiveDir, 'restart-reason.json'))).toBe(false);
   });
+
+  // Regression for code-review finding C10: the retired walker used to
+  // reconcile project .gitignore for skills + plan dirs on every tick.
+  // migrateProjectToGlobalInstall must do the same once-per-project so
+  // the first hook event on a legacy project produces a healthy
+  // .gitignore, without waiting for the next `myco update` cycle.
+  it('reconciles project .gitignore for skill + wrangler entries', () => {
+    // Seed an empty .gitignore so the reconcile writes its block.
+    fs.writeFileSync(path.join(projectRoot, '.gitignore'), '', 'utf-8');
+    // Seed a bundled-skill source so listSkillDirs has something to find.
+    const pkgRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mig-pkgroot-'));
+    fs.mkdirSync(path.join(pkgRoot, 'skills/sample-skill'), { recursive: true });
+    fs.writeFileSync(path.join(pkgRoot, 'skills/sample-skill/SKILL.md'), '# sample', 'utf-8');
+
+    // skillsTarget is required by updateGitignore's early-exit gate.
+    const manifestWithSkills = makeFakeManifest({
+      registration: {
+        hooksTarget: '.claude/settings.json',
+        hooksFormat: 'json',
+        mcpFormat: 'json',
+        mcpServersKey: 'mcpServers',
+        settingsFormat: 'json',
+        skillsTarget: '.agents/skills',
+      },
+    });
+
+    migrateProjectToGlobalInstall(projectRoot, {
+      manifests: [manifestWithSkills],
+      packageRoot: pkgRoot,
+    });
+
+    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
+    expect(gitignore).toContain('sample-skill');
+
+    fs.rmSync(pkgRoot, { recursive: true, force: true });
+  });
 });
 
 // Regression for code-review finding C2: daemon startup must propagate
