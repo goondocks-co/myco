@@ -323,22 +323,28 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg) return null;
     if (this.installScope === 'global') {
-      // Settings under global scope:
-      //   1. If the manifest declares an explicit `globalSettingsTarget`,
-      //      honor it — this is the right surface when settingsFormat
-      //      doesn't share shape with the hooks file (codex: TOML
-      //      settings + JSON hooks). The dedicated path keeps
-      //      installSettingsToml from corrupting a JSON hooks file with
-      //      a TOML section.
-      //   2. Plugin-file hooks: return null — settings template would
-      //      clobber the plugin source if it landed at the hooks path.
-      //   3. Otherwise: share the hooks file (Claude-Code-style merge).
-      const settingsTarget = reg.globalSettingsTarget !== undefined
-        ? reg.globalSettingsTarget
-        : (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE ? null : reg.globalHooksTarget);
+      // Settings under global scope must be EXPLICIT — no silent fallback.
+      //
+      // Historically, an undefined `globalSettingsTarget` fell back to
+      // `globalHooksTarget`, merging the settings template into the hooks
+      // file. That works for agents whose hooks file is a multi-key
+      // settings document (Claude Code, Copilot, Cursor) but silently
+      // breaks strict-schema agents like Windsurf — Cascade rejects the
+      // entire hooks file when an unknown root key appears, disabling
+      // every hook command. /code-review finding C9.
+      //
+      // The new rule: a manifest with a non-empty settings template must
+      // declare globalSettingsTarget explicitly:
+      //   - a string path → write settings there (may equal
+      //     globalHooksTarget when the agent's hooks file accepts the
+      //     extra keys; Claude Code's settings.json is the canonical case)
+      //   - explicit `null`            → skip settings install entirely
+      // Undefined returns null here — the global installer will skip
+      // settings without surprising the manifest author. Project-scope
+      // installs are unaffected (settingsTarget stays as-declared).
       const target = field === 'hooks' ? reg.globalHooksTarget
         : field === 'skills' ? reg.globalSkillsTarget
-        : settingsTarget;
+        : (reg.globalSettingsTarget ?? null);
       if (!target) return null;
       return expandHome(target);
     }

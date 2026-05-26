@@ -179,6 +179,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "globalSkillsTarget": "~/.claude/skills",
+      "globalSettingsTarget": "~/.claude/settings.json",
       "hooksFormat": "json",
       "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
@@ -512,6 +513,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "globalSkillsTarget": "~/.copilot/skills",
+      "globalSettingsTarget": "~/.copilot/hooks/myco-hooks.json",
       "hooksFormat": "json",
       "mcpTarget": ".vscode/mcp.json",
       "mcpFormat": "json",
@@ -757,6 +759,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "globalSkillsTarget": "~/.cursor/skills",
+      "globalSettingsTarget": "~/.cursor/hooks.json",
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
       "hookResponse": {

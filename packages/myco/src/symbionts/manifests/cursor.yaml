@@ -33,6 +33,11 @@ registration:
   skillsTarget: .cursor/skills
   globalSkillsTarget: ~/.cursor/skills
   settingsTarget: .cursor/settings.json
+  # Cursor's ~/.cursor/hooks.json accepts `chat.tools.terminal.autoApprove`
+  # alongside the hooks block — share-with-hooks is the intended global
+  # surface. Explicit declaration (vs. silent fallback) per /code-review
+  # finding C9.
+  globalSettingsTarget: ~/.cursor/hooks.json
 capabilities:
   sessionStartInjection: true
   preToolUseInjection: false
