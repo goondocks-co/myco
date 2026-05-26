@@ -392,9 +392,13 @@ async function postJson(
 //
 // Contract: the snippet assumes the containing file has already defined
 //   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
+//   - `resolveMycoHome(): string` — the user's Myco home (`~/.myco`)
+//   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
 //   - no other imports from the outer file
 // and exposes
 //   - `BATCH_KIND` constants + `BatchKind` type
+//   - `readProjectAndGroveIds(directory)` — regex-extracts identity from project.toml
+//   - `resolveBufferDir(directory)` — Grove-scoped buffer dir, null on miss
 //   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
 //   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
 //   - `postEventWithBuffer(dir, sessionId, event)` — live POST with buffer fallback
@@ -419,7 +423,49 @@ const BATCH_KIND = {
 type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
 /**
- * Append an event to `.myco/buffer/<session-id>.jsonl` for replay by the
+ * Read project + Grove identity from `<directory>/.myco/project.toml`.
+ *
+ * Returns `null` when the file is missing or the required fields can't be
+ * found. Plugins run with a zero-runtime-dep constraint (the file may load
+ * in a teammate's clone that has no Myco installed), so this uses regex
+ * extraction rather than a TOML parser dependency.
+ */
+function readProjectAndGroveIds(directory: string): { projectId: string; groveId: string } | null {
+  try {
+    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    const projectMatch = raw.match(/\[project\][\s\S]*?\bid\s*=\s*"([^"]+)"/);
+    const groveMatch = raw.match(/\[grove\][\s\S]*?\bid\s*=\s*"([^"]+)"/);
+    if (!projectMatch || !groveMatch) return null;
+    return { projectId: projectMatch[1]!, groveId: groveMatch[1]! };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve where to write a buffer file when the daemon is unreachable.
+ *
+ * Post-global-install (plan 38cff0752c919ffd §2), buffers live at
+ * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. The daemon's
+ * reconciler scans only Grove-scoped buffer dirs at startup, so writes
+ * to any other location would be orphaned.
+ *
+ * Returns the Grove-scoped path when project.toml carries the Grove +
+ * project identity. Returns `null` when project.toml is missing —
+ * brand-new projects the daemon has never seen have no resolvable
+ * identity, and matching the daemon-side tenet in `buffer-location.ts`
+ * we DROP the event rather than write to a non-canonical location. The
+ * daemon will provision project.toml on its first received event, so
+ * subsequent buffer fallbacks resolve correctly.
+ */
+function resolveBufferDir(directory: string): string | null {
+  const ids = readProjectAndGroveIds(directory);
+  if (!ids) return null;
+  return join(resolveMycoHome(), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+}
+
+/**
+ * Append an event to the Grove-scoped buffer dir for replay by the
  * daemon's startup reconciler. On-disk shape intentionally matches
  * `src/capture/buffer.ts`'s EventBuffer — the plugin can't import it because
  * of the zero-runtime-dep constraint, so the protocol is the contract.
@@ -430,7 +476,8 @@ function bufferEvent(
   event: Record<string, unknown>,
 ): void {
   try {
-    const bufferDir = join(directory, ".myco", "buffer");
+    const bufferDir = resolveBufferDir(directory);
+    if (!bufferDir) return;  // Brand-new project, daemon never seen — drop the event rather than write to a non-canonical path.
     mkdirSync(bufferDir, { recursive: true });
     const filePath = join(bufferDir, `${sessionId}.jsonl`);
     // Strip session_id from the entry — it's encoded in the filename
