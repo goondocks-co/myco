@@ -533,6 +533,60 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "rg",
             "perl"
           ]
+        },
+        {
+          "tool": "view",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "powershell",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl",
+            "Get-Content",
+            "gc"
+          ]
+        },
+        {
+          "tool": "grep",
+          "pathField": "path",
+          "pathKind": "file"
         }
       ],
       "pathBearingTools": [
@@ -575,6 +629,70 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         {
           "tool": "apply_patch",
           "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "view",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "powershell",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl",
+            "Get-Content",
+            "gc"
+          ]
+        },
+        {
+          "tool": "edit",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "create",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "grep",
+          "pathField": "path",
           "pathKind": "file"
         }
       ]

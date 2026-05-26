@@ -170,10 +170,18 @@ export interface SessionMutationDeps {
    *  short-circuited by the per-lifetime reconciliation cache. Mirrors
    *  the unregister path in session-lifecycle.ts. */
   reconciler: { clearSession(sessionId: string): void };
+  /** Cleared on DELETE so the next event for a deleted session's id
+   *  re-takes the auto-register-and-reconcile branch in
+   *  `event-dispatch.ts` (gated on `registry.getSession`). Without
+   *  this, a stale registry entry from the deleted session causes the
+   *  dispatcher to skip reconcile entirely, the defensive
+   *  `ensureSessionRowExists` materializes an empty row, and the
+   *  buffered prompts are orphaned forever. */
+  registry: { unregister(sessionId: string): void };
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, liveConfig, reconciler } = deps;
+  const { embeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -186,6 +194,14 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     // Clear the per-lifetime reconciliation cache so a re-registration
     // with the same session id replays its buffer cleanly.
     reconciler.clearSession(sessionId);
+
+    // Clear the in-memory registry entry. The event-dispatch fast path
+    // (`if (!registry.getSession(event.session_id))`) gates the whole
+    // auto-register-and-reconcile branch on registry membership; a
+    // stale entry leftover from the just-deleted session caused the
+    // next event to skip reconcile entirely and orphan its buffer.
+    // Mirror the unregister sequence in `session-lifecycle.ts`.
+    registry.unregister(sessionId);
 
     // Fire-and-forget cleanup: embeddings, vault files, attachments,
     // and the session's buffer journal.

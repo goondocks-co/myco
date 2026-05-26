@@ -1455,7 +1455,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
