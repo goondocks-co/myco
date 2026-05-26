@@ -14,7 +14,7 @@ import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-json
 import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
-import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
+import { updateSession } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
@@ -244,9 +244,9 @@ export function handleUserPrompt(
     createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
   } catch { /* lineage best-effort */ }
 
-  if (effectiveKind === BATCH_KIND.INITIAL) {
-    updateSession(sessionId, { prompt_count: promptNumber }, ALL_PROJECTS_SCOPE);
-  }
+  // `sessions.prompt_count` cache bump is folded into
+  // `insertBatchStateless` so it's atomic with the row write —
+  // see the function comment for the single-writer rationale.
 
   return { batchId: batch.id, promptNumber };
 }
@@ -300,9 +300,7 @@ export function syncTranscriptPromptBatches(
         const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
       } catch { /* lineage best-effort */ }
-      if (batch.prompt_number != null) {
-        updateSession(sessionId, { prompt_count: batch.prompt_number }, ALL_PROJECTS_SCOPE);
-      }
+      // Counter bump is atomic inside insertBatchStateless.
       createdBatchCount += 1;
     }
   });
@@ -369,8 +367,8 @@ export function handleToolUse(
     canopy_injection_tokens: injectionTokens,
   });
 
-  // Increment session-level tool_count atomically.
-  incrementSessionToolCount(sessionId);
+  // `sessions.tool_count` cache bump is folded into the activity
+  // insert itself — see `insertActivityWithBatch`.
 }
 
 /**

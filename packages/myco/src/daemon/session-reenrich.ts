@@ -78,10 +78,14 @@ export function reEnrichSessionFromTranscript(
     titleUpdated = true;
   }
 
-  if ((session.prompt_count ?? 0) === 0 && turns.length > 0) {
-    updateSession(sessionId, { prompt_count: turns.length }, ALL_PROJECTS_SCOPE);
-    promptCountUpdated = true;
-  }
+  // Cached `sessions.prompt_count` is now atomically maintained by
+  // `insertBatchStateless` — every batch insert bumps the column in
+  // the same transaction. Re-writing the cache here from
+  // `turns.length` would diverge it from the real batch row count
+  // (the cache would claim turns.length while the table still has
+  // whatever was actually inserted). Drop the override — the real
+  // fix when batches are missing is to insert them via the existing
+  // reconciler path, which will bump the cache for free.
 
   const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
   for (let i = 0; i < Math.min(batches.length, turns.length); i++) {

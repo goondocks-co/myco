@@ -121,14 +121,15 @@ Myco integrates with coding agents through **symbionts** — named for the mycor
 
 | Agent | Config surface |
 |-------|----------------|
-| [Claude Code](https://claude.ai/code) | `~/.claude/settings.json` (hooks, MCP, permissions); skills under `~/.claude/skills/` |
-| [Cursor](https://cursor.com) | `~/.cursor/mcp.json` (MCP); skills under `~/.cursor/skills/` |
-| [Codex](https://github.com/openai/codex) | `~/.codex/hooks.json` and `~/.codex/config.toml` (audit-tracked TOML preserves user-pre-existing keys) |
-| [Copilot](https://code.visualstudio.com/docs/copilot) | Multi-target MCP for Copilot CLI + IDE; hooks under `~/.github/hooks/` |
-| [Google Antigravity](https://antigravity.google) | `~/.gemini/config/plugins/myco/` (hooks, MCP, skills) |
-| [Windsurf](https://windsurf.com) | `~/.windsurf/hooks.json` |
-| [OpenCode](https://opencode.ai) | `~/.opencode/plugins/myco.ts` plugin; MCP via remote URL in `opencode.json` |
-| [Pi](https://github.com/badlogic/pi-mono) | `~/.pi/extensions/myco/index.ts` extension |
+| [Claude Code](https://claude.ai/code) | `~/.claude/settings.json` (hooks, MCP); skills under `~/.claude/skills/` |
+| [Cursor](https://cursor.com) | `~/.cursor/hooks.json` (hooks) and `~/.cursor/mcp.json` (MCP); skills under `~/.cursor/skills/` |
+| [Codex](https://github.com/openai/codex) | `~/.codex/hooks.json` (hooks) and `~/.codex/config.toml` (MCP); skills under `~/.codex/skills/` |
+| [Copilot](https://code.visualstudio.com/docs/copilot) | `~/.copilot/hooks/myco-hooks.json` (hooks) and multi-target MCP (CLI & VS Code); skills under `~/.copilot/skills/` |
+| [Google Antigravity](https://antigravity.google) | `~/.gemini/config/plugins/myco/` plugin (hooks, MCP); skills under `~/.gemini/antigravity/skills/` |
+| [Windsurf](https://windsurf.com) | `~/.codeium/windsurf/hooks.json` (hooks) and `~/.codeium/windsurf/mcp_config.json` (MCP); skills under `~/.codeium/windsurf/skills/` |
+| [OpenCode](https://opencode.ai) | `~/.config/opencode/plugins/myco.ts` (plugin) and `~/.config/opencode/opencode.json` (MCP); skills under `~/.config/opencode/skills/` |
+| [Pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/extensions/myco/index.ts` (extension); skills under `~/.pi/agent/skills/` |
+
 
 Skills are installed once to `.agents/skills/` (the emerging cross-agent standard) and symlinked to each agent's native skills directory. Adding a new agent requires only a YAML manifest and templates — no code changes for JSON-hook agents, and a small manifest extension for plugin-based agents like OpenCode and Pi.
 

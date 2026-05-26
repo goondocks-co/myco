@@ -234,36 +234,57 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
 export function insertBatch(data: BatchInsert): BatchRow {
   const db = getDatabase();
 
-  const info = db.prepare(
-    `INSERT INTO prompt_batches (
-       session_id, project_id, origin, prompt_number, user_prompt, response_summary,
-       classification, started_at, ended_at, status,
-       activity_count, processed, content_hash, created_at, machine_id
-     ) VALUES (
-       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
-       ?, ?, ?, ?,
-       ?, ?, ?, ?, ?
-     )`,
-  ).run(
-    data.session_id,
-    data.project_id ?? null,
-    data.session_id,
-    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
-    data.prompt_number ?? null,
-    data.user_prompt ?? null,
-    data.response_summary ?? null,
-    data.classification ?? null,
-    data.started_at ?? null,
-    data.ended_at ?? null,
-    data.status ?? DEFAULT_STATUS,
-    data.activity_count ?? DEFAULT_ACTIVITY_COUNT,
-    data.processed ?? DEFAULT_PROCESSED,
-    data.content_hash ?? null,
-    data.created_at,
-    data.machine_id ?? getTeamMachineId(),
-  );
+  const tx = db.transaction(() => {
+    const info = db.prepare(
+      `INSERT INTO prompt_batches (
+         session_id, project_id, origin, prompt_number, user_prompt, response_summary,
+         classification, started_at, ended_at, status,
+         activity_count, processed, content_hash, created_at, machine_id
+       ) VALUES (
+         ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
+         ?, ?, ?, ?,
+         ?, ?, ?, ?, ?
+       )`,
+    ).run(
+      data.session_id,
+      data.project_id ?? null,
+      data.session_id,
+      data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
+      data.prompt_number ?? null,
+      data.user_prompt ?? null,
+      data.response_summary ?? null,
+      data.classification ?? null,
+      data.started_at ?? null,
+      data.ended_at ?? null,
+      data.status ?? DEFAULT_STATUS,
+      data.activity_count ?? DEFAULT_ACTIVITY_COUNT,
+      data.processed ?? DEFAULT_PROCESSED,
+      data.content_hash ?? null,
+      data.created_at,
+      data.machine_id ?? getTeamMachineId(),
+    );
 
-  const batchId = Number(info.lastInsertRowid);
+    const batchId = Number(info.lastInsertRowid);
+
+    // Atomic counter bump — same rationale as `insertBatchStateless`.
+    // This function is the OTHER public writer for `prompt_batches`
+    // (used by the Grove importer and tests, where the caller
+    // supplies prompt_number explicitly), so it also owns the
+    // cached counter the column maintains. Using `MAX(prompt_number)`
+    // keeps the cache correct whether the caller inserts in order
+    // or fills gaps.
+    db.prepare(
+      `UPDATE sessions
+         SET prompt_count = (
+           SELECT MAX(prompt_number) FROM prompt_batches WHERE session_id = ?
+         )
+         WHERE id = ?`,
+    ).run(data.session_id, data.session_id);
+
+    return batchId;
+  });
+
+  const batchId = tx();
 
   const row = toBatchRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,
@@ -557,48 +578,82 @@ export interface StatelessBatchInsert {
 }
 
 /**
- * Insert a new prompt batch with prompt_number derived from an inline subquery.
+ * Insert a new prompt batch with prompt_number derived from an inline
+ * subquery AND atomically bump the owning session's cached
+ * `prompt_count` to match.
  *
- * The prompt_number is set to `COALESCE(MAX(prompt_number), 0) + 1` for the
- * session, so the caller never needs a separate SELECT. This makes the insert
- * stateless — no in-memory counter required.
+ * The cached counter on `sessions.prompt_count` exists because several
+ * MCP / CLI read paths and the Grove importer consult it directly. It
+ * USED to be hand-bumped by callers via a follow-up
+ * `updateSession({ prompt_count })`, which produced drift whenever a
+ * new code path inserted a batch and forgot the second step. The
+ * "single writer" tenet codified in AGENTS.md applies just as much
+ * inside the DB-query layer as it does for `ProjectVault` or the
+ * planned `CoTenantJsonWriter`: this function is the single writer
+ * for `prompt_batches`, so it ALSO owns the counter the column
+ * caches. No caller can insert without bumping; drift is structurally
+ * impossible.
+ *
+ * The insert and the counter UPDATE are wrapped in a single SQLite
+ * transaction so a crash between them can't leave a half-bumped
+ * state. The inline `MAX(prompt_number) + 1` semantics make
+ * concurrent inserts deterministic too — each insert reads its own
+ * MAX inside the transaction.
  *
  * FTS5 index is kept in sync automatically via database triggers.
  */
 export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
   const db = getDatabase();
 
-  const info = db.prepare(
-    `INSERT INTO prompt_batches (
-       session_id, project_id, parent_prompt_batch_id, kind, origin,
-       prompt_number, user_prompt, response_summary,
-       classification, started_at, ended_at, status,
-       activity_count, processed, content_hash, created_at, machine_id
-     ) VALUES (
-       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
-       (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
-       ?, NULL,
-       NULL, ?, NULL, ?,
-       ?, ?, NULL, ?, ?
-     )`,
-  ).run(
-    data.session_id,
-    data.project_id ?? null,
-    data.session_id,
-    data.parent_prompt_batch_id ?? null,
-    data.kind ?? 'initial',
-    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
-    data.session_id,
-    data.user_prompt ?? null,
-    data.started_at ?? null,
-    data.status ?? DEFAULT_STATUS,
-    DEFAULT_ACTIVITY_COUNT,
-    DEFAULT_PROCESSED,
-    data.created_at,
-    data.machine_id ?? getTeamMachineId(),
-  );
+  const tx = db.transaction(() => {
+    const info = db.prepare(
+      `INSERT INTO prompt_batches (
+         session_id, project_id, parent_prompt_batch_id, kind, origin,
+         prompt_number, user_prompt, response_summary,
+         classification, started_at, ended_at, status,
+         activity_count, processed, content_hash, created_at, machine_id
+       ) VALUES (
+         ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
+         (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
+         ?, NULL,
+         NULL, ?, NULL, ?,
+         ?, ?, NULL, ?, ?
+       )`,
+    ).run(
+      data.session_id,
+      data.project_id ?? null,
+      data.session_id,
+      data.parent_prompt_batch_id ?? null,
+      data.kind ?? 'initial',
+      data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
+      data.session_id,
+      data.user_prompt ?? null,
+      data.started_at ?? null,
+      data.status ?? DEFAULT_STATUS,
+      DEFAULT_ACTIVITY_COUNT,
+      DEFAULT_PROCESSED,
+      data.created_at,
+      data.machine_id ?? getTeamMachineId(),
+    );
 
-  const batchId = Number(info.lastInsertRowid);
+    const batchId = Number(info.lastInsertRowid);
+
+    // Atomic counter bump — folded INTO the single-writer for
+    // `prompt_batches`. Sets `sessions.prompt_count` to the
+    // freshly-derived `MAX(prompt_number)` for this session, which
+    // is always the truth at this point in the transaction.
+    db.prepare(
+      `UPDATE sessions
+         SET prompt_count = (
+           SELECT MAX(prompt_number) FROM prompt_batches WHERE session_id = ?
+         )
+         WHERE id = ?`,
+    ).run(data.session_id, data.session_id);
+
+    return batchId;
+  });
+
+  const batchId = tx();
 
   return toBatchRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,

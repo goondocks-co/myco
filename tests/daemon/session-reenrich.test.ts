@@ -59,7 +59,11 @@ describe('reEnrichSessionFromTranscript', () => {
     expect(result.promptsReplaced).toBe(1);
     expect(result.titleUpdated).toBe(true);
     expect(result.summarySet).toBe(true);
-    expect(result.promptCountUpdated).toBe(true);
+    // `prompt_count` is now atomically maintained at insert time via
+    // `insertBatch` / `insertBatchStateless`. The reenrich path no
+    // longer writes the cache, so this flag stays false even when
+    // the rest of the reenrichment succeeds.
+    expect(result.promptCountUpdated).toBe(false);
 
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches[0]!.user_prompt).toBe('hello');
