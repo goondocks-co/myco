@@ -25,6 +25,7 @@ import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import { propagateLegacyMachineId } from '../daemon/machine-id.js';
+import { propagateLegacySecrets } from '../config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
 
 /**
@@ -100,6 +101,8 @@ export interface MigrationOutcome {
   strippedSymbionts: string[];
   /** True when `propagateLegacyMachineId` actually wrote a global value. */
   machineIdPropagated: boolean;
+  /** Secret keys lifted from `<vault>/secrets.env` into `~/.myco/secrets.env`. */
+  secretsPropagated: string[];
   /** Correlation id stamped on the sentinel + audit log. */
   passId: string;
   /** Sentinel as written to disk (null when migration errored before the sentinel write). */
@@ -149,6 +152,7 @@ export function migrateProjectToGlobalInstall(
       archiveDir: null,
       strippedSymbionts: [],
       machineIdPropagated: false,
+      secretsPropagated: [],
       passId,
       sentinel: readMigrationSentinel(projectRoot),
     };
@@ -218,6 +222,13 @@ export function migrateProjectToGlobalInstall(
   // cache already exists OR when the project never had a machine_id.
   const machineIdPropagated = propagateLegacyMachineId(vaultDir);
 
+  // Step 4b — lift the project-scope `secrets.env` into `~/.myco/secrets.env`
+  // BEFORE step 5b purges it. Without this, user API keys stored at the
+  // project level (the documented fallback per `feedback_secrets_not_in_yaml.md`)
+  // would be deleted by the migration. Global-side keys win on conflict;
+  // any key absent globally is lifted from the project file.
+  const secretsPropagated = propagateLegacySecrets(vaultDir, resolveMycoHome());
+
   // Step 5 — cleanup empty co-tenant files and directories the strip
   // step may have hollowed out. We never delete a non-empty file; the
   // marker-bounded removal already preserved user content.
@@ -253,6 +264,7 @@ export function migrateProjectToGlobalInstall(
     archiveDir,
     strippedSymbionts,
     machineIdPropagated,
+    secretsPropagated,
     passId,
     sentinel,
   };
@@ -420,6 +432,8 @@ export interface ProjectMigrationOutcome {
   cleanedSymbionts: string[];
   /** True when a legacy project-scope machine_id was propagated to global. */
   machineIdPropagated: boolean;
+  /** Secret keys lifted from <vault>/secrets.env into ~/.myco/secrets.env. */
+  secretsPropagated: string[];
   /** Set when this project's migration threw. */
   error?: string;
 }
@@ -477,6 +491,7 @@ export function runGlobalInstallMigrationPass(
           archivedFiles: [],
           cleanedSymbionts: [],
           machineIdPropagated: false,
+          secretsPropagated: [],
         });
         continue;
       }
@@ -491,6 +506,7 @@ export function runGlobalInstallMigrationPass(
           archivedFiles: result.archivedFiles,
           cleanedSymbionts: result.strippedSymbionts,
           machineIdPropagated: result.machineIdPropagated,
+          secretsPropagated: result.secretsPropagated,
         });
       } catch (err) {
         outcomes.push({
@@ -502,6 +518,7 @@ export function runGlobalInstallMigrationPass(
           archivedFiles: [],
           cleanedSymbionts: [],
           machineIdPropagated: false,
+          secretsPropagated: [],
           error: err instanceof Error ? err.message : String(err),
         });
       }
