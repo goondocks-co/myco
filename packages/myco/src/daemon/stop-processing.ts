@@ -223,6 +223,17 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     user: z.string().optional(),
     transcript_path: z.string().nullish(),
     last_assistant_message: z.string().nullish(),
+    /**
+     * Which stop-phase processors to run for this event. The hook CLI
+     * passes the manifest-derived phases list per agent event. Symbionts
+     * whose hook fires once per turn (Claude Code, Codex, Copilot) send
+     * `['response', 'transcript']`. Multi-phase symbionts (Windsurf) send
+     * one phase per event. Absent / empty defaults to both phases to
+     * preserve the contract for any caller that hasn't been migrated
+     * (e.g., legacy hook installations from earlier versions still in
+     * the wild).
+     */
+    phases: z.array(z.enum(['response', 'transcript'])).optional(),
   });
 
   const triggerTitleSummary = (sessionId: string) =>
@@ -268,15 +279,26 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     requestProductionRef: string | null,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
+    phases: readonly ('response' | 'transcript')[] = ['response', 'transcript'],
   ): Promise<void> {
+    const runResponsePhase = phases.includes('response');
+    const runTranscriptPhase = phases.includes('transcript');
 
-    // --- Phase 1: Gather transcript data ---
+    // --- Phase 1: Gather transcript data (transcript phase only) ---
+    //
+    // Multi-phase symbionts (e.g. Windsurf) fire one event with the inline
+    // response (response phase, no transcript yet) and a later event with
+    // the transcript path. Skipping the mine on the response-only call
+    // avoids reading a file the agent hasn't finalized.
 
-    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, hookTranscriptPath);
-    let allTurns = transcriptResult.turns;
-    let turnSource = transcriptResult.source;
-
+    let allTurns: ReturnType<typeof transcriptMiner.getAllTurnsWithSource>['turns'] = [];
+    let turnSource = '';
     const bufferEvents = sessionBuffers.get(sessionId)?.readAll() ?? [];
+
+    if (runTranscriptPhase) {
+    const transcriptResult = transcriptMiner.getAllTurnsWithSource(sessionId, hookTranscriptPath);
+    allTurns = transcriptResult.turns;
+    turnSource = transcriptResult.source;
 
     if (allTurns.length === 0) {
       allTurns = extractTurnsFromBuffer(bufferEvents);
@@ -331,6 +353,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       turn_count: allTurns.length,
       image_count: imageCount,
     });
+    } // end runTranscriptPhase
 
     // --- Phase 2: Capture response + close session ---
 
@@ -410,9 +433,15 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // detects missing batches, the right response is to INSERT those
     // batches via reenrich, which bumps the cache as a side effect.
     const currentSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
-    const updateFields: Record<string, unknown> = {
-      transcript_path: hookTranscriptPath ?? null,
-    };
+    const updateFields: Record<string, unknown> = {};
+    // Only stamp transcript_path when this event actually carries one.
+    // Multi-phase symbionts (Windsurf) fire the response phase with no
+    // transcript_path; overwriting an already-set path with null on that
+    // event would clobber the value the transcript-phase event will
+    // provide (or has already provided) on the same session.
+    if (hookTranscriptPath) {
+      updateFields.transcript_path = hookTranscriptPath;
+    }
     if (user) updateFields.user = user;
     if (!hasTitle && sessionTitleCache.has(sessionId)) {
       updateFields.title = sessionTitleCache.get(sessionId);
@@ -615,7 +644,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       user,
       transcript_path: hookTranscriptPath,
       last_assistant_message: lastAssistantMessage,
+      phases: explicitPhases,
     } = StopBody.parse(req.body);
+    // Default phases: when the caller hasn't declared any, run both phases
+    // in sequence — preserves contract for single-phase symbionts and for
+    // any legacy hook install that predates the phases field.
+    const phases = explicitPhases && explicitPhases.length > 0
+      ? explicitPhases
+      : (['response', 'transcript'] as const);
     const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
     const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
@@ -735,6 +771,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       requestProductionRef,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
+      phases,
     ).catch((err) => {
       logger.error(LOG_KINDS.PROCESSOR_SESSION, 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });

@@ -15,7 +15,7 @@ import {
   type JsonSettingsAudit,
 } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, markGroupAsMyco } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
@@ -857,11 +857,12 @@ export class SymbiontInstaller {
         const nonMyco = (groups as Array<Record<string, unknown>>).filter((g) => !isMycoHookGroup(g));
         if (nonMyco.length > 0) mergedHooks[event] = nonMyco;
       }
-      // Stamp the identity marker so future reinstalls strip this
-      // block by ownership rather than launcher-path substring scan.
+      // Ownership identity rides on the embedded launcher path — see
+      // `isMycoHookGroup`. Reinstall strips by launcher-path match, so
+      // no parallel `_meta` marker is needed (and would break strict-
+      // schema agents like Windsurf).
       for (const [event, groups] of Object.entries(hooksTemplate)) {
-        const tagged = (groups as Array<Record<string, unknown>>).map((g) => markGroupAsMyco({ ...g }));
-        mergedHooks[event] = [...(mergedHooks[event] ?? []), ...tagged];
+        mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
       }
       data.hooks = mergedHooks;
       hooks = true;
@@ -1300,12 +1301,13 @@ export class SymbiontInstaller {
       }
     }
 
-    // Add template hooks, stamping each Myco-owned group with the
-    // identity marker so future reinstalls can strip it by ownership
-    // (not by substring scan of the launcher path).
+    // Add template hooks. Ownership identity rides on the embedded
+    // launcher path (see `isMycoHookGroup`), so the strip step on
+    // reinstall finds these by command-substring. No `_meta` marker is
+    // injected — that broke strict-schema agents (Windsurf) that
+    // silently reject hook entries with unknown fields.
     for (const [event, groups] of Object.entries(template)) {
-      const tagged = (groups as Array<Record<string, unknown>>).map((g) => markGroupAsMyco({ ...g }));
-      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...tagged];
+      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
     }
 
     settings.hooks = mergedHooks;

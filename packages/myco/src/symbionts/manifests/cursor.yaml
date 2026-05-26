@@ -34,27 +34,5 @@ registration:
   globalSkillsTarget: ~/.cursor/skills
   settingsTarget: .cursor/settings.json
 capabilities:
-  # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
-  # Canopy is intentionally NOT enabled for Cursor.
-  #
-  # Cursor's pre-execution hooks (preToolUse, beforeReadFile,
-  # beforeShellExecution, beforeMCPExecution) accept only
-  # permission decisions (allow/deny/ask) plus input modification —
-  # NONE can return additional context that gets injected into the
-  # agent's conversation. Per Cursor's official docs:
-  # "the three pre-execution hooks ... can observe, block, or modify
-  # behavior but cannot inject additional conversational context."
-  #
-  # The Canopy mechanism is value-prop'd on PRE-tool injection: the
-  # model sees Myco's file context BEFORE deciding how to use a Read
-  # result, so the next decision benefits from prior wisdom. Cursor's
-  # only available post-tool injection point (`postToolUse`) ships
-  # the Canopy text AFTER the file content arrives, which adds
-  # little value (the decision already happened) at the cost of
-  # context bloat. Same architectural call was made for Antigravity.
-  #
-  # If Cursor adds a true pre-tool context-injection hook in a
-  # future release, flip this to `true` and add the matching
-  # `canopyReadTools` declaration.
   preToolUseInjection: false

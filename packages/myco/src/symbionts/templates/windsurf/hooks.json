@@ -16,12 +16,12 @@
   ],
   "post_cascade_response": [
     {
-      "command": "{{mycoLauncher}} hook stop --symbiont windsurf"
+      "command": "{{mycoLauncher}} hook stop --symbiont windsurf --phases response"
     }
   ],
   "post_cascade_response_with_transcript": [
     {
-      "command": "{{mycoLauncher}} hook stop --symbiont windsurf"
+      "command": "{{mycoLauncher}} hook stop --symbiont windsurf --phases transcript"
     }
   ]
 }

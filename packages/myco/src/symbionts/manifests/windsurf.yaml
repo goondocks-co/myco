@@ -35,3 +35,17 @@ capabilities:
   # session-start hook. Cortex falls back to inline delivery via
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
   sessionStartInjection: false
+hooks:
+  # Windsurf splits turn-end across two events. `post_cascade_response`
+  # fires immediately with `tool_info.response` (inline text). The
+  # daemon runs the response phase: close open batches, set
+  # response_summary on the latest batch. `post_cascade_response_with_transcript`
+  # fires later, after Cascade finalizes the transcript file. The daemon
+  # runs the transcript phase: mine the transcript, populate batch
+  # responses, extract plan tags, capture images, materialize aggregates.
+  # Both events route through the same `stop` subcommand; the daemon
+  # dispatches by phase, not by subcommand.
+  post_cascade_response:
+    phases: [response]
+  post_cascade_response_with_transcript:
+    phases: [transcript]

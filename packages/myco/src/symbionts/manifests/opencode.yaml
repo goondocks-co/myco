@@ -31,6 +31,7 @@ registration:
   # No instructionsFile — opencode reads AGENTS.md natively
 capabilities:
   sessionStartInjection: true
+  preToolUseInjection: false
   # Tools whose tool_input carries a file path. opencode uses camelCase
   # `filePath` (vs Claude's snake_case `file_path`). Drives capture-side
   # population of `activities.file_path` for the FTS index and the

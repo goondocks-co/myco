@@ -171,3 +171,10 @@ capabilities:
       pathField: path
     - tool: grep
       pathField: path
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

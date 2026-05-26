@@ -345,6 +345,43 @@ const CapabilitiesSchema = z.object({
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
 export type SymbiontCanopyReadTool = z.infer<typeof CanopyReadToolSchema>;
 
+/**
+ * Phases a stop-style hook event can carry data for. Manifests declare
+ * which phases each agent event covers so the daemon's stop dispatcher
+ * runs only the work that has data to act on.
+ *
+ *   response   — inline assistant response text + per-turn close-out
+ *                (set response_summary on the latest batch, close open
+ *                batches, set title from first prompt if missing)
+ *   transcript — transcript file finalized; mine it for turns, reconcile
+ *                batch kinds, populate batch responses, extract plan
+ *                tags, capture images, materialize canopy aggregates
+ *
+ * Single-phase symbionts (Claude Code, Codex, Copilot) declare both
+ * phases on their `Stop` event — the daemon runs both in sequence in
+ * one invocation, matching pre-refactor behavior. Multi-phase symbionts
+ * (Windsurf) declare one phase per event; each event fires its own
+ * stop hook and the dispatcher runs only that phase's work, leaving
+ * the other phase's processing to its own event.
+ */
+const StopPhaseSchema = z.enum(['response', 'transcript']);
+
+const HookEventDeclarationSchema = z.object({
+  /**
+   * Lifecycle phases this event carries data for. The daemon's stop
+   * dispatcher reads this list to decide which phase processors to
+   * invoke for a given (symbiont, event_name) pair. Empty list means
+   * the event is observed but contributes to no stop phase.
+   */
+  phases: z.array(StopPhaseSchema).default([]),
+});
+
+const HooksManifestSchema = z.record(z.string(), HookEventDeclarationSchema).default({});
+
+export type StopPhase = z.infer<typeof StopPhaseSchema>;
+export type HookEventDeclaration = z.infer<typeof HookEventDeclarationSchema>;
+export type HooksManifest = z.infer<typeof HooksManifestSchema>;
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -387,6 +424,20 @@ export const SymbiontManifestSchema = z.object({
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
   capabilities: CapabilitiesSchema.optional(),
+  /**
+   * Per-agent-event lifecycle declarations. Keyed by the agent's hook
+   * event name (e.g., `Stop`, `post_cascade_response`,
+   * `post_cascade_response_with_transcript`). The daemon's stop
+   * dispatcher reads `hooks[event_name].phases` to decide which
+   * phase processors to invoke. See `HookEventDeclarationSchema`.
+   *
+   * Symbionts without a hooks block (or with an empty one) keep the
+   * pre-refactor behavior: every stop event runs both phases in
+   * sequence. That guarantees Cursor / Pi / Opencode / Antigravity
+   * don't need migration when this block is added for the agents
+   * that need phase-aware dispatch.
+   */
+  hooks: HooksManifestSchema.optional(),
 }).refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];

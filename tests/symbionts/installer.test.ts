@@ -466,22 +466,35 @@ describe('installHooks', () => {
     expect(result).toBe(false);
   });
 
-  it('stamps every Myco-written group with the _meta.owner identity marker', () => {
+  it('writes Myco-owned hook groups WITHOUT a _meta marker (ownership rides on launcher path)', () => {
+    // Earlier installs stamped `_meta.owner: myco` on every group as a
+    // redundant identity signal alongside the launcher path. That field
+    // broke strict-schema agents (Windsurf silently rejects entries
+    // with unknown fields), so it's retired. Ownership is now identified
+    // by the canonical launcher path embedded in the command — the only
+    // signal that ever needed to exist.
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
     const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
     const hooks = settings.hooks as Record<string, Array<Record<string, unknown>>>;
     for (const groups of Object.values(hooks)) {
       for (const group of groups) {
-        const meta = group._meta as Record<string, unknown> | undefined;
-        expect(meta?.owner).toBe('myco');
+        expect(group._meta).toBeUndefined();
+        // The command MUST carry a canonical Myco launcher reference so
+        // future reinstalls can find this entry by launcher-path scan.
+        const commands: string[] = Array.isArray(group.hooks)
+          ? (group.hooks as Array<{ command?: string }>).map((h) => h.command ?? '')
+          : [typeof group.command === 'string' ? group.command : ''];
+        expect(commands.some((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs'))).toBe(true);
       }
     }
   });
 
-  it('strips a previous Myco install (canonical-path legacy) and replaces with marker-tagged group', () => {
-    // Previous install used the legacy launcher path convention — no
-    // marker yet, but the substring scan recognizes it.
+  it('strips a previous Myco install (canonical-path) and replaces with a clean group', () => {
+    // Previous install used the canonical launcher path convention.
+    // The launcher-path substring scan is the authoritative ownership
+    // signal — Myco's entries get replaced, third-party tenant entries
+    // are preserved untouched.
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
     writeJson(settingsPath, {
       hooks: {
@@ -495,14 +508,17 @@ describe('installHooks', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
     const settings = readJson(settingsPath);
-    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }>; command?: string; _meta?: { owner: string } }>>).SessionStart;
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }>; command?: string }>>).SessionStart;
     expect(groups).toHaveLength(2);
     const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Third-party tenant entry survives.
     expect(commands.some((c) => c.includes('GitKrakenCLI'))).toBe(true);
+    // Myco's canonical entry is rewritten in place.
     expect(commands.some((c) => c.includes('myco-run.cjs hook session-start --symbiont claude-code'))).toBe(true);
-    // The new canonical Myco group carries the marker.
-    const mycoGroup = groups.find((g) => g._meta?.owner === 'myco');
-    expect(mycoGroup).toBeDefined();
+    // No `_meta` field anywhere on the installed groups.
+    for (const group of groups) {
+      expect((group as Record<string, unknown>)._meta).toBeUndefined();
+    }
   });
 
   it('PRESERVES user-authored hooks that invoke Myco from a non-canonical launcher path', () => {

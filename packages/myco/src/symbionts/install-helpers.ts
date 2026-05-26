@@ -10,54 +10,6 @@ Rules haven't been defined yet. Use the /myco-rules skill to add durable project
 `;
 
 /**
- * Marker stamped onto every Myco-written hook group. Identity is
- * recorded by the writer, not inferred from the command string — that's
- * what makes reinstall atomic and idempotent for co-tenant JSON files
- * (Claude, Cursor, Codex, Copilot, Windsurf) where we share the file
- * with third-party tenants. The marker survives launcher path changes,
- * sandbox relocations, and reinstalls.
- *
- * Stored under the `_meta` namespace rather than a top-level key so
- * future tenants that enforce strict schema validation on hook groups
- * can opt to ignore `_meta` (the conventional metadata sidecar pattern)
- * instead of rejecting the whole file. Shape:
- *   { ...group, _meta: { owner: 'myco' } }
- */
-export const MYCO_META_KEY = '_meta';
-export const MYCO_OWNER_FIELD = 'owner';
-export const MYCO_OWNER_VALUE = 'myco';
-
-interface MycoMeta {
-  [MYCO_OWNER_FIELD]?: string;
-  [k: string]: unknown;
-}
-
-/**
- * Tag a hook group as Myco-owned. Mutates in place and returns the
- * same reference so callers can chain. Idempotent — re-marking a
- * group preserves any other `_meta` fields a future writer might
- * have added.
- */
-export function markGroupAsMyco<T extends Record<string, unknown>>(group: T): T {
-  const existing = (group as { _meta?: MycoMeta })[MYCO_META_KEY];
-  const meta: MycoMeta = existing && typeof existing === 'object' ? existing : {};
-  meta[MYCO_OWNER_FIELD] = MYCO_OWNER_VALUE;
-  (group as Record<string, unknown>)[MYCO_META_KEY] = meta;
-  return group;
-}
-
-/**
- * Check the marker presence directly. Used by the strip step in
- * `installer.ts` — every group with this marker is Myco-owned and
- * must be removed before the new template is appended.
- */
-export function hasMycoOwnerMarker(group: Record<string, unknown>): boolean {
-  const meta = group[MYCO_META_KEY];
-  if (!meta || typeof meta !== 'object') return false;
-  return (meta as MycoMeta)[MYCO_OWNER_FIELD] === MYCO_OWNER_VALUE;
-}
-
-/**
  * Substring patterns identifying a Myco launcher reference in any
  * string. Single source of truth for "does this carry a reference to
  * one of Myco's launcher entry points?" — used by both the hook-
@@ -72,8 +24,16 @@ export function hasMycoOwnerMarker(group: Record<string, unknown>): boolean {
  *      Substring match catches both the absolute-path form Myco writes at
  *      install time (`node "/Users/.../.myco/launcher.cjs"`) and any future
  *      shell-expanded variants (`node "$HOME/.myco/launcher.cjs"`).
+ *
+ * Ownership identity: any hook command containing one of these substrings
+ * is Myco-owned. The launcher paths are unique to Myco — no third-party
+ * tenant has reason to invoke them — so the substring scan is the
+ * authoritative ownership signal. Earlier versions added a parallel
+ * `_meta.owner` marker on hook groups, but that broke strict-schema
+ * agents like Windsurf which silently reject hooks.json entries with
+ * unknown fields. The marker is gone; the launcher path stands alone.
  */
-const MYCO_LAUNCHER_SUBSTRINGS = [
+export const MYCO_LAUNCHER_SUBSTRINGS = [
   '.agents/myco-run.cjs',
   '.agents/myco-hook.cjs',
   '.myco/launcher.cjs',
@@ -91,25 +51,17 @@ export function containsMycoLauncherReference(content: string): boolean {
 /**
  * Check if a hook command string belongs to Myco.
  *
- * Matches in priority order:
- *   1. A canonical launcher-substring reference (project-local guard,
- *      legacy guard, or user-global launcher) — the strict identity
- *      signal for groups written before the `_mycoOwner` marker existed.
+ * Matches:
+ *   1. Any canonical launcher-substring reference (project-local guard,
+ *      legacy guard, or user-global launcher).
  *   2. The bare `myco-run` prefix used by the published MCP entry
  *      point and the old shell shim.
  *
- * The `_mycoOwner` marker (see `hasMycoOwnerMarker`) takes precedence
- * over this substring scan for groups Myco wrote after the marker
- * landed. Anything not matching either signal is treated as a
- * non-Myco co-tenant entry and preserved on reinstall — critical
- * because the user is allowed to write their own hooks that legitimately
- * invoke Myco's launcher from a wrapper script, and the substring scan
- * cannot distinguish "Myco wrote this" from "user wrote a hook that
- * happens to call our launcher."
- *
- * The smoke-test escape that produced sandboxed `/tmp/.../launcher.cjs`
- * orphans is closed structurally by the marker + `MYCO_SANDBOX_ROOT`
- * sentinel — no widened substring fallback needed.
+ * The launcher paths are exclusive to Myco — third-party tenants have
+ * no reason to call them — so a substring match is the authoritative
+ * ownership signal. Earlier installs stamped a parallel `_meta.owner`
+ * marker but that broke strict-schema agents; the marker is retired
+ * and ownership is identified by the command alone.
  */
 export function isMycoHookCommand(command: string): boolean {
   if (containsMycoLauncherReference(command)) return true;
@@ -118,23 +70,21 @@ export function isMycoHookCommand(command: string): boolean {
 }
 
 /**
- * Check if a hook group is Myco-owned.
+ * Check if a hook group is Myco-owned. Detects both shapes Myco-managed
+ * agent configs use:
  *
- * Ownership is established by either:
- *   1. The explicit `_mycoOwner` marker (every group Myco writes after
- *      this lands carries it), OR
- *   2. Legacy fallback — the launcher-substring scan on the embedded
- *      command. Pre-marker installs are still recognized so reinstall
- *      cleans them up. Once an install is rewritten with markers, this
- *      branch stops mattering for that file.
+ *   Nested (Claude Code, Codex, Copilot):
+ *     { hooks: [{ command: "node /Users/.../launcher.cjs ..." }] }
  *
- * Handles both nested format (Claude Code, Codex, Copilot) and flat
- * format (Cursor, Windsurf):
- *   Nested: { hooks: [{ command: "node /Users/.../launcher.cjs ..." }], _mycoOwner?: "myco" }
- *   Flat:   { command: "node /Users/.../launcher.cjs ...", _mycoOwner?: "myco" }
+ *   Flat (Cursor, Windsurf):
+ *     { command: "node /Users/.../launcher.cjs ..." }
+ *
+ * The launcher path embedded in the command string is the ownership
+ * signal. Any hook entry whose command references one of the canonical
+ * launcher paths is Myco-owned; any entry whose command does not is a
+ * third-party co-tenant entry and must be preserved on reinstall.
  */
 export function isMycoHookGroup(group: Record<string, unknown>): boolean {
-  if (hasMycoOwnerMarker(group)) return true;
   // Nested format: { hooks: [{ command: "..." }] }
   if (Array.isArray(group.hooks) && group.hooks.some((h: { command?: string }) => h.command && isMycoHookCommand(h.command))) return true;
   // Flat format: { command: "..." }

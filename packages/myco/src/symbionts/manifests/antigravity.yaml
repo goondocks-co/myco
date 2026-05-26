@@ -107,12 +107,5 @@ registration:
   # No standalone settings file — Antigravity wires settings through the
   # plugin bundle's plugin.json.
 capabilities:
-  # Antigravity supports session-start context injection via PreInvocation
-  # with injectSteps + ephemeralMessage. The hook template wires this on
-  # the first PreInvocation per conversationId.
   sessionStartInjection: true
-  # Antigravity's PreToolUse output is permission-oriented (decision,
-  # reason, permissionOverrides) — NOT Claude-style additionalContext.
-  # Canopy injection routes through PostInvocation instead. Capability
-  # flag stays false to reflect the actual hook contract.
   preToolUseInjection: false

@@ -58,7 +58,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "canopyReadTools": [],
       "pathBearingTools": []
-    }
+    },
+    "hooks": {}
   },
   {
     "name": "claude-code",
@@ -219,6 +220,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "pathKind": "file"
         }
       ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
     }
   },
   {
@@ -458,6 +467,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           ]
         }
       ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
     }
   },
   {
@@ -696,6 +713,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "pathKind": "file"
         }
       ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
     }
   },
   {
@@ -757,7 +782,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "canopyReadTools": [],
       "pathBearingTools": []
-    }
+    },
+    "hooks": {}
   },
   {
     "name": "opencode",
@@ -822,7 +848,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "pathKind": "file"
         }
       ]
-    }
+    },
+    "hooks": {}
   },
   {
     "name": "pi",
@@ -864,7 +891,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "canopyReadTools": [],
       "pathBearingTools": []
-    }
+    },
+    "hooks": {}
   },
   {
     "name": "windsurf",
@@ -910,6 +938,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
+    },
+    "hooks": {
+      "post_cascade_response": {
+        "phases": [
+          "response"
+        ]
+      },
+      "post_cascade_response_with_transcript": {
+        "phases": [
+          "transcript"
+        ]
+      }
     }
   }
 ] as const;
