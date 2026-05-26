@@ -113,6 +113,43 @@ export function ensureOpenBatch(sessionId: string): void {
   });
 }
 
+/**
+ * Try to claim the slot for an incoming INITIAL user prompt without
+ * inserting a new row. Returns the existing batch when a sentinel
+ * placeholder is sitting alone (created earlier by
+ * `recordInjectionActivity` for the SessionStart cortex / spores
+ * injection on single-shot symbionts), AFTER replacing its
+ * `user_prompt` with the real text. Returns `null` when no
+ * replaceable slot exists — caller falls back to the normal
+ * insert path.
+ *
+ * Centralises the sentinel-detect-and-replace logic so
+ * `handleUserPrompt` reads as a single "decide where this batch
+ * goes" call rather than an inline if/else. Same primitive used by
+ * the Antigravity transcript self-heal in `handleToolUse` and by
+ * `session-reenrich.ts` at Stop — three call sites of one pattern.
+ *
+ * The lineage row attaches to the replaced batch's id so consumers
+ * downstream see the same shape they'd get from a fresh insert.
+ */
+function claimInitialBatchSlot(
+  sessionId: string,
+  prompt: string,
+  now: number,
+): { batchId: number; promptNumber: number } | null {
+  const latest = getLatestBatch(sessionId);
+  if (!latest) return null;
+  if (latest.user_prompt !== RECOVERED_BATCH_SENTINEL) return null;
+  if (countBatchesBySession(sessionId) !== 1) return null;
+
+  replaceRecoveredBatchUserPrompt(latest.id, prompt);
+  try {
+    const lineageProjectId = latest.project_id ? assertGroveProjectId(latest.project_id) : null;
+    createBatchLineage(DEFAULT_AGENT_ID, sessionId, latest.id, now, lineageProjectId);
+  } catch { /* lineage best-effort */ }
+  return { batchId: latest.id, promptNumber: latest.prompt_number ?? 1 };
+}
+
 const antigravityParser = new AntigravityJsonlParser();
 
 /**
@@ -224,30 +261,12 @@ export function handleUserPrompt(
       parentId = null;
     }
   } else {
-    // Sentinel-replace fast path. When `/context` (cortex / spores /
-    // canopy) fired before any UserPromptSubmit, it created a
-    // sentinel batch via `ensureOpenBatch` so the injection activity
-    // had somewhere to land. If that sentinel is the ONLY batch and
-    // the incoming kind is INITIAL, replace its `user_prompt` in
-    // place instead of inserting a new batch — preserves the 1:1
-    // batch:turn mapping and keeps the cortex injection row attached
-    // to the right turn.
+    // Single entry point for "where does this initial prompt go?"
+    // The helper decides between sentinel-replace and fresh insert,
+    // hiding the branching from the call site.
     if (effectiveKind === BATCH_KIND.INITIAL && prompt) {
-      const latest = getLatestBatch(sessionId);
-      if (
-        latest
-        && latest.user_prompt === RECOVERED_BATCH_SENTINEL
-        && countBatchesBySession(sessionId) === 1
-      ) {
-        replaceRecoveredBatchUserPrompt(latest.id, prompt);
-        // Cache bump already happened when the sentinel was inserted;
-        // replace doesn't change the row count.
-        try {
-          const lineageProjectId = latest.project_id ? assertGroveProjectId(latest.project_id) : null;
-          createBatchLineage(DEFAULT_AGENT_ID, sessionId, latest.id, now, lineageProjectId);
-        } catch { /* lineage best-effort */ }
-        return { batchId: latest.id, promptNumber: latest.prompt_number ?? 1 };
-      }
+      const claimed = claimInitialBatchSlot(sessionId, prompt, now);
+      if (claimed) return claimed;
     }
     closeOpenBatches(sessionId, now);
   }
