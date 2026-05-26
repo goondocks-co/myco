@@ -1,6 +1,6 @@
 /**
- * Global-config one-shot migrations — companion to `runProjectLocalMigration`
- * in `migration-walker.ts` for filesystem state outside any single project.
+ * Global-config one-shot migrations — companion to `runGlobalInstallMigrationPass`
+ * in `global-install-migration.ts` for filesystem state outside any single project.
  *
  * Currently:
  *   - {@link scrubGeminiTrustedHooks} — removes stale `myco-*:--symbiont gemini`

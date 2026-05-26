@@ -590,7 +590,7 @@ const RUNTIME_COMMAND_REL = path.join('.myco', 'runtime.command');
  * Single source of truth for whether a project at `projectRoot` has
  * opted into the dashboard's commit-to-repo flow. Used by the migration
  * walker (which must preserve committed-project launchers) and by UI
- * status badges. Defined here, not in migration-walker.ts, so the
+ * status badges. Defined here, not in global-install-migration.ts, so the
  * marker definition cannot drift from the writer.
  */
 export function projectHasCommittedConfig(projectRoot: string): boolean {

@@ -722,7 +722,7 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
   const migrationChecks = checks.filter((c) => c.name === 'Migration' && c.fixable);
   if (migrationChecks.length > 0) {
     try {
-      const { runProjectLocalMigration } = await import('../grove/migration-walker.js');
+      const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
       const { recordMigrationPass } = await import('../db/queries/migration-log.js');
       const { getDatabase } = await import('../db/client.js');
       const beforeRoots = new Set<string>();
@@ -730,11 +730,11 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
         const match = c.detail.match(/project ([^:]+):/);
         if (match) beforeRoots.add(match[1]!);
       }
-      const result = runProjectLocalMigration();
+      const result = runGlobalInstallMigrationPass();
       recordMigrationPass(getDatabase(), result);
       const errorsByRoot = new Map<string, string>();
       for (const outcome of result.outcomes) {
-        if (outcome.error) errorsByRoot.set(outcome.project.root, outcome.error);
+        if (outcome.error) errorsByRoot.set(outcome.projectRoot, outcome.error);
       }
       for (const root of beforeRoots) {
         if (errorsByRoot.has(root)) {

@@ -15,7 +15,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
-import type { MigrationPassResult } from '../../grove/migration-walker.js';
+import type { MigrationPassResult } from '../../grove/global-install-migration.js';
 import { epochSeconds } from '@myco/constants.js';
 
 export interface MigrationLogRow {
@@ -40,7 +40,7 @@ export function recordMigrationPass(db: Database, result: MigrationPassResult): 
     // GROVE_PROJECT_SCOPED_TABLES drift check); the in-memory
     // RegisteredProject still uses `project_id`. The mapping is local
     // to this writer to keep the rename a column-only concern.
-    const visitedProjectIds = result.outcomes.map((o) => o.project.project_id);
+    const visitedProjectIds = result.outcomes.map((o) => o.projectId);
     if (visitedProjectIds.length > 0) {
       const placeholders = visitedProjectIds.map(() => '?').join(',');
       db.prepare(`DELETE FROM migration_log WHERE kind = 'error' AND affected_project_id IN (${placeholders})`)
@@ -68,7 +68,7 @@ export function recordMigrationPass(db: Database, result: MigrationPassResult): 
     for (const outcome of errors) {
       insertError.run(
         result.passId, recordedAt,
-        outcome.project.project_id, outcome.project.root,
+        outcome.projectId, outcome.projectRoot,
         JSON.stringify({ error: outcome.error }),
       );
     }

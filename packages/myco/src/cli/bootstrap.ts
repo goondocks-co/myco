@@ -29,7 +29,7 @@
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, type InstallResult } from '../symbionts/installer.js';
 import { installGlobalLaunchers, type InstalledLauncherReport } from '../grove/launcher-install.js';
-import { runProjectLocalMigration, type MigrationPassResult } from '../grove/migration-walker.js';
+import { runGlobalInstallMigrationPass, type MigrationPassResult } from '../grove/global-install-migration.js';
 import {
   runGlobalConfigMigration,
   type GlobalConfigMigrationResult,
@@ -172,10 +172,14 @@ export function runGlobalBootstrap(
   const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
   const launchers = installGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);
-  // Walker scope is enforced inside `runProjectLocalMigration` via its
-  // default `servedBy` arg (sourced from the current daemon variant);
-  // bootstrap doesn't override it.
-  const migration = runProjectLocalMigration(packageRoot);
+  // Per-project global-install migration. Sentinel-gated: projects
+  // already migrated return alreadyDone immediately. Hot path on every
+  // bootstrap is a stat per registered project; the cold path (legacy
+  // project not yet migrated) runs the archive + strip + sentinel-write
+  // sequence once. Scope is enforced by listing only Groves THIS
+  // DAEMON SERVES — cross-variant mutation is forbidden by the same
+  // rule that gates SQLite access.
+  const migration = runGlobalInstallMigrationPass({ packageRoot });
   const globalConfigMigration = runGlobalConfigMigration();
   return { defaultGrove, launchers, symbionts, migration, globalConfigMigration };
 }

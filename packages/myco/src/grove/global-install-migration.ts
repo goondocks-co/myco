@@ -19,7 +19,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveProjectVaultDir } from './paths.js';
+import { resolveProjectVaultDir, resolveMycoHome, currentDaemonVariant } from './paths.js';
+import { listGroves, listRegisteredProjects, type DaemonVariant } from './registry.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
@@ -337,4 +338,126 @@ function cryptoRandomId(): string {
   // 8-byte hex id — mirrors the walker's correlation id format so the
   // audit-log row format stays consistent.
   return Math.random().toString(16).slice(2, 10) + Math.random().toString(16).slice(2, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Bulk pass — iterate registered projects, call migration per project.
+//
+// Replaces the legacy `runProjectLocalMigration` walker. The bulk entry
+// is what `myco update`, the daemon's "run migration" API, and the
+// doctor's `--fix` mode all invoke. Per-project migration is the same
+// `migrateProjectToGlobalInstall` function — sentinel-gated, idempotent.
+// Projects already migrated are visited but no-op fast.
+// ---------------------------------------------------------------------------
+
+export interface ProjectMigrationOutcome {
+  groveId: string;
+  projectId: string;
+  projectRoot: string;
+  /** True when the sentinel was already present. */
+  alreadyDone: boolean;
+  /** True when steps 2–3 found nothing to archive or strip. */
+  noLegacyArtifacts: boolean;
+  /** Files archived during the pass. */
+  archivedFiles: string[];
+  /** Symbionts whose project-scope config blocks were stripped. */
+  cleanedSymbionts: string[];
+  /** True when a legacy project-scope machine_id was propagated to global. */
+  machineIdPropagated: boolean;
+  /** Set when this project's migration threw. */
+  error?: string;
+}
+
+export interface MigrationPassResult {
+  passId: string;
+  passedAt: number;
+  projectsVisited: number;
+  projectsCleaned: number;
+  projectsErrored: number;
+  outcomes: ProjectMigrationOutcome[];
+}
+
+/**
+ * Iterate every registered project in the Groves THIS DAEMON SERVES and
+ * run `migrateProjectToGlobalInstall` for each.
+ *
+ * Hard scope: invocations stay inside the Grove-ownership boundary
+ * (`grove.toml served_by`). Cross-daemon mutation is forbidden by the
+ * same rule that gates SQLite access.
+ *
+ * `servedBy` defaults to the current process's daemon variant; tests
+ * and CLI commands run outside a daemon pass it explicitly.
+ *
+ * Returns the pass result; the caller is responsible for persisting it
+ * via `recordMigrationPass` if audit-log coverage is desired.
+ */
+export function runGlobalInstallMigrationPass(
+  options: {
+    mycoHome?: string;
+    servedBy?: DaemonVariant;
+    manifests?: SymbiontManifest[];
+    packageRoot?: string;
+  } = {},
+): MigrationPassResult {
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const servedBy = options.servedBy ?? currentDaemonVariant();
+  const manifests = options.manifests ?? loadManifests();
+  const packageRoot = options.packageRoot ?? resolvePackageRoot();
+
+  const passId = cryptoRandomId();
+  const outcomes: ProjectMigrationOutcome[] = [];
+
+  for (const grove of listGroves(mycoHome, { servedBy })) {
+    for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+      if (!fs.existsSync(project.root)) {
+        // Off-disk root — record a benign no-op and move on. A separate
+        // cleanup task handles orphaned project entries.
+        outcomes.push({
+          groveId: grove.id,
+          projectId: project.project_id,
+          projectRoot: project.root,
+          alreadyDone: false,
+          noLegacyArtifacts: true,
+          archivedFiles: [],
+          cleanedSymbionts: [],
+          machineIdPropagated: false,
+        });
+        continue;
+      }
+      try {
+        const result = migrateProjectToGlobalInstall(project.root, { manifests, packageRoot });
+        outcomes.push({
+          groveId: grove.id,
+          projectId: project.project_id,
+          projectRoot: project.root,
+          alreadyDone: result.alreadyDone,
+          noLegacyArtifacts: result.noLegacyArtifacts,
+          archivedFiles: result.archivedFiles,
+          cleanedSymbionts: result.strippedSymbionts,
+          machineIdPropagated: result.machineIdPropagated,
+        });
+      } catch (err) {
+        outcomes.push({
+          groveId: grove.id,
+          projectId: project.project_id,
+          projectRoot: project.root,
+          alreadyDone: false,
+          noLegacyArtifacts: false,
+          archivedFiles: [],
+          cleanedSymbionts: [],
+          machineIdPropagated: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  return {
+    passId,
+    passedAt: epochSeconds(),
+    projectsVisited: outcomes.length,
+    projectsCleaned: outcomes.filter((o) => !o.alreadyDone && !o.error && (!o.noLegacyArtifacts || o.machineIdPropagated)).length,
+    projectsErrored: outcomes.filter((o) => !!o.error).length,
+    outcomes,
+  };
 }

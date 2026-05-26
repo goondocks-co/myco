@@ -5,7 +5,7 @@ import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-suppor
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { findRegisteredProject } from '@myco/grove/registry.js';
 import { resolveMycoHome, resolveServiceDirName } from '@myco/grove/paths.js';
-import { runProjectLocalMigration } from '@myco/grove/migration-walker.js';
+import { runGlobalInstallMigrationPass } from '@myco/grove/global-install-migration.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
@@ -225,7 +225,7 @@ export async function handleListSymbionts(vaultDir: string, groveId?: string | n
  *     `mcp-launcher.cjs` (idempotent; content-diff gated).
  *   - `runSymbiontDetection`: install Myco's global config into every
  *     detected symbiont.
- *   - `runProjectLocalMigration`: walk every registered project and
+ *   - `runGlobalInstallMigrationPass`: walk every registered project and
  *     strip stale per-project Myco state, honoring the `symbionts:`
  *     opt-in. Without this step here the UI's "Re-detect now" button
  *     skipped the walker entirely — a real defect the unit tests
@@ -249,7 +249,7 @@ export async function handleDetectSymbionts(vaultDir: string, groveId?: string |
 /**
  * Drain the brownfield migration-walker queue on demand.
  *
- * Wraps `runProjectLocalMigration()` — the same code path the daemon's
+ * Wraps `runGlobalInstallMigrationPass()` — the same code path the daemon's
  * first-start handler and the PowerManager periodic tick run. Surfaced
  * as an explicit UI button so users don't have to wait for the next
  * tick when they've just committed Myco config to a repo or rebound
@@ -263,7 +263,7 @@ export async function handleDetectSymbionts(vaultDir: string, groveId?: string |
  * invariant.
  */
 export async function handleDrainMigration(): Promise<RouteResponse> {
-  const pass = runProjectLocalMigration();
+  const pass = runGlobalInstallMigrationPass();
   try {
     const { getDatabase } = await import('../../db/client.js');
     const { recordMigrationPass } = await import('../../db/queries/migration-log.js');

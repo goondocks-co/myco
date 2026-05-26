@@ -39,7 +39,6 @@ import {
   saveProjectManifest,
 } from '@myco/config/project-manifest.js';
 import { loadConfig } from '@myco/config/loader.js';
-import { hasProjectLocalOptIn } from '@myco/grove/migration-walker.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { RouteHandler, RouteResponse } from '@myco/daemon/router.js';
 
@@ -327,16 +326,11 @@ describe('POST /api/symbionts/drain-migration', () => {
 });
 
 describe('Regression coverage for /code-review high-effort fixes', () => {
-  it('Fix #1: hasProjectLocalOptIn recognizes project.toml as the opt-in marker', () => {
-    // Walker would delete launchers if commit-to-repo's only artifact
-    // (project.toml) did not flip the opt-in gate. Verify the gate
-    // honors project.toml even when myco.yaml has no symbionts: block.
-    const { projectRoot } = seededProject();
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.writeFileSync(path.join(vaultDir, 'project.toml'), '[project]\nid = "x"\n');
-    expect(hasProjectLocalOptIn(projectRoot)).toBe(true);
-  });
+  // Fix #1 retired: `hasProjectLocalOptIn` was deleted alongside the
+  // walker (plan 38cff0752c919ffd §8 — gap 1/2). Under the global-install
+  // model there is no opt-in concept for project-local install; opt-out
+  // is the only project-level surface and lives in myco.yaml's
+  // `symbionts.<name>.enabled: false`.
 
   it('Fix #2: commit-to-repo writes .myco/.gitignore', async () => {
     const { projectId, projectRoot } = seededProject();

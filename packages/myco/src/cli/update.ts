@@ -1,9 +1,8 @@
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
-import { registerSymbionts } from './shared.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
-import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { loadConfig, updateConfig, getEnabledSymbiontNames } from '../config/loader.js';
+import { loadManifests } from '../symbionts/detect.js';
+import { loadConfig, updateConfig } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { getPluginVersion } from '../version.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
@@ -135,7 +134,6 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   // --- Update symbiont registration ---
 
   const allManifests = loadManifests();
-  const pkgRoot = resolvePackageRoot();
 
   const config = loadConfig(vaultDir, { groveId, migrateTiers: true });
   const withReleaseDefaults = withInferredReleaseProvenanceDefaults(config, resolvedProjectRoot);
@@ -144,32 +142,59 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     console.log('  ✓ Updated release provenance defaults');
     updatedCount++;
   }
-  let configured: typeof allManifests;
-
-  const enabledNames = getEnabledSymbiontNames(config);
-
-  if (enabledNames) {
-    // Explicit mode: only update enabled symbionts
-    configured = allManifests.filter((m) => enabledNames.has(m.name));
-
-    // Warn about registered-but-not-enabled symbionts
-    for (const m of allManifests) {
-      if (!enabledNames.has(m.name) && fs.existsSync(path.join(resolvedProjectRoot, m.configDir))) {
-        console.log(`  !! ${m.displayName} is registered but not enabled. Run 'myco remove --symbiont ${m.name}' to clean up.`);
-      }
+  // --- Refresh GLOBAL symbiont configs ---
+  //
+  // Post-global-install (plan 38cff0752c919ffd §4), `myco update` writes
+  // only at user-home (`~/.claude/`, `~/.codeium/windsurf/`, etc.) — not
+  // into the project's `.<symbiont>/` directory. `runSymbiontDetection`
+  // walks the manifest registry and installs at global scope for every
+  // agent whose `detectionDir` exists, idempotently.
+  const { runSymbiontDetection } = await import('./bootstrap.js');
+  const detection = runSymbiontDetection();
+  const installedCount = detection.filter((d) => d.status === 'installed').length;
+  for (const d of detection) {
+    if (d.status === 'installed' && d.install) {
+      const installed = [
+        d.install.hooks && 'hooks',
+        d.install.mcp && 'MCP server',
+        d.install.skills && 'skills',
+        d.install.settings && 'settings',
+        d.install.instructions && 'instructions',
+      ].filter(Boolean);
+      const manifest = allManifests.find((m) => m.name === d.symbiont);
+      const label = manifest?.displayName ?? d.symbiont;
+      console.log(`  ✓ Updated ${label}: ${installed.join(', ')}`);
+    } else if (d.status === 'error') {
+      console.log(`  ✗ Failed to update ${d.symbiont}: ${d.error ?? 'unknown error'}`);
     }
-  } else {
-    // Fallback: configDir-exists heuristic (pre-existing installs without symbionts config)
-    configured = allManifests.filter((m) =>
-      fs.existsSync(path.join(resolvedProjectRoot, m.configDir)),
-    );
+  }
+  updatedCount += installedCount;
+  if (installedCount === 0 && detection.every((d) => d.status === 'not-detected' || d.status === 'already-configured')) {
+    console.log('  \u2013 No detected agents on this machine');
   }
 
-  if (configured.length > 0) {
-    const registered = registerSymbionts(configured, resolvedProjectRoot, pkgRoot, 'Updated', undefined, groveId);
-    updatedCount += registered;
-  } else {
-    console.log('  \u2013 No configured agents found');
+  // --- Per-project one-shot global-install migration ---
+  //
+  // Iterate every known project on this machine and run the one-shot
+  // migration. Sentinel-gated \u2014 projects already migrated return
+  // alreadyDone immediately without any side effect. New projects are
+  // born-global (sentinel pre-written by the provisioner). Errors are
+  // surfaced in `myco doctor` via the audit log.
+  try {
+    const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
+    const { recordMigrationPass } = await import('../db/queries/migration-log.js');
+    const { getDatabase } = await import('../db/client.js');
+    const pass = runGlobalInstallMigrationPass();
+    if (pass.projectsCleaned > 0) {
+      console.log(`  \u2713 Migrated ${pass.projectsCleaned} project${pass.projectsCleaned > 1 ? 's' : ''} to global install`);
+      updatedCount += pass.projectsCleaned;
+    }
+    if (pass.projectsErrored > 0) {
+      console.log(`  !! ${pass.projectsErrored} project${pass.projectsErrored > 1 ? 's' : ''} errored during migration \u2014 run \`myco doctor\` for details`);
+    }
+    try { recordMigrationPass(getDatabase(), pass); } catch { /* audit log is best-effort */ }
+  } catch (err) {
+    console.log(`  !! Migration pass failed: ${(err as Error).message}`);
   }
 
   // --- Write version stamp ---
