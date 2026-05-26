@@ -9,7 +9,7 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
@@ -224,6 +224,31 @@ export function handleUserPrompt(
       parentId = null;
     }
   } else {
+    // Sentinel-replace fast path. When `/context` (cortex / spores /
+    // canopy) fired before any UserPromptSubmit, it created a
+    // sentinel batch via `ensureOpenBatch` so the injection activity
+    // had somewhere to land. If that sentinel is the ONLY batch and
+    // the incoming kind is INITIAL, replace its `user_prompt` in
+    // place instead of inserting a new batch — preserves the 1:1
+    // batch:turn mapping and keeps the cortex injection row attached
+    // to the right turn.
+    if (effectiveKind === BATCH_KIND.INITIAL && prompt) {
+      const latest = getLatestBatch(sessionId);
+      if (
+        latest
+        && latest.user_prompt === RECOVERED_BATCH_SENTINEL
+        && countBatchesBySession(sessionId) === 1
+      ) {
+        replaceRecoveredBatchUserPrompt(latest.id, prompt);
+        // Cache bump already happened when the sentinel was inserted;
+        // replace doesn't change the row count.
+        try {
+          const lineageProjectId = latest.project_id ? assertGroveProjectId(latest.project_id) : null;
+          createBatchLineage(DEFAULT_AGENT_ID, sessionId, latest.id, now, lineageProjectId);
+        } catch { /* lineage best-effort */ }
+        return { batchId: latest.id, promptNumber: latest.prompt_number ?? 1 };
+      }
+    }
     closeOpenBatches(sessionId, now);
   }
 

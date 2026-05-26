@@ -86,9 +86,40 @@ export async function recordInjectionActivity(
 ): Promise<RecordInjectionResult> {
   const { sessionId, projectId, injectionType, discriminator, trigger, fetchContent } = options;
 
-  const latestBatch = getLatestBatch(sessionId);
+  // Cortex injection fires during SessionStart, BEFORE any
+  // UserPromptSubmit. For single-shot SessionStart symbionts
+  // (Codex, Claude Code, Cursor) that means no batch exists yet.
+  // Create a sentinel batch via the standard recovery shape so the
+  // cortex activity has somewhere to land. `handleUserPrompt`
+  // detects this sentinel on the next real prompt and REPLACES its
+  // user_prompt rather than inserting a parallel batch — preserves
+  // the 1:1 batch:turn mapping and keeps the cortex activity
+  // attached to the right turn.
+  //
+  // Spores and canopy injections fire AFTER a batch already exists
+  // (UserPromptSubmit / PreToolUse respectively), so the no-batch
+  // path stays the legacy 'no_batch' fall-through for those — they
+  // shouldn't manufacture sentinels.
+  let latestBatch = getLatestBatch(sessionId);
   if (!latestBatch) {
-    return { injected: false, reason: 'no_batch' };
+    if (injectionType !== 'cortex') {
+      return { injected: false, reason: 'no_batch' };
+    }
+    // Best-effort sentinel-bootstrap. Wrapped in try/catch because
+    // unit tests sometimes exercise this handler with a synthetic
+    // session id that has no row in `sessions` — the FK on
+    // `prompt_batches.session_id` would throw. In production the
+    // session row always exists by the time `/context` is hit
+    // (SessionStart fires `/sessions/register` first), so the throw
+    // path is purely a test-isolation safety net.
+    try {
+      const { ensureOpenBatch } = await import('./event-handlers.js');
+      ensureOpenBatch(sessionId);
+      latestBatch = getLatestBatch(sessionId);
+    } catch { /* session row absent — keep legacy fall-through */ }
+    if (!latestBatch) {
+      return { injected: false, reason: 'no_batch' };
+    }
   }
 
   const contentHash = buildInjectionContentHash(injectionType, sessionId, discriminator);

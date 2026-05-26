@@ -43,15 +43,42 @@ describe('recordInjectionActivity', () => {
   afterAll(() => teardownTestDb());
   beforeEach(() => cleanTestDb());
 
-  it('returns no_batch when the session has no open prompt_batch yet', async () => {
+  it('returns no_batch for spores/canopy when no prompt_batch yet (they fire AFTER a batch exists)', async () => {
+    // Spores and canopy injections fire from UserPromptSubmit /
+    // PreToolUse respectively, both of which create a batch before
+    // the injection fires. Hitting no_batch here is a violation of
+    // that contract, so we keep the legacy fall-through — return
+    // no_batch and serve the text without manufacturing a sentinel.
     const sessionId = seedSession({ id: 's-no-batch', agent: 'antigravity' });
     const result = await recordInjectionActivity({
       sessionId,
       projectId: null,
-      injectionType: 'cortex',
+      injectionType: 'spores',
+      discriminator: 'abc',
       fetchContent: async () => ({ text: 'should never run' }),
     });
     expect(result).toEqual({ injected: false, reason: 'no_batch' });
+  });
+
+  it('creates a sentinel batch when CORTEX is recorded with no existing batch (single-shot SessionStart symbionts)', async () => {
+    // Cortex fires during SessionStart, BEFORE UserPromptSubmit
+    // creates the first real batch. With no_batch fall-through, the
+    // cortex injection would never appear in the activities list.
+    // The fix manufactures a sentinel batch so the activity has
+    // somewhere to attach; `handleUserPrompt` later replaces the
+    // sentinel's user_prompt with the real prompt rather than
+    // inserting a second batch.
+    const { hasAnyBatch } = await import('@myco/db/queries/batches.js');
+    const sessionId = seedSession({ id: 's-cortex-recovery', agent: 'codex' });
+    expect(hasAnyBatch(sessionId)).toBe(false);
+    const result = await recordInjectionActivity({
+      sessionId,
+      projectId: null,
+      injectionType: 'cortex',
+      fetchContent: async () => ({ text: 'fake cortex content', metadata: { source: 'cortex' } }),
+    });
+    expect(result.injected).toBe(true);
+    expect(hasAnyBatch(sessionId)).toBe(true);
   });
 
   it('records the activity and returns the fetched text on first call', async () => {
