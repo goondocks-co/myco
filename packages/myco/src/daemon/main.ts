@@ -582,6 +582,20 @@ export async function main(): Promise<void> {
     resolveBootstrapVaultDirOrPhantom();
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
+  // BEFORE the first getMachineId() call mints a fresh value, scan every
+  // registered project the daemon serves for a legacy project-scope
+  // machine_id and propagate the FIRST hit into ~/.myco/machine_id.
+  // Without this guard, a brownfield upgrade silently abandons the legacy
+  // identity (per-project migration that runs later sees the global file
+  // already exists and bails). Idempotent — no-op once the global cache
+  // is populated. /code-review finding C2.
+  try {
+    const { propagateLegacyMachineIdAtStartup } = await import('../grove/global-install-migration.js');
+    propagateLegacyMachineIdAtStartup();
+  } catch {
+    // Best-effort: if registry scan fails (e.g. greenfield daemon with
+    // no Groves yet), fall through to fresh derivation via getMachineId.
+  }
   const machineId = getMachineId();
   const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
     ...process.env,

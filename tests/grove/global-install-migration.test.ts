@@ -13,10 +13,34 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   migrateProjectToGlobalInstall,
+  propagateLegacyMachineIdAtStartup,
   resolveSentinelPath,
   hasGlobalInstallMigrationCompleted,
   readMigrationSentinel,
 } from '@myco/grove/global-install-migration.js';
+
+// Fixture helper: seed a Grove on disk with a registered project that
+// has a legacy machine_id in its vault. Matches the on-disk shape
+// listGroves + listRegisteredProjects read from.
+function seedGroveWithLegacyProject(
+  mycoHome: string,
+  opts: { groveId: string; projectId: string; projectRoot: string; servedBy: string; machineId: string },
+): void {
+  const groveDir = path.join(mycoHome, 'groves', opts.groveId);
+  fs.mkdirSync(path.join(groveDir, 'registry'), { recursive: true });
+  fs.writeFileSync(
+    path.join(groveDir, 'grove.toml'),
+    `[grove]\nid = "${opts.groveId}"\nname = "Test"\nslug = "test"\nmode = "local"\ncreated_at = "2026-05-26T00:00:00.000Z"\nserved_by = "${opts.servedBy}"\n`,
+    'utf-8',
+  );
+  fs.writeFileSync(
+    path.join(groveDir, 'registry/projects.toml'),
+    `[projects.${opts.projectId}]\nproject_id = "${opts.projectId}"\nname = "test-project"\nroot = "${opts.projectRoot}"\nbinding_id = "gbind_${opts.projectId.slice(5, 13)}"\ncreated_at = "2026-05-26T00:00:00.000Z"\nupdated_at = "2026-05-26T00:00:00.000Z"\n`,
+    'utf-8',
+  );
+  fs.mkdirSync(path.join(opts.projectRoot, '.myco'), { recursive: true });
+  fs.writeFileSync(path.join(opts.projectRoot, '.myco/machine_id'), opts.machineId, 'utf-8');
+}
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 
 function makeFakeManifest(overrides: Partial<SymbiontManifest> = {}): SymbiontManifest {
@@ -196,5 +220,86 @@ describe('migrateProjectToGlobalInstall', () => {
     expect(fs.existsSync(path.join(archiveDir, 'secrets.env'))).toBe(false);
     expect(fs.existsSync(path.join(archiveDir, 'machine_id'))).toBe(false);
     expect(fs.existsSync(path.join(archiveDir, 'restart-reason.json'))).toBe(false);
+  });
+});
+
+// Regression for code-review finding C2: daemon startup must propagate
+// any registered project's legacy machine_id into the global cache
+// BEFORE getMachineId() mints a fresh value, or historic capture rows
+// get orphaned from the live identity.
+describe('propagateLegacyMachineIdAtStartup', () => {
+  let projectRoot: string;
+  let mycoHome: string;
+  let priorMycoHome: string | undefined;
+
+  beforeEach(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-startup-project-'));
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-startup-home-'));
+    priorMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+  });
+
+  afterEach(() => {
+    if (priorMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = priorMycoHome;
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+  });
+
+  it('lifts a registered project\'s legacy machine_id into ~/.myco/machine_id', () => {
+    seedGroveWithLegacyProject(mycoHome, {
+      groveId: 'grove_11111111111111111111111111111111',
+      projectId: 'proj_11111111111111111111111111111111',
+      projectRoot,
+      servedBy: 'service',
+      machineId: 'legacy_startup_id_alpha',
+    });
+    // No global machine_id yet — simulates the racey daemon-startup window.
+    expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
+
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+
+    expect(sourceRoot).toBe(projectRoot);
+    expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
+      .toBe('legacy_startup_id_alpha');
+  });
+
+  it('no-ops when ~/.myco/machine_id already exists', () => {
+    fs.writeFileSync(path.join(mycoHome, 'machine_id'), 'global_pre_existing', 'utf-8');
+    seedGroveWithLegacyProject(mycoHome, {
+      groveId: 'grove_22222222222222222222222222222222',
+      projectId: 'proj_22222222222222222222222222222222',
+      projectRoot,
+      servedBy: 'service',
+      machineId: 'should_not_overwrite',
+    });
+
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+
+    expect(sourceRoot).toBeNull();
+    expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
+      .toBe('global_pre_existing');
+  });
+
+  it('skips Groves not served by this daemon variant', () => {
+    seedGroveWithLegacyProject(mycoHome, {
+      groveId: 'grove_33333333333333333333333333333333',
+      projectId: 'proj_33333333333333333333333333333333',
+      projectRoot,
+      servedBy: 'service-dev',  // dev-served grove
+      machineId: 'dev_only_id',
+    });
+
+    // Prod daemon scans only service-served groves.
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+
+    expect(sourceRoot).toBeNull();
+    expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
+  });
+
+  it('returns null on a greenfield daemon with no registered Groves', () => {
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    expect(sourceRoot).toBeNull();
+    expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
   });
 });
