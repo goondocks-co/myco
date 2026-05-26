@@ -23,6 +23,14 @@ capture:
 registration:
   hooksTarget: .windsurf/hooks.json
   globalHooksTarget: ~/.codeium/windsurf/hooks.json
+  # Cascade reads `~/.codeium/windsurf/hooks.json` and requires the
+  # documented `{ "hooks": { "<event_name>": [...] } }` envelope — see
+  # https://docs.windsurf.com/windsurf/cascade/hooks#basic-structure.
+  # The installer's default writer (`settings.hooks = ...`) matches that
+  # shape; do not add `hooksRootKey` overrides here. `show_output` is
+  # optional per the docs (the field surfaces stdout to the user) and is
+  # NOT required for the hook command to execute — confirmed live on a
+  # wrapped file with no `show_output`.
   # New capability — Windsurf MCP only available at the user-global location
   # under ~/.codeium/windsurf/mcp_config.json. No project-local equivalent;
   # mcpTarget omitted on purpose.
@@ -30,6 +38,15 @@ registration:
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.codeium/windsurf/skills
   settingsTarget: .windsurf/settings.json
+  # Cascade's `windsurf.cascadeCommandsAllowList` is an IDE user-settings
+  # key, not a hooks-file key. The installer's default global fallback
+  # would write it into the hooks file (line 338 in installer.ts), which
+  # poisons Cascade's hooks schema with an unknown root key and silently
+  # disables every hook. Explicit `null` opts Windsurf out of global
+  # settings installation entirely — capture works without the allowlist,
+  # and the right surface for that key is the Windsurf IDE settings file
+  # (a future, separate concern).
+  globalSettingsTarget: null
 capabilities:
   # Windsurf's bundled hook template does not currently register a
   # session-start hook. Cortex falls back to inline delivery via

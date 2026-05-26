@@ -926,6 +926,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "globalSkillsTarget": "~/.codeium/windsurf/skills",
+      "globalSettingsTarget": null,
       "hooksFormat": "json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
