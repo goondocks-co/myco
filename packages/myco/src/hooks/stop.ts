@@ -1,9 +1,7 @@
 import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
-import fs from 'node:fs';
-import path from 'node:path';
 
 /**
  * Parse `--phases response,transcript` from process.argv. The hook command
@@ -24,8 +22,8 @@ function parsePhasesArg(): ('response' | 'transcript')[] | undefined {
 }
 
 export async function main() {
-  const VAULT_DIR = resolveVaultDir();
-  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
+  const VAULT_DIR = resolveProvisionedVaultDir();
+  if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
   try {

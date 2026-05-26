@@ -5,10 +5,9 @@ import { type NormalizedHookInput } from './normalize.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
-import fs from 'node:fs';
-import path from 'node:path';
 
 /**
  * Classify why a hook is falling back to a buffer write. Surfaces in stderr
@@ -40,8 +39,8 @@ export async function sendEvent(
   hookName: string,
   buildEvent: (input: NormalizedHookInput) => Record<string, unknown>,
 ): Promise<void> {
-  const VAULT_DIR = resolveVaultDir();
-  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
+  const VAULT_DIR = resolveProvisionedVaultDir();
+  if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
   try {
