@@ -2,6 +2,7 @@ import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { loadManifests } from '../symbionts/detect.js';
+import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { loadConfig, updateConfig } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { getPluginVersion } from '../version.js';
@@ -91,7 +92,112 @@ export async function run(args: string[]): Promise<void> {
   }
 }
 
-async function runForProject(projectRoot: string | undefined): Promise<void> {
+/**
+ * Machine-wide side effects of `myco update`: re-render every global
+ * symbiont config (~/.claude/, ~/.cursor/, etc.), scrub stale global
+ * hook entries, run the per-project global-install migration pass
+ * across every registered project, and stamp the version file.
+ *
+ * Called ONCE per `myco update` invocation regardless of single-project
+ * vs --all-projects mode. Hoisted out of runForProject so a
+ * `myco update --all-projects` with N registered projects doesn't
+ * re-run these N times. /code-review finding C7.
+ */
+async function runMachineWideUpdate(allManifests: SymbiontManifest[], currentVersion: string, stampPath: string): Promise<number> {
+  let updatedCount = 0;
+
+  // --- Refresh GLOBAL symbiont configs ---
+  //
+  // Post-global-install (plan 38cff0752c919ffd §4), `myco update` writes
+  // only at user-home (`~/.claude/`, `~/.codeium/windsurf/`, etc.) — not
+  // into the project's `.<symbiont>/` directory. `runSymbiontDetection`
+  // walks the manifest registry and installs at global scope for every
+  // agent whose `detectionDir` exists, idempotently.
+  const { runSymbiontDetection } = await import('./bootstrap.js');
+  const detection = runSymbiontDetection();
+  const installedCount = detection.filter((d) => d.status === 'installed').length;
+  for (const d of detection) {
+    if (d.status === 'installed' && d.install) {
+      const installed = [
+        d.install.hooks && 'hooks',
+        d.install.mcp && 'MCP server',
+        d.install.skills && 'skills',
+        d.install.settings && 'settings',
+        d.install.instructions && 'instructions',
+      ].filter(Boolean);
+      const manifest = allManifests.find((m) => m.name === d.symbiont);
+      const label = manifest?.displayName ?? d.symbiont;
+      console.log(`  ✓ Updated ${label}: ${installed.join(', ')}`);
+    } else if (d.status === 'error') {
+      console.log(`  ✗ Failed to update ${d.symbiont}: ${d.error ?? 'unknown error'}`);
+    }
+  }
+  updatedCount += installedCount;
+  if (installedCount === 0 && detection.every((d) => d.status === 'not-detected' || d.status === 'already-configured')) {
+    console.log('  – No detected agents on this machine');
+  }
+
+  // --- Heal known escaped global config artifacts ---
+  // Historical smoke runs could write temp `/tmp/myco-*-smoke-*/home/launcher.cjs`
+  // commands into real global agent config files when HOME wasn't sandboxed.
+  // Installer ownership detection intentionally preserves non-canonical paths,
+  // so update runs the one-shot global scrub explicitly after symbiont install.
+  try {
+    const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
+    const globalConfigMigration = runGlobalConfigMigration();
+    const repaired = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
+    const failed = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
+    for (const outcome of repaired) {
+      console.log(`  ✓ Scrubbed ${outcome.entriesRemoved} stale global hook group${outcome.entriesRemoved === 1 ? '' : 's'}: ${outcome.filePath}`);
+      updatedCount++;
+    }
+    for (const outcome of failed) {
+      console.log(`  !! Failed to scrub stale global hook groups from ${outcome.filePath}: ${outcome.error}`);
+    }
+  } catch (err) {
+    console.log(`  !! Global config scrub failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // --- Per-project one-shot global-install migration ---
+  try {
+    const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
+    const { recordMigrationPass } = await import('../db/queries/migration-log.js');
+    const { getDatabase } = await import('../db/client.js');
+    const pass = runGlobalInstallMigrationPass();
+    if (pass.projectsCleaned > 0) {
+      console.log(`  ✓ Migrated ${pass.projectsCleaned} project${pass.projectsCleaned > 1 ? 's' : ''} to global install`);
+      updatedCount += pass.projectsCleaned;
+    }
+    if (pass.projectsErrored > 0) {
+      console.log(`  !! ${pass.projectsErrored} project${pass.projectsErrored > 1 ? 's' : ''} errored during migration — run \`myco doctor\` for details`);
+    }
+    try { recordMigrationPass(getDatabase(), pass); } catch { /* audit log is best-effort */ }
+  } catch (err) {
+    console.log(`  !! Migration pass failed: ${(err as Error).message}`);
+  }
+
+  // --- Write version stamp ---
+  try {
+    fs.mkdirSync(path.dirname(stampPath), { recursive: true });
+    fs.writeFileSync(stampPath, currentVersion, 'utf-8');
+  } catch {
+    // Non-fatal — stamp write failure shouldn't break the update
+  }
+
+  return updatedCount;
+}
+
+interface RunForProjectOptions {
+  /**
+   * Skip the machine-wide side effects (global symbiont install, config
+   * scrub, migration pass, version stamp). Set when the caller has
+   * already invoked `runMachineWideUpdate` exactly once for the whole
+   * batch — `runAllProjects` is the canonical use site.
+   */
+  skipMachineWide?: boolean;
+}
+
+async function runForProject(projectRoot: string | undefined, options: RunForProjectOptions = {}): Promise<void> {
   const vaultDir = projectRoot
     ? path.join(projectRoot, '.myco')
     : resolveVaultDir();
@@ -142,93 +248,11 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     console.log('  ✓ Updated release provenance defaults');
     updatedCount++;
   }
-  // --- Refresh GLOBAL symbiont configs ---
-  //
-  // Post-global-install (plan 38cff0752c919ffd §4), `myco update` writes
-  // only at user-home (`~/.claude/`, `~/.codeium/windsurf/`, etc.) — not
-  // into the project's `.<symbiont>/` directory. `runSymbiontDetection`
-  // walks the manifest registry and installs at global scope for every
-  // agent whose `detectionDir` exists, idempotently.
-  const { runSymbiontDetection } = await import('./bootstrap.js');
-  const detection = runSymbiontDetection();
-  const installedCount = detection.filter((d) => d.status === 'installed').length;
-  for (const d of detection) {
-    if (d.status === 'installed' && d.install) {
-      const installed = [
-        d.install.hooks && 'hooks',
-        d.install.mcp && 'MCP server',
-        d.install.skills && 'skills',
-        d.install.settings && 'settings',
-        d.install.instructions && 'instructions',
-      ].filter(Boolean);
-      const manifest = allManifests.find((m) => m.name === d.symbiont);
-      const label = manifest?.displayName ?? d.symbiont;
-      console.log(`  ✓ Updated ${label}: ${installed.join(', ')}`);
-    } else if (d.status === 'error') {
-      console.log(`  ✗ Failed to update ${d.symbiont}: ${d.error ?? 'unknown error'}`);
-    }
-  }
-  updatedCount += installedCount;
-  if (installedCount === 0 && detection.every((d) => d.status === 'not-detected' || d.status === 'already-configured')) {
-    console.log('  \u2013 No detected agents on this machine');
-  }
-
-  // --- Heal known escaped global config artifacts ---
-  // Historical smoke runs could write temp `/tmp/myco-*-smoke-*/home/launcher.cjs`
-  // commands into real global agent config files when HOME wasn't sandboxed.
-  // Installer ownership detection intentionally preserves non-canonical paths,
-  // so update runs the one-shot global scrub explicitly after symbiont install.
-  try {
-    const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
-    const globalConfigMigration = runGlobalConfigMigration();
-    const repaired = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
-    const failed = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
-    for (const outcome of repaired) {
-      console.log(`  ✓ Scrubbed ${outcome.entriesRemoved} stale global hook group${outcome.entriesRemoved === 1 ? '' : 's'}: ${outcome.filePath}`);
-      updatedCount++;
-    }
-    for (const outcome of failed) {
-      console.log(`  !! Failed to scrub stale global hook groups from ${outcome.filePath}: ${outcome.error}`);
-    }
-  } catch (err) {
-    console.log(`  !! Global config scrub failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // --- Per-project one-shot global-install migration ---
-  //
-  // Iterate every known project on this machine and run the one-shot
-  // migration. Sentinel-gated \u2014 projects already migrated return
-  // alreadyDone immediately without any side effect. New projects are
-  // born-global (sentinel pre-written by the provisioner). Errors are
-  // surfaced in `myco doctor` via the audit log.
-  try {
-    const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
-    const { recordMigrationPass } = await import('../db/queries/migration-log.js');
-    const { getDatabase } = await import('../db/client.js');
-    const pass = runGlobalInstallMigrationPass();
-    if (pass.projectsCleaned > 0) {
-      console.log(`  \u2713 Migrated ${pass.projectsCleaned} project${pass.projectsCleaned > 1 ? 's' : ''} to global install`);
-      updatedCount += pass.projectsCleaned;
-    }
-    if (pass.projectsErrored > 0) {
-      console.log(`  !! ${pass.projectsErrored} project${pass.projectsErrored > 1 ? 's' : ''} errored during migration \u2014 run \`myco doctor\` for details`);
-    }
-    try { recordMigrationPass(getDatabase(), pass); } catch { /* audit log is best-effort */ }
-  } catch (err) {
-    console.log(`  !! Migration pass failed: ${(err as Error).message}`);
-  }
-
-  // --- Write version stamp ---
-  // Informational marker of the last-updated version; not a migration gate.
-  // Lives at `~/.myco/last-update-version` — per-machine bookkeeping, not
-  // per-project state. The parent dir always exists when the daemon's
-  // already running, but `myco update` can be a first-touch path, so we
-  // mkdirSync defensively before writing.
-  try {
-    fs.mkdirSync(path.dirname(stampPath), { recursive: true });
-    fs.writeFileSync(stampPath, currentVersion, 'utf-8');
-  } catch {
-    // Non-fatal — stamp write failure shouldn't break the update
+  // Machine-wide refresh (global symbiont install, config scrub,
+  // per-project migration pass, version stamp). Skipped by --all-projects
+  // which hoists this work out of its per-project loop. /code-review C7.
+  if (!options.skipMachineWide) {
+    updatedCount += await runMachineWideUpdate(allManifests, currentVersion, stampPath);
   }
 
   // HTTP MCP entries depend on the local daemon being reachable at the
@@ -422,11 +446,26 @@ async function runAllProjects(): Promise<void> {
 
   console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'} served_by ${serviceVariantToDirName(variant)}.\n`);
 
+  // Hoist machine-wide work (global symbiont install, scrub, migration
+  // pass, version stamp) ABOVE the per-project loop. Each block was
+  // running N times — the migration pass itself iterates every project,
+  // so an N-project --all-projects pass was N×N for the worst block.
+  // /code-review finding C7.
+  console.log('=== Machine-wide refresh ===');
+  const allManifests = loadManifests();
+  const currentVersion = getPluginVersion();
+  const stampPath = resolveLastUpdateVersionPath();
+  try {
+    await runMachineWideUpdate(allManifests, currentVersion, stampPath);
+  } catch (error) {
+    console.error(`  ✗ Machine-wide refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const failures: { target: typeof targets[number]; error: unknown }[] = [];
   for (const target of targets) {
     console.log(`\n=== ${target.groveSlug}/${target.projectName} (${target.root}) ===`);
     try {
-      await runForProject(target.root);
+      await runForProject(target.root, { skipMachineWide: true });
     } catch (error) {
       failures.push({ target, error });
       console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
