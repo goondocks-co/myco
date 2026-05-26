@@ -148,7 +148,7 @@ export interface EnsureSessionRowExistsParams {
    * in the WARN log so post-mortems can tell which upstream handler missed
    * its responsibility.
    */
-  source: 'user_prompt' | 'tool_use' | 'activity' | 'batch';
+  source: 'user_prompt' | 'tool_use' | 'activity' | 'batch' | 'context';
 }
 
 /**

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { ensureSessionRowExists } from '../session-lifecycle.js';
 import {
   EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
@@ -147,11 +148,28 @@ export function createSessionContextHandler(deps: ContextDeps) {
 
       // Per-(session) dedup gate. UNIQUE on
       // `myco:inject:cortex:<sessionId>` blocks re-entry within the same
-      // session. `no_batch` (session has no prompt_batches row yet) falls
-      // through and serves the text without recording — preserves the
-      // single-shot session-start behavior for symbionts that don't
-      // re-fire (Claude Code, Codex, Cursor).
+      // session.
+      //
+      // Some symbionts (OpenCode) race `/sessions/register` and
+      // `/context` in parallel; `/context` can land first. The
+      // injection sentinel-batch creation downstream has an FK to
+      // `sessions`, so an absent row makes `recordInjectionActivity`
+      // bail with `no_batch` and the cortex activity never gets
+      // recorded even though the text was served. Defensively ensure
+      // the session row exists FIRST — `ensureSessionRowExists`
+      // upserts only when truly missing and logs a warning so the
+      // gap is observable.
       if (session_id) {
+        try {
+          ensureSessionRowExists({
+            sessionId: session_id,
+            projectId: requestProjectId,
+            projectRoot: req.requestContext?.projectRoot ?? null,
+            machineId: req.requestContext?.machineId ?? 'local',
+            logger,
+            source: 'context',
+          });
+        } catch { /* defensive — never block the cortex serve */ }
         const { suppress } = await recordInjectionAndShouldSuppress({
           sessionId: session_id,
           projectId: requestProjectId,
