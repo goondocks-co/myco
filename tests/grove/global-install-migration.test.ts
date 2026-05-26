@@ -139,4 +139,27 @@ describe('migrateProjectToGlobalInstall', () => {
     expect(result.archivedFiles).toEqual([]);
     expect(result.archiveDir).toBeNull();
   });
+
+  it('purges legacy per-machine artifacts from the project vault', () => {
+    // Seed the kinds of files a pre-global-install vault accumulates.
+    fs.writeFileSync(path.join(projectRoot, '.myco/last-update-version'), '0.21.0', 'utf-8');
+    fs.writeFileSync(path.join(projectRoot, '.myco/restart-reason.json'), '{"reason":"x"}', 'utf-8');
+    fs.mkdirSync(path.join(projectRoot, '.myco/attachments'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/attachments/dummy.png'), 'fake', 'utf-8');
+    fs.mkdirSync(path.join(projectRoot, '.myco/team'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.myco/installer-audit'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/installer-audit/x.json'), '{}', 'utf-8');
+    fs.writeFileSync(path.join(projectRoot, '.myco/secrets.env'), 'API_KEY=oldvalue', 'utf-8');
+
+    migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+
+    expect(fs.existsSync(path.join(projectRoot, '.myco/last-update-version'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/restart-reason.json'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/attachments'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/team'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/installer-audit'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/secrets.env'))).toBe(false);
+    // Sentinel still written on a "noLegacyArtifacts: false" pass.
+    expect(hasGlobalInstallMigrationCompleted(projectRoot)).toBe(true);
+  });
 });
