@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
+import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -16,8 +17,19 @@ export interface SystemctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
 }
 
-class RealSystemctlRunner implements SystemctlRunner {
+/**
+ * Real systemctl shell-out. Gated on `MYCO_LAUNCH_AGENTS_DIR` (set by every
+ * sandboxed install / test harness): same structural concern as launchd —
+ * a sandboxed install must never touch the user's real `systemd --user`
+ * registry, or `daemon-reload` + `enable` would leave persistent units the
+ * test cleanup can't reach. Tests that need to observe systemctl argv inject
+ * a `SystemctlRunner` stub via `SystemdManagerOptions.runner`.
+ */
+export class RealSystemctlRunner implements SystemctlRunner {
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return { stdout: `[sandbox] skipped systemctl ${args.join(' ')}`, exitCode: 0 };
+    }
     return new Promise((resolve) => {
       const child = spawn('systemctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';

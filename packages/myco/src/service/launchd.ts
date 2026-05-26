@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
+import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -16,8 +17,21 @@ export interface LaunchctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
 }
 
-class RealLaunchctlRunner implements LaunchctlRunner {
+/**
+ * Real launchctl shell-out. Gated on `MYCO_LAUNCH_AGENTS_DIR` (set by every
+ * sandboxed install / test harness): when that env var is present the install
+ * is by definition isolated from the user's real `gui/<uid>` launchd domain,
+ * so calling `launchctl bootstrap`/`bootout` against that domain would
+ * register a sandbox label that survives temp-dir cleanup and forces launchd
+ * to respawn the daemon forever. The structural fix is to never make that
+ * call in sandbox mode; tests that need to observe the launchctl argv inject
+ * their own `LaunchctlRunner` stub via `LaunchdManagerOptions.runner`.
+ */
+export class RealLaunchctlRunner implements LaunchctlRunner {
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+    if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
+      return { stdout: `[sandbox] skipped launchctl ${args.join(' ')}`, exitCode: 0 };
+    }
     return new Promise((resolve) => {
       const child = spawn('launchctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
