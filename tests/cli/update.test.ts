@@ -26,7 +26,16 @@ mock.module('@myco/symbionts/detect.js', () => ({
 mock.module('@myco/symbionts/installer.js', () => ({
   SymbiontInstaller: vi.fn(function MockSymbiontInstaller() {
     return {
-    install: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
+      // `myco update` now refreshes GLOBAL symbiont configs via
+      // runSymbiontDetection (plan 38cff0752c919ffd §4). The detection
+      // pass calls isAvailableForScope() before install(); when the
+      // mock returns false the manifest is reported as `not-detected`
+      // and install() is skipped — that's the right behavior for
+      // these tests, which don't exercise live symbiont detection.
+      isAvailableForScope: vi.fn().mockReturnValue(false),
+      isConfigured: vi.fn().mockReturnValue(false),
+      install: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
+      uninstall: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
     };
   }),
   MYCO_MCP_SERVER_NAME: 'myco',
@@ -93,7 +102,10 @@ describe('myco update', () => {
     stdoutSpy.mockRestore();
   });
 
-  it('updates only enabled symbionts from config', async () => {
+  it('runs symbiont detection across every manifest at GLOBAL scope', async () => {
+    // Plan 38cff0752c919ffd §4 — `myco update` no longer filters by
+    // per-project enabled flag. It calls runSymbiontDetection() which
+    // iterates every manifest and writes at global scope.
     const config = {
       version: 3, config_version: 0,
       symbionts: { 'claude-code': { enabled: true } },
@@ -106,31 +118,28 @@ describe('myco update', () => {
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    expect(SymbiontInstaller).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(SymbiontInstaller).mock.calls[0][0].name).toBe('claude-code');
+    // Every manifest from loadManifests() gets a SymbiontInstaller —
+    // detection runs across all of them, regardless of per-project
+    // enabled flag. The mock has two manifests (claude-code, cursor).
+    expect(SymbiontInstaller).toHaveBeenCalledTimes(2);
+    const calledNames = vi.mocked(SymbiontInstaller).mock.calls.map((c) => c[0].name).sort();
+    expect(calledNames).toEqual(['claude-code', 'cursor']);
+    // Each installer was constructed with installScope='global' (the
+    // 7th positional arg). Pre-refactor this was 'project'.
+    for (const call of vi.mocked(SymbiontInstaller).mock.calls) {
+      expect(call[6]).toBe('global');
+    }
   });
 
-  it('warns about registered but not enabled symbionts', async () => {
+  it('does not gate install by per-project enabled flag', async () => {
+    // Per-project opt-OUT (symbionts.<name>.enabled: false in myco.yaml)
+    // is a capture-time concern, not an install-time concern. The
+    // global install proceeds regardless; only the daemon's capture
+    // rules apply the project-level deny-list.
     const config = {
       version: 3, config_version: 0,
-      symbionts: { 'claude-code': { enabled: true } },
+      symbionts: { 'claude-code': { enabled: true }, cursor: { enabled: false } },
     };
-    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
-    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
-    fs.mkdirSync(path.join(testDir, '.cursor'), { recursive: true });
-
-    const consoleSpy = vi.spyOn(console, 'log');
-    const { run } = await import('@myco/cli/update.js');
-    await run(['--project', testDir]);
-
-    const output = consoleSpy.mock.calls.flat().join(' ');
-    expect(output).toContain('Cursor');
-    expect(output).toContain('not enabled');
-    consoleSpy.mockRestore();
-  });
-
-  it('falls back to configDir heuristic when symbionts section absent', async () => {
-    const config = { version: 3, config_version: 0 };
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
     fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
 
@@ -138,10 +147,11 @@ describe('myco update', () => {
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    expect(SymbiontInstaller).toHaveBeenCalled();
+    const calledNames = vi.mocked(SymbiontInstaller).mock.calls.map((c) => c[0].name).sort();
+    expect(calledNames).toContain('cursor');  // opted out but still installed globally
   });
 
-  it('updates all enabled telemetry-capable symbionts from config', async () => {
+  it('installs every manifest that loadManifests returns', async () => {
     const { loadManifests } = await import('@myco/symbionts/detect.js');
     vi.mocked(loadManifests).mockReturnValue([
       {
