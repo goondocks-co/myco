@@ -162,4 +162,39 @@ describe('migrateProjectToGlobalInstall', () => {
     // Sentinel still written on a "noLegacyArtifacts: false" pass.
     expect(hasGlobalInstallMigrationCompleted(projectRoot)).toBe(true);
   });
+
+  // Regression for code-review finding C4: user-data artifacts must be
+  // ARCHIVED (moved into .archive-pre-global-install-<ts>/) before purge,
+  // not destroyed. team/, attachments/, installer-audit/ carry user
+  // data with no in-tree migration target.
+  it('archives user-data artifacts (team/, attachments/, installer-audit/) before purging', () => {
+    fs.mkdirSync(path.join(projectRoot, '.myco/team/worker'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/team/worker/build.txt'), 'legacy-team-build', 'utf-8');
+    fs.mkdirSync(path.join(projectRoot, '.myco/attachments'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/attachments/img.png'), 'legacy-png', 'utf-8');
+    fs.mkdirSync(path.join(projectRoot, '.myco/installer-audit'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/installer-audit/strip.json'), '{"k":"v"}', 'utf-8');
+    // Ephemera + propagated artifacts that should NOT appear in the archive.
+    fs.writeFileSync(path.join(projectRoot, '.myco/machine_id'), 'legacy_id', 'utf-8');
+    fs.writeFileSync(path.join(projectRoot, '.myco/secrets.env'), 'API_KEY=hush', 'utf-8');
+    fs.writeFileSync(path.join(projectRoot, '.myco/restart-reason.json'), '{"r":"x"}', 'utf-8');
+
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+
+    expect(fs.existsSync(path.join(projectRoot, '.myco/team'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/attachments'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.myco/installer-audit'))).toBe(false);
+
+    expect(result.archiveDir).not.toBeNull();
+    const archiveDir = result.archiveDir!;
+    expect(fs.existsSync(archiveDir)).toBe(true);
+
+    expect(fs.readFileSync(path.join(archiveDir, 'team/worker/build.txt'), 'utf-8')).toBe('legacy-team-build');
+    expect(fs.readFileSync(path.join(archiveDir, 'attachments/img.png'), 'utf-8')).toBe('legacy-png');
+    expect(fs.readFileSync(path.join(archiveDir, 'installer-audit/strip.json'), 'utf-8')).toBe('{"k":"v"}');
+
+    expect(fs.existsSync(path.join(archiveDir, 'secrets.env'))).toBe(false);
+    expect(fs.existsSync(path.join(archiveDir, 'machine_id'))).toBe(false);
+    expect(fs.existsSync(path.join(archiveDir, 'restart-reason.json'))).toBe(false);
+  });
 });

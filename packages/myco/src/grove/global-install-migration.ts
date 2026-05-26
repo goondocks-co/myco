@@ -235,16 +235,24 @@ export function migrateProjectToGlobalInstall(
   removeEmptyConfigArtifacts(projectRoot, manifests);
 
   // Step 5b — purge legacy per-machine artifacts that the global-install
-  // model relocates. The data has been (or is being) lifted to its
-  // canonical home; leaving the project-vault copies behind is just
-  // cruft that pollutes `git status` for every committer.
-  const purgedArtifacts = purgeLegacyPerMachineArtifacts(vaultDir);
+  // model relocates. Items with a propagation target (machine_id,
+  // secrets.env) have been lifted already; items without one
+  // (attachments/, team/, installer-audit/) are MOVED into the archive
+  // dir before deletion so user data is preserved on a forensic path
+  // rather than destroyed. See PURGABLE_VAULT_ARTIFACTS.
+  const purgedArtifacts = purgeLegacyPerMachineArtifacts(vaultDir, archiveDirAbs);
 
   const noLegacyArtifacts =
     archivedFiles.length === 0
     && strippedSymbionts.length === 0
     && purgedArtifacts.length === 0;
-  const archiveDir = archivedFiles.length > 0 ? archiveDirAbs : null;
+  // archiveDir is non-null when EITHER step 2 archived co-tenant config OR
+  // step 5b moved a `mode: 'archive'` artifact into the directory.
+  const archivedAnything = archivedFiles.length > 0 ||
+    purgedArtifacts.some((rel) =>
+      PURGABLE_VAULT_ARTIFACTS.find((a) => a.rel === rel)?.mode === 'archive',
+    );
+  const archiveDir = archivedAnything ? archiveDirAbs : null;
 
   // Step 6 — sentinel write. Last step in the happy path; its presence
   // is the future-skip signal.
@@ -362,42 +370,66 @@ function cryptoRandomId(): string {
 }
 
 /**
- * Per-vault paths that the global-install model relocates. The data
- * has been lifted to `~/.myco/` (machine_id, last-update-version),
- * to the Grove (db/embeddings/buffer/logs/attachments), or never
- * belonged at the project level in the first place (secrets.env,
- * installer-audit, team/). The migration purges the project-vault
- * copies AFTER the lift completes — leaving them behind just
- * pollutes `git status` for every committer.
+ * Per-vault paths that the global-install model relocates. Each entry
+ * declares whether the artifact is safe to DELETE outright (already
+ * propagated or pure ephemera) or must be ARCHIVED before removal
+ * (potentially-valuable user data with no current propagation target).
  *
- * Conservative: only deletes paths that are clearly post-migrated
- * dead weight. Anything the daemon may still write to (daemon.json
- * during the same pass) stays — a separate cleanup tick can purge
- * those when the daemon stops at next restart.
+ * Per the `feedback_data_preservation.md` tenet — when in doubt,
+ * archive. The archive directory is gitignored (".archive-*"), so
+ * moving user data there gives a forensic trail without polluting
+ * `git status`.
+ *
+ * - `delete`: artifact has been propagated by an earlier step (machine_id,
+ *   secrets.env) or is ephemera the daemon regenerates on demand
+ *   (last-update-version, restart-reason.json). Security-sensitive items
+ *   intentionally land here so the archive doesn't carry a second copy
+ *   of user secrets.
+ *
+ * - `archive`: artifact contains user data (attachments, team/, the
+ *   per-symbiont installer-audit provenance) that the global-install
+ *   model has no in-tree migration target for. Move into the archive
+ *   directory instead of deleting; a future tick or user-initiated
+ *   recovery can pull from there if needed.
  */
-const PURGABLE_VAULT_ARTIFACTS = [
-  'machine_id',
-  'last-update-version',
-  'restart-reason.json',
-  'attachments',
-  'team',
-  'installer-audit',
-  'secrets.env',
+const PURGABLE_VAULT_ARTIFACTS: Array<{ rel: string; mode: 'delete' | 'archive' }> = [
+  { rel: 'machine_id',          mode: 'delete'  }, // propagated by propagateLegacyMachineId
+  { rel: 'last-update-version', mode: 'delete'  }, // daemon regenerates
+  { rel: 'restart-reason.json', mode: 'delete'  }, // ephemeral
+  { rel: 'attachments',         mode: 'archive' }, // user content
+  { rel: 'team',                mode: 'archive' }, // legacy team-sync state pre-Grove
+  { rel: 'installer-audit',     mode: 'archive' }, // per-symbiont strip provenance
+  { rel: 'secrets.env',         mode: 'delete'  }, // propagated by propagateLegacySecrets; not archived (security)
 ];
 
 /**
- * Delete the legacy per-machine artifacts listed above from the
- * project vault. Returns the relative paths actually removed for
- * audit-log diagnostics. Safe to run after `propagateLegacyMachineId`
- * — that step has already copied the value to the global cache before
- * we remove the legacy file here.
+ * Remove the legacy per-machine artifacts listed above from the project
+ * vault. Items declared `mode: 'archive'` are first MOVED into
+ * `archiveDirAbs/<rel>` (gitignored), preserving user data on a
+ * forensics path before the in-tree copy is removed. Items declared
+ * `mode: 'delete'` are removed directly.
+ *
+ * Returns the relative paths actually touched (archived OR deleted) for
+ * audit-log diagnostics. Safe to run after the upstream propagation
+ * steps — those steps have already lifted the data to its canonical
+ * home before this function fires.
  */
-function purgeLegacyPerMachineArtifacts(vaultDir: string): string[] {
+function purgeLegacyPerMachineArtifacts(vaultDir: string, archiveDirAbs: string): string[] {
   const removed: string[] = [];
-  for (const rel of PURGABLE_VAULT_ARTIFACTS) {
+  for (const { rel, mode } of PURGABLE_VAULT_ARTIFACTS) {
     const abs = path.join(vaultDir, rel);
     if (!fs.existsSync(abs)) continue;
     try {
+      if (mode === 'archive') {
+        const archiveTarget = path.join(archiveDirAbs, rel);
+        fs.mkdirSync(path.dirname(archiveTarget), { recursive: true });
+        // Best-effort copy → rm. cpSync handles both files and directories
+        // recursively and preserves contents; rmSync below cleans the
+        // original. We deliberately do NOT use fs.renameSync — it fails
+        // across filesystem boundaries (the archive dir and the vault
+        // could land on different mounts).
+        fs.cpSync(abs, archiveTarget, { recursive: true });
+      }
       fs.rmSync(abs, { recursive: true, force: true });
       removed.push(rel);
     } catch {
