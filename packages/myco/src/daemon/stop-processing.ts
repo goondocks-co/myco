@@ -399,17 +399,19 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     }
 
     // Update session with transcript metadata (no LLM calls).
-    // Use MAX of current DB count vs transcript-derived count — the incremental
-    // count from handleUserPrompt is authoritative during active sessions; the
-    // transcript parse may see fewer turns if the file is incomplete.
+    // NOTE: `prompt_count` and `tool_count` are NOT updated here.
+    // The batch/activity insert paths (`insertBatchStateless` /
+    // `insertBatch` / `insertActivityWithBatch`) atomically own those
+    // counters per the single-writer tenet — see `db/queries/batches.ts`
+    // and `db/queries/activities.ts`. Any cache override at Stop time
+    // would either be redundant (the inserts already bumped) or
+    // wrong (writing transcript-derived counts that don't match the
+    // actual row counts the readers care about). If transcript-mining
+    // detects missing batches, the right response is to INSERT those
+    // batches via reenrich, which bumps the cache as a side effect.
     const currentSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
-    const transcriptPromptCount = allTurns.length;
-    const transcriptToolCount = allTurns.reduce((sum, t) => sum + t.toolCount, 0);
-
     const updateFields: Record<string, unknown> = {
       transcript_path: hookTranscriptPath ?? null,
-      prompt_count: Math.max(transcriptPromptCount, currentSession?.prompt_count ?? 0),
-      tool_count: Math.max(transcriptToolCount, currentSession?.tool_count ?? 0),
     };
     if (user) updateFields.user = user;
     if (!hasTitle && sessionTitleCache.has(sessionId)) {
