@@ -356,58 +356,77 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     } // end runTranscriptPhase
 
     // --- Phase 2: Capture response + close session ---
+    //
+    // The body below is split into RESPONSE-phase work (close batches,
+    // set response_summary, defer git provenance, title fallback,
+    // triggerTitleSummary) and TRANSCRIPT-phase work (skill detection,
+    // populateBatchResponses, plan tags, plan-file reconciliation,
+    // image attachment, materializeCanopyAggregates). Single-phase
+    // symbionts (Claude Code / Codex / Copilot fire one Stop event
+    // declaring both phases) run everything once. Multi-phase symbionts
+    // (Windsurf splits across post_cascade_response + _with_transcript)
+    // run each side exactly once per turn.
+    //
+    // Without these gates, Windsurf's transcript event re-runs the
+    // response-side work — duplicate git-provenance jobs queued, second
+    // setResponseSummary against the same batch row, repeated
+    // closeOpenBatches no-op. /code-review finding C1.
 
-    // Get the latest batch BEFORE closing — this is the batch for the current turn.
+    // Reads used by both phases — computed once, gated side-effects below.
     const latestBatch = getLatestBatch(sessionId);
-
-    // Primary capture: put last_assistant_message on the TURN'S batch, not
-    // just the most recently inserted one. When a steering child nests under
-    // its parent, both batches belong to the same turn — there's only one
-    // combined assistant response, and it belongs on the parent so the UI's
-    // parent card renders it. The steering child's summary stays null
-    // (steering children never carry a response of their own).
-    // Fall back to the last parsed turn's aiResponse when the symbiont's stop
-    // payload omits `last_assistant_message` (e.g., Cursor), or when only the
-    // transcript carries the final text. Covers Cursor's per-turn transcript
-    // model, where the file is rewritten each turn and only contains the
-    // current one — we always want that single turn's response on the latest
-    // batch, regardless of prompt_number alignment.
     const latestTurnResponse = allTurns.length > 0 ? allTurns[allTurns.length - 1]?.aiResponse : undefined;
     const resolvedResponse = lastAssistantMessage || latestTurnResponse;
-    if (resolvedResponse && latestBatch && !latestBatch.response_summary) {
-      const summaryTarget = latestBatch.parent_prompt_batch_id
-        ? findOwningParent(latestBatch)
-        : latestBatch;
-      if (summaryTarget && !summaryTarget.response_summary) {
-        try { setResponseSummary(summaryTarget.id, resolvedResponse); }
-        catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
-      }
-    }
 
-    // Close open batches but do NOT close the session — the Stop hook fires
-    // after every assistant turn, not just session end. The session is closed
-    // when the SessionEnd hook fires (via /sessions/unregister).
-    closeOpenBatches(sessionId, epochSeconds());
-    if (latestBatch) {
-      deferGitProvenance({
-        projectRoot: requestProjectRoot,
-        projectId: requestRowProjectId,
-        machineId: requestMachineId,
-        sessionId,
-        promptBatchId: latestBatch.id,
-        capturePoint: 'prompt_batch_stop',
-        productionRef: requestProductionRef,
-        logger,
-      });
+    if (runResponsePhase) {
+      // Primary capture: put last_assistant_message on the TURN'S batch, not
+      // just the most recently inserted one. When a steering child nests under
+      // its parent, both batches belong to the same turn — there's only one
+      // combined assistant response, and it belongs on the parent so the UI's
+      // parent card renders it. The steering child's summary stays null
+      // (steering children never carry a response of their own).
+      // Fall back to the last parsed turn's aiResponse when the symbiont's stop
+      // payload omits `last_assistant_message` (e.g., Cursor), or when only the
+      // transcript carries the final text. Covers Cursor's per-turn transcript
+      // model, where the file is rewritten each turn and only contains the
+      // current one — we always want that single turn's response on the latest
+      // batch, regardless of prompt_number alignment.
+      if (resolvedResponse && latestBatch && !latestBatch.response_summary) {
+        const summaryTarget = latestBatch.parent_prompt_batch_id
+          ? findOwningParent(latestBatch)
+          : latestBatch;
+        if (summaryTarget && !summaryTarget.response_summary) {
+          try { setResponseSummary(summaryTarget.id, resolvedResponse); }
+          catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
+        }
+      }
+
+      // Close open batches but do NOT close the session — the Stop hook fires
+      // after every assistant turn, not just session end. The session is closed
+      // when the SessionEnd hook fires (via /sessions/unregister).
+      closeOpenBatches(sessionId, epochSeconds());
+      if (latestBatch) {
+        deferGitProvenance({
+          projectRoot: requestProjectRoot,
+          projectId: requestRowProjectId,
+          machineId: requestMachineId,
+          sessionId,
+          promptBatchId: latestBatch.id,
+          capturePoint: 'prompt_batch_stop',
+          productionRef: requestProductionRef,
+          logger,
+        });
+      }
     }
 
     // Derive a simple title from the first user prompt — but only if the
     // session has no title yet. Once the LLM (or anything else) sets a title,
-    // stop overwriting it with the fallback.
+    // stop overwriting it with the fallback. Runs on response phase so the
+    // title shows up immediately; the idempotent `!hasTitle` guard makes a
+    // second run on transcript phase a safe no-op for single-phase symbionts.
     const existingSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
     const hasTitle = existingSession?.title !== null && existingSession?.title !== undefined;
 
-    if (!hasTitle) {
+    if (runResponsePhase && !hasTitle) {
       let title = sessionTitleCache.get(sessionId) ?? null;
       if (!title) {
         const firstBatch = listBatchesBySession(sessionId, { limit: 1, scope: ALL_PROJECTS_SCOPE })[0];
@@ -450,8 +469,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1], ALL_PROJECTS_SCOPE);
 
     // Detect skill usage from transcript content (best-effort, non-blocking).
-    // Skip transcript I/O entirely when detection is disabled.
-    if (SKILL_USAGE_DETECTION_ENABLED) {
+    // Skip transcript I/O entirely when detection is disabled OR this event
+    // is the response-only half of a two-phase symbiont split.
+    if (runTranscriptPhase && SKILL_USAGE_DETECTION_ENABLED) {
       try {
         let transcriptText: string | null = null;
         if (hookTranscriptPath) {
@@ -475,16 +495,19 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // batches get their response_summary filled even when the transcript's
     // turn order doesn't align with batch insertion order (Cursor starts its
     // transcript mid-session, daemon restarts renumber prompts, etc.).
-    const transcriptResponses = allTurns
-      .filter((t) => t.prompt && t.aiResponse)
-      .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }));
+    // Gated on transcript phase — allTurns is empty until Phase 1 runs.
+    const transcriptResponses = runTranscriptPhase
+      ? allTurns
+          .filter((t) => t.prompt && t.aiResponse)
+          .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }))
+      : [];
     if (transcriptResponses.length > 0) {
       try { populateBatchResponses(sessionId, transcriptResponses); }
       catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to populate batch responses', { error: String(err) }); }
     }
 
     // --- Plan tag extraction from transcript responses ---
-    if (deps.planTags.length > 0) {
+    if (runTranscriptPhase && deps.planTags.length > 0) {
       for (const turn of allTurns) {
         if (!turn.aiResponse) continue;
         const taggedPlans = extractTaggedPlans(turn.aiResponse, deps.planTags);
@@ -526,7 +549,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const sessionBatches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
 
     const planCaptureRoot = requestFilesystemRoot;
-    for (const watchDir of planWatchConfig.watchDirs) {
+    // Plan-file reconciliation gated on transcript phase so two-phase
+    // symbionts don't double-scan the watch dirs per turn.
+    if (runTranscriptPhase) for (const watchDir of planWatchConfig.watchDirs) {
       const absoluteWatchDir = resolvePlanWatchDir(watchDir, planCaptureRoot);
       if (!fs.existsSync(absoluteWatchDir)) continue;
 
@@ -572,8 +597,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       }
     }
 
-    // Trigger title/summary if the session still needs one.
-    if (!hasTitle) {
+    // Trigger title/summary if the session still needs one. Runs on
+    // response phase for early visibility; idempotent if called again.
+    if (runResponsePhase && !hasTitle) {
       triggerTitleSummary(sessionId);
     }
 
@@ -581,7 +607,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // After context compaction, transcript turn indices no longer match batch prompt_numbers.
     // Instead, match each turn to its batch by prompt text (content-based, not position-based).
     // Binary data is stored in the DB BLOB column; DB uses ON CONFLICT DO NOTHING → idempotent.
-    for (let i = 0; i < allTurns.length; i++) {
+    // Gated on transcript phase — allTurns is empty until the transcript is mined.
+    if (runTranscriptPhase) for (let i = 0; i < allTurns.length; i++) {
       const turn = allTurns[i];
       if (!turn.images?.length) continue;
 
@@ -616,25 +643,33 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       });
     }
 
-    logger.info(LOG_KINDS.PROCESSOR_SESSION, 'Session captured', {
-      session_id: sessionId,
-      turns: allTurns.length,
-      source: turnSource,
-      title: existingSession?.title ?? sessionTitleCache.get(sessionId) ?? '(untitled)',
-    });
+    // Final-state markers run on transcript phase only. For single-phase
+    // symbionts this still fires once (their Stop declares both phases).
+    // For Windsurf, this lands on post_cascade_response_with_transcript,
+    // which is the second of the two events and the one carrying the
+    // mined turns — the correct point to log "Session captured" and
+    // materialize Canopy aggregates.
+    if (runTranscriptPhase) {
+      logger.info(LOG_KINDS.PROCESSOR_SESSION, 'Session captured', {
+        session_id: sessionId,
+        turns: allTurns.length,
+        source: turnSource,
+        title: existingSession?.title ?? sessionTitleCache.get(sessionId) ?? '(untitled)',
+      });
 
-    // Materialize Canopy aggregates onto the sessions row. Pure SQL over
-    // already-persisted activities — safe to run after every Stop. Internal
-    // failure is swallowed by materializeCanopyAggregates so it never blocks
-    // the rest of the Stop pipeline.
-    materializeCanopyAggregates(sessionId);
+      // Materialize Canopy aggregates onto the sessions row. Pure SQL over
+      // already-persisted activities — safe to run after every Stop. Internal
+      // failure is swallowed by materializeCanopyAggregates so it never blocks
+      // the rest of the Stop pipeline.
+      materializeCanopyAggregates(sessionId);
 
-    // Materialize per-(tool, op) Myco tool-call counts into
-    // `session_myco_tool_calls`. Same pattern: pure SQL over the activity
-    // log, internal failures swallowed. Replaces the dispatch-time
-    // `canopy_map_tool_calls` counter that depended on a transport-supplied
-    // sessionId and silently produced zeros for several symbionts.
-    materializeSessionMycoToolCalls(sessionId);
+      // Materialize per-(tool, op) Myco tool-call counts into
+      // `session_myco_tool_calls`. Same pattern: pure SQL over the activity
+      // log, internal failures swallowed. Replaces the dispatch-time
+      // `canopy_map_tool_calls` counter that depended on a transport-supplied
+      // sessionId and silently produced zeros for several symbionts.
+      materializeSessionMycoToolCalls(sessionId);
+    }
   }
 
   const handleStopRoute: RouteHandler = async (req) => {

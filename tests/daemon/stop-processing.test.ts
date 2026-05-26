@@ -653,4 +653,66 @@ describe('createStopProcessor session capture rules', () => {
     fs.rmSync(worktreeRoot, { recursive: true, force: true });
   });
 
+  // Regression for /code-review finding C1: a Stop event declaring only
+  // `phases: ['response']` (Windsurf's post_cascade_response, no transcript)
+  // must run the response-phase side effects exactly once. A follow-up
+  // `phases: ['transcript']` event (post_cascade_response_with_transcript)
+  // must NOT re-fire setResponseSummary / closeOpenBatches / deferGitProvenance.
+  // Before the gate fix, every transcript-phase event re-ran the response
+  // block and queued a duplicate git-provenance job per turn.
+  it('two-phase split: response-only event sets response_summary; transcript-only event does not re-set it', async () => {
+    const sessionId = 'two-phase-windsurf-001';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'windsurf',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    const batch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'two-phase prompt',
+      started_at: now,
+      created_at: now,
+    });
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    // Phase 1 — response event. Sets response_summary, closes batches.
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'windsurf',
+        last_assistant_message: 'phase 1 reply',
+        phases: ['response'],
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+
+    const afterResponse = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+      .find((b) => b.id === batch.id)!;
+    expect(afterResponse.response_summary).toBe('phase 1 reply');
+
+    // Phase 2 — transcript event. last_assistant_message intentionally different
+    // (Windsurf doesn't carry response text on the with_transcript event), so if
+    // the response-side block re-fired against a different lastAssistantMessage
+    // we'd see a stale-overwrite. The `!latestBatch.response_summary` guard plus
+    // the new runResponsePhase gate together ensure the summary stays put.
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'windsurf',
+        last_assistant_message: 'phase 2 stray text (should be ignored)',
+        phases: ['transcript'],
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+
+    const afterTranscript = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+      .find((b) => b.id === batch.id)!;
+    expect(afterTranscript.response_summary).toBe('phase 1 reply');
+  });
+
 });
