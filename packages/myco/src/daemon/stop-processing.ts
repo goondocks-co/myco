@@ -812,7 +812,23 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     });
 
     const prev = activeStopProcessing ?? Promise.resolve();
-    activeStopProcessing = prev.then(run).finally(() => { activeStopProcessing = null; });
+    // Chain the new run after prev, then null out activeStopProcessing
+    // only if THIS chain is still the registered head — without this
+    // guard, the older chain's `.finally` clobbers a newer chain's
+    // reference whenever two stop events arrive in quick succession:
+    //   t0  event A → activeStopProcessing = chainA(.finally→null)
+    //   t1  event B → activeStopProcessing = chainB(.finally→null)
+    //   t2  chainA resolves → its .finally fires and sets
+    //       activeStopProcessing = null even though chainB is still
+    //       running. getActiveProcessing() consumers (shutdown drain,
+    //       tests) then proceed on what looks like an idle queue and
+    //       can interrupt chainB mid-write. /code-review finding C5.
+    const chain: Promise<void> = prev.then(run).finally(() => {
+      if (activeStopProcessing === chain) {
+        activeStopProcessing = null;
+      }
+    });
+    activeStopProcessing = chain;
 
     return { body: { ok: true } };
   };

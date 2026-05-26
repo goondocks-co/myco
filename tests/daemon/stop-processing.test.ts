@@ -715,4 +715,38 @@ describe('createStopProcessor session capture rules', () => {
     expect(afterTranscript.response_summary).toBe('phase 1 reply');
   });
 
+  // Regression for /code-review finding C5: when two Stop events arrive
+  // in quick succession, the older chain's `.finally` must NOT clobber
+  // the newer chain's `activeStopProcessing` reference.
+  it('activeStopProcessing tracks the latest chain, not the resolving one', async () => {
+    const sessionA = 'race-session-A-001';
+    const sessionB = 'race-session-B-002';
+    const now = epochNow();
+    upsertSession({ id: sessionA, agent: 'claude-code', status: 'active', started_at: now, created_at: now });
+    upsertSession({ id: sessionB, agent: 'claude-code', status: 'active', started_at: now, created_at: now });
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    // Fire two stop events back-to-back. handleStopRoute is fire-and-forget
+    // (returns { ok: true } synchronously) and chains the actual processing
+    // through activeStopProcessing.
+    await stopProcessor.handleStopRoute({
+      body: { session_id: sessionA, agent: 'claude-code', last_assistant_message: 'A' },
+    } as never);
+    await stopProcessor.handleStopRoute({
+      body: { session_id: sessionB, agent: 'claude-code', last_assistant_message: 'B' },
+    } as never);
+
+    // While the chain is still in flight, activeStopProcessing must be
+    // non-null (the new chain registered after A's chain settled would
+    // pre-fix have been clobbered to null by A's finally).
+    const inFlight = stopProcessor.getActiveProcessing();
+    expect(inFlight).not.toBeNull();
+
+    // Drain — after both chains complete, the reference should be null
+    // exactly once.
+    await stopProcessor.getActiveProcessing();
+    expect(stopProcessor.getActiveProcessing()).toBeNull();
+  });
+
 });
