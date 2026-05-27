@@ -89,6 +89,18 @@ mock.module('@myco/agent/harness/index.js', () => ({
   getAgentHarness: () => fakeRuntime,
 }));
 
+// Per-phase preCondition resolver — programmable per test.
+let phasePreConditionResult: { passed: boolean; reason: string } = { passed: true, reason: 'default-pass' };
+mock.module('@myco/agent/phase-preconditions.js', () => ({
+  checkPhasePreCondition: () => phasePreConditionResult,
+}));
+
+// projectScopeFromRequestContext is called only when a requestContext is
+// present; tests that supply one need a non-throwing stub.
+mock.module('@myco/tools/request-context.js', () => ({
+  projectScopeFromRequestContext: () => ({ kind: 'all' as const }),
+}));
+
 // Cost resolution is async but doesn't need real numbers here.
 mock.module('@myco/agent/cost/index.js', () => ({
   resolveCost: async () => ({
@@ -185,6 +197,7 @@ beforeEach(() => {
   defaultRuntimeBehavior = { kind: 'success' };
   capturedExecuteInputs = [];
   runtimeSupportsSessionResume = false;
+  phasePreConditionResult = { passed: true, reason: 'default-pass' };
 });
 
 // ---------------------------------------------------------------------------
@@ -301,6 +314,58 @@ describe('executePhase', () => {
     // allowedMaxTurns is still recorded on every failure so the audit trail
     // can show the budget the failure was operating against.
     expect(result.allowedMaxTurns).toBe(35);
+  });
+
+  it('skips the phase entirely (no harness invocation) when preCondition fails', async () => {
+    phasePreConditionResult = { passed: false, reason: 'Only 1 active spores in last 24h (need ≥3)' };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.summary).toContain('has-recent-spore-activity');
+    expect(result.summary).toContain('Only 1 active spores');
+    expect(capturedExecuteInputs).toHaveLength(0);
+    expect(result.turnsUsed).toBe(0);
+    expect(result.costUsd).toBe(0);
+  });
+
+  it('runs the phase normally when preCondition passes', async () => {
+    phasePreConditionResult = { passed: true, reason: 'plenty of spores' };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('silently bypasses the preCondition check when no requestContext is available', async () => {
+    // requestContext-less paths (some test/embedded callers) should still
+    // run — the gate is opt-in, not a hard requirement.
+    phasePreConditionResult = { passed: false, reason: 'should not be consulted' };
+    const ctx = baseContext({ requestContext: undefined });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(capturedExecuteInputs).toHaveLength(1);
   });
 
   it('reports abort reason when the run is aborted mid-execution', async () => {

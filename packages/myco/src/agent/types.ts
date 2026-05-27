@@ -33,6 +33,20 @@ export interface AgentDefinition {
  * run concurrently via `Promise.allSettled()`. Each phase gets its own `query()`
  * call with scoped tools, turn limit, and isolated provider env.
  */
+/**
+ * Per-phase preCondition kinds. Distinct from the daemon's task-level
+ * `PreCondition` enum because phase-level checks run at a different
+ * scope (during a task run, against the pinned project DB) and answer
+ * different questions ("does THIS phase have work?" vs "does the task
+ * have any work at all?").
+ *
+ * The phase-level check is mechanical: deterministic SQL, no LLM turns.
+ * When it returns false, the phase is recorded as `skipped` and no
+ * harness call is made — saving the turns that would otherwise be spent
+ * discovering "nothing to do" via tool calls.
+ */
+export type PhasePreConditionKind = 'has-recent-spore-activity';
+
 export interface PhaseDefinition {
   name: string;
   prompt: string;
@@ -49,6 +63,13 @@ export interface PhaseDefinition {
   skipPriorContext?: boolean;
   /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
   readOnly?: boolean;
+  /**
+   * Optional mechanical precondition. When set, the phase loop runs the
+   * registered SQL check before composing the prompt; on false the phase
+   * is recorded as `skipped` and the harness is not invoked. Use to
+   * prevent paying for LLM turns that would only discover "no work."
+   */
+  preCondition?: PhasePreConditionKind;
 
   // --- Map mode (mode === 'map') -------------------------------------------
   /** Phase execution mode. Unset/`agent` = free-form (existing). `map` = drain mode. */

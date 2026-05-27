@@ -211,71 +211,116 @@ phases:
     maxTurns: 10
     required: false
 
-  - name: consolidate
-    reasoningLevel: default
+  # ---- Consolidate: cheap shortlist (haiku) → expensive write (sonnet) ----
+  # Splitting the original 25-turn sonnet phase saves ~50% of consolidate
+  # cost. The shortlist is search-heavy retrieval work that doesn't need
+  # judgment — haiku does it for ~5× less per token. Only the wisdom
+  # synthesis itself runs on sonnet.
+
+  - name: consolidate-shortlist
+    reasoningLevel: low
     dependsOn: [extract]
+    readOnly: true
+    # Mechanical gate: skip entirely if no recent spore activity. The
+    # consolidate phases exist to merge/supersede related spores, which
+    # is impossible without at least 3 active spores in the recent
+    # window. The check is project-scoped SQL, runs in zero LLM turns.
+    preCondition: has-recent-spore-activity
     prompt: |
-      Consolidate related spores into wisdom and clean up redundancy.
-      The vault must get SHARPER over time, not just bigger.
+      Find consolidation candidates. This is the cheap retrieval pass —
+      a later phase (`consolidate-write`) does any actual wisdom creation
+      or supersession based on your shortlist.
 
-      Spores may exist that were created outside this run's extract phase
-      (for example by a coding agent or manual curation). You may still
-      consolidate those when it materially sharpens the vault.
-      Stay focused on recent or high-signal active spores; do not perform an
-      exhaustive crawl if the first few targeted searches show no action.
+      Stay focused on recent or high-signal active spores; do not perform
+      an exhaustive crawl if the first few targeted searches show no action.
 
-      ## Step 1: Find clusters safely (budget: 5 turns)
+      ## Step 1: Search for clusters (budget: 6 turns)
 
-      1. Start with targeted `vault_search_semantic` queries for themes from the
-         current extract phase and other likely consolidation targets.
-      2. Use the semantic results as a shortlist: note their IDs, titles/previews,
-         and similarity scores.
-      3. For any candidate you need to read in full, call `vault_spores` with
-         `ids: [...]` to fetch ONLY those exact spores. Do not bulk-read an
-         entire high-volume type when exact-ID reads will do.
-      4. Use broad `vault_spores` listings only when the payload is small enough
-         to inspect safely.
+      1. Run targeted `vault_search_semantic` queries for themes touched by
+         the current extract phase and other likely consolidation targets.
+      2. For any candidate you need to inspect in full, call `vault_spores`
+         with `ids: [...]` — never bulk-read an entire high-volume type.
+      3. Skip spores with status "consolidated" or "superseded" to prevent
+         cycles.
 
-      ## Decision tree
+      ## Step 2: Emit a STRUCTURED shortlist (budget: 2 turns)
 
-      - **3+ related active spores on same topic** → create wisdom, consolidate all
-      - **Exactly 2 related spores** → keep the better one, supersede the weaker
-      - **1 spore (no duplicates)** → no action
+      Your final message MUST be parseable by the next phase. Use this
+      exact format. If no clusters meet the bar, emit only the SKIP line
+      and call `vault_report` with action "skip".
 
-      ## Step 2: Create wisdom (budget: 8 turns)
+      ```
+      SHORTLIST v1
+      cluster: <one-line topic name>
+        action: wisdom           # 3+ related active spores on same topic
+        source_ids: [id1, id2, id3, ...]
+        rationale: <why these belong together — 1 line>
 
-      When you find 3+ related active spores on the same topic:
-      1. Create a wisdom spore via `vault_create_spore`:
-         - observation_type: "wisdom"
-         - properties: '{"consolidated_from": ["id-1", "id-2", "id-3"]}'
-         - Content MUST preserve ALL specific details from sources —
-           file paths, error messages, concrete values. Wisdom is a
-           comprehensive reference, not a vague summary.
-      2. Resolve EACH source via `vault_resolve_spore` action "consolidate"
-         — this removes them from search results and context injection
+      cluster: <topic>
+        action: supersede        # exactly 2 spores; the newer/richer wins
+        keep_id: <id of winner>
+        old_id: <id to supersede>
+        rationale: <1 line>
+      ```
 
-      ## Step 3: Supersede stale spores (budget: 5 turns)
+      Hard cap: emit at most 3 clusters per run. The downstream write
+      phase has a small budget; over-feeding it produces nothing extra.
 
-      Also look for spores that are outdated or contradicted by newer ones:
-      - If two spores describe the same thing but one is more recent/detailed,
-        supersede the older one via `vault_resolve_spore` action "supersede"
-      - Never supersede a spore you have not actually read in full via
-        `vault_spores(ids: [...])`
-      - Superseded spores stay in the DB but are removed from search and
-        context injection — this keeps the vault relevant
+      If `vault_search_semantic` returns no results (embedding unavailable),
+      report action "skip" and finish.
 
-      Skip spores with status "consolidated" or "superseded" to prevent cycles.
-
-      If `vault_search_semantic` returns no results (embedding unavailable), report
-      action "skip" and move on.
+      Final summary MUST be ≤ 25 lines (the shortlist block plus a brief
+      header). No prose recap of what you searched.
     tools:
       - vault_spores
       - vault_search_semantic
       - vault_release_state
+      - vault_report
+    maxTurns: 18
+    required: false
+
+  - name: consolidate-write
+    reasoningLevel: default
+    dependsOn: [consolidate-shortlist]
+    prompt: |
+      Execute the shortlist from `consolidate-shortlist`. The judgment
+      work — content synthesis, preserving specific details — needs the
+      default tier; cheap retrieval already happened upstream.
+
+      If the shortlist was empty or marked SKIP, call `vault_report` with
+      action "skip" and finish immediately.
+
+      ## For each `action: wisdom` cluster
+
+      1. (Optional, 1 turn) Re-read the source spores in full via
+         `vault_spores(ids: [...])` if the shortlist didn't include enough
+         body text to synthesize from. Skip if you already have what you need.
+      2. Create a wisdom spore via `vault_create_spore`:
+         - observation_type: "wisdom"
+         - properties: '{"consolidated_from": [<source_ids>]}'
+         - Content MUST preserve ALL specific details from sources —
+           file paths, error messages, concrete values. Wisdom is a
+           comprehensive reference, not a vague summary.
+      3. Resolve EACH source via `vault_resolve_spore` action "consolidate"
+         — this removes them from search and context injection.
+
+      ## For each `action: supersede` cluster
+
+      1. (Required) Read the keep spore in full via `vault_spores(ids: [<keep_id>])`
+         to confirm it actually subsumes the old one. Never supersede on
+         the shortlist's word alone.
+      2. Call `vault_resolve_spore` action "supersede" with new_spore_id =
+         keep_id and old_spore_id = old_id.
+
+      Final summary MUST be ≤ 5 lines: how many wisdom spores created, how
+      many supersedes applied, anything skipped. No retelling of the shortlist.
+    tools:
+      - vault_spores
+      - vault_release_state
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
-    maxTurns: 25
+    maxTurns: 10
     required: false
 
   # ---- Digest: assess + 3 parallel tier writes ----
@@ -284,7 +329,7 @@ phases:
 
   - name: digest-assess
     reasoningLevel: default
-    dependsOn: [consolidate]
+    dependsOn: [consolidate-write]
     prompt: |
       Gather material for AT MOST ONE digest tier update per run. The
       rotation decision is made by the `vault_read_digest` tool, not
@@ -473,7 +518,7 @@ phases:
 
   - name: report
     reasoningLevel: low
-    dependsOn: [extract, summarize, consolidate, digest-assess, digest-10000, digest-5000, digest-1500]
+    dependsOn: [extract, summarize, consolidate-shortlist, consolidate-write, digest-assess, digest-10000, digest-5000, digest-1500]
     prompt: |
       Summarize what was done across all phases.
 

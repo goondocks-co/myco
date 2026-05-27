@@ -644,21 +644,39 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "onItemError": "skip"
       },
       {
-        "name": "consolidate",
-        "prompt": "Consolidate related spores into wisdom and clean up redundancy.\nThe vault must get SHARPER over time, not just bigger.\n\nSpores may exist that were created outside this run's extract phase\n(for example by a coding agent or manual curation). You may still\nconsolidate those when it materially sharpens the vault.\nStay focused on recent or high-signal active spores; do not perform an\nexhaustive crawl if the first few targeted searches show no action.\n\n## Step 1: Find clusters safely (budget: 5 turns)\n\n1. Start with targeted `vault_search_semantic` queries for themes from the\n   current extract phase and other likely consolidation targets.\n2. Use the semantic results as a shortlist: note their IDs, titles/previews,\n   and similarity scores.\n3. For any candidate you need to read in full, call `vault_spores` with\n   `ids: [...]` to fetch ONLY those exact spores. Do not bulk-read an\n   entire high-volume type when exact-ID reads will do.\n4. Use broad `vault_spores` listings only when the payload is small enough\n   to inspect safely.\n\n## Decision tree\n\n- **3+ related active spores on same topic** → create wisdom, consolidate all\n- **Exactly 2 related spores** → keep the better one, supersede the weaker\n- **1 spore (no duplicates)** → no action\n\n## Step 2: Create wisdom (budget: 8 turns)\n\nWhen you find 3+ related active spores on the same topic:\n1. Create a wisdom spore via `vault_create_spore`:\n   - observation_type: \"wisdom\"\n   - properties: '{\"consolidated_from\": [\"id-1\", \"id-2\", \"id-3\"]}'\n   - Content MUST preserve ALL specific details from sources —\n     file paths, error messages, concrete values. Wisdom is a\n     comprehensive reference, not a vague summary.\n2. Resolve EACH source via `vault_resolve_spore` action \"consolidate\"\n   — this removes them from search results and context injection\n\n## Step 3: Supersede stale spores (budget: 5 turns)\n\nAlso look for spores that are outdated or contradicted by newer ones:\n- If two spores describe the same thing but one is more recent/detailed,\n  supersede the older one via `vault_resolve_spore` action \"supersede\"\n- Never supersede a spore you have not actually read in full via\n  `vault_spores(ids: [...])`\n- Superseded spores stay in the DB but are removed from search and\n  context injection — this keeps the vault relevant\n\nSkip spores with status \"consolidated\" or \"superseded\" to prevent cycles.\n\nIf `vault_search_semantic` returns no results (embedding unavailable), report\naction \"skip\" and move on.\n",
+        "name": "consolidate-shortlist",
+        "prompt": "Find consolidation candidates. This is the cheap retrieval pass —\na later phase (`consolidate-write`) does any actual wisdom creation\nor supersession based on your shortlist.\n\nStay focused on recent or high-signal active spores; do not perform\nan exhaustive crawl if the first few targeted searches show no action.\n\n## Step 1: Search for clusters (budget: 6 turns)\n\n1. Run targeted `vault_search_semantic` queries for themes touched by\n   the current extract phase and other likely consolidation targets.\n2. For any candidate you need to inspect in full, call `vault_spores`\n   with `ids: [...]` — never bulk-read an entire high-volume type.\n3. Skip spores with status \"consolidated\" or \"superseded\" to prevent\n   cycles.\n\n## Step 2: Emit a STRUCTURED shortlist (budget: 2 turns)\n\nYour final message MUST be parseable by the next phase. Use this\nexact format. If no clusters meet the bar, emit only the SKIP line\nand call `vault_report` with action \"skip\".\n\n```\nSHORTLIST v1\ncluster: <one-line topic name>\n  action: wisdom           # 3+ related active spores on same topic\n  source_ids: [id1, id2, id3, ...]\n  rationale: <why these belong together — 1 line>\n\ncluster: <topic>\n  action: supersede        # exactly 2 spores; the newer/richer wins\n  keep_id: <id of winner>\n  old_id: <id to supersede>\n  rationale: <1 line>\n```\n\nHard cap: emit at most 3 clusters per run. The downstream write\nphase has a small budget; over-feeding it produces nothing extra.\n\nIf `vault_search_semantic` returns no results (embedding unavailable),\nreport action \"skip\" and finish.\n\nFinal summary MUST be ≤ 25 lines (the shortlist block plus a brief\nheader). No prose recap of what you searched.\n",
         "tools": [
           "vault_spores",
           "vault_search_semantic",
+          "vault_release_state",
+          "vault_report"
+        ],
+        "maxTurns": 18,
+        "reasoningLevel": "low",
+        "required": false,
+        "dependsOn": [
+          "extract"
+        ],
+        "readOnly": true,
+        "preCondition": "has-recent-spore-activity",
+        "onItemError": "skip"
+      },
+      {
+        "name": "consolidate-write",
+        "prompt": "Execute the shortlist from `consolidate-shortlist`. The judgment\nwork — content synthesis, preserving specific details — needs the\ndefault tier; cheap retrieval already happened upstream.\n\nIf the shortlist was empty or marked SKIP, call `vault_report` with\naction \"skip\" and finish immediately.\n\n## For each `action: wisdom` cluster\n\n1. (Optional, 1 turn) Re-read the source spores in full via\n   `vault_spores(ids: [...])` if the shortlist didn't include enough\n   body text to synthesize from. Skip if you already have what you need.\n2. Create a wisdom spore via `vault_create_spore`:\n   - observation_type: \"wisdom\"\n   - properties: '{\"consolidated_from\": [<source_ids>]}'\n   - Content MUST preserve ALL specific details from sources —\n     file paths, error messages, concrete values. Wisdom is a\n     comprehensive reference, not a vague summary.\n3. Resolve EACH source via `vault_resolve_spore` action \"consolidate\"\n   — this removes them from search and context injection.\n\n## For each `action: supersede` cluster\n\n1. (Required) Read the keep spore in full via `vault_spores(ids: [<keep_id>])`\n   to confirm it actually subsumes the old one. Never supersede on\n   the shortlist's word alone.\n2. Call `vault_resolve_spore` action \"supersede\" with new_spore_id =\n   keep_id and old_spore_id = old_id.\n\nFinal summary MUST be ≤ 5 lines: how many wisdom spores created, how\nmany supersedes applied, anything skipped. No retelling of the shortlist.\n",
+        "tools": [
+          "vault_spores",
           "vault_release_state",
           "vault_create_spore",
           "vault_resolve_spore",
           "vault_report"
         ],
-        "maxTurns": 25,
+        "maxTurns": 10,
         "reasoningLevel": "default",
         "required": false,
         "dependsOn": [
-          "extract"
+          "consolidate-shortlist"
         ],
         "onItemError": "skip"
       },
@@ -677,7 +695,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "reasoningLevel": "default",
         "required": true,
         "dependsOn": [
-          "consolidate"
+          "consolidate-write"
         ],
         "onItemError": "skip"
       },
@@ -745,7 +763,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "extract",
           "summarize",
-          "consolidate",
+          "consolidate-shortlist",
+          "consolidate-write",
           "digest-assess",
           "digest-10000",
           "digest-5000",

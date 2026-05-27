@@ -50,6 +50,8 @@ import { aggregateUsage } from './executor-state.js';
 import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
+import { checkPhasePreCondition } from './phase-preconditions.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 
 /**
  * Detect the SDK's "reached the max-turns budget" error from its message.
@@ -144,6 +146,39 @@ export async function executePhase(
   }
 
   const logger = ctx.options?.logger;
+
+  // Mechanical per-phase preCondition. Runs before harness invocation so a
+  // false check costs zero LLM turns. Required phases respect the check
+  // identically — if the data isn't there, an LLM run can't fabricate it.
+  // Counter failure is non-fatal (logged + fall through) so a transient SQL
+  // error never stops scheduled work.
+  if (phase.preCondition && ctx.requestContext) {
+    try {
+      const scope = projectScopeFromRequestContext(ctx.requestContext);
+      const result = checkPhasePreCondition(phase.preCondition, scope);
+      if (!result.passed) {
+        logger?.info('agent.phase.skip-precondition', `Phase ${phase.name} skipped: preCondition not met`, {
+          runId: ctx.runId,
+          phase: phase.name,
+          preCondition: phase.preCondition,
+          reason: result.reason,
+        });
+        return buildPhaseResult({
+          name: phase.name,
+          status: 'skipped',
+          summary: `Skipped (preCondition "${phase.preCondition}"): ${result.reason}`,
+        });
+      }
+    } catch (err) {
+      logger?.warn('agent.phase.precondition-error', `Phase ${phase.name} preCondition check threw — proceeding to run`, {
+        runId: ctx.runId,
+        phase: phase.name,
+        preCondition: phase.preCondition,
+        error: toErrorMessage(err),
+      });
+    }
+  }
+
   const harness = getAgentHarness(ctx.config.harness);
   logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
     runId: ctx.runId,

@@ -169,6 +169,9 @@ const MapPhaseSinkSchema = z.object({
   argMap: z.record(z.string(), z.string()).default({}),
 });
 
+/** Phase-level preCondition kinds. See PhasePreConditionKind in types.ts. */
+const PhasePreConditionSchema = z.enum(['has-recent-spore-activity']);
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -182,6 +185,7 @@ export const PhaseDefinitionSchema = z.object({
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
+  preCondition: PhasePreConditionSchema.optional(),
 
   // --- Map mode -------------------------------------------------------------
   mode: z.enum(['agent', 'map']).optional(),

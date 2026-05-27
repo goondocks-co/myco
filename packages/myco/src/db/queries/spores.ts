@@ -326,6 +326,26 @@ export function countSporesSince(sinceEpoch: number): number {
 }
 
 /**
+ * Project-scoped variant of `countSporesSince` — narrows to a single
+ * project. Used by per-phase preConditions to decide whether a
+ * consolidation phase has enough recent material to be worth running
+ * (cheaper than an LLM "is there anything to do" probe).
+ */
+export function countSporesInProjectSince(
+  scope: ProjectScope,
+  sinceEpoch: number,
+): number {
+  const db = getDatabase();
+  const conditions: string[] = ['created_at > ?', "status = 'active'"];
+  const params: unknown[] = [sinceEpoch];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM spores WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as { count: number };
+  return row.count;
+}
+
+/**
  * List active spore IDs created after a given timestamp, ordered newest first.
  */
 export function listSporeIdsSince(sinceEpoch: number, limit = 20): string[] {
