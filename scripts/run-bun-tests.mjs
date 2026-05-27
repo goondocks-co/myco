@@ -137,7 +137,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/agent/provider-harness.test.ts',
       'tests/agent/provider.test.ts',
       'tests/agent/run-accounting.test.ts',
-      'tests/agent/runtime-claude.test.ts',
       'tests/agent/schemas.test.ts',
       'tests/agent/skill-candidate-evidence.test.ts',
       'tests/agent/skill-candidate-quality.test.ts',
@@ -145,6 +144,11 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/agent/skill-staging.test.ts',
       'tests/agent/tools-dry-run.test.ts',
       'tests/agent/tools/canopy-tools.test.ts',
+      // tests/agent/runtime-claude.test.ts intentionally omitted: it has
+      // top-level bun mock.module() calls for @myco/agent/provider.js and
+      // @myco/agent/harness/claude-code-executable.js. Those mocks are
+      // process-global and can poison provider/executable tests when Bun's
+      // platform-dependent file order runs runtime-claude first.
     ],
   },
   {
