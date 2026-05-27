@@ -90,6 +90,18 @@ export const PROMPT_BATCH_ORIGIN = {
 
 export type PromptBatchOrigin = typeof PROMPT_BATCH_ORIGIN[keyof typeof PROMPT_BATCH_ORIGIN];
 
+/**
+ * Default origin filter for intelligence tasks (vault-evolve, extract-only,
+ * etc.) and their scheduler counters. Excludes harness-injected `system`
+ * batches (env_context, task notifications, skill envelopes) and
+ * `agent_dispatch` sub-agent return prompts — neither carries user intent
+ * and reasoning over them wastes LLM turns. Callers that genuinely need
+ * the broader set (e.g. title-summary, classification) opt in explicitly.
+ */
+export const INTELLIGENCE_DEFAULT_ORIGINS: readonly PromptBatchOrigin[] = [
+  PROMPT_BATCH_ORIGIN.HUMAN,
+];
+
 const VALID_ORIGINS = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
 
 /**
@@ -377,9 +389,21 @@ export function populateBatchResponses(
  * in `status = 'active'` are excluded — intelligence tasks opt in to this
  * so they don't reason over in-flight work. The default is permissive to
  * preserve behavior for tests and any non-agent caller.
+ *
+ * `origins` narrows the result to specific `prompt_batches.origin` values.
+ * Intelligence tasks default to `['human']` at their call sites so they
+ * don't waste LLM turns on env-context wrappers, task-notifications, and
+ * other harness-injected `system` batches. Omit to leave the result
+ * permissive across all origins.
  */
 export function getUnprocessedBatches(
-  options: { after_id?: number; limit?: number; includeActive?: boolean; scope: ProjectScope },
+  options: {
+    after_id?: number;
+    limit?: number;
+    includeActive?: boolean;
+    origins?: readonly PromptBatchOrigin[];
+    scope: ProjectScope;
+  },
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -395,6 +419,12 @@ export function getUnprocessedBatches(
     conditions.push(
       `EXISTS (SELECT 1 FROM sessions s WHERE s.id = prompt_batches.session_id AND s.status != 'active')`,
     );
+  }
+
+  if (options.origins && options.origins.length > 0) {
+    const placeholders = options.origins.map(() => '?').join(', ');
+    conditions.push(`origin IN (${placeholders})`);
+    params.push(...options.origins);
   }
 
   appendProjectCondition(conditions, params, options.scope);
@@ -421,18 +451,32 @@ export function getUnprocessedBatches(
  * scheduler precondition — both must answer the same question. Owned by
  * the batches/sessions domain so the scheduler doesn't have to reason
  * about prompt_batches schema.
+ *
+ * `origins` narrows the count to specific `prompt_batches.origin` values.
+ * Intelligence-task schedulers default to `['human']` at their call sites
+ * so accelerator thresholds aren't tripped by env-context noise. Omit to
+ * leave the count permissive across all origins.
  */
 export function countUnprocessedSettledBatches(
   scope: ProjectScope,
-  limit?: number,
+  options?: { limit?: number; origins?: readonly PromptBatchOrigin[] },
 ): number {
   const projectConditions: string[] = [];
   const projectParams: unknown[] = [];
   appendProjectCondition(projectConditions, projectParams, scope, 'pb');
+
+  const origins = options?.origins;
+  if (origins && origins.length > 0) {
+    const placeholders = origins.map(() => '?').join(', ');
+    projectConditions.push(`pb.origin IN (${placeholders})`);
+    projectParams.push(...origins);
+  }
+
   const projectWhere = projectConditions.length > 0
     ? ` AND ${projectConditions.join(' AND ')}`
     : '';
 
+  const limit = options?.limit;
   if (limit !== undefined) {
     const boundedLimit = Math.max(1, Math.floor(limit));
     const row = getDatabase().prepare(

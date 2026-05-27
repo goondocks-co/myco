@@ -51,6 +51,20 @@ import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
 
+/**
+ * Detect the SDK's "reached the max-turns budget" error from its message.
+ * Used by the catch path to set `capHit: true` on the phase checkpoint so
+ * cost-audit tooling can distinguish budget exhaustion from other failures.
+ *
+ * Each harness phrases this differently; this matcher is intentionally
+ * permissive (case-insensitive) so a future harness wording change doesn't
+ * silently drop the classification.
+ */
+export function isMaxTurnsError(message: string): boolean {
+  if (!message) return false;
+  return /reached.*maximum number of turns|max\s*turns/i.test(message);
+}
+
 // ---------------------------------------------------------------------------
 // PhaseLoopContext — parameter object carrying orchestrator state into the
 // phase-execution functions. Fields marked "by reference" are mutated by the
@@ -217,6 +231,8 @@ export async function executePhase(
   } catch (err) {
     const abortReason = abortReasonMessage(ctx.abortController);
     const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
+    const errorText = toErrorMessage(err);
+    const capHit = isMaxTurnsError(errorText);
     const costData = telemetry
       ? await resolveCost({
           harness: ctx.config.harness,
@@ -232,15 +248,19 @@ export async function executePhase(
       turnsUsed: telemetry?.usage.requests ?? 0,
       tokensUsed: telemetry?.usage.totalTokens ?? 0,
       costUsd: telemetry?.usage.costUsd ?? null,
-      error: abortReason ?? toErrorMessage(err),
+      capHit,
+      allowedMaxTurns: phase.maxTurns ?? null,
+      error: abortReason ?? errorText,
     });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
-      summary: abortReason ? `Error: ${abortReason}` : `Error: ${toErrorMessage(err)}`,
+      summary: abortReason ? `Error: ${abortReason}` : `Error: ${errorText}`,
       usage: telemetry?.usage,
       costData,
       sessionRef: telemetry?.sessionRef,
+      capHit,
+      allowedMaxTurns: phase.maxTurns,
     });
   }
 }
@@ -490,7 +510,7 @@ export async function executePhasedQuery(
     });
 
     const plan = parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
-    effectivePhases = applyDirectives(phases, plan.phases);
+    effectivePhases = applyDirectives(phases, plan.phases, ctx.options?.logger);
     ctx.options?.logger?.debug('agent.orchestrator.plan', 'Orchestrator plan applied', {
       runId,
       reasoning: plan.reasoning,

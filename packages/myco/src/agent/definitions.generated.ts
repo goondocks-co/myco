@@ -795,10 +795,11 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
       "accelerator": {
         "name": "unprocessed-settled-batches",
         "thresholds": {
-          "steady": 5,
-          "accelerated": 25
+          "steady": 25,
+          "accelerated": 100
         }
-      }
+      },
+      "maxRunsPerDay": 6
     }
   },
   {

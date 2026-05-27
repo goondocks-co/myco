@@ -138,6 +138,15 @@ export const TaskScheduleSchema = z.object({
    * during backlog according to the declared thresholds.
    */
   accelerator: AcceleratorConfigSchema.optional(),
+  /**
+   * Hard ceiling on completed-or-failed runs of this task per
+   * (grove, project) tuple in the trailing 24 hours. When the count is
+   * at-or-above the ceiling, the scheduler will not dispatch another run
+   * until the oldest run rolls out of the window. Pairs with `accelerator`:
+   * the accelerator decides cadence within the day, the ceiling caps the
+   * day. Omit to leave run frequency bounded only by `intervalSeconds`.
+   */
+  maxRunsPerDay: z.number().int().positive().optional(),
 });
 
 // ---------------------------------------------------------------------------

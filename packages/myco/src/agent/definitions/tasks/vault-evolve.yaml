@@ -28,13 +28,23 @@ schedule:
     - idle
     - sleep
   preCondition: has-unprocessed-batches
-  # Each unprocessed batch is ~30–60s of multi-stage LLM work, so the
-  # thresholds are an order of magnitude lower than canopy-describe's.
+  # Each unprocessed batch is ~30–60s of multi-stage LLM work, but the
+  # batch count is now `origin = 'human'` only (env_context, task
+  # notifications, and other harness-injected `system` batches are
+  # excluded — they carry no user intent and shouldn't trip the
+  # accelerator). Thresholds sized so a single user-day of human
+  # prompts (~50–150) stays at steady tier; only sustained backlogs
+  # from heavy multi-day workloads trip accelerated.
   accelerator:
     name: unprocessed-settled-batches
     thresholds:
-      steady: 5
-      accelerated: 25
+      steady: 25
+      accelerated: 100
+  # Hard 24h ceiling. The accelerator decides cadence within the day;
+  # this caps the day. Six runs/24h × ~$1.40/run ≈ $8.40/day worst case
+  # for vault-evolve. Without the ceiling, accelerated mode on a heavy
+  # machine can produce 20+ runs/day before the queue drains.
+  maxRunsPerDay: 6
 
 orchestrator:
   enabled: true

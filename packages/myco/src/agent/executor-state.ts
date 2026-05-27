@@ -120,11 +120,13 @@ export function buildPhaseResult(input: {
   costSource?: CostSource;
   sessionRef?: string;
   sessionData?: unknown;
+  capHit?: boolean;
+  allowedMaxTurns?: number;
 }): PhaseResult & { sessionData?: unknown } {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
-    sessionRef, sessionData,
+    sessionRef, sessionData, capHit, allowedMaxTurns,
   } = input;
   return {
     name,
@@ -136,6 +138,8 @@ export function buildPhaseResult(input: {
     ...(usage ? { usage } : {}),
     ...(sessionRef ? { sessionRef } : {}),
     ...(sessionData !== undefined ? { sessionData } : {}),
+    ...(capHit === true ? { capHit: true } : {}),
+    ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),
     summary,
   };
 }

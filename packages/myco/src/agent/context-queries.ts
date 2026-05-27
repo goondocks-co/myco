@@ -8,7 +8,7 @@
 
 import type { ContextQuery } from './types.js';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
+import { getUnprocessedBatches, INTELLIGENCE_DEFAULT_ORIGINS } from '@myco/db/queries/batches.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
@@ -149,9 +149,12 @@ async function executeQuery(
     case 'vault_unprocessed':
       // Agent pre-planning context should only see settled work — a task
       // planning against in-flight batches is working from partial signal.
+      // Restrict to human-origin batches: system/agent_dispatch entries
+      // are harness noise that wastes LLM turns at the planning stage.
       return getUnprocessedBatches({
         limit,
         includeActive: false,
+        origins: INTELLIGENCE_DEFAULT_ORIGINS,
         scope,
       }).map((batch) => projectBatchForAgent(batch));
 

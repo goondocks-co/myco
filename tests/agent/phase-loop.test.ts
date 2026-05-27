@@ -266,6 +266,43 @@ describe('executePhase', () => {
     expect(result.summary).toContain('boom');
   });
 
+  it('records capHit + allowedMaxTurns when runtime hits the max-turns budget', async () => {
+    // Cost-audit tooling distinguishes budget exhaustion from other failures.
+    defaultRuntimeBehavior = {
+      kind: 'error',
+      message: 'Claude Code returned an error result: Reached maximum number of turns (35)',
+    };
+    const ctx = baseContext();
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('extract', { maxTurns: 35 }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.capHit).toBe(true);
+    expect(result.allowedMaxTurns).toBe(35);
+    expect(result.summary).toContain('maximum number of turns');
+  });
+
+  it('does not set capHit on non-budget failures', async () => {
+    defaultRuntimeBehavior = { kind: 'error', message: 'network timeout' };
+    const ctx = baseContext();
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('extract', { maxTurns: 35 }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.capHit).toBeUndefined();
+    // allowedMaxTurns is still recorded on every failure so the audit trail
+    // can show the budget the failure was operating against.
+    expect(result.allowedMaxTurns).toBe(35);
+  });
+
   it('reports abort reason when the run is aborted mid-execution', async () => {
     defaultRuntimeBehavior = { kind: 'abort' };
     const ctx = baseContext();

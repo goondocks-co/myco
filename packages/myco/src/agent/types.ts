@@ -79,6 +79,20 @@ export interface PhaseResult {
   summary: string; // last assistant message or error
   usage?: RuntimeUsage;
   sessionRef?: string;
+  /**
+   * True when the phase failed because the SDK reported "Reached maximum
+   * number of turns". Set by the phase loop when classifying the error.
+   * Distinct from `status: 'failed'` (any error) so cost-audit tooling
+   * can count budget-exhaustion failures separately from other failures.
+   */
+  capHit?: boolean;
+  /**
+   * Turn budget the SDK was asked to enforce (the value of
+   * `maxTurns` after orchestrator directives + overrides have been
+   * applied). Populated alongside `capHit` so the auditor can compare
+   * the budget the run was given against the budget needed.
+   */
+  allowedMaxTurns?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +312,13 @@ export interface TaskSchedule {
    * additive — tasks without an accelerator use intervalSeconds verbatim.
    */
   accelerator?: AcceleratorConfig;
+  /**
+   * Hard ceiling on completed-or-failed runs in the trailing 24 hours per
+   * (grove, project, task) tuple. The accelerator decides cadence within
+   * the day; this caps the day. Omit to leave run frequency bounded only
+   * by `intervalSeconds`.
+   */
+  maxRunsPerDay?: number;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */

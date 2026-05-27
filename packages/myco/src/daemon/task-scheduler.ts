@@ -29,8 +29,12 @@ function resolveSchedule(
     // overrides on thresholds/floor would let users pair a name from
     // YAML with a thresholds shape from a different work unit.
     accelerator: configOverride.schedule.accelerator ?? yamlSchedule.accelerator,
+    maxRunsPerDay: configOverride.schedule.maxRunsPerDay ?? yamlSchedule.maxRunsPerDay,
   };
 }
+
+/** Trailing-window length for `maxRunsPerDay` checks. Exported for tests. */
+export const RUNS_PER_DAY_WINDOW_SECONDS = 24 * 60 * 60;
 
 // Tier divisors (1× / 4× / 12×) applied to intervalSeconds based on backlog size.
 export function computeEffectiveInterval(
@@ -71,6 +75,19 @@ export interface ScheduledJobContext {
   preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
   /** Backlog count functions keyed by accelerator name. */
   accelerators?: Record<string, (scope: RegisteredProjectScope, limit?: number) => number>;
+  /**
+   * Count completed-or-failed runs of `taskName` for `scope` within the
+   * trailing `windowSeconds` window. Used to enforce the per-task
+   * `maxRunsPerDay` ceiling. Implementations should round-trip through
+   * the project's database so the count reflects on-disk truth, not the
+   * in-memory `lastRun` map. Optional — when omitted, the ceiling is
+   * silently skipped (no enforcement).
+   */
+  getRecentTaskRunCount?: (
+    scope: RegisteredProjectScope,
+    taskName: string,
+    windowSeconds: number,
+  ) => number;
   /** Detached-run error sink so the PowerManager tick stays responsive. */
   onTaskError?: (taskName: string, groveId: string, projectId: GroveProjectId, err: unknown) => void;
   /**
@@ -248,6 +265,27 @@ export function buildScheduledJobs(
             const check = context.preConditions[effective.preCondition];
             if (!check) continue;
             if (!check(projectScope)) continue;
+          }
+
+          // Per-day ceiling. Bypass intentionally honors the ceiling — a
+          // kick should bypass interval/accelerator throttling but not
+          // the safety cap. Counter rounds the window relative to "now"
+          // so a steady drip exits the window naturally instead of
+          // requiring a calendar boundary.
+          if (effective.maxRunsPerDay !== undefined && context.getRecentTaskRunCount) {
+            try {
+              const recent = context.getRecentTaskRunCount(
+                projectScope,
+                task.name,
+                RUNS_PER_DAY_WINDOW_SECONDS,
+              );
+              if (recent >= effective.maxRunsPerDay) continue;
+            } catch {
+              // Counter failures are non-fatal; fall through and let
+              // interval/accelerator throttling do its job. A persistent
+              // count failure surfaces via the daemon log, not by halting
+              // scheduling.
+            }
           }
 
           // Detach the agent run so PowerManager tick stays responsive.
