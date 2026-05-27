@@ -5,7 +5,8 @@ import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
-import { createGroveId, isGroveEraId } from './ids.js';
+import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
+import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
   pathsEquivalent,
   resolveGlobalConfigPath,
@@ -23,7 +24,6 @@ import {
   findRegisteredProjectByBinding as findRegisteredProjectByBindingResolve,
   type RegistryResolvedProject,
 } from './registry-resolve.js';
-import { assertSafeProjectRoot } from '../vault/resolve.js';
 
 export type DaemonVariant = 'service' | 'service-dev';
 
@@ -289,22 +289,98 @@ function uniqueSlug(base: string, mycoHome: string): string {
   throw new Error(`Unable to allocate unique Grove slug from base ${base}`);
 }
 
-export function ensureDefaultGrove(mycoHome = resolveMycoHome()): GroveRecord {
-  const defaultId = getDefaultGroveId(mycoHome);
-  if (defaultId) {
-    const existing = loadGroveRecord(defaultId, mycoHome);
-    if (existing) return existing;
+/**
+ * Ensure a default Grove exists matching the requested variant.
+ *
+ * Variant-aware: dev daemons and prod daemons each need their own
+ * default Grove with the matching `served_by` so the cross-variant
+ * walker boundary (R3.0) and rebind filter both keep working. A single
+ * machine can host both — they get distinct slugs (`default` for prod,
+ * `default-dev` for dev) so they coexist in the registry.
+ *
+ * The pointer `default_grove_id` always names the variant's own
+ * default — for a dev daemon, it's the dev Grove; for prod, it's the
+ * prod Grove. Variant lookup is filtered by `served_by`, NOT by the
+ * pointer, so the pointer can safely co-exist between variants.
+ *
+ * Called from `runGlobalBootstrap()` — fires at daemon first-start so
+ * the default Grove is guaranteed to exist before any hook tries to
+ * register a project into it. Idempotent: an existing matching default
+ * Grove is returned unchanged.
+ */
+export function ensureDefaultGrove(
+  mycoHome = resolveMycoHome(),
+  options: { servedBy?: 'service' | 'service-dev' } = {},
+): GroveRecord {
+  const servedBy = options.servedBy ?? 'service';
+  const slug = servedBy === 'service-dev' ? 'default-dev' : 'default';
+
+  // 1. Honor an explicit default pointer when it names a Grove matching
+  //    the current variant. Users can `setDefaultGrove(non-default-slug)`
+  //    and have that decision survive across daemon restarts.
+  const pointedId = getDefaultGroveId(mycoHome);
+  if (pointedId) {
+    const pointed = loadGroveRecord(pointedId, mycoHome);
+    if (pointed && pointed.served_by === servedBy) return pointed;
   }
 
-  const existingDefault = listGroves(mycoHome).find((grove) => grove.slug === 'default');
-  if (existingDefault) {
-    setDefaultGrove(existingDefault.id, mycoHome);
-    return existingDefault;
+  // 2. No pointer (or it names a wrong-variant Grove) — look for a
+  //    variant-matching Grove by its canonical slug.
+  const matching = listGroves(mycoHome, { servedBy }).find(
+    (grove) => grove.slug === slug,
+  );
+  if (matching) {
+    // Promote to the default pointer when there's no pointer at all,
+    // OR the existing pointer is for a different variant (preserves
+    // intentional cross-variant pointer assignment).
+    const pointedRecord = pointedId ? loadGroveRecord(pointedId, mycoHome) : null;
+    if (!pointedRecord || pointedRecord.served_by !== servedBy) {
+      setDefaultGrove(matching.id, mycoHome);
+    }
+    return matching;
   }
 
-  const created = createGrove('default', mycoHome);
-  setDefaultGrove(created.id, mycoHome);
+  // 3. No matching Grove yet — create it.
+  const created = createGrove(slug, mycoHome, { servedBy });
+  // Promote to the default pointer when there's no pointer at all OR
+  // the existing pointer names a wrong-variant Grove. Symmetric with
+  // step 2's promotion logic — the just-created Grove is the right
+  // owner of the pointer for this variant. (Coexisting dev+prod
+  // installs see the pointer thrash on each daemon boot; that's
+  // expected, and variant-aware project resolution must not depend
+  // on the pointer alone — see `resolveDefaultGroveForVariant`.)
+  const pointedRecord = pointedId ? loadGroveRecord(pointedId, mycoHome) : null;
+  if (!pointedRecord || pointedRecord.served_by !== servedBy) {
+    setDefaultGrove(created.id, mycoHome);
+  }
   return created;
+}
+
+/**
+ * Read-only variant-aware default-Grove lookup. Sister of
+ * `ensureDefaultGrove`: no side effects, returns null when no
+ * matching Grove exists.
+ *
+ * Used by `ensureProjectRegistered` and any other code path that
+ * needs to find "this variant's default Grove" without creating one.
+ * Honors the pointer when it matches the variant, otherwise falls
+ * back to the canonical slug lookup (`default` for prod, `default-dev`
+ * for dev). NEVER returns a wrong-variant Grove — the cross-variant
+ * boundary that `firstProjectVaultFromRegistry` enforces at the vault
+ * resolver layer applies here too.
+ */
+export function resolveDefaultGroveForVariant(
+  mycoHome = resolveMycoHome(),
+  options: { servedBy?: 'service' | 'service-dev' } = {},
+): GroveRecord | null {
+  const servedBy = options.servedBy ?? 'service';
+  const pointedId = getDefaultGroveId(mycoHome);
+  if (pointedId) {
+    const pointed = loadGroveRecord(pointedId, mycoHome);
+    if (pointed && pointed.served_by === servedBy) return pointed;
+  }
+  const slug = servedBy === 'service-dev' ? 'default-dev' : 'default';
+  return listGroves(mycoHome, { servedBy }).find((g) => g.slug === slug) ?? null;
 }
 
 export function resolveGrove(ref: string | undefined, mycoHome = resolveMycoHome()): GroveRecord {
@@ -438,6 +514,81 @@ export function findRegisteredProject(
     return { grove, project };
   }
 
+  return null;
+}
+
+/**
+ * Locate a registered project by its filesystem root, across every Grove
+ * known to the local registry. Returns the owning Grove + project record
+ * when found, or null if the root isn't registered anywhere.
+ *
+ * Used by the capture path (and any other surface that knows the project's
+ * disk location but not its Grove/project IDs) to resolve the global buffer
+ * dir without forcing the caller to walk the Grove tree by hand. Comparison
+ * goes through `pathsEquivalent` (inode-aware) so macOS APFS case-only diffs
+ * and symlink chains both compare equal.
+ */
+/**
+ * Auto-register a project under the machine default Grove when the
+ * hook layer fires from a real project root that isn't yet known.
+ *
+ * Returns the resolved registration so callers (event-dispatch in
+ * particular) can move straight to writing events without an extra
+ * registry walk. Idempotent: an already-registered project returns the
+ * existing record.
+ *
+ * Refuses to register when:
+ *   - the path fails `isSafeProjectRoot` (cwd-fallback paths from a
+ *     misfired hook, $HOME-rooted invocations, etc.); returns `null`.
+ *   - the machine has no default Grove yet (extremely early bootstrap);
+ *     returns `null`.
+ *
+ * Decision 2 of the plan: silent register, no prompt — discovery via
+ * the Groves page in the UI. Per Decision 3, the default Grove is the
+ * owner.
+ */
+export function ensureProjectRegistered(
+  projectRoot: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  const existing = findProjectByRoot(projectRoot, mycoHome);
+  if (existing) return existing;
+  if (!isSafeProjectRoot(projectRoot)) return null;
+
+  // Variant-aware default Grove lookup. `getDefaultGroveId()` is
+  // variant-blind by design (the pointer is shared between dev and
+  // prod on coexisting installs); reading it directly would let a
+  // wrong-variant pointer steal projects from another variant's
+  // Grove. `resolveDefaultGroveForVariant` honors the pointer only
+  // when its target matches the current variant, otherwise falls
+  // back to the canonical slug lookup.
+  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
+  const servedBy = variant === 'dev' ? 'service-dev' : 'service';
+  const grove = resolveDefaultGroveForVariant(mycoHome, { servedBy });
+  if (!grove) return null;
+
+  const projectId = createProjectId();
+  const projectName = path.basename(path.resolve(projectRoot));
+  registerProjectInGrove(grove.id, {
+    projectId,
+    projectName,
+    projectRoot,
+  }, mycoHome);
+  return findProjectByRoot(projectRoot, mycoHome);
+}
+
+export function findProjectByRoot(
+  projectRoot: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  if (!projectRoot) return null;
+  for (const grove of listGroves(mycoHome)) {
+    for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+      if (pathsEquivalent(project.root, projectRoot)) {
+        return { grove, project };
+      }
+    }
+  }
   return null;
 }
 

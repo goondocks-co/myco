@@ -13,8 +13,9 @@
 // See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
 //
 // Degraded-mode safety: this extension ships committed inside any project that has
-// run `myco init` — the file lives at .pi/extensions/myco/index.ts in that project's
-// repo. When a teammate clones such a project WITHOUT having Myco installed
+// used the dashboard's commit-to-repo opt-in — the file lives at
+// .pi/extensions/myco/index.ts in that project's repo. When a teammate clones
+// such a project WITHOUT having Myco installed
 // locally, pi will still load this extension. Every path that would contact the
 // Myco daemon gracefully no-ops when `.myco/daemon.json` is absent or the daemon
 // is unreachable, so the extension becomes invisible rather than throwing.
@@ -47,6 +48,8 @@ const MYCO_FETCH_TIMEOUT_MS = 3000;
 
 /** Max size of resume context injection to keep resumed sessions lean. */
 const RESUME_CONTEXT_MAX_CHARS = 4000;
+
+const MYCO_AUTH_HEADER = "x-myco-auth";
 
 const REQUEST_CONTEXT_HEADERS = {
   projectRoot: "x-myco-project-root",
@@ -110,16 +113,55 @@ function buildRequestContextHeaders(directory: string): Record<string, string> {
 
 function withRequestContextHeaders(directory: string, init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers);
-  for (const [key, value] of Object.entries(buildRequestContextHeaders(directory))) {
+  const ctxHeaders = buildRequestContextHeaders(directory);
+  let hasContextSwitchingHeader = false;
+  for (const [key, value] of Object.entries(ctxHeaders)) {
     if (!headers.has(key)) headers.set(key, value);
+    if (key === REQUEST_CONTEXT_HEADERS.projectId) hasContextSwitchingHeader = true;
+  }
+  // The daemon's request-context auth gate rejects context-switching
+  // headers (x-myco-project-id, etc.) without the daemon-issued bearer
+  // token. Read it from daemon.json (same file we read the port from).
+  if (hasContextSwitchingHeader && !headers.has(MYCO_AUTH_HEADER)) {
+    const token = readDaemonAuthTokenFromDisk(resolveDaemonStatePath(directory));
+    if (token) headers.set(MYCO_AUTH_HEADER, token);
   }
   return { ...init, headers };
 }
 
+/**
+ * Read the Grove served_by daemon variant ("service" or "service-dev")
+ * for a project. Returns "service" when grove.toml is missing or
+ * doesn't declare served_by — the conservative default that matches
+ * production single-daemon installs.
+ */
+function resolveGroveServedBy(directory: string): "service" | "service-dev" {
+  try {
+    const projectToml = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    const groveId = readTomlString(projectToml, "grove", "id");
+    if (!groveId) return "service";
+    const groveToml = readFileSync(
+      join(resolveMycoHome(), "groves", groveId, "grove.toml"),
+      "utf-8",
+    );
+    const servedBy = readTomlString(groveToml, "grove", "served_by");
+    return servedBy === "service-dev" ? "service-dev" : "service";
+  } catch {
+    return "service";
+  }
+}
+
 function resolveDaemonStatePath(directory: string): string {
-  return projectUsesGrove(directory)
-    ? join(resolveMycoHome(), "service", "daemon.json")
-    : join(directory, ".myco", "daemon.json");
+  if (!projectUsesGrove(directory)) {
+    return join(directory, ".myco", "daemon.json");
+  }
+  // The plugin runs in pi's runtime and has no awareness of which
+  // daemon variant owns this project's Grove. Read served_by from
+  // grove.toml to route correctly — without this, a dogfood grove
+  // (served_by: service-dev) silently fails because the plugin talks
+  // to the prod daemon, which refuses cross-Grove access.
+  const variant = resolveGroveServedBy(directory);
+  return join(resolveMycoHome(), variant, "daemon.json");
 }
 
 function readDaemonPortFromDisk(statePath: string): number | null {
@@ -127,6 +169,18 @@ function readDaemonPortFromDisk(statePath: string): number | null {
     const raw = readFileSync(statePath, "utf-8");
     const info = JSON.parse(raw) as { port?: number };
     return typeof info.port === "number" ? info.port : null;
+  } catch {
+    return null;
+  }
+}
+
+function readDaemonAuthTokenFromDisk(statePath: string): string | null {
+  try {
+    const raw = readFileSync(statePath, "utf-8");
+    const info = JSON.parse(raw) as { auth_token?: string };
+    return typeof info.auth_token === "string" && info.auth_token.length > 0
+      ? info.auth_token
+      : null;
   } catch {
     return null;
   }
@@ -150,9 +204,19 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MYCO_FETCH_TIMEOUT_MS);
   try {
+    const headers = init?.headers ? new Headers(init.headers as HeadersInit) : new Headers();
+    const headerKeys = Array.from(headers.keys());
+    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} headers=[${headerKeys.join(',')}] hasAuth=${headers.has("x-myco-auth")} authLen=${headers.get("x-myco-auth")?.length ?? 0}\n`); } catch {}
     const res = await fetch(url, { ...init, signal: controller.signal });
+    let bodyPreview = "";
+    try {
+      const cloned = res.clone();
+      bodyPreview = (await cloned.text()).slice(0, 200);
+    } catch {}
+    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} status=${res.status} ok=${res.ok} body=${bodyPreview}\n`); } catch {}
     return res.ok ? res : null;
-  } catch {
+  } catch (err: any) {
+    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} threw ${err?.message}\n`); } catch {}
     return null;
   } finally {
     clearTimeout(timer);
@@ -275,9 +339,13 @@ async function execMycoTool(
 //
 // Contract: the snippet assumes the containing file has already defined
 //   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
+//   - `resolveMycoHome(): string` — the user's Myco home (`~/.myco`)
+//   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
 //   - no other imports from the outer file
 // and exposes
 //   - `BATCH_KIND` constants + `BatchKind` type
+//   - `readProjectAndGroveIds(directory)` — regex-extracts identity from project.toml
+//   - `resolveBufferDir(directory)` — Grove-scoped buffer dir, null on miss
 //   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
 //   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
 //   - `postEventWithBuffer(dir, sessionId, event)` — live POST with buffer fallback
@@ -302,7 +370,54 @@ const BATCH_KIND = {
 type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
 /**
- * Append an event to `.myco/buffer/<session-id>.jsonl` for replay by the
+ * Read project + Grove identity from `<directory>/.myco/project.toml`.
+ *
+ * Returns `null` when the file is missing or the required fields can't be
+ * found. Plugins run with a zero-runtime-dep constraint (the file may load
+ * in a teammate's clone that has no Myco installed), so this uses regex
+ * extraction rather than a TOML parser dependency.
+ */
+function readProjectAndGroveIds(directory: string): { projectId: string; groveId: string } | null {
+  try {
+    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    // Section-anchored: `(?:(?!\n\[)[\s\S])*?` matches any char that is
+    // NOT followed by a newline + `[` (next TOML section header). Without
+    // this anchor the non-greedy `[\s\S]*?` would happily cross into
+    // [grove] and return the wrong section's id if [project] lacks one.
+    // /code-review finding C6.
+    const projectMatch = raw.match(/\[project\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
+    const groveMatch = raw.match(/\[grove\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/);
+    if (!projectMatch || !groveMatch) return null;
+    return { projectId: projectMatch[1]!, groveId: groveMatch[1]! };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve where to write a buffer file when the daemon is unreachable.
+ *
+ * Post-global-install (plan 38cff0752c919ffd §2), buffers live at
+ * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. The daemon's
+ * reconciler scans only Grove-scoped buffer dirs at startup, so writes
+ * to any other location would be orphaned.
+ *
+ * Returns the Grove-scoped path when project.toml carries the Grove +
+ * project identity. Returns `null` when project.toml is missing —
+ * brand-new projects the daemon has never seen have no resolvable
+ * identity, and matching the daemon-side tenet in `buffer-location.ts`
+ * we DROP the event rather than write to a non-canonical location. The
+ * daemon will provision project.toml on its first received event, so
+ * subsequent buffer fallbacks resolve correctly.
+ */
+function resolveBufferDir(directory: string): string | null {
+  const ids = readProjectAndGroveIds(directory);
+  if (!ids) return null;
+  return join(resolveMycoHome(), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+}
+
+/**
+ * Append an event to the Grove-scoped buffer dir for replay by the
  * daemon's startup reconciler. On-disk shape intentionally matches
  * `src/capture/buffer.ts`'s EventBuffer — the plugin can't import it because
  * of the zero-runtime-dep constraint, so the protocol is the contract.
@@ -313,7 +428,8 @@ function bufferEvent(
   event: Record<string, unknown>,
 ): void {
   try {
-    const bufferDir = join(directory, ".myco", "buffer");
+    const bufferDir = resolveBufferDir(directory);
+    if (!bufferDir) return;  // Brand-new project, daemon never seen — drop the event rather than write to a non-canonical path.
     mkdirSync(bufferDir, { recursive: true });
     const filePath = join(bufferDir, `${sessionId}.jsonl`);
     // Strip session_id from the entry — it's encoded in the filename
@@ -383,12 +499,14 @@ async function mycoRegisterSession(
   directory: string,
   sessionId: string,
 ): Promise<void> {
-  await postJson(directory, "/sessions/register", {
+  try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] mycoRegisterSession enter directory=${directory} sessionId=${sessionId}\n`); } catch {}
+  const result = await postJson(directory, "/sessions/register", {
     session_id: sessionId,
     agent: "pi",
     branch: detectGitBranch(directory),
     started_at: new Date().toISOString(),
   });
+  try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] mycoRegisterSession result ok=${result?.ok} data=${JSON.stringify(result?.data ?? null).slice(0,160)}\n`); } catch {}
 }
 
 async function mycoUnregisterSession(directory: string, sessionId: string): Promise<void> {
@@ -720,6 +838,7 @@ export default function (pi: ExtensionAPI) {
   // ── Session lifecycle ──────────────────────────────────────────────────
 
   pi.on("session_start", async (event, ctx) => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_start') fired\n`)}catch{};
     currentCwd = ctx.cwd;
 
     // Check if daemon is available — silent no-op if not
@@ -765,6 +884,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_shutdown') fired\n`)}catch{};
     if (!currentSessionId) return;
 
     await mycoPostStop(currentCwd, currentSessionId, lastAssistantMessage || undefined);
@@ -814,6 +934,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event) => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('input') fired\n`)}catch{};
     if (!currentSessionId) return;
     // Skip when no turn is running — the initial prompt will be captured
     // via before_agent_start, which also carries the post-expansion text.
@@ -840,6 +961,7 @@ export default function (pi: ExtensionAPI) {
   // ── Tool use capture ───────────────────────────────────────────────────
 
   pi.on("tool_result", async (event) => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('tool_result') fired\n`)}catch{};
     if (!currentSessionId) return;
 
     const toolName = event.toolName ?? "unknown";
@@ -860,6 +982,7 @@ export default function (pi: ExtensionAPI) {
   // ── Track last assistant message ───────────────────────────────────────
 
   pi.on("message_end", async (event) => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('message_end') fired\n`)}catch{};
     if (!currentSessionId) return;
     if (event.message?.role === "assistant") {
       const text = extractTextFromContent(event.message.content);
@@ -876,6 +999,7 @@ export default function (pi: ExtensionAPI) {
   // handles the final cleanup on exit.
 
   pi.on("agent_end", async () => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('agent_end') fired\n`)}catch{};
     if (!currentSessionId) return;
     // Clear the in-flight marker so subsequent `input` events are treated
     // as a fresh initial prompt, not continued steering. This replaces the
@@ -888,6 +1012,7 @@ export default function (pi: ExtensionAPI) {
   // ── Compaction hook — notify daemon of context compaction ──────────────
 
   pi.on("session_before_compact", async () => {
+    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_before_compact') fired\n`)}catch{};
     if (!currentSessionId) return;
     await mycoPostCompact(currentCwd, currentSessionId);
     return undefined;

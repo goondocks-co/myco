@@ -94,12 +94,12 @@ const GEMINI_MANIFEST: SymbiontManifest = {
   },
 };
 
-const VSCODE_MANIFEST: SymbiontManifest = {
-  name: 'vscode-copilot',
-  displayName: 'VS Code Copilot',
-  binary: 'code',
+const COPILOT_MANIFEST: SymbiontManifest = {
+  name: 'copilot',
+  displayName: 'GitHub Copilot',
+  binary: 'copilot',
   configDir: '.vscode',
-  pluginRootEnvVar: 'VSCODE_PLUGIN_ROOT',
+  pluginRootEnvVar: 'COPILOT_PLUGIN_ROOT',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'sessionId' },
   registration: {
     hooksTarget: '.github/hooks/myco-hooks.json',
@@ -217,12 +217,12 @@ function setupPackageRoot(): void {
   const claudeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/claude-code');
   const cursorTemplateDir = path.join(packageRoot, 'src/symbionts/templates/cursor');
   const codexTemplateDir = path.join(packageRoot, 'src/symbionts/templates/codex');
-  const vscodeTemplateDir = path.join(packageRoot, 'src/symbionts/templates/vscode-copilot');
+  const copilotTemplateDir = path.join(packageRoot, 'src/symbionts/templates/copilot');
   const geminiTemplateDir = path.join(packageRoot, 'src/symbionts/templates/gemini');
   fs.mkdirSync(claudeTemplateDir, { recursive: true });
   fs.mkdirSync(cursorTemplateDir, { recursive: true });
   fs.mkdirSync(codexTemplateDir, { recursive: true });
-  fs.mkdirSync(vscodeTemplateDir, { recursive: true });
+  fs.mkdirSync(copilotTemplateDir, { recursive: true });
   fs.mkdirSync(geminiTemplateDir, { recursive: true });
 
   writeJson(path.join(claudeTemplateDir, 'hooks.json'), HOOKS_TEMPLATE);
@@ -252,13 +252,13 @@ function setupPackageRoot(): void {
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { hooks: true },
   });
-  writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont vscode-copilot', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont vscode-copilot', timeout: 30 }] }],
-    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot', timeout: 5 }] }],
+  writeJson(path.join(copilotTemplateDir, 'hooks.json'), {
+    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont copilot', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont copilot', timeout: 30 }] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot', timeout: 5 }] }],
   });
-  writeJson(path.join(vscodeTemplateDir, 'mcp.json'), MCP_TEMPLATE);
-  writeJson(path.join(vscodeTemplateDir, 'settings.json'), {
+  writeJson(path.join(copilotTemplateDir, 'mcp.json'), MCP_TEMPLATE);
+  writeJson(path.join(copilotTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
@@ -466,6 +466,104 @@ describe('installHooks', () => {
     expect(result).toBe(false);
   });
 
+  it('writes Myco-owned hook groups WITHOUT a _meta marker (ownership rides on launcher path)', () => {
+    // Earlier installs stamped `_meta.owner: myco` on every group as a
+    // redundant identity signal alongside the launcher path. That field
+    // broke strict-schema agents (Windsurf silently rejects entries
+    // with unknown fields), so it's retired. Ownership is now identified
+    // by the canonical launcher path embedded in the command — the only
+    // signal that ever needed to exist.
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+    const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
+    const hooks = settings.hooks as Record<string, Array<Record<string, unknown>>>;
+    for (const groups of Object.values(hooks)) {
+      for (const group of groups) {
+        expect(group._meta).toBeUndefined();
+        // The command MUST carry a canonical Myco launcher reference so
+        // future reinstalls can find this entry by launcher-path scan.
+        const commands: string[] = Array.isArray(group.hooks)
+          ? (group.hooks as Array<{ command?: string }>).map((h) => h.command ?? '')
+          : [typeof group.command === 'string' ? group.command : ''];
+        expect(commands.some((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs'))).toBe(true);
+      }
+    }
+  });
+
+  it('strips a previous Myco install (canonical-path) and replaces with a clean group', () => {
+    // Previous install used the canonical launcher path convention.
+    // The launcher-path substring scan is the authoritative ownership
+    // signal — Myco's entries get replaced, third-party tenant entries
+    // are preserved untouched.
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook session-start --symbiont claude-code', timeout: 5 }] },
+          { hooks: [{ type: 'command', command: '/Users/x/Library/Application Support/GitKrakenCLI/gk ai hook run --host claude-code' }] },
+        ],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+    const settings = readJson(settingsPath);
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }>; command?: string }>>).SessionStart;
+    expect(groups).toHaveLength(2);
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Third-party tenant entry survives.
+    expect(commands.some((c) => c.includes('GitKrakenCLI'))).toBe(true);
+    // Myco's canonical entry is rewritten in place.
+    expect(commands.some((c) => c.includes('myco-run.cjs hook session-start --symbiont claude-code'))).toBe(true);
+    // No `_meta` field anywhere on the installed groups.
+    for (const group of groups) {
+      expect((group as Record<string, unknown>)._meta).toBeUndefined();
+    }
+  });
+
+  it('PRESERVES user-authored hooks that invoke Myco from a non-canonical launcher path', () => {
+    // User's own hook calls Myco's launcher from a wrapper they own.
+    // Without the marker, Myco MUST treat it as a third-party tenant
+    // entry and leave it intact on reinstall — the substring scan is
+    // intentionally strict (canonical paths only) so user wrappers
+    // are not falsely claimed.
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: 'node /opt/me/launcher.cjs --symbiont claude-code && my-wrapper', timeout: 5 }] },
+        ],
+      },
+    });
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+    const settings = readJson(settingsPath);
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).SessionStart;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // User's hook survives untouched.
+    expect(commands.some((c) => c.includes('/opt/me/launcher.cjs'))).toBe(true);
+    // Myco's canonical hook is also added alongside.
+    expect(commands.some((c) => c.includes('.agents/myco-run.cjs hook session-start'))).toBe(true);
+  });
+
+  it('reinstall after marker landed is idempotent — repeated installs do not accumulate groups', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+    installer.installHooks();
+    installer.installHooks();
+    const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
+    const hooks = settings.hooks as Record<string, unknown[]>;
+    // Every event present after first install carries exactly one group
+    // after three installs — Myco strips its own marker-tagged groups
+    // before re-adding the template on each reinstall.
+    for (const [event, groups] of Object.entries(hooks)) {
+      expect(groups, `event ${event} accumulated groups across reinstalls`).toHaveLength(1);
+    }
+    // The events the project-scope manifest cares about must be present.
+    expect(hooks.SessionStart).toBeDefined();
+    expect(hooks.Stop).toBeDefined();
+  });
+
   it('installs pre and post compact hooks for Claude Code', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
@@ -508,14 +606,14 @@ describe('installHooks', () => {
   });
 
   it('installs pre-compact hook for VS Code Copilot', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
 
     const settings = readJson(path.join(projectRoot, '.github/hooks/myco-hooks.json'));
     const preCompact = ((settings.hooks as Record<string, unknown[]>).PreCompact as Array<{ hooks: Array<{ command: string }> }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont vscode-copilot');
+    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot');
   });
 });
 
@@ -727,7 +825,7 @@ describe('installSettings', () => {
   });
 
   it('writes auto-approve to VS Code settings', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     const settings = readJson(path.join(projectRoot, '.vscode/settings.json'));
@@ -782,7 +880,7 @@ describe('installSettings', () => {
       'chat.tools.terminal.autoApprove': { 'other-tool': true },
     });
 
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     const settings = readJson(path.join(settingsDir, 'settings.json'));
@@ -842,7 +940,7 @@ describe('install', () => {
   });
 
   it('runs all steps for VS Code Copilot', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     const result = installer.install();
 
     expect(result.hooks).toBe(true);
@@ -882,18 +980,24 @@ describe('install', () => {
     expect((settings as Record<string, unknown>).coreTools).toContain('ShellTool(myco-dev *)');
   });
 
-  it('is idempotent — running twice produces same result', () => {
+  it('is idempotent — running twice produces same on-disk state, second pass is a no-op', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
 
     const result1 = installer.install();
     const result2 = installer.install();
 
-    // Instructions is false on second run (file already exists — never overwritten)
+    // First run wrote everything; second run is a no-op because the
+    // content-diff gate in writeJsonFile and writeManagedFile detects
+    // unchanged content. Instructions follow the same shape — they're
+    // only ever written once, then preserved.
+    expect(result1.hooks).toBe(true);
+    expect(result1.mcp).toBe(true);
+    expect(result1.settings).toBe(true);
     expect(result1.instructions).toBe(true);
+    expect(result2.hooks).toBe(false);
+    expect(result2.mcp).toBe(false);
+    expect(result2.settings).toBe(false);
     expect(result2.instructions).toBe(false);
-
-    // All other fields should be identical
-    expect({ ...result1, instructions: undefined }).toEqual({ ...result2, instructions: undefined });
 
     // Settings file should be identical
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
@@ -1287,17 +1391,26 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('hooks = true');
   });
 
-  it('reconciles dropped template keys out of a Myco-managed section', () => {
-    // Regression: install must replace the body of each Myco-managed TOML
-    // section with the template's current keys. A previous template wrote
-    // `codex_hooks = true` to `[features]`; the new template writes
-    // `hooks = true`. Reconciling drops the stale key without requiring a
-    // separate migration.
+  it('reconciles dropped template keys via the install audit', () => {
+    // When a previous Myco template wrote a key the new template no longer
+    // claims (here: `codex_hooks` → `hooks`), install consults the audit and
+    // strips the now-stale Myco-owned key. The audit makes this a real
+    // ownership transfer rather than the old whole-section-rewrite hack
+    // (which also nuked unrelated sibling keys the user had added).
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
       '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n\n[features]\ncodex_hooks = true\n',
+    );
+    // Pre-seed the audit as if an older Myco had recorded ownership of the
+    // now-renamed key. This is what every upgrading user's machine looks
+    // like after a previous install/init cycle.
+    const auditDir = path.join(projectRoot, '.myco', 'installer-audit');
+    fs.mkdirSync(auditDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(auditDir, 'codex-project-settings.json'),
+      JSON.stringify({ schema: 1, wroteKeys: ['features.codex_hooks'] }) + '\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
@@ -1308,6 +1421,43 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('[features]');
     expect(content).toContain('hooks = true');
     expect(content).toContain('[mcp_servers.myco]');
+  });
+
+  it('preserves user-added sibling keys inside a Myco-managed section', () => {
+    // Data-preservation regression: install must not nuke user keys that
+    // happen to live in the same TOML section Myco writes to. Codex users
+    // commonly add their own `[features]` flags; those must survive.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[features]\nmy_user_flag = true\nother_flag = "yes"\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('my_user_flag = true');
+    expect(content).toContain('other_flag = "yes"');
+    expect(content).toContain('hooks = true');
+  });
+
+  it('records audit only for keys it actually mutated', () => {
+    // When the user already has [features].hooks = true, install is a no-op
+    // on disk and the audit must not claim ownership of that key. This is
+    // what makes the uninstall path safe: an uninstall that runs after this
+    // install will leave the user's pre-existing value alone.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+
+    const auditPath = path.join(projectRoot, '.myco', 'installer-audit', 'codex-project-settings.json');
+    const audit = JSON.parse(fs.readFileSync(auditPath, 'utf-8'));
+    expect(audit.wroteKeys).not.toContain('features.hooks');
   });
 });
 
@@ -1321,10 +1471,11 @@ describe('uninstallSettings (TOML)', () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n\n[features]\nhooks = true\n',
+      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     const result = installer.uninstallSettings();
 
     expect(result).toBe(true);
@@ -1339,10 +1490,11 @@ describe('uninstallSettings (TOML)', () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[features]\nsome_other_flag = true\nhooks = true\n',
+      '[features]\nsome_other_flag = true\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     installer.uninstallSettings();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
@@ -1354,22 +1506,48 @@ describe('uninstallSettings (TOML)', () => {
   it('deletes file when no TOML content remains', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
     installer.uninstallSettings();
 
     expect(fs.existsSync(path.join(codexDir, 'config.toml'))).toBe(false);
   });
 
-  it('returns false when template key is already absent', () => {
+  it('returns false when no Myco install is on record', () => {
+    // No prior install → no audit → uninstall must be a no-op. This is the
+    // safe-default behavior that prevents data loss for users whose config
+    // pre-dates Myco entirely (their pre-existing [features].hooks survives).
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[mcp_servers.other]\ncommand = "other"\n');
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     const result = installer.uninstallSettings();
     expect(result).toBe(false);
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('hooks = true');
+  });
+
+  it('preserves pre-existing user [features].hooks across install + uninstall', () => {
+    // Smoke-test regression (live repro 2026-05-24): a user whose codex
+    // config already enabled hooks lost the setting entirely on `myco
+    // remove`. The fix: install detects the value already matches and
+    // refuses to claim ownership; uninstall therefore leaves the key alone.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    const userOriginal = '[user]\nsome_existing_setting = true\n\n[features]\nhooks = true\n';
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), userOriginal);
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).toContain('[user]');
+    expect(content).toContain('some_existing_setting = true');
+    expect(content).toContain('[features]');
+    expect(content).toContain('hooks = true');
   });
 
   it('full install then uninstall leaves legacy MYCO_CMD stripped', () => {
@@ -1573,8 +1751,37 @@ describe('uninstall', () => {
     expect(settingsAfter.permissions).toBeUndefined();
   });
 
+  it('audit-track: install + uninstall preserves a value-collision Bash(myco *) entry (Claude Code)', () => {
+    // User already had `Bash(myco *)` in their permissions.allow
+    // before installing Myco (maybe they hand-allowed it for some
+    // workflow). Install dedupes — no array-append happens for that
+    // entry, so the audit doesn't claim ownership. Uninstall must
+    // preserve it.
+    const settingsDir = path.join(projectRoot, '.claude');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      permissions: { allow: ['Bash(myco *)', 'Bash(user-custom *)'] },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json')) as {
+      permissions?: { allow: string[] };
+    };
+    const allow = settings.permissions?.allow ?? [];
+    // User's pre-existing entries survive.
+    expect(allow).toContain('Bash(myco *)');
+    expect(allow).toContain('Bash(user-custom *)');
+    // Myco's other additions (myco:*, myco-dev *, myco-dev:*) are gone.
+    expect(allow).not.toContain('Bash(myco:*)');
+    expect(allow).not.toContain('Bash(myco-dev *)');
+    expect(allow).not.toContain('Bash(myco-dev:*)');
+  });
+
   it('removes auto-approve from VS Code settings', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     installer.uninstallSettings();
@@ -1590,7 +1797,7 @@ describe('uninstall', () => {
       'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco': true, 'myco-dev': true },
     });
 
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.uninstallSettings();
 
     const settings = readJson(path.join(settingsDir, 'settings.json'));
@@ -1598,6 +1805,40 @@ describe('uninstall', () => {
     expect(autoApprove['other-tool']).toBe(true);
     expect(autoApprove['myco']).toBeUndefined();
     expect(autoApprove['myco-dev']).toBeUndefined();
+  });
+
+  // -----------------------------------------------------------------
+  // Stewardship audit regression — value-collision case
+  //
+  // The data-loss bug the audit closes: user already had a setting
+  // whose value happens to MATCH Myco's template (e.g. they enabled
+  // `chat.tools.terminal.autoApprove.myco-dev = true` themselves
+  // before installing Myco). Install is a no-op on disk; if uninstall
+  // used value-match removal it would silently strip the user's
+  // setting. With the audit, install records only changes Myco
+  // actually made — so this user-pre-existing value survives.
+  // -----------------------------------------------------------------
+  it('audit-track: install + uninstall preserves a value-collision user setting (Copilot/VS Code)', () => {
+    const settingsDir = path.join(projectRoot, '.vscode');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    // User has pre-set `myco-dev: true` independently — value matches
+    // Myco's template by coincidence.
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'chat.tools.terminal.autoApprove': { 'other-tool': true, 'myco-dev': true },
+    });
+
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json')) as Record<string, unknown>;
+    const autoApprove = settings['chat.tools.terminal.autoApprove'] as Record<string, boolean>;
+    // The user's pre-existing value survives.
+    expect(autoApprove['myco-dev']).toBe(true);
+    // Myco's own additions are gone (myco: true was Myco-only).
+    expect(autoApprove['myco']).toBeUndefined();
+    // The user's other key is untouched.
+    expect(autoApprove['other-tool']).toBe(true);
   });
 
   it('removes coreTools entries from Gemini settings', () => {
@@ -1808,6 +2049,31 @@ describe('Windsurf install', () => {
     expect(allowList).not.toContain('myco');
     expect(allowList).not.toContain('myco-dev');
   });
+
+  it('audit-track: install + uninstall preserves a value-collision allowlist entry (Windsurf)', () => {
+    // User had `myco-dev` in their allowlist BEFORE installing Myco
+    // (some other tool happens to use the same name, or they typed it
+    // themselves). Install is a no-op for that array entry — audit
+    // does NOT claim ownership. Uninstall preserves it.
+    const settingsDir = path.join(projectRoot, '.windsurf');
+    fs.mkdirSync(settingsDir, { recursive: true });
+    writeJson(path.join(settingsDir, 'settings.json'), {
+      'windsurf.cascadeCommandsAllowList': ['user-cmd', 'myco-dev'],
+    });
+
+    const installer = new SymbiontInstaller(WINDSURF_MANIFEST, projectRoot, packageRoot);
+    installer.installSettings();
+    installer.uninstallSettings();
+
+    const settings = readJson(path.join(settingsDir, 'settings.json'));
+    const allowList = (settings as Record<string, unknown>)['windsurf.cascadeCommandsAllowList'] as string[];
+    // User's pre-existing entry survives.
+    expect(allowList).toContain('myco-dev');
+    // User's other entry is untouched.
+    expect(allowList).toContain('user-cmd');
+    // Myco's own additions (just `myco`) are gone.
+    expect(allowList).not.toContain('myco');
+  });
 });
 
 // =====================
@@ -1849,12 +2115,12 @@ describe('installInstructions', () => {
     expect(matches?.length).toBe(1);
   });
 
-  it('creates .github/ directory for VS Code instructions', () => {
-    const installer = new SymbiontInstaller(VSCODE_MANIFEST, projectRoot, packageRoot);
+  it('creates .github/ directory for Copilot instructions', () => {
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     installer.installInstructions();
     expect(fs.existsSync(path.join(projectRoot, '.github/copilot-instructions.md'))).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.github/copilot-instructions.md'), 'utf-8');
-    expect(content).toContain('VS Code Copilot');
+    expect(content).toContain('GitHub Copilot');
   });
 
   it('creates instruction stub for Gemini CLI', () => {
@@ -1954,7 +2220,7 @@ describe('uninstallInstructions', () => {
   });
 
   it('removes prepended reference block, preserves user content', () => {
-    // Simulate: user had custom rules, then myco init prepended the reference
+    // Simulate: user had custom rules, then the installer prepended the reference
     fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installInstructions(); // Prepends reference
@@ -2062,21 +2328,21 @@ describe('uninstallHookGuard', () => {
     expect(result).toBe(false);
   });
 
-  it('skips uninstall guard for symbionts without hooksTarget', () => {
-    const installer = new SymbiontInstaller(NO_HOOKS_MANIFEST, projectRoot, packageRoot);
-    const result = installer.uninstallHookGuard();
-    expect(result).toBe(false);
-  });
-
-  it('uninstall() removes hook guard', () => {
+  // Contract: per-symbiont uninstall must NOT remove the shared
+  // project-level launchers — uninstalling symbiont A must not break
+  // symbiont B. Project-level teardown lives in `removeProjectLaunchers`,
+  // called explicitly by `myco remove` and the migration walker (gated
+  // by the opt-in check) after the per-symbiont loop completes.
+  it('uninstall() preserves the shared project launchers', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
 
     installer.uninstall();
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(false);
+    // Launchers must still be on disk — another symbiont may need them.
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
   });
 });
 
@@ -2139,8 +2405,15 @@ describe('old-format hook backward compatibility', () => {
 // =====================
 
 describe('hook template validation', () => {
-  it('all hook templates use the guard prefix', () => {
-    const templateDirs = ['claude-code', 'codex', 'cursor', 'gemini', 'vscode-copilot', 'windsurf'];
+  it('all hook templates use the launcher placeholder', () => {
+    // Templates use `{{mycoLauncher}}`, which the installer substitutes
+    // at install time to either `node .agents/myco-run.cjs` (project) or
+    // `node ".../.myco/launcher.cjs"` (global). The legacy hard-coded
+    // `.agents/myco-run.cjs` form is the bug that caused global-install
+    // hook files to depend on a project-local file existing — the
+    // placeholder is what enforces the scope-correctness invariant.
+    const templateDirs = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf'];
+    const launcherForm = /\{\{mycoLauncher\}\} /;
     for (const dir of templateDirs) {
       const filePath = path.resolve(`packages/myco/src/symbionts/templates/${dir}/hooks.json`);
       const template = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -2150,13 +2423,15 @@ describe('hook template validation', () => {
           if (Array.isArray(group.hooks)) {
             for (const hook of group.hooks as Array<{ command?: string }>) {
               if (hook.command) {
-                expect(hook.command).toMatch(/\.agents\/myco-run\.cjs /);
+                expect(hook.command).toMatch(launcherForm);
+                expect(hook.command).not.toMatch(/\.agents\/myco-run\.cjs/);
               }
             }
           }
           // Flat format
           if (typeof group.command === 'string') {
-            expect(group.command).toMatch(/\.agents\/myco-run\.cjs /);
+            expect(group.command).toMatch(launcherForm);
+            expect(group.command).not.toMatch(/\.agents\/myco-run\.cjs/);
           }
         }
       }

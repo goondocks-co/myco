@@ -26,6 +26,9 @@ let postJsonImpl: (path: string, body?: unknown) => PostResult = async () => ({}
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: async () => ({}),
   postJson: (path: string, body?: unknown) => postJsonImpl(path, body),
+  putJson: async () => ({}),
+  patchJson: async () => ({}),
+  deleteJson: async () => ({}),
   ApiError: class extends Error {},
 }));
 

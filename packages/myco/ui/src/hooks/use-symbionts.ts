@@ -17,10 +17,34 @@ export interface SymbiontInfo {
   resumeCommand?: string;
   supportsSessionStartInjection: boolean;
   supportsPromptSubmitInjection: boolean;
+  /** Whether the agent's detectionDir exists on this machine. */
+  detected: boolean;
+  /** Whether Myco's hook block is present in the agent's global config. */
+  globallyInstalled: boolean;
+
+  // Capability profile — populated by the daemon from the symbiont
+  // manifest, consumed by `capability-map.ts` to render chips on the
+  // Symbionts page.
+  supportsSessions: boolean;
+  supportsCanopyInjection: boolean;
+  supportsSubagentStartInjection: boolean;
+  supportsPlanCapture: boolean;
+  supportsSkills: boolean;
+  supportsMcp: boolean;
+  /** Recent Myco MCP tool calls observed (last 7 days). Omitted when
+   *  `supportsMcp === false`. */
+  mcpActive?: boolean;
+  /** Explicit project-level override. Omitted when no override is set
+   *  — the effective `enabled` value then comes from the global default. */
+  projectOverride?: { enabled: boolean };
 }
 
 interface SymbiontsResponse {
   symbionts: SymbiontInfo[];
+  /** When true, the project's myco.yaml has an explicit `symbionts:` block
+   *  and per-symbiont toggles are meaningful. When false, the project follows
+   *  global defaults — the page-level customization toggle is OFF. */
+  projectCustomizationActive?: boolean;
 }
 
 /* ---------- Hook ---------- */

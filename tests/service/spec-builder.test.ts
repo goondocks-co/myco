@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildServiceSpec } from '../../packages/myco/src/service/spec-builder';
+import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 
 function makeFakeBinary(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-svc-spec-'));
@@ -131,6 +132,45 @@ describe('buildServiceSpec', () => {
       mycoHome: home,
       executable: link,
     })).toThrow(/dev-build executable/);
+  });
+
+  // Regression for canonical-plist hijack. launchd's RunAtLoad fires the
+  // moment we `launchctl bootstrap` the sandbox plist — the supervisor-
+  // spawned child daemon then re-runs ensureSelfInstalledAsService during
+  // its own startup. If the plist env block doesn't carry MYCO_LAUNCH_AGENTS_DIR,
+  // the child resolves to the real ~/Library/LaunchAgents/ and writes the
+  // user's canonical plist with sandbox MYCO_HOME paths, hijacking the
+  // running dev/prod daemon. Burned the variant-pinned smoke test.
+  describe('MYCO_LAUNCH_AGENTS_DIR propagation', () => {
+    const originalEnv = process.env[SERVICE_UNIT_DIR_ENV];
+    beforeEach(() => { delete process.env[SERVICE_UNIT_DIR_ENV]; });
+    afterEach(() => {
+      if (originalEnv === undefined) delete process.env[SERVICE_UNIT_DIR_ENV];
+      else process.env[SERVICE_UNIT_DIR_ENV] = originalEnv;
+    });
+
+    test('plist env omits MYCO_LAUNCH_AGENTS_DIR when unset (default prod behavior is unchanged)', () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+      const bin = makeFakeBinary();
+      const spec = buildServiceSpec({ variant: 'prod', mycoHome: home, executable: bin });
+      expect(spec.env[SERVICE_UNIT_DIR_ENV]).toBeUndefined();
+    });
+
+    test('plist env carries MYCO_LAUNCH_AGENTS_DIR through to the supervisor-spawned child', () => {
+      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-abc/Library/LaunchAgents';
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+      const bin = makeFakeBinary();
+      const spec = buildServiceSpec({ variant: 'dev', mycoHome: home, executable: bin });
+      expect(spec.env[SERVICE_UNIT_DIR_ENV]).toBe('/tmp/sandbox-abc/Library/LaunchAgents');
+    });
+
+    test('whitespace-only env value is not propagated', () => {
+      process.env[SERVICE_UNIT_DIR_ENV] = '   ';
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+      const bin = makeFakeBinary();
+      const spec = buildServiceSpec({ variant: 'prod', mycoHome: home, executable: bin });
+      expect(spec.env[SERVICE_UNIT_DIR_ENV]).toBeUndefined();
+    });
   });
 
   test('prod allows a normal globally-installed path (npm-style)', () => {

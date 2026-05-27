@@ -3,7 +3,7 @@
  *
  * This subprocess does NOT run an MCP server. It is a transparent JSON-RPC
  * pump between two MCP-SDK transports: a `StdioServerTransport` facing the
- * agent (claude-code, cursor, vscode-copilot, gemini, etc.) and a
+ * agent (claude-code, cursor, copilot, antigravity, etc.) and a
  * `StreamableHTTPClientTransport` facing the daemon's in-process MCP server
  * at `/mcp`. Tool execution happens in the daemon — the same path that codex
  * already uses over native HTTP. There is one tool runtime, regardless of

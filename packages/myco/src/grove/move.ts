@@ -20,10 +20,7 @@ import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
 import { EMBEDDABLE_TABLES } from '@myco/db/queries/embeddings.js';
-import {
-  saveProjectManifest,
-  saveProjectLocalManifest,
-} from '@myco/config/project-manifest.js';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 import {
   BACKUP_TABLES,
   createBackup,
@@ -227,7 +224,7 @@ export function moveProjectBetweenGroves(
   const sourceDbPath = resolveGroveDbPath(sourceGroveId, mycoHome);
   const targetDbPath = resolveGroveDbPath(targetGroveId, mycoHome);
 
-  const machineId = getMachineId(vaultDir);
+  const machineId = getMachineId();
   const snapshotsRoot = resolveBackupsRoot(options.snapshotsRoot);
   const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
   fs.mkdirSync(snapshotDir, { recursive: true });
@@ -311,17 +308,22 @@ export function moveProjectBetweenGroves(
     }, mycoHome);
     // force: idempotent on resume after a partial commit
     deregisterProjectInGrove(sourceGroveId, projectId, mycoHome, { force: true });
-    saveProjectManifest(vaultDir, {
-      project: { id: projectId, name: projectName },
-      grove: {
-        id: targetGroveId,
-        slug: targetGrove.slug,
-        name: targetGrove.name,
-        mode: 'local',
+    // Move commit: atomic write of both manifests + gitignore refresh
+    // via ProjectVault. The new Grove identity carries the freshly
+    // minted binding_id (newBindingId) generated for this move.
+    new ProjectVault(projectRoot).writeIdentity({
+      manifest: {
+        project: { id: projectId, name: projectName },
+        grove: {
+          id: targetGroveId,
+          slug: targetGrove.slug,
+          name: targetGrove.name,
+          mode: 'local',
+        },
       },
-    });
-    saveProjectLocalManifest(vaultDir, {
-      grove_binding: { binding_id: newBindingId, mode: 'local' },
+      localManifest: {
+        grove_binding: { binding_id: newBindingId, mode: 'local' },
+      },
     });
     marker = { ...marker, phase: 'committed', new_binding_id: newBindingId };
     writeMarker(markerPath, marker);

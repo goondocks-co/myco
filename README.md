@@ -12,30 +12,32 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
-  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Gemini%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Gemini | Windsurf | OpenCode | Pi">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Antigravity%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Antigravity | Windsurf | OpenCode | Pi">
 </p>
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Then initialize in your project:
+That single command installs the npm package, registers the per-user service, and starts the daemon. There is no `myco init` step, and no per-project setup. Open the dashboard to verify your setup and configure intelligence providers:
+
 ```bash
-cd your-project
-myco init
+myco dashboard
 ```
 
-`myco init` detects your coding agents, installs hooks, starts the daemon, and opens the dashboard. Pick the agent and embedding providers from the Settings page when you're ready — data capture starts immediately, intelligence is opt-in. Works with Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, and Pi.
+Myco's per-user daemon walks every coding agent on your machine and wires hooks, MCP, and skills into each one's user-global config automatically — no per-project files, no per-worktree bootstrap. New project? Just start coding — Myco picks it up on the first agent hook, auto-registering the project into your default Grove. Data capture starts immediately; intelligence is opt-in from the dashboard's Settings page. Works with Claude Code, Cursor, Codex, Copilot, Antigravity, Windsurf, OpenCode, and Pi.
+
+To commit per-project Myco config to a repo (portable Grove identity for teammates, dogfood binary pinning, project-local launcher overrides), open the dashboard and use the **Commit Myco config to this repo** affordance on the Symbionts page. The `myco init` CLI command is removed — project setup is fully automatic, and any per-project overrides are UI-driven.
 
 ## Upgrade path
 
-Existing users still upgrade the main product the same way:
+Existing users upgrade the main product the same way:
 
 ```bash
 npm update -g @goondocks/myco
 ```
 
-That remains the only package most users need for the local CLI, daemon, hooks, and dashboard.
+That remains the only package most users need for the local CLI, daemon, hooks, and dashboard. Upgrading from a per-project install? Run `npm install -g @goondocks/myco@latest`; the migration walker archives any old `.agents/myco-buffer/` and project-local stubs the first time the daemon starts. See [Upgrading Myco](docs/upgrade.md).
 
 If you also installed the optional operator packages, the Operations page detects and applies updates for them too. You only need to drop to npm for the initial install.
 
@@ -115,18 +117,19 @@ A local web dashboard provides configuration and operations management. Manage i
 
 ### Symbionts
 
-Myco integrates with coding agents through **symbionts** — named for the mycorrhizal symbiotic relationship between fungi and their host trees. `myco init` detects available agents and lets you choose which to configure. Registration is project-local — hooks, MCP servers, skills, and auto-approve settings are written directly to each agent's config files.
+Myco integrates with coding agents through **symbionts** — named for the mycorrhizal symbiotic relationship between fungi and their host trees. The daemon detects every agent on your machine and wires each one into its user-global config — hooks, MCP servers, skills, and auto-approve settings — pointing them at two global launchers (`~/.myco/launcher.cjs` for hooks, `~/.myco/mcp-launcher.cjs` for MCP). Per-project overrides live in the dashboard's **Symbionts** page. The launchers are bridges to the daemon, so an upgrade to the Myco package takes effect on the next hook invocation without rewriting per-agent config.
 
-| Agent | Hooks | MCP | Skills | Auto-Approve | Plans |
-|-------|-------|-----|--------|-------------|-------|
-| [Claude Code](https://claude.ai/code) | `.claude/settings.json` | `.mcp.json` | `.claude/skills/` | `permissions.allow` | `.claude/plans/` |
-| [Cursor](https://cursor.com) | — | `.cursor/mcp.json` | `.cursor/skills/` | `autoApprove` | `.cursor/plans/` |
-| [Codex](https://github.com/openai/codex) | `.codex/hooks.json` | `.codex/config.toml` | `.agents/skills/` | — | — |
-| [VS Code Copilot](https://code.visualstudio.com/docs/copilot) | `.github/hooks/` | `.vscode/mcp.json` | `.agents/skills/` | `autoApprove` | — |
-| [Gemini CLI](https://geminicli.com) | `.gemini/settings.json` | `.gemini/settings.json` | `.agents/skills/` | `coreTools` | `.gemini/plans/` |
-| [Windsurf](https://windsurf.com) | `.windsurf/hooks.json` | — | `.agents/skills/` | `cascadeCommandsAllowList` | `~/.windsurf/plans/` |
-| [OpenCode](https://opencode.ai) | `.opencode/plugins/myco.ts` (plugin) | `opencode.json` (`mcp` key) | `.agents/skills/` | `permission.bash` | `.opencode/plans/` |
-| [Pi](https://github.com/badlogic/pi-mono) | `.pi/extensions/myco/index.ts` (extension) | via `pi.registerTool()` | `.agents/skills/` | — | `.pi/plans/` |
+| Agent | Config surface |
+|-------|----------------|
+| [Claude Code](https://claude.ai/code) | `~/.claude/settings.json` (hooks, MCP); skills under `~/.claude/skills/` |
+| [Cursor](https://cursor.com) | `~/.cursor/hooks.json` (hooks) and `~/.cursor/mcp.json` (MCP); skills under `~/.cursor/skills/` |
+| [Codex](https://github.com/openai/codex) | `~/.codex/hooks.json` (hooks) and `~/.codex/config.toml` (MCP); skills under `~/.codex/skills/` |
+| [Copilot](https://code.visualstudio.com/docs/copilot) | `~/.copilot/hooks/myco-hooks.json` (hooks) and multi-target MCP (CLI & VS Code); skills under `~/.copilot/skills/` |
+| [Google Antigravity](https://antigravity.google) | `~/.gemini/config/plugins/myco/` plugin (hooks, MCP); skills under `~/.gemini/antigravity/skills/` |
+| [Windsurf](https://windsurf.com) | `~/.codeium/windsurf/hooks.json` (hooks) and `~/.codeium/windsurf/mcp_config.json` (MCP); skills under `~/.codeium/windsurf/skills/` |
+| [OpenCode](https://opencode.ai) | `~/.config/opencode/plugins/myco.ts` (plugin) and `~/.config/opencode/opencode.json` (MCP); skills under `~/.config/opencode/skills/` |
+| [Pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/extensions/myco/index.ts` (extension); skills under `~/.pi/agent/skills/` |
+
 
 Skills are installed once to `.agents/skills/` (the emerging cross-agent standard) and symlinked to each agent's native skills directory. Adding a new agent requires only a YAML manifest and templates — no code changes for JSON-hook agents, and a small manifest extension for plugin-based agents like OpenCode and Pi.
 
@@ -180,7 +183,16 @@ Local SQL dump backups run automatically during daemon idle periods. Configure a
 myco doctor
 ```
 
-Verifies vault config, database, intelligence provider, embedding provider, symbiont registration, and daemon status. Use `--fix` to auto-repair fixable issues.
+Verifies vault config, database, intelligence provider, embedding provider, symbiont registration, service registration, and daemon status. Doctor also surfaces install-state drift: missing matchers on Claude Code hooks, missing `cd ${CURSOR_PROJECT_DIR:-.}` prefix on Cursor hooks, hybrid-TOML state on Codex, residual project-local stubs, and the migration audit log. Use `--fix` to auto-repair fixable issues.
+
+## Uninstall
+
+```bash
+myco remove           # removes Myco's contributions from every agent's global config
+myco remove --purge   # also removes ~/.myco/ itself
+```
+
+Removal preserves any user-pre-existing keys in agent config files (e.g. a Codex `[features].hooks` entry you added yourself stays put).
 
 ## Contributing
 

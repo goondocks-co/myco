@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Myco hook guard — silently no-ops when myco is not installed.
+// MYCO_LAUNCHER_PROTOCOL=v2
 //
 // This file is committed to the repo so open-source contributors without
 // Myco don't see hook errors in their agent sessions. It stays deliberately
@@ -9,7 +10,14 @@
 // (project-scope `<project>/.myco/runtime.command` first, then machine-scope
 // `~/.myco/runtime.command`).
 //
-// Managed by: myco init / myco update
+// The `MYCO_LAUNCHER_PROTOCOL=v2` sentinel above is read by the global
+// launcher (~/.myco/launcher.cjs) before delegating to this file. Pre-
+// upgrade brownfield stubs lack the sentinel — the global launcher refuses
+// to delegate to them and queues the project for walker cleanup instead.
+// Bumping the version (v2 → v3) requires teaching the global launcher
+// to accept the new value.
+//
+// Managed by: myco update / dashboard Symbionts page (commit-to-repo opt-in)
 // Safe to delete: myco remove
 'use strict';
 

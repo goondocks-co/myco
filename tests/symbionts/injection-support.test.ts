@@ -25,11 +25,25 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   'claude-code': { session: true, prompt: true },
   codex: { session: true, prompt: true },
   cursor: { session: true, prompt: true },
-  gemini: { session: true, prompt: true },
+  // Antigravity exposes PreInvocation (per model call, not per user prompt)
+  // and Stop. There is no user-prompt-submit equivalent in the live hooks
+  // contract at https://antigravity.google/docs/hooks — `prompt: false`.
+  antigravity: { session: true, prompt: false },
   opencode: { session: true, prompt: false },
   pi: { session: true, prompt: false },
-  'vscode-copilot': { session: true, prompt: true },
+  copilot: { session: true, prompt: true },
   windsurf: { session: false, prompt: true },
+};
+
+const EXPECTED_SUBAGENT_START_INJECTION: Record<string, boolean> = {
+  'claude-code': true,
+  codex: true,
+  cursor: false,
+  antigravity: false,
+  opencode: false,
+  pi: false,
+  copilot: true,
+  windsurf: false,
 };
 
 describe('detectSymbiontInjectionSupport', () => {
@@ -61,7 +75,7 @@ describe('detectSymbiontInjectionSupport', () => {
   it('never lies: templates with `hook session-start` always report supportsSessionStartInjection=true', () => {
     for (const manifest of manifests) {
       const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
-        ? 'plugin.ts'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
         : 'hooks.json';
       const templatePath = path.resolve(
         import.meta.dirname,
@@ -90,7 +104,7 @@ describe('detectSymbiontInjectionSupport', () => {
   it('manifest sessionStartInjection matches the template scan for every symbiont', () => {
     for (const manifest of manifests) {
       const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
-        ? 'plugin.ts'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
         : 'hooks.json';
       const templatePath = path.resolve(
         import.meta.dirname,
@@ -108,6 +122,37 @@ describe('detectSymbiontInjectionSupport', () => {
         declared,
         `${manifest.name}: manifest declares sessionStartInjection=${declared} but template scan = ${templateHasSignal}`,
       ).toBe(templateHasSignal);
+    }
+  });
+
+  it('pins the docs-grounded subagent-start injection capability matrix', () => {
+    const actual: Record<string, boolean> = {};
+    for (const manifest of manifests) {
+      actual[manifest.name] = manifest.capabilities?.subagentStartInjection ?? false;
+    }
+    expect(actual).toEqual(EXPECTED_SUBAGENT_START_INJECTION);
+  });
+
+  it('requires every true subagent-start injection capability to have a hook template entry', () => {
+    for (const manifest of manifests) {
+      if (!manifest.capabilities?.subagentStartInjection) continue;
+      const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
+        : 'hooks.json';
+      const templatePath = path.resolve(
+        import.meta.dirname,
+        '..',
+        '..',
+        'packages/myco/src/symbionts/templates',
+        manifest.name,
+        templateFile,
+      );
+      expect(fs.existsSync(templatePath), `${manifest.name}: missing hooks template`).toBe(true);
+      const template = fs.readFileSync(templatePath, 'utf-8');
+      expect(
+        template.includes('hook subagent-start'),
+        `${manifest.name}: subagentStartInjection=true but template does not invoke hook subagent-start`,
+      ).toBe(true);
     }
   });
 });

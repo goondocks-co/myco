@@ -85,6 +85,27 @@ describe('prompt batch query helpers', () => {
       expect(b2.id).toBeGreaterThan(b1.id);
     });
 
+    it('atomically bumps sessions.prompt_count without an explicit caller update', async () => {
+      // Single-writer tenet: the insert function owns the cache the
+      // column maintains. Three inserts -> session.prompt_count = 3.
+      const { getSession } = await import('@myco/db/queries/sessions.js');
+      insertBatch(makeBatch(sessionId, { prompt_number: 1 }));
+      insertBatch(makeBatch(sessionId, { prompt_number: 2 }));
+      insertBatch(makeBatch(sessionId, { prompt_number: 3 }));
+      const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      expect(session?.prompt_count).toBe(3);
+    });
+
+    it('atomically bumps sessions.prompt_count via insertBatchStateless too', async () => {
+      const { getSession } = await import('@myco/db/queries/sessions.js');
+      const { insertBatchStateless } = await import('@myco/db/queries/batches.js');
+      const now = epochNow();
+      insertBatchStateless({ session_id: sessionId, started_at: now, created_at: now });
+      insertBatchStateless({ session_id: sessionId, started_at: now, created_at: now });
+      const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      expect(session?.prompt_count).toBe(2);
+    });
+
     it('stores optional fields', () => {
       const data = makeBatch(sessionId, {
         prompt_number: 3,

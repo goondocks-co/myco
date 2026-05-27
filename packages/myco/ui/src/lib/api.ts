@@ -41,9 +41,10 @@ export interface MergedConfigShape {
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  // Only set Content-Type for methods with a body (POST, PUT)
+  // Set Content-Type whenever a body is present, regardless of method.
   const method = init?.method?.toUpperCase();
-  const needsContentType = method === 'POST' || method === 'PUT';
+  const hasBody = init?.body !== undefined && init.body !== null;
+  const needsContentType = hasBody || method === 'POST' || method === 'PUT';
   const headers = buildHeaders(path, init?.headers, needsContentType);
 
   const res = await fetch(withBasePath(`${API_BASE}${path}`), {
@@ -149,8 +150,15 @@ export async function putJson<T>(path: string, body: unknown): Promise<T> {
   return fetchJson(path, { method: 'PUT', body: JSON.stringify(body) });
 }
 
-export async function deleteJson<T>(path: string): Promise<T> {
-  return fetchJson(path, { method: 'DELETE' });
+export async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  return fetchJson(path, { method: 'PATCH', body: JSON.stringify(body) });
+}
+
+export async function deleteJson<T>(path: string, body?: unknown): Promise<T> {
+  return fetchJson(path, {
+    method: 'DELETE',
+    body: body ? JSON.stringify(body) : undefined,
+  });
 }
 
 // ---------------------------------------------------------------------------

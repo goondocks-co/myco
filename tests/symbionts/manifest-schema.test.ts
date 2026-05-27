@@ -111,14 +111,22 @@ describe('symbiont manifests', () => {
     expect(manifest.capture).toBeUndefined();
   });
 
-  it('vscode-copilot manifest has registration with github hooks target', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'vscode-copilot.yaml'), 'utf-8');
+  it('copilot manifest has registration with github hooks target and dual MCP targets', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'copilot.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
     expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
     expect(manifest.registration!.settingsTarget).toBe('.vscode/settings.json');
+    // Copilot is the canonical multi-target MCP case: two surfaces of
+    // the same agent runtime with diverging top-level JSON keys. The
+    // schema normalizes the YAML into Array<{path, serversKey?}> so the
+    // installer can write each file under its surface's expected key.
+    expect(manifest.registration!.globalMcpTarget).toEqual([
+      { path: '~/.copilot/mcp-config.json', serversKey: 'mcpServers' },
+      { path: '~/Library/Application Support/Code/User/mcp.json', serversKey: 'servers' },
+    ]);
   });
 
   it('claude-code manifest has settingsTarget', () => {
@@ -149,14 +157,26 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });
 
-  it('gemini manifest has registration with shared settings target', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+  it('antigravity manifest has registration with plugin-bundle layout', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
     expect(manifest.registration).toBeDefined();
-    expect(manifest.registration!.hooksTarget).toBe('.gemini/settings.json');
-    expect(manifest.registration!.mcpTarget).toBe('.gemini/settings.json');
-    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBe('.gemini/settings.json');
+    expect(manifest.registration!.hooksTarget).toBe('.agents/plugins/myco/hooks.json');
+    expect(manifest.registration!.mcpTarget).toBe('.agents/plugins/myco/mcp_config.json');
+    expect(manifest.registration!.globalHooksTarget).toBe('~/.gemini/config/plugins/myco/hooks.json');
+    // Plugin-bundle marker (Google's plugin loader requires it) lives
+    // beside hooks.json + mcp_config.json — not inside a sub-dir.
+    expect(manifest.registration!.pluginManifestTarget).toBe('.agents/plugins/myco/plugin.json');
+    expect(manifest.registration!.globalPluginManifestTarget).toBe('~/.gemini/config/plugins/myco/plugin.json');
+    // Skills deliberately do NOT live inside the plugin bundle.
+    // Antigravity reads workspace `.agents/skills/` natively (populated
+    // by other cross-agent symbiont installs and Myco's intelligence
+    // pipeline), and the package myco + myco-rules skills go to
+    // Antigravity's user-global skills dir `~/.gemini/antigravity/skills/`.
+    // This keeps the plugin bundle lean — only the hook/MCP/manifest
+    // surface lives there.
+    expect(manifest.registration!.skillsTarget).toBeUndefined();
+    expect(manifest.registration!.globalSkillsTarget).toBe('~/.gemini/antigravity/skills');
   });
 
   it('windsurf manifest has registration without mcpTarget', () => {
@@ -169,10 +189,10 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.settingsTarget).toBe('.windsurf/settings.json');
   });
 
-  it('gemini manifest has planDirs configured', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'gemini.yaml'), 'utf-8');
+  it('antigravity manifest has planDirs configured', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.capture?.planDirs).toEqual(['.gemini/plans/']);
+    expect(manifest.capture?.planDirs).toEqual(['.agents/plugins/myco/plans/']);
   });
 
   it('accepts planTags array in capture block', () => {
@@ -247,10 +267,10 @@ describe('symbiont manifests', () => {
     expect(result.capture?.planTags).toEqual(['proposed_plan']);
   });
 
-  it('codex manifest has planTags with proposed_plan', () => {
+  it('codex manifest has planTags with update_plan (synthesized by the parser from the function-call tool)', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.capture?.planTags).toEqual(['proposed_plan']);
+    expect(manifest.capture?.planTags).toEqual(['update_plan']);
   });
 
   it('claude-code manifest has planTags with ultraplan', () => {

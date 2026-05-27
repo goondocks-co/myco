@@ -1,0 +1,17 @@
+{
+  "name": "myco",
+  "version": "0.1.0",
+  "description": "Project + team intelligence for Antigravity. Captures session context, surfaces prior decisions via Cortex, and exposes the Myco MCP tool surface.",
+  "author": {
+    "name": "Goondocks"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://myco.sh",
+  "keywords": [
+    "myco",
+    "intelligence",
+    "cortex",
+    "canopy",
+    "session-capture"
+  ]
+}

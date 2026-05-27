@@ -99,6 +99,9 @@ mock.module('../../packages/myco/ui/src/hooks/use-database-details', () => ({
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: async () => ({ backups: [] }),
   postJson: async () => ({}),
+  putJson: async () => ({}),
+  patchJson: async () => ({}),
+  deleteJson: async () => ({}),
   ApiError: class extends Error {},
 }));
 

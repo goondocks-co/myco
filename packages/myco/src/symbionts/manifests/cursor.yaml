@@ -2,6 +2,7 @@ name: cursor
 displayName: Cursor
 binary: cursor
 configDir: .cursor
+detectionDir: ~/.cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
 settingsPath: .cursor/mcp.json
 hookFields:
@@ -16,6 +17,7 @@ capture:
     - .cursor/plans/
 registration:
   hooksTarget: .cursor/hooks.json
+  globalHooksTarget: ~/.cursor/hooks.json
   hooksConfigVersion: 1
   hookResponse:
     format: json
@@ -27,8 +29,18 @@ registration:
       followupMessage: followup_message
       systemMessage: system_message
   mcpTarget: .cursor/mcp.json
+  globalMcpTarget: ~/.cursor/mcp.json
   skillsTarget: .cursor/skills
+  globalSkillsTarget: ~/.cursor/skills
   settingsTarget: .cursor/settings.json
+  # Cursor's ~/.cursor/hooks.json accepts `chat.tools.terminal.autoApprove`
+  # alongside the hooks block — share-with-hooks is the intended global
+  # surface. Explicit declaration (vs. silent fallback) per /code-review
+  # finding C9.
+  globalSettingsTarget: ~/.cursor/hooks.json
 capabilities:
-  # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
+  preToolUseInjection: false
+  # Cursor currently exposes subagentStart for lifecycle allow/deny, not
+  # proven child model-context injection.
+  subagentStartInjection: false

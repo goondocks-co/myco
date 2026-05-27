@@ -282,7 +282,7 @@ function requireGroveInstallScope(scope: TeamCliScope): asserts scope is GroveTe
   console.error('myco-team install requires a Grove-bound project.');
   console.error('');
   console.error('To activate Grove for this project:');
-  console.error('  1. Run `myco init` from your project root.');
+  console.error('  1. Open this project in any supported agent so Myco auto-registers it.');
   console.error('  2. Re-run `myco-team install` to provision team sync.');
   console.error('');
   console.error('If you are intentionally provisioning team sync against a legacy');
@@ -371,7 +371,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
   // worker config) can still proceed.
   const fallbackProjectId = envProjectId ?? manifest?.project.id;
   if (!fallbackProjectId) {
-    throw new Error('No Grove project id available. Run `myco init` to activate a Grove for this project.');
+    throw new Error('No Grove project id available. Open this project in any supported agent so Myco auto-registers it, then retry.');
   }
   return {
     projectRoot: fallbackProjectRoot,
@@ -846,7 +846,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
   console.log('Setting team configuration...');
   try {
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
-    const creatorMachineId = await getMachineId(vaultDir);
+    const creatorMachineId = getMachineId();
     await fetch(`${workerUrl}/config`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },

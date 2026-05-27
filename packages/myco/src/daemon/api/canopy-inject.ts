@@ -32,6 +32,7 @@ import { composeBlob, blobTokenCost } from '../../canopy/inject/compose.js';
 import { decide, type IntentDecision, type NoInjectionReason } from '../../canopy/inject/filter.js';
 import { recordPendingInjection } from '../../canopy/inject/pending.js';
 import { symbiontHasCapability } from '../../symbionts/capabilities.js';
+import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 
 export interface CanopyInjectDeps {
   liveConfig: { current: MycoConfig };
@@ -133,6 +134,29 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
 
     const blob = composeBlob(decision.entry);
     const injectionTokens = blobTokenCost(blob);
+
+    // Per-(session, file) dedup gate. UNIQUE on
+    // `myco:inject:canopy:<sessionId>:<filePath>` blocks a second
+    // injection of the same file within the same session. `no_batch`
+    // falls through and still serves the blob.
+    const { suppress } = await recordInjectionAndShouldSuppress({
+      sessionId,
+      projectId,
+      injectionType: 'canopy',
+      discriminator: decision.entry.path,
+      trigger: {
+        metadata: {
+          file_path: decision.entry.path,
+          injection_tokens: injectionTokens,
+          language: decision.entry.language,
+        },
+      },
+      fetchContent: async () => ({ text: blob, metadata: { tokens: injectionTokens, path: decision.entry.path } }),
+    });
+    if (suppress) {
+      const body: InjectResponseBody = { inject: false, reason: 'already_injected' };
+      return { body };
+    }
 
     if (filePath) {
       recordPendingInjection(sessionId, decision.entry.path, injectionTokens);

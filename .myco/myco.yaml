@@ -103,20 +103,3 @@ appearance:
   mode: dark
   font: default
   density: normal
-symbionts:
-  claude-code:
-    enabled: true
-  codex:
-    enabled: true
-  cursor:
-    enabled: true
-  gemini:
-    enabled: true
-  opencode:
-    enabled: true
-  pi:
-    enabled: true
-  vscode-copilot:
-    enabled: true
-  windsurf:
-    enabled: true

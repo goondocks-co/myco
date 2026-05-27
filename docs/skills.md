@@ -17,7 +17,7 @@ survey → approve → generate → evolve
 
 **Approve** — Candidates appear in the Skills dashboard. You approve what becomes canon and dismiss the rest. Only approved candidates proceed to generation.
 
-**Generate** — Myco writes a SKILL.md file from the approved candidate's source material. The skill is staged, validated against quality criteria (is it procedural? does it have concrete file paths? is it under 500 lines? does it conflict with existing skills?), and promoted to `.agents/skills/` only when it passes.
+**Generate** — Myco writes a SKILL.md file from the approved candidate's source material. The skill is staged, validated against quality criteria (is it procedural? does it have concrete file paths? is it under 500 lines? does it conflict with existing skills?), and promoted to Myco's canonical skill store only when it passes — at which point every installed agent picks it up via its global skills symlink.
 
 **Evolve** — Over time, Myco monitors active skills for drift. When new knowledge appears that should be incorporated, a skill's underlying spores get superseded, or a skill grows oversized and should be split, the evolve task rewrites it. Each rewrite bumps a generation number and records what changed.
 
@@ -64,9 +64,7 @@ A validation gate enforces these conventions. Skills that fail validation are re
 
 ## How skills reach agents
 
-Skills are written to `.agents/skills/<name>/SKILL.md` — the emerging cross-agent standard directory. Agents that use `.agents/skills/` natively (Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, Pi) pick them up directly. For Claude Code and Cursor, `myco init` and `myco update` create symlinks from the agent's native skills directory to the canonical location.
-
-Run `myco update` after new skills are generated to refresh the symlinks.
+Skills are written to Myco's canonical skill store and symlinked into each agent's native skills directory at the **global** install location — `~/.claude/skills/`, `~/.cursor/skills/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity/skills/`, `~/.codeium/windsurf/skills/`, `~/.config/opencode/skills/`, and `~/.pi/agent/skills/`. Every project on your machine sees the same set of skills, kept in sync by Myco's symbiont layer — see [Supported Agents](symbionts.md) for the per-agent paths.
 
 ## Dashboard
 

@@ -56,6 +56,9 @@ import {
   setGroveServedBy,
 } from './registry.js';
 import { readMarkerJson } from './marker.js';
+import { parseProjectManifest, ProjectLocalManifestSchema } from '@myco/config/project-manifest.js';
+import { parse } from 'smol-toml';
+import { ProjectVault } from '@myco/vault/project-vault.js';
 
 export type ClaimPhase = 'claimed' | 'flipped';
 export type ReleasePhase = 'restored' | 'registry-restored' | 'flipped' | 'archived';
@@ -645,11 +648,35 @@ function restoreProjectManifests(snapshotProjectManifestsDir: string): void {
     }
     const snapshotManifest = path.join(projectSnapshotDir, PROJECT_MANIFEST_FILENAME);
     const snapshotLocal = path.join(projectSnapshotDir, PROJECT_LOCAL_MANIFEST_FILENAME);
-    if (fs.existsSync(snapshotManifest)) {
-      fs.copyFileSync(snapshotManifest, resolveProjectManifestPath(vaultDir));
-    }
-    if (fs.existsSync(snapshotLocal)) {
-      fs.copyFileSync(snapshotLocal, resolveProjectLocalManifestPath(vaultDir));
+    if (!fs.existsSync(snapshotManifest)) continue;
+    // Restore goes through ProjectVault so the snapshot is validated by
+    // the schema and the gitignore stays coherent. A raw fs.copyFileSync
+    // would bypass both. Per-project try/catch keeps the loop tolerant:
+    // a single malformed snapshot warns and is skipped, every other
+    // project is still restored. (The function's docstring promises
+    // "skips any project... does not fail the release.")
+    try {
+      const manifest = parseProjectManifest(fs.readFileSync(snapshotManifest, 'utf-8'));
+      const localManifest = fs.existsSync(snapshotLocal)
+        ? ProjectLocalManifestSchema.parse(parse(fs.readFileSync(snapshotLocal, 'utf-8')))
+        : undefined;
+      const vault = new ProjectVault(projectRoot);
+      if (localManifest) {
+        vault.writeIdentity({ manifest, localManifest });
+      } else {
+        // No local manifest in the snapshot → the project was unbound
+        // pre-claim. Delete any claim-era project.local.toml on disk so
+        // we don't leak the claim-period binding_id back to the user's
+        // restored vault.
+        vault.writeIdentity({ manifest, mode: 'manifest-only' });
+        const claimEraLocal = path.join(vaultDir, PROJECT_LOCAL_MANIFEST_FILENAME);
+        if (fs.existsSync(claimEraLocal)) fs.unlinkSync(claimEraLocal);
+      }
+    } catch (err) {
+      process.stderr.write(
+        `warn: snapshot for project ${projectId} could not be restored ` +
+        `(${(err as Error).message}); skipping\n`,
+      );
     }
   }
 }

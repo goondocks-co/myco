@@ -28,7 +28,8 @@ import {
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import * as updateInProgress from '../update-in-progress.js';
-import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
+import { RELEASE_CHANNELS } from '../../constants/update.js';
+import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
 import { resolveServiceRestartCommand } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
@@ -118,8 +119,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
    */
   function isStampMatching(version: string): boolean {
     try {
-      const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
-      const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
+      const stamp = fs.readFileSync(resolveLastUpdateVersionPath(), 'utf-8').trim();
       return stamp === version;
     } catch {
       return false;

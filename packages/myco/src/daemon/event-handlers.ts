@@ -6,12 +6,15 @@
  */
 
 import path from 'node:path';
+import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
+import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
-import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
+import { updateSession } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
@@ -111,6 +114,106 @@ export function ensureOpenBatch(sessionId: string): void {
 }
 
 /**
+ * Try to claim the slot for an incoming INITIAL user prompt without
+ * inserting a new row. Returns the existing batch when a sentinel
+ * placeholder is sitting alone (created earlier by
+ * `recordInjectionActivity` for the SessionStart cortex / spores
+ * injection on single-shot symbionts), AFTER replacing its
+ * `user_prompt` with the real text. Returns `null` when no
+ * replaceable slot exists — caller falls back to the normal
+ * insert path.
+ *
+ * Centralises the sentinel-detect-and-replace logic so
+ * `handleUserPrompt` reads as a single "decide where this batch
+ * goes" call rather than an inline if/else. Same primitive used by
+ * the Antigravity transcript self-heal in `handleToolUse` and by
+ * `session-reenrich.ts` at Stop — three call sites of one pattern.
+ *
+ * The lineage row attaches to the replaced batch's id so consumers
+ * downstream see the same shape they'd get from a fresh insert.
+ */
+function claimInitialBatchSlot(
+  sessionId: string,
+  prompt: string,
+  now: number,
+): { batchId: number; promptNumber: number } | null {
+  const latest = getLatestBatch(sessionId);
+  if (!latest) return null;
+  if (latest.user_prompt !== RECOVERED_BATCH_SENTINEL) return null;
+  if (countBatchesBySession(sessionId) !== 1) return null;
+
+  replaceRecoveredBatchUserPrompt(latest.id, prompt);
+  try {
+    const lineageProjectId = latest.project_id ? assertGroveProjectId(latest.project_id) : null;
+    createBatchLineage(DEFAULT_AGENT_ID, sessionId, latest.id, now, lineageProjectId);
+  } catch { /* lineage best-effort */ }
+  return { batchId: latest.id, promptNumber: latest.prompt_number ?? 1 };
+}
+
+const antigravityParser = new AntigravityJsonlParser();
+
+/**
+ * Best-effort recovery of an Antigravity session's user prompt(s)
+ * from the transcript file, accounting for two pieces of existing
+ * state the Antigravity integration already keeps:
+ *
+ *   - The first batch may be the {@link RECOVERED_BATCH_SENTINEL}
+ *     placeholder written by {@link ensureOpenBatch}. When the IDE
+ *     finally flushes its transcript, this routine REPLACES the
+ *     sentinel with the real first-turn prompt via
+ *     {@link replaceRecoveredBatchUserPrompt} (idempotent — bails
+ *     when the row is no longer the sentinel).
+ *
+ *   - Injection records (cortex / spores / canopy) live in
+ *     `injection-records.ts` keyed by `(sessionId, content_hash)`.
+ *     This routine does NOT trigger re-injection — it only
+ *     reconciles the visible prompt text. The injection step
+ *     already self-deduplicates if a later code path retriggers it.
+ *
+ * Called on every tool_use for Antigravity. Cheap when the
+ * transcript hasn't changed: a stat-and-fast-bail design would be
+ * marginal — the parser cost on a real session transcript is
+ * sub-millisecond, and the early-exit when no sentinel exists
+ * already trims the hot path.
+ */
+function selfHealAntigravityPromptFromTranscript(
+  sessionId: string,
+  transcriptPath: string,
+): void {
+  // Cheap precondition: only proceed when this session still has a
+  // sentinel batch sitting at the head. If it doesn't, the prompt
+  // is already correct and nothing to heal.
+  const earliest = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE, limit: 1 });
+  if (earliest.length === 0) return;
+  if (earliest[0].user_prompt !== RECOVERED_BATCH_SENTINEL) return;
+
+  let content: string;
+  try { content = fs.readFileSync(transcriptPath, 'utf-8'); }
+  catch { return; }
+
+  const prompts = antigravityParser
+    .parseTurns(content)
+    .map((t) => t.prompt)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0);
+  if (prompts.length === 0) return;
+
+  // Replace the sentinel with the first real prompt. Idempotent —
+  // returns false if the row has already been healed by another
+  // event (e.g. a parallel post-tool-use, or session-reenrich at
+  // Stop). Either path leaves the user with the right answer.
+  replaceRecoveredBatchUserPrompt(earliest[0].id, prompts[0]);
+
+  // If the transcript advanced beyond the sentinel turn while no
+  // user_prompt hook ever fired for the tail (Antigravity does not
+  // have a per-prompt hook), reuse syncTranscriptPromptBatches to
+  // append the missing batches. Idempotent via its count check.
+  if (prompts.length > 1) {
+    try { syncTranscriptPromptBatches(sessionId, prompts); }
+    catch { /* best-effort */ }
+  }
+}
+
+/**
  * Invariant: every activity insert increments the linked batch's
  * `activity_count`. Pre-PR-#346 only `handleToolUse` honored it; the
  * bookkeeping handlers (subagent_*, task_completed, compact, stop_failure)
@@ -158,6 +261,13 @@ export function handleUserPrompt(
       parentId = null;
     }
   } else {
+    // Single entry point for "where does this initial prompt go?"
+    // The helper decides between sentinel-replace and fresh insert,
+    // hiding the branching from the call site.
+    if (effectiveKind === BATCH_KIND.INITIAL && prompt) {
+      const claimed = claimInitialBatchSlot(sessionId, prompt, now);
+      if (claimed) return claimed;
+    }
     closeOpenBatches(sessionId, now);
   }
 
@@ -178,11 +288,69 @@ export function handleUserPrompt(
     createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
   } catch { /* lineage best-effort */ }
 
-  if (effectiveKind === BATCH_KIND.INITIAL) {
-    updateSession(sessionId, { prompt_count: promptNumber }, ALL_PROJECTS_SCOPE);
-  }
+  // `sessions.prompt_count` cache bump is folded into
+  // `insertBatchStateless` so it's atomic with the row write —
+  // see the function comment for the single-writer rationale.
 
   return { batchId: batch.id, promptNumber };
+}
+
+/**
+ * Sync a session's prompt_batches against an ordered list of user prompts
+ * mined from the agent's transcript. Inserts batches for any prompts beyond
+ * the count already captured for the session; existing batches are left
+ * alone. Used by symbionts (Antigravity) whose hook payloads do not carry
+ * the user prompt — the transcript is the authoritative source and the
+ * hook handler reads it on every fire to keep the DB in sync.
+ *
+ * Count-based diff means callers can POST the full prompt list every call;
+ * the server only creates batches for the new tail.
+ */
+export function syncTranscriptPromptBatches(
+  sessionId: string,
+  prompts: string[],
+): { createdBatchCount: number; existingBatchCount: number } {
+  // countBatchesBySession is a SELECT COUNT(*); listBatchesBySession caps
+  // at BATCHES_DEFAULT_LIMIT and would saturate at 200 — then re-insert
+  // prompts[200..N] as duplicates on every hook fire.
+  const existingBatchCount = countBatchesBySession(sessionId);
+  if (existingBatchCount >= prompts.length) {
+    return { createdBatchCount: 0, existingBatchCount };
+  }
+
+  // Insert the new tail in a single transaction — N user prompts at AGY
+  // session cold-start could otherwise pay N fsyncs. Direct
+  // insertBatchStateless skips handleUserPrompt's closeOpenBatches step,
+  // which would collapse turn boundaries when N synthetic batches are
+  // written in one sweep.
+  const now = epochSeconds();
+  let createdBatchCount = 0;
+  const machineId = getTeamMachineId();
+
+  const insertTail = getDatabase().transaction(() => {
+    for (let i = existingBatchCount; i < prompts.length; i++) {
+      const prompt = prompts[i];
+      if (typeof prompt !== 'string' || prompt.trim().length === 0) continue;
+      const batch = insertBatchStateless({
+        session_id: sessionId,
+        user_prompt: prompt,
+        started_at: now,
+        created_at: now,
+        machine_id: machineId,
+        kind: BATCH_KIND.INITIAL,
+        parent_prompt_batch_id: null,
+      });
+      try {
+        const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
+        createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
+      } catch { /* lineage best-effort */ }
+      // Counter bump is atomic inside insertBatchStateless.
+      createdBatchCount += 1;
+    }
+  });
+  insertTail();
+
+  return { createdBatchCount, existingBatchCount };
 }
 
 /**
@@ -197,10 +365,24 @@ export function handleToolUse(
   toolInput: unknown,
   toolOutput: string | undefined,
   projectRoot: string,
+  transcriptPath?: string,
 ): void {
   const now = epochSeconds();
 
   ensureOpenBatch(sessionId);
+
+  // Daemon-side self-heal: when a `RECOVERED_BATCH_SENTINEL` placeholder
+  // exists for this session AND the event carries a transcript path,
+  // re-read the transcript and overwrite the sentinel with the real
+  // user prompt. The Antigravity IDE writes its transcript file
+  // asynchronously after the PreInvocation hook fires, so the initial
+  // session-start sync can miss the prompt — every subsequent
+  // tool_use is a chance to heal. Idempotent: bails immediately when
+  // no sentinel batch exists for this session.
+  if (transcriptPath && agent === 'antigravity') {
+    try { selfHealAntigravityPromptFromTranscript(sessionId, transcriptPath); }
+    catch { /* best-effort heal */ }
+  }
 
   const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
@@ -229,8 +411,8 @@ export function handleToolUse(
     canopy_injection_tokens: injectionTokens,
   });
 
-  // Increment session-level tool_count atomically.
-  incrementSessionToolCount(sessionId);
+  // `sessions.tool_count` cache bump is folded into the activity
+  // insert itself — see `insertActivityWithBatch`.
 }
 
 /**

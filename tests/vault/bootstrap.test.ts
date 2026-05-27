@@ -2,7 +2,11 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveBootstrapVaultDir } from '../../packages/myco/src/vault/bootstrap';
+import {
+  resolveBootstrapVaultDir,
+  resolveBootstrapVaultDirOrPhantom,
+  resolvePhantomBootstrapVaultDir,
+} from '../../packages/myco/src/vault/bootstrap';
 
 let originalHome: string | undefined;
 let tmpHome: string;
@@ -80,8 +84,46 @@ describe('resolveBootstrapVaultDir', () => {
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(goodRoot, '.myco'));
   });
 
-  test('throws when neither cwd nor registry yields a project', () => {
-    expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/no enclosing project.*no projects registered/i);
+  test('returns null on greenfield (no enclosing project, no registry)', () => {
+    // Greenfield contract: the variant-less daemon must come up so hooks
+    // can register the first project. Throwing here would re-create the
+    // chicken-and-egg that blocked publication.
+    expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+  });
+
+  test('phantom helper falls back to MYCO_HOME scratch dir on greenfield', () => {
+    const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    expect(result.isPhantom).toBe(true);
+    expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
+    // Dir is created so callers (machine-id, logger) can write into it
+    // immediately.
+    expect(fs.existsSync(result.vaultDir)).toBe(true);
+    // Manifest is materialized so loadProjectManifest / request-context
+    // resolution don't blow up against a vault-less dir.
+    const manifestPath = path.join(result.vaultDir, 'project.toml');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    expect(fs.readFileSync(manifestPath, 'utf-8')).toMatch(/^\[project\]\nid = "proj_[0-9a-f]{32}"/);
+    // myco.yaml is materialized so loadConfigInternal doesn't throw
+    // "myco.yaml not found" on the first loadMergedConfig call —
+    // greenfield smoke caught this gap before the fix-up.
+    const configPath = path.join(result.vaultDir, 'myco.yaml');
+    expect(fs.existsSync(configPath)).toBe(true);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe('version: 3\n');
+  });
+
+  test('phantom helper is idempotent — manifest id persists across calls', () => {
+    const first = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    const firstBody = fs.readFileSync(path.join(first.vaultDir, 'project.toml'), 'utf-8');
+    const second = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    const secondBody = fs.readFileSync(path.join(second.vaultDir, 'project.toml'), 'utf-8');
+    expect(secondBody).toBe(firstBody);
+  });
+
+  test('phantom helper passes through real vault when one resolves', () => {
+    const projRoot = makeProject('phantom-passthrough');
+    const result = resolveBootstrapVaultDirOrPhantom(projRoot);
+    expect(result.isPhantom).toBe(false);
+    expect(result.vaultDir).toBe(path.join(projRoot, '.myco'));
   });
 
   function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
@@ -111,6 +153,27 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 
+  test('prod variant refuses to bind a default Grove with served_by=service-dev (task #9)', () => {
+    // The cross-variant escape hatch: a user sets a dev Grove as
+    // default_grove_id and then installs the prod daemon. Before
+    // task #9 the prod daemon would silently bind to the dev Grove
+    // via the default-Grove fast-path, ignoring served_by. The fix
+    // makes the prod variant skip a dev-owned default and fall
+    // through to the served_by-filtered loop (which finds nothing
+    // here), returning null so the rebind watcher keeps waiting.
+    const devGrove = 'grove_2222222222222222222222222222222a';
+    const devRoot = makeProject('escape-hatch-dev');
+    writeRegistry(devGrove); // default points at a dev Grove
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
   test('prod variant (default) still picks the default Grove', () => {
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
@@ -125,7 +188,27 @@ describe('resolveBootstrapVaultDir', () => {
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(prodRoot, '.myco'));
   });
 
-  test('dev variant fails clearly when no dev Grove exists', () => {
+  test('variant-pinned greenfield (no registry at all) returns null for phantom-mode bootstrap', () => {
+    // Production user path: `npm install -g` → postinstall registers a
+    // service → launchd/systemd spawns the daemon with the variant env
+    // set BEFORE any project exists. Throwing here would respawn-loop
+    // the supervisor. The variant safety invariant is preserved by
+    // firstProjectVaultFromRegistry()'s served_by filter: when a Grove
+    // eventually registers, the dev daemon binds only to dev Groves
+    // and the prod daemon binds only to prod Groves.
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('dev variant in greenfield with prod-only Groves returns null (does not bind to prod)', () => {
+    // The variant filter must hold even when a non-matching Grove is
+    // registered. A dev-variant daemon must not silently bootstrap onto
+    // a prod Grove just because no dev Grove exists yet — the rebind
+    // watcher waits for a dev Grove to appear.
     const prodGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     const prodRoot = makeProject('prod3');
     writeRegistry(prodGrove);
@@ -133,7 +216,21 @@ describe('resolveBootstrapVaultDir', () => {
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
-      expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/service-dev/);
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('variant-pinned greenfield routes through phantom helper without throw', () => {
+    // End-to-end: the daemon's actual startup path. Combined with the
+    // phantom helper, variant-pinned supervisor spawns get a usable
+    // bootstrap dir instead of a respawn loop.
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    try {
+      const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+      expect(result.isPhantom).toBe(true);
+      expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
@@ -182,6 +279,53 @@ describe('resolveBootstrapVaultDir', () => {
       expect(resolveBootstrapVaultDir(devRoot)).toBe(path.join(prodRoot, '.myco'));
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('sandbox-mode daemon refuses to bind to a real project via cwd-walk', () => {
+    // Smoke-test daemons are spawned with MYCO_LAUNCH_AGENTS_DIR set
+    // and an isolated MYCO_HOME under /tmp. Their cwd usually lands
+    // inside the developer's real repo (the foreground spawn starts
+    // from a project tree). Without this guard, the cwd-walk branch
+    // would happily bind the sandbox daemon's vault to the real
+    // project's `.myco/`, writing the real `.myco/myco.db` from a
+    // sandbox-locked daemon. Confirmed in the wild: a sandbox smoke
+    // daemon (lock under /tmp/myco-smoke2-xxx) had the developer's
+    // real `Repos/myco/.myco/myco.db` open for writes.
+    //
+    // The guard: when MYCO_LAUNCH_AGENTS_DIR is set, skip cwd-walk
+    // entirely. Registry path only; sandbox HOME has an empty registry
+    // so we fall through to null → phantom-bootstrap.
+    const realProject = makeProject('real-repo');
+    process.env.MYCO_LAUNCH_AGENTS_DIR = path.join(tmpHome, 'Library', 'LaunchAgents');
+    try {
+      // Cwd inside the real project — without the guard, this would
+      // return the real project's .myco/ vault, escaping the sandbox.
+      expect(resolveBootstrapVaultDir(realProject)).toBeNull();
+    } finally {
+      delete process.env.MYCO_LAUNCH_AGENTS_DIR;
+    }
+  });
+
+  test('sandbox-mode + sandbox-registry still binds to sandbox-internal projects', () => {
+    // Sandbox-mode guard MUST NOT block legitimate sandbox project
+    // resolution. If the sandbox's own registry has a project (e.g.
+    // a smoke test that registered one during setup), the daemon
+    // binds to it.
+    const sandboxGrove = 'grove_99999999999999999999999999999999';
+    const sandboxProject = makeProject('sandbox-internal');
+    writeRegistry(sandboxGrove);
+    writeGroveToml(sandboxGrove, 'service');
+    writeProjectsToml(sandboxGrove, [{ id: 'proj_sandbox', root: sandboxProject }]);
+
+    const realProject = makeProject('real-but-cwd');
+    process.env.MYCO_LAUNCH_AGENTS_DIR = path.join(tmpHome, 'Library', 'LaunchAgents');
+    try {
+      // Even though cwd is the real project, sandbox mode goes
+      // straight to the registry and finds the sandbox-internal one.
+      expect(resolveBootstrapVaultDir(realProject)).toBe(path.join(sandboxProject, '.myco'));
+    } finally {
+      delete process.env.MYCO_LAUNCH_AGENTS_DIR;
     }
   });
 });

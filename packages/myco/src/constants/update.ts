@@ -48,9 +48,6 @@ export const MACHINE_RUNTIME_TMP_DIRNAME = `${MACHINE_RUNTIME_DIRNAME}.tmp`;
 /** Filename for the machine-scope runtime command alias (lives in `~/.myco/`). */
 export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
 
-/** Filename for the version stamp written by `myco update` (lives inside vault .myco/). */
-export const UPDATE_STAMP_FILENAME = 'last-update-version';
-
 /** Filename for the restart reason signal file (lives inside vault .myco/). */
 export const RESTART_REASON_FILENAME = 'restart-reason.json';
 

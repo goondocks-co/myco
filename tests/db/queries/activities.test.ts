@@ -104,6 +104,34 @@ describe('activity query helpers', () => {
       expect(row.processed).toBe(0);
     });
 
+    it('insertActivityWithBatch atomically bumps sessions.tool_count', async () => {
+      // Single-writer tenet: insertActivityWithBatch owns the
+      // cached tool_count column. Real tool-use call sites go
+      // through this function; the cache must stay in sync without
+      // an explicit caller bump.
+      const { getSession } = await import('@myco/db/queries/sessions.js');
+      const { insertActivityWithBatch } = await import('@myco/db/queries/activities.js');
+      const now = epochNow();
+      insertActivityWithBatch({ session_id: sessionId, tool_name: 'Bash', timestamp: now, created_at: now });
+      insertActivityWithBatch({ session_id: sessionId, tool_name: 'Read', timestamp: now, created_at: now });
+      insertActivityWithBatch({ session_id: sessionId, tool_name: 'Edit', timestamp: now, created_at: now });
+      const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      expect(session?.tool_count).toBe(3);
+    });
+
+    it('insertActivity (the shaping-injection path) does NOT bump tool_count', async () => {
+      // Injection records (myco:inject_cortex / spores / canopy)
+      // route through `insertActivity` and should NOT inflate
+      // `tool_count` — that column counts actual agent tool calls,
+      // not Myco-synthesized rows. This locks the asymmetry so a
+      // future refactor doesn't accidentally collapse the two
+      // writers into one.
+      const { getSession } = await import('@myco/db/queries/sessions.js');
+      insertActivity(makeActivity(sessionId, { tool_name: 'myco:inject_cortex' }));
+      const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      expect(session?.tool_count ?? 0).toBe(0);
+    });
+
     it('stores all optional fields', () => {
       const data = makeActivity(sessionId, {
         tool_name: 'Edit',

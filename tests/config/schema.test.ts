@@ -96,6 +96,7 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     expect(config.cortex.enabled).toBe(true);
     expect(config.cortex.instructions.inject_on_session_start).toBe(true);
+    expect(config.cortex.instructions.inject_on_subagent_start).toBe(true);
     expect(config.cortex.digest.tier).toBe(5000);
     expect(config.cortex.digest.inject_on_session_start).toBe(false);
     expect(config.cortex.spores.inject_on_prompt_submit).toBe(true);
@@ -106,12 +107,13 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse({
       version: 3,
       cortex: {
-        instructions: { inject_on_session_start: false },
+        instructions: { inject_on_session_start: false, inject_on_subagent_start: false },
         digest: { tier: 10000, inject_on_session_start: true },
         spores: { inject_on_prompt_submit: false, max_per_prompt: 5 },
       },
     });
     expect(config.cortex.instructions.inject_on_session_start).toBe(false);
+    expect(config.cortex.instructions.inject_on_subagent_start).toBe(false);
     expect(config.cortex.digest.tier).toBe(10000);
     expect(config.cortex.digest.inject_on_session_start).toBe(true);
     expect(config.cortex.spores.inject_on_prompt_submit).toBe(false);

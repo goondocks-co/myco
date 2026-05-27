@@ -20,6 +20,9 @@ import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.
 import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
+import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
+import { runGlobalBootstrap } from '../cli/bootstrap.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -70,6 +73,8 @@ import {
 import {
   createProjectBackupHandler,
   createProjectRestoreHandler,
+  createCommitToRepoHandler,
+  createUncommitFromRepoHandler,
 } from './api/projects.js';
 import {
   handleListSessions,
@@ -90,11 +95,22 @@ import {
   handleGetDigest,
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
-import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
+import {
+  createSessionContextHandler,
+  createPromptContextHandler,
+  createResumeContextHandler,
+  createSubagentContextHandler,
+} from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
-import { handleListSymbionts } from './api/symbionts.js';
+import {
+  handleListSymbionts,
+  handleDetectSymbionts,
+  handleDrainMigration,
+  createProjectSymbiontsPatchHandler,
+  createProjectSymbiontsCustomizationHandler,
+} from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
 import {
@@ -145,7 +161,6 @@ import {
   ProjectPowerStateTracker,
   readProjectActivitySeed,
 } from './project-power-state.js';
-import { resolveMycoHome } from '../grove/paths.js';
 import { pauseAwareShouldVisit } from '../grove/registry.js';
 import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
@@ -173,12 +188,14 @@ import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
 import { startSelfReconcileLoop } from './self-reconcile-wiring.js';
+import { createDaemonStateAuthority } from './daemon-state-authority.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
-  handleTaskCompleted, handleCompact,
+  handleTaskCompleted, handleCompact, syncTranscriptPromptBatches,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
+import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
@@ -190,7 +207,6 @@ import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type My
 import {
   daemonStateMtimeMs,
   readDaemonState,
-  removeDaemonState,
   assertGroveBound,
   resolveDaemonLogDir,
   resolveDaemonServiceState,
@@ -269,14 +285,28 @@ export interface ReconcileDeps {
  *   exits cleanly. This is what stops the concurrent-spawn cascade where each
  *   new process SIGTERMs the last one standing.
  * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM, poll for
- *   exit, escalate to SIGKILL if needed, and only `removeDaemonState` once
- *   the pid is confirmed dead. If the pid survives both signals, log an
- *   error and return 'step-aside' WITHOUT unlinking — leaving the file in
- *   place is structurally safer than orphaning a live daemon.
+ *   exit, escalate to SIGKILL if needed. If the pid survives both signals,
+ *   log an error and return 'step-aside' — leaving the file in place is
+ *   structurally safer than orphaning a live daemon.
  *
- * Cleanup ownership inversion: this function is the SOLE production path
- * that may remove daemon.json. `stop()` and `killDaemon()` no longer unlink.
+ * **Succession via atomic overwrite, not delete-then-write.** When this
+ * function returns 'ok' the caller proceeds to `server.start()`, whose
+ * `listen` callback atomically rewrites daemon.json with the successor's
+ * state. The atomic rename inside `atomicWriteFileSync` means readers
+ * see either the predecessor's contents or the successor's — never an
+ * absent file. We therefore do NOT delete the predecessor's record here.
+ *
+ * History: the prior shape unlinked daemon.json in all four take-over
+ * branches, opening a multi-second absence window that masked capture
+ * regressions until the self-reconciler caught up. The deletion was
+ * never structurally necessary — the successor's write already overwrites
+ * — and removing it closes the window without weakening any invariant.
+ * Stale state in the rare server-start-failure case is recovered by the
+ * next daemon-startup pass through this same function.
+ *
  * Self-mutation-discipline tenet: pid alive ⇔ daemon.json exists.
+ * Enforcement lives in `daemon-state-authority.ts` (Phase 4: drop raw
+ * unlink access entirely).
  */
 export async function reconcileExistingDaemon(
   daemonService: DaemonServiceState,
@@ -309,8 +339,10 @@ export async function reconcileExistingDaemon(
   // Is the recorded process actually alive? Use the dependency-injected
   // probe so tests can simulate "still alive after SIGKILL".
   if (!alive(info.pid)) {
-    // Dead — clean up and take over.
-    removeDaemonState(daemonJsonPath);
+    // Dead — succeed it via the caller's upcoming server.start() write.
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor pid dead; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -353,16 +385,17 @@ export async function reconcileExistingDaemon(
   }
 
   // Stale, unhealthy, or version mismatch: take over. We MUST confirm the
-  // predecessor pid is dead before unlinking daemon.json — otherwise a
-  // wedged shutdown leaves a live daemon with no discoverable state file
-  // (the orphan-zombie failure mode the tenet prohibits).
+  // predecessor pid is dead before proceeding — otherwise a wedged
+  // shutdown leaves a live daemon racing the new one for the port.
   try {
     kill(info.pid, 'SIGTERM');
     logger.info(LOG_KINDS.DAEMON_RECONCILE, 'SIGTERM sent to stale daemon', { pid: info.pid });
   } catch { /* already dead between alive() and kill() */ }
 
   if (await waitForExit(info.pid, alive, sigtermGraceMs, pollMs)) {
-    removeDaemonState(daemonJsonPath);
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on SIGTERM; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -375,7 +408,9 @@ export async function reconcileExistingDaemon(
   } catch { /* already dead */ }
 
   if (await waitForExit(info.pid, alive, sigkillGraceMs, pollMs)) {
-    removeDaemonState(daemonJsonPath);
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on SIGKILL; proceeding to take over', {
+      predecessor_pid: info.pid,
+    });
     return 'ok';
   }
 
@@ -408,7 +443,8 @@ export async function reconcileExistingDaemon(
         sigkill_grace_ms: sigkillGraceMs,
       },
     );
-    removeDaemonState(daemonJsonPath);
+    // Recycled foreign pid: the upcoming server.start() write will
+    // overwrite the stale record atomically. No delete needed.
     return 'ok';
   }
 
@@ -541,15 +577,31 @@ export async function main(): Promise<void> {
   //       global handlers or singleton subsystems that haven't been
   //       Grove-aware-ified yet).
   //
-  // Once `myco init` is universally required and every handler/subsystem
-  // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
-  // case (a) handlers move to a dedicated daemon-paths struct. Until then,
-  // do NOT use this value as a stand-in for the request-scoped vault.
-  const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
-  const bootstrapVaultDir = resolveBootstrapVaultDir();
+  // Once every handler/subsystem takes a ProjectScope (auto-registered
+  // at first hook), the bootstrap fallback in case (b) goes away and
+  // case (a) handlers move to a dedicated daemon-paths struct. Until
+  // then, do NOT use this value as a stand-in for the request-scoped
+  // vault.
+  const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
+  const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
+    resolveBootstrapVaultDirOrPhantom();
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
-  const machineId = getMachineId(bootstrapVaultDir);
+  // BEFORE the first getMachineId() call mints a fresh value, scan every
+  // registered project the daemon serves for a legacy project-scope
+  // machine_id and propagate the FIRST hit into ~/.myco/machine_id.
+  // Without this guard, a brownfield upgrade silently abandons the legacy
+  // identity (per-project migration that runs later sees the global file
+  // already exists and bails). Idempotent — no-op once the global cache
+  // is populated. /code-review finding C2.
+  try {
+    const { propagateLegacyMachineIdAtStartup } = await import('../grove/global-install-migration.js');
+    propagateLegacyMachineIdAtStartup();
+  } catch {
+    // Best-effort: if registry scan fails (e.g. greenfield daemon with
+    // no Groves yet), fall through to fresh derivation via getMachineId.
+  }
+  const machineId = getMachineId();
   const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
@@ -580,21 +632,36 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  const projectRoot = resolveProjectRoot(bootstrapVaultDir);
+  // In greenfield (phantom) mode there is no project on disk yet — anchor
+  // plan watch to MYCO_HOME so the watcher has a real directory but no
+  // false-positive matches. The registry watcher below restarts the
+  // daemon as soon as a real project registers.
+  const projectRoot = bootstrapIsPhantom ? resolveMycoHome() : resolveProjectRoot(bootstrapVaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
-  assertGroveBound(bootstrapVaultDir, {
-    requestContext: dataPaths.requestContext,
-    env: process.env,
-  });
+  // Skip the Grove-binding assertion in greenfield: the phantom vault
+  // intentionally has no manifest. The first hook-driven registration
+  // triggers a restart that re-runs this path against a real vault.
+  if (!bootstrapIsPhantom) {
+    assertGroveBound(bootstrapVaultDir, {
+      requestContext: dataPaths.requestContext,
+      env: process.env,
+    });
+  }
   const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
   });
   setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
+  // Bind the daemon's service state so any in-process call to
+  // `installGlobalLaunchers` (from `runGlobalBootstrap`, /api/symbionts/
+  // detect, or the PowerManager tick) raises the `refresh-launchers`
+  // intent instead of writing directly. Single self-mutation thread.
+  const { bindDaemonForLauncherRefresh } = await import('../grove/launcher-install.js');
+  bindDaemonForLauncherRefresh(daemonService);
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -602,6 +669,21 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+  if (bootstrapIsPhantom) {
+    logger.info(LOG_KINDS.DAEMON_START, 'No project bound; polling registry from unbound bootstrap', {
+      unbound_vault: bootstrapVaultDir,
+    });
+  } else {
+    logger.info(LOG_KINDS.DAEMON_START, 'Bound to project vault', {
+      vault: bootstrapVaultDir,
+    });
+  }
+
+  // The sole capability for mutating daemon.json. Constructed once and
+  // threaded into every subsystem that writes state (server, self-
+  // reconciler). See `daemon-state-authority.ts` for the structural
+  // invariant this encapsulates.
+  const daemonStateAuthority = createDaemonStateAuthority(daemonService, logger);
 
   // Self-install as a managed OS service so launchd / systemd starts the
   // daemon at every login. Idempotent: no-ops when the unit is already
@@ -971,7 +1053,7 @@ export async function main(): Promise<void> {
   const server = new DaemonServer({
     vaultDir: bootstrapVaultDir,
     logger,
-    daemonStatePath: daemonService.statePath,
+    daemonStateAuthority,
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
@@ -994,16 +1076,68 @@ export async function main(): Promise<void> {
     ),
   });
 
-  const bufferDir = path.join(bootstrapVaultDir, 'buffer');
+  // Every registered project's buffer dir under the global Grove tree.
+  // No legacy bootstrap path — there is exactly one canonical home for a
+  // project's buffer, and the reconciler scans those and only those.
+  const bufferDirs = listAllProjectBufferDirs();
   const sessionBuffers = new Map<string, EventBuffer>();
 
-  const reconciler = createReconciler({ bufferDir, logger, projectRoot });
+  const reconciler = createReconciler({
+    bufferDirs,
+    logger,
+    projectRoot,
+    onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
+  });
   reconciler.runStartupReconciliation();
 
   // Runtime migration tasks (vector reindex, file rewrites, etc.) — idempotent,
   // gated by the migration_tasks ledger in the DB so each task runs once per
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
+
+  // First-start auto-bootstrap. Signal: the global launcher is absent
+  // from `~/.myco/`. When fired, write the launchers and run a symbiont
+  // detection pass so every installed agent on the machine gets Myco
+  // wired into its user-global config without the user touching the
+  // CLI. Idempotent — subsequent daemon starts skip immediately.
+  // PowerManager tick (Step 7) handles re-detection thereafter.
+  try {
+    const mycoHome = resolveMycoHome();
+    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    if (!fs.existsSync(launcherPath)) {
+      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap — launchers absent', {
+        myco_home: mycoHome,
+      });
+      const result = runGlobalBootstrap();
+      const installed = result.symbionts.filter((r) => r.status === 'installed');
+      const notDetected = result.symbionts.filter((r) => r.status === 'not-detected');
+      const errored = result.symbionts.filter((r) => r.status === 'error');
+      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap complete', {
+        launchers_written: result.launchers.written.length,
+        symbionts_installed: installed.length,
+        symbionts_not_detected: notDetected.length,
+        symbionts_errored: errored.length,
+        installed_names: installed.map((r) => r.symbiont),
+        projects_cleaned: result.migration.projectsCleaned,
+        projects_errored: result.migration.projectsErrored,
+      });
+      // Persist the migration pass to the bounded audit log so doctor
+      // can surface any per-project errors. Same code path the
+      // PowerManager tick uses.
+      try {
+        const { recordMigrationPass } = await import('../db/queries/migration-log.js');
+        recordMigrationPass(getDatabase(), result.migration);
+      } catch (err) {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Migration audit log write failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  } catch (err) {
+    logger.error(LOG_KINDS.DAEMON_START, 'First-start global bootstrap failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // --- Stop processor (created early so triggerTitleSummary is available to /events route) ---
   const stopProcessor = createStopProcessor({
@@ -1049,6 +1183,25 @@ export async function main(): Promise<void> {
   });
   server.registerRoute('POST', '/events', eventDispatcher);
 
+  // --- Transcript-prompt sync (Antigravity-class symbionts) ---
+  //
+  // Hooks for symbionts whose payload does not carry the user prompt POST
+  // the full transcript-derived prompt list here; the server inserts only
+  // prompts beyond the count already captured for the session. Count-based
+  // diff makes the call idempotent across repeated PreInvocation fires.
+  server.registerRoute('POST', '/events/sync-transcript-prompts', async (req) => {
+    const body = req.body as { session_id?: unknown; prompts?: unknown };
+    const sessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    const prompts = Array.isArray(body.prompts)
+      ? body.prompts.filter((p): p is string => typeof p === 'string')
+      : [];
+    if (!sessionId) {
+      return { status: 400, body: { error: 'session_id required' } };
+    }
+    const result = syncTranscriptPromptBatches(sessionId, prompts);
+    return { body: result };
+  });
+
   // --- Stop route ---
 
   server.registerRoute('POST', '/events/stop', stopProcessor.handleStopRoute);
@@ -1065,6 +1218,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
+  server.registerRoute('POST', '/context/subagent', createSubagentContextHandler(contextDeps));
 
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
@@ -1088,6 +1242,11 @@ export async function main(): Promise<void> {
     req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
     req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
   ));
+  server.registerRoute('POST', '/api/symbionts/detect', async (req) => handleDetectSymbionts(
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+    req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+  ));
+  server.registerRoute('POST', '/api/symbionts/drain-migration', async () => handleDrainMigration());
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
@@ -1263,6 +1422,10 @@ export async function main(): Promise<void> {
   server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
+  server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
+  server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/projects/:projectId/commit-to-repo', createCommitToRepoHandler(groveDaemonStateDir));
+  server.registerRoute('DELETE', '/api/projects/:projectId/commit-to-repo', createUncommitFromRepoHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 
@@ -1312,7 +1475,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -1325,7 +1488,7 @@ export async function main(): Promise<void> {
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
     resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
-    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(bootstrapVaultDir),
+    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction, fire
@@ -1925,6 +2088,7 @@ export async function main(): Promise<void> {
   });
   const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,
+    stateAuthority: daemonStateAuthority,
     server,
     daemonVaultDir: bootstrapVaultDir,
     projectRoot,
@@ -2000,6 +2164,43 @@ export async function main(): Promise<void> {
     });
   }
 
+  // Greenfield rebind: when the daemon booted without a vault (phantom
+  // bootstrap), poll the Grove registry every 5s. The first hook-driven
+  // auto-Grove-create writes a project under the default Grove; once a
+  // registered project shows up, restart so the next boot resolves a
+  // real vault via `firstProjectVaultFromRegistry()` and brings up the
+  // full Grove-bound surface (sqlite, embeddings, scope iteration).
+  let phantomRebindWatcher: ReturnType<typeof setInterval> | null = null;
+  if (bootstrapIsPhantom) {
+    const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
+    logger.info(LOG_KINDS.DAEMON_START, 'Greenfield daemon — bootstrapped with phantom vault, watching registry for first project', {
+      phantom_vault: bootstrapVaultDir,
+    });
+    const rebindShutdown = scheduleShutdownWithAttribution('phantom-rebind', logger);
+    phantomRebindWatcher = setInterval(() => {
+      try {
+        const resolved = resolveBootstrapVaultDir();
+        if (!resolved) return;
+        logger.info(LOG_KINDS.DAEMON_START, 'Greenfield rebind — first project registered, restarting to bind', {
+          resolved_vault: resolved,
+        });
+        if (phantomRebindWatcher) {
+          clearInterval(phantomRebindWatcher);
+          phantomRebindWatcher = null;
+        }
+        rebindShutdown();
+      } catch (err) {
+        // Variant-pinned throws would never happen here (we are by definition
+        // in the variant-less greenfield branch), but log if the registry
+        // read itself blew up so the watcher is observable.
+        logger.warn(LOG_KINDS.DAEMON_START, 'Phantom-rebind registry probe failed', {
+          error: errorMessage(err),
+        });
+      }
+    }, 5000);
+    if (typeof phantomRebindWatcher.unref === 'function') phantomRebindWatcher.unref();
+  }
+
   powerManager.start();
   eventLoopLagProbe.start();
 
@@ -2026,6 +2227,10 @@ export async function main(): Promise<void> {
     selfReconcileLoop.stop();
     powerManager.stop();
     eventLoopLagProbe.stop();
+    if (phantomRebindWatcher) {
+      clearInterval(phantomRebindWatcher);
+      phantomRebindWatcher = null;
+    }
     // Wait for any active stop processing to finish before shutting down
     const activeStopProcessing = stopProcessor.getActiveProcessing();
     if (activeStopProcessing) {

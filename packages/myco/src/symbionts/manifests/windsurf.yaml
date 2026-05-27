@@ -2,20 +2,68 @@ name: windsurf
 displayName: Windsurf
 binary: windsurf
 configDir: .windsurf
+detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 hookFields:
+  # Windsurf hook payloads wrap event-specific data in a `tool_info` bag.
+  # The session identity is top-level (`trajectory_id`), but prompt text,
+  # response text, transcript path, and tool input live under `tool_info.*`.
+  # Schema: https://docs.windsurf.com/windsurf/cascade/hooks
   sessionId: trajectory_id
-  transcriptPath: transcript_path
-  lastResponse: last_assistant_message
+  transcriptPath: tool_info.transcript_path
+  lastResponse: tool_info.response
+  # `agent_action_name` IS the hook event name (e.g. "post_run_command") —
+  # Windsurf uses one shape per event rather than a generic tool_name field.
+  toolName: agent_action_name
+  toolInput: tool_info
+  prompt: tool_info.user_prompt
 capture:
   planDirs:
     - ~/.windsurf/plans/
 registration:
   hooksTarget: .windsurf/hooks.json
+  globalHooksTarget: ~/.codeium/windsurf/hooks.json
+  # Cascade reads `~/.codeium/windsurf/hooks.json` and requires the
+  # documented `{ "hooks": { "<event_name>": [...] } }` envelope — see
+  # https://docs.windsurf.com/windsurf/cascade/hooks#basic-structure.
+  # The installer's default writer (`settings.hooks = ...`) matches that
+  # shape; do not add `hooksRootKey` overrides here. `show_output` is
+  # optional per the docs (the field surfaces stdout to the user) and is
+  # NOT required for the hook command to execute — confirmed live on a
+  # wrapped file with no `show_output`.
+  # New capability — Windsurf MCP only available at the user-global location
+  # under ~/.codeium/windsurf/mcp_config.json. No project-local equivalent;
+  # mcpTarget omitted on purpose.
+  globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.codeium/windsurf/skills
   settingsTarget: .windsurf/settings.json
+  # Cascade's `windsurf.cascadeCommandsAllowList` is an IDE user-settings
+  # key, not a hooks-file key. The installer's default global fallback
+  # would write it into the hooks file (line 338 in installer.ts), which
+  # poisons Cascade's hooks schema with an unknown root key and silently
+  # disables every hook. Explicit `null` opts Windsurf out of global
+  # settings installation entirely — capture works without the allowlist,
+  # and the right surface for that key is the Windsurf IDE settings file
+  # (a future, separate concern).
+  globalSettingsTarget: null
 capabilities:
   # Windsurf's bundled hook template does not currently register a
   # session-start hook. Cortex falls back to inline delivery via
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
   sessionStartInjection: false
+  subagentStartInjection: false
+hooks:
+  # Windsurf splits turn-end across two events. `post_cascade_response`
+  # fires immediately with `tool_info.response` (inline text). The
+  # daemon runs the response phase: close open batches, set
+  # response_summary on the latest batch. `post_cascade_response_with_transcript`
+  # fires later, after Cascade finalizes the transcript file. The daemon
+  # runs the transcript phase: mine the transcript, populate batch
+  # responses, extract plan tags, capture images, materialize aggregates.
+  # Both events route through the same `stop` subcommand; the daemon
+  # dispatches by phase, not by subcommand.
+  post_cascade_response:
+    phases: [response]
+  post_cascade_response_with_transcript:
+    phases: [transcript]

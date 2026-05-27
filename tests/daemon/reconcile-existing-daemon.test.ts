@@ -85,7 +85,10 @@ describe('reconcileExistingDaemon', () => {
     expect(result).toBe('ok');
   });
 
-  it('returns ok and cleans daemon.json when recorded pid is dead', async () => {
+  it('returns ok and preserves daemon.json for successor overwrite when recorded pid is dead', async () => {
+    // New contract: reconcile no longer unlinks. The successor's
+    // server.start() atomic write overwrites in place, eliminating the
+    // absence window that masked v0.27.x capture regressions.
     const svc = daemonService(vaultDir);
     fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
     fs.writeFileSync(
@@ -94,7 +97,7 @@ describe('reconcileExistingDaemon', () => {
     );
     const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
     expect(result).toBe('ok');
-    expect(fs.existsSync(svc.statePath)).toBe(false);
+    expect(fs.existsSync(svc.statePath)).toBe(true);
   });
 
   it('steps aside when recorded daemon is recent, healthy, same version, and on canonical port', async () => {
@@ -148,7 +151,8 @@ describe('reconcileExistingDaemon', () => {
         );
         const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('ok');
-        expect(fs.existsSync(svc.statePath)).toBe(false);
+        // daemon.json preserved — successor's atomic write overwrites.
+        expect(fs.existsSync(svc.statePath)).toBe(true);
       },
     );
   });
@@ -182,7 +186,8 @@ describe('reconcileExistingDaemon', () => {
         fs.utimesSync(svc.statePath, ancient, ancient);
         const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('ok');
-        expect(fs.existsSync(svc.statePath)).toBe(false);
+        // daemon.json preserved — successor's atomic write overwrites.
+        expect(fs.existsSync(svc.statePath)).toBe(true);
       },
     );
   });
@@ -198,13 +203,15 @@ describe('reconcileExistingDaemon', () => {
     );
     const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
     expect(result).toBe('ok');
-    expect(fs.existsSync(svc.statePath)).toBe(false);
+    // daemon.json preserved — successor's atomic write overwrites.
+    expect(fs.existsSync(svc.statePath)).toBe(true);
   });
 
-  it('escalates to SIGKILL when SIGTERM is ignored, then unlinks once dead', async () => {
+  it('escalates to SIGKILL when SIGTERM is ignored, then returns ok once dead', async () => {
     // Spawn a child that swallows SIGTERM but exits on SIGKILL. The reconcile
-    // SIGTERM phase will time out, escalate to SIGKILL, and only then unlink
-    // daemon.json — proving the orphan-zombie window is closed.
+    // SIGTERM phase will time out, escalate to SIGKILL, and only then return
+    // 'ok' — the orphan-zombie window is closed by confirming death before
+    // succession (the successor's atomic write overwrites in place).
     sibling.kill('SIGKILL');
     await new Promise<void>((resolve) => sibling.once('exit', () => resolve()));
     sibling = spawn(process.execPath, [
@@ -240,7 +247,8 @@ describe('reconcileExistingDaemon', () => {
     );
 
     expect(result).toBe('ok');
-    expect(fs.existsSync(svc.statePath)).toBe(false);
+    // daemon.json preserved — successor's atomic write overwrites.
+    expect(fs.existsSync(svc.statePath)).toBe(true);
     await new Promise<void>((resolve) => {
       if (sibling.exitCode !== null || sibling.signalCode !== null) return resolve();
       sibling.once('exit', () => resolve());
@@ -329,7 +337,9 @@ describe('reconcileExistingDaemon', () => {
     });
 
     expect(result).toBe('ok');
-    expect(fs.existsSync(svc.statePath)).toBe(false);
+    // daemon.json preserved — successor's atomic write overwrites the
+    // stale recycled-pid record in place.
+    expect(fs.existsSync(svc.statePath)).toBe(true);
   });
 });
 

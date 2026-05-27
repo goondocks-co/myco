@@ -13,7 +13,8 @@ import {
 } from '@myco/tools/request-context.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
-import { resolveDaemonServiceState, writeDaemonState } from '@myco/daemon/service-state.js';
+import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
+import { createDaemonStateAuthority } from '@myco/daemon/daemon-state-authority.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const servers: http.Server[] = [];
@@ -82,11 +83,12 @@ async function startDaemonStub(
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address() as { port: number };
   const daemonService = resolveDaemonServiceState(vaultDir, { env: process.env });
-  writeDaemonState(daemonService.statePath, {
+  const authority = createDaemonStateAuthority(daemonService, { info: () => {} });
+  authority.write({
     pid: process.pid,
     port: address.port,
     auth_token: authToken,
-  });
+  }, { reason: 'test:stub-daemon' });
 }
 
 function childEnv(strip: string[], extra: Record<string, string>): Record<string, string> {

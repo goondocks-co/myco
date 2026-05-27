@@ -1,0 +1,30 @@
+{
+  "myco": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "{{mycoLauncher}} hook session-start --symbiont antigravity",
+        "timeout": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{mycoLauncher}} hook post-tool-use --symbiont antigravity",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "{{mycoLauncher}} hook stop --symbiont antigravity",
+        "timeout": 30
+      }
+    ]
+  }
+}

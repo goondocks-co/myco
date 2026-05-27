@@ -57,6 +57,8 @@ const TEST_AGENT_ID = 'test-agent';
 
 let projectRoot: string;
 let vaultDir: string;
+let mycoHome: string;
+let priorMycoHome: string | undefined;
 let projectId: string;
 let machineId: string;
 
@@ -64,15 +66,22 @@ function setupProject(): void {
   projectRoot = mkdtempSync(join(tmpdir(), 'myco-canopy-map-'));
   vaultDir = join(projectRoot, '.myco');
   mkdirSync(vaultDir, { recursive: true });
-  // Pin a deterministic machine id by pre-writing the cache file. Avoids
-  // hitting `git config` / network during the test.
-  writeFileSync(join(vaultDir, 'machine_id'), 'test_machine_pin', 'utf-8');
+  // Pin a deterministic machine id by routing MYCO_HOME at a tmp dir and
+  // pre-writing the cache file there. Avoids hitting `git config` /
+  // network during the test and avoids touching the real ~/.myco.
+  mycoHome = mkdtempSync(join(tmpdir(), 'myco-canopy-map-home-'));
+  priorMycoHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = mycoHome;
+  writeFileSync(join(mycoHome, 'machine_id'), 'test_machine_pin', 'utf-8');
   projectId = ensureProjectManifest(vaultDir, { projectName: 'canopy-map-test' }).project.id;
-  machineId = getMachineId(vaultDir);
+  machineId = getMachineId();
 }
 
 function teardownProject(): void {
+  if (priorMycoHome === undefined) delete process.env.MYCO_HOME;
+  else process.env.MYCO_HOME = priorMycoHome;
   try { rmSync(projectRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { rmSync(mycoHome, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 function seedDescribed(path: string, contentHash: string, llmDescription: string): void {

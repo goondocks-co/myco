@@ -34,7 +34,7 @@ export interface StreamableMcpHttpHandlerOptions {
  * handler and surface as the opaque `tool_call_failed` JSON-RPC
  * error. Detect that state up front and return a structured 503
  * with a `legacy_vault` discriminator + a friendly message that
- * tells the user to run `myco init`.
+ * tells the user the project hasn't been auto-registered yet.
  *
  * Only triggers when the incoming request has *not* supplied
  * project-context headers — Grove-bound transports always do, so

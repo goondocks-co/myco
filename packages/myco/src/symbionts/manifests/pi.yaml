@@ -2,6 +2,7 @@ name: pi
 displayName: Pi
 binary: pi
 configDir: .pi
+detectionDir: ~/.pi
 pluginRootEnvVar: PI_PLUGIN_ROOT
 hookFields:
   sessionId: session_id
@@ -13,12 +14,19 @@ capture:
 registration:
   # Pi uses an extension file, not JSON hook entries
   hooksTarget: .pi/extensions/myco/index.ts
+  # Pi's user-global agent extensions live under ~/.pi/agent/extensions/
+  globalHooksTarget: ~/.pi/agent/extensions/myco/index.ts
   hooksFormat: plugin-file
   # package.json for the extension's deps
   pluginPackageTarget: .pi/extensions/myco/package.json
   # Pi has no native MCP — Myco tools are registered via pi.registerTool()
   # mcpTarget is omitted; tools are wired in the extension itself.
+  globalMcpTarget: null
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.pi/agent/skills
   # No instructionsFile — pi reads AGENTS.md natively via context files
 capabilities:
   sessionStartInjection: true
+  # Pi can inject at before_agent_start, but spawned-subagent lifecycle needs
+  # runtime proof before enabling direct child injection.
+  subagentStartInjection: false

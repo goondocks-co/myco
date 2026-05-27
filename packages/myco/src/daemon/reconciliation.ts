@@ -43,10 +43,27 @@ const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 export interface ReconcilerDeps {
-  bufferDir: string;
+  /**
+   * Every buffer directory the reconciler should scan. One per registered
+   * project under the global install at
+   * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. There is NO
+   * legacy fallback — `capture/buffer-location.ts` enforces the
+   * no-divergent-location invariant structurally, and the reconciler
+   * trusts that contract. Derived from `listAllProjectBufferDirs()`.
+   *
+   * Order matters only for log determinism; per-session lookup tries each
+   * directory in order and uses the first match (a session's events live
+   * in exactly one dir).
+   */
+  bufferDirs: string[];
   logger: DaemonLogger;
   /** Canonical project root — derived from vaultDir, never cwd. */
   projectRoot: string;
+  /**
+   * Fires once after `reconcileSession` finishes for a session. Wrapped in
+   * try/catch by the reconciler — thrown errors are logged and swallowed.
+   */
+  onSessionReconciled?: (sessionId: string) => void;
 }
 
 export interface Reconciler {
@@ -69,10 +86,33 @@ export interface Reconciler {
  * `reconciledSessions` set so that each session is only reconciled once
  * per daemon lifetime.
  */
-export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerDeps): Reconciler {
+export function createReconciler({ bufferDirs, logger, projectRoot, onSessionReconciled }: ReconcilerDeps): Reconciler {
   // Track sessions already reconciled this daemon lifetime to avoid
   // redundant file reads (startup scan + register + event can all fire).
   const reconciledSessions = new Set<string>();
+
+  /**
+   * Locate the buffer file for a session across all known buffer dirs.
+   * Returns `{ dir, path, content }` for the first dir whose buffer file
+   * exists and is non-empty, or `null` when no buffer holds this session.
+   * The PR #346 invariant — "don't mark reconciled if buffer absent" —
+   * lifts cleanly across multiple dirs: a session whose buffer hasn't
+   * surfaced in any of them is genuinely absent, and the caller returns
+   * without marking it.
+   */
+  function locateBufferContent(sessionId: string): { dir: string; content: string } | null {
+    for (const dir of bufferDirs) {
+      const bufferPath = path.join(dir, `${sessionId}.jsonl`);
+      let raw: string;
+      try {
+        raw = fs.readFileSync(bufferPath, 'utf-8').trim();
+      } catch {
+        continue;
+      }
+      if (raw) return { dir, content: raw };
+    }
+    return null;
+  }
 
   /**
    * Replay a single buffer event into the DB via the appropriate handler.
@@ -96,6 +136,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
         event.tool_input,
         typeof event.output_preview === 'string' ? event.output_preview : undefined,
         projectRoot,
+        typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
       );
       return 'activity';
     }
@@ -140,18 +181,12 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
   function reconcileSession(sessionId: string): void {
     if (reconciledSessions.has(sessionId)) return;
 
-    // Read buffer file directly — avoid EventBuffer constructor which reads
-    // the file to compute a count we don't need.
-    const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
-    let content: string;
-    try {
-      content = fs.readFileSync(bufferPath, 'utf-8').trim();
-    } catch {
-      // Buffer file absent. Return WITHOUT marking reconciled so a later
-      // call after the buffer appears can replay it.
-      return;
-    }
-    if (!content) return;
+    // Locate the session's buffer across every known dir. Buffer file
+    // absent in every dir → return WITHOUT marking reconciled so a later
+    // call (after the buffer appears) can replay it.
+    const located = locateBufferContent(sessionId);
+    if (!located) return;
+    const content = located.content;
 
     // Session row absent (deleted, or not yet created by an /events
     // POST). Return WITHOUT marking reconciled — if the row later
@@ -208,6 +243,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
           summaries_recovered: summariesRecovered,
         });
       }
+      tryReEnrich(sessionId);
       return;
     }
 
@@ -265,6 +301,20 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
         duplicates_suppressed: duplicatesSuppressed,
       });
     }
+    tryReEnrich(sessionId);
+  }
+
+  /** Invoke `onSessionReconciled` if provided, swallowing + logging any error. */
+  function tryReEnrich(sessionId: string): void {
+    if (!onSessionReconciled) return;
+    try {
+      onSessionReconciled(sessionId);
+    } catch (err) {
+      logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Post-reconcile re-enrichment threw', {
+        session_id: sessionId,
+        error: String(err),
+      });
+    }
   }
 
   /**
@@ -272,19 +322,29 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
    * buffer sessions found on disk.
    */
   function runStartupReconciliation(): void {
-    // Clean up stale buffer files (>24h) on startup
-    const startupCleanedCount = cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS);
-    if (startupCleanedCount > 0) {
-      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', { stale_removed: startupCleanedCount });
+    // Clean up stale buffer files (>24h) on startup across every known dir.
+    let totalCleaned = 0;
+    for (const dir of bufferDirs) {
+      totalCleaned += cleanStaleBuffers(dir, STALE_BUFFER_MAX_AGE_MS);
+    }
+    if (totalCleaned > 0) {
+      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', { stale_removed: totalCleaned });
     }
 
-    // Reconcile all remaining buffer files — recover events from sessions
-    // that had activity while the daemon was down.
-    for (const sessionId of listBufferSessionIds(bufferDir)) {
-      try {
-        reconcileSession(sessionId);
-      } catch (err) {
-        logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
+    // Reconcile every remaining buffer file across all known dirs. A
+    // session shows up at most once even if its buffer lives in only one
+    // dir — `reconcileSession` is idempotent across multiple invocations
+    // via the `reconciledSessions` set.
+    const seen = new Set<string>();
+    for (const dir of bufferDirs) {
+      for (const sessionId of listBufferSessionIds(dir)) {
+        if (seen.has(sessionId)) continue;
+        seen.add(sessionId);
+        try {
+          reconcileSession(sessionId);
+        } catch (err) {
+          logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Startup reconciliation failed', { session_id: sessionId, error: String(err) });
+        }
       }
     }
   }

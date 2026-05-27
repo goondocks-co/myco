@@ -7,6 +7,7 @@ import {
   deleteSecrets,
   loadLayeredSecrets,
   loadSecrets,
+  propagateLegacySecrets,
   readSecrets,
   tightenSecretsPermissions,
   writeSecret,
@@ -209,6 +210,75 @@ describe('secrets', () => {
       }
       // Cleanup
       delete process.env.BOOTKEY;
+    });
+  });
+
+  // Regression: the global-install migration must propagate project-scope
+  // secrets to the machine-wide secrets.env BEFORE purging the project
+  // file. Without this, user API keys stored at the project level vanish
+  // on first migration. See vault spore + code-review finding C3.
+  describe('propagateLegacySecrets', () => {
+    let projectDir: string;
+    let mycoHomeDir: string;
+
+    beforeEach(() => {
+      projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-project-'));
+      mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-home-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+      fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    });
+
+    it('returns [] when project has no secrets.env', () => {
+      expect(propagateLegacySecrets(projectDir, mycoHomeDir)).toEqual([]);
+    });
+
+    it('lifts every project key when global secrets.env is absent', () => {
+      writeSecret(projectDir, 'ANTHROPIC_API_KEY', 'sk-ant-legacy');
+      writeSecret(projectDir, 'OPENAI_API_KEY', 'sk-openai-legacy');
+
+      const propagated = propagateLegacySecrets(projectDir, mycoHomeDir);
+
+      expect(propagated.sort()).toEqual(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']);
+      expect(readSecrets(mycoHomeDir)).toEqual({
+        ANTHROPIC_API_KEY: 'sk-ant-legacy',
+        OPENAI_API_KEY: 'sk-openai-legacy',
+      });
+    });
+
+    it('global value wins on conflict — only absent keys are lifted', () => {
+      writeSecret(projectDir, 'ANTHROPIC_API_KEY', 'sk-ant-project-OLD');
+      writeSecret(projectDir, 'TEAM_TOKEN', 'team-from-project');
+      writeSecret(mycoHomeDir, 'ANTHROPIC_API_KEY', 'sk-ant-machine-NEW');
+
+      const propagated = propagateLegacySecrets(projectDir, mycoHomeDir);
+
+      expect(propagated).toEqual(['TEAM_TOKEN']);
+      expect(readSecrets(mycoHomeDir)).toEqual({
+        ANTHROPIC_API_KEY: 'sk-ant-machine-NEW',
+        TEAM_TOKEN: 'team-from-project',
+      });
+    });
+
+    it('is idempotent — a second call after migration is a no-op', () => {
+      writeSecret(projectDir, 'KEY_A', 'a');
+      writeSecret(projectDir, 'KEY_B', 'b');
+
+      const first = propagateLegacySecrets(projectDir, mycoHomeDir);
+      expect(first.sort()).toEqual(['KEY_A', 'KEY_B']);
+
+      const second = propagateLegacySecrets(projectDir, mycoHomeDir);
+      expect(second).toEqual([]);
+    });
+
+    it('written global file has 0o600 perms (POSIX)', () => {
+      writeSecret(projectDir, 'SENSITIVE', 'hush');
+      propagateLegacySecrets(projectDir, mycoHomeDir);
+      if (POSIX) {
+        expect(fs.statSync(path.join(mycoHomeDir, 'secrets.env')).mode & 0o777).toBe(0o600);
+      }
     });
   });
 });

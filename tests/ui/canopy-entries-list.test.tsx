@@ -19,6 +19,7 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: (...args: unknown[]) => fetchJsonMock(...args),
   postJson: (...args: unknown[]) => postJsonMock(...args),
   putJson: vi.fn(),
+  patchJson: vi.fn(),
   deleteJson: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(public status: number, public body: unknown) {

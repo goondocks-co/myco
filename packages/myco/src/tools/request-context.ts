@@ -159,7 +159,7 @@ interface ExplicitContextInput {
  * know a `GroveProjectId`. The function exists to keep the daemon-startup
  * and tool entry paths typed: `projectId` is required and branded — there
  * is no path-derived fallback. Pre-Grove callers cannot use this; they
- * must complete Grove activation first (see `myco init`).
+ * must complete Grove activation first (auto-registered on first agent hook).
  */
 export function resolveLegacyRequestContext(
   vaultDir: string,
@@ -171,7 +171,7 @@ export function resolveLegacyRequestContext(
     callerRoot: options.callerRoot ?? null,
     projectId: assertGroveProjectId(options.projectId),
     groveId: options.groveId ?? null,
-    machineId: options.machineId ?? process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir),
+    machineId: options.machineId ?? process.env.MYCO_MACHINE_ID ?? getMachineId(),
     sessionId: options.sessionId ?? process.env.MYCO_SESSION_ID ?? null,
     projectVaultDir: vaultDir,
     databasePath: vaultDbPath(vaultDir),
@@ -304,8 +304,9 @@ export function requestContextFromEnvironment(
  * silently producing a path-derived id.
  *
  * For tool/MCP entry points that prefer a soft-fail path (so MCP clients
- * see a friendly "run `myco init`" message instead of `tool_call_failed`),
- * use `tryResolveRequestContextForVault` instead.
+ * see a friendly "this project hasn't been auto-registered yet" message
+ * instead of `tool_call_failed`), use `tryResolveRequestContextForVault`
+ * instead.
  */
 export function resolveRequestContextForVault(
   vaultDir: string,
@@ -326,7 +327,7 @@ export function resolveRequestContextForVault(
  * would have returned. The `kind: 'legacy'` variant carries the
  * vault directory and a human-readable reason — surfaced by tool
  * runtimes as a degraded-mode error so MCP clients render
- * "run \`myco init\` to activate Grove features" instead of an
+ * "this project hasn't been auto-registered yet" instead of an
  * opaque `tool_call_failed`.
  */
 export type TryRequestContextResult =
@@ -395,7 +396,7 @@ function tryBuildVaultFallback(
     return {
       kind: 'legacy',
       vaultDir,
-      reason: `No Grove project id available for vault ${vaultDir}. Run \`myco init\` to activate a Grove for this project.`,
+      reason: `No Grove project id available for vault ${vaultDir}. Open the dashboard and commit Myco config to this project from the Symbionts page.`,
     };
   }
   const projectRoot = resolveProjectRoot(vaultDir);
@@ -406,7 +407,7 @@ function tryBuildVaultFallback(
       callerRoot: overrides.callerRoot ?? null,
       projectId: assertGroveProjectId(manifest.project.id),
       groveId: null,
-      machineId: overrides.machineId ?? getMachineId(vaultDir),
+      machineId: overrides.machineId ?? getMachineId(),
       sessionId: overrides.sessionId ?? null,
       projectVaultDir: vaultDir,
       databasePath: vaultDbPath(vaultDir),

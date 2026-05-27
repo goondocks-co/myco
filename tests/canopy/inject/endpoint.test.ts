@@ -278,6 +278,89 @@ describe('POST /canopy/inject — handler', () => {
     expect(consumePendingInjection('s-worktree', absoluteWorktreePath)).toBe(body.injectionTokens);
   });
 
+  it('returns already_injected on the second read of the same file in one session', async () => {
+    // Per-(session, file) dedup via recordInjectionActivity. The first call
+    // records `myco:inject_canopy` with content_hash
+    // `myco:inject:canopy:<sessionId>:<filePath>`; the second collides on
+    // the UNIQUE index and surfaces as inject:false / already_injected.
+    const { insertBatch } = await import('@myco/db/queries/batches.js');
+    const { upsertSession } = await import('@myco/db/queries/sessions.js');
+    const NOW_SEC = Math.floor(Date.now() / 1000);
+    upsertSession({ id: 's-canopy-dedup', agent: 'claude-code', started_at: NOW_SEC, created_at: NOW_SEC });
+    insertBatch({
+      session_id: 's-canopy-dedup',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'read big.ts',
+      started_at: NOW_SEC,
+      created_at: NOW_SEC,
+      project_id: tmpProjectId,
+    });
+    seed(tmpProjectId, [{ path: 'src/big.ts', size: 4096, exports: ['foo'] }]);
+
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
+      vaultDir: path.join(tmpVault, '.myco'),
+      getDatabase,
+    });
+    const first = await handler({
+      body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+    });
+    expect(first.body).toMatchObject({ inject: true, path: 'src/big.ts' });
+
+    const second = await handler({
+      body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+    });
+    expect(second.body).toMatchObject({ inject: false, reason: 'already_injected' });
+  });
+
+  it('distinct files in one session both inject (discriminator is per-file)', async () => {
+    const { insertBatch } = await import('@myco/db/queries/batches.js');
+    const { upsertSession } = await import('@myco/db/queries/sessions.js');
+    const NOW_SEC = Math.floor(Date.now() / 1000);
+    upsertSession({ id: 's-canopy-multi', agent: 'claude-code', started_at: NOW_SEC, created_at: NOW_SEC });
+    insertBatch({
+      session_id: 's-canopy-multi',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'read a + b',
+      started_at: NOW_SEC,
+      created_at: NOW_SEC,
+      project_id: tmpProjectId,
+    });
+    seed(tmpProjectId, [
+      { path: 'src/a.ts', size: 4096, exports: ['a'] },
+      { path: 'src/b.ts', size: 4096, exports: ['b'] },
+    ]);
+
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
+      vaultDir: path.join(tmpVault, '.myco'),
+      getDatabase,
+    });
+    const a = await handler({ body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/a.ts' } } });
+    const b = await handler({ body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/b.ts' } } });
+    expect(a.body).toMatchObject({ inject: true, path: 'src/a.ts' });
+    expect(b.body).toMatchObject({ inject: true, path: 'src/b.ts' });
+  });
+
+  it('no_batch falls through and still serves the blob (preserves legacy behavior)', async () => {
+    // PreToolUse can fire before any prompt_batch lands (e.g. agent calls a
+    // tool from its own start-up). recordInjectionActivity returns
+    // {injected:false, reason:'no_batch'} in that case — the handler must
+    // continue and serve the blob, only skipping the activity record.
+    seed(tmpProjectId, [{ path: 'src/c.ts', size: 4096, exports: ['c'] }]);
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
+      vaultDir: path.join(tmpVault, '.myco'),
+      getDatabase,
+    });
+    const res = await handler({
+      body: { sessionId: 's-canopy-no-batch', agent: 'claude-code', toolInput: { file_path: 'src/c.ts' } },
+    });
+    expect(res.body).toMatchObject({ inject: true, path: 'src/c.ts' });
+  });
+
   it('uses summary [meta] line when llm_description is populated', async () => {
     seed(tmpProjectId, [
       {

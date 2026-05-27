@@ -793,6 +793,10 @@ describe('session-maintenance power job', () => {
 
     // Insert a session whose last activity is two hours ago (stale window
     // is one hour by default in buildDeps), tied to our registered project.
+    // Seed matching prompt_batches rows so the post-R4.18 derived count in
+    // `findDeadSessionIds` agrees that this session has captured work —
+    // otherwise it'd be flagged dead and deleted right after the
+    // stale-active sweep marks it completed.
     const twoHoursAgoSec = Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000);
     withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
       const db = getDatabase();
@@ -800,6 +804,11 @@ describe('session-maintenance power job', () => {
         `INSERT INTO sessions (id, project_id, status, started_at, created_at, prompt_count, machine_id, agent)
          VALUES ('sess-stale', ?, 'active', ?, ?, 5, 'test-machine', 'claude_code')`,
       ).run(PROJECT_ID, twoHoursAgoSec, twoHoursAgoSec);
+      const insertBatch = db.prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+         VALUES (?, ?, ?, ?, 'active')`,
+      );
+      for (let i = 1; i <= 5; i++) insertBatch.run('sess-stale', i, twoHoursAgoSec, twoHoursAgoSec);
     });
 
     await pm.find('session-maintenance').fn();

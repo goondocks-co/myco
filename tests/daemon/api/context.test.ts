@@ -12,12 +12,15 @@ import {
   createSessionContextHandler,
   createPromptContextHandler,
   createResumeContextHandler,
+  createSubagentContextHandler,
 } from '@myco/daemon/api/context';
 import type { ContextDeps } from '@myco/daemon/api/context';
 import type { RouteRequest } from '@myco/daemon/router';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 import type { DaemonLogger } from '@myco/daemon/logger';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
+import { listActivities } from '@myco/db/queries/activities';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeReq(body: unknown): RouteRequest {
@@ -167,6 +170,43 @@ describe('createSessionContextHandler', () => {
     expect(body.text).toContain('## Preferred Digest (Tier 5000)');
     expect(body.text).toContain('Digest extract for current project work.');
   });
+
+  it('returns empty text on the second call when a prompt_batches row pins dedup', async () => {
+    // First call: no batch yet → injection record gate falls through and
+    // returns the text. Second call after a batch is opened → dedup gate
+    // fires (UNIQUE on content_hash) and returns empty.
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Cortex preamble.',
+      input_hash: 'hash-dedup',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertSession({
+      id: 'sess-dedup',
+      agent: 'antigravity',
+      started_at: NOW,
+      created_at: NOW,
+    });
+    const handler = createSessionContextHandler(makeDeps());
+
+    insertBatch({
+      session_id: 'sess-dedup',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'hello',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const first = await handler(makeReq({ session_id: 'sess-dedup' }));
+    expect((first.body as { text: string }).text).toContain('Cortex preamble');
+
+    const second = await handler(makeReq({ session_id: 'sess-dedup' }));
+    expect((second.body as { text: string }).text).toBe('');
+  });
 });
 
 describe('createResumeContextHandler', () => {
@@ -206,6 +246,158 @@ describe('createResumeContextHandler', () => {
     expect(body.text).toContain('Branch:: `feat/opencode`');
     expect(body.text).toContain('Previous Session:: `parent-1`');
     expect(body.text).toContain('Session:: `resume-2`');
+  });
+});
+
+describe('createSubagentContextHandler', () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+  });
+
+  it('returns managed Cortex instructions and records a subagent injection activity for supported symbionts', async () => {
+    const { insertBatch, getBatchById } = await import('@myco/db/queries/batches');
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_cortex` before major changes.\n\nPrefer Canopy before raw search.',
+      input_hash: 'hash-subagent',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+      source_run_id: 'run-subagent-cortex',
+    });
+    upsertSession({
+      id: 'sess-subagent',
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    const batch = insertBatch({
+      session_id: 'sess-subagent',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'spawn a reviewer',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-subagent',
+      agent: 'codex',
+      agent_id: 'agent-123',
+      agent_type: 'reviewer',
+    }));
+    const body = result.body as { text: string; source: string; sourceRunId: string | null; generatedAt: number | null };
+
+    expect(body.source).toBe('cortex-subagent');
+    expect(body.sourceRunId).toBe('run-subagent-cortex');
+    expect(body.generatedAt).toBe(NOW);
+    expect(body.text).toContain('You are a delegated subagent working inside a Myco-connected project.');
+    expect(body.text).toContain('Use `myco_cortex` before major changes.');
+    expect(body.text).toContain('Prefer Canopy before raw search.');
+
+    const activities = listActivities({ session_id: 'sess-subagent', scope: ALL_PROJECTS_SCOPE });
+    expect(activities).toHaveLength(1);
+    expect(activities[0]!.tool_name).toBe('myco:inject_subagent');
+    expect(activities[0]!.content_hash).toBe('myco:inject:subagent:sess-subagent:agent-123');
+    expect(JSON.parse(activities[0]!.tool_input!)).toMatchObject({
+      source: 'subagent-start',
+      agent: 'codex',
+      agent_id: 'agent-123',
+      agent_type: 'reviewer',
+    });
+    expect(activities[0]!.tool_output_summary).toContain('Use `myco_cortex` before major changes.');
+    expect(getBatchById(batch.id, ALL_PROJECTS_SCOPE)!.activity_count).toBe(1);
+  });
+
+  it('suppresses duplicate subagent injection for the same child agent id', async () => {
+    const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Cortex subagent dedup content.',
+      input_hash: 'hash-subagent-dedup',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    upsertSession({
+      id: 'sess-subagent-dedup',
+      agent: 'claude-code',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    insertBatch({
+      session_id: 'sess-subagent-dedup',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'spawn a reviewer',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const handler = createSubagentContextHandler(makeDeps());
+    const payload = {
+      session_id: 'sess-subagent-dedup',
+      agent: 'claude-code',
+      agent_id: 'agent-dup',
+      agent_type: 'reviewer',
+    };
+
+    const first = await handler(makeReq(payload));
+    expect((first.body as { text: string }).text).toContain('Cortex subagent dedup content');
+
+    const second = await handler(makeReq(payload));
+    expect((second.body as { text: string }).text).toBe('');
+    expect(listActivities({ session_id: 'sess-subagent-dedup', scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+  });
+
+  it('returns empty when no managed Cortex instructions are stored', async () => {
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-subagent-empty',
+      agent: 'codex',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('returns empty for symbionts that do not declare subagent-start injection', async () => {
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-unsupported',
+      agent: 'cursor',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('returns empty when subagent context injection is disabled in config', async () => {
+    const handler = createSubagentContextHandler(makeDeps({
+      config: MycoConfigSchema.parse({
+        version: 3,
+        cortex: {
+          instructions: { inject_on_subagent_start: false },
+        },
+      }),
+    }));
+    const result = await handler(makeReq({
+      session_id: 'sess-disabled',
+      agent: 'codex',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
   });
 });
 
@@ -299,6 +491,69 @@ describe('createPromptContextHandler', () => {
       expect(text).toContain('(gotcha)');
       expect(text).toContain('(decision)');
       expect(text).toContain('Always validate JWT expiry');
+    });
+
+    it('dedups identical prompts within a session — second call returns empty when a batch is open', async () => {
+      const { insertBatch } = await import('@myco/db/queries/batches');
+      upsertSession({
+        id: 's-spore-dedup',
+        agent: 'antigravity',
+        started_at: NOW,
+        created_at: NOW,
+      });
+      insertBatch({
+        session_id: 's-spore-dedup',
+        kind: 'initial',
+        prompt_number: 1,
+        user_prompt: 'auth question',
+        started_at: NOW,
+        created_at: NOW,
+        project_id: TEST_REQUEST_CONTEXT.projectId,
+      });
+
+      const handler = createPromptContextHandler(makeDeps({
+        embeddingManager: mockEmbeddingManager({
+          searchVectors: vi.fn().mockReturnValue([
+            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
+          ]),
+        }),
+      }));
+      const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-dedup' }));
+      expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
+
+      const second = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-dedup' }));
+      expect((second.body as { text: string }).text).toBe('');
+    });
+
+    it('different prompts in the same session both inject (discriminator scopes dedup)', async () => {
+      const { insertBatch } = await import('@myco/db/queries/batches');
+      upsertSession({
+        id: 's-spore-distinct',
+        agent: 'antigravity',
+        started_at: NOW,
+        created_at: NOW,
+      });
+      insertBatch({
+        session_id: 's-spore-distinct',
+        kind: 'initial',
+        prompt_number: 1,
+        user_prompt: 'p1',
+        started_at: NOW,
+        created_at: NOW,
+        project_id: TEST_REQUEST_CONTEXT.projectId,
+      });
+
+      const handler = createPromptContextHandler(makeDeps({
+        embeddingManager: mockEmbeddingManager({
+          searchVectors: vi.fn().mockReturnValue([
+            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
+          ]),
+        }),
+      }));
+      const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-distinct' }));
+      const second = await handler(makeReq({ prompt: 'Different prompt about caching strategies', session_id: 's-spore-distinct' }));
+      expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
+      expect((second.body as { text: string }).text).toContain('Always validate JWT expiry');
     });
 
     it('respects max spores limit', async () => {

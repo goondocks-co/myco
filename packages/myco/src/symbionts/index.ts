@@ -5,4 +5,4 @@ export { claudeCodeAdapter } from './claude-code.js';
 export { cursorAdapter } from './cursor.js';
 export { codexAdapter } from './codex.js';
 export { windsurfAdapter } from './windsurf.js';
-export { vscodeCopilotAdapter } from './vscode-copilot.js';
+export { copilotAdapter } from './copilot.js';

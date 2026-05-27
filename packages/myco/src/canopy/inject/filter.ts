@@ -18,7 +18,11 @@ export type NoInjectionReason =
   | 'disabled'
   | 'targeted'
   | 'unknown_file'
-  | 'small_file';
+  | 'small_file'
+  /** Per-session per-file dedup gate held — this file was already injected
+   * for this session within the current logical run. Set by the injection
+   * record helper, not by `decide()`. */
+  | 'already_injected';
 
 export interface IntentInput {
   /** PreToolUse `tool_input` payload. We only inspect file_path / offset / limit. */

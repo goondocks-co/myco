@@ -48,13 +48,12 @@ function buildStallingHeadersResponse(): Promise<Response> {
   return new Promise(() => {});
 }
 
-function buildIdleStreamResponse(idleAfterChunkMs: number): Response {
+function buildIdleStreamResponse(): Response {
   const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       controller.enqueue(new TextEncoder().encode('first'));
       // Then go silent — never closes, never enqueues. The wrapper's
       // idle watchdog must abort.
-      await new Promise((r) => setTimeout(r, idleAfterChunkMs));
     },
   });
   return new Response(body, { status: 200 });
@@ -63,6 +62,7 @@ function buildIdleStreamResponse(idleAfterChunkMs: number): Response {
 describe('createInstrumentedFetch', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('logs start + complete with chunk stats on a normal response', async () => {
@@ -126,7 +126,7 @@ describe('createInstrumentedFetch', () => {
     const { logs, logger } = captureLogger();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => buildIdleStreamResponse(5_000)),
+      vi.fn(async () => buildIdleStreamResponse()),
     );
 
     const fetchFn = createInstrumentedFetch({

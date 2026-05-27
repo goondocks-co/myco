@@ -86,6 +86,32 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
 }
 
 /**
+ * Resolve the canonical path for the cached machine identity. One file
+ * per machine, shared across every Grove and every project — the value
+ * was previously cached per-project at `<projectVaultDir>/machine_id`,
+ * which produced one identity per vault and forced every team-sync /
+ * backup-dedup consumer to re-resolve when crossing projects.
+ *
+ * Post-global-install: `~/.myco/machine_id` is the single source. The
+ * value moves on first read after the global-install migration runs
+ * (the migration step propagates an existing project-vault value when
+ * the global file is absent — see plan §5).
+ */
+export function resolveMachineIdPath(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, 'machine_id');
+}
+
+/**
+ * Resolve the canonical path for the last-update version stamp.
+ * Written by `myco update` after each successful pass — informational
+ * marker only, not a migration gate. Per-machine bookkeeping; lives
+ * alongside the launchers it tracks rather than in any single project.
+ */
+export function resolveLastUpdateVersionPath(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, 'last-update-version');
+}
+
+/**
  * Process-level switch routing the daemon to `service-dev/` instead of
  * `service/` so a contributor's dogfood daemon coexists with a production
  * daemon on the same machine (different paths → different derived ports).
@@ -102,6 +128,19 @@ export function setDevServiceMode(value: boolean): void {
 
 export function isDevServiceMode(): boolean {
   return devServiceMode;
+}
+
+/**
+ * The current daemon variant — `'service'` for a production install,
+ * `'service-dev'` for a contributor's dogfood daemon. Source of truth
+ * for "which Groves does this daemon own?" filters across walker, CLI
+ * cleanup, reconciler, and API handlers. Every consumer that scopes
+ * work to its own Groves MUST call this rather than re-deriving the
+ * ternary in place — that's how a fresh walker last leaked across the
+ * Grove-ownership boundary.
+ */
+export function currentDaemonVariant(): DaemonVariant {
+  return devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
 }
 
 export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonVariant {
@@ -180,6 +219,48 @@ export function resolveGroveRootsPath(groveId: string, mycoHome = resolveMycoHom
   return path.join(resolveGroveRegistryDir(groveId, mycoHome), GROVE_ROOTS_FILENAME);
 }
 
+/**
+ * `~/.myco/groves/<groveId>/projects/<projectId>/` — the project-scoped
+ * directory under its owning Grove. Hosts per-project artifacts that used to
+ * live in `<projectRoot>/.myco/` (the capture buffer initially; archive
+ * markers, per-project audit files later) so they ride with the Grove rather
+ * than the project tree.
+ *
+ * Both `groveId` and `projectId` flow through their brand asserters before
+ * being joined — Grove-id and project-id traversal attempts (`..`, absolute
+ * paths) are rejected structurally, the same defense-in-depth as the other
+ * Grove path resolvers.
+ */
+export function resolveGroveProjectDir(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): string {
+  return path.join(
+    resolveGroveDir(groveId, mycoHome),
+    'projects',
+    assertGroveEraId(projectId, 'project'),
+  );
+}
+
+/**
+ * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/` — global home for
+ * a project's capture buffer files. One buffer dir per project (the legacy
+ * `<projectRoot>/.myco/buffer/` shape carried over to the global tree).
+ *
+ * Hooks and the daemon's event dispatcher both write here; the reconciler
+ * walks each registered project's buffer dir at startup. The legacy
+ * project-local path remains as a read-side fallback during the brownfield
+ * migration window.
+ */
+export function resolveProjectBufferDir(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): string {
+  return path.join(resolveGroveProjectDir(groveId, projectId, mycoHome), 'buffer');
+}
+
 export function resolveProjectVaultDir(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), '.myco');
 }
@@ -210,13 +291,65 @@ export function resolveMachineRuntimeDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_DIRNAME);
 }
 
+
 /** `~/.myco/runtime.tmp/` — staging dir for atomic runtime swap on update. */
 export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_TMP_DIRNAME);
 }
 
-function expandHome(value: string, homeDir = os.homedir()): string {
-  if (value === '~') return homeDir;
-  if (value.startsWith(`~${path.sep}`)) return path.join(homeDir, value.slice(2));
-  return value;
+/**
+ * Expand a leading `~` to the user's home dir. Pure path-string helper.
+ *
+ * Reads `$HOME` first so tests that override the home dir via
+ * `process.env.HOME` actually take effect — Bun's `os.homedir()` resolves
+ * via `getpwuid_r()` and IGNORES `$HOME` set after process launch, which
+ * would otherwise let test pollution from the developer's real `~/...`
+ * leak into a tmp-dir scoped test.
+ *
+ * Single source of truth for the entire codebase — every `globalXxxTarget`
+ * resolver, every doctor check, every API handler that touches a
+ * `~/...` literal funnels through this.
+ */
+export function expandHome(value: string, homeDir?: string): string {
+  // Non-`~` paths are returned verbatim — no home resolution happens,
+  // so the sandbox sentinel has nothing to enforce. Returning early
+  // here keeps stray MYCO_SANDBOX_ROOT settings from poisoning
+  // unrelated call paths that pass already-absolute values.
+  const needsExpansion = value === '~' || value.startsWith(`~${path.sep}`) || value.startsWith('~/');
+  if (!needsExpansion) return value;
+  const home = homeDir ?? process.env.HOME ?? os.homedir();
+  assertSandboxedHome(home);
+  if (value === '~') return home;
+  // Accept both `~/foo` (POSIX shape, what every manifest target uses)
+  // and `~\foo` on Windows.
+  return path.join(home, value.slice(2));
+}
+
+/**
+ * Smoke-test sandbox enforcement. When `MYCO_SANDBOX_ROOT` is set, the
+ * caller is claiming "this whole process is running inside an isolated
+ * filesystem root." In that case `HOME` MUST resolve to a path inside
+ * the sandbox — otherwise a smoke test that sandboxed `MYCO_HOME` (the
+ * launcher state dir) but forgot to set `HOME` would write to the real
+ * `~/.claude/settings.json`, `~/.cursor/hooks.json`, etc. via
+ * manifest globalHooksTarget paths. That escape produced 30+ orphan
+ * hook entries across five real symbiont config files — the bug this
+ * gate exists to prevent recurring.
+ *
+ * Production calls (no MYCO_SANDBOX_ROOT) are unaffected.
+ */
+function assertSandboxedHome(home: string): void {
+  const sandboxRoot = process.env.MYCO_SANDBOX_ROOT;
+  if (!sandboxRoot) return;
+  const resolvedRoot = path.resolve(sandboxRoot);
+  const resolvedHome = path.resolve(home);
+  const sep = path.sep;
+  if (resolvedHome !== resolvedRoot && !resolvedHome.startsWith(resolvedRoot + sep)) {
+    throw new Error(
+      `MYCO_SANDBOX_ROOT=${sandboxRoot} is set but HOME=${home} resolves outside it. ` +
+      `Smoke tests must point HOME inside MYCO_SANDBOX_ROOT so manifest `
+      + `globalHooksTarget paths (~/.claude/settings.json, ~/.cursor/hooks.json, ...) `
+      + `stay sandboxed alongside MYCO_HOME.`,
+    );
+  }
 }

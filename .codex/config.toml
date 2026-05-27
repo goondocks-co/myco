@@ -1,8 +1,2 @@
 [shell_environment_policy]
 inherit = "core"
-
-[mcp_servers.myco]
-url = "http://127.0.0.1:19344/mcp"
-
-[features]
-hooks = true

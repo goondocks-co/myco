@@ -2,6 +2,7 @@ name: claude-code
 displayName: Claude Code
 binary: claude
 configDir: .claude
+detectionDir: ~/.claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
 resumeCommand: "claude --resume {sessionId}"
@@ -157,9 +158,20 @@ capture:
     interruptMarker: "[Request interrupted by user for tool use]"
 registration:
   hooksTarget: .claude/settings.json
+  globalHooksTarget: ~/.claude/settings.json
   mcpTarget: .mcp.json
+  globalMcpTarget: ~/.claude/settings.json
   skillsTarget: .claude/skills
+  globalSkillsTarget: ~/.claude/skills
   settingsTarget: .claude/settings.json
+  # Claude Code's ~/.claude/settings.json is a multi-key settings file:
+  # `hooks`, `permissions`, `mcpServers`, etc. all live at the root.
+  # Pointing globalSettingsTarget at the same path as globalHooksTarget
+  # opts the installer in to merging the settings template (`permissions`
+  # block) alongside the hooks block — Claude Code's schema accepts both.
+  # /code-review finding C9: this used to be a silent fallback; now it
+  # is an explicit declaration so future agents don't inherit the trap.
+  globalSettingsTarget: ~/.claude/settings.json
   instructionsFile: CLAUDE.md
 capabilities:
   # Claude Code threads PreToolUse hookSpecificOutput.additionalContext into
@@ -170,6 +182,9 @@ capabilities:
   # Hook template registers a session-start hook that fetches Cortex context
   # and emits it as additional system context.
   sessionStartInjection: true
+  # SubagentStart can inject additionalContext into the child agent before
+  # its first prompt.
+  subagentStartInjection: true
   # File-read tools this symbiont exposes for Canopy PreToolUse injection.
   # Each entry tells the resolver how to recognize the tool and locate the
   # file path on tool_input.
@@ -189,3 +204,10 @@ capabilities:
       pathField: file_path
     - tool: MultiEdit
       pathField: file_path
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

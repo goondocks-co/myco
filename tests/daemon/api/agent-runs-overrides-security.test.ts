@@ -10,6 +10,9 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate } from '@myco/db/queries/skill-candidates.js';
@@ -20,12 +23,21 @@ import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
+// Seed a real vault dir so the (unmocked) loadMergedConfig has a myco.yaml
+// to read. A top-level mock.module('@myco/config/loader.js', ...) returning a
+// partial stub would poison every other test file in the same bun process
+// (bundled runs share state across files) — see config-cortex-paths.test.ts
+// and team-* tests that depend on a real four-tier merged config.
+const VAULT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-agent-runs-sec-'));
+fs.writeFileSync(
+  path.join(VAULT_DIR, 'myco.yaml'),
+  'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n',
+  'utf-8',
+);
+
 const runAgentSpy = vi.fn(async () => ({ runId: 'stub', status: 'completed' as const }));
 mock.module('@myco/agent/executor.js', () => ({
   runAgent: (...args: unknown[]) => runAgentSpy(...args),
-}));
-mock.module('@myco/config/loader.js', () => ({
-  loadMergedConfig: () => ({ agent: { tasks: {} } }),
 }));
 mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
@@ -38,7 +50,7 @@ function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
 function makeHandlers() {
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return createAgentRunHandlers({
-    vaultDir: '/tmp/fake-vault',
+    vaultDir: VAULT_DIR,
     embeddingManager: {} as never,
     logger: logger as never,
   });
