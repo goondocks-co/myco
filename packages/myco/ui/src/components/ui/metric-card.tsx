@@ -9,7 +9,7 @@ import { Sparkline } from './sparkline';
  * and Team queue tiles. Mirrors `.myco-vault-metric` from styles-v7.css.
  */
 const metricCardVariants = cva(
-  'flex flex-col gap-1 rounded-md bg-surface-container-lowest border border-[var(--ghost-border)] px-4 py-3',
+  'flex min-w-0 flex-col gap-1 overflow-hidden rounded-md bg-surface-container-lowest border border-[var(--ghost-border)] px-4 py-3',
   {
     variants: {
       tone: {
@@ -47,11 +47,12 @@ export const MetricCard = forwardRef<HTMLDivElement, MetricCardProps>(
       <Eyebrow size="sm">{label}</Eyebrow>
       <div
         className={cn(
-          'flex items-end justify-between gap-2',
+          'flex min-w-0 items-end justify-between gap-2',
         )}
       >
         <div
           className={cn(
+            'min-w-0 max-w-full [overflow-wrap:anywhere]',
             mono
               ? 'font-mono text-base leading-tight text-on-surface'
               : 'myco-display-md text-on-surface',

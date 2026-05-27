@@ -69,9 +69,13 @@ export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
       groveId: req.requestContext?.groveId ?? null,
     });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
+    const daemonStateVersion = stats.daemon.version;
     stats.daemon.pid = process.pid;
     stats.daemon.port = deps.server.port;
     stats.daemon.version = deps.server.version;
+    if (!stats.daemon.version_label || stats.daemon.version_label === daemonStateVersion) {
+      stats.daemon.version_label = deps.server.version;
+    }
     stats.daemon.uptime_seconds = Math.floor(process.uptime());
     return {
       body: {

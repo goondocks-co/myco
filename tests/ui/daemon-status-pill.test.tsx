@@ -2,6 +2,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { formatUptime, DaemonStatusPillView } from '../../packages/myco/ui/src/components/ui/daemon-status-pill';
 
 describe('formatUptime', () => {
@@ -35,5 +36,27 @@ describe('DaemonStatusPillView', () => {
   it('appends version when provided', () => {
     render(<DaemonStatusPillView uptimeSeconds={60} version="0.25.1" />);
     expect(screen.getByText('v0.25.1')).toBeDefined();
+  });
+
+  it('does not double-prefix git describe labels', () => {
+    render(<DaemonStatusPillView uptimeSeconds={60} version="v0.18.1-244-g63fe75a5" />);
+    expect(screen.getByText('v0.18.1-244-g63fe75a5')).toBeDefined();
+  });
+
+  it('links to update settings and indicates update availability', () => {
+    render(
+      <MemoryRouter>
+        <DaemonStatusPillView
+          uptimeSeconds={60}
+          version="0.25.1"
+          updateAvailable
+          latestVersion="0.27.19"
+          to="/settings?configSection=update#update"
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: /daemon/i }).getAttribute('href')).toBe('/settings?configSection=update#update');
+    expect(screen.getByTestId('status-dot').dataset.tone).toBe('ochre');
+    expect(screen.getByTestId('status-dot').dataset.pulsing).toBe('true');
   });
 });

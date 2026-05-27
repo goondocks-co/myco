@@ -4,6 +4,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionSpores } from '../../packages/myco/ui/src/components/sessions/SessionSpores';
+import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 
 const SAMPLE_SPORES = {
   spores: [
@@ -46,9 +47,11 @@ beforeEach(() => {
 function renderWith(sessionId: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <SessionSpores sessionId={sessionId} />
-    </QueryClientProvider>,
+    <PowerProvider>
+      <QueryClientProvider client={client}>
+        <SessionSpores sessionId={sessionId} />
+      </QueryClientProvider>
+    </PowerProvider>,
   );
 }
 

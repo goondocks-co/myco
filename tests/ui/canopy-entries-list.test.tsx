@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 import type {
   CanopyEntriesListResponse,
   CanopyEntryRow,
@@ -48,12 +49,14 @@ function renderList(props: {
 }) {
   const client = makeQueryClient();
   return render(
-    <QueryClientProvider client={client}>
-      <CanopyEntriesList
-        selectedPath={props.selectedPath}
-        onSelectPath={props.onSelectPath ?? (() => {})}
-      />
-    </QueryClientProvider>,
+    <PowerProvider>
+      <QueryClientProvider client={client}>
+        <CanopyEntriesList
+          selectedPath={props.selectedPath}
+          onSelectPath={props.onSelectPath ?? (() => {})}
+        />
+      </QueryClientProvider>
+    </PowerProvider>,
   );
 }
 
@@ -205,11 +208,13 @@ describe('CanopyEntriesList', () => {
 function renderPanel() {
   const client = makeQueryClient();
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <CanopyEntriesPanel />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <PowerProvider>
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <CanopyEntriesPanel />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </PowerProvider>,
   );
 }
 

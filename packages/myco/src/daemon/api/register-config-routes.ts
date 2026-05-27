@@ -61,7 +61,7 @@ export function registerConfigRoutes(
     handleGetMergedConfig(vaultDirFor(req), { groveId: groveIdFor(req) }));
 
   server.registerRoute('GET', '/api/config/local', async (req) =>
-    handleGetLocalConfig(vaultDirFor(req)));
+    handleGetLocalConfig(vaultDirFor(req), { groveId: groveIdFor(req) }));
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
     const vaultDir = vaultDirFor(req);

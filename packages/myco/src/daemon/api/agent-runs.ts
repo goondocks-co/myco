@@ -305,7 +305,13 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
     const runIds = runs.map((r) => r.id);
-    const activityBuckets = getRunActivityBuckets(runIds);
+    const activityBuckets = getRunActivityBuckets(runIds, {
+      ranges: runs.map((run) => ({
+        id: run.id,
+        started_at: run.started_at,
+        ended_at: run.completed_at,
+      })),
+    });
     const branches = getRunBranches(runIds);
 
     return {
@@ -338,7 +344,13 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
     const byTool = countWriteIntentsByTool(run.id, scope);
     const total = Object.values(byTool).reduce((acc, n) => acc + n, 0);
-    const activityBuckets = getRunActivityBuckets([run.id]);
+    const activityBuckets = getRunActivityBuckets([run.id], {
+      ranges: [{
+        id: run.id,
+        started_at: run.started_at,
+        ended_at: run.completed_at,
+      }],
+    });
     const branches = getRunBranches([run.id]);
     return {
       body: {

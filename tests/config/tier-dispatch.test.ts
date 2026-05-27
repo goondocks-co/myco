@@ -131,11 +131,13 @@ describe('Tier dispatch', () => {
         // Grove tier — should NOT survive into project file.
         backup: { dir: '/tmp/bad', retention_days: 30 },
         team: { enabled: true, github_repo: 'acme/x', branch: 'main', api_token: 'secret' },
+        appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
       } as MycoConfig);
 
       const persisted = YAML.parse(fs.readFileSync(path.join(projectDir, 'myco.yaml'), 'utf-8'));
       expect(persisted.backup).toBeUndefined();
       expect(persisted.team).toBeUndefined();
+      expect(persisted.appearance).toBeUndefined();
       expect(persisted.daemon).toBeUndefined();
       expect(persisted.update).toBeUndefined();
       // Project-tier shape preserved.

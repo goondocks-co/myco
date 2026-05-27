@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 import { useProjectScopedQueryKey } from './use-project-selection';
+import { usePowerQuery } from './use-power-query';
 
 /* ---------- Constants ---------- */
 
@@ -261,23 +262,23 @@ function buildEntriesQueryString(args: CanopyEntriesQuery): string {
 
 /** Fetches the paginated list of canopy entries with optional filters. */
 export function useCanopyEntries(args: CanopyEntriesQuery) {
-  const queryKey = useProjectScopedQueryKey([
-    'canopy-entries',
-    args.limit ?? null,
-    args.offset ?? null,
-    args.language ?? null,
-    args.described ?? null,
-    args.embedded ?? null,
-    args.path_prefix ?? null,
-    args.q ?? null,
-    args.sort_by ?? null,
-    args.sort_dir ?? null,
-  ]);
-  return useQuery<CanopyEntriesListResponse>({
-    queryKey,
+  return usePowerQuery<CanopyEntriesListResponse>({
+    queryKey: [
+      'canopy-entries',
+      args.limit ?? null,
+      args.offset ?? null,
+      args.language ?? null,
+      args.described ?? null,
+      args.embedded ?? null,
+      args.path_prefix ?? null,
+      args.q ?? null,
+      args.sort_by ?? null,
+      args.sort_dir ?? null,
+    ],
     queryFn: ({ signal }) =>
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
     staleTime: ENTRIES_STALE_TIME,
+    pollCategory: 'standard',
     refetchInterval: POLL_INTERVALS.CANOPY_ENTRIES,
   });
 }

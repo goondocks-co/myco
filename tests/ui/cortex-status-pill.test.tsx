@@ -2,6 +2,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { CortexStatusPillView, computeIndexingPct } from '../../packages/myco/ui/src/components/ui/cortex-status-pill';
 
 describe('computeIndexingPct', () => {
@@ -35,5 +36,14 @@ describe('CortexStatusPillView', () => {
   it('renders em-dash when data is missing', () => {
     render(<CortexStatusPillView describedCount={undefined} entriesCount={undefined} />);
     expect(screen.getByText('—')).toBeDefined();
+  });
+
+  it('can link to Cortex', () => {
+    render(
+      <MemoryRouter>
+        <CortexStatusPillView describedCount={10} entriesCount={10} to="/cortex" />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: /cortex/i }).getAttribute('href')).toBe('/cortex');
   });
 });

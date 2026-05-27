@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Activity,
   Bell,
@@ -269,6 +270,7 @@ function SettingsInner() {
   // It only falls to null when there are zero projects — in which case
   // the page shows machine fields and the no-project banner.
   const projectSelection = useProjectSelection();
+  const location = useLocation();
   const hasProject = projectSelection !== null;
   const unified = useUnifiedSettings();
 
@@ -294,7 +296,7 @@ function SettingsInner() {
 
   // Honor an initial #hash so deep links work.
   useEffect(() => {
-    const hash = typeof window !== 'undefined' ? window.location.hash.replace('#', '') : '';
+    const hash = location.hash.replace('#', '');
     if (!hash) return;
     if (!SETTINGS_GROUPS.some((g) => g.id === hash)) return;
     setActiveGroupId(hash);
@@ -303,7 +305,7 @@ function SettingsInner() {
       // Defer one tick so the layout has settled.
       requestAnimationFrame(() => el.scrollIntoView({ behavior: 'auto', block: 'start' }));
     }
-  }, []);
+  }, [location.hash]);
 
   // Honor `?configField=<key>` deep links from notification cards. Layout's
   // shared resolver runs on mount with an 80ms delay, but Settings's data
@@ -313,7 +315,7 @@ function SettingsInner() {
   // from. Falls back to `?configSection=<id>` if no field match is found.
   useEffect(() => {
     if (unified.isLoading) return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(location.search);
     const fieldParam = params.get('configField');
     const sectionParam = params.get('configSection');
     if (!fieldParam && !sectionParam) return;
@@ -338,12 +340,15 @@ function SettingsInner() {
     })();
 
     if (!target) return;
+    if (sectionParam && SETTINGS_GROUPS.some((g) => g.id === sectionParam)) {
+      setActiveGroupId(sectionParam);
+    }
     requestAnimationFrame(() => {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
       target.classList.add(...HIGHLIGHT);
       window.setTimeout(() => target.classList.remove(...HIGHLIGHT), 2000);
     });
-  }, [unified.isLoading]);
+  }, [unified.isLoading, location.search]);
 
   const handleTocClick = useCallback((id: string) => {
     setActiveGroupId(id);

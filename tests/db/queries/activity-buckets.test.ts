@@ -1,8 +1,8 @@
 /**
  * Tests for the v6-rail-card activity-bucket helpers.
  *
- * The helpers compute the per-row sparkline data (8 × 1-minute buckets,
- * newest last) used by `GET /api/sessions` and `GET /api/agent/runs`.
+ * The helpers compute the per-row sparkline data (8 lifetime buckets,
+ * oldest first) used by `GET /api/sessions` and `GET /api/agent/runs`.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
@@ -37,33 +37,34 @@ describe('activity-bucket helpers', () => {
       const now = epochNow();
       upsertSession({ id: 'sess-quiet', agent: 'claude-code', started_at: now, created_at: now });
 
-      const result = getSessionActivityBuckets(['sess-quiet'], { nowSeconds: now });
+      const result = getSessionActivityBuckets(['sess-quiet'], {
+        nowSeconds: now,
+        ranges: [{ id: 'sess-quiet', started_at: now, ended_at: now }],
+      });
       const buckets = result.get('sess-quiet');
       expect(buckets).toBeDefined();
       expect(buckets!).toHaveLength(BUCKET_COUNT);
       expect(buckets!.every((c) => c === 0)).toBe(true);
     });
 
-    it('bucketizes prompt_batches into the correct 1-minute slot', () => {
+    it('bucketizes prompt_batches across the session lifetime', () => {
       const now = epochNow();
-      upsertSession({ id: 'sess-a', agent: 'claude-code', started_at: now - 600, created_at: now - 600 });
+      const start = now - 800;
+      upsertSession({ id: 'sess-a', agent: 'claude-code', started_at: start, ended_at: now, created_at: start });
 
-      // Two batches in the most-recent bucket (within last 60s).
-      insertBatch({ session_id: 'sess-a', started_at: now - 10, created_at: now - 10 });
-      insertBatch({ session_id: 'sess-a', started_at: now - 50, created_at: now - 50 });
-      // One batch in the second-most-recent bucket (60–120s ago).
-      insertBatch({ session_id: 'sess-a', started_at: now - 90, created_at: now - 90 });
-      // Outside the 8-minute window — should not be counted.
-      insertBatch({ session_id: 'sess-a', started_at: now - 600, created_at: now - 600 });
+      insertBatch({ session_id: 'sess-a', started_at: start + 10, created_at: start + 10 });
+      insertBatch({ session_id: 'sess-a', started_at: start + 250, created_at: start + 250 });
+      insertBatch({ session_id: 'sess-a', started_at: start + 780, created_at: start + 780 });
 
-      const result = getSessionActivityBuckets(['sess-a'], { nowSeconds: now });
+      const result = getSessionActivityBuckets(['sess-a'], {
+        nowSeconds: now,
+        ranges: [{ id: 'sess-a', started_at: start, ended_at: now }],
+      });
       const buckets = result.get('sess-a')!;
       expect(buckets).toHaveLength(BUCKET_COUNT);
-      // Newest bucket (index BUCKET_COUNT-1) should hold the two recent batches.
-      expect(buckets[BUCKET_COUNT - 1]).toBe(2);
-      // Second-newest bucket should hold the one mid-window batch.
-      expect(buckets[BUCKET_COUNT - 2]).toBe(1);
-      // Sum equals captured-in-window batches (older one excluded).
+      expect(buckets[0]).toBe(1);
+      expect(buckets[2]).toBe(1);
+      expect(buckets[7]).toBe(1);
       expect(buckets.reduce((a, b) => a + b, 0)).toBe(3);
     });
 
@@ -75,12 +76,46 @@ describe('activity-bucket helpers', () => {
       insertBatch({ session_id: 'sess-a', started_at: now - 5, created_at: now - 5 });
       insertBatch({ session_id: 'sess-b', started_at: now - 70, created_at: now - 70 });
 
-      const result = getSessionActivityBuckets(['sess-a', 'sess-b'], { nowSeconds: now });
-      expect(result.get('sess-a')![BUCKET_COUNT - 1]).toBe(1);
-      expect(result.get('sess-b')![BUCKET_COUNT - 2]).toBe(1);
+      const result = getSessionActivityBuckets(['sess-a', 'sess-b'], {
+        nowSeconds: now,
+        ranges: [
+          { id: 'sess-a', started_at: now - 200, ended_at: now },
+          { id: 'sess-b', started_at: now - 200, ended_at: now },
+        ],
+      });
+      expect(result.get('sess-a')![7]).toBe(1);
+      expect(result.get('sess-b')![5]).toBe(1);
       // Cross-leakage check: each session sees only its own counts.
       expect(result.get('sess-a')!.reduce((a, b) => a + b, 0)).toBe(1);
       expect(result.get('sess-b')!.reduce((a, b) => a + b, 0)).toBe(1);
+    });
+
+    it('widens stale session ranges to include captured prompt history', () => {
+      const now = epochNow();
+      const originalStart = now - 800;
+      const overwrittenStart = now - 100;
+      upsertSession({
+        id: 'sess-resumed',
+        agent: 'codex',
+        started_at: overwrittenStart,
+        created_at: originalStart,
+      });
+
+      insertBatch({ session_id: 'sess-resumed', started_at: originalStart + 10, created_at: originalStart + 10 });
+      insertBatch({ session_id: 'sess-resumed', started_at: originalStart + 250, created_at: originalStart + 250 });
+      insertBatch({ session_id: 'sess-resumed', started_at: now - 20, created_at: now - 20 });
+
+      const result = getSessionActivityBuckets(['sess-resumed'], {
+        nowSeconds: now,
+        ranges: [{ id: 'sess-resumed', started_at: overwrittenStart, ended_at: now }],
+      });
+
+      const buckets = result.get('sess-resumed')!;
+      expect(buckets).toHaveLength(BUCKET_COUNT);
+      expect(buckets.reduce((a, b) => a + b, 0)).toBe(3);
+      expect(buckets[0]).toBe(1);
+      expect(buckets[2]).toBe(1);
+      expect(buckets[7]).toBe(1);
     });
   });
 
@@ -90,13 +125,16 @@ describe('activity-bucket helpers', () => {
       registerAgent({ id: 'agent-buckets', name: 'Bucket Test', created_at: now });
       const run = insertRun({ id: 'run-quiet', agent_id: 'agent-buckets' });
 
-      const result = getRunActivityBuckets([run.id], { nowSeconds: now });
+      const result = getRunActivityBuckets([run.id], {
+        nowSeconds: now,
+        ranges: [{ id: run.id, started_at: now - 10, ended_at: now }],
+      });
       const buckets = result.get(run.id)!;
       expect(buckets).toHaveLength(BUCKET_COUNT);
       expect(buckets.every((c) => c === 0)).toBe(true);
     });
 
-    it('bucketizes agent_turns into 1-minute slots', () => {
+    it('bucketizes agent_turns across the run lifetime', () => {
       const now = epochNow();
       registerAgent({ id: 'agent-buckets', name: 'Bucket Test', created_at: now });
       const run = insertRun({ id: 'run-a', agent_id: 'agent-buckets' });
@@ -106,27 +144,67 @@ describe('activity-bucket helpers', () => {
         agent_id: 'agent-buckets',
         turn_number: 1,
         tool_name: 'read',
-        started_at: now - 5,
+        started_at: now - 395,
       });
       insertTurn({
         run_id: run.id,
         agent_id: 'agent-buckets',
         turn_number: 2,
         tool_name: 'edit',
-        started_at: now - 30,
+        started_at: now - 200,
       });
       insertTurn({
         run_id: run.id,
         agent_id: 'agent-buckets',
         turn_number: 3,
         tool_name: 'bash',
-        started_at: now - 130,
+        started_at: now - 5,
       });
 
-      const result = getRunActivityBuckets([run.id], { nowSeconds: now });
+      const result = getRunActivityBuckets([run.id], {
+        nowSeconds: now,
+        ranges: [{ id: run.id, started_at: now - 400, ended_at: now }],
+      });
       const buckets = result.get(run.id)!;
-      expect(buckets[BUCKET_COUNT - 1]).toBe(2);
-      expect(buckets[BUCKET_COUNT - 3]).toBe(1);
+      expect(buckets[0]).toBe(1);
+      expect(buckets[4]).toBe(1);
+      expect(buckets[7]).toBe(1);
+    });
+
+    it('widens stale run ranges to include captured turn history', () => {
+      const now = epochNow();
+      registerAgent({ id: 'agent-buckets', name: 'Bucket Test', created_at: now });
+      const run = insertRun({
+        id: 'run-resumed',
+        agent_id: 'agent-buckets',
+        started_at: now - 60,
+        completed_at: now,
+      });
+
+      insertTurn({
+        run_id: run.id,
+        agent_id: 'agent-buckets',
+        turn_number: 1,
+        tool_name: 'read',
+        started_at: now - 300,
+      });
+      insertTurn({
+        run_id: run.id,
+        agent_id: 'agent-buckets',
+        turn_number: 2,
+        tool_name: 'edit',
+        started_at: now - 10,
+      });
+
+      const result = getRunActivityBuckets([run.id], {
+        nowSeconds: now,
+        ranges: [{ id: run.id, started_at: now - 60, ended_at: now }],
+      });
+
+      const buckets = result.get(run.id)!;
+      expect(buckets.reduce((a, b) => a + b, 0)).toBe(2);
+      expect(buckets[0]).toBe(1);
+      expect(buckets[7]).toBe(1);
     });
   });
 

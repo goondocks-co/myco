@@ -5,7 +5,7 @@ import { Row } from '../ui/row';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Pagination } from '../ui/pagination';
 import { StatusDot, type StatusTone } from '../ui/status-dot';
-import { Sparkline } from '../ui/sparkline';
+import { ActivitySparkline } from '../ui/sparkline';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { useSymbionts } from '../../hooks/use-symbionts';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
@@ -58,7 +58,7 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
       data-selected={isSelected || undefined}
       className="group"
     >
-      {/* Top row: status + title on the left, time + sparkline + actions on the right */}
+      {/* Top row: status + title on the left, time + actions on the right */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0 flex-1">
           <StatusDot
@@ -75,7 +75,6 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
           <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
             {formatEpochAgo(session.started_at)}
           </span>
-          <Sparkline data={session.activity_buckets} widthPx={48} heightPx={14} />
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -96,8 +95,17 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
       </div>
 
       {/* Meta line: agent · symbiont · prompts · tools */}
-      <div className="mt-1.5 ml-5 font-mono text-[11px] text-on-surface-variant truncate">
-        {session.agent} · {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
+      <div className="mt-1.5 ml-5 flex items-center justify-between gap-3">
+        <div className="min-w-0 truncate font-mono text-[11px] text-on-surface-variant">
+          {session.agent} · {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
+        </div>
+        <ActivitySparkline
+          data={session.activity_buckets}
+          kind="session"
+          widthPx={48}
+          heightPx={14}
+          className="shrink-0"
+        />
       </div>
 
       {/* Branch line: rendered only when a branch was captured */}

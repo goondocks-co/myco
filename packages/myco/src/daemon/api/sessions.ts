@@ -39,7 +39,13 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   const rawSessions = listSessions({ ...filterOpts, limit, offset });
   const ids = rawSessions.map((s) => s.id);
   const states = releaseStateAnnotationMap('sessions', ids, scope);
-  const activityBuckets = getSessionActivityBuckets(ids);
+  const activityBuckets = getSessionActivityBuckets(ids, {
+    ranges: rawSessions.map((s) => ({
+      id: s.id,
+      started_at: s.started_at,
+      ended_at: s.ended_at,
+    })),
+  });
   // Derived counts from a single GROUP BY each — the cached
   // `sessions.prompt_count` / `tool_count` columns can drift if a writer
   // missed the bump, and the detail endpoint already derives, so the

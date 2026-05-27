@@ -22,7 +22,7 @@ import {
 import { RunTaskDialog } from './RunTaskDialog';
 import { AuditTrail } from './AuditTrail';
 import { formatEpochRelative, capitalize } from '../../lib/format';
-import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
+import { formatCost, formatTokens, formatDuration, resolveTaskName, statusBadgeVariant } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
 import type { HarnessTokenBudget } from '@myco/agent/types';
@@ -38,6 +38,32 @@ function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructiv
   if (a.includes('skip') || a.includes('no-op')) return 'secondary';
   if (a.includes('error') || a.includes('fail')) return 'destructive';
   return 'default';
+}
+
+function statusMetricTone(status: string): 'default' | 'sage' | 'ochre' | 'terra' {
+  switch (status) {
+    case 'completed':
+      return 'sage';
+    case 'running':
+      return 'ochre';
+    case 'failed':
+    case 'cancelled':
+      return 'terra';
+    default:
+      return 'default';
+  }
+}
+
+function RunStatusMetricValue({ status }: { status: string }) {
+  return (
+    <Badge
+      variant={statusBadgeVariant(status)}
+      className="max-w-full truncate px-2.5 py-1 font-mono text-[11px] uppercase tracking-wide"
+      title={status}
+    >
+      {capitalize(status)}
+    </Badge>
+  );
 }
 
 
@@ -464,7 +490,12 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
       {/* Metric tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        <MetricCard label="Status" value={capitalize(run.status)} tone="sage" />
+        <MetricCard
+          label="Status"
+          value={<RunStatusMetricValue status={run.status} />}
+          tone={statusMetricTone(run.status)}
+          mono
+        />
         <MetricCard label="Task" value={resolveTaskName(run.task, tasksList)} mono />
         <MetricCard label="Started" value={formatEpochRelative(run.started_at)} mono />
         <MetricCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} mono />

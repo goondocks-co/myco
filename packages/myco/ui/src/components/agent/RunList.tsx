@@ -1,30 +1,18 @@
-import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, AlertCircle, GitBranch, Play, RotateCcw } from 'lucide-react';
 import { Button } from '../ui/button';
 import { CompareBar } from '../ui/compare-bar';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
-import { Sparkline } from '../ui/sparkline';
+import { ActivitySparkline } from '../ui/sparkline';
 import { StatusDot, type StatusTone } from '../ui/status-dot';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { RunTaskDialog } from './RunTaskDialog';
-import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, capitalize } from '../../lib/format';
 import { sectionRows } from '../../lib/section-rows';
 import { statusBadgeVariant, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
-
-/* ---------- Constants ---------- */
-
-const RUN_STATUS_OPTIONS = [
-  { value: FILTER_ALL, label: 'All statuses' },
-  { value: 'running', label: 'Running' },
-  { value: 'completed', label: 'Completed' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'cancelled', label: 'Cancelled' },
-];
 
 /* ---------- Helpers ---------- */
 
@@ -51,6 +39,62 @@ function RunStatusBadge({ status }: { status: string }) {
     >
       {capitalize(status)}
     </span>
+  );
+}
+
+function phasePipState(phaseStatus: string): 'done' | 'active' | 'failed' | 'pending' {
+  switch (phaseStatus) {
+    case 'completed':
+    case 'complete':
+    case 'done':
+      return 'done';
+    case 'running':
+    case 'active':
+    case 'in_progress':
+      return 'active';
+    case 'failed':
+    case 'error':
+    case 'cancelled':
+      return 'failed';
+    default:
+      return 'pending';
+  }
+}
+
+export function RunPhasePips({
+  phases,
+  status,
+  className,
+}: {
+  phases?: RunRow['phase_checkpoints'];
+  status: string;
+  className?: string;
+}) {
+  if (!phases || phases.length === 0) return null;
+  return (
+    <div
+      className={cn('flex items-center gap-[3px]', className)}
+      aria-label={`${phases.length} phase checkpoints for ${status} run`}
+      title={`${phases.length} phase checkpoints`}
+    >
+      {phases.map((phase) => {
+        const state = phasePipState(phase.status);
+        return (
+          <span
+            key={phase.name}
+            title={`${phase.name}: ${phase.status}`}
+            data-state={state}
+            className={cn(
+              'h-1 rounded-[1px] bg-surface-container-high',
+              phases.length > 8 ? 'w-1.5' : phases.length > 5 ? 'w-2' : 'w-3',
+              state === 'done' && 'bg-sage',
+              state === 'active' && 'animate-pulse bg-gradient-to-r from-sage to-sage/45 shadow-[0_0_4px_color-mix(in_srgb,var(--sage)_50%,transparent)]',
+              state === 'failed' && 'bg-terracotta',
+            )}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -93,6 +137,7 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
 }, ref) {
   const onClick = useCallback(() => onSelectRun(run.id), [onSelectRun, run.id]);
   const taskLabel = run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL;
+  const showPhasePips = (run.phase_checkpoints?.length ?? 0) > 1;
 
   // Meta segments built conditionally so missing fields drop out entirely
   // rather than rendering em-dash placeholders that read as broken state.
@@ -141,7 +186,7 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
       aria-selected={isActive}
       aria-label={`Agent run: ${taskLabel}, status ${run.status}`}
     >
-      {/* Top row: checkbox + status dot + title on the left, time + sparkline + actions on the right */}
+      {/* Top row: checkbox + status dot + title on the left, time + actions on the right */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0 flex-1">
           {/* Compare checkbox */}
@@ -181,7 +226,6 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
               {formatEpochAgo(run.started_at)}
             </span>
           )}
-          <Sparkline data={run.activity_buckets ?? []} widthPx={48} heightPx={14} />
           <div onClick={(e) => e.stopPropagation()}>
             <Button
               size="icon"
@@ -201,13 +245,26 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
       </div>
 
       {/* Status line: badge + flags */}
-      <div className="mt-1.5 ml-11 flex items-center gap-2">
-        <RunStatusBadge status={run.status} />
-        {run.resumable && run.status === 'failed' && (
-          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
-        )}
-        {run.cost_source === 'estimated' && (
-          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
+      <div className="mt-1.5 ml-11 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <RunStatusBadge status={run.status} />
+          {run.resumable && run.status === 'failed' && (
+            <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
+          )}
+          {run.cost_source === 'estimated' && (
+            <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
+          )}
+        </div>
+        {showPhasePips ? (
+          <RunPhasePips phases={run.phase_checkpoints} status={run.status} className="shrink-0" />
+        ) : (
+          <ActivitySparkline
+            data={run.activity_buckets}
+            kind="agent-run"
+            widthPx={48}
+            heightPx={14}
+            className="shrink-0"
+          />
         )}
       </div>
 
@@ -241,18 +298,30 @@ export interface RunListProps {
   /** When set, the row with this run id renders as active. Also seeds the
    *  keyboard-nav cursor so j/k continues from the selection. */
   selectedId?: string;
+  search?: string;
+  statusFilter?: string;
+  taskFilter?: string;
+  offset: number;
+  onOffsetChange: (offset: number) => void;
+  filterInputRef: RefObject<HTMLInputElement | null>;
   onSelectRun: (id: string, options?: RunListSelectOptions) => void;
   onTriggerRun: () => void;
   /** Navigates to an ad-hoc comparison over the selected run ids. */
   onCompareRuns: (ids: string[]) => void;
 }
 
-export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }: RunListProps) {
-  const filterInputRef = useRef<HTMLInputElement>(null);
-  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
-    initialFilters: { status: FILTER_ALL, task: FILTER_ALL },
-  });
-
+export function RunList({
+  selectedId,
+  search,
+  statusFilter,
+  taskFilter,
+  offset,
+  onOffsetChange,
+  filterInputRef,
+  onSelectRun,
+  onTriggerRun,
+  onCompareRuns,
+}: RunListProps) {
   // Run-selection state for multi-run compare. Selection is transient —
   // scoped to this mount of the RunList. Leaving the list (navigating to a
   // run detail, the comparison view, etc.) unmounts the component and wipes
@@ -283,28 +352,12 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
     return map;
   }, [tasksData]);
 
-  const taskFilterOptions = useMemo(() => {
-    const opts = [{ value: FILTER_ALL, label: 'All tasks' }];
-    for (const task of tasksData?.tasks ?? []) {
-      opts.push({ value: task.name, label: task.displayName });
-    }
-    return opts;
-  }, [tasksData]);
-
-  const filters: FilterDefinition[] = useMemo(() => [
-    { key: 'status', label: 'Status', options: RUN_STATUS_OPTIONS },
-    { key: 'task', label: 'Task', options: taskFilterOptions },
-  ], [taskFilterOptions]);
-
-  const activeStatus = activeFilter('status');
-  const activeTask = activeFilter('task');
-
   const { data, isLoading, isError, error } = useAgentRuns({
     limit: DEFAULT_PAGE_SIZE,
     offset,
-    search: debouncedSearch,
-    status: activeStatus,
-    task: activeTask,
+    search,
+    status: statusFilter,
+    task: taskFilter,
   });
 
   const runs = data?.runs ?? [];
@@ -359,23 +412,10 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
     </div>
   );
 
-  const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Search runs..."
-      searchValue={searchInput}
-      onSearchChange={handleSearchChange}
-      filters={filters}
-      filterValues={filterValues}
-      onFilterChange={handleFilterChange}
-      inputRef={filterInputRef}
-    />
-  );
-
   if (isError) {
     return (
       <div className="p-4 space-y-4">
         {totalsHeader}
-        {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
           <span className="font-sans text-sm">Failed to load runs</span>
@@ -390,7 +430,6 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
   return (
     <div className="p-4 space-y-4">
       {totalsHeader}
-      {toolbar}
 
       {isLoading ? (
         <div className="rounded-md bg-surface-container-low overflow-hidden">
@@ -401,15 +440,15 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
           <Bot className="h-10 w-10 opacity-30" />
           <div className="text-center font-sans">
             <p className="text-sm">
-              {total === 0 && !debouncedSearch && !activeStatus && !activeTask
+              {total === 0 && !search && !statusFilter && !taskFilter
                 ? 'No agent runs yet'
                 : 'No matching runs'}
             </p>
-            {total === 0 && !debouncedSearch && !activeStatus && !activeTask && (
+            {total === 0 && !search && !statusFilter && !taskFilter && (
               <p className="text-xs mt-1">Trigger the first run to see the agent at work</p>
             )}
           </div>
-          {total === 0 && !debouncedSearch && !activeStatus && !activeTask && (
+          {total === 0 && !search && !statusFilter && !taskFilter && (
             <Button variant="outline" size="sm" className="gap-2 mt-2" onClick={onTriggerRun}>
               <Play className="h-3.5 w-3.5" />
               Run Now
@@ -473,7 +512,7 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
         total={total}
         offset={offset}
         limit={DEFAULT_PAGE_SIZE}
-        onPageChange={setOffset}
+        onPageChange={onOffsetChange}
       />
 
       <CompareBar

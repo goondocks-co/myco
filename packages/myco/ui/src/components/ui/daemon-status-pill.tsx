@@ -1,5 +1,7 @@
+import { Link } from 'react-router-dom';
 import { StatusDot } from './status-dot';
 import { useDaemon } from '../../hooks/use-daemon';
+import { useUpdateStatus } from '../../hooks/use-update-status';
 import { cn } from '../../lib/cn';
 
 export function formatUptime(seconds: number): string {
@@ -18,20 +20,32 @@ export function formatUptime(seconds: number): string {
 export interface DaemonStatusPillViewProps {
   uptimeSeconds: number | undefined;
   version?: string;
+  updateAvailable?: boolean;
+  latestVersion?: string;
+  to?: string;
   className?: string;
 }
 
-export function DaemonStatusPillView({ uptimeSeconds, version, className }: DaemonStatusPillViewProps) {
-  return (
-    <div
-      className={cn(
-        'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1',
-        className,
-      )}
-      title={version ? `Daemon uptime · ${version}` : 'Daemon uptime'}
-      aria-live="polite"
-    >
-      <StatusDot tone="sage" />
+function formatVersionLabel(version: string): string {
+  return version.startsWith('v') ? version : `v${version}`;
+}
+
+export function DaemonStatusPillView({
+  uptimeSeconds,
+  version,
+  updateAvailable = false,
+  latestVersion,
+  to,
+  className,
+}: DaemonStatusPillViewProps) {
+  const title = updateAvailable && latestVersion
+    ? `Daemon uptime · update available: ${formatVersionLabel(latestVersion)}`
+    : version
+      ? `Daemon uptime · ${formatVersionLabel(version)}`
+      : 'Daemon uptime';
+  const content = (
+    <>
+      <StatusDot tone={updateAvailable ? 'ochre' : 'sage'} pulse={updateAvailable} />
       <span className="font-sans text-[10px] uppercase tracking-wider text-on-surface-variant">daemon</span>
       <span className="font-mono text-xs text-on-surface">
         {uptimeSeconds !== undefined ? formatUptime(uptimeSeconds) : '—'}
@@ -39,19 +53,56 @@ export function DaemonStatusPillView({ uptimeSeconds, version, className }: Daem
       {version && (
         <>
           <span aria-hidden className="text-on-surface-variant">·</span>
-          <span className="font-mono text-xs text-on-surface-variant">v{version}</span>
+          <span className="font-mono text-xs text-on-surface-variant">{formatVersionLabel(version)}</span>
         </>
       )}
+    </>
+  );
+
+  const classes = cn(
+    'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 no-underline',
+    to && 'hover:bg-surface-container-high transition-colors',
+    className,
+  );
+
+  return to ? (
+    <Link
+      to={to}
+      className={classes}
+      title={`${title}. Open update settings.`}
+      aria-live="polite"
+    >
+      {content}
+    </Link>
+  ) : (
+    <div
+      className={cn(
+        'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1',
+        className,
+      )}
+      title={title}
+      aria-live="polite"
+    >
+      {content}
     </div>
   );
 }
 
-export function DaemonStatusPill({ className }: { className?: string }) {
+export function DaemonStatusPill({ to, className }: { to?: string; className?: string }) {
   const { data } = useDaemon();
+  const updateStatus = useUpdateStatus();
+  const updateAvailable = Boolean(
+    updateStatus.data
+    && !updateStatus.data.exempt
+    && (updateStatus.data.update_available || updateStatus.data.revert_available),
+  );
   return (
     <DaemonStatusPillView
       uptimeSeconds={data?.daemon.uptime_seconds}
-      version={data?.daemon.version}
+      version={data?.daemon.version_label ?? data?.daemon.version}
+      updateAvailable={updateAvailable}
+      latestVersion={updateStatus.data?.latest_version}
+      to={to}
       className={className}
     />
   );
