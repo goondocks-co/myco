@@ -46,13 +46,23 @@ describe('manifestHasCapability', () => {
 });
 
 describe('symbiontHasCapability', () => {
-  it('claude-code and codex have preToolUseInjection enabled', () => {
-    expect(symbiontHasCapability('claude-code', 'preToolUseInjection')).toBe(true);
-    expect(symbiontHasCapability('codex', 'preToolUseInjection')).toBe(true);
+  it('symbionts with a documented PreToolUse injection surface have it enabled', () => {
+    // Each of these manifests declares `preToolUseInjection: true` AND
+    // `canopyReadTools` — the daemon needs both to activate Canopy
+    // injection per-tool. The list grows as new symbionts gain
+    // PreToolUse contracts (Copilot joined when its 13-event hook
+    // surface was wired; see copilot.yaml capabilities block).
+    for (const name of ['claude-code', 'codex', 'copilot']) {
+      expect(symbiontHasCapability(name, 'preToolUseInjection')).toBe(true);
+    }
   });
 
   it('symbionts without a PreToolUse hook surface default to false', () => {
-    for (const name of ['cursor', 'gemini', 'windsurf', 'vscode-copilot']) {
+    // Copilot moved into the preToolUseInjection cohort once we wired
+    // its full hook surface and declared its path-bearing tools — see
+    // copilot.yaml `capabilities`. The agents below remain false until
+    // their own hook contracts gain an equivalent pre-call injection.
+    for (const name of ['cursor', 'antigravity', 'windsurf']) {
       expect(symbiontHasCapability(name, 'preToolUseInjection')).toBe(false);
     }
   });

@@ -30,6 +30,9 @@ let fetchJsonImpl: FetchImpl = () => new Promise(() => {});
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: (path: string) => fetchJsonImpl(path),
   postJson: async () => ({}),
+  putJson: async () => ({}),
+  patchJson: async () => ({}),
+  deleteJson: async () => ({}),
   ApiError: class extends Error {},
 }));
 

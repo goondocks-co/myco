@@ -1,11 +1,10 @@
 import {
   loadProjectManifest,
-  saveProjectLocalManifest,
-  saveProjectManifest,
   type ProjectManifest,
 } from '../config/project-manifest.js';
 import { loadGroveRecord } from './registry.js';
 import { pathsEquivalent, resolveMycoHome, resolveProjectVaultDir } from './paths.js';
+import { ProjectVault } from '../vault/project-vault.js';
 import {
   activationMarkerPath,
   readActivationMarker,
@@ -183,9 +182,15 @@ function resolveAfterRepair(
         ...(groveRecord ? { name: groveRecord.name } : {}),
       },
     };
-    saveProjectManifest(vaultDir, restored);
-    saveProjectLocalManifest(vaultDir, {
-      grove_binding: { binding_id: marker.grove_binding_id, mode: 'local' },
+    // Repair path: write both the portable manifest and the per-machine
+    // binding atomically via ProjectVault. Preserves the marker's
+    // existing binding_id (do NOT mint a new one — the marker's id is
+    // the canonical record we're recovering from).
+    new ProjectVault(resolveProjectRoot(vaultDir)).writeIdentity({
+      manifest: restored,
+      localManifest: {
+        grove_binding: { binding_id: marker.grove_binding_id, mode: 'local' },
+      },
     });
     nextManifest = {
       ...restored,

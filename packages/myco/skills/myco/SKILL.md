@@ -32,9 +32,7 @@ Use the CLI tool surface below for going deeper than the automatic context injec
 
 ## Setup
 
-If the vault isn't configured, run `myco init` in the project directory for guided first-time setup.
-
-For reconfiguration, status checks, and ongoing management, use the CLI commands and tool surfaces documented below. For detailed vault health checks, see `references/vault-status.md`.
+Setup is automatic. Installing the global `myco` binary brings up the daemon and creates a default Grove; opening this project in any supported agent registers it on the first hook. For ongoing status checks and per-project overrides (portable Grove identity, dogfood binary pinning), use the dashboard's Symbionts page. For detailed vault health checks, see `references/vault-status.md`.
 
 ## CLI Tool Reference
 

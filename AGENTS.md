@@ -34,6 +34,17 @@ Myco captures project memory in a local vault and serves it back through context
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
+- License is **Apache 2.0** (relicensed from MIT on 2026-04-29). New files must carry the Apache header; do not introduce GPL- or AGPL-licensed dependencies.
+
+## Global Install Architecture
+
+Myco installs once at the per-user/global level for every symbiont; project-local files are an opt-in override, not the default.
+
+- All symbionts install at the agent's global config location (e.g. `~/.claude/settings.json`, `~/.codex/config.toml`). Per-project `.agents/` folders are no longer required.
+- Two global launchers — `~/.myco/launcher.cjs` (hooks) and `~/.myco/mcp-launcher.cjs` (MCP) — bridge every agent to the daemon. Project-local launchers override per-project when present.
+- Settings-merge for shared agent config files is required: Myco's hook/MCP/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) must be preserved across install/uninstall cycles. Use audit-tracked TOML writes for Codex; atomic writes for every other agent.
+- Per-project overrides live in the dashboard's **Symbionts** page, not in CLI flags or hand-edited config.
+- Capture buffer lives under `~/.myco/buffer/<grove>/`. Do not reintroduce `.agents/myco-buffer/`; the migration walker archives any residue.
 
 ## Actors and Boundaries
 
@@ -68,9 +79,30 @@ Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of pr
 - One global daemon serves many Groves, and each Grove owns its own SQLite DB. Do not assume the daemon is single-project. Code that opens a database must resolve the path through the request context, not from `vaultDir` alone.
 - Reads must pass a `ProjectScope` (the discriminated union over Grove/project tenancy). API handlers, query helpers, and tools take `ProjectScope` so the right database, project_id, and machine_id are bound for the call.
 - Config is a three-tier scoped system: **machine** (`~/.myco/config.yaml`), **grove** (`~/.myco/groves/<id>/config.yaml`), **project** (`<project>/.myco/myco.yaml`), and **personal** (`<project>/.myco/local.yaml`) overlays merge in that order. Use the `safe-config-updates` skill when adding a new configurable field — it covers scope assignment, Zod schema extension, and the `ScopedField` UI wiring.
-- `myco init` is a precondition for any vault operation. Do not silently bootstrap a vault from cwd in new code paths; require explicit init and surface a clear error otherwise. Bootstrap-from-cwd in `daemon/main.ts` is a transitional concept (see `bootstrapVaultDir`).
+- Project registration is automatic on first agent hook. The default Grove for the daemon's variant is ensured by `runGlobalBootstrap()` at first start; hooks fired from a git project then call `ensureProjectRegistered()` which auto-registers the project into the default Grove. New code paths must not silently materialize a project-local vault from cwd — registration goes through `isSafeProjectRoot()` (git-repo gate) and never invents a project from a bare cwd. Project-local commit (writing `<projectRoot>/.myco/project.toml` for portable Grove identity, plus optional launcher/binary overrides) is UI-driven through the dashboard's Symbionts page. The `myco init` CLI command — both bare and `--project` forms — is removed; the CLI is install/diagnostic/uninstall only.
+- Shared state goes through capabilities — see [Capabilities](#capabilities-single-writers-for-shared-state) below. `daemon.json`, `<projectRoot>/.myco/`, `myco.yaml`, and symbiont agent config each have exactly one sanctioned writer; bypassing produces silent drift.
+- Variant-aware rebind is strict. `MYCO_SERVICE_VARIANT=service-dev` daemons bind only to Groves with `served_by="service-dev"`; `MYCO_SERVICE_VARIANT=service` daemons bind only to `served_by="service"`. No fall-through; do not add a default-Grove escape hatch.
 - Power state is per-project. Scheduled work iterates Grove scopes; do not collapse multiple projects into one power loop or assume a single PowerManager owns all projects.
 - After changing daemon code, run `make build` and then `myco-dev restart`. Restart is per-machine (one daemon serves all Groves), not per-project.
+
+## Capabilities (single writers for shared state)
+
+Every shared resource below has exactly one sanctioned writer. Adding a second entry point that bypasses the capability is Myco's dominant historical bug class — silent drift between writers produced repeated bugs in gitignore coverage, missing companion files, and schema bypass. When the resource you're writing appears here, route through its capability. MUST NOT call the lower-level primitives directly from new code.
+
+| Resource | Capability |
+|---|---|
+| `~/.myco/service/daemon.json` | `DaemonStateAuthority` (`packages/myco/src/daemon/daemon-state-authority.ts`) — logs reason, caller PID, before/after PID for every change. |
+| `<projectRoot>/.myco/` + `<projectRoot>/.agents/myco-*.cjs` | `ProjectVault` (`packages/myco/src/vault/project-vault.ts`) — pairs every manifest write with `project.local.toml` + `.gitignore`; refuses cross-identity overwrites; sweeps retired launchers on remove. |
+| `myco.yaml` (every tier) | `updateConfig()` / `saveConfig()` (`packages/myco/src/config/loader.ts`) — runs Zod validation; see also the `safe-config-updates` skill. |
+| Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries, and per-agent skill symlinks. |
+
+**Meta-rule (single writers).** When new shared state emerges — a file written by more than one caller, an invariant maintained by convention across helpers, a multi-file coordination contract — add a capability that owns it BEFORE adding the second writer. Discipline-by-convention is a bug class, not an architecture. Every row in the table above started as duplication-by-discipline that produced regressions until the capability was added.
+
+**Meta-rule (structural invariants).** A capability is not done when it compiles; it is done when there is no callable sequence that can violate its invariants. Invariants encoded as *procedure* (call A, then B, then C in this order) are fragile — an exception in B can skip C, an empty input can skip the loop, a future maintainer can reorder the body. Encode invariants *structurally*:
+- Wrap per-state-class writes in a helper that runs the invariant guard FIRST (e.g. `_writePerMachineFile(fn)` calls `_ensureGitignore()` before invoking `fn`).
+- Compute responses from a FRESH read of the resource, not by piggy-backing the response on the last write's return value (an empty batch must still return the live state).
+- When refactoring a function that had defensive try/catch or validation, audit each removed line for the question *"what input or filesystem state was this defending against?"* — the answer is almost always load-bearing, not cleanup.
+- Pin externally observable behavior with contract-diff regression tests: every (input → status, error code, response shape) tuple the old code honored must survive the refactor. Happy-path tests catch zero of these regressions.
 
 ## Working Style
 

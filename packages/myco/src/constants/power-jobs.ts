@@ -14,6 +14,12 @@ export const POWER_JOB_NAMES = {
   CANOPY_BACKGROUND_SCAN: 'canopy-background-scan',
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance-reconcile',
   SELF_RECONCILE: 'self-reconcile',
+  /**
+   * Periodic re-detection of installed coding agents. Walks the manifest
+   * registry, checks each `detectionDir`, and installs Myco's global
+   * config into any newly-detected agent. Idempotent.
+   */
+  SYMBIONT_DETECTION: 'symbiont-detection',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

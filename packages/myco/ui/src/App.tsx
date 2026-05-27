@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Sessions from './pages/Sessions';
 import Cortex from './pages/Cortex';
 import Mycelium from './pages/Mycelium';
+import Symbionts from './pages/Symbionts';
 import Agent from './pages/Agent';
 import Skills from './pages/Skills';
 import Settings from './pages/Settings';
@@ -33,6 +34,7 @@ export default function App() {
       <Route element={<GlobalSelectionBoundary><Layout /></GlobalSelectionBoundary>}>
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/groves" element={<Groves />} />
+        <Route path="/symbionts" element={<Symbionts />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/machine" element={<MachineDashboard />} />
         {/* Unified Settings page owns /settings. The wrapper binds a

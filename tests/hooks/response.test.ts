@@ -111,6 +111,38 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
+  describe('subagent-start envelope is capability-driven', () => {
+    it('Claude Code emits SubagentStart context in hookSpecificOutput JSON', () => {
+      writeHookResponse('claude-code', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStart',
+          additionalContext: 'myco primer',
+        },
+      });
+    });
+
+    it('Codex emits SubagentStart context in hookSpecificOutput JSON', () => {
+      writeHookResponse('codex', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStart',
+          additionalContext: 'myco primer',
+        },
+      });
+    });
+
+    it('Copilot emits subagent additionalContext at the top level', () => {
+      writeHookResponse('copilot', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({ additionalContext: 'myco primer' });
+    });
+
+    it('unsupported symbionts do not get the SubagentStart envelope', () => {
+      writeHookResponse('cursor', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(captured).toBe('');
+    });
+  });
+
   describe('unknown symbiont', () => {
     it('falls back to the plain-text default rather than crashing', () => {
       writeHookResponse('some-hypothetical-agent', 'stop', { additionalContext: 'ok' });
@@ -120,6 +152,63 @@ describe('writeHookResponse (manifest-driven)', () => {
     it('handles an undefined symbiont too (no crash, plain-text)', () => {
       writeHookResponse(undefined, 'stop');
       expect(captured).toBe('');
+    });
+  });
+
+  describe('antigravity inject-steps response', () => {
+    it('renders multiple additionalSteps as separate injectSteps entries', () => {
+      writeHookResponse('antigravity', 'session-start', {
+        additionalSteps: ['<cortex>cortex text</cortex>', '<spores>spore text</spores>'],
+      });
+      const parsed = JSON.parse(captured) as { injectSteps: Array<{ userMessage: string }> };
+      expect(parsed.injectSteps).toHaveLength(2);
+      expect(parsed.injectSteps[0].userMessage).toBe('<cortex>cortex text</cortex>');
+      expect(parsed.injectSteps[1].userMessage).toBe('<spores>spore text</spores>');
+    });
+
+    it('drops empty entries from additionalSteps so an empty cortex+full spores yields ONE step', () => {
+      writeHookResponse('antigravity', 'session-start', {
+        additionalSteps: ['', 'spore text only'],
+      });
+      const parsed = JSON.parse(captured) as { injectSteps: Array<{ userMessage: string }> };
+      expect(parsed.injectSteps).toHaveLength(1);
+      expect(parsed.injectSteps[0].userMessage).toBe('spore text only');
+    });
+
+    it('falls back to legacy additionalContext as one injectStep when additionalSteps is absent', () => {
+      writeHookResponse('antigravity', 'session-start', { additionalContext: 'just one block' });
+      const parsed = JSON.parse(captured) as { injectSteps: Array<{ userMessage: string }> };
+      expect(parsed.injectSteps).toHaveLength(1);
+      expect(parsed.injectSteps[0].userMessage).toBe('just one block');
+    });
+
+    it('emits `{}` when there is nothing to inject', () => {
+      writeHookResponse('antigravity', 'session-start', {});
+      expect(captured).toBe('{}');
+    });
+
+    it('emits `{}` when additionalSteps is empty after filtering', () => {
+      writeHookResponse('antigravity', 'session-start', { additionalSteps: ['', ''] });
+      expect(captured).toBe('{}');
+    });
+
+    it('Stop is unaffected — still returns the decision envelope', () => {
+      writeHookResponse('antigravity', 'stop', { additionalSteps: ['ignored', 'for stop'] });
+      expect(JSON.parse(captured)).toEqual({ decision: 'allow' });
+    });
+  });
+
+  describe('plain-text additionalSteps fallback', () => {
+    it('joins additionalSteps with a blank line for plain-text symbionts', () => {
+      writeHookResponse('claude-code', 'user-prompt-submit', {
+        additionalSteps: ['block one', 'block two'],
+      });
+      expect(captured).toBe('block one\n\nblock two');
+    });
+
+    it('falls back to additionalContext when additionalSteps is empty', () => {
+      writeHookResponse('claude-code', 'user-prompt-submit', { additionalContext: 'legacy block' });
+      expect(captured).toBe('legacy block');
     });
   });
 });

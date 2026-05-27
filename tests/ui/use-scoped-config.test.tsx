@@ -19,6 +19,9 @@ const fetchJsonMock = vi.fn();
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   writeScopedConfig: (...args: unknown[]) => writeScopedConfigMock(...args),
   putJson: (...args: unknown[]) => putJsonMock(...args),
+  patchJson: vi.fn(),
+  postJson: vi.fn(),
+  deleteJson: vi.fn(),
   clearLocalConfigKeys: (...args: unknown[]) => clearLocalConfigKeysMock(...args),
   fetchJson: (...args: unknown[]) => fetchJsonMock(...args),
   fetchMergedConfig: () => Promise.resolve({}),

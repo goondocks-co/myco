@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { Row } from '../ui/row';
@@ -140,6 +140,7 @@ export interface SessionListProps {
   /** Active filter values from the page-level filter bar (undefined = all). */
   statusFilter?: string;
   agentFilter?: string;
+  hasPlanFilter?: boolean;
   /** Pagination state (owned by the page so it resets when filters change). */
   offset: number;
   onOffsetChange: (offset: number) => void;
@@ -153,11 +154,13 @@ export function SessionList({
   search,
   statusFilter,
   agentFilter,
+  hasPlanFilter,
   offset,
   onOffsetChange,
   filterInputRef,
 }: SessionListProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
@@ -182,6 +185,7 @@ export function SessionList({
     offset,
     status: statusFilter,
     agent: agentFilter,
+    hasPlan: hasPlanFilter,
     search,
   });
 
@@ -204,11 +208,22 @@ export function SessionList({
   const didAutoSelect = useRef(false);
   useEffect(() => {
     if (didAutoSelect.current) return;
+    // Skip auto-select when a deep-link has applied a SPECIFIC filter
+    // we know about (status / agent / has_plan). Jumping to the first
+    // session would unmount the route and lose the filter on remount.
+    // Important: only latch `didAutoSelect` when an auto-select
+    // actually fires — skipping here without latching keeps the
+    // effect alive so that clearing the filters in the same mount
+    // (via the dropdowns) restores auto-select on the next render.
+    const params = new URLSearchParams(location.search);
+    const hasDeepLinkFilter =
+      params.has('status') || params.has('agent') || params.has('has_plan');
+    if (hasDeepLinkFilter) return;
     if (!selectedId && !isLoading && sessions.length > 0) {
       didAutoSelect.current = true;
       navigate(`/sessions/${sessions[0].id}`, { replace: true });
     }
-  }, [selectedId, isLoading, sessions, navigate]);
+  }, [selectedId, isLoading, sessions, navigate, location.search]);
 
   const nav = useListKeyboardNav({
     items: sessions,

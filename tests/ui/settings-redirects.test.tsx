@@ -230,6 +230,7 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
   }),
   postJson: vi.fn().mockResolvedValue({}),
   putJson: vi.fn().mockResolvedValue({}),
+  patchJson: vi.fn().mockResolvedValue({}),
   deleteJson: vi.fn().mockResolvedValue({}),
   fetchMergedConfig: vi.fn().mockResolvedValue({}),
   fetchLocalConfig: vi.fn().mockResolvedValue({}),

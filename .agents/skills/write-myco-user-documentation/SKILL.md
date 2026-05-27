@@ -1,14 +1,6 @@
 ---
 name: myco:write-myco-user-documentation
-description: |
-  Use this skill when writing, reviewing, or editing user-facing Myco documentation
-  — README sections, feature docs, onboarding guides, CLI reference pages, or any
-  content intended for people who *use* Myco (not people who build it). Activate
-  this skill even if the user doesn't explicitly ask for a documentation review —
-  if you're finishing a feature implementation and documentation is the next step,
-  invoke this skill before writing or committing any docs. This skill enforces the
-  Myco doc-voice contract: capability-first language, zero internal mechanics leakage,
-  and user-vocabulary only.
+description: "Use this skill when writing, reviewing, or editing user-facing Myco documentation — README sections, feature docs, onboarding guides, CLI reference pages, or any content intended for people who use Myco (not people who build it). Activate this skill even if the user doesn't explicitly ask for a documentation review — if you're finishing a feature implementation and documentation is the next step, invoke this skill before writing or committing any docs. This skill enforces the Myco doc-voice contract: capability-first language, zero internal mechanics leakage, and user-vocabulary only."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -109,7 +101,24 @@ Document skill discovery and layout patterns that users encounter:
     that allow agents to discover and load them automatically."
 ```
 
-### 7. Document CLI help and command patterns
+### 7. Document Three-Surface Rule for user-facing content
+
+Myco documentation is consumed across three surfaces: code comments, CLI help, and narrative docs. Apply consistent capability-first voice across all three:
+
+- **Code comments** (for future maintainers): Explain *what* capability the code provides and *why* it was designed this way.
+- **CLI help text** (for interactive users): Answer "what does this command do right now?" in present tense.
+- **Narrative docs** (for onboarding): Walk users through capability with examples and preconditions.
+
+The voice contract applies equally across all three surfaces. When documenting a feature:
+```
+✅ Code comment: "Validates that vault contains required spore indices for query optimization"
+✅ CLI help: "Search the vault by spore type and text content"
+✅ Narrative doc: "Run `myco search spore discovery` to find recent discoveries about the codebase"
+```
+
+Never leak implementation detail in any surface. All three should be readable by users who don't understand the system architecture.
+
+### 8. Document CLI help and command patterns
 
 When writing CLI help text or documenting command usage, follow consistent patterns that match user expectations:
 
@@ -125,7 +134,7 @@ Document auto-completion and discovery features:
     Run `myco --help` to see all available commands."
 ```
 
-### 8. Ensure legal/IP clarity in public messaging
+### 9. Ensure legal/IP clarity in public messaging
 
 When writing public-facing content that references Myco's relationship to other tools or projects, be precise about intellectual property boundaries:
 
@@ -143,7 +152,7 @@ If mentioning predecessor tools is necessary for context, frame it as user migra
 ✅ "Users migrating from OAK can import their activity history with `myco migrate`"
 ```
 
-### 9. Apply the voice checklist
+### 10. Apply the voice checklist
 
 After drafting, read each paragraph through this gate:
 
@@ -155,7 +164,7 @@ After drafting, read each paragraph through this gate:
 | Could a user act on this information directly? | ✅ | Consider removing |
 | Are any IP/legal claims clear and accurate? | ✅ | Clarify relationships and boundaries |
 
-### 10. Add docs to the PR as the final step
+### 11. Add docs to the PR as the final step
 
 Documentation is a merge gate, not a mid-implementation artifact. Write docs after implementation is complete and review them with fresh eyes — ideally after stepping away from the implementation context.
 

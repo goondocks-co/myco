@@ -74,6 +74,37 @@ import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import type { SessionRegistry } from './lifecycle.js';
 
+/**
+ * Tags identifying which code path invoked one of the session-ensure
+ * helpers. Surfaced in WARN logs so post-mortems can tell which
+ * upstream handler missed its responsibility. Magic-string unions
+ * have repeatedly drifted in this codebase — keeping the canonical
+ * list here behind a typed constant matches the same discipline as
+ * `BATCH_KIND` / `PROMPT_BATCH_ORIGIN` / `CANDIDATE_STATUS`.
+ */
+export const ENSURE_SESSION_SOURCE = {
+  /** Upstream `/events/user_prompt` route or its dispatcher branch. */
+  USER_PROMPT: 'user_prompt',
+  /** Stop hook processing. */
+  STOP: 'stop',
+  /** SessionStart hook (or symbiont-equivalent). */
+  SESSION_START: 'session_start',
+  /** Activity insert / tool_use event. */
+  TOOL_USE: 'tool_use',
+  /** Catch-all for synthetic activity rows (e.g. injections). */
+  ACTIVITY: 'activity',
+  /** Batch insert. */
+  BATCH: 'batch',
+  /** Manual API call (e.g. `/api/sessions/:id/complete`). */
+  API: 'api',
+  /** Backfill / migration code paths. */
+  BACKFILL: 'backfill',
+  /** `/context` cortex serve path (race against `/sessions/register`). */
+  CONTEXT: 'context',
+} as const;
+
+export type EnsureSessionSource = (typeof ENSURE_SESSION_SOURCE)[keyof typeof ENSURE_SESSION_SOURCE];
+
 export interface EnsureSessionParams {
   sessionId: string;
   agent: string;
@@ -84,12 +115,8 @@ export interface EnsureSessionParams {
   startedAt?: string;
   registry: SessionRegistry;
   logger: Logger;
-  /**
-   * Tag identifying which code path invoked this — included in logs so
-   * post-mortem analysis can tell whether the session was first seen via
-   * a Prompt, a Stop, a session-start hook, or a manual API call.
-   */
-  source: 'user_prompt' | 'stop' | 'session_start' | 'tool_use' | 'api' | 'backfill';
+  /** Code path that invoked this — see {@link ENSURE_SESSION_SOURCE}. */
+  source: EnsureSessionSource;
 }
 
 /**
@@ -148,7 +175,8 @@ export interface EnsureSessionRowExistsParams {
    * in the WARN log so post-mortems can tell which upstream handler missed
    * its responsibility.
    */
-  source: 'user_prompt' | 'tool_use' | 'activity' | 'batch';
+  /** Code path that invoked this — see {@link ENSURE_SESSION_SOURCE}. */
+  source: EnsureSessionSource;
 }
 
 /**

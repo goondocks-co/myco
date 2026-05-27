@@ -149,6 +149,15 @@ describe('tool request context', () => {
     });
   });
 
+  // Timeout bumped from the bun default (5s) to 15s — the test does
+  // 4+ filesystem writes via `withRegisteredProject` (createGrove,
+  // saveProjectManifest, registerProjectInGrove, project.toml,
+  // mkdtempSync) AND a fallback resolve that walks `listGroves`.
+  // In isolation it completes in well under a second; under load in
+  // the shared `tests-tools` bundle on macOS APFS the parallel
+  // mkdtemp/rmSync traffic intermittently pushes it past 5s. The
+  // workload is real IO, not a logic hang, so widening the budget
+  // is the correct fix.
   it('falls back to the daemon vault manifest when no context headers are present', () => {
     withRegisteredProject(({ projectRoot, vaultDir, projectId }) => {
       const resolved = requestContextFromHttpHeaders({}, vaultDir);
@@ -156,7 +165,7 @@ describe('tool request context', () => {
       expect(resolved.projectRoot).toBe(projectRoot);
       expect(resolved.projectId).toBe(projectId);
     });
-  });
+  }, 15000);
 
   it('throws when neither headers nor a Grove manifest provide a project id', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-no-grove-'));

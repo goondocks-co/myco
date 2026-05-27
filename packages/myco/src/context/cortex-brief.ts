@@ -338,7 +338,10 @@ export async function buildCortexInstructionsInput(
   }
   const projectId = requestContext.projectId;
   const scope = projectScopeFromRequestContext(requestContext);
-  const machineId = getMachineId(vaultDir);
+  // Request context carries the machine id when the caller knows it
+  // (tests, /sessions/register paths, MCP requests). Fall back to the
+  // global cache so non-request-driven call sites still resolve.
+  const machineId = requestContext.machineId ?? getMachineId();
   const mapRow = readCanopyMap(projectId, machineId);
   const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
 
@@ -396,7 +399,8 @@ export async function buildCortexInstructionsInput(
     `- ${RETIRED_TOOLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
-    '- Include one delegation sentence: before delegating work to another agent, subagent, teammate, worker session, or other spawned process, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Include the CLI fallback `node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"instructions"}\'` for hosts without MCP. Do not assume the returned instructions have any particular heading or section name.',
+    '- In the planning paragraph, teach `myco_cortex` op `"digest"` as the explicit, optional high-fidelity memory pull for large refactors, large features, broad planning, or unfamiliar cross-system changes. Recommend `myco_cortex({"op":"digest","tier":5000})` by default, and tier 10000 only when the agent has enough context budget and needs deeper historical background. Say not to pull the digest for narrow edits.',
+    '- Include one delegation sentence: when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt, and Myco has not already injected subagent-start Cortex context, tell the agent to refresh the current project instructions with `myco_cortex({"op":"instructions"})` and include the returned instructions verbatim in that agent\'s prompt, along with task-specific instructions. Include the CLI fallback `node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"instructions"}\'` for hosts without MCP. Do not assume the returned instructions have any particular heading or section name.',
     // The recent-plans section is background context, not a task list for
     // the incoming session. The session is launching to do something else;
     // these plans tell the agent what shape of work the project has on file
@@ -414,7 +418,7 @@ export async function buildCortexInstructionsInput(
     // is missing or empty, this directive is omitted entirely and the
     // session-start instructions stay silent about Canopy map retrieval.
     instructionParts.push(
-      '- Teach `myco_cortex` op `"canopy_map"` as the default first move when the task needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. Invoke it as `myco_cortex({"op":"canopy_map"})` via MCP (one call, the host\'s native tool surface). The map is built from real per-file descriptions (project-curated, not LLM guesses) and typically replaces a chain of Glob/Read calls before the agent has any layout signal. Frame it as a default first move, never as a condition the agent self-evaluates ("when you need to explore unfamiliar code" leaks the decision back to the agent and is precisely what causes the tool to be skipped). Do not list a CLI fallback alongside the MCP form in this paragraph — the dual-form phrasing reads as two redundant steps and causes the directive to be ignored. Do not enumerate other `myco_cortex` ops in this paragraph: `op:"canopy_entry"` belongs with `myco_search` as a follow-up to a canopy result, and `op:"digest"` overlaps with canopy_map for orientation and can be omitted entirely. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
+      '- Teach `myco_cortex` op `"canopy_map"` as the default first move when the task needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. Invoke it as `myco_cortex({"op":"canopy_map"})` via MCP (one call, the host\'s native tool surface). The map is built from real per-file descriptions (project-curated, not LLM guesses) and typically replaces a chain of Glob/Read calls before the agent has any layout signal. Frame it as a default first move, never as a condition the agent self-evaluates ("when you need to explore unfamiliar code" leaks the decision back to the agent and is precisely what causes the tool to be skipped). Do not list a CLI fallback alongside the MCP form in this paragraph — the dual-form phrasing reads as two redundant steps and causes the directive to be ignored. Do not enumerate other `myco_cortex` ops in this paragraph: `op:"canopy_entry"` belongs with `myco_search` as a follow-up to a canopy result, and `op:"digest"` belongs with planning-context guidance for large work. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
     );
   }
 

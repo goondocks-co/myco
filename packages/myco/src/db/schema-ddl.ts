@@ -651,6 +651,42 @@ export const MIGRATION_IMPORT_JOURNAL_TABLE = `
     UNIQUE (migration_id, target_grove_id, target_project_id, target_table, target_id)
   )`;
 
+/**
+ * Bounded audit log for the global-install migration walker.
+ *
+ * The walker visits every registered project on version-drift and during
+ * the periodic detection tick to remove legacy per-project install
+ * artifacts (`.agents/myco-run.cjs`, marker-bounded blocks in each
+ * agent's project config). To keep this table small in steady state, we
+ * only persist what matters for diagnostics:
+ *
+ *   - `kind = 'pass-summary'`: one row per walker pass with aggregate
+ *     counts in `details`. Older summaries are pruned so the table
+ *     holds at most one summary row per Grove DB.
+ *   - `kind = 'error'`: one row per project that failed; retained for
+ *     `myco doctor` to surface.
+ *
+ * Successful cleanups are never persisted — their absence is the
+ * "everything ok" signal. The complete pass history would otherwise
+ * accumulate one row per registered project per release, which is the
+ * exact bloat that motivated keeping this table bounded by design.
+ */
+// `affected_project_id` (not `project_id`) on purpose — this audit log is
+// daemon-level and walks projects across every Grove, so it isn't
+// project-scope-filtered the way capture tables are. The
+// GROVE_PROJECT_SCOPED_TABLES drift check insists that any `project_id`
+// column belong to that registry, which we deliberately opt out of here.
+export const MIGRATION_LOG_TABLE = `
+  CREATE TABLE IF NOT EXISTS migration_log (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    pass_id              TEXT    NOT NULL,
+    recorded_at          INTEGER NOT NULL,
+    kind                 TEXT    NOT NULL CHECK (kind IN ('pass-summary', 'error')),
+    affected_project_id  TEXT,
+    project_root         TEXT,
+    details              TEXT    NOT NULL
+  )`;
+
 export const CANOPY_ENTRIES_TABLE = `
   CREATE TABLE IF NOT EXISTS canopy_entries (
     project_id             TEXT    NOT NULL,
@@ -1062,6 +1098,7 @@ export const TABLE_DDLS = [
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
   MIGRATION_IMPORT_JOURNAL_TABLE,
+  MIGRATION_LOG_TABLE,
   // Canopy layer
   CANOPY_ENTRIES_TABLE,
   CANOPY_MAPS_TABLE,

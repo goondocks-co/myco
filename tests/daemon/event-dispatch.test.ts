@@ -373,7 +373,7 @@ describe('createEventDispatcher', () => {
     });
 
     it('suppresses repeated tool_use events with the same tool_input', async () => {
-      const { handler, logger, vaultDir, sessionBuffers } = makeHandler();
+      const { handler, logger, vaultDir } = makeHandler();
       const sessionId = 'dedup-tool-burst-001';
       const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dedup-'));
       const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
@@ -396,8 +396,13 @@ describe('createEventDispatcher', () => {
       expect(r2.body).toEqual({ ok: true, ignored: 'duplicate' });
       expect(r3.body).toEqual({ ok: true, ignored: 'duplicate' });
 
+      // Dedup verified via response status + a single landed activity. The
+      // buffer-side assertion that used to live here required a Grove-
+      // bound request context (which TEST_REQUEST_CONTEXT lacks); under
+      // the no-fallback buffer location, dispatch skips the buffer write
+      // entirely when ctx is incomplete and the dedup short-circuit at
+      // the response layer is the canonical observable.
       expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
-      expect(sessionBuffers.get(sessionId)?.readAll().length ?? 0).toBe(1);
 
       logger.close();
       fs.rmSync(vaultDir, { recursive: true, force: true });

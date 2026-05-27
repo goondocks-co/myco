@@ -653,4 +653,100 @@ describe('createStopProcessor session capture rules', () => {
     fs.rmSync(worktreeRoot, { recursive: true, force: true });
   });
 
+  // Regression for /code-review finding C1: a Stop event declaring only
+  // `phases: ['response']` (Windsurf's post_cascade_response, no transcript)
+  // must run the response-phase side effects exactly once. A follow-up
+  // `phases: ['transcript']` event (post_cascade_response_with_transcript)
+  // must NOT re-fire setResponseSummary / closeOpenBatches / deferGitProvenance.
+  // Before the gate fix, every transcript-phase event re-ran the response
+  // block and queued a duplicate git-provenance job per turn.
+  it('two-phase split: response-only event sets response_summary; transcript-only event does not re-set it', async () => {
+    const sessionId = 'two-phase-windsurf-001';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'windsurf',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    const batch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'two-phase prompt',
+      started_at: now,
+      created_at: now,
+    });
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    // Phase 1 — response event. Sets response_summary, closes batches.
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'windsurf',
+        last_assistant_message: 'phase 1 reply',
+        phases: ['response'],
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+
+    const afterResponse = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+      .find((b) => b.id === batch.id)!;
+    expect(afterResponse.response_summary).toBe('phase 1 reply');
+
+    // Phase 2 — transcript event. last_assistant_message intentionally different
+    // (Windsurf doesn't carry response text on the with_transcript event), so if
+    // the response-side block re-fired against a different lastAssistantMessage
+    // we'd see a stale-overwrite. The `!latestBatch.response_summary` guard plus
+    // the new runResponsePhase gate together ensure the summary stays put.
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'windsurf',
+        last_assistant_message: 'phase 2 stray text (should be ignored)',
+        phases: ['transcript'],
+      },
+    } as never);
+    await stopProcessor.getActiveProcessing();
+
+    const afterTranscript = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+      .find((b) => b.id === batch.id)!;
+    expect(afterTranscript.response_summary).toBe('phase 1 reply');
+  });
+
+  // Regression for /code-review finding C5: when two Stop events arrive
+  // in quick succession, the older chain's `.finally` must NOT clobber
+  // the newer chain's `activeStopProcessing` reference.
+  it('activeStopProcessing tracks the latest chain, not the resolving one', async () => {
+    const sessionA = 'race-session-A-001';
+    const sessionB = 'race-session-B-002';
+    const now = epochNow();
+    upsertSession({ id: sessionA, agent: 'claude-code', status: 'active', started_at: now, created_at: now });
+    upsertSession({ id: sessionB, agent: 'claude-code', status: 'active', started_at: now, created_at: now });
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    // Fire two stop events back-to-back. handleStopRoute is fire-and-forget
+    // (returns { ok: true } synchronously) and chains the actual processing
+    // through activeStopProcessing.
+    await stopProcessor.handleStopRoute({
+      body: { session_id: sessionA, agent: 'claude-code', last_assistant_message: 'A' },
+    } as never);
+    await stopProcessor.handleStopRoute({
+      body: { session_id: sessionB, agent: 'claude-code', last_assistant_message: 'B' },
+    } as never);
+
+    // While the chain is still in flight, activeStopProcessing must be
+    // non-null (the new chain registered after A's chain settled would
+    // pre-fix have been clobbered to null by A's finally).
+    const inFlight = stopProcessor.getActiveProcessing();
+    expect(inFlight).not.toBeNull();
+
+    // Drain — after both chains complete, the reference should be null
+    // exactly once.
+    await stopProcessor.getActiveProcessing();
+    expect(stopProcessor.getActiveProcessing()).toBeNull();
+  });
+
 });

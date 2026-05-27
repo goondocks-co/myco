@@ -144,6 +144,7 @@ describe('handleCompleteSession', () => {
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
       reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn() },
     });
   }
 
@@ -202,6 +203,50 @@ describe('handleCompleteSession', () => {
     expect(res.status).toBe(404);
     expect((res.body as { error: string }).error).toBe('Session not found');
   });
+
+  it('handleDeleteSession ALSO clears the in-memory registry — invariant', async () => {
+    // Regression: prior to this guard, cascade-delete cleared the DB
+    // and the reconciler cache but left the in-memory registry
+    // populated. The dispatcher's auto-register-and-reconcile branch
+    // is gated on `registry.getSession(sessionId)`, so a stale
+    // registry entry caused the next event for the deleted id to
+    // skip reconcile entirely — the buffered prompts for the
+    // deleted session became orphaned forever, and the defensive
+    // `ensureSessionRowExists` materialized an empty row.
+    //
+    // The fix: cascade-delete must also call
+    // `registry.unregister(sessionId)`, mirroring the unregister
+    // path in `session-lifecycle.ts`. This test pins the contract.
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-delete-clear-registry',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+      status: 'completed',
+    });
+
+    const liveConfig = {
+      current: {
+        agent: { summary_batch_interval: 5, event_tasks_enabled: false },
+      },
+    };
+    const reconcilerStub = { clearSession: vi.fn() };
+    const registryStub = { unregister: vi.fn() };
+    const handlers = createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: liveConfig as never,
+      reconciler: reconcilerStub,
+      registry: registryStub,
+    });
+
+    await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-delete-clear-registry' } }));
+
+    expect(reconcilerStub.clearSession).toHaveBeenCalledWith('sess-delete-clear-registry');
+    expect(registryStub.unregister).toHaveBeenCalledWith('sess-delete-clear-registry');
+  });
 });
 
 describe('handleDeletePlan', () => {
@@ -228,6 +273,7 @@ describe('handleDeletePlan', () => {
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn() },
     });
   }
 
@@ -322,6 +368,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn() },
     });
   }
 

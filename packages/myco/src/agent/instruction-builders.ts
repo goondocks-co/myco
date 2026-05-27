@@ -864,7 +864,7 @@ export async function gatherCanopyMapContext(
   // Prior map lookup is keyed (project_id, machine_id). The map is per-machine
   // because token_estimate and timing reflect how *this* machine ran the
   // task — sync between machines is a separate concern.
-  const machineId = getMachineId(vaultDir);
+  const machineId = getMachineId();
   const prior = readCanopyMap(projectId, machineId);
 
   if (!forceColdStart && prior?.inputs_hash === inputsHash) {

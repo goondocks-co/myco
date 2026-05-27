@@ -25,6 +25,7 @@ import {
   Trees,
   FolderTree,
   Activity,
+  Plug,
 } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
@@ -69,6 +70,7 @@ const navItems: readonly NavItem[] = [
   { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine', category: 'Observability' },
   { to: '/g/:groveSlug/dashboard', label: 'Grove', icon: Trees, scope: 'grove', category: 'Grove management' },
   { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine', category: 'Grove management' },
+  { to: '/symbionts', label: 'Symbionts', icon: Plug, scope: 'machine', category: 'Grove management' },
   { to: '/g/:groveSlug/team', label: 'Team', icon: Users, scope: 'grove', category: 'Grove management' },
   { to: '/settings', label: 'Settings', icon: Settings, scope: 'machine', category: 'Settings' },
 ];

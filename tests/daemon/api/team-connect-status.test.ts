@@ -51,6 +51,7 @@ describe('createTeamHandlers.handleStatus', () => {
   let tempDir: string;
   let vaultDir: string;
   let originalPath: string | undefined;
+  let originalMycoHome: string | undefined;
 
   beforeAll(() => {
     setupTestDb();
@@ -59,7 +60,12 @@ describe('createTeamHandlers.handleStatus', () => {
   beforeEach(() => {
     cleanTestDb();
     originalPath = process.env.PATH;
+    originalMycoHome = process.env.MYCO_HOME;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-status-'));
+    // Sandbox MYCO_HOME so the v8 merged-config loader doesn't pick up
+    // the dev machine's Grove tier and drop the project-tier `team:` block.
+    process.env.MYCO_HOME = path.join(tempDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
     vaultDir = path.join(tempDir, 'project', '.myco');
 
     fs.mkdirSync(vaultDir, { recursive: true });
@@ -87,6 +93,8 @@ describe('createTeamHandlers.handleStatus', () => {
   afterEach(() => {
     vi.resetModules();
     process.env.PATH = originalPath;
+    if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = originalMycoHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

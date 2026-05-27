@@ -1,7 +1,6 @@
 ---
 name: myco:git-release-provenance-reconciler
-description: |
-  Implement and maintain Git-based release provenance tracking with reconciliation for squash-merge workflows. Covers Git snapshot capture, two-tier reconciliation strategy (ancestry + patch-ID matching), knowledge graph propagation, performance optimization, and privacy-aware sync design. Use this for setting up release provenance systems, troubleshooting reconciliation issues, or maintaining Git lineage tracking even if the user doesn't explicitly ask for release provenance configuration.
+description: Implement and maintain Git-based release provenance tracking with reconciliation for squash-merge workflows. Covers Git snapshot capture, two-tier reconciliation strategy (ancestry + patch-ID matching), knowledge graph propagation, performance optimization, and privacy-aware sync design. Use this for setting up release provenance systems, troubleshooting reconciliation issues, or maintaining Git lineage tracking even if the user doesn't explicitly ask for release provenance configuration.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -95,7 +94,7 @@ Implement reconciliation that handles both direct ancestry and squash-merge scen
 
 2. **Patch-ID reconciliation (medium confidence)**:
    - Build `PatchIdCache` shared across reconciliation cycle (`packages/myco/src/release-provenance/reconcile.ts`)
-   - For each release ref, collect patch-IDs via `git log --format="%H" | xargs -n1 git show`
+   - For each release ref, collect patch-IDs via `git log --format=\"%H\" | xargs -n1 git show`
    - Match captured patch-IDs against release patch-IDs
    - First match wins: cache maps patch-ID → claiming ref
    - **Trade-off**: Less precise than ancestry but handles squashed commits
@@ -197,6 +196,33 @@ Implement privacy-aware sync that keeps Git refs local while sharing classificat
    - `packages/myco-team/worker/src/search-helpers.ts` surfaces only `basis_kind` and `basis_reason`
    - Never include `basis_ref` or `basis_sha` in MCP annotations
 
+## Procedure G: GitHub Token and Machine-Scoped Configuration
+
+Implement GitHub token configuration and machine-scoped auth for release provenance.
+
+1. **Machine-scoped token design**:
+   - GitHub tokens must be stored at the **machine** scope, not grove or project scope
+   - Rationale: Avoid asking users for new tokens for every grove; one token per machine covers all projects
+   - Location: `packages/myco/src/daemon/api/provider-secrets.ts`
+   - Config location: `~/.myco/providers.toml` (machine-level)
+
+2. **Token lifecycle**:
+   ```typescript
+   // Load from machine-level config
+   const ghToken = getProviderSecret('github', 'machine');
+   // Never attempt to load per-grove or per-project tokens
+   ```
+
+3. **UI organization**:
+   - Present settings organized by **feature flow**, not implementation details
+   - Groupings: **Release Model** (preset + refs), **GitHub Evidence** (token + scope), **Reconciliation Behavior** (interval + dirty-state handling), **Monorepo** (mapping rules)
+   - Each section has its own save button; design UX holistically, not field-by-field
+   - Token input lives in "GitHub Evidence" section with credential masking
+
+4. **Settings API routes**:
+   - Verify all config routes in `packages/myco/src/daemon/main.ts` use `req.requestContext?.projectVaultDir` for project-scoped settings
+   - Do not use `bootstrapVaultDir` in handler closures (see Gotcha: Config Routes Cross-Project Bleed)
+
 ## Cross-Cutting Gotchas
 
 **Refs must be fully qualified**: Writing `main` instead of `origin/main` causes silent reconciliation failures. Always test `origin/HEAD` resolution path and write fully qualified refs.
@@ -212,3 +238,5 @@ Implement privacy-aware sync that keeps Git refs local while sharing classificat
 **Vector metadata refresh without re-embedding**: Use JSON-patch updates to preserve expensive embeddings when only metadata changes.
 
 **Self-healing orphan rows**: Rows with `synced_at IS NULL` must be treated as dirty to force them through the sync pipeline until they reach a steady state.
+
+**Config Routes Cross-Project Bleed**: Six config routes in `packages/myco/src/daemon/main.ts` (lines 910, 917–919, 992–994, 1003–1004) must use `req.requestContext?.projectVaultDir` instead of `bootstrapVaultDir`. Hard-wiring `bootstrapVaultDir` causes settings to leak across projects within the same machine. Regression test: `tests/daemon/api/config.test.ts` (PR #280).

@@ -489,6 +489,61 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
+  // Periodic symbiont detection. Walks the manifest registry and installs
+  // Myco's global config into any agent whose `detectionDir` appeared
+  // since the last tick. Also refreshes the global launchers (cheap,
+  // self-healing via the refresh-launchers intent when content drifts).
+  // Throttled to a 1-hour cadence so newly-installed agents land within
+  // the hour without burning ticks on a stable system. Newly-detected
+  // symbionts emit a notification.
+  //
+  // NB: this tick does NOT run the project-local → global migration
+  // walker. Migration is fire-once-per-project: daemon first-start
+  // sweeps every registered project, auto-Grove-create sweeps the new
+  // project, and `myco doctor --fix` retries failed projects. Re-running
+  // the walker hourly would normalize failure as ongoing operational
+  // state.
+  let lastSymbiontDetectionAt = 0;
+  const SYMBIONT_DETECTION_INTERVAL_MS = 60 * 60 * 1000;
+  powerManager.register({
+    name: POWER_JOB_NAMES.SYMBIONT_DETECTION,
+    runIn: ['active', 'idle', 'sleep'],
+    fn: async () => {
+      const now = Date.now();
+      if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
+      lastSymbiontDetectionAt = now;
+      try {
+        const { runSymbiontDetection } = await import('../cli/bootstrap.js');
+        const { installGlobalLaunchers } = await import('../grove/launcher-install.js');
+        installGlobalLaunchers();
+        const symbionts = runSymbiontDetection();
+        const newlyInstalled = symbionts.filter((r) => r.status === 'installed');
+        if (newlyInstalled.length > 0) {
+          logger.info(LOG_KINDS.DAEMON_START, 'Symbiont detection wired in new agent(s)', {
+            installed: newlyInstalled.map((r) => r.symbiont),
+          });
+          for (const r of newlyInstalled) {
+            notifyDaemon(
+              'daemon.symbiont_detected',
+              `Detected ${r.symbiont}`,
+              `Myco is now wired in for ${r.symbiont}.`,
+              { symbiont: r.symbiont },
+            );
+          }
+        }
+        for (const r of symbionts.filter((s) => s.status === 'error')) {
+          logger.warn(LOG_KINDS.DAEMON_START, 'Symbiont detection install failed', {
+            symbiont: r.symbiont, error: r.error,
+          });
+        }
+      } catch (err) {
+        logger.error(LOG_KINDS.DAEMON_START, 'Symbiont detection tick failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  });
+
   powerManager.register({
     name: POWER_JOB_NAMES.STAGING_GC,
     runIn: ['idle', 'sleep'],

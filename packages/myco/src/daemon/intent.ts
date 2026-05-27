@@ -58,13 +58,30 @@ export interface UpdateIntent {
   requested_at: string;
 }
 
+/**
+ * Refresh the global launchers at `~/.myco/launcher.cjs` and
+ * `~/.myco/mcp-launcher.cjs`. Raised by the version-drift / update path
+ * so a refreshed launcher template lands without racing the running
+ * daemon's hook traffic. The daemon's self-reconcile loop drains this
+ * intent on its own thread, then deletes it.
+ *
+ * Carries no payload — the launcher content is determined by the
+ * daemon's bundled template, not by the intent file.
+ */
+export interface RefreshLaunchersIntent {
+  requested_at: string;
+  reason?: string;
+}
+
 export interface Intent {
   restart?: RestartIntent;
   update?: UpdateIntent;
+  refresh_launchers?: RefreshLaunchersIntent;
 }
 
 const RESTART_INTENT_FILENAME = 'intent.restart.toml';
 const UPDATE_INTENT_FILENAME = 'intent.update.toml';
+const REFRESH_LAUNCHERS_INTENT_FILENAME = 'intent.refresh-launchers.toml';
 
 function restartIntentPath(daemonService: DaemonServiceState): string {
   return join(daemonService.stateDir, RESTART_INTENT_FILENAME);
@@ -72,6 +89,10 @@ function restartIntentPath(daemonService: DaemonServiceState): string {
 
 function updateIntentPath(daemonService: DaemonServiceState): string {
   return join(daemonService.stateDir, UPDATE_INTENT_FILENAME);
+}
+
+function refreshLaunchersIntentPath(daemonService: DaemonServiceState): string {
+  return join(daemonService.stateDir, REFRESH_LAUNCHERS_INTENT_FILENAME);
 }
 
 function isRestartIntent(value: unknown): value is RestartIntent {
@@ -87,6 +108,14 @@ function isUpdateIntent(value: unknown): value is UpdateIntent {
   const v = value as Record<string, unknown>;
   if (typeof v.target_version !== 'string' || v.target_version === '') return false;
   if (typeof v.requested_at !== 'string') return false;
+  return true;
+}
+
+function isRefreshLaunchersIntent(value: unknown): value is RefreshLaunchersIntent {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.requested_at !== 'string') return false;
+  if (v.reason !== undefined && typeof v.reason !== 'string') return false;
   return true;
 }
 
@@ -109,12 +138,20 @@ export function readUpdateIntent(daemonService: DaemonServiceState): UpdateInten
   return readSectionFile(updateIntentPath(daemonService), isUpdateIntent);
 }
 
+export function readRefreshLaunchersIntent(
+  daemonService: DaemonServiceState,
+): RefreshLaunchersIntent | undefined {
+  return readSectionFile(refreshLaunchersIntentPath(daemonService), isRefreshLaunchersIntent);
+}
+
 export function readIntent(daemonService: DaemonServiceState): Intent {
   const restart = readRestartIntent(daemonService);
   const update = readUpdateIntent(daemonService);
+  const refresh_launchers = readRefreshLaunchersIntent(daemonService);
   return {
     ...(restart ? { restart } : {}),
     ...(update ? { update } : {}),
+    ...(refresh_launchers ? { refresh_launchers } : {}),
   };
 }
 
@@ -134,12 +171,25 @@ export function writeUpdateIntent(daemonService: DaemonServiceState, intent: Upd
   );
 }
 
+export function writeRefreshLaunchersIntent(
+  daemonService: DaemonServiceState,
+  intent: RefreshLaunchersIntent,
+): void {
+  atomicWriteFileSync(
+    refreshLaunchersIntentPath(daemonService),
+    stringify(intent as unknown as Record<string, unknown>),
+    { mode: 0o600 },
+  );
+}
+
 export function clearIntentSection(
   daemonService: DaemonServiceState,
-  section: 'restart' | 'update',
+  section: 'restart' | 'update' | 'refresh_launchers',
 ): void {
   const filePath = section === 'restart'
     ? restartIntentPath(daemonService)
-    : updateIntentPath(daemonService);
+    : section === 'update'
+      ? updateIntentPath(daemonService)
+      : refreshLaunchersIntentPath(daemonService);
   try { unlinkSync(filePath); } catch { /* already gone */ }
 }

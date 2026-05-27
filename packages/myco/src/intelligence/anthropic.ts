@@ -11,18 +11,17 @@ interface AnthropicConfig {
 
 export class AnthropicBackend implements LlmProvider {
   readonly name = 'anthropic';
-  private client: Anthropic;
+  private client?: Anthropic;
   private model: string;
 
   constructor(config?: AnthropicConfig) {
-    this.client = new Anthropic();
     this.model = config?.model ?? config?.summary_model ?? 'claude-haiku-4-5-20251001';
   }
 
   async summarize(prompt: string, opts?: LlmRequestOptions): Promise<LlmResponse> {
     const maxTokens = opts?.maxTokens ?? 1024;
 
-    const response = await this.client.messages.create({
+    const response = await this.getClient().messages.create({
       model: this.model,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
@@ -48,5 +47,14 @@ export class AnthropicBackend implements LlmProvider {
     } catch {
       return false;
     }
+  }
+
+  private getClient(): Anthropic {
+    this.client ??= new Anthropic({
+      // Bun exposes browser-like globals in tests, but this backend is only
+      // instantiated from local CLI/daemon runtimes where env auth is expected.
+      dangerouslyAllowBrowser: true,
+    });
+    return this.client;
   }
 }

@@ -10,30 +10,99 @@ Rules haven't been defined yet. Use the /myco-rules skill to add durable project
 `;
 
 /**
- * Check if a command string belongs to Myco.
+ * Substring patterns identifying a Myco launcher reference in any
+ * string. Single source of truth for "does this carry a reference to
+ * one of Myco's launcher entry points?" — used by both the hook-
+ * command detector (an existing hook entry) and the plugin-file
+ * detector (a verbatim plugin source file). If the next launcher
+ * rename adds or drops a name, this list is the only place to update.
  *
- * Three legacy shapes we still need to recognize so uninstall / re-install
- * can strip old entries cleanly:
- *   1. `.agents/myco-run.cjs`  — current hook guard entry point
- *   2. `.agents/myco-hook.cjs` — prior cross-platform guard (pre-rename)
- *   3. `myco-run` bare         — published MCP entry point and old shell shim
+ * Three shapes:
+ *   1. `.agents/myco-run.cjs`  — project-local launcher (per-project commit-to-repo opt-in).
+ *   2. `.agents/myco-hook.cjs` — legacy cross-platform guard (pre-rename).
+ *   3. `.myco/launcher.cjs`    — user-global launcher (`installScope: 'global'`).
+ *      Substring match catches both the absolute-path form Myco writes at
+ *      install time (`node "/Users/.../.myco/launcher.cjs"`) and any future
+ *      shell-expanded variants (`node "$HOME/.myco/launcher.cjs"`).
  *
- * Any of these signals "this is our group, safe to replace on reinstall."
+ * Ownership identity: any hook command containing one of these substrings
+ * is Myco-owned. The launcher paths are unique to Myco — no third-party
+ * tenant has reason to invoke them — so the substring scan is the
+ * authoritative ownership signal. Earlier versions added a parallel
+ * `_meta.owner` marker on hook groups, but that broke strict-schema
+ * agents like Windsurf which silently reject hooks.json entries with
+ * unknown fields. The marker is gone; the launcher path stands alone.
  */
-export function isMycoHookCommand(command: string): boolean {
-  return (
-    command.includes('.agents/myco-run.cjs') ||
-    command.includes('.agents/myco-hook.cjs') ||
-    command.startsWith('myco-run')
-  );
+export const MYCO_LAUNCHER_SUBSTRINGS = [
+  '.agents/myco-run.cjs',
+  '.agents/myco-hook.cjs',
+  '.myco/launcher.cjs',
+] as const;
+
+/**
+ * Whether `content` references one of Myco's launcher paths. Operates
+ * on any string — a hook command line or an entire plugin source file.
+ *
+ * Intentionally STRICT — only matches the canonical install paths
+ * above plus the standalone `mcp-launcher.cjs` filename (unique to
+ * Myco's MCP entry point). A user can legitimately author a hook of
+ * their own that calls Myco's launcher from a non-canonical wrapper
+ * (e.g. `node /opt/me/launcher.cjs --symbiont claude-code && my-step`);
+ * see `installer.test.ts` "PRESERVES user-authored hooks that invoke
+ * Myco from a non-canonical launcher path". Treating any `launcher.cjs
+ * + --symbiont` pair as Myco-owned would claim and overwrite those
+ * user entries on every `myco update`.
+ *
+ * /code-review finding C12 flagged the fragility (a hypothetical
+ * historical Myco install at `/opt/myco/launcher.cjs` would NOT match
+ * and would orphan on reinstall). The trade-off is intentional:
+ * prefer leaving a stale entry behind (recoverable by deletion) over
+ * claiming a user's legitimate wrapper (data-loss-shaped). A future
+ * `manifests/<agent>.yaml: extraLauncherSubstrings` opt-in could give
+ * packagers an explicit way to widen the set without crossing into
+ * user-content territory.
+ */
+export function containsMycoLauncherReference(content: string): boolean {
+  if (MYCO_LAUNCHER_SUBSTRINGS.some((s) => content.includes(s))) return true;
+  if (content.includes('mcp-launcher.cjs')) return true;
+  return false;
 }
 
 /**
- * Check if a hook group is Myco-owned.
- * Handles both nested format (Claude Code, Codex, etc.) and flat format (Windsurf).
+ * Check if a hook command string belongs to Myco.
  *
- * Nested: { hooks: [{ command: "cd \"$(git rev-parse ...)\" && node .agents/myco-run.cjs ..." }] }
- * Flat:   { command: "cd \"$(git rev-parse ...)\" && node .agents/myco-run.cjs ..." }
+ * Matches:
+ *   1. Any canonical launcher-substring reference (project-local guard,
+ *      legacy guard, or user-global launcher).
+ *   2. The bare `myco-run` prefix used by the published MCP entry
+ *      point and the old shell shim.
+ *
+ * The launcher paths are exclusive to Myco — third-party tenants have
+ * no reason to call them — so a substring match is the authoritative
+ * ownership signal. Earlier installs stamped a parallel `_meta.owner`
+ * marker but that broke strict-schema agents; the marker is retired
+ * and ownership is identified by the command alone.
+ */
+export function isMycoHookCommand(command: string): boolean {
+  if (containsMycoLauncherReference(command)) return true;
+  if (command.startsWith('myco-run')) return true;
+  return false;
+}
+
+/**
+ * Check if a hook group is Myco-owned. Detects both shapes Myco-managed
+ * agent configs use:
+ *
+ *   Nested (Claude Code, Codex, Copilot):
+ *     { hooks: [{ command: "node /Users/.../launcher.cjs ..." }] }
+ *
+ *   Flat (Cursor, Windsurf):
+ *     { command: "node /Users/.../launcher.cjs ..." }
+ *
+ * The launcher path embedded in the command string is the ownership
+ * signal. Any hook entry whose command references one of the canonical
+ * launcher paths is Myco-owned; any entry whose command does not is a
+ * third-party co-tenant entry and must be preserved on reinstall.
  */
 export function isMycoHookGroup(group: Record<string, unknown>): boolean {
   // Nested format: { hooks: [{ command: "..." }] }

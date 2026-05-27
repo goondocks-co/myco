@@ -19,6 +19,11 @@ export interface HookConfigEntry {
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
+  "antigravity": {
+    "hookResponse": {
+      "format": "antigravity-inject-steps"
+    }
+  },
   "claude-code": {
     "capturePrompts": {
       "shapes": [
@@ -251,6 +256,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       }
     ]
   },
+  "copilot": {},
   "cursor": {
     "hookResponse": {
       "format": "json",
@@ -264,9 +270,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       }
     }
   },
-  "gemini": {},
   "opencode": {},
   "pi": {},
-  "vscode-copilot": {},
   "windsurf": {}
 } as const;

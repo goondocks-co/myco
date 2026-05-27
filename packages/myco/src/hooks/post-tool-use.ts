@@ -2,15 +2,15 @@ import { createHookDaemonClient } from './client.js';
 import { classifyBufferFallback } from './send-event.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
+import { resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
-import fs from 'node:fs';
-import path from 'node:path';
 
 export async function main() {
-  const VAULT_DIR = resolveVaultDir();
-  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
+  const VAULT_DIR = resolveProvisionedVaultDir();
+  if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
   try {
@@ -18,6 +18,17 @@ export async function main() {
     symbiont = input.agent;
     const sessionId = input.sessionId;
     if (!sessionId) return;
+
+    // Drop PostToolUse fires that carry no tool name. Some symbionts
+    // (notably Antigravity) emit PostToolUse for non-tool steps where
+    // the field-mapped `toolCall.name` resolves to undefined — sending
+    // those to the daemon produces blank activity rows that clutter
+    // the Sessions UI with no useful data. The agent's real tool
+    // invocations always carry a name.
+    if (typeof input.toolName !== 'string' || input.toolName.length === 0) {
+      process.stderr.write(`[myco] post-tool-use dropped (no tool_name) symbiont=${symbiont ?? '?'} session=${sessionId}\n`);
+      return;
+    }
 
     const client = createHookDaemonClient(VAULT_DIR, { sessionId });
 
@@ -34,7 +45,14 @@ export async function main() {
     });
 
     if (!result.ok) {
-      const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
+      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
+      if (!location) {
+        process.stderr.write(
+          `[myco] post-tool-use dropped (project-not-registered) session=${sessionId}\n`,
+        );
+        return;
+      }
+      const buffer = new EventBuffer(location.bufferDir, sessionId);
       buffer.append({
         type: 'tool_use',
         tool_name: input.toolName,

@@ -116,6 +116,102 @@ const CaptureManifestSchema = z.object({
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   /**
+   * Absolute path (with `~` expansion) where Myco writes hook config when
+   * installing under global scope. May point at a file the agent shares with
+   * user content (e.g. `~/.claude/settings.json`) — settings-merge.ts owns
+   * surgical, marker-bounded replacement of Myco's block. `null` declares that
+   * the symbiont does not expose a global hook surface.
+   */
+  globalHooksTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path(s) (with `~` expansion) where Myco writes MCP server
+   * entries when installing under global scope. May share a file with hook
+   * config (e.g. Codex's `~/.codex/config.toml`). `null` declares no global
+   * MCP support (e.g. Pi, whose tools are wired via the extension itself).
+   *
+   * Accepts three shapes:
+   *   - A single string: the common case (one MCP file per agent).
+   *   - An array of strings: one agent, multiple surfaces with identical
+   *     JSON shape (e.g. two MCP files that both use `mcpServers` as the
+   *     top-level key).
+   *   - An array of objects with `{ path, serversKey? }`: per-target
+   *     server-key override. Required when surfaces of the same agent
+   *     diverge on top-level key — Copilot is the canonical case: the
+   *     terminal `copilot` CLI reads `~/.copilot/mcp-config.json` keyed
+   *     under `mcpServers`, while the VS Code Copilot extension reads
+   *     `~/Library/Application Support/Code/User/mcp.json` keyed under
+   *     `servers`. The installer threads each target's `serversKey`
+   *     into the JSON write so each surface gets the shape it expects.
+   *
+   * The schema normalizes every form into
+   * `Array<{ path: string; serversKey?: string }> | null` so the
+   * installer always iterates a uniform shape — single-target manifests
+   * don't change behavior, and string entries inside an array inherit
+   * `manifest.registration.mcpServersKey` at install time.
+   */
+  globalMcpTarget: z
+    .union([
+      z.string(),
+      z.array(
+        z.union([
+          z.string(),
+          z.object({
+            path: z.string(),
+            serversKey: z.string().optional(),
+          }),
+        ]),
+      ).min(1),
+    ])
+    .nullable()
+    .optional()
+    .transform((value) => {
+      if (value == null) return value;
+      if (typeof value === 'string') return [{ path: value }];
+      return value.map((entry) =>
+        typeof entry === 'string' ? { path: entry } : entry,
+      );
+    }),
+  /**
+   * Absolute path (with `~` expansion) where Myco symlinks Myco-shipped
+   * skills under global scope. Symlinks point back into the Myco install so
+   * auto-update rewrites pick up new content. `null` declares no global
+   * skills surface.
+   */
+  globalSkillsTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path (with `~` expansion) where Myco writes the settings
+   * template under global scope. When unset, settings under global scope
+   * share the file with hooks (the historical Claude-Code-style merge:
+   * one settings.json carries hooks + MCP + settings together).
+   *
+   * Required for symbionts whose `settingsFormat` doesn't match the file
+   * shape `globalHooksTarget` expects — most notably Codex, whose hooks
+   * file is JSON (`~/.codex/hooks.json`) but whose settings format is
+   * TOML. Without an explicit `globalSettingsTarget`, the installer's
+   * settings writer drops a `[features]` TOML section into the JSON
+   * hooks file, producing a hybrid file Codex itself appends to on every
+   * launch — and silently invalidating Codex's trust-hash on every
+   * Myco bootstrap pass.
+   */
+  globalSettingsTarget: z.string().nullable().optional(),
+  /**
+   * Project-relative path of the agent's plugin-bundle manifest. Plugin-
+   * file symbionts (Antigravity) require a bundle manifest at the root
+   * of their plugin directory — without it, the agent's plugin loader
+   * doesn't discover the bundle. The file is owned by Myco and copied
+   * verbatim from `templates/<symbiont>/plugin.json`. `null`/absent
+   * declares no bundle-manifest requirement (every JSON-merge symbiont).
+   */
+  pluginManifestTarget: z.string().nullable().optional(),
+  /**
+   * Absolute path (with `~` expansion) for the plugin-bundle manifest
+   * under global scope. Mirrors `pluginManifestTarget` but at the user
+   * home location. Plugin-file symbionts that install globally write
+   * the bundle manifest here so the agent's user-home plugin discovery
+   * sees the Myco bundle as a complete plugin.
+   */
+  globalPluginManifestTarget: z.string().nullable().optional(),
+  /**
    * Format of the hooks target.
    * - 'json' (default): hooks template is merged into a JSON settings file.
    * - 'plugin-file': the hooks template is a verbatim file (e.g., an opencode TS plugin)
@@ -123,6 +219,13 @@ const RegistrationSchema = z.object({
    *   systems rather than JSON hook entries.
    */
   hooksFormat: z.enum(['json', 'plugin-file']).default('json'),
+  /**
+   * For `hooksFormat: 'plugin-file'`, the basename of the template file
+   * under `packages/myco/src/symbionts/templates/<symbiont>/`. Defaults to
+   * `plugin.ts` (the opencode/pi convention). Antigravity ships a verbatim
+   * `hooks.json` inside its plugin bundle and overrides this field.
+   */
+  hooksTemplateFile: z.string().optional(),
   /** Top-level `version` integer written alongside the `hooks` object. */
   hooksConfigVersion: z.number().optional(),
   /**
@@ -131,7 +234,13 @@ const RegistrationSchema = z.object({
    * via `fieldNames` (unmapped fields are dropped).
    */
   hookResponse: z.object({
-    format: z.enum(['plain-text', 'json']),
+    // `antigravity-inject-steps` selects a per-event serializer that
+    // wraps additionalContext in Antigravity's required shape
+    // (`{ injectSteps: [{ ephemeralMessage }] }` for PreInvocation/
+    // PostInvocation, `{}` for PostToolUse, `{ decision }` for Stop).
+    // Distinct from `json` because the field-name mapping isn't a flat
+    // rename — it's a structural wrap.
+    format: z.enum(['plain-text', 'json', 'antigravity-inject-steps']),
     fieldNames: z.record(z.string(), z.string()).optional(),
   }).optional(),
   /**
@@ -209,6 +318,13 @@ const CapabilitiesSchema = z.object({
    */
   sessionStartInjection: z.boolean().default(false),
   /**
+   * Whether this symbiont has a subagent-start lifecycle hook whose
+   * response can place model-visible context into the child agent before
+   * its first prompt. This is distinct from merely observing or gating
+   * subagent lifecycle events.
+   */
+  subagentStartInjection: z.boolean().default(false),
+  /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
@@ -229,6 +345,7 @@ const CapabilitiesSchema = z.object({
 }).default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
+  subagentStartInjection: false,
   canopyReadTools: [],
   pathBearingTools: [],
 }));
@@ -236,20 +353,76 @@ const CapabilitiesSchema = z.object({
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
 export type SymbiontCanopyReadTool = z.infer<typeof CanopyReadToolSchema>;
 
+/**
+ * Phases a stop-style hook event can carry data for. Manifests declare
+ * which phases each agent event covers so the daemon's stop dispatcher
+ * runs only the work that has data to act on.
+ *
+ *   response   — inline assistant response text + per-turn close-out
+ *                (set response_summary on the latest batch, close open
+ *                batches, set title from first prompt if missing)
+ *   transcript — transcript file finalized; mine it for turns, reconcile
+ *                batch kinds, populate batch responses, extract plan
+ *                tags, capture images, materialize canopy aggregates
+ *
+ * Single-phase symbionts (Claude Code, Codex, Copilot) declare both
+ * phases on their `Stop` event — the daemon runs both in sequence in
+ * one invocation, matching pre-refactor behavior. Multi-phase symbionts
+ * (Windsurf) declare one phase per event; each event fires its own
+ * stop hook and the dispatcher runs only that phase's work, leaving
+ * the other phase's processing to its own event.
+ */
+const StopPhaseSchema = z.enum(['response', 'transcript']);
+
+const HookEventDeclarationSchema = z.object({
+  /**
+   * Lifecycle phases this event carries data for. The daemon's stop
+   * dispatcher reads this list to decide which phase processors to
+   * invoke for a given (symbiont, event_name) pair. Empty list means
+   * the event is observed but contributes to no stop phase.
+   */
+  phases: z.array(StopPhaseSchema).default([]),
+});
+
+const HooksManifestSchema = z.record(z.string(), HookEventDeclarationSchema).default({});
+
+export type StopPhase = z.infer<typeof StopPhaseSchema>;
+export type HookEventDeclaration = z.infer<typeof HookEventDeclarationSchema>;
+export type HooksManifest = z.infer<typeof HooksManifestSchema>;
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
   binary: z.string(),
   configDir: z.string(),
+  /**
+   * User-global directory whose existence signals that this agent is
+   * installed on the machine. The detection function walks the manifest
+   * registry and checks each declared `detectionDir`. Use the canonical
+   * user-home location (e.g. `~/.claude`, `~/.codex`); `~` is expanded by
+   * the consumer. Manifests that have no global surface (or that should be
+   * detected by a different signal) may omit this field. An explicit `null`
+   * means "intentionally no global detection" — used during the Gemini→
+   * Antigravity transition where two manifests share `~/.gemini` but only
+   * Antigravity should claim detection.
+   */
+  detectionDir: z.string().nullable().optional(),
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({
     sessionId: z.string(),
     transcriptPath: z.string(),
-    lastResponse: z.string(),
+    /** Symbiont's hook payload key for the final assistant response text.
+     * Defaults to `last_assistant_message`. Symbionts that deliver the response
+     * only through the transcript file (e.g., Antigravity) can keep the default
+     * — the payload won't carry that field and the normalized value stays
+     * undefined. */
+    lastResponse: z.string().default('last_assistant_message'),
     prompt: z.string().default('prompt'),
     toolName: z.string().default('tool_name'),
     toolInput: z.string().default('tool_input'),
+    /** Symbiont's hook payload key for tool output. Defaults to `tool_output`.
+     * Same transcript-only caveat applies as `lastResponse`. */
     toolOutput: z.string().default('tool_output'),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
@@ -259,6 +432,20 @@ export const SymbiontManifestSchema = z.object({
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
   capabilities: CapabilitiesSchema.optional(),
+  /**
+   * Per-agent-event lifecycle declarations. Keyed by the agent's hook
+   * event name (e.g., `Stop`, `post_cascade_response`,
+   * `post_cascade_response_with_transcript`). The daemon's stop
+   * dispatcher reads `hooks[event_name].phases` to decide which
+   * phase processors to invoke. See `HookEventDeclarationSchema`.
+   *
+   * Symbionts without a hooks block (or with an empty one) keep the
+   * pre-refactor behavior: every stop event runs both phases in
+   * sequence. That guarantees Cursor / Pi / Opencode / Antigravity
+   * don't need migration when this block is added for the agents
+   * that need phase-aware dispatch.
+   */
+  hooks: HooksManifestSchema.optional(),
 }).refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];
@@ -270,6 +457,34 @@ export const SymbiontManifestSchema = z.object({
   {
     message: 'capabilities.pathBearingTools must be non-empty when canopyReadTools is non-empty',
     path: ['capabilities', 'pathBearingTools'],
+  },
+).refine(
+  (m) => {
+    // TOML settings cannot share a JSON hooks file. Without an explicit
+    // `globalSettingsTarget`, the installer's settings writer falls back
+    // to `globalHooksTarget` — dropping a `[features]` TOML section into
+    // a JSON hooks file produces a hybrid file the consuming agent
+    // appends to (Codex), invalidating its trust-hash on every Myco
+    // bootstrap pass. The schema-level check makes the bug class
+    // structurally impossible for any new symbiont.
+    const reg = m.registration;
+    if (!reg) return true;
+    if ((reg.settingsFormat ?? 'json') !== 'toml') return true;
+    const hooksTarget = reg.globalHooksTarget;
+    if (!hooksTarget) return true;
+    if (!hooksTarget.endsWith('.json')) return true;
+    const settingsTarget = reg.globalSettingsTarget;
+    return (
+      settingsTarget !== undefined &&
+      settingsTarget !== null &&
+      settingsTarget !== hooksTarget &&
+      !settingsTarget.endsWith('.json')
+    );
+  },
+  {
+    message:
+      'registration.globalSettingsTarget must be set to a non-JSON path when settingsFormat is "toml" and globalHooksTarget is a .json file',
+    path: ['registration', 'globalSettingsTarget'],
   },
 );
 

@@ -106,9 +106,9 @@ Check for these problems when assessing vault health:
 | Issue | How to detect | Meaning |
 |-------|--------------|---------|
 | **Stale buffers** | `.jsonl` files in `<vault>/buffer/` older than 24 hours | Events were captured but never processed — LLM may have been unavailable |
-| **Missing vault DB** | `<vault>/myco.db` does not exist | The vault database is missing or the project is not initialized; suggest `myco init` or check vault resolution |
+| **Missing vault DB** | `<vault>/myco.db` does not exist | The Grove database is missing or the project hasn't been auto-registered yet; check daemon status and that an agent has fired a hook from this project |
 | **Missing vectors** | `<vault>/vectors.db` does not exist | Semantic search disabled; embeddings may be unconfigured |
-| **Old config version** | `version` in `myco.yaml` is stale | Vault may need migration; suggest running `myco init` or `myco update` |
+| **Old config version** | `version` in `myco.yaml` is stale | Vault may need migration; suggest running `myco update` |
 
 Report all issues found, or "None found." if the vault is clean.
 
@@ -202,4 +202,4 @@ Lineage tracks parent-child relationships between sessions. A high count of `sem
 | Stale buffers | Check if LLM provider was down during those sessions; events will process on next daemon start |
 | Missing index | Run `node .agents/myco-cli.cjs rebuild` to regenerate FTS and vector indexes |
 | Provider unreachable | Ensure the provider is running (e.g., `ollama serve`); verify model name in `myco.yaml`; reconfigure with CLI commands |
-| Config version < 2 | Run `myco init` to migrate the vault configuration |
+| Config version < 2 | Run `myco update` to migrate the vault configuration |

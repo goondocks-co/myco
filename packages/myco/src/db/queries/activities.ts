@@ -227,52 +227,72 @@ export function insertActivityWithBatch(
 ): ActivityRow {
   const db = getDatabase();
 
-  const info = db.prepare(
-    `INSERT INTO activities (
-       project_id, session_id, prompt_batch_id, tool_name, tool_input,
-       tool_output_summary, file_path, files_affected, duration_ms,
-       success, error_message, timestamp, processed,
-       content_hash, created_at, canopy_injection_tokens
-     ) VALUES (
-       (SELECT project_id FROM sessions WHERE id = ?),
-       ?,
-       (SELECT id FROM prompt_batches WHERE session_id = ?
-          ORDER BY (ended_at IS NULL) DESC, id DESC LIMIT 1),
-       ?, ?,
-       ?, ?, ?, ?,
-       ?, ?, ?, ?,
-       ?, ?, ?
-     )`,
-  ).run(
-    data.session_id,
-    data.session_id,
-    data.session_id,
-    data.tool_name,
-    data.tool_input ?? null,
-    data.tool_output_summary ?? null,
-    data.file_path ?? null,
-    data.files_affected ?? null,
-    data.duration_ms ?? null,
-    data.success ?? DEFAULT_SUCCESS,
-    data.error_message ?? null,
-    data.timestamp,
-    DEFAULT_PROCESSED,
-    data.content_hash ?? null,
-    data.created_at,
-    data.canopy_injection_tokens ?? null,
-  );
+  // Wrap the insert + FTS sync + `sessions.tool_count` bump in one
+  // transaction. The cache bump on the session row USED to be a
+  // separate `incrementSessionToolCount` call in `handleToolUse` —
+  // any other call site that inserts an activity (the injection
+  // record path, future helpers) would have silently skipped the
+  // bump and drifted the cached counter. The single-writer tenet
+  // (AGENTS.md) applies here too: this function is THE writer for
+  // `activities`, so it also owns the cache the column maintains.
+  const tx = db.transaction(() => {
+    const info = db.prepare(
+      `INSERT INTO activities (
+         project_id, session_id, prompt_batch_id, tool_name, tool_input,
+         tool_output_summary, file_path, files_affected, duration_ms,
+         success, error_message, timestamp, processed,
+         content_hash, created_at, canopy_injection_tokens
+       ) VALUES (
+         (SELECT project_id FROM sessions WHERE id = ?),
+         ?,
+         (SELECT id FROM prompt_batches WHERE session_id = ?
+            ORDER BY (ended_at IS NULL) DESC, id DESC LIMIT 1),
+         ?, ?,
+         ?, ?, ?, ?,
+         ?, ?, ?, ?,
+         ?, ?, ?
+       )`,
+    ).run(
+      data.session_id,
+      data.session_id,
+      data.session_id,
+      data.tool_name,
+      data.tool_input ?? null,
+      data.tool_output_summary ?? null,
+      data.file_path ?? null,
+      data.files_affected ?? null,
+      data.duration_ms ?? null,
+      data.success ?? DEFAULT_SUCCESS,
+      data.error_message ?? null,
+      data.timestamp,
+      DEFAULT_PROCESSED,
+      data.content_hash ?? null,
+      data.created_at,
+      data.canopy_injection_tokens ?? null,
+    );
 
-  const activityId = Number(info.lastInsertRowid);
+    const activityId = Number(info.lastInsertRowid);
 
-  // FTS5 sync
-  const toolName = data.tool_name;
-  const toolInput = data.tool_input ?? null;
-  const filePath = data.file_path ?? null;
-  if (toolName || toolInput || filePath) {
+    // FTS5 sync
+    const toolName = data.tool_name;
+    const toolInput = data.tool_input ?? null;
+    const filePath = data.file_path ?? null;
+    if (toolName || toolInput || filePath) {
+      db.prepare(
+        'INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path) VALUES (?, ?, ?, ?)',
+      ).run(activityId, toolName ?? '', toolInput ?? '', filePath ?? '');
+    }
+
+    // Atomic counter bump — folded into the single-writer for
+    // `activities`.
     db.prepare(
-      'INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path) VALUES (?, ?, ?, ?)',
-    ).run(activityId, toolName ?? '', toolInput ?? '', filePath ?? '');
-  }
+      `UPDATE sessions SET tool_count = COALESCE(tool_count, 0) + 1 WHERE id = ?`,
+    ).run(data.session_id);
+
+    return activityId;
+  });
+
+  const activityId = tx();
 
   return toActivityRow(
     db.prepare(`SELECT ${SELECT_COLUMNS} FROM activities WHERE id = ?`).get(activityId) as Record<string, unknown>,
@@ -356,4 +376,24 @@ export function countActivities(sessionId: string): number {
   ).get(sessionId) as Record<string, unknown>;
 
   return row.count as number;
+}
+
+/**
+ * Bulk derived activity counts for a list of session ids — single GROUP BY
+ * scan, paired with `countBatchesBySessions` for the sessions list endpoint.
+ *
+ * Returns a Map keyed by session id; sessions with zero activities are
+ * absent (caller treats missing as 0). R4.18 audit.
+ */
+export function countActivitiesBySessions(sessionIds: readonly string[]): Map<string, number> {
+  const result = new Map<string, number>();
+  if (sessionIds.length === 0) return result;
+  const placeholders = sessionIds.map(() => '?').join(', ');
+  const rows = getDatabase().prepare(
+    `SELECT session_id, COUNT(*) AS n FROM activities
+     WHERE session_id IN (${placeholders})
+     GROUP BY session_id`,
+  ).all(...sessionIds) as Array<{ session_id: string; n: number }>;
+  for (const row of rows) result.set(row.session_id, row.n);
+  return result;
 }

@@ -13,7 +13,7 @@ description: >-
   Runtime.command redirect mechanisms, substituteRuntimeCommand flag for
   PATH collision handling, universal stop buffer fallback patterns, scratchProbe()
   session validation, installer skill discovery, MCP tool registration verification
-  procedures, API verification discipline, and source==exec capture filter for
+  procedures, API verification discipline, source==exec capture filter for
   sub-agent phantom defense.
 managed_by: myco
 user-invocable: true
@@ -22,7 +22,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Building and Maintaining a Myco Symbiont Integration
 
-A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, VS Code extension, etc.) that Myco captures session data from. Adding one requires coordinated changes across five layers: the manifest, hook templates, transcript parser, capture rules, and installer. Each layer has its own file locations and failure modes. This skill walks through the architectural foundations and all implementation layers in the order you'd encounter them when shipping a new symbiont from scratch, or when modifying an existing one.
+A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, VS Code, Antigravity) that Myco captures session data from. Adding one requires coordinated changes across five layers: the manifest, hook templates, transcript parser, capture rules, and installer. Each layer has its own file locations and failure modes.
 
 ## Prerequisites
 
@@ -32,18 +32,16 @@ A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, 
 - Familiarity with `packages/myco/src/symbionts/` directory layout: `manifest-schema.ts`, `manifests/`, and `packages/myco/src/capture/` for parsers, rules, installer
 - Understanding of Myco's daemon architecture and symbiont manifest structure
 - Familiarity with the SQLite schema for sessions, prompt_batches, and lineage edges
-- Knowledge of TypeScript patterns in `packages/myco/src/daemon/` and symbiont integration points
-- Access to symbiont manifest files in `packages/myco/src/symbionts/manifests/`
 
 ---
 
 ## Architectural Foundations: Session Lifecycle Management
 
-Sessions are the fundamental unit of developer work, identified by `transcript_path` as the durable key. Understanding session architecture is essential before implementing any symbiont integration.
+Sessions are the fundamental unit of developer work, identified by `transcript_path` as the durable key.
 
 ### Session Identity and Registry
 
-1. **Use transcript_path as the source of truth** for session identity. Hook lifecycle events (connect/disconnect) are transient; the transcript file persists.
+1. **Use transcript_path as the source of truth** for session identity. Hook lifecycle events are transient; the transcript file persists.
 
 2. **Implement DB-backed session persistence** in the `SessionRegistry` constructor by querying the database for active sessions at startup.
 
@@ -58,16 +56,6 @@ When a session returns after being settled:
 3. **Update session metadata** (last_activity, status) but preserve identity
 4. **Resume capture** from the last processed position in transcript
 
-Example reactivation logic in session management:
-```typescript
-const existingSession = await db.getSessionByTranscriptPath(transcript_path);
-if (existingSession) {
-  session = await this.reactivateSession(existingSession);
-} else {
-  session = await this.createNewSession(transcript_path);
-}
-```
-
 ---
 
 ## Architectural Foundations: Steering Prompt Capture
@@ -76,38 +64,15 @@ Steering prompts occur mid-turn when users refine their request. The hierarchica
 
 ### Hierarchical Batch Architecture
 
-1. **Design the batch hierarchy** using `parent_prompt_batch_id` and `kind` taxonomy from `BATCH_KIND`:
-   - `initial`: First prompt in a turn (parent batch)
-   - `steering`: Mid-turn refinement (child of initial)
-   - `interrupt`: User interruption during assistant response
+1. **Use parent_prompt_batch_id** and `kind` taxonomy from `BATCH_KIND`: `initial`, `steering`, `interrupt`
 
 2. **Implement turn boundary detection** by tracking when a new user prompt appears before the previous assistant response completes.
 
-3. **Create child batches** for steering prompts using `insertBatchStateless`:
-   ```typescript
-   const steeringBatch = {
-     parent_prompt_batch_id: parentBatch.id,
-     kind: BATCH_KIND.STEERING,
-     user_prompt: newPromptText,
-     session_id: session.id
-   };
-   ```
-
-### Symbiont-Specific Detection
-
-Each symbiont has different transcript formats requiring specialized detection:
-
-**Claude Code**: Mine JSONL transcripts for `role: "user"` entries between tool_use blocks
-**Codex**: Detect `turn_id` changes in the event stream
-**OpenCode**: Parse plugin field boundaries in server responses
-
-Example Claude Code detection in `packages/myco/src/capture/prompt-kind.ts`:
-```typescript
-function detectSteeringInClaudeCode(events: HookEvent[]): boolean {
-  const promptKinds = extractUserPromptKinds(events, transcriptPath);
-  return promptKinds.some(kind => kind.steering);
-}
-```
+3. **Symbiont-specific detection:**
+   - **Claude Code**: Mine JSONL transcripts for `role: "user"` entries between tool_use blocks
+   - **Codex**: Detect `turn_id` changes in the event stream
+   - **Antigravity**: Parse JSON stdin/stdout for new turn markers (see Procedure 9.3)
+   - **OpenCode**: Parse plugin field boundaries in server responses
 
 ---
 
@@ -119,27 +84,9 @@ Response summaries provide compact batch descriptions for intelligence processin
 
 Implement the 3-layer fix for robust summary generation in `packages/myco/src/daemon/stop-processing.ts`:
 
-1. **Buffer fallback**: When live events are missed, parse transcript files directly using `enrichTurnsWithToolMetadata`
+1. **Buffer fallback**: When live events are missed, parse transcript files directly
 2. **TUI exit handling**: Detect when TUI-based agents terminate without stop events
 3. **Tail widening**: When transcript tail is empty, expand search window
-
-### Summary Routing Decisions
-
-Route summaries to the correct batch based on turn structure using the parent traversal logic:
-
-**Rule**: Summary belongs on the parent batch when the latest batch is a steering child
-
-```typescript
-function determineSummaryTarget(latestBatch: PromptBatch): string {
-  // Walk up parent chain to find the root parent for steering children
-  while (current?.parent_prompt_batch_id != null) {
-    const parent = getBatchById(current.parent_prompt_batch_id);
-    if (!parent) break;
-    current = parent;
-  }
-  return current?.id || latestBatch.id;
-}
-```
 
 ---
 
@@ -149,139 +96,61 @@ Capture systems must survive daemon restarts, network issues, and symbiont crash
 
 ### Registry Persistence Pattern
 
-Implement database-backed session recovery:
-
 1. **Store session state** in SQLite sessions table, not just in-memory
 2. **Query active sessions at startup** to rebuild the `SessionRegistry` state
 3. **Handle partial state** gracefully when transcripts have moved
 
 ### Buffer Fallback Mechanisms
 
-For agents like OpenCode that may lose connection:
+For agents like OpenCode and Antigravity that may lose connection:
 
 1. **Implement local buffering** within the plugin/agent
 2. **Queue stop events** when daemon is unreachable
 3. **Replay buffered events** on reconnection
 
-### SIGTERM Handling
-
-The three-layer OpenCode SIGTERM fix provides a durability template:
-
-1. **DB-backed registry**: Session state survives daemon restart
-2. **Scope fix**: `any_agent` rules only match known agents or unknown events
-3. **Plugin buffer fallback**: Local event storage for network issues
-
 ---
 
-## Architectural Foundations: Global Symbiont Installation Architecture
+## Architectural Foundations: Cortex Delegation Chain and Subagent Propagation
 
-Global symbiont installation provides unified detection and management of agent integrations at the machine level, supporting both greenfield installs and brownfield adoption scenarios.
+When agent sessions invoke subagents (e.g., Claude Code running an embedded Claude instance), delegation chains form across symbiont boundaries. Understanding this architecture prevents phantom sessions.
 
-### Unified Detection Function Architecture
+### Cortex Delegation Pattern (PR #354+)
 
-**Invariant**: All symbiont detection in the global install path flows through a single `runSymbiontDetection()` function. Detection is entirely manifest-driven via the `detectionDir` field.
+**Problem:** When an agent delegates to a subagent, both have hooks installed. Without proper delegation handling, each creates independent session rows.
+
+**Solution:** Cortex delegation chain propagates session context through environment variables:
 
 ```typescript
-function runSymbiontDetection(): DetectionResult {
-  // Walk manifest registry for all registered symbionts
-  for (const manifest of symbiontManifestRegistry) {
-    if (manifest.detectionDir && existsSync(manifest.detectionDir)) {
-      return { detected: true, symbiont: manifest.id, path: manifest.detectionDir };
-    }
-  }
-  return { detected: false };
-}
+// Parent agent (Claude Code) sets delegation context
+process.env.MYCO_PARENT_SESSION_ID = parentSessionId;
+process.env.MYCO_DELEGATION_DEPTH = '1';
+
+// Subagent (Claude CLI) reads context and registers as child
+const parentId = process.env.MYCO_PARENT_SESSION_ID;
+const depth = parseInt(process.env.MYCO_DELEGATION_DEPTH) || 0;
+
+// Register subagent session with parent linkage
+const subagentSession = await registerSubagentSession({
+  parentSessionId: parentId,
+  delegationDepth: depth + 1,
+  transcriptPath: subagentTranscriptPath
+});
 ```
 
-**Four triggers invoke detection**:
-1. **Manual detection**: `myco install --detect`
-2. **Daemon startup**: Background detection during daemon initialization
-3. **Tick-based scanning**: Periodic detection for new installations
-4. **Grove activation**: Detection when switching project contexts
+### Subagent Propagation Pattern
 
-### Manifest-Driven Detection Configuration
+**Invariant:** Subagent sessions always capture `parent_session_id` for proper lineage.
 
-Each symbiont manifest must include a `detectionDir` field pointing to the agent's installation directory:
-
+**Implementation in manifest:**
 ```yaml
-# Example: ~/.myco/manifests/claude-code.yaml
-id: claude-code
-detectionDir: ~/Library/Application Support/Claude/Claude Desktop
 capture:
-  # ... capture rules
-registration:
-  # ... registration config
+  delegation:
+    enableParentPropagation: true
+    envVarPrefix: MYCO_
+    maxDepth: 5
 ```
 
-**Detection principles**:
-- Never create the agent's directory — only detect existing installations
-- Detection must be passive and non-intrusive
-- Support both global installations and user-specific installs
-- Handle platform-specific installation paths
-
-### Greenfield vs Brownfield Installation Flows
-
-**Greenfield Install** (fresh agent, no prior Myco integration):
-1. **Detect agent installation** via `runSymbiontDetection()`
-2. **Initialize Myco integration** by installing hooks and MCP configuration
-3. **Register symbiont** in global registry
-4. **Test integration** with capture validation
-
-**Brownfield Install** (existing Myco integration):
-1. **Detect existing integration** via manifest registry
-2. **Validate integration status** (hooks, MCP, permissions)
-3. **Update if necessary** using incremental upgrade procedures
-4. **Preserve existing configuration** and session history
-
-### Safety Invariants and Self-Mutation Discipline
-
-**Self-Mutation Discipline**: Global symbiont installation must never modify itself or create circular dependencies.
-
-**Non-negotiable safety invariants**:
-1. **Installation atomicity**: All installation steps must be transactional
-2. **Rollback capability**: Failed installations must be completely reversible
-3. **Permission boundaries**: Never escalate privileges beyond necessary scope
-4. **Configuration isolation**: Each symbiont has isolated configuration space
-5. **Registry consistency**: Manifest registry must remain consistent across all operations
-
-### Launcher Write-Ordering and Binary Path Resolution
-
-**Launcher Write-Ordering**: Global installation must coordinate launcher updates to prevent corruption during concurrent installs.
-
-```typescript
-// Atomic launcher update pattern
-async function updateLauncher(symbiontId: string, config: LauncherConfig) {
-  const tempPath = `${launcherPath}.tmp.${Date.now()}`;
-  await writeFile(tempPath, generateLauncherScript(config));
-  await rename(tempPath, launcherPath);  // Atomic replacement
-}
-```
-
-**Binary Path Resolution**: Global installation must resolve agent binary paths across platforms and installation methods.
-
-```typescript
-// Cross-platform binary resolution
-function resolveAgentBinary(symbiont: SymbiontManifest): string {
-  const candidates = [
-    symbiont.binaryPath,  // Explicit path from manifest
-    ...platformSpecificPaths[process.platform],  // Platform defaults
-    ...pathBasedResolution(symbiont.binaryName)   // PATH search
-  ];
-
-  return candidates.find(path => existsSync(path)) || null;
-}
-```
-
-### Marker-Bounded Configuration Blocks
-
-**Marker-Bounded Config**: Global installation uses delimited configuration blocks to enable safe updates and removal.
-
-**Marker patterns**:
-- **BEGIN/END MYCO INTEGRATION**: For agent configuration files
-- **# MYCO-MANAGED**: For individual configuration lines
-- **/** MYCO:START **/ ... /** MYCO:END **/**: For JSON/JSONC files
-
-This enables surgical updates without corrupting existing agent configuration.
+**Gotcha:** Don't confuse `parent_session_id` (delegation context) with `session_id` (identity). A subagent session has its own identity but maintains parent linkage.
 
 ---
 
@@ -289,43 +158,28 @@ This enables surgical updates without corrupting existing agent configuration.
 
 The manifest is the authoritative description of a symbiont. It lives in `packages/myco/src/symbionts/manifests/<symbiont-id>.yaml` and is validated against `CaptureManifestSchema` at load time.
 
-### 1.1 Building Manifest-Driven Capture Rules
+### 1.1 Manifest-Driven Capture Rules
 
-Move from hardcoded agent-specific logic to declarative manifest-driven capture.
+Move from hardcoded agent-specific logic to declarative rules:
 
-#### Generic Walker Architecture
-
-1. **Use the unified capture rule functions** in `packages/myco/src/capture/prompt-kind.ts` and `packages/myco/src/hooks/capture-rules.ts` instead of agent-specific walkers.
-
-2. **Define capture rules in symbiont manifests** at `packages/myco/src/symbionts/manifests/*.json`:
-   ```json
-   {
-     "capture": {
-       "prompts": {
-         "detector": "jsonl_role_user",
-         "boundaries": ["tool_use", "assistant_end"]
-       },
-       "attachments": {
-         "patterns": ["*.md", "*.ts"],
-         "max_size": 102400
-       }
-     }
-   }
-   ```
-
-3. **Implement domain-keyed schemas** using the `CaptureRule` type from `packages/myco/src/symbionts/manifest-schema.ts`.
-
-#### Hook Purity Pattern
-
-Keep hooks as pure proxies, moving all capture logic daemon-side:
-
-1. **Hooks forward events** without classification or processing
-2. **Daemon inspects transcripts** using manifest rules in `packages/myco/src/hooks/capture-rules.ts`
-3. **No silent crashes** on unknown transcript shapes - log and skip instead
+```json
+{
+  "capture": {
+    "prompts": {
+      "detector": "jsonl_role_user",
+      "boundaries": ["tool_use", "assistant_end"]
+    },
+    "attachments": {
+      "patterns": ["*.md", "*.ts"],
+      "max_size": 102400
+    }
+  }
+}
+```
 
 ### 1.2 registration.mcpCwd Field for Portable MCP Launch
 
-**Problem:** MCP servers spawned from hooks run with `cwd` from the hook's execution context. If the agent changes directories between hook invocation and MCP spawn, the MCP process uses a different working directory, breaking file resolution for relative paths in MCP payloads.
+**Problem:** MCP servers spawned from hooks run with the hook's execution context. If the agent changes directories, file resolution breaks.
 
 **Solution:** Add `registration.mcpCwd` to the manifest:
 
@@ -334,51 +188,30 @@ registration:
   mcpCwd: /absolute/path  # absolute path, often PROJECT_ROOT
 ```
 
-This path is stored in the generated hook script at install time. When the MCP server spawns, the hook explicitly sets `cwd` to `mcpCwd` **before** spawning the child process:
-
-```bash
-cd "$MYCO_MCP_CWD" && node packages/myco/bin/myco-run ...  # spawn with fixed cwd
-```
-
-This ensures portable MCP behavior regardless of where the agent changes directory. Always set this field in the manifest and always expand it to an absolute path at install time.
+When the MCP server spawns, the hook explicitly sets `cwd` before spawning the child process, ensuring portable behavior.
 
 ---
 
 ## Procedure 2: SDK-Specific MCP Configuration
 
-Different agent SDKs have distinct MCP integration patterns and requirements that affect symbiont design:
+Different agent SDKs have distinct MCP integration patterns:
 
-### 2.1 Claude SDK Auto-Loading Behavior
+### 2.1 Claude SDK Auto-Loading
 
-**Issue:** The Claude SDK automatically loads all user-configured plugins and MCP servers, including Myco's MCP server. This can create initialization conflicts or duplicate tool registrations if not handled properly.
+The Claude SDK automatically loads all user-configured MCP servers, including Myco's. Ensure Myco's MCP server gracefully handles multiple initialization attempts.
 
-**Solution:** Ensure Myco's MCP server gracefully handles multiple initialization attempts and doesn't conflict with other user MCP configurations.
+### 2.2 OpenAI Strict Function-Calling
 
-### 2.2 OpenAI Strict Function-Calling Incompatibilities
+OpenAI agents using strict function-calling reject Zod schemas with refinements. Use only basic types without `.refine()` calls.
 
-**Issue:** OpenAI agents using strict function-calling mode reject Zod schemas with refinements (`.refine()` calls), causing MCP tool registration failures.
+### 2.3 Claude SDK strictMcpConfig
 
-**Solution:** For OpenAI-compatible symbionts, ensure MCP tool schemas use only basic Zod types without refinements:
-
-```ts
-// AVOID for OpenAI strict function-calling
-const schema = z.string().refine(s => s.length > 0);
-
-// USE instead
-const schema = z.string().min(1);
-```
-
-### 2.3 Claude SDK strictMcpConfig and settingSources Control
-
-**Issue:** The Claude SDK requires `strictMcpConfig: true` in its configuration to properly validate MCP server registration and tool schemas. Additionally, the Claude SDK's `settingSources: []` controls which configuration sources are loaded.
-
-**Solution:** Ensure Claude SDK-based symbionts pass the correct flags:
+Ensure Claude SDK-based symbionts pass the correct flags:
 
 ```ts
-// Required for Claude SDK
 const config = {
   strictMcpConfig: true,
-  settingSources: [], // empty array prevents unwanted config loading
+  settingSources: [],  // prevents unwanted config loading
 };
 ```
 
@@ -386,55 +219,28 @@ const config = {
 
 ## Procedure 3: Runtime Command Redirection and PATH Collision Handling
 
-### 3.1 Runtime.command Redirect Mechanism
+### 3.1 Runtime.command Redirect
 
-**Issue:** Some agents (particularly OpenCode) need to redirect runtime commands through Myco's execution wrapper to ensure proper session context and capture pipeline integration.
-
-**Solution:** Use the Runtime.command redirect mechanism in `packages/myco/bin/myco-run`:
+Some agents need runtime command redirection through Myco's wrapper:
 
 ```ts
-// In the agent's runtime configuration
 Runtime.command = 'myco-run';  // redirect through myco wrapper
 ```
 
-### 3.2 substituteRuntimeCommand Flag for PATH Collision Issues
+### 3.2 substituteRuntimeCommand Flag
 
-**Issue:** GUI applications (like OpenCode) can have PATH collisions where the system `node` binary differs from the development `node` binary, causing runtime command failures.
-
-**Solution:** Use the `substituteRuntimeCommand` flag in the manifest:
+Use the `substituteRuntimeCommand` flag for GUI apps to avoid NODE binary resolution issues:
 
 ```yaml
 manifest:
   substituteRuntimeCommand: true  # enable PATH collision handling
 ```
 
-### 3.3 PATH Collision Gotchas with GUI Apps
-
-**Common Issue:** GUI applications don't inherit shell PATH modifications (nvm, volta, etc.), causing `node` command resolution to fail or use the wrong binary.
-
-**Symptoms:**
-- `env: node: No such file or directory`
-- Runtime using system Node instead of development Node
-- MCP server startup failures in GUI context
-
-**Fix:** Always use absolute paths for Node binary resolution in GUI-launched contexts:
-
-```ts
-const nodeBin = process.execPath;  // absolute path to current node
-spawn(nodeBin, ['script.js'], { ... });
-```
-
 ---
 
 ## Procedure 4: Universal Stop Buffer Fallback Patterns
 
-Agent integrations commonly need stop buffer fallback patterns to handle graceful shutdown and prevent data loss. This pattern applies universally, not just to specific agents like OpenCode.
-
-### 4.1 Buffer Persistence Strategy
-
-**Issue:** When agents terminate unexpectedly or receive termination signals, in-memory buffers can be lost, resulting in incomplete session captures.
-
-**Solution:** Implement buffer persistence across all symbiont integrations:
+All symbionts should implement buffer persistence:
 
 ```ts
 // Persist buffer state on shutdown signals
@@ -442,14 +248,8 @@ process.on('SIGTERM', async () => {
   await persistBufferState();
   await gracefulShutdown();
 });
-```
 
-### 4.2 Recovery Mechanisms
-
-**Pattern:** On startup, check for persisted buffer state and recover partial sessions:
-
-```ts
-// On symbiont startup, check for recovery state
+// On startup, check for recovery state
 const recoveryState = await checkBufferRecoveryState();
 if (recoveryState) {
   await recoverPartialSession(recoveryState);
@@ -457,52 +257,25 @@ if (recoveryState) {
 }
 ```
 
-### 4.3 OpenCode-Specific Three-Layer Implementation
-
-OpenCode requires additional layers beyond the universal pattern due to registry rehydration and scope semantics:
-
-**Layer 1 — Registry Rehydration:**
-```ts
-// Force registry refresh on SIGTERM recovery
-await rehydrateSymbiontRegistry();
-```
-
-**Layer 2 — Scope Semantics:**
-```ts
-process.on('SIGTERM', async () => {
-  await flushPartialScope();  // complete any in-progress scope
-  await persistBufferState(); // universal pattern
-  await gracefulShutdown();
-});
-```
-
-**Layer 3 — Buffer Fallback:** Uses the universal pattern above.
-
 ---
 
-## Procedure 5: Session Validation with scratchProbe() and MYCO_AGENT_SESSION
+## Procedure 5: Session Validation with scratchProbe()
 
 ### 5.1 MYCO_AGENT_SESSION Environment Variable
 
-**Purpose:** The `MYCO_AGENT_SESSION` environment variable provides session context to sub-processes and helps validate session boundaries.
-
-**Usage:** Set during hook initialization:
+Set during hook initialization:
 
 ```bash
 export MYCO_AGENT_SESSION="<session-id>"
-# ... launch agent with session context
 ```
 
-This ensures that all child processes inherit the session context, enabling proper session validation and preventing phantom session creation.
+This ensures all child processes inherit the session context.
 
-### 5.2 scratchProbe() Helper for Session Validation
+### 5.2 scratchProbe() Helper
 
-**Purpose:** The `scratchProbe()` helper function validates session integrity and prevents corrupt session creation.
-
-**Usage:** Call during session startup to validate session state:
+Call during session startup to validate session state:
 
 ```ts
-// Validate session before proceeding with capture
 const isValidSession = await scratchProbe(sessionId);
 if (!isValidSession) {
   // Skip capture for invalid session
@@ -510,15 +283,13 @@ if (!isValidSession) {
 }
 ```
 
-This helper checks session ID validity, transcript path accessibility, hook registration status, and environment variable consistency.
-
 ---
 
 ## Procedure 6: source==exec Filter — 4th Phantom Defense Layer
 
-**Problem:** Codex spawns sub-agent processes (e.g., to run `node` or `python` commands). These sub-agents also have hooks installed and fire their own `session_start` events. Without filtering, each sub-agent invocation creates phantom sessions.
+**Problem:** Agents spawn sub-agent processes that also have hooks installed. Without filtering, each creates phantom sessions.
 
-**Solution:** Add a rule in the manifest (or capture rules config) to filter `source==exec` calls:
+**Solution:** Add a rule in the manifest to filter `source==exec` calls:
 
 ```yaml
 capture:
@@ -526,17 +297,14 @@ capture:
     - source: exec
       event: session_start
       action: skip
-      reason: Filter Codex sub-agent spawns (source==exec prevents phantom session creation)
+      reason: Filter sub-agent spawns
 ```
 
-When an agent is invoked as a sub-process (source=exec in the environment), this rule drops its events before daemon wake, preventing nested sessions. This is the **4th layer** of phantom session defense:
-
-1. **Layer 1 — Zod schema nullable:** `transcript_path: z.string().nullable()`
-2. **Layer 2 — Filter before daemon wake:** `evaluateSessionStartRules()` before `ensureRunning()`
-3. **Layer 3 — Complete drop filter:** Project path matching, symbiont identity validation
-4. **Layer 4 — source==exec filter:** Block sub-agent invocations by source context
-
-All four layers must be present.
+All four phantom defense layers must be present:
+1. **Zod schema must accept null** for `transcript_path`
+2. **Filter BEFORE daemon wake** via `evaluateSessionStartRules()`
+3. **Complete drop filter** covering project path matching, symbiont identity
+4. **source==exec filter** for sub-agent invocations
 
 ---
 
@@ -544,10 +312,9 @@ All four layers must be present.
 
 ### 7.1 SymbiontInstaller Registration
 
-Register the new symbiont in the `SymbiontInstaller` class with install, update, remove, and doctor methods:
+Register the new symbiont in the `SymbiontInstaller` class:
 
 ```ts
-// In packages/myco/src/capture/installer/index.ts
 symbiont: {
   install: async () => { /* implementation */ },
   update: async () => { /* implementation */ },
@@ -558,13 +325,10 @@ symbiont: {
 
 ### 7.2 Installer Skill Discovery Filtering
 
-**Issue:** The installer needs to discover available skills but should filter to only SKILL.md files to avoid false positives from other markdown files.
-
-**Solution:** Implement skill discovery filtering in the installer:
+Filter skill discovery to SKILL.md files only to avoid false positives:
 
 ```ts
-// Filter skill discovery to SKILL.md files only
-const skillFiles = await glob('**\\/SKILL.md', { cwd: skillsDir });
+const skillFiles = await glob('**/SKILL.md', { cwd: skillsDir });
 const skills = skillFiles.map(file => parseSkillFromPath(file));
 ```
 
@@ -574,12 +338,9 @@ const skills = skillFiles.map(file => parseSkillFromPath(file));
 
 ### 8.1 Tool Registration Completeness Audit
 
-**Issue:** Symbiont integrations may have incomplete MCP tool registration, where some tools are advertised but not actually available, or phantom tools are referenced that don't exist.
-
-**Solution:** Implement systematic tool registration verification:
+Implement systematic tool registration verification:
 
 ```ts
-// Verify all advertised tools are actually registered
 const advertisedTools = await getAdvertisedMcpTools();
 const registeredTools = await getRegisteredMcpTools();
 
@@ -592,19 +353,17 @@ if (missingTools.length > 0) {
 }
 ```
 
-### 8.2 Tool Registration Verification During Integration Testing
+### 8.2 Integration Testing
 
-**Pattern:** Include tool registration verification in symbiont integration tests:
+Include tool registration verification in symbiont integration tests:
 
 ```ts
-// Test that all expected tools are properly registered
 test('MCP tool registration completeness', async () => {
   const expectedTools = ['tool1', 'tool2', 'tool3'];
   const actualTools = await getMcpToolList();
 
   expect(actualTools).toEqual(expect.arrayContaining(expectedTools));
 
-  // Verify no phantom tools
   for (const tool of actualTools) {
     expect(await validateToolHandler(tool)).toBe(true);
   }
@@ -617,25 +376,19 @@ test('MCP tool registration completeness', async () => {
 
 ### 9.1 Fetch Authoritative Type Definitions
 
-**Issue:** When integrating with external agent APIs, inferring behavior from documentation or assumptions can lead to implementation failures. Always verify against authoritative sources.
-
-**Solution:** Fetch actual type definitions and API specifications before implementing:
+Always verify against authoritative sources:
 
 ```ts
-// CORRECT: Fetch authoritative types
 const apiSchema = await fetchApiSchema(agentApiUrl);
 const expectedTypes = parseTypeDefinitions(apiSchema);
-
-// Use verified types for implementation
 const implementation = buildParserFromTypes(expectedTypes);
 ```
 
-### 9.2 Regression Prevention via API Verification
+### 9.2 Regression Prevention
 
-**Pattern:** Build API verification into the integration test suite:
+Build API verification into test suites:
 
 ```ts
-// Verify current implementation matches live API
 test('API compatibility verification', async () => {
   const liveApiSchema = await fetchLiveApiSchema();
   const currentImplementation = getCurrentParserSchema();
@@ -644,86 +397,87 @@ test('API compatibility verification', async () => {
 });
 ```
 
+### 9.3 Antigravity JSON stdin/stdout Contract
+
+Antigravity uses a JSON-based stdin/stdout contract for agent communication:
+
+```json
+// Antigravity stdin format
+{
+  "type": "prompt",
+  "content": "user message",
+  "context": { "sessionId": "...", "turnId": "..." }
+}
+
+// Antigravity stdout format
+{
+  "type": "response",
+  "content": "assistant message",
+  "metadata": { "turnId": "...", "completionTime": 1234 }
+}
+```
+
+**Implementation:**
+
+```ts
+function parseAntigravityTurns(transcript: string): Turn[] {
+  const lines = transcript.split('\n').filter(l => l.trim());
+  return lines.map(line => {
+    const event = JSON.parse(line);
+    if (event.type === 'prompt') {
+      return { kind: 'user_prompt', content: event.content, turnId: event.context.turnId };
+    } else if (event.type === 'response') {
+      return { kind: 'assistant_response', content: event.content, turnId: event.metadata.turnId };
+    }
+  });
+}
+```
+
 ---
 
-## Vault Location Resolution
+## Phantom Session Defense — 4-Layer Pattern
 
-The vault is always `<git-repo-root>/.myco/`. There are no env var overrides — `resolveVaultDir()` walks up to the git common dir and appends `.myco`. If a symbiont's MCP child or hook would otherwise launch with a cwd that breaks discovery, fix it at the launch surface (e.g. set `registration.mcpCwd` in the manifest), not by injecting `MYCO_VAULT_DIR` or `MYCO_PROJECT_ROOT` — those env vars are no longer honored.
+All four layers must be present:
 
----
-
-## Phantom Session Defense — 4-Layer Pattern (Updated)
-
-A phantom session is a vault row created for an interaction that should have been filtered out. All four layers must be present:
-
-**Layer 1 — Zod schema must accept null:**
-```typescript
-transcript_path: z.string().nullable()  // CORRECT
-```
-
-**Layer 2 — Filter BEFORE daemon wake:**
-```typescript
-// CORRECT — filter fires first; daemon only wakes if session passes
-const shouldDrop = await evaluateSessionStartRules(payload);
-if (shouldDrop) return;
-await ensureRunning();
-```
-
-**Layer 3 — Complete drop filter covering:** project path matching, symbiont identity, hook phase suppression, duplicate detection.
-
-**Layer 4 — source==exec filter for sub-agent invocations:**
-```yaml
-capture:
-  rules:
-    - source: exec
-      action: skip
-      reason: Drop Codex sub-agent spawns
-```
-
-Verify: stop the daemon, trigger a drop condition (e.g., null transcript_path, or source=exec), confirm `myco daemon status` still reports stopped.
+1. **Zod schema must accept null:** `transcript_path: z.string().nullable()`
+2. **Filter BEFORE daemon wake:** `evaluateSessionStartRules()` fires first
+3. **Complete drop filter:** project path matching, symbiont identity
+4. **source==exec filter:** blocks sub-agent invocations
 
 ---
 
 ## Cross-Cutting Gotchas
 
-**Transcript timing races**: Always check transcript file timestamps against database records. Events may arrive out of order during high activity.
+**Cortex delegation chains preserve lineage** — Parent session ID propagates through subagent invocations via MYCO_PARENT_SESSION_ID. Always set when delegating.
 
-**Registry memory leaks**: Clean up settled sessions periodically. Use `WeakMap` for temporary session associations.
+**Antigravity JSON contract is strict** — Respect the exact JSON format. Type mismatches cause parsing failures and phantom sessions.
 
-**Steering detection false positives**: Mid-conversation code blocks or examples may contain user-like patterns. Validate against actual turn boundaries.
+**registration.mcpCwd is mandatory for portable MCP** — Without this field, MCP servers run with agent-context `cwd`, breaking file resolution. Always set and expand to absolute path.
 
-**Summary routing edge cases**: When parent batches have no direct prompts (only steering children), ensure summaries still have a valid target.
+**source==exec filter in capture rules config** — `source` is environment-variable-based, evaluated by rules engine. Must be in YAML manifest, not hardcoded in hook.
 
-**Event normalization assumptions**: Don't assume all symbionts follow the same event structure. Use `normalizeHookInput()` for non-standard fields.
+**SDK-specific MCP is critical** — Claude SDK auto-loading, OpenAI strict function-calling, strictMcpConfig, and settingSources all affect success. Test against target SDK.
 
-**Lineage preservation during fallback**: When using buffer fallback or transcript reconciliation, maintain proper session → batch → spore lineage edges.
+**Runtime command redirection prevents PATH collisions** — Use Runtime.command redirect and substituteRuntimeCommand for GUI apps.
 
-**registration.mcpCwd is mandatory for portable MCP** — Without this field, MCP servers spawned from hooks run with agent-context `cwd`, breaking file resolution. Always set this in the manifest and expand to absolute path at install time.
+**Universal stop buffer fallback is required** — All symbionts should implement buffer persistence with agent-specific layering.
 
-**source==exec filter must be in capture rules config** — `source` is an environment-variable-based filter evaluated by the rules engine. Ensure the filter is present in the YAML manifest, not hardcoded in the hook.
+**Session validation prevents phantom sessions** — Use MYCO_AGENT_SESSION env var and scratchProbe() to validate integrity.
 
-**SDK-specific MCP considerations are critical** — Claude SDK auto-loading, OpenAI strict function-calling limitations, Claude SDK strictMcpConfig requirements, and settingSources control all affect symbiont integration success. Test against target SDK behavior patterns, not just generic MCP specifications.
+**Installer skill discovery filters to SKILL.md** — Only discover properly-formatted skill files to prevent false positives.
 
-**Runtime command redirection prevents PATH collisions** — Use Runtime.command redirect and substituteRuntimeCommand flag for GUI applications to avoid NODE binary resolution issues.
+**Cross-platform hook guard at .agents/myco-run.cjs** — Not .agents/myco-hook.cjs. Always reference the correct filename.
 
-**Universal stop buffer fallback is required** — All symbionts should implement buffer persistence and recovery patterns, with agent-specific layering (like OpenCode's three-layer pattern) as needed.
+**MCP tool registration must be verified** — Audit completeness to prevent phantom tools and missing handlers.
 
-**Session validation prevents phantom sessions** — Use MYCO_AGENT_SESSION env var and scratchProbe() helper to validate session integrity before capture.
+**API verification prevents inference failures** — Fetch authoritative type definitions rather than inferring from documentation.
 
-**Installer skill discovery must filter to SKILL.md** — Only discover properly-formatted skill files to prevent false positives from other markdown files.
+**Transcript timing races** — Check file timestamps against DB records. Events may arrive out of order during high activity.
 
-**Cross-platform hook guard location** — The hook guard is located at `.agents/myco-run.cjs`, not `.agents/myco-hook.cjs`. Always reference the correct filename.
+**Registry memory leaks** — Clean up settled sessions periodically. Use `WeakMap` for temporary associations.
 
-**MCP tool registration must be verified** — Audit tool registration completeness during integration to prevent phantom tools and missing tool handlers.
+**Steering detection false positives** — Code blocks may contain user-like patterns. Validate against actual turn boundaries.
 
-**API verification prevents inference failures** — Always fetch authoritative type definitions from external APIs rather than inferring behavior from documentation. Build verification into test suites.
+**Event normalization** — Don't assume all symbionts follow same event structure. Use `normalizeHookInput()` for non-standard fields.
 
-**Global installation detection must be passive** — Never create directories during detection; only detect existing agent installations. Detection should be non-intrusive and manifest-driven.
-
-**Self-mutation discipline is non-negotiable** — Global installation must never modify itself or create circular dependencies. All operations must be transactional with rollback capability.
-
-**Launcher write-ordering prevents corruption** — Use atomic file operations when updating launcher scripts to prevent corruption during concurrent global installs.
-
-**Binary path resolution must be cross-platform** — Support platform-specific installation paths and handle GUI application PATH limitations with absolute binary paths.
-
-**Marker-bounded configuration enables safe updates** — Always use delimited configuration blocks (BEGIN/END MYCO INTEGRATION) for surgical updates without corrupting existing agent configuration.
+**Lineage preservation during fallback** — Maintain proper session → batch → spore edges when using buffer fallback or transcript reconciliation.

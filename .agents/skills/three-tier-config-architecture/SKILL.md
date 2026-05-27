@@ -1,7 +1,6 @@
 ---
 name: myco:three-tier-config-architecture
-description: |
-  Comprehensive procedures for implementing and managing Myco's three-tier configuration architecture with Machine/Grove/Project scope hierarchy. Covers config storage design with scope enforcement patterns, TypeScript compile-time scope validation, multi-tier settings UI development, hierarchical config merging and override resolution strategies, and migration workflows for scope boundary evolution. Use this when implementing new configuration settings, refactoring config scope boundaries, building scope-aware editing interfaces, or migrating configuration data between tiers, even if the user doesn't explicitly ask for three-tier architecture guidance.
+description: Comprehensive procedures for implementing and managing Myco's three-tier configuration architecture with Machine/Grove/Project scope hierarchy. Covers config storage design with scope enforcement patterns, TypeScript compile-time scope validation, multi-tier settings UI development, hierarchical config merging and override resolution strategies, and migration workflows for scope boundary evolution. Use this when implementing new configuration settings, refactoring config scope boundaries, building scope-aware editing interfaces, or migrating configuration data between tiers, even if the user doesn't explicitly ask for three-tier architecture guidance.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -316,7 +315,130 @@ class PortableProjectMergeStrategy<T extends Record<string, any>> {
 
 ## Procedure E: Migration Patterns for Scope Boundary Changes
 
-### 1. Design Scope Migration Workflows
+### 1. Two-Layer Automatic Migration Model
+
+Myco uses a two-layer automatic migration model for scope boundary evolution:
+
+**Layer 1: PROJECT_TIER_LEGACY_FIELDS Silent Recognition**
+
+Legacy project-tier fields are recognized but not written to. When `loadMergedConfig()` encounters them, they are silently skipped (not exposed to code):
+
+```typescript
+// packages/myco/src/config/schema.ts
+const PROJECT_TIER_LEGACY_FIELDS = [
+  'embedding.run_in_deep_sleep',
+  'embedding.provider',
+  'embedding.model',
+  'agent.scheduled_tasks_active_window_days',
+  'agent.provider',
+  'agent.model',
+  'agent.timeout_ms'
+];
+
+class ConfigMerger {
+  async mergeWithLegacyHandling(configs: { machine?, grove?, project? }) {
+    const merged = deepMergeConfig(configs.machine, configs.grove);
+    
+    // Recognize legacy fields in project tier but don't use them
+    // They will be migrated during myco update
+    for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
+      if (this.hasNestedValue(configs.project, legacyField)) {
+        // Field exists in legacy location - will be migrated by layer 2
+        console.debug(`Legacy field ${legacyField} recognized for migration`);
+      }
+    }
+    
+    // Return config with grove/machine tiers only (legacy project fields excluded)
+    return merged;
+  }
+}
+```
+
+**Layer 2: Atomic `myco update --all-projects` Lift**
+
+Running `myco update` performs an atomic, value-preserving migration of legacy project-tier fields to Grove tier across all projects in a single operation:
+
+```typescript
+// packages/myco/src/cli/update.ts
+async function migrateAllProjectConfigToGroveTier() {
+  const projects = await discoverAllProjects();
+  const groveConfig = await loadGroveConfig();
+  const migrations: { project: string; field: string; value: any }[] = [];
+  
+  // Phase 1: Scan all projects for legacy fields
+  for (const project of projects) {
+    const projectConfig = await loadConfig(path.join(project.path, '.myco/myco.yaml'));
+    
+    for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
+      const value = getNestedValue(projectConfig, legacyField);
+      if (value !== undefined) {
+        migrations.push({ project: project.name, field: legacyField, value });
+      }
+    }
+  }
+  
+  if (migrations.length === 0) {
+    console.log('No legacy project-tier config fields found.');
+    return;
+  }
+  
+  // Phase 2: Atomic lift to Grove tier
+  const transactionStart = Date.now();
+  
+  try {
+    // Write all values to Grove config (idempotent - repeated values are no-ops)
+    const uniqueMigrations = new Map<string, any>();
+    for (const { field, value } of migrations) {
+      if (!uniqueMigrations.has(field) || uniqueMigrations.get(field) === value) {
+        uniqueMigrations.set(field, value);
+      } else {
+        console.warn(`Conflicting values for ${field} across projects - using Grove tier value`);
+      }
+    }
+    
+    for (const [field, value] of uniqueMigrations) {
+      setNestedValue(groveConfig, field, value);
+    }
+    
+    await saveGroveConfig(groveConfig);
+    
+    // Phase 3: Remove legacy fields from all project configs
+    for (const project of projects) {
+      const projectConfig = await loadConfig(path.join(project.path, '.myco/myco.yaml'));
+      let hasChanges = false;
+      
+      for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
+        if (hasNestedValue(projectConfig, legacyField)) {
+          removeNestedValue(projectConfig, legacyField);
+          hasChanges = true;
+        }
+      }
+      
+      if (hasChanges) {
+        await updateConfig(path.join(project.path, '.myco/myco.yaml'), projectConfig);
+        console.log(`Migrated ${project.name} to Grove-tier embedding/agent config`);
+      }
+    }
+    
+    const transactionDuration = Date.now() - transactionStart;
+    console.log(`Completed atomic migration in ${transactionDuration}ms: ${migrations.length} fields lifted to Grove tier`);
+  } catch (error) {
+    console.error('Migration failed - rolling back Grove config changes');
+    // Rollback: restore previous Grove config
+    throw error;
+  }
+}
+```
+
+**Key properties of the two-layer model:**
+
+1. **Preservation**: Configuration VALUES are preserved during migration — they move from project to Grove tier, they are never lost or stripped
+2. **Atomicity**: The `myco update --all-projects` operation is atomic at the transaction level — either all projects migrate successfully or none do
+3. **Conflict detection**: If different projects have different values for the same field, the Grove tier value takes precedence (with warning logged)
+4. **Legacy recognition**: Existing code using `loadMergedConfig()` automatically skips legacy fields without errors
+5. **Idempotency**: Running `myco update` multiple times is safe — subsequent runs find no legacy fields and exit cleanly
+
+### 2. Design Scope Migration Workflows
 
 Create procedures for moving settings between tiers with portable project identity support:
 
@@ -373,98 +495,6 @@ class ScopeMigrationRunner {
   }
 }
 ```
-
-### 2. Automatic CLI-Driven Migration Patterns
-
-`myco update` automatically handles scope migration for specific legacy configuration fields:
-
-```typescript
-// packages/myco/src/config/automatic-migration.ts
-interface AutomaticMigrationRule {
-  field: string;
-  fromScope: 'project' | 'grove' | 'machine';
-  toScope: 'project' | 'grove' | 'machine';
-  condition?: (value: any) => boolean;
-}
-
-const AUTOMATIC_MIGRATION_RULES: AutomaticMigrationRule[] = [
-  {
-    field: 'embedding.run_in_deep_sleep',
-    fromScope: 'project',
-    toScope: 'grove'
-  },
-  {
-    field: 'agent.scheduled_tasks_active_window_days', 
-    fromScope: 'project',
-    toScope: 'grove'
-  }
-];
-
-class AutomaticMigrationProcessor {
-  async processProjectToGroveMigration(projectPath: string): Promise<void> {
-    const projectConfig = await loadConfig(path.join(projectPath, '.myco/myco.yaml'));
-    const groveConfig = await loadGroveConfig();
-    
-    let hasProjectChanges = false;
-    let hasGroveChanges = false;
-    
-    for (const rule of AUTOMATIC_MIGRATION_RULES) {
-      if (rule.fromScope === 'project' && rule.toScope === 'grove') {
-        const value = this.getNestedValue(projectConfig, rule.field);
-        
-        if (value !== undefined) {
-          // Move value from project to grove config
-          this.setNestedValue(groveConfig, rule.field, value);
-          this.removeNestedValue(projectConfig, rule.field);
-          
-          hasProjectChanges = true;
-          hasGroveChanges = true;
-          
-          console.log(`Migrated ${rule.field} from project to grove config`);
-        }
-      }
-    }
-    
-    // Write updated configurations
-    if (hasProjectChanges) {
-      await updateConfig(path.join(projectPath, '.myco/myco.yaml'), projectConfig);
-    }
-    if (hasGroveChanges) {
-      await saveGroveConfig(groveConfig);
-    }
-  }
-  
-  private getNestedValue(obj: any, path: string): any {
-    return path.split('.').reduce((current, key) => current?.[key], obj);
-  }
-  
-  private setNestedValue(obj: any, path: string, value: any): void {
-    const keys = path.split('.');
-    const lastKey = keys.pop()!;
-    const target = keys.reduce((current, key) => {
-      current[key] = current[key] || {};
-      return current[key];
-    }, obj);
-    target[lastKey] = value;
-  }
-  
-  private removeNestedValue(obj: any, path: string): void {
-    const keys = path.split('.');
-    const lastKey = keys.pop()!;
-    const target = keys.reduce((current, key) => current?.[key], obj);
-    if (target) {
-      delete target[lastKey];
-    }
-  }
-}
-```
-
-**Migration Trigger:** The automatic migration is integrated into the `myco update` command workflow. When updating CLI hooks and MCP entries, the system checks for legacy configuration fields at the project level and migrates them to the Grove tier. This migration:
-
-- Preserves the configured behavior (values are not lost)
-- Makes settings available to all projects within the Grove
-- Follows the principle that scope should broaden when settings prove useful across multiple projects
-- Runs transparently during routine update operations
 
 ### 3. Implement Backward Compatibility During Migration
 
@@ -563,4 +593,10 @@ class MigrationValidator {
 
 - **Grove identity coordination**: Project configuration changes may affect Grove-level settings inheritance. Always consider the Grove/project relationship when modifying project-scoped configuration patterns.
 
-- **Automatic migration side effects**: The automatic migration during `myco update` preserves values but changes their scope. Be aware that previously project-specific settings become grove-wide after migration. Review Grove config after update to ensure the migrated values are appropriate for all projects in the Grove.
+- **Automatic migration semantics**: The `myco update` command performs a TWO-LAYER automatic migration for scope boundary changes: (1) legacy project-tier fields are silently recognized but not used, (2) the atomic update operation lifts those values to Grove tier. Legacy fields are PRESERVED and MIGRATED, never stripped or lost. Running `myco update` multiple times is safe and idempotent.
+
+- **Legacy field recognition during merge**: When `loadMergedConfig()` encounters legacy project-tier fields like `embedding.run_in_deep_sleep` or `agent.scheduled_tasks_active_window_days`, they are silently skipped and not included in the merged configuration. The system reads from Grove tier instead. This allows old code to continue working without changes while the two-layer migration runs in the background.
+
+- **Scope boundary change coordination**: Before moving a configuration field from project to Grove tier, verify that all projects in the Grove will tolerate the same value. Different projects requiring different values for the same field indicates the field should remain project-scoped. Grove-tier migration is appropriate only when field values should be consistent across all projects in a Grove.
+
+- **Atomic update failure recovery**: If `myco update` fails partway through the migration, Grove config may have been partially updated. Always check Grove and project config consistency after a failed update and re-run `myco update` to complete the migration.

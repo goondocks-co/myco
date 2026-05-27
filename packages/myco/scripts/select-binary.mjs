@@ -80,3 +80,26 @@ fs.writeFileSync(
 );
 
 process.stdout.write(`[myco] Selected platform binary: ${binaryPath}\n`);
+
+// Self-install as a managed OS service so launchd / systemd starts the
+// daemon at every login from the moment Myco is installed. Skipped in
+// source checkouts (no published dist/), skipped silently on failure
+// (the daemon's lazy-spawn path still works; doctor will surface the
+// gap). Plan reference: Decision 13 / Step 12.
+if (!isSourceCheckout) {
+  const distSelfInstall = path.join(pkgRoot, 'dist/src/service/self-install.js');
+  if (fs.existsSync(distSelfInstall)) {
+    try {
+      const mod = await import(distSelfInstall);
+      const stderrLogger = {
+        info: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
+        debug: () => undefined,
+        warn: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
+        error: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
+      };
+      await mod.ensureSelfInstalledAsService(stderrLogger);
+    } catch (err) {
+      process.stderr.write(`[myco] Service install skipped: ${err?.message ?? err}\n`);
+    }
+  }
+}

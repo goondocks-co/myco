@@ -6,9 +6,9 @@ Install it to add Myco to a project, run the local dashboard and daemon, connect
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
-cd your-project
-myco init
 ```
+
+Open a project in any supported agent — Myco registers it automatically on the first hook.
 
 ## What you can do
 

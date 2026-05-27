@@ -347,6 +347,8 @@ const CanopyExcludeSchema = z.object({
 const CortexInstructionsSchema = z.object({
   /** Inject Cortex-built session-start instructions at SessionStart. */
   inject_on_session_start: z.boolean().default(true),
+  /** Inject a compact Cortex primer when a supported symbiont starts a subagent. */
+  inject_on_subagent_start: z.boolean().default(true),
 });
 
 const CortexDigestSchema = z.object({

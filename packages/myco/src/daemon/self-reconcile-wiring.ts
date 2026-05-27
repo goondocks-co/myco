@@ -1,6 +1,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { DaemonServer } from './server.js';
 import type { DaemonServiceState } from './service-state.js';
+import type { DaemonStateAuthority } from './daemon-state-authority.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import { spawnUpdateScript } from './update-installer.js';
@@ -26,6 +27,8 @@ const SELF_RECONCILE_INTERVAL_MS = 30_000;
 
 export interface SelfReconcileWiringDeps {
   daemonService: DaemonServiceState;
+  /** The single capability that mutates daemon.json. Passed through to reconcileSelf. */
+  stateAuthority: DaemonStateAuthority;
   /** Live server handle. `server.currentDaemonState()` projects in-memory truth back into daemon.json each tick. */
   server: DaemonServer;
   daemonVaultDir: string;
@@ -70,6 +73,7 @@ export function startSelfReconcileLoop(
     try {
       await reconcileSelf({
         daemonService: deps.daemonService,
+        stateAuthority: deps.stateAuthority,
         currentState: () => deps.server.currentDaemonState(),
         logger,
         requestSupervisorRestart: () => requestSupervisorRestart(logger, deps.daemonService),

@@ -214,13 +214,14 @@ describe('teamInit', () => {
     const { teamInit } = await import('../../packages/myco-team/src/cli.js');
     // Pre-Grove vaults now exit with code 2 (configuration error) and a
     // friendly migration prompt rather than the historical generic
-    // exit(1). The prompt tells operators to either run `myco init` or
-    // pass `--legacy` to bypass the gate.
+    // exit(1). The prompt tells operators to either auto-register by
+    // opening the project in a supported agent, or pass `--legacy` to
+    // bypass the gate.
     await expect(teamInit(vaultDir)).rejects.toThrow('process.exit(2)');
 
     const stderr = errors.join('\n');
     expect(stderr).toContain('myco-team install requires a Grove-bound project');
-    expect(stderr).toContain('myco init');
+    expect(stderr).toContain('auto-registers');
     expect(stderr).toContain('--legacy');
     expect(execCalls).toHaveLength(0);
   });

@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveProjectBufferDir } from '@myco/grove/paths.js';
+
+const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /**
  * Regression: hook buffer-fallback used to be completely silent. A "session
@@ -15,23 +19,39 @@ import { spawnSync } from 'node:child_process';
  * audit.
  */
 describe('hook send-event stderr observability', () => {
-  function setupProject(): { projectRoot: string; vaultDir: string; transcriptPath: string } {
+  function setupProject(): {
+    projectRoot: string;
+    vaultDir: string;
+    mycoHome: string;
+    groveId: string;
+    transcriptPath: string;
+  } {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-send-event-stderr-'));
     const vaultDir = path.join(projectRoot, '.myco');
+    const mycoHome = path.join(projectRoot, 'home');
     const transcriptPath = path.join(projectRoot, 'transcript.jsonl');
     fs.mkdirSync(vaultDir, { recursive: true });
+    fs.mkdirSync(mycoHome, { recursive: true });
     fs.writeFileSync(
       path.join(vaultDir, 'project.toml'),
-      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "send-event-stderr"\n',
+      `[project]\nid = "${TEST_PROJECT_ID}"\nname = "send-event-stderr"\n`,
       'utf-8',
     );
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
     fs.writeFileSync(transcriptPath, '{}\n', 'utf-8');
-    return { projectRoot, vaultDir, transcriptPath };
+    // Register the project in an isolated Grove so the hook's buffer
+    // resolver finds (groveId, projectId) and writes to the global path.
+    const grove = createGrove('test', mycoHome);
+    registerProjectInGrove(grove.id, {
+      projectId: TEST_PROJECT_ID,
+      projectName: 'send-event-stderr',
+      projectRoot,
+    }, mycoHome);
+    return { projectRoot, vaultDir, mycoHome, groveId: grove.id, transcriptPath };
   }
 
   it('logs to stderr when buffering a tool_use on transport failure (daemon unreachable)', () => {
-    const { projectRoot, vaultDir, transcriptPath } = setupProject();
+    const { projectRoot, mycoHome, groveId, transcriptPath } = setupProject();
 
     try {
       // Isolated MYCO_HOME + no daemon.json + MYCO_NO_AUTO_SPAWN=1 means
@@ -47,7 +67,7 @@ describe('hook send-event stderr observability', () => {
           env: {
             ...process.env,
             MYCO_NO_AUTO_SPAWN: '1',
-            MYCO_HOME: path.join(projectRoot, 'home'),
+            MYCO_HOME: mycoHome,
           },
           input: JSON.stringify({
             session_id: 'sess-stderr-transport',
@@ -66,8 +86,12 @@ describe('hook send-event stderr observability', () => {
       // Reason classification: no daemon.json → result.ok=false, result.data=undefined.
       expect(result.stderr).toContain('transport-failure');
 
-      // And the buffer should still have the event (the durability path is unchanged).
-      const bufferPath = path.join(vaultDir, 'buffer', 'sess-stderr-transport.jsonl');
+      // The buffer landed under the global Grove tree, not the legacy
+      // `<projectRoot>/.myco/buffer/` path.
+      const bufferPath = path.join(
+        resolveProjectBufferDir(groveId, TEST_PROJECT_ID, mycoHome),
+        'sess-stderr-transport.jsonl',
+      );
       expect(fs.existsSync(bufferPath)).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });

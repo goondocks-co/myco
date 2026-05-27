@@ -3,17 +3,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Regression guard: stdio symbiont MCP templates must use committed,
- * project-portable launchers (no absolute paths, no `myco-dev`, no
- * host-specific shims). Most agents use the global `myco-run` launcher,
- * which consults `.myco/runtime.command` to pick the right binary per
- * project. OpenCode uses the committed project launcher because its MCP
- * child PATH can bypass `~/.local/bin`.
+ * Regression guard: symbiont MCP templates must use a portable transport
+ * shape — either an HTTP URL pointing at the local daemon, or a stdio
+ * launcher invocation with no absolute paths and no `myco-dev` shim.
  *
- * Two shape variants are allowed:
- *   - Claude/Cursor/Gemini/Copilot: `{ command: "myco-run", args: ["mcp"] }`
- *   - Opencode:                     `{ command: ["node", ".agents/myco-cli.cjs", "mcp"] }`
- *   - Codex:                        `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
+ * Shape variants allowed:
+ *   - HTTP URL:    `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
+ *                  Cursor, Codex, Windsurf, Opencode, Copilot, Antigravity.
+ *   - Stdio node:  `{ command: ["node", ".agents/myco-cli.cjs", "mcp"] }`
+ *                  Legacy project-launcher shape — still tolerated for
+ *                  manifests that haven't migrated to URL transport.
+ *   - Stdio bin:   `{ command: "myco-run", args: ["mcp"] }`
+ *                  Legacy PATH-binary shape — same.
+ *
+ * The convergence direction is URL transport (one daemon, one port,
+ * no PATH dependency). New manifests should land there by default.
  */
 
 const TEMPLATES_ROOT = path.resolve('packages/myco/src/symbionts/templates');
@@ -62,13 +66,20 @@ describe('symbiont MCP templates', () => {
       });
 
       it('uses the expected transport shape', () => {
-        if (name === 'codex') {
-          expect(mycoServer.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
+        // URL transport: every URL must point at the local daemon via the
+        // `{{daemonPort}}` placeholder. Windsurf uses `serverUrl` (its
+        // MCP config key), every other URL-transport agent uses `url`.
+        const url = (mycoServer as { url?: string; serverUrl?: string }).url
+          ?? (mycoServer as { url?: string; serverUrl?: string }).serverUrl;
+        if (url) {
+          expect(url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
           expect(mycoServer.command).toBeUndefined();
           expect(mycoServer.args).toBeUndefined();
           return;
         }
 
+        // Stdio transport: launcher invocation must use a portable
+        // command (no absolute paths, no host-specific shims).
         const { command, args } = extractLauncherInvocation(mycoServer);
 
         if (name === 'opencode') {

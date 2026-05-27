@@ -6,6 +6,7 @@
 
 import type { MycoConfig } from '@myco/config/schema.js';
 import { shouldInjectCortex } from './cortex-brief.js';
+import { composeCortexInstructionInjection } from './cortex-injection-context.js';
 import { getSessionStartDigestPayload, shouldInjectSessionStartDigest } from './session-start-digest.js';
 
 export interface SessionStartContextPart {
@@ -46,7 +47,8 @@ export function composeSessionStartContext(
   const parts: SessionStartContextPart[] = [];
 
   if (cortexEnabled && cortexContent) {
-    parts.push({ kind: 'cortex', text: cortexContent });
+    const cortex = composeCortexInstructionInjection(cortexContent, 'session-start');
+    if (cortex) parts.push({ kind: 'cortex', text: cortex.text });
   }
   if (digestEnabled) {
     const digest = getSessionStartDigestPayload(config.cortex.digest, scope);

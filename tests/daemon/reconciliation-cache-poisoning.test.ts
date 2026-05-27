@@ -43,7 +43,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
       JSON.stringify({ type: 'user_prompt', prompt: promptText, timestamp: '2026-05-18T17:37:20.907Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     // First call: session row not present yet. Reconciler must bail and
     // must NOT poison the cache.
@@ -65,7 +65,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     const sessionId = 'cache-poison-002';
     seedSession({ id: sessionId, agent: 'claude-code' });
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     // No buffer file on disk yet — reconciler should silently no-op.
     reconciler.reconcileSession(sessionId);
@@ -93,7 +93,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
       JSON.stringify({ type: 'user_prompt', prompt: promptText, timestamp: '2026-05-18T17:37:20.907Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     reconciler.reconcileSession(sessionId);
     const batchesAfterFirst = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });

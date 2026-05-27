@@ -74,29 +74,40 @@ export function completeStaleActiveSessions(
 /**
  * Find session IDs eligible for dead-session cleanup.
  *
- * A session is "dead" only if BOTH:
- *   1. Its status is NOT 'active' (prevents racing with a session that's
- *      currently running — active sessions get swept by the stale-session
- *      step first when truly idle).
- *   2. Its prompt_count is at most DEAD_SESSION_MAX_PROMPTS (default 0,
- *      meaning only empty "registered but never used" sessions qualify).
+ * "Dead" requires both:
+ *   1. status != 'active' (avoids racing currently-running sessions; the
+ *      stale-session step handles those when truly idle).
+ *   2. actual prompt_batches count <= DEAD_SESSION_MAX_PROMPTS (default 0).
  *
- * Also excludes currently-registered in-memory sessions as a defense-in-depth
- * guard against TOCTOU between the status check and the delete.
+ * Counts come from prompt_batches directly, not `sessions.prompt_count` —
+ * the cached column can drift low and falsely qualify a session that has
+ * batches. Uses NOT EXISTS for the default zero-threshold path (fast,
+ * short-circuits on first hit per session) and a correlated COUNT for
+ * any non-default threshold.
+ *
+ * `registeredSessionIds` are excluded as defense-in-depth against TOCTOU
+ * between the status check and the delete.
  */
 export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
   const db = getDatabase();
 
   const excludePlaceholders = registeredSessionIds.length > 0
-    ? `AND id NOT IN (${registeredSessionIds.map(() => '?').join(', ')})`
+    ? `AND s.id NOT IN (${registeredSessionIds.map(() => '?').join(', ')})`
     : '';
 
-  const params: unknown[] = [DEAD_SESSION_MAX_PROMPTS, ...registeredSessionIds];
+  const fastPath = DEAD_SESSION_MAX_PROMPTS === 0;
+  const countPredicate = fastPath
+    ? `NOT EXISTS (SELECT 1 FROM prompt_batches pb WHERE pb.session_id = s.id)`
+    : `(SELECT COUNT(*) FROM prompt_batches pb WHERE pb.session_id = s.id) <= ?`;
+
+  const params: unknown[] = fastPath
+    ? [...registeredSessionIds]
+    : [DEAD_SESSION_MAX_PROMPTS, ...registeredSessionIds];
 
   const rows = db.prepare(
-    `SELECT id FROM sessions
-     WHERE prompt_count <= ?
-       AND status != 'active'
+    `SELECT s.id FROM sessions s
+     WHERE ${countPredicate}
+       AND s.status != 'active'
        ${excludePlaceholders}`,
   ).all(...params) as { id: string }[];
 

@@ -1,6 +1,6 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession, countBatchesBySession, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
-import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
+import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
+import { listActivitiesByBatch, countActivities, countActivitiesBySessions } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js';
@@ -31,21 +31,29 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   const status = req.query.status || undefined;
   const agent = req.query.agent || undefined;
   const search = req.query.search || undefined;
+  const hasPlan = req.query.has_plan === 'true' ? true : undefined;
   const scope = projectScopeFromRequestContext(req.requestContext);
 
-  const filterOpts = { scope, status, agent, search };
+  const filterOpts = { scope, status, agent, search, hasPlan };
 
   const rawSessions = listSessions({ ...filterOpts, limit, offset });
-  const states = releaseStateAnnotationMap('sessions', rawSessions.map((s) => s.id), scope);
-  const activityBuckets = getSessionActivityBuckets(rawSessions.map((s) => s.id));
+  const ids = rawSessions.map((s) => s.id);
+  const states = releaseStateAnnotationMap('sessions', ids, scope);
+  const activityBuckets = getSessionActivityBuckets(ids);
+  // Derived counts from a single GROUP BY each — the cached
+  // `sessions.prompt_count` / `tool_count` columns can drift if a writer
+  // missed the bump, and the detail endpoint already derives, so the
+  // list endpoint matches.
+  const promptCounts = countBatchesBySessions(ids);
+  const toolCounts = countActivitiesBySessions(ids);
   const sessions = rawSessions.map((s) => ({
     id: s.id,
     date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
     title: s.title || s.id.slice(0, 8),
     status: s.status,
     agent: s.agent,
-    prompt_count: s.prompt_count,
-    tool_count: s.tool_count,
+    prompt_count: promptCounts.get(s.id) ?? 0,
+    tool_count: toolCounts.get(s.id) ?? 0,
     started_at: s.started_at,
     ended_at: s.ended_at,
     branch: s.branch,
@@ -162,10 +170,18 @@ export interface SessionMutationDeps {
    *  short-circuited by the per-lifetime reconciliation cache. Mirrors
    *  the unregister path in session-lifecycle.ts. */
   reconciler: { clearSession(sessionId: string): void };
+  /** Cleared on DELETE so the next event for a deleted session's id
+   *  re-takes the auto-register-and-reconcile branch in
+   *  `event-dispatch.ts` (gated on `registry.getSession`). Without
+   *  this, a stale registry entry from the deleted session causes the
+   *  dispatcher to skip reconcile entirely, the defensive
+   *  `ensureSessionRowExists` materializes an empty row, and the
+   *  buffered prompts are orphaned forever. */
+  registry: { unregister(sessionId: string): void };
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, liveConfig, reconciler } = deps;
+  const { embeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -178,6 +194,14 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     // Clear the per-lifetime reconciliation cache so a re-registration
     // with the same session id replays its buffer cleanly.
     reconciler.clearSession(sessionId);
+
+    // Clear the in-memory registry entry. The event-dispatch fast path
+    // (`if (!registry.getSession(event.session_id))`) gates the whole
+    // auto-register-and-reconcile branch on registry membership; a
+    // stale entry leftover from the just-deleted session caused the
+    // next event to skip reconcile entirely and orphan its buffer.
+    // Mirror the unregister sequence in `session-lifecycle.ts`.
+    registry.unregister(sessionId);
 
     // Fire-and-forget cleanup: embeddings, vault files, attachments,
     // and the session's buffer journal.

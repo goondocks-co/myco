@@ -1,7 +1,3 @@
-<!-- myco:agents-ref:start -->
-> **Project intelligence:** This project uses [Myco](https://myco.sh). The canonical project rules are in [`AGENTS.md`](AGENTS.md) — read and follow it alongside this file.
-<!-- myco:agents-ref:end -->
-
 ## Agent Teams
 
 Use Claude Code agent teams for parallelizable work where teammates need to communicate with each other. See [docs/agent-teams.md](docs/agent-teams.md) for the full reference.

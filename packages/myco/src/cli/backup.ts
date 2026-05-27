@@ -48,7 +48,7 @@ export async function run(args: string[]): Promise<void> {
     }
 
     const vaultDir = resolveProjectVaultDir(found.project.root);
-    const machineId = getMachineId(vaultDir);
+    const machineId = getMachineId();
     const slug = projectUrlSlug(found.project.name, found.project.project_id);
     const backupDir = path.join(resolveBackupsRoot(), slug);
     fs.mkdirSync(backupDir, { recursive: true });

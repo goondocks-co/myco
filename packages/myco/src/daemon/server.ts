@@ -17,7 +17,12 @@ import {
 } from '../tools/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
-import { readDaemonState, writeDaemonState, type DaemonState } from './service-state.js';
+import { type DaemonState } from './service-state.js';
+import {
+  DaemonStateAuthority,
+  createDaemonStateAuthority,
+} from './daemon-state-authority.js';
+import { resolveDaemonServiceState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
@@ -53,7 +58,13 @@ const HTTP_LISTEN_BACKLOG = 4_096;
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
-  daemonStatePath?: string;
+  /**
+   * Capability for mutating `daemon.json`. The ONLY way the server
+   * writes state. Required for production callers; tests that don't
+   * exercise the listen callback may omit it, in which case the server
+   * constructs one from `resolveDaemonServiceState(vaultDir)`.
+   */
+  daemonStateAuthority?: DaemonStateAuthority;
   uiDir?: string;
   uiDevProxyTarget?: string;
   onRequest?: () => void;
@@ -77,7 +88,7 @@ export class DaemonServer {
   uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
-  private daemonStatePath: string;
+  private stateAuthority: DaemonStateAuthority;
   private logger: DaemonLogger;
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
@@ -109,8 +120,12 @@ export class DaemonServer {
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
-    this.daemonStatePath = config.daemonStatePath ?? path.join(config.vaultDir, 'daemon.json');
     this.logger = config.logger;
+    this.stateAuthority = config.daemonStateAuthority
+      ?? createDaemonStateAuthority(
+        resolveDaemonServiceState(config.vaultDir, { env: process.env }),
+        config.logger,
+      );
     this.uiDir = config.uiDir ?? null;
     this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
@@ -531,10 +546,10 @@ export class DaemonServer {
 
   updateDaemonJsonSessions(sessions: string[]): void {
     try {
-      const info = readDaemonState(this.daemonStatePath);
+      const info = this.stateAuthority.read();
       if (!info) return;
       info.sessions = sessions;
-      writeDaemonState(this.daemonStatePath, info);
+      this.stateAuthority.write(info, { reason: 'sessions-update' });
     } catch { /* daemon state may not exist during shutdown */ }
   }
 
@@ -552,7 +567,7 @@ export class DaemonServer {
   }
 
   private writeDaemonJson(): void {
-    writeDaemonState(this.daemonStatePath, this.currentDaemonState());
+    this.stateAuthority.write(this.currentDaemonState(), { reason: 'server-start-listen' });
   }
 }
 

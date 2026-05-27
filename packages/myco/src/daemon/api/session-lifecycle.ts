@@ -21,7 +21,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { cleanStaleBuffers } from '@myco/capture/buffer.js';
 import { closeSession, updateSession } from '@myco/db/queries/sessions.js';
-import { ensureSession } from '../session-lifecycle.js';
+import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -152,7 +152,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       startedAt: resolvedStartedAt,
       registry,
       logger,
-      source: 'api',
+      source: ENSURE_SESSION_SOURCE.API,
     });
     // `branch` is only carried on this API path (hooks discover it via
     // git provenance separately). Apply it as a follow-up update so the

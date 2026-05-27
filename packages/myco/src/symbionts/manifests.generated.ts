@@ -10,10 +10,64 @@ import type { SymbiontManifest } from './manifest-schema.js';
 
 export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
   {
+    "name": "antigravity",
+    "displayName": "Google Antigravity",
+    "binary": "antigravity",
+    "configDir": ".agents/plugins/myco",
+    "detectionDir": "~/.gemini",
+    "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
+    "hookFields": {
+      "sessionId": "conversationId",
+      "transcriptPath": "transcriptPath",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "toolCall.name",
+      "toolInput": "toolCall.args",
+      "toolOutput": "tool_output"
+    },
+    "capture": {
+      "planDirs": [
+        ".agents/plugins/myco/plans/"
+      ],
+      "planTags": [],
+      "rules": []
+    },
+    "registration": {
+      "hooksTarget": ".agents/plugins/myco/hooks.json",
+      "globalHooksTarget": "~/.gemini/config/plugins/myco/hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.gemini/config/plugins/myco/mcp_config.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.gemini/antigravity/skills",
+      "pluginManifestTarget": ".agents/plugins/myco/plugin.json",
+      "globalPluginManifestTarget": "~/.gemini/config/plugins/myco/plugin.json",
+      "hooksFormat": "plugin-file",
+      "hooksTemplateFile": "hooks.json",
+      "hookResponse": {
+        "format": "antigravity-inject-steps"
+      },
+      "mcpTarget": ".agents/plugins/myco/mcp_config.json",
+      "mcpFormat": "json",
+      "mcpServersKey": "mcpServers",
+      "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false,
+      "canopyReadTools": [],
+      "pathBearingTools": []
+    },
+    "hooks": {}
+  },
+  {
     "name": "claude-code",
     "displayName": "Claude Code",
     "binary": "claude",
     "configDir": ".claude",
+    "detectionDir": "~/.claude",
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
     "settingsPath": ".claude/settings.json",
     "hookFields": {
@@ -119,6 +173,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".claude/settings.json",
+      "globalHooksTarget": "~/.claude/settings.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.claude/settings.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.claude/skills",
+      "globalSettingsTarget": "~/.claude/settings.json",
       "hooksFormat": "json",
       "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
@@ -131,6 +193,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
+      "subagentStartInjection": true,
       "canopyReadTools": [
         {
           "tool": "Read",
@@ -160,6 +223,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "pathKind": "file"
         }
       ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
     }
   },
   {
@@ -167,6 +238,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "Codex",
     "binary": "codex",
     "configDir": ".codex",
+    "detectionDir": "~/.codex",
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
     "settingsPath": ".codex/config.toml",
     "hookFields": {
@@ -182,7 +254,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capture": {
       "planDirs": [],
       "planTags": [
-        "proposed_plan"
+        "update_plan"
       ],
       "rules": [
         {
@@ -333,6 +405,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".codex/hooks.json",
+      "globalHooksTarget": "~/.codex/hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.codex/config.toml"
+        }
+      ],
+      "globalSkillsTarget": "~/.codex/skills",
+      "globalSettingsTarget": "~/.codex/config.toml",
       "hooksFormat": "json",
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
@@ -344,6 +424,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
+      "subagentStartInjection": true,
       "canopyReadTools": [
         {
           "tool": "Bash",
@@ -390,6 +471,262 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           ]
         }
       ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
+    }
+  },
+  {
+    "name": "copilot",
+    "displayName": "GitHub Copilot",
+    "binary": "copilot",
+    "configDir": ".vscode",
+    "detectionDir": "~/.copilot",
+    "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
+    "hookFields": {
+      "sessionId": "session_id",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_response"
+    },
+    "capture": {
+      "planDirs": [],
+      "planTags": [],
+      "rules": []
+    },
+    "registration": {
+      "hooksTarget": ".github/hooks/myco-hooks.json",
+      "globalHooksTarget": "~/.copilot/hooks/myco-hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.copilot/mcp-config.json",
+          "serversKey": "mcpServers"
+        },
+        {
+          "path": "~/Library/Application Support/Code/User/mcp.json",
+          "serversKey": "servers"
+        }
+      ],
+      "globalSkillsTarget": "~/.copilot/skills",
+      "globalSettingsTarget": "~/.copilot/hooks/myco-hooks.json",
+      "hooksFormat": "json",
+      "mcpTarget": ".vscode/mcp.json",
+      "mcpFormat": "json",
+      "mcpServersKey": "mcpServers",
+      "skillsTarget": ".agents/skills",
+      "settingsTarget": ".vscode/settings.json",
+      "settingsFormat": "json",
+      "instructionsFile": ".github/copilot-instructions.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "subagentStartInjection": true,
+      "canopyReadTools": [
+        {
+          "tool": "read_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "run_in_terminal",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "view",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "powershell",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl",
+            "Get-Content",
+            "gc"
+          ]
+        },
+        {
+          "tool": "grep",
+          "pathField": "path",
+          "pathKind": "file"
+        }
+      ],
+      "pathBearingTools": [
+        {
+          "tool": "read_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "run_in_terminal",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "replace_string_in_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "create_file",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "apply_patch",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "view",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "powershell",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl",
+            "Get-Content",
+            "gc"
+          ]
+        },
+        {
+          "tool": "edit",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "create",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "grep",
+          "pathField": "path",
+          "pathKind": "file"
+        }
+      ]
+    },
+    "hooks": {
+      "Stop": {
+        "phases": [
+          "response",
+          "transcript"
+        ]
+      }
     }
   },
   {
@@ -397,6 +734,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "Cursor",
     "binary": "cursor",
     "configDir": ".cursor",
+    "detectionDir": "~/.cursor",
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
     "settingsPath": ".cursor/mcp.json",
     "hookFields": {
@@ -418,6 +756,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".cursor/hooks.json",
+      "globalHooksTarget": "~/.cursor/hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.cursor/mcp.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.cursor/skills",
+      "globalSettingsTarget": "~/.cursor/hooks.json",
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
       "hookResponse": {
@@ -441,57 +787,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
-    }
-  },
-  {
-    "name": "gemini",
-    "displayName": "Gemini CLI",
-    "binary": "gemini",
-    "configDir": ".gemini",
-    "pluginRootEnvVar": "GEMINI_PLUGIN_ROOT",
-    "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_output",
-      "sessionIdEnv": "GEMINI_SESSION_ID"
     },
-    "resumeCommand": "gemini --resume {sessionId}",
-    "capture": {
-      "planDirs": [
-        ".gemini/plans/"
-      ],
-      "planTags": [],
-      "rules": []
-    },
-    "registration": {
-      "hooksTarget": ".gemini/settings.json",
-      "hooksFormat": "json",
-      "mcpTarget": ".gemini/settings.json",
-      "mcpFormat": "json",
-      "mcpServersKey": "mcpServers",
-      "skillsTarget": ".agents/skills",
-      "settingsTarget": ".gemini/settings.json",
-      "settingsFormat": "json",
-      "instructionsFile": "GEMINI.md"
-    },
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "canopyReadTools": [],
-      "pathBearingTools": []
-    }
+    "hooks": {}
   },
   {
     "name": "opencode",
     "displayName": "OpenCode",
     "binary": "opencode",
     "configDir": ".opencode",
+    "detectionDir": "~/.config/opencode",
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "session_id",
@@ -512,6 +819,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".opencode/plugins/myco.ts",
+      "globalHooksTarget": "~/.config/opencode/plugins/myco.ts",
+      "globalMcpTarget": [
+        {
+          "path": "~/.config/opencode/opencode.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.config/opencode/skills",
       "hooksFormat": "plugin-file",
       "pluginPackageTarget": ".opencode/package.json",
       "mcpTarget": "opencode.json",
@@ -524,6 +838,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -542,13 +857,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "pathKind": "file"
         }
       ]
-    }
+    },
+    "hooks": {}
   },
   {
     "name": "pi",
     "displayName": "Pi",
     "binary": "pi",
     "configDir": ".pi",
+    "detectionDir": "~/.pi",
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "session_id",
@@ -568,6 +885,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".pi/extensions/myco/index.ts",
+      "globalHooksTarget": "~/.pi/agent/extensions/myco/index.ts",
+      "globalMcpTarget": null,
+      "globalSkillsTarget": "~/.pi/agent/skills",
       "hooksFormat": "plugin-file",
       "pluginPackageTarget": ".pi/extensions/myco/package.json",
       "mcpFormat": "json",
@@ -578,61 +898,26 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
-    }
-  },
-  {
-    "name": "vscode-copilot",
-    "displayName": "VS Code Copilot",
-    "binary": "code",
-    "configDir": ".vscode",
-    "pluginRootEnvVar": "VSCODE_PLUGIN_ROOT",
-    "hookFields": {
-      "sessionId": "sessionId",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_output"
     },
-    "capture": {
-      "planDirs": [],
-      "planTags": [],
-      "rules": []
-    },
-    "registration": {
-      "hooksTarget": ".github/hooks/myco-hooks.json",
-      "hooksFormat": "json",
-      "mcpTarget": ".vscode/mcp.json",
-      "mcpFormat": "json",
-      "mcpServersKey": "mcpServers",
-      "skillsTarget": ".agents/skills",
-      "settingsTarget": ".vscode/settings.json",
-      "settingsFormat": "json",
-      "instructionsFile": ".github/copilot-instructions.md"
-    },
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "canopyReadTools": [],
-      "pathBearingTools": []
-    }
+    "hooks": {}
   },
   {
     "name": "windsurf",
     "displayName": "Windsurf",
     "binary": "windsurf",
     "configDir": ".windsurf",
+    "detectionDir": "~/.codeium/windsurf",
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "trajectory_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+      "transcriptPath": "tool_info.transcript_path",
+      "lastResponse": "tool_info.response",
+      "prompt": "tool_info.user_prompt",
+      "toolName": "agent_action_name",
+      "toolInput": "tool_info",
       "toolOutput": "tool_output"
     },
     "capture": {
@@ -644,6 +929,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".windsurf/hooks.json",
+      "globalHooksTarget": "~/.codeium/windsurf/hooks.json",
+      "globalMcpTarget": [
+        {
+          "path": "~/.codeium/windsurf/mcp_config.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.codeium/windsurf/skills",
+      "globalSettingsTarget": null,
       "hooksFormat": "json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
@@ -654,8 +947,21 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
+    },
+    "hooks": {
+      "post_cascade_response": {
+        "phases": [
+          "response"
+        ]
+      },
+      "post_cascade_response_with_transcript": {
+        "phases": [
+          "transcript"
+        ]
+      }
     }
   }
 ] as const;

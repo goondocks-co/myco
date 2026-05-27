@@ -173,6 +173,7 @@ export function useSessions(filters?: {
   status?: string;
   agent?: string;
   search?: string;
+  hasPlan?: boolean;
   limit?: number;
   offset?: number;
 }) {
@@ -180,6 +181,7 @@ export function useSessions(filters?: {
   if (filters?.status) params.set('status', filters.status);
   if (filters?.agent) params.set('agent', filters.agent);
   if (filters?.search) params.set('search', filters.search);
+  if (filters?.hasPlan) params.set('has_plan', 'true');
   if (filters?.limit !== undefined) params.set('limit', String(filters.limit));
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();

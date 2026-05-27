@@ -3,9 +3,11 @@
  * spore search per prompt, and resume summaries for resumed sessions.
  */
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { ensureSessionRowExists, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import {
   EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
@@ -19,10 +21,13 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   shouldInjectCortex,
 } from '@myco/context/cortex-brief.js';
+import { composeCortexInstructionInjection } from '@myco/context/cortex-injection-context.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
+import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -62,6 +67,13 @@ const ResumeContextBody = z.object({
 const PromptContextBody = z.object({
   prompt: z.string(),
   session_id: z.string().optional(),
+});
+
+const SubagentContextBody = z.object({
+  session_id: z.string().optional(),
+  agent: z.string().optional(),
+  agent_id: z.string().optional(),
+  agent_type: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -140,9 +152,42 @@ export function createSessionContextHandler(deps: ContextDeps) {
           source_run_id: sourceRunId,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
-          injected_text: contextText,
         },
       );
+
+      // Per-(session) dedup gate. UNIQUE on
+      // `myco:inject:cortex:<sessionId>` blocks re-entry within the same
+      // session.
+      //
+      // Some symbionts (OpenCode) race `/sessions/register` and
+      // `/context` in parallel; `/context` can land first. The
+      // injection sentinel-batch creation downstream has an FK to
+      // `sessions`, so an absent row makes `recordInjectionActivity`
+      // bail with `no_batch` and the cortex activity never gets
+      // recorded even though the text was served. Defensively ensure
+      // the session row exists FIRST — `ensureSessionRowExists`
+      // upserts only when truly missing and logs a warning so the
+      // gap is observable.
+      if (session_id) {
+        try {
+          ensureSessionRowExists({
+            sessionId: session_id,
+            projectId: requestProjectId,
+            projectRoot: req.requestContext?.projectRoot ?? null,
+            machineId: req.requestContext?.machineId ?? 'local',
+            logger,
+            source: ENSURE_SESSION_SOURCE.CONTEXT,
+          });
+        } catch { /* defensive — never block the cortex serve */ }
+        const { suppress } = await recordInjectionAndShouldSuppress({
+          sessionId: session_id,
+          projectId: requestProjectId,
+          injectionType: 'cortex',
+          trigger: { metadata: { source, branch } },
+          fetchContent: async () => ({ text: contextText, metadata: { source } }),
+        });
+        if (suppress) return { body: { text: '' } };
+      }
 
       return {
         body: {
@@ -152,6 +197,121 @@ export function createSessionContextHandler(deps: ContextDeps) {
       };
     } catch (error) {
       logger.error(LOG_KINDS.CONTEXT_SESSION, 'Session context failed', { error: (error as Error).message });
+      return { body: { text: '' } };
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Subagent-start context handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a handler that injects managed Cortex instructions into supported child agents.
+ */
+export function createSubagentContextHandler(deps: ContextDeps) {
+  return async function handleSubagentContext(req: RouteRequest): Promise<RouteResponse> {
+    const { session_id, agent, agent_id, agent_type } = SubagentContextBody.parse(req.body);
+    const { logger, liveConfig } = deps;
+    const config = liveConfig.current;
+
+    logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Subagent context query', {
+      session_id,
+      agent,
+      agent_id,
+      agent_type,
+    });
+
+    try {
+      if (!session_id) return { body: { text: '' } };
+      if (!config.cortex.enabled || !config.cortex.instructions.inject_on_subagent_start) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Subagent context disabled', { session_id, agent });
+        return { body: { text: '' } };
+      }
+      if (!symbiontHasCapability(agent, 'subagentStartInjection')) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Symbiont lacks subagent-start injection', {
+          session_id,
+          agent,
+        });
+        return { body: { text: '' } };
+      }
+
+      const requestProjectId = req.requestContext?.projectId ?? null;
+      const requestScope: import('@myco/grove/ids.js').ProjectScope = requestProjectId
+        ? { kind: 'project', id: requestProjectId }
+        : { kind: 'global' };
+      const snapshot = getCortexInstructionsSnapshot(config, requestScope);
+      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start');
+      if (!composed) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for subagent start', {
+          session_id,
+          agent,
+        });
+        return { body: { text: '' } };
+      }
+      const text = composed.text;
+      const projectId = rowProjectIdFromRequestContext(req.requestContext);
+
+      try {
+        ensureSessionRowExists({
+          sessionId: session_id,
+          projectId: typeof projectId === 'string' ? projectId : null,
+          projectRoot: req.requestContext?.projectRoot ?? null,
+          machineId: req.requestContext?.machineId ?? 'local',
+          logger,
+          source: ENSURE_SESSION_SOURCE.CONTEXT,
+        });
+      } catch { /* defensive — never block child-agent startup */ }
+
+      const discriminator = subagentDiscriminator(agent_id, agent_type);
+      const { suppress } = await recordInjectionAndShouldSuppress({
+        sessionId: session_id,
+        projectId: typeof projectId === 'string' ? projectId : null,
+        injectionType: 'subagent',
+        discriminator,
+        trigger: {
+          metadata: {
+            source: 'subagent-start',
+            agent,
+            agent_id,
+            agent_type,
+          },
+        },
+        fetchContent: async () => ({
+          text,
+          metadata: {
+            source: 'cortex-subagent',
+            source_run_id: snapshot.sourceRunId,
+            generated_at: snapshot.generatedAt,
+          },
+        }),
+      });
+      if (suppress) return { body: { text: '' } };
+
+      logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context injected', {
+        session_id,
+        agent,
+        agent_id,
+        agent_type,
+        source_run_id: snapshot.sourceRunId,
+        text_length: text.length,
+        estimated_tokens: estimateTokens(text),
+      });
+
+      return {
+        body: {
+          text,
+          source: 'cortex-subagent',
+          sourceRunId: snapshot.sourceRunId,
+          generatedAt: snapshot.generatedAt,
+        },
+      };
+    } catch (error) {
+      logger.error(LOG_KINDS.CONTEXT_SESSION, 'Subagent context failed', {
+        session_id,
+        agent,
+        error: (error as Error).message,
+      });
       return { body: { text: '' } };
     }
   };
@@ -219,7 +379,6 @@ export function createResumeContextHandler(deps: ContextDeps) {
           branch: resolvedBranch ?? undefined,
           text_length: contextText.length,
           estimated_tokens: estimatedTokens,
-          injected_text: contextText,
         },
       );
 
@@ -327,12 +486,45 @@ export function createPromptContextHandler(deps: ContextDeps) {
         spore_titles: titles,
         scores: spores.map((s) => s.score.toFixed(3)),
         estimated_tokens: promptTokens,
-        injected_text: text,
       },
     );
 
+    // Per-(session, prompt) dedup gate. UNIQUE on
+    // `myco:inject:spores:<sessionId>:<promptHash>` blocks a second
+    // injection for the same prompt content. `no_batch` falls through.
+    if (text && session_id) {
+      const { suppress } = await recordInjectionAndShouldSuppress({
+        sessionId: session_id,
+        projectId: typeof projectId === 'string' ? projectId : null,
+        injectionType: 'spores',
+        discriminator: hashPromptDiscriminator(prompt),
+        trigger: {
+          metadata: {
+            spore_titles: spores.map((s) => s.title),
+            spore_count: spores.length,
+          },
+        },
+        fetchContent: async () => ({ text, metadata: { spore_count: spores.length } }),
+      });
+      if (suppress) return { body: { text: '' } };
+    }
+
     return { body: { text } };
   };
+}
+
+/**
+ * Hash a prompt to a short, deterministic discriminator suitable for
+ * embedding in a `content_hash`. SHA-1 truncated to 16 hex chars — collisions
+ * here would only mean a single user submitting two prompts whose first 64
+ * bits of SHA-1 collide, which is not a real risk.
+ */
+function hashPromptDiscriminator(prompt: string): string {
+  return createHash('sha1').update(prompt).digest('hex').slice(0, 16);
+}
+
+function subagentDiscriminator(agentId: string | undefined, agentType: string | undefined): string {
+  return agentId?.trim() || agentType?.trim() || 'unknown';
 }
 
 // ---------------------------------------------------------------------------

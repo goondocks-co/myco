@@ -10,7 +10,10 @@ export interface SymbiontInjectionSupport {
 }
 
 function resolveTemplateKey(manifest: SymbiontManifest): string {
-  const templateFile = manifest.registration?.hooksFormat === 'plugin-file' ? 'plugin.ts' : 'hooks.json';
+  const reg = manifest.registration;
+  const templateFile = reg?.hooksFormat === 'plugin-file'
+    ? (reg.hooksTemplateFile ?? 'plugin.ts')
+    : 'hooks.json';
   return `${manifest.name}/${templateFile}`;
 }
 

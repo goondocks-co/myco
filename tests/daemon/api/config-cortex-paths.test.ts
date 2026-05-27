@@ -27,7 +27,7 @@ import type { MycoConfig } from '@myco/config/schema';
 
 function seedFreshVault(dir: string): void {
   // Minimal myco.yaml — schema defaults fill in everything else, just
-  // like a real `myco init` output.
+  // like a real install-bootstrap output.
   fs.writeFileSync(
     path.join(dir, 'myco.yaml'),
     `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`,
@@ -68,18 +68,28 @@ function patchFromPath(dotted: string, value: unknown): Record<string, unknown> 
 
 describe('PUT /api/config/scoped — cortex paths land at the v8 shape', () => {
   let tmpDir: string;
+  let prevMycoHome: string | undefined;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cortex-paths-'));
     seedFreshVault(tmpDir);
+    // The v8 merged-config loader walks Grove tiers anchored at MYCO_HOME;
+    // without a sandbox it picks up the dev machine's Grove(s) and the
+    // project tier disappears from the merge.
+    prevMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmpDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = prevMycoHome;
   });
 
   /** Each entry: a path string, a non-default value to patch, and the expected return type. */
   const cases: Array<{ path: string; value: unknown }> = [
     { path: CORTEX_PATHS.enabled, value: false },
     { path: CORTEX_PATHS.instructions.injectOnSessionStart, value: false },
+    { path: CORTEX_PATHS.instructions.injectOnSubagentStart, value: false },
     { path: CORTEX_PATHS.digest.tier, value: 10000 },
     { path: CORTEX_PATHS.digest.injectOnSessionStart, value: true },
     { path: CORTEX_PATHS.spores.injectOnPromptSubmit, value: false },
@@ -183,12 +193,18 @@ describe('PUT /api/config/scoped — cortex paths land at the v8 shape', () => {
 
 describe('non-cortex paths still work post-v8 (regression check)', () => {
   let tmpDir: string;
+  let prevMycoHome: string | undefined;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-non-cortex-'));
     seedFreshVault(tmpDir);
+    prevMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmpDir, '.myco-home');
+    fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (prevMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = prevMycoHome;
   });
 
   it('notifications.enabled toggles cleanly (agent.* is now Grove-tier)', async () => {

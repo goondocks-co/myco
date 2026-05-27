@@ -2,6 +2,7 @@ name: codex
 displayName: Codex
 binary: codex
 configDir: .codex
+detectionDir: ~/.codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
 resumeCommand: "codex --resume {sessionId}"
@@ -12,7 +13,15 @@ hookFields:
 capture:
   planDirs: []
   planTags:
-    - proposed_plan
+    # Codex's plan mode does not write markdown files to disk; instead
+    # it emits structured plan updates via the `update_plan` function-call
+    # tool (response_item / function_call / name=update_plan with a JSON
+    # `plan` array in `arguments`). The Codex transcript parser
+    # (`packages/myco/src/symbionts/parsers/codex-jsonl.ts`) synthesizes
+    # an `<update_plan>...</update_plan>` envelope from the tool call's
+    # JSON args at parse time, appended to the assistant turn's
+    # aiResponse, so this shared tag-extraction path captures it.
+    - update_plan
   rules:
     # Ephemeral sub-invocation filter (structural, two-layer defense).
     #
@@ -193,14 +202,29 @@ capture:
     interruptMarker: "<turn_aborted>"
 registration:
   hooksTarget: .codex/hooks.json
+  # Codex hooks live in a dedicated JSON file at both scopes. The plan's
+  # original "consolidate hooks + MCP into config.toml" left the installer
+  # writing JSON over a TOML file, corrupting the user's mcp_servers /
+  # profiles / etc. Hooks go to a separate JSON file; MCP keeps config.toml.
+  globalHooksTarget: ~/.codex/hooks.json
   mcpTarget: .codex/config.toml
   mcpFormat: toml
+  globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.codex/skills
   settingsTarget: .codex/config.toml
+  # Settings under global scope MUST land in config.toml (TOML) and
+  # NOT share a path with the JSON hooks file. Required because
+  # settingsFormat is `toml`; the manifest schema's TOML-vs-JSON
+  # refine() enforces this declaration.
+  globalSettingsTarget: ~/.codex/config.toml
   settingsFormat: toml
 capabilities:
   # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
+  # SubagentStart can inject additionalContext as extra developer context for
+  # the child agent.
+  subagentStartInjection: true
   # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
   # the agent's context.
   preToolUseInjection: true
@@ -249,3 +273,10 @@ capabilities:
         - grep
         - rg
         - perl
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

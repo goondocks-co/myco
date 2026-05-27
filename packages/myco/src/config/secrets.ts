@@ -57,6 +57,39 @@ export function writeSecret(vaultDir: string, key: string, value: string): void 
   writeSecretsFile(secretsPath, content);
 }
 
+/**
+ * Migrate secrets from a legacy project vault to the machine-wide
+ * `~/.myco/secrets.env`. The one-shot global-install migration calls this
+ * before deleting the project-vault `secrets.env` so user API keys
+ * (ANTHROPIC_API_KEY, OPENAI_API_KEY, team tokens) never silently vanish.
+ *
+ * Semantics:
+ * - Reads the legacy project secrets; if none, returns `[]` immediately.
+ * - For each key, writes it to `mycoHome/secrets.env` ONLY when the
+ *   global file has no entry for that key — the machine-level value
+ *   wins on conflict, matching `propagateLegacyMachineId`'s "global is
+ *   already canonical" semantics.
+ * - Returns the list of keys actually propagated, for audit logging.
+ *
+ * Permissions are tightened on every write by the underlying
+ * `writeSecret`. Idempotent: a second call after migration is a no-op
+ * because the global file now has every legacy key.
+ */
+export function propagateLegacySecrets(vaultDir: string, mycoHome: string): string[] {
+  const legacy = readSecrets(vaultDir);
+  const keys = Object.keys(legacy);
+  if (keys.length === 0) return [];
+
+  const propagated: string[] = [];
+  const existing = readSecrets(mycoHome);
+  for (const key of keys) {
+    if (existing[key] !== undefined) continue;
+    writeSecret(mycoHome, key, legacy[key]);
+    propagated.push(key);
+  }
+  return propagated;
+}
+
 /** Remove one or more secrets from <vault>/secrets.env, preserving remaining entries. */
 export function deleteSecrets(vaultDir: string, keys: string[]): void {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);

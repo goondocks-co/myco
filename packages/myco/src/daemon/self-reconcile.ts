@@ -1,19 +1,30 @@
 import type { DaemonLogger } from './logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
-  readDaemonState,
-  writeOrTouchDaemonState,
   type DaemonServiceState,
   type DaemonState,
 } from './service-state.js';
+import type { DaemonStateAuthority } from './daemon-state-authority.js';
 import { readIntent, clearIntentSection } from './intent.js';
+import { installGlobalLaunchers } from '../grove/launcher-install.js';
 
 export interface ReconcileSelfDeps {
   daemonService: DaemonServiceState;
+  /**
+   * Capability for mutating daemon.json. The reconciler's heartbeat
+   * write goes through this; raw `writeOrTouchDaemonState` is no longer
+   * accessible.
+   */
+  stateAuthority: DaemonStateAuthority;
   currentState: () => DaemonState;
   logger: DaemonLogger;
   requestSupervisorRestart?: () => void;
   installUpdate?: (targetVersion: string) => Promise<void>;
+  /**
+   * Override the launcher-install step for tests; production callers
+   * use the bundled-template-driven default.
+   */
+  refreshLaunchers?: () => void;
   /**
    * Reads the post-install error file (~/.myco/update-error.json) if
    * present. The installer script writes this on npm install failure
@@ -57,7 +68,7 @@ export interface ReconcileSelfDeps {
  */
 export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   const expected = deps.currentState();
-  const observed = readDaemonState(deps.daemonService.statePath);
+  const observed = deps.stateAuthority.read();
   if (!observed || observed.pid !== expected.pid || observed.port !== expected.port) {
     deps.logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Re-asserting daemon.json from live state', {
       had_file: observed !== null,
@@ -68,9 +79,42 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       observed_port: observed?.port ?? null,
     });
   }
-  writeOrTouchDaemonState(deps.daemonService.statePath, expected);
+  deps.stateAuthority.writeOrTouch(expected, { reason: 'self-reconcile:heartbeat' });
 
   const intent = readIntent(deps.daemonService);
+
+  if (intent.refresh_launchers) {
+    // Refresh `~/.myco/launcher.cjs` + `~/.myco/mcp-launcher.cjs` from
+    // the bundled template. Always runs on the daemon thread (never on
+    // the hook process) so we don't race a hook script that is currently
+    // exec'ing the file. Clear AFTER the write so an in-flight crash
+    // leaves the intent for the next tick to retry — the write itself
+    // is atomic + idempotent.
+    deps.logger.info(
+      LOG_KINDS.DAEMON_RECONCILE,
+      'Refresh-launchers intent observed; rewriting global launcher files',
+      {
+        requested_at: intent.refresh_launchers.requested_at,
+        reason: intent.refresh_launchers.reason ?? null,
+      },
+    );
+    try {
+      // skipIntent: true forces the actual write — otherwise the
+      // default daemon-bound `installGlobalLaunchers` would observe
+      // its own daemonIntentContext and raise yet another intent
+      // instead of writing, leaving launchers absent on disk forever.
+      const refresh = deps.refreshLaunchers ?? (() => installGlobalLaunchers(undefined, { skipIntent: true }));
+      refresh();
+      clearIntentSection(deps.daemonService, 'refresh_launchers');
+    } catch (err) {
+      deps.logger.error(
+        LOG_KINDS.DAEMON_RECONCILE,
+        'Launcher refresh failed; intent retained for next-tick retry',
+        { err: String(err) },
+      );
+    }
+  }
+
   if (intent.restart) {
     deps.logger.info(
       LOG_KINDS.DAEMON_RECONCILE,

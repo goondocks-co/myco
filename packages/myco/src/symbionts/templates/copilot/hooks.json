@@ -1,0 +1,134 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook session-start --symbiont copilot",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook session-end --symbiont copilot",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook user-prompt-submit --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook pre-tool-use --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook post-tool-use --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PostToolUseFailure": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook post-tool-use-failure --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "ErrorOccurred": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook error-occurred --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Notification": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook notification --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook pre-compact --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SubagentStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook subagent-start --symbiont copilot",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SubagentStop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook subagent-stop --symbiont copilot",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook stop --symbiont copilot",
+          "timeout": 30
+        }
+      ]
+    }
+  ]
+}

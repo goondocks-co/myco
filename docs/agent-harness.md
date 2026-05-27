@@ -14,7 +14,7 @@ Every piece of this comes from the same source material: the prompts, tool calls
 
 ## Tasks
 
-Twelve tasks cover the full lifecycle. Most users only interact with `vault-evolve` (the default scheduled task) or `vault-seed` (a one-shot for brownfield repos) — the others are available for manual trigger or specialized workflows.
+Fourteen tasks cover the full lifecycle. Most users only interact with `vault-evolve` (the default scheduled task) or `vault-seed` (a one-shot for brownfield repos) — the others are available for manual trigger or specialized workflows.
 
 ### Intelligence
 
@@ -23,11 +23,26 @@ Twelve tasks cover the full lifecycle. Most users only interact with `vault-evol
 | `vault-evolve` | The complete pipeline. Runs on unprocessed batches, extracts spores, consolidates wisdom, refreshes digests. Scheduled by default. |
 | `vault-seed` | One-shot manual seeding for brownfield codebases — explores the repo with filesystem + grep tools and creates the initial spore set and digest. |
 | `title-summary` | Generates or updates a session title and summary. Runs automatically after each session turn. |
-| `extract-only` | Spore extraction without the graph or digest work. Useful for catching up after a long gap. |
+| `extract-only` | Spore extraction without the digest work. Useful for catching up after a long gap. |
 | `review-session` | Deep end-to-end processing of a single session. Trigger from the session detail page. |
-| `graph-maintenance` | Entity creation, edge linking, and deduplication pass. |
 | `digest-only` | Regenerate digest extracts from the current vault state. |
 | `supersession-sweep` | Find and resolve duplicate or contradictory spores. |
+
+### Cortex injection
+
+| Task | What it does |
+|------|-------------|
+| `cortex-instructions` | Generate the per-project instructions block that ships with the session-start digest. |
+| `cortex-prompt-builder` | Build the per-prompt spore injection payload. |
+
+### Canopy
+
+| Task | What it does |
+|------|-------------|
+| `canopy-describe` | Generate the optional one-line LLM descriptions for Canopy entries. |
+| `canopy-map` | Synthesize and refresh the project map. |
+
+See [Canopy](canopy.md) for what these produce.
 
 ### Skill lifecycle
 

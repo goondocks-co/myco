@@ -11,7 +11,6 @@ activateDevBuildModeIfDetected();
 const USAGE = `Usage: myco <command> [args]
 
 Commands:
-  init [options]           Initialize a new vault
   grove <subcommand>       Manage local Groves
   backup <subcommand>      Snapshot and restore a project's Grove data
   update                   Update vault files and agent registration
@@ -35,8 +34,13 @@ Commands:
   restart                  Restart the daemon
   version                  Show plugin version
   mcp                     Start the MCP stdio server
-  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact)
+  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
   daemon                   Start the daemon for the current project
+
+Myco installs globally and registers projects automatically on first agent
+hook. There is no \`myco init\` command — project setup is fully automatic.
+To commit per-project Myco config to a repo (portable Grove identity,
+dogfood binary pinning) use the dashboard's Symbionts page.
 `;
 
 const COMMAND_HELP: Record<string, string> = {
@@ -83,7 +87,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (cmd === 'init') return (await import('./cli/init.js')).run(args);
+  if (cmd === 'init') {
+    console.error(
+      '`myco init` was removed in v0.26. Global install registers projects automatically on first agent hook.\n' +
+      'To commit per-project Myco config to a repo, use the dashboard\'s Symbionts page (`myco open`).',
+    );
+    process.exit(1);
+  }
   if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
   if (cmd === 'backup') return (await import('./cli/backup.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
@@ -109,6 +119,8 @@ async function main(): Promise<void> {
       'task-completed': () => import('./hooks/task-completed.js'),
       'pre-compact': () => import('./hooks/pre-compact.js'),
       'post-compact': () => import('./hooks/post-compact.js'),
+      'error-occurred': () => import('./hooks/error-occurred.js'),
+      'notification': () => import('./hooks/notification.js'),
     };
     const loader = HOOK_DISPATCH[hookName];
     if (!loader) {
@@ -129,7 +141,10 @@ async function main(): Promise<void> {
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
+    console.error(
+      `No myco.yaml found in ${vaultDir}. ` +
+      `Open the dashboard (\`myco open\`) and commit Myco config to this project from the Symbionts page.`,
+    );
     process.exit(1);
   }
 

@@ -3,7 +3,11 @@
  *
  * The contract proven here, across the daemon lifecycle operation class:
  *
- *   At any observable moment, `pid alive ⇔ daemon.json exists`.
+ *   At any observable moment during steady-state succession,
+ *   `daemon.json exists`. Reconcile preserves the predecessor's record
+ *   so the successor's atomic write overwrites in place without a
+ *   visibly-absent window. The self-reconciler heartbeat is the
+ *   backstop for the rare case where succession itself crashes.
  *
  * Plus the two intent-file sub-invariants that complete the tenet:
  *
@@ -60,7 +64,12 @@ import { DaemonLogger } from '../../packages/myco/src/daemon/logger.js';
 import type {
   DaemonServiceState,
   DaemonState,
+  DaemonStatePath,
 } from '../../packages/myco/src/daemon/service-state.js';
+import {
+  createDaemonStateAuthority,
+  type DaemonStateAuthority,
+} from '../../packages/myco/src/daemon/daemon-state-authority.js';
 import type { DaemonLogger as DaemonLoggerType } from '../../packages/myco/src/daemon/logger.js';
 
 function makeService(dir: string, canonicalPort = 20915): DaemonServiceState {
@@ -69,9 +78,14 @@ function makeService(dir: string, canonicalPort = 20915): DaemonServiceState {
   return {
     scope: 'global',
     stateDir,
-    statePath: join(stateDir, 'daemon.json'),
+    statePath: join(stateDir, 'daemon.json') as DaemonStatePath,
+    lockPath: join(stateDir, 'daemon.lock'),
     canonicalPort,
   };
+}
+
+function makeAuthority(svc: DaemonServiceState): DaemonStateAuthority {
+  return createDaemonStateAuthority(svc, { info: () => {} });
 }
 
 function makeLogger(dir: string): DaemonLoggerType {
@@ -101,11 +115,13 @@ function pidAlive(pid: number): boolean {
 }
 
 describe('self-mutation-discipline invariants', () => {
-  test('round-trip: dead predecessor + stale daemon.json → reconcile cleans, invariant restored', async () => {
-    // Cross-cutting integration: simulate a predecessor that exited
-    // without removing daemon.json (the new contract — successor owns
-    // cleanup). The invariant is violated at the start (file exists,
-    // pid dead). reconcileExistingDaemon must restore it.
+  test('round-trip: dead predecessor + stale daemon.json → reconcile preserves file for successor overwrite', async () => {
+    // Cross-cutting integration: predecessor exited leaving stale
+    // daemon.json. New contract: reconcile returns 'ok' without
+    // touching the file. The successor's server.start() atomic write
+    // (simulated here via an in-place rewrite) overwrites the stale
+    // contents — closing the absence window that the previous
+    // delete-then-write shape introduced.
     const dir = mkdtempSync(join(tmpdir(), 'myco-tenet-roundtrip-'));
     const svc = makeService(dir);
 
@@ -116,14 +132,23 @@ describe('self-mutation-discipline invariants', () => {
     expect(pidAlive(deadPid)).toBe(false);
 
     writeFileSync(svc.statePath, JSON.stringify({ pid: deadPid, port: 12345 }));
-    expect(existsSync(svc.statePath)).toBe(true); // invariant violated
+    expect(existsSync(svc.statePath)).toBe(true);
 
     const result = await reconcileExistingDaemon(svc, makeLogger(dir));
 
     expect(result).toBe('ok');
-    // INVARIANT RESTORED: pid not alive AND state file gone.
     expect(pidAlive(deadPid)).toBe(false);
-    expect(existsSync(svc.statePath)).toBe(false);
+    // Reconcile preserves the file — no absence window.
+    expect(existsSync(svc.statePath)).toBe(true);
+
+    // Simulate the successor's atomic write that follows reconcile.
+    const successor = makeState({ pid: process.pid });
+    writeFileSync(svc.statePath, JSON.stringify(successor));
+
+    // INVARIANT: file present and now reflects the successor.
+    expect(existsSync(svc.statePath)).toBe(true);
+    const observed = JSON.parse(readFileSync(svc.statePath, 'utf-8'));
+    expect(observed.pid).toBe(successor.pid);
   });
 
   test('simultaneous restart + update intent — both sections processed in one tick, file fully cleared', async () => {
@@ -148,6 +173,7 @@ describe('self-mutation-discipline invariants', () => {
     const events: string[] = [];
     await reconcileSelf({
       daemonService: svc,
+      stateAuthority: makeAuthority(svc),
       currentState: () => state,
       logger,
       requestSupervisorRestart: () => events.push('restart'),
@@ -195,6 +221,7 @@ describe('self-mutation-discipline invariants', () => {
     let updateCalls = 0;
     await reconcileSelf({
       daemonService: svc,
+      stateAuthority: makeAuthority(svc),
       currentState: () => state,
       logger,
       requestSupervisorRestart: () => { restartCalls += 1; },
@@ -270,13 +297,17 @@ describe('self-mutation-discipline invariants', () => {
       });
 
       // INVARIANTS:
-      //   - State file removed (no orphan pointing at the wrong pid).
       //   - Result is 'ok' — we took over rather than stepping aside
       //     into a non-myco predecessor.
+      //   - State file preserved — successor's upcoming server.start()
+      //     atomic write overwrites the stale recycled-pid record. The
+      //     old delete-then-write shape would have produced an absence
+      //     window; the new shape leaves the file present at every
+      //     observable moment.
       //   - Stranger untouched: pid-reuse defense must not collateral-
       //     damage unrelated processes.
       expect(result).toBe('ok');
-      expect(existsSync(svc.statePath)).toBe(false);
+      expect(existsSync(svc.statePath)).toBe(true);
       expect(pidAlive(strangerPid)).toBe(true);
     } finally {
       stranger.kill('SIGKILL');

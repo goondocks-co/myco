@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { getManifestByName } from '../symbionts/detect.js';
 import { resolveCanopyReadTool } from '../symbionts/canopy-read-tools.js';
@@ -57,8 +57,8 @@ export async function main(): Promise<void> {
   let blob: string | undefined;
 
   try {
-    const vaultDir = resolveVaultDir();
-    if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) return;
+    const vaultDir = resolveProvisionedVaultDir();
+    if (!vaultDir) return;
 
     const input = await readHookInput();
     symbiont = input.agent;

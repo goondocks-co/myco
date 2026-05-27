@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
+import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -45,7 +46,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
-import { ensureSession, ensureSessionRowExists } from './session-lifecycle.js';
+import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -326,7 +327,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           startedAt: event.timestamp,
           registry,
           logger,
-          source: event.type === 'user_prompt' ? 'user_prompt' : 'tool_use',
+          source: event.type === 'user_prompt' ? ENSURE_SESSION_SOURCE.USER_PROMPT : ENSURE_SESSION_SOURCE.TOOL_USE,
         });
         logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
         const autoRegisterScope = projectScopeFromRequestContext(req.requestContext);
@@ -352,12 +353,28 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       }
     }
 
-    // Persist to disk so events survive daemon restarts
+    // Persist to disk so events survive daemon restarts. The buffer lives
+    // under the owning project's Grove dir, resolved from the bound
+    // request context. There is NO fallback location — request context
+    // missing either id means we can't safely route the buffer to its
+    // owning project, and silently writing to a substitute path is the
+    // bug class we kept rediscovering through Grove migration regressions.
+    // Skip the buffer write and log it; the event still flows through the
+    // live DB path above.
     if (!sessionBuffers.has(event.session_id)) {
-      const bufferDir = path.join(vaultDir, 'buffer');
-      sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
+      const ctx = req.requestContext;
+      if (!ctx?.groveId || !ctx?.projectId) {
+        logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Skipping buffer write — request context missing grove/project ids', {
+          session_id: event.session_id,
+          has_grove: !!ctx?.groveId,
+          has_project: !!ctx?.projectId,
+        });
+      } else {
+        const bufferDir = resolveProjectBufferDir(ctx.groveId, ctx.projectId);
+        sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
+      }
     }
-    sessionBuffers.get(event.session_id)!.append(event);
+    sessionBuffers.get(event.session_id)?.append(event);
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
@@ -414,7 +431,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             projectRoot: requestProjectRoot,
             machineId: requestMachineId,
             logger,
-            source: 'user_prompt',
+            source: ENSURE_SESSION_SOURCE.USER_PROMPT,
           });
           const kind = typeof event.kind === 'string' ? event.kind : 'initial';
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
@@ -532,7 +549,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           projectRoot: requestProjectRoot,
           machineId: requestMachineId,
           logger,
-          source: 'tool_use',
+          source: ENSURE_SESSION_SOURCE.TOOL_USE,
         });
         handleToolUse(
           event.session_id,
@@ -541,6 +558,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
           requestFilesystemRoot,
+          typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });

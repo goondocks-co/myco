@@ -15,7 +15,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Worktree-Aware Request Context and Filesystem Root Management
 
-Myco's request context architecture separates project identity from caller locality through dual filesystem roots. This prevents worktree-bleed bugs where operations meant for the caller's actual working directory incorrectly use the canonical project root instead.
+MycoRequestContext separates project identity from caller locality through dual filesystem roots. This prevents worktree-bleed bugs where operations meant for the caller's actual working directory incorrectly use the canonical project root instead. All context-switching headers require bearer token authentication to prevent unauthorized cross-project access.
 
 ## Prerequisites
 
@@ -23,6 +23,7 @@ Myco's request context architecture separates project identity from caller local
 - Familiarity with Grove registration and project identity concepts
 - Knowledge of worktree patterns and potential bleed scenarios
 - Access to `packages/myco/src/tools/request-context.ts` and related request handling code
+- Understand that context-switching headers require daemon authentication tokens
 
 ## Procedure A: Implement callerRoot vs projectRoot Separation
 
@@ -98,7 +99,121 @@ Canopy operations require careful separation of file path canonicalization from 
    - Prefer normalized `activities.file_path` over raw `tool_input` paths
    - Maintain project identity separation in aggregation queries
 
-## Procedure D: Prevent Worktree-Bleed in New Code
+## Procedure D: Request Context Authentication and Authorization
+
+All request context headers that switch identity must be accompanied by a valid daemon authentication token. This prevents unauthorized cross-project access and ensures proper authorization boundaries.
+
+### Bearer Token Requirement
+
+Context-switching headers (`x-myco-project-root`, `x-myco-project-id`, `x-myco-grove-id`) must include an `Authorization` header with a valid daemon bearer token:
+
+```typescript
+interface RequestContextAuthOptions {
+  authToken: string; // Bearer token from daemon.json
+  source: 'environment' | 'header';
+}
+
+// Headers MUST include:
+// Authorization: Bearer <daemon-auth-token>
+// x-myco-project-root: /path/to/project
+// x-myco-project-id: proj_xxx
+```
+
+### Token Resolution Patterns
+
+For environments where context is passed via headers (e.g., MCP requests, Worker-to-daemon calls):
+
+```typescript
+export function requestContextFromHttpHeaders(
+  headers: Record<string, string>
+): TryRequestContextResult {
+  const authHeader = headers['authorization'];
+  const daemonToken = authHeader?.replace(/^Bearer\s+/, '');
+  
+  if (!daemonToken) {
+    return {
+      ok: false,
+      error: new UnauthorizedRequestContextError(
+        'Authorization header with Bearer token required for context-switching'
+      )
+    };
+  }
+
+  // Verify token against daemon.json
+  const isValid = verifyDaemonAuthToken(daemonToken);
+  if (!isValid) {
+    return {
+      ok: false,
+      error: new UnauthorizedRequestContextError('Invalid or expired authentication token')
+    };
+  }
+
+  // Token valid; proceed with context parsing
+  return tryParseContextHeaders(headers);
+}
+```
+
+### Silent Failure Prevention
+
+**Critical Pattern**: Context-switching failures without authentication MUST NOT silently return null. Instead, return explicit authorization errors:
+
+```typescript
+// BAD: Silent failure (buffered to disk, never audited)
+if (!authToken) return null;
+
+// GOOD: Explicit error with diagnostics
+if (!authToken) {
+  throw new UnauthorizedRequestContextError(
+    'Context-switching headers require Bearer token authentication'
+  );
+}
+```
+
+### Token Storage and Lifecycle
+
+Daemon auth tokens are stored in `~/.myco/daemon.json` (machine-scoped). When clients need to send context-switching headers:
+
+```typescript
+// Pi extension runtime example
+import { readDaemonAuthTokenFromDisk } from '@myco/daemon/auth';
+
+const token = readDaemonAuthTokenFromDisk();
+const headers = {
+  'Authorization': `Bearer ${token}`,
+  'x-myco-project-root': userProjectRoot,
+  'x-myco-project-id': projectId
+};
+
+const response = await fetch('/api/vault', { headers });
+```
+
+**Token Rotation**: Daemon auth tokens rotate on each daemon restart. Clients reading tokens from disk must refresh on 401 responses:
+
+```typescript
+async function withAuthRefresh(request: () => Promise<Response>) {
+  let response = await request();
+  
+  if (response.status === 401) {
+    // Token may be stale; refresh and retry
+    const newToken = readDaemonAuthTokenFromDisk();
+    // Update headers and retry...
+  }
+  
+  return response;
+}
+```
+
+### Authorization Boundaries
+
+Token verification establishes these boundaries:
+
+1. **Machine Identity**: Token is machine-specific (tied to `daemon.json`). Cannot be transferred across machines.
+2. **Daemon Identity**: Token verifies that the request came from an authorized daemon process, not a rogue client.
+3. **Project Scope**: Once token is verified, `x-myco-project-id` determines project isolation in DB operations.
+
+**Never treat a valid token as blanket authorization** — always scope subsequent DB operations by `project_id` from headers.
+
+## Procedure E: Prevent Worktree-Bleed in New Code
 
 When adding new filesystem operations:
 
@@ -143,3 +258,11 @@ When adding new filesystem operations:
 **Canopy identity vs locality**: Scanning and entry management stay identity-keyed to prevent row conflicts, while file path canonicalization follows caller locality. This distinction prevents worktree chaos in the canopy database.
 
 **One-field decisions**: Future worktree issues become a single field choice (`callerRoot ?? projectRoot` vs `projectRoot`) instead of requiring architectural changes, enforced by the type system.
+
+**Authorization header is mandatory for context-switching**: Requests that include `x-myco-project-root`, `x-myco-project-id`, or `x-myco-grove-id` MUST include a valid `Authorization: Bearer <token>` header. Missing or invalid tokens return 401, not null silently. This prevents unauthorized cross-project access and ensures all context-switching is auditable.
+
+**Token validation timing**: Bearer token MUST be validated BEFORE any context headers are parsed or acted upon. Check token first, parse headers second. This prevents partially-processed unauthorized requests.
+
+**No silent 401 buffering**: In Pi extensions and MCP clients, catching 401 responses and buffering them to disk for later retry is a debugging nightmare. Instead, fail fast with explicit error messages. Store tokens correctly at startup and refresh on daemon restart.
+
+**Machine-scoped tokens cannot be shared**: Daemon auth tokens in `~/.myco/daemon.json` are tied to the machine's daemon process. Do not bake them into CI/CD configs or shared environments. Each machine needs its own daemon and token lifecycle.

@@ -114,5 +114,54 @@ describe('codexAdapter', () => {
       expect(turns).toHaveLength(1);
       expect(turns[0].prompt).toBe('Valid line');
     });
+
+    it('synthesizes an <update_plan> envelope from the update_plan function-call tool', () => {
+      const updatePlanArgs = JSON.stringify({
+        plan: [
+          { step: 'Investigate the bug', status: 'completed' },
+          { step: 'Write a failing test', status: 'in_progress' },
+          { step: 'Land the fix', status: 'pending' },
+        ],
+      });
+      const content = toJsonl([
+        messageItem('user', [{ type: 'input_text', text: 'Plan the work' }], '2026-05-25T10:00:00Z'),
+        messageItem('assistant', [{ type: 'output_text', text: 'Here is the plan.' }]),
+        functionCallItem('update_plan', updatePlanArgs),
+      ]);
+      const turns = codexAdapter.parseTurns(content);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].aiResponse).toContain('<update_plan>');
+      expect(turns[0].aiResponse).toContain('## Plan');
+      expect(turns[0].aiResponse).toContain('- [x] Investigate the bug');
+      expect(turns[0].aiResponse).toContain('- [~] Write a failing test');
+      expect(turns[0].aiResponse).toContain('- [ ] Land the fix');
+      expect(turns[0].aiResponse).toContain('</update_plan>');
+      // toolCount still increments — update_plan IS a tool call.
+      expect(turns[0].toolCount).toBe(1);
+    });
+
+    it('does not synthesize an envelope when update_plan args are empty or malformed', () => {
+      const content = toJsonl([
+        messageItem('user', [{ type: 'input_text', text: 'X' }], '2026-05-25T10:00:00Z'),
+        messageItem('assistant', [{ type: 'output_text', text: 'AI reply' }]),
+        functionCallItem('update_plan', 'not json'),
+        functionCallItem('update_plan', JSON.stringify({ plan: [] })),
+      ]);
+      const turns = codexAdapter.parseTurns(content);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].aiResponse).toBe('AI reply');
+      expect(turns[0].aiResponse).not.toContain('<update_plan>');
+    });
+
+    it('ignores other function calls (only update_plan synthesizes a plan envelope)', () => {
+      const content = toJsonl([
+        messageItem('user', [{ type: 'input_text', text: 'X' }], '2026-05-25T10:00:00Z'),
+        messageItem('assistant', [{ type: 'output_text', text: 'AI reply' }]),
+        functionCallItem('shell', JSON.stringify({ command: 'ls' })),
+      ]);
+      const turns = codexAdapter.parseTurns(content);
+      expect(turns[0].aiResponse).toBe('AI reply');
+      expect(turns[0].toolCount).toBe(1);
+    });
   });
 });

@@ -4,12 +4,13 @@ Myco exposes two sets of MCP tools and a few slash-command skills that your agen
 
 ## Automatic context injection
 
-Before any tool is called, Myco injects context at two points automatically:
+Before any tool is called, Myco injects context at three points automatically:
 
-- **Session start** — the digest extract is injected, giving the agent a pre-computed understanding of the project before it asks a single question
+- **Session start** — the Cortex digest is injected, giving the agent a pre-computed understanding of the project before it asks a single question
 - **Per prompt** — relevant spores are retrieved via vector search and injected, providing targeted context for the current task
+- **Pre-Read** — [Canopy](canopy.md) injects per-file anatomy so the agent can decide whether to follow through with a full read
 
-See the [Lifecycle docs](lifecycle.md) for more on how this works.
+All three flow through the same `recordInjectionActivity()` helper, get UNIQUE-index deduplicated, and surface as distinct `myco:inject_cortex`, `myco:inject_spores`, and `myco:inject_canopy` rows in the session timeline. See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 

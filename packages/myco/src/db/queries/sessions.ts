@@ -134,6 +134,12 @@ export interface ListSessionsOptions {
    * Defaults permissive so UI listings keep showing in-flight sessions.
    */
   includeActive?: boolean;
+  /**
+   * When true, restrict to sessions that produced at least one plan
+   * (EXISTS join against `plans.session_id`). The Symbionts page uses
+   * this to scope its "Plans" capability deep-link.
+   */
+  hasPlan?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +369,10 @@ function buildSessionsWhere(
     conditions.push(`status != 'active'`);
   }
 
+  if (options.hasPlan === true) {
+    conditions.push(`EXISTS (SELECT 1 FROM plans p WHERE p.session_id = sessions.id)`);
+  }
+
   return {
     where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     params,
@@ -515,18 +525,6 @@ export function updateSession(
   if (updated) syncRow('sessions', updated);
 
   return updated;
-}
-
-/**
- * Atomically increment tool_count for a session.
- *
- * Uses SQL `tool_count + 1` to avoid read-modify-write races.
- */
-export function incrementSessionToolCount(id: string): void {
-  const db = getDatabase();
-  db.prepare(
-    `UPDATE sessions SET tool_count = COALESCE(tool_count, 0) + 1 WHERE id = ?`,
-  ).run(id);
 }
 
 /**

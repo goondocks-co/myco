@@ -65,13 +65,140 @@ export function upsertTomlSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx);
-    const separator = before ? '\n\n' : '';
-    return (before + separator + block + after).trimEnd() + '\n';
+    // findTomlSectionEnd returns the index of the next section header;
+    // the slice starts with `[...]`. Normalize so the concatenation
+    // always inserts a blank line between the rewritten block and the
+    // following section header — without this, a section whose body
+    // ends without a trailing newline (a one-liner like `hooks = true`)
+    // collides with the next `[section]` and produces malformed TOML
+    // like `hooks = true[notice.model_migrations]`.
+    const after = raw.slice(endIdx).replace(/^\s+/, '');
+    const beforeSeparator = before ? '\n\n' : '';
+    const afterSeparator = after ? '\n\n' : '';
+    return (before + beforeSeparator + block + afterSeparator + after).trimEnd() + '\n';
   }
 
   const separator = raw.trim() ? '\n\n' : '';
   return (raw.trimEnd() + separator + block).trimEnd() + '\n';
+}
+
+/**
+ * Insert or update only the listed keys in a top-level TOML section, leaving
+ * any other keys already in that section intact.
+ *
+ * Differs from {@link upsertTomlSection} which replaces the whole section
+ * body. Use this when the caller owns a *subset* of the section's keys and
+ * must coexist with user-owned siblings (e.g. Codex's `[features]` section,
+ * where Myco owns `hooks` but the user may add other feature flags).
+ *
+ * - Scalar values (string, boolean, number, string[]) are written as `key = value`.
+ * - Subtables (`[section.sub]`) below the named section are preserved.
+ * - Idempotent.
+ */
+export function upsertTomlSectionKeys(
+  raw: string,
+  sectionName: string,
+  values: Record<string, unknown>,
+): string {
+  const sectionHeader = `[${sectionName}]`;
+  const writeEntries = Object.entries(values)
+    .map(([key, val]) => ({ key, line: formatTomlScalarLine(key, val) }))
+    .filter((e): e is { key: string; line: string } => e.line !== null);
+
+  if (writeEntries.length === 0) return raw;
+
+  if (!raw.includes(sectionHeader)) {
+    const separator = raw.trim() ? '\n\n' : '';
+    const block = [sectionHeader, ...writeEntries.map((e) => e.line)].join('\n');
+    return (raw.trimEnd() + separator + block).trimEnd() + '\n';
+  }
+
+  const startIdx = raw.indexOf(sectionHeader);
+  const bodyStart = startIdx + sectionHeader.length;
+  const endIdx = findTomlSectionEnd(raw, bodyStart, sectionName);
+  const sectionBody = raw.slice(bodyStart, endIdx);
+
+  const bodyLines = sectionBody.split('\n');
+  const writeMap = new Map(writeEntries.map((e) => [e.key, e.line]));
+  const written = new Set<string>();
+  const updatedLines: string[] = [];
+  let subtableSeen = false;
+  const subtableLines: string[] = [];
+
+  for (const line of bodyLines) {
+    if (subtableSeen || TOML_SECTION_RE.test(line.trim())) {
+      subtableSeen = true;
+      subtableLines.push(line);
+      continue;
+    }
+    const m = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+    if (m && writeMap.has(m[1])) {
+      updatedLines.push(writeMap.get(m[1])!);
+      written.add(m[1]);
+      continue;
+    }
+    updatedLines.push(line);
+  }
+
+  // Append any template keys that didn't already exist in the section body.
+  const trailing: string[] = [];
+  for (const { key, line } of writeEntries) {
+    if (!written.has(key)) trailing.push(line);
+  }
+
+  let mergedBody = updatedLines.join('\n');
+  if (trailing.length > 0) {
+    // Strip any pure-blank tail before splicing in the new keys so the
+    // section stays compact (one blank line between body and subtables).
+    mergedBody = mergedBody.replace(/\n*$/, '');
+    mergedBody = (mergedBody ? mergedBody + '\n' : '') + trailing.join('\n');
+  }
+  const subtablePart = subtableLines.length > 0 ? '\n\n' + subtableLines.join('\n').replace(/^\s+/, '') : '';
+
+  const before = raw.slice(0, startIdx).trimEnd();
+  const after = raw.slice(endIdx).replace(/^\s+/, '');
+  const beforeSeparator = before ? '\n\n' : '';
+  const afterSeparator = after ? '\n\n' : '';
+
+  const rebuiltSection = sectionHeader + (mergedBody.startsWith('\n') ? mergedBody : '\n' + mergedBody) + subtablePart;
+  return (before + beforeSeparator + rebuiltSection + afterSeparator + after).trimEnd() + '\n';
+}
+
+/**
+ * Read the scalar value of a single key inside a top-level TOML section.
+ * Returns `undefined` if the section or key is absent. Booleans, integers,
+ * and quoted strings are decoded; anything else (arrays, nested tables) is
+ * returned as its raw RHS text so callers can value-compare.
+ */
+export function readTomlSectionKey(
+  raw: string,
+  sectionName: string,
+  key: string,
+): string | boolean | number | undefined {
+  const sectionHeader = `[${sectionName}]`;
+  if (!raw.includes(sectionHeader)) return undefined;
+
+  const startIdx = raw.indexOf(sectionHeader);
+  const bodyStart = startIdx + sectionHeader.length;
+  const endIdx = findTomlSectionEnd(raw, bodyStart, sectionName);
+  const body = raw.slice(bodyStart, endIdx);
+
+  const keyRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*(.+?)\\s*$`, 'm');
+  for (const line of body.split('\n')) {
+    if (TOML_SECTION_RE.test(line.trim())) break; // entered a subtable
+    const m = line.match(keyRe);
+    if (!m) continue;
+    const rhs = m[1].replace(/\s*#.*$/, '').trim();
+    if (rhs === 'true') return true;
+    if (rhs === 'false') return false;
+    if (/^-?\d+$/.test(rhs)) return Number(rhs);
+    if (/^-?\d*\.\d+$/.test(rhs)) return Number(rhs);
+    if ((rhs.startsWith('"') && rhs.endsWith('"')) || (rhs.startsWith("'") && rhs.endsWith("'"))) {
+      return rhs.slice(1, -1);
+    }
+    return rhs;
+  }
+  return undefined;
 }
 
 /**
@@ -181,9 +308,17 @@ export function buildTomlMcpSection(
     const startIdx = raw.indexOf(sectionHeader);
     const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, sectionName);
     const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx);
-    const separator = before ? '\n\n' : '';
-    updated = (before + separator + block + after).trimEnd() + '\n';
+    // findTomlSectionEnd returns the offset of the next section header. Strip
+    // leading whitespace from `after` and insert an explicit blank line between
+    // our rewritten block and that header — otherwise a block whose final line
+    // lacks a trailing newline (the common case here: lines.join('\n') leaves
+    // none) collides with the following `[mcp_servers.x]` and writes invalid
+    // TOML like `url = "..."[mcp_servers.node_repl]`. Same normalization as
+    // upsertTomlSection.
+    const after = raw.slice(endIdx).replace(/^\s+/, '');
+    const beforeSeparator = before ? '\n\n' : '';
+    const afterSeparator = after ? '\n\n' : '';
+    updated = (before + beforeSeparator + block + afterSeparator + after).trimEnd() + '\n';
   } else {
     // Append new section
     const separator = raw.trim() ? '\n\n' : '';

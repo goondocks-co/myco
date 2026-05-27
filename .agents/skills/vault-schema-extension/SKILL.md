@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
+MycoVault stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
 
 ## Prerequisites
 
@@ -238,6 +238,26 @@ CREATE INDEX IF NOT EXISTS idx_team_outbox_table_row
 
 **Index gaps to watch**: SQLite does not auto-index foreign keys; explicitly add indexes for all FK columns, `WHERE`/`ORDER BY` columns, and `created_at` if filtered/sorted by time.
 
+### Pattern 3: NOT EXISTS for Zero-Injection Queries
+
+When checking for the absence of injection records in a session, use NOT EXISTS rather than GROUP BY for clarity and performance:
+
+```typescript
+// Check for sessions with no injection activity
+db.prepare(`
+  SELECT s.id, s.project_id
+  FROM sessions s
+  WHERE s.status = 'active'
+    AND NOT EXISTS (
+      SELECT 1 FROM activities
+      WHERE session_id = s.id
+        AND json_extract(content, '$.tool_name') IN 
+            ('myco:inject_cortex', 'myco:inject_spores', 'myco:inject_canopy')
+    )
+  LIMIT 100
+`).all();
+```
+
 ## Procedure G: Grove Project-Scoped Schema Architecture
 
 Grove's global daemon architecture introduces project-scoped row management patterns requiring specialized schema design considerations.
@@ -379,7 +399,7 @@ Write tests that survive schema evolution and don't break on version advances.
 
 3. **Use Current Schema**: Test against the current state, not historical snapshots
 
-**Pattern**: Tests should check invariants ("this feature works") rather than absolute values ("version is exactly X"). Follow the patterns from `tests/db/migrate-v40.test.ts` and `tests/db/schema.test.ts`.
+**Pattern**: Tests should check invariants (\"this feature works\") rather than absolute values (\"version is exactly X\"). Follow the patterns from `tests/db/migrate-v40.test.ts` and `tests/db/schema.test.ts`.
 
 ## Procedure L: D1 Schema Parity Management
 
@@ -569,9 +589,9 @@ D1 drift reconciliation must handle the case where team sync deployments introdu
 2. **Graceful Degradation**: If D1 is ahead, use compatible subset of operations
 3. **Reconciliation Backlog**: Queue drift fixes for background processing
 
-## Procedure O: Tool Name Canonicalization for Activities Migration
+## Procedure O: Tool Name Canonicalization and Injection Dedup for Activities
 
-Activities table processing in modern schema versions requires tool name canonicalization to handle MCP tool identifier evolution and prevent data fragmentation.
+Activities table processing in modern schema versions requires tool name canonicalization to handle MCP tool identifier evolution and prevent data fragmentation. For injection-based tool operations, implement synthetic tool name patterns to prevent duplicate processing.
 
 ### Canonicalization Migration Pattern
 
@@ -634,13 +654,116 @@ export function getCanonicalToolName(rawName: string, db: Database): string {
 }
 ```
 
+### Synthetic Tool Name Injection Dedup Pattern
+
+For injection-based operations (cortex, spores, canopy), use synthetic tool names with content-hash based dedup to prevent duplicate processing:
+
+```typescript
+// Create synthetic injection tool names for dedup tracking
+const SYNTHETIC_TOOL_NAMES = {
+  CORTEX_INJECT: 'myco:inject_cortex',
+  SPORES_INJECT: 'myco:inject_spores',
+  CANOPY_INJECT: 'myco:inject_canopy'
+};
+
+// Content hash format for injection dedup:
+// - Cortex: myco:inject:cortex:<sessionId>
+// - Spores: myco:inject:spores:<sessionId>:<promptHash>
+// - Canopy: myco:inject:canopy:<sessionId>:<filePath>
+
+// Migration to establish injection tracking table
+{
+  version: 47,
+  name: 'add_injection_dedup_tracking',
+  description: 'Add injection_dedup_log for tracking processed injections',
+  up: (db: Database) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS injection_dedup_log (
+        id              TEXT PRIMARY KEY,
+        session_id      TEXT NOT NULL,
+        project_id      TEXT NOT NULL,
+        injection_type  TEXT NOT NULL, -- 'cortex', 'spores', 'canopy'
+        content_hash    TEXT NOT NULL,
+        processed_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(project_id, content_hash),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_injection_dedup_session
+        ON injection_dedup_log(session_id);
+      CREATE INDEX IF NOT EXISTS idx_injection_dedup_processed
+        ON injection_dedup_log(processed_at DESC);
+    `);
+  }
+}
+```
+
+### Injection Dedup Query Patterns
+
+Check for already-processed injections using INSERT-or-ignore:
+
+```typescript
+// INSERT-or-ignore pattern for injection dedup
+export function recordInjectionProcessing(
+  db: Database,
+  sessionId: string,
+  projectId: string,
+  injectionType: 'cortex' | 'spores' | 'canopy',
+  contentHash: string
+): boolean {
+  try {
+    db.prepare(`
+      INSERT INTO injection_dedup_log 
+      (id, session_id, project_id, injection_type, content_hash)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      sessionId,
+      projectId,
+      injectionType,
+      contentHash
+    );
+    return true; // First time processing this injection
+  } catch (e) {
+    if ((e as any).message?.includes('UNIQUE')) {
+      return false; // Already processed
+    }
+    throw e;
+  }
+}
+
+// Detection of zero-injection sessions
+export function findZeroInjectionSessions(
+  db: Database,
+  projectId: string,
+  limit = 100
+): string[] {
+  return db.prepare(`
+    SELECT DISTINCT s.id
+    FROM sessions s
+    WHERE s.project_id = ?
+      AND s.status = 'active'
+      AND NOT EXISTS (
+        SELECT 1 FROM activities a
+        WHERE a.session_id = s.id
+          AND json_extract(a.content, '$.tool_name') IN (
+            'myco:inject_cortex',
+            'myco:inject_spores', 
+            'myco:inject_canopy'
+          )
+      )
+    LIMIT ?
+  `).all(projectId, limit) as Array<{id: string}>;
+}
+```
+
 ### Activities Processing Gotchas
 
 - **MCP Prefix Stripping**: Raw tool names often include `mcp__myco-vault__` prefixes that should be stripped for analytics
 - **Version-Specific Mappings**: Tool names evolve across MCP schema versions; maintain mapping for each version
 - **Retroactive Application**: Apply canonicalization to existing activities during migration, not just new ones
+- **Injection Dedup Scope**: Dedup is per `(project_id, content_hash)` to prevent duplicate processing across worktrees while allowing same injection in different projects
 
-**Critical Rule**: Always canonicalize tool names during activities processing to prevent analytics fragmentation across schema versions.
+**Critical Rule**: Always canonicalize tool names during activities processing to prevent analytics fragmentation across schema versions. Use synthetic injection tool names and content-hash dedup to prevent duplicate injection processing.
 
 ## Cross-Cutting Gotchas
 
@@ -662,6 +785,7 @@ export function getCanonicalToolName(rawName: string, db: Database): string {
 - **Phantom Batch States** — Always check for orphaned session references before adding FK constraints. Use phantom batch detection queries to identify cleanup requirements.
 - **D1 Drift Reconciliation** — Team sync scenarios can create schema version mismatches between local and D1. Always query D1 schema version before sync operations and implement graceful degradation for version skew.
 - **Tool Name Canonicalization** — MCP tool identifiers evolve across schema versions. Store canonical tool names in analytics tables and maintain mapping tables for retroactive normalization.
+- **Injection Dedup Scope** — Synthetic tool names and content hashes prevent duplicate processing per project. Always scope dedup by project_id to allow same injection content in different projects.
 - **Migration Ordering for Tool Aggregation** — Tool call aggregation tables must be created before tool name canonicalization migrations to avoid FK constraint violations during data normalization.
 - **Stop Boundary Materialization** — Tool usage analytics use Stop boundary aggregation rather than real-time updates. Run `aggregateSessionMycoToolCalls()` at session completion, not per tool invocation.
 - **Team Sync Exclusion for Analytics** — Tool usage data (session_myco_tool_calls) remains local-only and should not sync to team D1 databases to avoid analytics data pollution.

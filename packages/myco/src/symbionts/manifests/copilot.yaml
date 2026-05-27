@@ -1,0 +1,188 @@
+name: copilot
+displayName: GitHub Copilot
+# `copilot` is the terminal CLI binary; the same agent runtime also drives
+# the VS Code Copilot extension via the Copilot SDK. One symbiont covers
+# both surfaces because they share hooks, skills, and instructions.
+binary: copilot
+configDir: .vscode
+# Copilot detection key: ~/.copilot/ is the user-home location both the
+# terminal CLI and the VS Code Copilot extension read hooks and skills
+# from. Platform-specific VS Code data dirs (~/Library/Application Support/Code,
+# ~/.config/Code) are not the detection signal; ~/.copilot is the
+# canonical, cross-surface marker.
+detectionDir: ~/.copilot
+pluginRootEnvVar: COPILOT_PLUGIN_ROOT
+# Copilot's hook payload uses snake_case keys per
+# https://docs.github.com/en/copilot/reference/hooks-reference
+# Every event includes session_id, transcript_path, hook_event_name, cwd
+# at the top level. PostToolUse adds tool_name / tool_input / tool_response
+# / tool_use_id. Field-name mismatch (e.g., expecting `sessionId`) causes
+# the launcher to read undefined for the session ID and the daemon
+# silently drops the prompt — exact failure mode this guards against.
+hookFields:
+  sessionId: session_id
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  prompt: prompt
+  toolName: tool_name
+  toolInput: tool_input
+  toolOutput: tool_response
+capture:
+  planDirs: []
+# Hook surface (https://docs.github.com/en/copilot/reference/hooks-reference)
+#
+# Subscribed events (12) — captured in templates/copilot/hooks.json:
+#   SessionStart       — daemon registration + Cortex preamble injection
+#   SessionEnd         — session lifecycle close
+#   UserPromptSubmit   — prompt capture + per-prompt spore injection
+#   PreToolUse         — Canopy injection for read-style tools (Cortex)
+#   PostToolUse        — tool activity row + file_path stamping
+#   PostToolUseFailure — tool failure row (success=false)
+#   ErrorOccurred      — runtime error capture (separate from tool failure)
+#   Notification       — agent-emitted notifications (observability only)
+#   PreCompact         — pre-compact lifecycle event
+#   SubagentStart      — subagent lineage (parent_session_id)
+#   SubagentStop       — subagent completion
+#   Stop               — final transcript mining + reconciliation
+#
+# Skipped event:
+#   PermissionRequest — fires when Copilot needs the user to approve a
+#     tool call (run command, file write, etc.). We do NOT subscribe
+#     because:
+#     1. Permission is a decision the user owns; Myco is observational.
+#        A hook that returns the wrong allow/deny shape would silently
+#        suppress real tool calls — capture risk with no data benefit.
+#     2. The data we'd want (tool name + input) is already captured by
+#        PreToolUse, which fires for tool calls the user approves.
+#     3. Adds round-trip latency to every permission prompt, hurting the
+#        agent's interactive feel for zero observability gain.
+#     If a future feature needs the permission decision itself (e.g.
+#     "show me the tools the user denied"), revisit and design the
+#     response shape with an explicit-allow default before subscribing.
+registration:
+  hooksTarget: .github/hooks/myco-hooks.json
+  # Both surfaces (terminal CLI + VS Code Copilot extension) read hooks
+  # from this user-home location. Workspace .github/hooks/*.json overrides
+  # user-home (no merge).
+  globalHooksTarget: ~/.copilot/hooks/myco-hooks.json
+  mcpTarget: .vscode/mcp.json
+  # Two MCP attach points for one Copilot agent runtime — Microsoft's
+  # docs document the surfaces separately, and the two surfaces also
+  # diverge on the top-level JSON key:
+  #   - Copilot CLI (terminal): ~/.copilot/mcp-config.json, key=mcpServers
+  #     (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
+  #   - VS Code Copilot extension: ~/Library/Application Support/Code/User/mcp.json, key=servers
+  #     (https://code.visualstudio.com/docs/copilot/reference/mcp-configuration)
+  # The installer writes the identical `myco` server entry to each file
+  # under its surface's expected key. If VS Code eventually converges to
+  # auto-discover ~/.copilot/mcp-config.json (the trajectory Microsoft
+  # has telegraphed), drop the Library entry to a single target.
+  globalMcpTarget:
+    - path: ~/.copilot/mcp-config.json
+      serversKey: mcpServers
+    - path: ~/Library/Application Support/Code/User/mcp.json
+      serversKey: servers
+  skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.copilot/skills
+  settingsTarget: .vscode/settings.json
+  # Copilot's hook file (~/.copilot/hooks/myco-hooks.json) accepts the
+  # `chat.tools.terminal.autoApprove` key alongside the hooks block —
+  # share-with-hooks is the intended global surface. Explicit declaration
+  # (vs. silent fallback) per /code-review finding C9.
+  globalSettingsTarget: ~/.copilot/hooks/myco-hooks.json
+  instructionsFile: .github/copilot-instructions.md
+capabilities:
+  # Copilot's PreToolUse hook accepts JSON on stdout and threads
+  # `additionalContext` into the agent's context window before the
+  # tool fires. Same shape as Claude Code's PreToolUse injection, so
+  # Cortex's Canopy lookup activates here automatically once the
+  # `canopyReadTools` block below declares which tools carry paths.
+  preToolUseInjection: true
+  # SessionStart and UserPromptSubmit hooks accept additionalContext;
+  # the daemon already routes Cortex preamble + per-prompt spores
+  # through these injection points.
+  sessionStartInjection: true
+  # subagentStart can prepend additionalContext to the subagent prompt when
+  # the agent type emits subagent lifecycle events.
+  subagentStartInjection: true
+  # File-read tools Copilot exposes whose tool_input carries a path
+  # field Canopy can resolve into a code-intelligence summary. Each
+  # entry maps the tool name (as it appears in tool.execution_start
+  # events) to the field on tool_input that holds the path.
+  #
+  #   read_file       — direct file read; absolute path on filePath.
+  #   run_in_terminal — shell invocation; extract the path argument
+  #                     from `command` for known read-style commands.
+  # Two flavors share this symbiont:
+  #   - VS Code Copilot extension: `read_file` / `run_in_terminal` /
+  #     `replace_string_in_file` / `create_file` / `apply_patch`.
+  #   - Copilot CLI (`copilot` binary): per
+  #     https://docs.github.com/en/copilot/reference/hooks-reference
+  #     uses `view` for reads, `bash` / `powershell` for shell,
+  #     `edit` / `create` for writes, plus `grep` / `glob` / `task` /
+  #     `web_fetch` / `ask_user`.
+  # The list below is the UNION so canopy fires regardless of which
+  # surface produced the tool call. Both pathField names are valid
+  # (the daemon's `extractToolFilePath` checks the declared field).
+  canopyReadTools:
+    # VS Code Copilot extension shape
+    - tool: read_file
+      pathField: filePath
+    - tool: run_in_terminal
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    # Copilot CLI shape
+    - tool: view
+      pathField: path
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: powershell
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl, Get-Content, gc]
+    - tool: grep
+      pathField: path
+  # Broader superset for capture's activities.file_path stamping —
+  # repeats every canopyReadTools entry and adds Copilot's write-side
+  # file mutators so the FTS index stays accurate on edits too.
+  pathBearingTools:
+    # VS Code Copilot extension shape
+    - tool: read_file
+      pathField: filePath
+    - tool: run_in_terminal
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: replace_string_in_file
+      pathField: filePath
+    - tool: create_file
+      pathField: filePath
+    - tool: apply_patch
+      pathField: filePath
+    # Copilot CLI shape
+    - tool: view
+      pathField: path
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: powershell
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl, Get-Content, gc]
+    - tool: edit
+      pathField: path
+    - tool: create
+      pathField: path
+    - tool: grep
+      pathField: path
+
+hooks:
+  # Single-event turn-end: `Stop` carries both the inline response and the
+  # transcript path. The daemon's stop dispatcher runs both phases in
+  # sequence for this single event — matching pre-refactor behavior.
+  Stop:
+    phases: [response, transcript]

@@ -64,7 +64,24 @@ The Myco capture pipeline can fail silently while the daemon appears healthy—s
 
 **Key insight:** A daemon can pass `/health` (raw liveness) while failing `/ready` (routed readiness). The split exists because `/health` bypasses routing middleware while capture endpoints traverse the full request stack.
 
-## Procedure 2: Diagnosing Failure Modes
+## Procedure 2: Diagnosing Failure Modes with Three-Tier Daemon.lock Discovery
+
+**Three-Tier Discovery Pattern (v0.27.17+):**
+The daemon discovery system uses three tiers to locate and validate daemon.lock:
+
+1. **Tier 1 — Explicit Path Resolution:**
+   - Check `MYCO_DAEMON_LOCK` environment variable (if set)
+   - Check `.myco/daemon.lock` in current grove
+
+2. **Tier 2 — Grove-Scoped Search:**
+   - Walk up directory tree from current project
+   - Match groove directory structure
+   - Validate grove ownership and permissions
+
+3. **Tier 3 — Global Machine Scan:**
+   - Scan `~/.myco/daemons/` for all machine-registered daemons
+   - Select daemon matching project context
+   - Fall back to default if ambiguous
 
 **Liveness vs Readiness failure patterns:**
 
@@ -89,6 +106,9 @@ The Myco capture pipeline can fail silently while the daemon appears healthy—s
 # Check if daemon process is running
 ps aux | grep myco-daemon
 
+# Check daemon.lock location
+cat .myco/daemon.lock  # or wherever Tier 1/2/3 resolves it
+
 # Check port binding
 lsof -i :20915
 
@@ -103,7 +123,7 @@ timeout 5s curl -H "X-Myco-Context: project:test,grove:test" \
   http://localhost:20915/ready
 ```
 
-## Procedure 3: Implementing Recovery Patterns
+## Procedure 3: Implementing Recovery Patterns with Decoupled Self-Reconcile
 
 **For capture-critical hooks, always use `capturePost()` instead of raw `DaemonClient.post()`:**
 
@@ -131,6 +151,24 @@ await capturePost('/events', {
 **Non-capture hooks keep ordinary `post()`:**
 - Health checks, context switches, stats reads
 - These get basic `spawnDaemon()` recovery, appropriate for unmanaged daemons
+
+**Self-Reconcile Architecture (v0.27.17+):**
+Self-reconciliation is now decoupled from PowerManager scheduling and runs on a dedicated interval:
+
+```typescript
+// Self-reconcile runs independently every N minutes
+setInterval(async () => {
+  // Compare buffer state to database state
+  // Recover any orphaned sessions or incomplete batches
+  await daemon.selfReconcile();
+}, SELF_RECONCILE_INTERVAL);  // No longer co-scheduled with PowerManager
+```
+
+**Key differences from previous pattern:**
+- **Not co-scheduled** with PowerManager tick events
+- **Runs continuously** even when PowerManager tasks are disabled
+- **Independent failure recovery** without PowerManager intervention
+- **Configurable interval** per Grove (no longer fixed at daemon startup)
 
 **Implementation in `packages/myco/src/hooks/client.ts`:**
 
@@ -191,13 +229,20 @@ When capture appears degraded (incomplete sessions, missing prompts, tool call f
 ### Layer 1: Hook Diagnosis
 **Question:** Did the hook fire and reach the daemon?
 
-```bash
-# Check buffer observability (post-PR #285)
-grep "\[myco\].*buffered" ~/.myco/daemon-*/logs/daemon.err.log | tail -20
+**Error Semantics (v0.27.17+):**
+- **transport-failure**: Network/socket level issue (daemon unreachable, connection reset, timeout)
+- **http-error**: HTTP-level failure (4xx/5xx response, routing middleware rejected request)
+- **daemon-ignored**: Daemon received but intentionally filtered (rule-based drops, phantom defense)
 
-# Look for reasons: transport-failure, http-error, daemon-ignored:<reason>
-# If buffer writes show transport-failure → network/daemon connectivity issue
-# If no buffer entries but session active → hook not firing
+```bash
+# Check buffer observability (post-v0.27.17)
+grep -E "\[(transport-failure|http-error|daemon-ignored)\]" ~/.myco/daemon-*/logs/daemon.err.log | tail -20
+
+# Interpret error types:
+# - transport-failure → network/daemon connectivity issue
+# - http-error → routing/authentication issue
+# - daemon-ignored → rule-based filtering (expected behavior)
+# - No entries but session active → hook not firing
 ```
 
 **Recovery:** Check daemon health, restart daemon if unresponsive.
@@ -334,7 +379,7 @@ HAVING COUNT(*) > 1;"
 ### Architecture Context
 Double-fire hooks are **normal and expected**. Symbionts and agents consume hook configuration from multiple sources. The system must accommodate this architecturally.
 
-### Solution Pattern (Post-PR #285)
+### Solution Pattern (Post-v0.27.17)
 ```typescript
 // Shared fingerprint in packages/myco/src/capture/dedup.ts
 // 10-second dedup window
@@ -360,6 +405,10 @@ if (isProcessedRecently(fingerprint)) {
 **Service manager authority:** For managed daemons, the service manager (launchd/systemd) is the authority for process lifecycle. Recovery paths must route through the service manager, not raw process spawn.
 
 **Coalesced recovery:** Multiple rapid capture failures trigger coalesced service restarts (30s window) to prevent restart storms. Don't interpret delayed recovery as evidence that the fix didn't work.
+
+**Three-tier daemon.lock discovery:** The three-tier pattern allows daemon.lock to be discovered from explicit paths, grove directories, or global machine scan. Understand which tier applies to your setup when debugging location mismatches.
+
+**Self-reconcile is independent:** Self-reconciliation no longer depends on PowerManager scheduling. It runs continuously on its own interval, even when PowerManager tasks are suspended.
 
 **Silent Failure Patterns:**
 - **Multiple simultaneous bugs:** The May 15 incident had three independent failures. Fix one layer, then re-test the full pipeline.

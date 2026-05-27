@@ -71,4 +71,54 @@ describe('plugin shared-helpers snippet', () => {
     expect(snippet).toContain('STEERING: "steering"');
     expect(snippet).toContain('INTERRUPT: "interrupt"');
   });
+
+  // Regression for /code-review finding C6: readProjectAndGroveIds's
+  // non-greedy `[\s\S]*?` previously crossed TOML section boundaries —
+  // a project.toml whose [project] table lacked an `id` would return
+  // the [grove] section's id as projectId, and plugins would write
+  // buffer JSONL into ~/.myco/groves/<id>/projects/<id>/ (the same id
+  // twice), a path the daemon's reconciler never scans. The fix uses
+  // a negative-lookahead `(?:(?!\n\[)[\s\S])*?` that won't cross the
+  // next `[section]` header. Verify both regex patterns carry it.
+  it('readProjectAndGroveIds regex is section-anchored against TOML headers', () => {
+    expect(snippet).toContain(String.raw`\[project\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"`);
+    expect(snippet).toContain(String.raw`\[grove\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"`);
+  });
+
+  // Behavioral regression for the same finding: re-evaluate the two
+  // regex patterns the snippet ships and prove the section-anchor
+  // semantics hold against a project.toml where [project] is missing
+  // its id but [grove] still has one.
+  it('section-anchored regex returns no match when [project] is missing id', () => {
+    const projectPattern = /\[project\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/;
+    const grovePattern = /\[grove\](?:(?!\n\[)[\s\S])*?\bid\s*=\s*"([^"]+)"/;
+
+    const truncatedProject = [
+      '[project]',
+      'name = "still-here"',
+      '',
+      '[grove]',
+      'id = "grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+      '',
+    ].join('\n');
+
+    // Project's id key isn't present — must NOT fall through to grove's.
+    expect(truncatedProject.match(projectPattern)).toBeNull();
+    // Grove's id key IS present — must match.
+    const groveMatch = truncatedProject.match(grovePattern);
+    expect(groveMatch?.[1]).toBe('grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
+    // A well-formed project.toml still works — both patterns match the
+    // values inside their own sections.
+    const wellFormed = [
+      '[project]',
+      'id = "proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
+      'name = "ok"',
+      '',
+      '[grove]',
+      'id = "grove_cccccccccccccccccccccccccccccccc"',
+    ].join('\n');
+    expect(wellFormed.match(projectPattern)?.[1]).toBe('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(wellFormed.match(grovePattern)?.[1]).toBe('grove_cccccccccccccccccccccccccccccccc');
+  });
 });

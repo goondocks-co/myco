@@ -2,9 +2,11 @@ import { createContext, useCallback, useContext, useLayoutEffect, useState, type
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import {
   projectPath,
+  selectionFromLast,
   selectionKey,
   setCurrentRequestSelection,
   writeLastSelection,
+  type GrovesResponse,
   type ProjectSelection,
 } from '../lib/selection';
 
@@ -54,6 +56,30 @@ export function GlobalSelectionBoundary({ children }: { children: ReactNode }) {
 
 export function useProjectSelection(): ProjectSelection | null {
   return useContext(ProjectSelectionContext);
+}
+
+/**
+ * "Active project" resolver for surfaces that render at machine-scope
+ * (e.g. /symbionts) but still need to act on a project — the per-project
+ * Symbionts section, settings tied to the upper-left switcher, etc.
+ *
+ * Priority:
+ *   1. The route-bound ProjectSelectionContext (if rendered under /g/:slug/p/:slug)
+ *   2. The last-selected project from localStorage, resolved against the
+ *      `['groves']` query cache populated by `useGroves`.
+ *
+ * Returns null when neither source resolves. This keeps the per-project
+ * UI consistent regardless of which route the user navigated from.
+ */
+export function useActiveProjectSelection(): ProjectSelection | null {
+  const ctx = useContext(ProjectSelectionContext);
+  // Sip the `['groves']` cache the layout already populates via useGroves.
+  // We don't fetch ourselves to avoid duplicating the query plumbing.
+  const qc = useQueryClient();
+  if (ctx) return ctx;
+  const groves = qc.getQueryData<GrovesResponse>(['groves']);
+  if (!groves) return null;
+  return selectionFromLast(groves.groves);
 }
 
 export function useProjectPath(suffix = ''): string {

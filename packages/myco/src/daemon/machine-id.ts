@@ -2,8 +2,9 @@
  * Machine identity generation — deterministic `{github_user}_{machine_hash}` format.
  *
  * The machine ID uniquely identifies a (user, machine) pair for backup dedup
- * and team sync. It is computed once, cached to `{vaultDir}/machine_id`,
- * and reused on subsequent calls.
+ * and team sync. It is computed once, cached to `~/.myco/machine_id`,
+ * and reused on subsequent calls — one identity per machine, shared across
+ * every Grove and every project on that machine.
  *
  * Format: `{github_user}_{machine_hash}` where machine_hash is a truncated
  * SHA-256 of `os.hostname() + os.homedir()`.
@@ -14,12 +15,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveMachineIdPath, resolveMycoHome } from '../grove/paths.js';
 
 /** Length of the truncated machine hash suffix. */
 const MACHINE_HASH_LENGTH = 8;
 
-/** Filename for the cached machine ID within the vault. */
-const MACHINE_ID_FILE = 'machine_id';
+/** Filename for the cached machine ID within a legacy project vault. */
+const LEGACY_MACHINE_ID_FILE = 'machine_id';
 
 /** Fallback GitHub username when `gh` CLI is unavailable. */
 const FALLBACK_GITHUB_USER = 'local';
@@ -55,32 +57,59 @@ export function resolveGitHubUser(): string {
 }
 
 /**
- * Get or generate the machine ID for this vault.
+ * Get or generate the machine ID for this host.
  *
  * On first call, computes `{github_user}_{machine_hash}` and caches it
- * to `{vaultDir}/machine_id`. Subsequent calls read from cache.
+ * to `~/.myco/machine_id`. Subsequent calls read from cache.
  *
- * @param vaultDir — vault root directory (e.g., `~/.myco/vaults/myco/`)
  * @returns the machine ID string
  */
-export function getMachineId(vaultDir: string): string {
-  const cachePath = path.join(vaultDir, MACHINE_ID_FILE);
+export function getMachineId(): string {
+  const cachePath = resolveMachineIdPath();
 
-  // Read from cache if present
+  // Read from global cache if present.
   try {
     const cached = fs.readFileSync(cachePath, 'utf-8').trim();
     if (cached.length > 0) return cached;
   } catch {
-    // File doesn't exist yet — fall through to generate
+    // Global cache missing — fall through to generate.
   }
 
   const githubUser = resolveGitHubUser();
   const machineHash = computeMachineHash();
   const machineId = `${githubUser}_${machineHash}`;
 
-  // Cache for future calls
-  fs.mkdirSync(vaultDir, { recursive: true });
+  // Cache for future calls.
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, machineId, 'utf-8');
 
   return machineId;
+}
+
+/**
+ * Propagate a legacy per-project machine_id into the global cache when
+ * the global cache is absent. Used by the one-shot global-install
+ * migration (plan §5, step "machine_id propagation"): the value the
+ * project vault was carrying becomes the machine's canonical id rather
+ * than re-deriving and risking divergence from historic capture rows
+ * already stamped with the old value.
+ *
+ * Returns `true` when a value was propagated; `false` when the global
+ * cache already exists (so the legacy value is dropped silently — the
+ * global cache wins) or when no legacy file exists.
+ */
+export function propagateLegacyMachineId(vaultDir: string): boolean {
+  const globalPath = resolveMachineIdPath();
+  if (fs.existsSync(globalPath)) return false;
+  const legacyPath = path.join(vaultDir, LEGACY_MACHINE_ID_FILE);
+  let legacyValue: string;
+  try {
+    legacyValue = fs.readFileSync(legacyPath, 'utf-8').trim();
+  } catch {
+    return false;
+  }
+  if (legacyValue.length === 0) return false;
+  fs.mkdirSync(resolveMycoHome(), { recursive: true });
+  fs.writeFileSync(globalPath, legacyValue, 'utf-8');
+  return true;
 }

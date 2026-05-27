@@ -1,13 +1,13 @@
 # Myco Quick Start
 
-Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a SQLite-backed intelligence graph and serves it back via MCP tools. Install it, run `myco init` to bootstrap your project, then configure providers in the dashboard when you're ready.
+Myco is a collective agent intelligence plugin that captures session knowledge — events, observations, decisions, trade-offs — into a SQLite-backed intelligence graph and serves it back via MCP tools. Install Myco once, and every coding agent on your machine picks it up automatically — no per-project setup, no per-worktree bootstrap.
 
 ## Requirements
 
 - **Node.js 22+**
-- **At least one supported coding agent** — Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, or Pi
+- **At least one supported coding agent** — Claude Code, Cursor, Codex, Copilot, Google Antigravity, Windsurf, OpenCode, or Pi
 
-Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after init.
+Provider configuration (Myco Agent and embedding) is **optional** at install time — Myco works in data-collection mode out of the box, with full-text search over captured sessions. To enable the intelligence pipeline (spores, digest, skill lifecycle), configure providers in the dashboard after install.
 
 When you're ready to enable intelligence features, you'll need:
 
@@ -48,25 +48,19 @@ That updates the local CLI, daemon, hooks, dashboard, and the built-in team-sync
 - `@goondocks/myco-team` for direct team-worker administration commands
 - `@goondocks/myco-collective` for cross-project Collective administration
 
-## Set Up Your Project
+## That's it — global by default
 
-```bash
-cd your-project
-myco init
-```
+Once Myco is installed, the per-user daemon starts automatically. On first boot it creates a **default Grove** to hold your captured sessions, then walks every detected coding agent on your machine and wires Myco's hooks, MCP entries, and skills into each one's user-global config. The first time any agent fires a hook from a project directory (must be a real git repo), Myco auto-registers that project into your default Grove. No CLI invocation required. The dashboard is available immediately — you can configure intelligence providers, create additional Groves, or move projects between Groves before you've fired your first hook.
 
-`myco init` is a fast bootstrap. It:
+New agent installed later? Myco wires it in on the next periodic detection tick, or on demand via the dashboard's Symbionts page.
 
-1. **Detects coding agents** — finds Claude Code, Cursor, Codex, VS Code Copilot, Gemini CLI, Windsurf, OpenCode, or Pi and lets you pick which to register
-2. **Installs hooks, MCP entries, and skills** for each selected agent
-3. **Starts the daemon** in the background
-4. **Opens the dashboard** to the Settings page so you can configure providers when ready
+If you want a project's Myco wiring committed to the repo (portable Grove identity for teammates, dogfood binary pinning, project-local launcher overrides), open the dashboard's **Symbionts page** and use the **Commit Myco config to this repo** affordance. The `myco init` CLI command is removed — project-level setup is fully automatic, and per-project overrides are UI-driven.
 
-The Myco Agent pipeline is **off by default** after init. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section — that enables the scheduled and event-driven task toggles automatically.
+The Myco Agent pipeline is **off by default** after install. Session capture starts immediately and you get full-text search out of the box. To enable the intelligence pipeline (spore extraction, digest, skill lifecycle), configure an agent provider in the dashboard's **Myco Agent** section.
 
 ### Configure Providers in the Dashboard
 
-After init, the dashboard opens to the Settings page. Two cards are at the top:
+Open the dashboard to the Settings page. Two cards are at the top:
 
 - **Myco Agent** — pick Anthropic, Ollama, or LM Studio. The dropdown lists detected models. Click **Save** to enable the intelligence pipeline.
 - **Embedding** — pick Ollama or an OpenAI-compatible endpoint. Embedding models are filtered automatically.
@@ -92,7 +86,7 @@ Doctor warns (rather than errors) when provider config is absent — data-collec
 
 ## What Happens Next
 
-Once installed and initialized, Myco works automatically:
+Once installed, Myco works automatically:
 
 - **Session start**: Myco injects a digest extract and relevant spores into the conversation
 - **During the session**: Activity (prompts, tool calls, responses) is captured in the vault
@@ -116,7 +110,7 @@ The dashboard lets you:
 - **Monitor** daemon health, power state, and system stats
 - **View logs** in real-time with level filtering
 
-All settings are saved to `myco.yaml` and take effect after a daemon restart (the dashboard handles this automatically).
+All settings are saved through Myco's three-tier scoped config (machine / Grove / project / personal) — the Settings page shows the scope per field. Changes take effect on the next daemon restart, which the dashboard triggers automatically for settings that require it.
 
 ## MCP tools
 
@@ -155,12 +149,15 @@ myco doctor --fix
 
 ### Daemon not starting
 
-The daemon spawns automatically on session start. If it fails:
+The daemon is installed as a per-user service (launchd on macOS, systemd-user on Linux) and starts at login. If it fails:
 
 ```bash
 myco restart    # Manual restart
 myco stats      # Check status
+myco logs       # Tail the daemon log
 ```
+
+If the daemon is up but no projects are registered yet, just fire an agent hook from any git-tracked project — Myco auto-registers that project into your default Grove and capture starts immediately.
 
 ### No observations being captured
 
@@ -179,6 +176,15 @@ curl http://localhost:11434/api/tags
 # For LM Studio
 curl http://localhost:1234/v1/models
 ```
+
+## Uninstall
+
+```bash
+myco remove           # remove Myco's contributions from every agent's global config
+myco remove --purge   # additionally remove ~/.myco/ itself
+```
+
+`myco remove` preserves user-pre-existing keys in shared agent config files (for example, a `[features].hooks` entry you added to `~/.codex/config.toml` yourself).
 
 ## Optional Operator CLIs
 

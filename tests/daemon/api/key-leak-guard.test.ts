@@ -65,9 +65,13 @@ mock.module('@myco/intelligence/lm-studio.js', () => ({
 mock.module('@myco/agent/executor.js', () => ({
   runAgent: vi.fn(async () => ({ runId: 'stub', status: 'completed' as const })),
 }));
-mock.module('@myco/config/loader.js', () => ({
-  loadMergedConfig: () => ({ agent: { tasks: {} } }),
-}));
+// Don't mock `@myco/config/loader.js` here. In bundled (non-isolated) test
+// runs, a top-level `mock.module('@myco/config/loader.js', ...)` returning a
+// partial stub poisons every other test file in the same bun process — the
+// stub omits notifications/cortex/team/etc., so any test that calls
+// `loadMergedConfig` afterwards crashes when it dereferences those keys. The
+// real loader works fine here: tmpVault is freshly seeded with a minimal
+// myco.yaml in beforeAll, and MYCO_HOME is sandboxed by tests/setup/vitest.ts.
 mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
 }));
@@ -117,6 +121,13 @@ describe('cross-route API key leak guard', () => {
 
     tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leak-guard-'));
     fs.mkdirSync(path.join(tmpVault, 'logs'), { recursive: true });
+    // Real loadMergedConfig requires myco.yaml — seed a minimal v3 doc so the
+    // (now-unmocked) loader returns schema-defaulted config rather than throwing.
+    fs.writeFileSync(
+      path.join(tmpVault, 'myco.yaml'),
+      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n',
+      'utf-8',
+    );
     logger = new DaemonLogger(path.join(tmpVault, 'logs'));
     setupTestDb();
 

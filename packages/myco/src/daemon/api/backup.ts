@@ -23,7 +23,7 @@ import {
 import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
 import { GroveConfigSchema } from '../../config/schema.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
-import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome } from '../../grove/paths.js';
+import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome, currentDaemonVariant } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -192,7 +192,9 @@ export function createBackupHandlers(deps: BackupDeps) {
     if (scope && scope.kind === 'all-groves') {
       const key = `backup:${actionScopeKey(scope)}`;
       return inflight.run(key, async (): Promise<RouteResponse> => {
-        const groves = listGroves(mycoHome);
+        // "all-groves" backup means all Groves THIS DAEMON serves; the
+        // peer daemon is responsible for its own Groves' backups.
+        const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
         const results = groves.map((g) => performBackupForGrove(g));
         const ok = results.filter((r) => r.ok).length;
         return {

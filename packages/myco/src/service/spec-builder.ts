@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome, SERVICE_DEV_DIRNAME, SERVICE_DIRNAME } from '../grove/paths.js';
 import { serviceLabel } from './labels.js';
+import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type { ServiceSpec, ServiceVariant } from './types.js';
 
 export interface BuildSpecOptions {
@@ -85,17 +86,28 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
   const serviceDirName = opts.variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
   const logDir = path.join(mycoHome, serviceDirName, 'logs');
 
+  const env: Record<string, string> = {
+    MYCO_HOME: mycoHome,
+    MYCO_SERVICE_VARIANT: opts.variant,
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+  };
+  // Propagate the sandbox unit-dir override into the plist so a supervisor-
+  // spawned child daemon does NOT fall back to `~/Library/LaunchAgents/` and
+  // hijack the real user's canonical service registration. launchd / systemd
+  // run RunAtLoad — the moment the parent calls `launchctl bootstrap` on the
+  // sandbox plist, a child daemon comes up and re-runs ensureSelfInstalledAsService
+  // during its own startup. Without this pass-through, the child computes the
+  // canonical label and writes the real user's plist with sandbox MYCO_HOME paths.
+  const unitDirOverride = process.env[SERVICE_UNIT_DIR_ENV]?.trim();
+  if (unitDirOverride) env[SERVICE_UNIT_DIR_ENV] = unitDirOverride;
+
   return {
     label: serviceLabel(opts.variant),
     variant: opts.variant,
     executable,
     args: ['daemon'],
     workingDir: mycoHome,
-    env: {
-      MYCO_HOME: mycoHome,
-      MYCO_SERVICE_VARIANT: opts.variant,
-      PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-    },
+    env,
     stdoutPath: path.join(logDir, 'daemon.out.log'),
     stderrPath: path.join(logDir, 'daemon.err.log'),
     runAtLoad: true,

@@ -82,7 +82,11 @@ export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
 // (`cli/init.ts`, `cli/update.ts`) keep their imports unchanged. The
 // canonical body lives there so activation/grove code can import it
 // without dragging in cli-level transitive dependencies.
-export { VAULT_GITIGNORE, ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
+// Vault gitignore is now owned by ProjectVault — see
+// `@myco/vault/project-vault.ts`. Callers that need to refresh
+// `<projectRoot>/.myco/.gitignore` go through
+// `new ProjectVault(projectRoot).ensureGitignore()`; the helper isn't
+// re-exported here to keep the single-writer contract honest.
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
 export function collapseHomePath(absPath: string): string {
@@ -95,12 +99,11 @@ export function collapseHomePath(absPath: string): string {
 
 /**
  * Run the SymbiontInstaller for each symbiont manifest and log results.
- * Shared between myco init and myco update.
  *
  * `vaultDir` overrides where the installer reads project config from.
- * Defaults to `<projectRoot>/.myco`. The worktree-bootstrap path in
- * `myco init --worktree` uses this to point config reads at the main
- * repo's shared vault while writing hook files into the worktree.
+ * Defaults to `<projectRoot>/.myco`. The worktree-bootstrap path uses
+ * this to point config reads at the main repo's shared vault while
+ * writing hook files into the worktree.
  */
 export function registerSymbionts(
   manifests: SymbiontManifest[],
@@ -109,11 +112,12 @@ export function registerSymbionts(
   verb: 'Registered' | 'Updated',
   vaultDir?: string,
   groveId?: string | null,
+  installScope: 'project' | 'global' = 'project',
 ): number {
   let count = 0;
   for (const manifest of manifests) {
     try {
-      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId);
+      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId, installScope);
       const result = installer.install();
 
       const installed = [

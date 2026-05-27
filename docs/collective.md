@@ -101,7 +101,7 @@ That adds:
 
 Install `@goondocks/myco-collective` only if you want to run a Collective.
 
-It is separate because it manages a different Cloudflare deployment and admin surface from the per-project Myco install.
+It is separate because it manages a different Cloudflare deployment and admin surface from the local Myco install.
 
 ## Update
 

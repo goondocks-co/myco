@@ -37,6 +37,7 @@ import {
   CANOPY_INDEX_DDLS,
   MIGRATION_IMPORT_JOURNAL_TABLE,
   MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
+  MIGRATION_LOG_TABLE,
   GROVE_PROJECT_SCOPED_TABLES,
   PLAN_LOGICAL_KEY_INDEX_DDLS,
   TABLE_DDLS,
@@ -102,6 +103,9 @@ export const MIGRATIONS: Migration[] = [
   { version: 43, migrate: (db) => migrateV42ToV43(db) },
   { version: 44, migrate: (db) => migrateV43ToV44(db) },
   { version: 45, migrate: (db) => migrateV44ToV45(db) },
+  { version: 46, migrate: (db) => migrateV45ToV46(db) },
+  { version: 47, migrate: (db) => migrateV46ToV47(db) },
+  { version: 48, migrate: (db) => migrateV47ToV48(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2894,6 +2898,81 @@ function migrateV44ToV45(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(45, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v45 → v46: install `migration_log` table for the global-install
+ * migration walker (Step 8). Bounded by design — only error rows and
+ * the most-recent pass-summary row persist after each walker pass.
+ */
+function migrateV45ToV46(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(MIGRATION_LOG_TABLE).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(46, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v46 → v47: Gemini → Antigravity symbiont rename.
+ *
+ * Google retired Gemini CLI and replaced it with Antigravity, which
+ * shares the `~/.gemini/` user-home directory but uses a fundamentally
+ * different hook contract. Existing captured sessions tagged
+ * `agent='gemini'` belong to the same product line and stay queryable
+ * by remapping them to `'antigravity'`. Old session data isn't lost —
+ * just relabeled. Step 16 of the global-install plan.
+ */
+function migrateV46ToV47(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(`UPDATE sessions SET agent = 'antigravity' WHERE agent = 'gemini'`).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(47, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v47 → v48: vscode-copilot → copilot symbiont rename.
+ *
+ * "VS Code Copilot" and "GitHub Copilot CLI" are two surfaces of the
+ * same agent runtime (VS Code Copilot extension drives Copilot CLI via
+ * the Copilot SDK per Microsoft's unified-agent-experience direction).
+ * One symbiont now covers both surfaces under the `copilot` name with
+ * a multi-target globalMcpTarget. Existing captured sessions tagged
+ * `agent='vscode-copilot'` belong to the same product line and stay
+ * queryable by remapping them to `'copilot'`. Old session data isn't
+ * lost — just relabeled. Mirrors the gemini → antigravity remap.
+ */
+function migrateV47ToV48(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(`UPDATE sessions SET agent = 'copilot' WHERE agent = 'vscode-copilot'`).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(48, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
