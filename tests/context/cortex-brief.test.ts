@@ -294,10 +294,15 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('use the `myco` skill as the fuller workflow reference');
     expect(result.instruction).toContain('compact always-on version of that workflow');
     expect(result.instruction).toContain('before creating a new plan or spec');
+    expect(result.instruction).toContain('explicit, optional high-fidelity memory pull');
+    expect(result.instruction).toContain('myco_cortex({"op":"digest","tier":5000})');
+    expect(result.instruction).toContain('tier 10000 only when the agent has enough context budget');
+    expect(result.instruction).toContain('not to pull the digest for narrow edits');
     expect(result.instruction).not.toContain('before implementation');
     expect(result.instruction).toContain('Do not instruct it to call `myco_skills`');
     expect(result.instruction).toContain('Do not mention retired tool names');
-    expect(result.instruction).toContain('before delegating work to another agent, subagent, teammate, worker session, or other spawned process');
+    expect(result.instruction).toContain('when composing a child-agent, subagent, teammate, worker session, or other spawned process prompt');
+    expect(result.instruction).toContain('Myco has not already injected subagent-start Cortex context');
     expect(result.instruction).toContain('myco_cortex({"op":"instructions"})');
     expect(result.instruction).toContain('include the returned instructions verbatim');
     expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"instructions"}\'');
@@ -423,6 +428,8 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('myco_cortex({"op":"canopy_map"})');
     expect(result.instruction).toContain('"op":"canopy_map"');
     expect(result.instruction).toContain('default first move');
+    expect(result.instruction).toContain('`op:"digest"` belongs with planning-context guidance for large work');
+    expect(result.instruction).not.toContain('`op:"digest"` overlaps with canopy_map');
     // The canopy_map directive paragraph no longer pairs the MCP form with the
     // CLI fallback — the dual-form phrasing produced "do the same thing twice"
     // sentences in generated instructions and led agents to skip the tool. The

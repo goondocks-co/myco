@@ -137,20 +137,27 @@ phases:
          sub-bullets) so the reading flow is "default first move →
          situational lookup."
 
-      4. A plan-persistence paragraph naming `myco_plans` with
+      4. A planning-context paragraph naming `myco_plans` with
          op `"list"`, `"get"`, and `"save"`. Trigger `op:"list"`
          around planning, not around every implementation edit: say
          that before creating a new plan or spec, or when existing
          plans may already cover the work, the agent should check for
-         existing plans. Do not say "before implementing anything."
+         existing plans. Also teach `myco_cortex` op `"digest"` as the
+         explicit, optional high-fidelity memory pull for large refactors,
+         large features, broad planning, or unfamiliar cross-system
+         changes; recommend tier 5000 by default and tier 10000 only when
+         the agent has budget and needs deeper historical background. Say
+         not to pull the digest for narrow edits. Do not say "before
+         implementing anything."
 
-      5. A delegation sentence telling the agent that before delegating
-         work to another agent, subagent, teammate, worker session, or
-         other spawned process, it must refresh the current project
-         instructions with `myco_cortex({"op":"instructions"})` and
-         include the returned instructions verbatim in that agent's
-         prompt, along with the task-specific instructions. Include this
-         CLI fallback in the same sentence for hosts without MCP:
+      5. A delegation sentence telling the agent that when composing a
+         child-agent, subagent, teammate, worker session, or other spawned
+         process prompt, and Myco has not already injected subagent-start
+         Cortex context, it should refresh the current project instructions
+         with `myco_cortex({"op":"instructions"})` and include the returned
+         instructions verbatim in that agent's prompt, along with the
+         task-specific instructions. Include this CLI fallback in the same
+         sentence for hosts without MCP:
          `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"instructions"}'`.
          Do not assume the returned instructions have any particular
          heading or section name.
