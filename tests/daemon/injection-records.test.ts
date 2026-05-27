@@ -132,13 +132,13 @@ describe('recordInjectionActivity', () => {
       injectionType: 'subagent',
       discriminator: 'agent-123',
       trigger: { metadata: { source: 'subagent-start', agent_type: 'reviewer' } },
-      fetchContent: async () => ({ text: 'subagent primer', metadata: { source: 'subagent-primer' } }),
+      fetchContent: async () => ({ text: 'subagent cortex', metadata: { source: 'cortex-subagent' } }),
     });
 
     expect(result).toMatchObject({
       injected: true,
-      text: 'subagent primer',
-      metadata: { source: 'subagent-primer' },
+      text: 'subagent cortex',
+      metadata: { source: 'cortex-subagent' },
     });
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });

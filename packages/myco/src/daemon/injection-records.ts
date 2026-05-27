@@ -1,7 +1,7 @@
 /**
  * Universal Myco injection-record primitive.
  *
- * Records each Myco-side injection (Cortex, spores, Canopy, subagent primer) as a synthetic
+ * Records each Myco-side injection (Cortex, spores, Canopy, subagent Cortex) as a synthetic
  * row in `activities` with a deterministic `content_hash`. The UNIQUE
  * index on `(project_id, content_hash)` enforces dedup structurally.
  *

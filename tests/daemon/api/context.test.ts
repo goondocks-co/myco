@@ -258,8 +258,16 @@ describe('createSubagentContextHandler', () => {
     cleanTestDb();
   });
 
-  it('returns a Myco primer and records a subagent injection activity for supported symbionts', async () => {
+  it('returns managed Cortex instructions and records a subagent injection activity for supported symbionts', async () => {
     const { insertBatch, getBatchById } = await import('@myco/db/queries/batches');
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Use `myco_cortex` before major changes.\n\nPrefer Canopy before raw search.',
+      input_hash: 'hash-subagent',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+      source_run_id: 'run-subagent-cortex',
+    });
     upsertSession({
       id: 'sess-subagent',
       agent: 'codex',
@@ -284,11 +292,14 @@ describe('createSubagentContextHandler', () => {
       agent_id: 'agent-123',
       agent_type: 'reviewer',
     }));
-    const body = result.body as { text: string; source: string };
+    const body = result.body as { text: string; source: string; sourceRunId: string | null; generatedAt: number | null };
 
-    expect(body.source).toBe('subagent-primer');
-    expect(body.text).toContain('myco_cortex({"op":"instructions"})');
-    expect(body.text).toContain('Canopy code intelligence');
+    expect(body.source).toBe('cortex-subagent');
+    expect(body.sourceRunId).toBe('run-subagent-cortex');
+    expect(body.generatedAt).toBe(NOW);
+    expect(body.text).toContain('You are a delegated subagent working inside a Myco-connected project.');
+    expect(body.text).toContain('Use `myco_cortex` before major changes.');
+    expect(body.text).toContain('Prefer Canopy before raw search.');
 
     const activities = listActivities({ session_id: 'sess-subagent', scope: ALL_PROJECTS_SCOPE });
     expect(activities).toHaveLength(1);
@@ -300,11 +311,19 @@ describe('createSubagentContextHandler', () => {
       agent_id: 'agent-123',
       agent_type: 'reviewer',
     });
+    expect(activities[0]!.tool_output_summary).toContain('Use `myco_cortex` before major changes.');
     expect(getBatchById(batch.id, ALL_PROJECTS_SCOPE)!.activity_count).toBe(1);
   });
 
   it('suppresses duplicate subagent injection for the same child agent id', async () => {
     const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertCortexInstructions({
+      agent_id: DEFAULT_AGENT_ID,
+      content: 'Cortex subagent dedup content.',
+      input_hash: 'hash-subagent-dedup',
+      generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
     upsertSession({
       id: 'sess-subagent-dedup',
       agent: 'claude-code',
@@ -331,11 +350,23 @@ describe('createSubagentContextHandler', () => {
     };
 
     const first = await handler(makeReq(payload));
-    expect((first.body as { text: string }).text).toContain('Myco project context');
+    expect((first.body as { text: string }).text).toContain('Cortex subagent dedup content');
 
     const second = await handler(makeReq(payload));
     expect((second.body as { text: string }).text).toBe('');
     expect(listActivities({ session_id: 'sess-subagent-dedup', scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+  });
+
+  it('returns empty when no managed Cortex instructions are stored', async () => {
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-subagent-empty',
+      agent: 'codex',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
   });
 
   it('returns empty for symbionts that do not declare subagent-start injection', async () => {

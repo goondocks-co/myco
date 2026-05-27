@@ -21,6 +21,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   shouldInjectCortex,
 } from '@myco/context/cortex-brief.js';
+import { composeCortexInstructionInjection } from '@myco/context/cortex-injection-context.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
@@ -206,7 +207,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a handler that injects a compact Myco primer into supported child agents.
+ * Create a handler that injects managed Cortex instructions into supported child agents.
  */
 export function createSubagentContextHandler(deps: ContextDeps) {
   return async function handleSubagentContext(req: RouteRequest): Promise<RouteResponse> {
@@ -235,7 +236,20 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         return { body: { text: '' } };
       }
 
-      const text = buildSubagentPrimer();
+      const requestProjectId = req.requestContext?.projectId ?? null;
+      const requestScope: import('@myco/grove/ids.js').ProjectScope = requestProjectId
+        ? { kind: 'project', id: requestProjectId }
+        : { kind: 'global' };
+      const snapshot = getCortexInstructionsSnapshot(config, requestScope);
+      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start');
+      if (!composed) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for subagent start', {
+          session_id,
+          agent,
+        });
+        return { body: { text: '' } };
+      }
+      const text = composed.text;
       const projectId = rowProjectIdFromRequestContext(req.requestContext);
 
       try {
@@ -263,7 +277,14 @@ export function createSubagentContextHandler(deps: ContextDeps) {
             agent_type,
           },
         },
-        fetchContent: async () => ({ text, metadata: { source: 'subagent-primer' } }),
+        fetchContent: async () => ({
+          text,
+          metadata: {
+            source: 'cortex-subagent',
+            source_run_id: snapshot.sourceRunId,
+            generated_at: snapshot.generatedAt,
+          },
+        }),
       });
       if (suppress) return { body: { text: '' } };
 
@@ -272,11 +293,19 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         agent,
         agent_id,
         agent_type,
+        source_run_id: snapshot.sourceRunId,
         text_length: text.length,
         estimated_tokens: estimateTokens(text),
       });
 
-      return { body: { text, source: 'subagent-primer' } };
+      return {
+        body: {
+          text,
+          source: 'cortex-subagent',
+          sourceRunId: snapshot.sourceRunId,
+          generatedAt: snapshot.generatedAt,
+        },
+      };
     } catch (error) {
       logger.error(LOG_KINDS.CONTEXT_SESSION, 'Subagent context failed', {
         session_id,
@@ -501,16 +530,6 @@ function subagentDiscriminator(agentId: string | undefined, agentType: string | 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function buildSubagentPrimer(): string {
-  return [
-    'Myco project context:',
-    '- This repository is connected to Myco for project memory, Cortex guidance, spores, and Canopy code intelligence.',
-    '- If Myco MCP tools are available in this child context, call `myco_cortex({"op":"instructions"})` before broad exploration and follow the returned instructions verbatim.',
-    '- If Myco MCP tools are not available here, ask the parent agent to refresh Cortex instructions and pass them into the delegation prompt.',
-    '- Prefer Myco/Canopy context for project orientation before raw search when those tools are available.',
-  ].join('\n');
-}
 
 /**
  * Format hydrated spore search results as markdown context for injection.
