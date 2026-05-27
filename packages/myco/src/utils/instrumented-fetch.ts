@@ -332,14 +332,21 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const reader = body.getReader();
+      let rejectPendingRead: ((reason: unknown) => void) | null = null;
+      const abortRead = new Promise<never>((_, reject) => {
+        rejectPendingRead = reject;
+      });
       // Forward any abort source (idle watchdog, total-timeout, caller
       // signal) to the inner reader. Without this, `reader.read()` blocks
       // indefinitely while the upstream sends nothing, even after our
       // own watchdog has set `idleAbort` — the reader doesn't observe
-      // signals on its own. Cancelling the reader causes the pending
-      // read promise to reject with the supplied reason.
+      // signals on its own. Some runtimes do not reliably wake a pending
+      // read from `reader.cancel()`, so race the read with an explicit
+      // abort rejection as the authoritative wake-up path.
       const cancelOnAbort = () => {
-        try { void reader.cancel(callerSignal.reason); } catch { /* ignore */ }
+        const reason = callerSignal.reason ?? new Error('Aborted');
+        rejectPendingRead?.(reason);
+        try { void reader.cancel(reason); } catch { /* ignore */ }
       };
       if (callerSignal.aborted) {
         cancelOnAbort();
@@ -353,7 +360,10 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
           if (callerSignal.aborted) {
             throw callerSignal.reason ?? new Error('Aborted');
           }
-          const { done, value } = await reader.read();
+          const { done, value } = await Promise.race([
+            reader.read(),
+            abortRead,
+          ]);
           if (callerSignal.aborted) {
             // Reader was cancelled mid-read. The read may return
             // `{ done: true }` quietly when cancelled — turn that into a
