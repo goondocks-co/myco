@@ -64,11 +64,11 @@ async function withRefHandle<T>(fn: () => Promise<T>): Promise<T> {
   // The production daemon has ref'd server handles. In bare Bun test
   // processes, an unref'd watchdog timer may never get a turn while the
   // only awaited work is a suspended Web Stream read.
-  const keepAlive = setInterval(() => {}, 10);
+  const keepAlive = setTimeout(() => {}, 500);
   try {
     return await fn();
   } finally {
-    clearInterval(keepAlive);
+    clearTimeout(keepAlive);
   }
 }
 
