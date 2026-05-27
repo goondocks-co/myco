@@ -60,6 +60,18 @@ function buildIdleStreamResponse(options: { neverResolveCancel?: boolean } = {})
   return new Response(body, { status: 200 });
 }
 
+async function withRefHandle<T>(fn: () => Promise<T>): Promise<T> {
+  // The production daemon has ref'd server handles. In bare Bun test
+  // processes, an unref'd watchdog timer may never get a turn while the
+  // only awaited work is a suspended Web Stream read.
+  const keepAlive = setInterval(() => {}, 10);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
 describe('createInstrumentedFetch', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -135,14 +147,15 @@ describe('createInstrumentedFetch', () => {
       logger,
       idleTimeoutMs: 60,
     });
-    const response = await fetchFn('http://example.test/api/drip');
-
-    let caught: unknown;
-    try {
-      await response.text();
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await withRefHandle(async () => {
+      const response = await fetchFn('http://example.test/api/drip');
+      try {
+        await response.text();
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    });
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
 
@@ -162,14 +175,15 @@ describe('createInstrumentedFetch', () => {
       logger,
       idleTimeoutMs: 60,
     });
-    const response = await fetchFn('http://example.test/api/drip');
-
-    let caught: unknown;
-    try {
-      await response.text();
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await withRefHandle(async () => {
+      const response = await fetchFn('http://example.test/api/drip');
+      try {
+        await response.text();
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    });
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
   });

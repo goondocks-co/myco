@@ -319,6 +319,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
         ));
       }
     }, options.idleTimeoutMs);
+    watchdog.unref?.();
   };
 
   const disarmWatchdog = () => {
