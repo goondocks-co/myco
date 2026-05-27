@@ -1,7 +1,6 @@
 ---
 name: myco:debug-daemon-errors
-description: |
-  Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically fixing daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design.
+description: "Use this skill whenever the Myco daemon is misbehaving — even if the user doesn't explicitly ask for a debugging procedure. Activates for: daemon process crashes, uncaught exceptions, FK constraint violations, PowerManager jobs not firing, scheduler starvation, outbox drain loops, duplicate or phantom sessions, executor tasks that silently succeed or stall, and any log output from the daemon's core subsystems (PowerManager, SQLite, outbox, session lifecycle, phased executor). This is the cross-cutting playbook for investigating, tracing, and surgically fixing daemon-layer bugs — distinct from debugging agent task YAML, schema migrations, or outbox architecture design."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -111,7 +110,7 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
     .where(
       and(
         lte(sessions.promptCount, DEAD_SESSION_MAX_PROMPTS),
-        ne(sessions.status, 'active'),          // required guard
+        ne(sessions.status, 'active'),
         notInArray(sessions.id, registeredSessionIds),
       )
     );
@@ -136,7 +135,7 @@ for (const phase of task.phases) {
     clearTimeout(phaseTimeout);
     if (err.name === 'AbortError') {
       logger.warn(`Phase ${phase.name} timeout after ${config.phaseTimeoutSeconds}s`);
-      continue; // Try next phase with fresh controller
+      continue;
     }
     throw err;
   }
@@ -171,171 +170,43 @@ try {
 5. Daemon A should step aside but has already performed expensive FTS work
 6. Result: "database is locked" errors and wasted computation
 
-**Fix pattern:** Move the port-claim check before expensive database operations:
-```typescript
-// In src/daemon/main.ts - CORRECTED startup order
-export async function startDaemon(opts: StartDaemonOptions) {
-  // 1. FIRST: Check if we should step aside for existing healthy daemon
-  const existingDaemon = await checkForExistingDaemon();
-  if (existingDaemon?.healthy) {
-    logger.info('Healthy daemon already running, stepping aside');
-    return { shouldStepAside: true, existingPid: existingDaemon.pid };
-  }
-
-  // 2. SECOND: Claim port early to prevent other daemon startup attempts
-  const port = await claimPort(opts.port || 20915);
-  if (!port.claimed) {
-    throw new Error(`Port ${opts.port} claimed by another process during startup`);
-  }
-
-  // 3. THIRD: Now safe to perform expensive database operations
-  await ensureSelfInstalledAsService(opts);
-  await migrateDatabaseSchema(); // Includes FTS rebuild - now safe from conflicts
-  
-  // 4. Continue with normal startup...
-  const powerManager = await initializePowerManager();
-  // ... rest of startup
-}
-
-// Port claim should be atomic and fail fast
-async function claimPort(port: number): Promise<{ claimed: boolean; conflictPid?: number }> {
-  try {
-    const server = await createServer().listen(port);
-    return { claimed: true, server };
-  } catch (err) {
-    if (err.code === 'EADDRINUSE') {
-      const conflictPid = await findProcessUsingPort(port);
-      return { claimed: false, conflictPid };
-    }
-    throw err;
-  }
-}
-```
-
-**Diagnostic pattern for startup ordering bugs:**
-```bash
-# Look for this failure signature in logs
-grep -B 10 -A 5 "database is locked" ~/.myco/daemon.log
-grep -B 5 -A 5 "FTS.*rebuild\|FTS.*index" ~/.myco/daemon.log
-
-# Check for multiple daemon startup attempts
-grep -E "Starting daemon|Port.*already in use|Stepping aside" ~/.myco/daemon.log | tail -20
-```
-
-**Prevention pattern:** Always check for resource conflicts before expensive operations:
-```typescript
-// Pattern: check-then-claim-then-work, not work-then-check
-async function expensiveStartupOperation() {
-  // 1. Check if we should proceed
-  const shouldProceed = await checkPreconditions();
-  if (!shouldProceed) return;
-
-  // 2. Claim exclusive access to shared resources  
-  const lock = await claimExclusiveLock();
-  if (!lock.acquired) throw new Error('Resource conflict');
-
-  // 3. Now safe to do expensive work
-  await performExpensiveWork();
-}
-```
+**Fix pattern:** Move the port-claim check before expensive database operations.
 
 ---
 
 ## Step 4 — Daemon Restart and PID Reconciliation Failures
 
-### EPERM Livelock in reconcileExistingDaemon
+### EPERM Livelock in reconcileExistingDaemon with Binary Masquerade Detection
 
 **Problem:** When daemon restart encounters an existing daemon.json with a stale PID, `reconcileExistingDaemon` can enter an EPERM livelock where repeated `process.kill(pid, 0)` calls fail with EPERM but the function keeps retrying without resolution.
 
-**Root cause:** The kill-probe doesn't distinguish between "process doesn't exist" (ESRCH, safe to proceed) and "process exists but we can't signal it" (EPERM, uncertain state).
+**Root cause:** The kill-probe doesn't distinguish between "process doesn't exist" (ESRCH, safe to proceed) and "process exists but we can't signal it" (EPERM, uncertain state). Additionally, EPERM can occur when the PID is reused by a different unrelated process, masquerading as the old daemon.
 
-**Fix pattern:** Treat EPERM as "uncertain" and escalate to user decision rather than looping:
-```typescript
-export async function reconcileExistingDaemon(existingRecord: DaemonRecord): Promise<'cleared' | 'escalate'> {
-  try {
-    // Probe with kill signal 0 (no-op probe)
-    process.kill(existingRecord.pid, 0);
-    // If we get here, process exists and we can signal it
-    logger.info(`Found existing daemon process ${existingRecord.pid}, attempting clean shutdown`);
-    process.kill(existingRecord.pid, 'SIGTERM');
-    await waitForProcessExit(existingRecord.pid, { timeoutMs: 10000 });
-    return 'cleared';
-  } catch (err) {
-    if (err.code === 'ESRCH') {
-      // Process doesn't exist, safe to clear the record
-      logger.info(`Daemon record points to non-existent process ${existingRecord.pid}, clearing stale record`);
-      return 'cleared';
-    } else if (err.code === 'EPERM') {
-      // Process may exist but we can't signal it - escalate to user
-      logger.warn(`Cannot signal existing daemon process ${existingRecord.pid} (EPERM). Manual intervention required.`);
-      console.error(`Existing daemon process ${existingRecord.pid} is running but not accessible.`);
-      console.error(`Please manually stop the process or run: sudo kill ${existingRecord.pid}`);
-      return 'escalate';
-    } else {
-      throw err; // Unexpected error
-    }
-  }
-}
-```
+**Diagnosis — Binary Masquerade Cross-Check:**
+
+Before escalating to user intervention, verify whether the process holding the PID is actually a Myco daemon. Read `/proc/[pid]/cmdline` and check for myco daemon markers (command contains 'myco' plus daemon start patterns).
+
+**Fix pattern:** Treat EPERM with binary cross-check:
+- If the PID holds a Myco daemon: escalate to user for manual intervention
+- If the PID was reused by an unrelated process: safe to clear the stale record
+
+This prevents false EPERM escalations when PIDs are recycled by unrelated processes.
+
+### lifecycle-lock.ts — Atomic Truncation for Process-Scoped Locks
+
+**New knowledge:** The lifecycle-lock module implements process-scoped file locks using atomic truncation to signal lock release. This pattern is critical for daemon restart safety.
+
+**Pattern:** Use `fs.ftruncateSync(fd, 0)` to atomically signal lock release to other processes.
+
+This pattern prevents race conditions during daemon shutdown where a restarting daemon might pick up an old lock.
 
 ### daemon.json Deletion Via Third-Contender Reconciliation: ownerPid Guard Fix
 
-**Problem:** During concurrent daemon startup, a third-contender scenario can occur where:
-1. Two daemons (A and B) start concurrently
-2. Daemon A finds daemon.json with pid X
-3. Daemon A signals pid X (kills it)
-4. Daemon B independently kills the same pid X
-5. Both A and B attempt to delete daemon.json, creating a race
-
-This causes spurious "no daemon found" errors during restart even when processes are coordinating cleanly.
+**Problem:** During concurrent daemon startup, a third-contender scenario can occur where both daemons A and B attempt to delete daemon.json, creating a race condition.
 
 **Root cause:** `removeDaemonState()` doesn't verify that the process being killed actually owned daemon.json before deletion.
 
-**Fix pattern:** Verify ownerPid before deletion:
-
-```typescript
-// In packages/myco/src/daemon/service-state.ts
-export async function removeDaemonState(
-  currentDaemonRecord: DaemonRecord
-): Promise<{ deleted: boolean; reason?: string }> {
-  const daemonJsonPath = ServicePaths.getDaemonJsonPath();
-  
-  // Critical: Only delete if the PID we own matches what's in daemon.json
-  // This prevents third-contender race where daemon B deletes A's daemon.json
-  const existingRecord = await readDaemonJson();
-  
-  if (existingRecord && existingRecord.ownerPid !== currentDaemonRecord.ownerPid) {
-    // Another daemon owns this daemon.json, don't touch it
-    logger.warn(`daemon.json owned by different process (${existingRecord.ownerPid}), skipping deletion`);
-    return { deleted: false, reason: 'owned-by-different-process' };
-  }
-
-  try {
-    await fs.promises.unlink(daemonJsonPath);
-    logger.info(`Removed daemon.json at ${daemonJsonPath}`);
-    return { deleted: true };
-  } catch (err) {
-    if ((err as any).code === 'ENOENT') {
-      // Already deleted by another contender, that's fine
-      logger.info(`daemon.json already missing (deleted by concurrent process)`);
-      return { deleted: true, reason: 'already-deleted' };
-    }
-    throw err;
-  }
-}
-
-// Ensure ownerPid is set when creating daemon.json
-export async function createDaemonRecord(): Promise<DaemonRecord> {
-  return {
-    id: generateId(),
-    pid: process.pid,
-    ownerPid: process.pid,  // Critical: track which process owns this record
-    port: config.port,
-    createdAt: Date.now(),
-    healthyAt: Date.now()
-  };
-}
-```
+**Fix pattern:** Verify ownerPid before deletion to prevent third-contender races where daemon B deletes daemon A's record. Ensure daemon.json creation sets ownerPid = process.pid, and removal checks ownerPid equality before unlink.
 
 ### Daemon Restart Failure Mode 4 — MCP Bridge Indefinite Reconnect
 
@@ -345,7 +216,7 @@ export async function createDaemonRecord(): Promise<DaemonRecord> {
 ```bash
 # Look for these log patterns indicating Mode 4 failure:
 grep -A 5 -B 5 "MCP bridge.*reconnect" ~/.myco/daemon.log
-grep "bridge.*timeout\|bridge.*failed" ~/.myco/daemon.log | tail -20
+grep "bridge.*timeout|bridge.*failed" ~/.myco/daemon.log | tail -20
 ```
 
 **Typical Mode 4 signature:**
@@ -354,68 +225,14 @@ grep "bridge.*timeout\|bridge.*failed" ~/.myco/daemon.log | tail -20
 [MCP] Bridge connection attempt 2 failed: connect ECONNREFUSED 127.0.0.1:3456
 [MCP] Bridge connection attempt 3 failed: connect ECONNREFUSED 127.0.0.1:3456
 [MCP] Bridge reconnect exponential backoff, next attempt in 8000ms
-[MCP] Bridge connection attempt 4 failed: connect ECONNREFUSED 127.0.0.1:3456
 ```
 
 **Resolution procedure:**
-```typescript
-export async function resolveMcpBridgeLoopMode4() {
-  // Step 1: Stop daemon cleanly to break the reconnect loop
-  await stopDaemonProcess({ force: false, timeoutMs: 15000 });
-  
-  // Step 2: Clean any stale MCP bridge state
-  await cleanupMcpBridgeState();
-  
-  // Step 3: Restart with bridge connection verification
-  const startResult = await startDaemonWithBridgeVerification();
-  
-  if (!startResult.bridgeHealthy) {
-    throw new Error('Daemon started but MCP bridge failed verification. Check daemon port conflicts.');
-  }
-  
-  return startResult;
-}
+1. Stop daemon cleanly to break the reconnect loop
+2. Clean any stale MCP bridge state
+3. Restart with bridge connection verification before declaring restart successful
 
-async function startDaemonWithBridgeVerification(): Promise<{ pid: number; bridgeHealthy: boolean }> {
-  const daemon = await startDaemonProcess();
-  
-  // Wait for bridge to establish or timeout
-  const bridgeHealthy = await waitForMcpBridgeReady({
-    timeoutMs: 10000,
-    healthCheckInterval: 500
-  });
-  
-  return { pid: daemon.pid, bridgeHealthy };
-}
-
-async function waitForMcpBridgeReady({ timeoutMs, healthCheckInterval }: { timeoutMs: number; healthCheckInterval: number }): Promise<boolean> {
-  const startTime = Date.now();
-  
-  while (Date.now() - startTime < timeoutMs) {
-    try {
-      // Test bridge connectivity with a minimal request
-      const response = await fetch('http://127.0.0.1:3456/mcp/health', { 
-        timeout: 2000,
-        headers: { 'X-Bridge-Health-Check': '1' }
-      });
-      
-      if (response.ok) {
-        logger.info('[MCP] Bridge health check passed');
-        return true;
-      }
-    } catch (err) {
-      // Bridge not ready yet, continue waiting
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, healthCheckInterval));
-  }
-  
-  logger.warn('[MCP] Bridge health check timed out');
-  return false;
-}
-```
-
-**Prevention:** Always verify MCP bridge health after daemon restart before declaring the restart successful.
+**Prevention:** Always verify MCP bridge health after daemon restart using health check endpoint.
 
 ---
 
@@ -542,155 +359,32 @@ export async function cleanupStaleActiveSessions() {
 
 **When:** Daemon operations that modify Myco's own state, configuration, or process identity create inconsistencies.
 
-### The DaemonStateAuthority Pattern: Structural Invariant Enforcement
+### The DaemonStateAuthority Pattern: Structural Invariant Enforcement (6-Phase Refactor)
 
 **Core Pattern:** Rather than documenting a discipline-based rule ("don't touch daemon.json outside this module"), make the invariant **structural** through a single capability module that is the ONLY place in the codebase that mutates daemon.json.
 
 **Problem it solves:** The production codebase previously had discipline-based documentation ("never call fs.unlinkSync on daemon.json except in shutdown"), but discipline erodes over time. Contributors added mutation sites that weren't caught until runtime. The structural approach is immune to this class of bugs.
 
-**Implementation:**
+**Six-Phase Refactor (7-Method API):**
+
+The refactored DaemonStateAuthority now exposes a complete 6-phase lifecycle with mandatory intent tracking and structured logging:
 
 ```typescript
-// packages/myco/src/daemon/daemon-state-authority.ts
-// This module makes the invariant structural:
-//   1. It is the ONLY module that calls fs.unlinkSync (or variants) on daemon.json
-//   2. The CI test gate verifies no other module imports fs.unlinkSync/unlink on the daemon path
-//   3. Branded types (DaemonStateToken) prevent accidental daemon.json mutations elsewhere
-
-export type DaemonStateToken = Brand<'DaemonStateToken', {}>;
-
-/**
- * Daemon state authority — the only place that can delete daemon.json.
- * All other modules must import from this module if they need mutation capability.
- */
-export class DaemonStateAuthority {
-  /**
-   * Only this method modifies daemon.json. Branded return type ensures
-   * other modules cannot accidently acquire the capability elsewhere.
-   */
-  static async acquireToken(): Promise<DaemonStateToken> {
-    return { __brand: 'DaemonStateToken' } as DaemonStateToken;
-  }
-
-  /**
-   * Atomic replace of daemon.json with ownerPid guard.
-   * Prevents third-contender race where daemon B deletes daemon A's record.
-   */
-  static async atomicReplace(
-    newRecord: DaemonRecord,
-    token: DaemonStateToken
-  ): Promise<void> {
-    // Verify token (compiler ensures it came from acquireToken)
-    if (!token || !token.__brand) {
-      throw new Error('Invalid DaemonStateToken: unauthorized daemon.json mutation');
-    }
-
-    const daemonJsonPath = ServicePaths.getDaemonJsonPath();
-    const tempPath = `${daemonJsonPath}.tmp.${Date.now()}`;
-
-    // Write to temp file first
-    const serialized = JSON.stringify(newRecord, null, 2);
-    await fs.promises.writeFile(tempPath, serialized, { mode: 0o600 });
-
-    // Atomic rename
-    await fs.promises.rename(tempPath, daemonJsonPath);
-  }
-
-  /**
-   * Remove daemon.json with ownerPid verification.
-   */
-  static async removeDaemonState(
-    currentPid: number,
-    token: DaemonStateToken
-  ): Promise<{ deleted: boolean; reason?: string }> {
-    if (!token || !token.__brand) {
-      throw new Error('Invalid DaemonStateToken: unauthorized daemon.json mutation');
-    }
-
-    const daemonJsonPath = ServicePaths.getDaemonJsonPath();
-    const existingRecord = await readDaemonJson();
-
-    if (existingRecord && existingRecord.ownerPid !== currentPid) {
-      logger.warn(`daemon.json owned by different process, skipping deletion`);
-      return { deleted: false, reason: 'owned-by-different-process' };
-    }
-
-    try {
-      await fs.promises.unlink(daemonJsonPath);
-      return { deleted: true };
-    } catch (err) {
-      if ((err as any).code === 'ENOENT') {
-        return { deleted: true, reason: 'already-deleted' };
-      }
-      throw err;
-    }
-  }
-}
+// Phase 1: Token (capability proof) — acquireToken()
+// Phase 2: Write operations (create, update) — read(), write()
+// Phase 3: Conditional mutation (write-or-touch) — writeOrTouch()
+// Phase 4: Atomic succession (replace) — replace()
+// Phase 5: Safe deletion (delete-if-owned) — deleteIfOwnedBy()
+// Phase 6: Cleanup (delete-for-uninstall, delete-if-malformed) — deleteIfMalformed(), deleteForUninstall()
 ```
+
+All mutations require mandatory reason parameters with structured logging (kind=daemon.state-mutation) for audit trail.
 
 ### Usage Pattern: Intent + Reconciliation via Authority
 
-```typescript
-// In daemon startup/shutdown code
-export async function startDaemonWithIntentPattern() {
-  // Step 1: Acquire the structural token
-  const token = await DaemonStateAuthority.acquireToken();
-
-  // Step 2: Declare intent by creating daemon.json
-  const daemonRecord = {
-    id: generateId(),
-    pid: process.pid,
-    ownerPid: process.pid,  // ownerPid guard for third-contender protection
-    port: config.port,
-    createdAt: Date.now()
-  };
-
-  await DaemonStateAuthority.atomicReplace(daemonRecord, token);
-
-  // Step 3: Continue with daemon startup
-  // If any error occurs after this point, the next daemon startup
-  // will see daemon.json and attempt to reconcile
-}
-
-export async function shutdownDaemonWithIntentPattern(token: DaemonStateToken) {
-  // Step 1: Clean internal state
-  await performCleanShutdown();
-
-  // Step 2: Remove daemon.json (structural authority enforces only we can do this)
-  const result = await DaemonStateAuthority.removeDaemonState(process.pid, token);
-  
-  if (!result.deleted) {
-    logger.warn(`Could not remove daemon.json: ${result.reason}`);
-  }
-
-  process.exit(0);
-}
-```
-
-### CI Test Gate: Verify Structural Invariant
-
-```typescript
-// In tests/invariant/daemon-state-authority.test.ts
-describe('DaemonStateAuthority Invariant', () => {
-  it('should be the ONLY module calling fs.unlinkSync on daemon.json paths', async () => {
-    const sourceFiles = await glob('src/**/*.ts', { ignore: 'src/daemon/daemon-state-authority.ts' });
-    
-    for (const file of sourceFiles) {
-      const content = await fs.promises.readFile(file, 'utf-8');
-      
-      // Scan for direct fs.unlinkSync/unlink calls on daemon paths
-      const forbiddenPatterns = [
-        /fs\.unlinkSync\s*\(\s*.*daemon\.json/,
-        /fs\.promises\.unlink\s*\(\s*.*daemon\.json/,
-      ];
-      
-      for (const pattern of forbiddenPatterns) {
-        expect(content).not.toMatch(pattern);
-      }
-    }
-  });
-});
-```
+1. Acquire the structural token via `DaemonStateAuthority.acquireToken()`
+2. Declare intent by writing daemon.json with structured reason (kind + details)
+3. Continue with daemon startup — if any error occurs, next startup will see daemon.json and reconcile
 
 ### Gotchas in Self-Mutation Discipline
 
@@ -706,42 +400,20 @@ describe('DaemonStateAuthority Invariant', () => {
 
 **When:** Investigating startup failures related to resource conflicts, database locks, or multi-instance coordination.
 
-### Startup Ordering Failure Mode Detection
+### Four-Sources-of-Truth Diagnostic Table
 
-```bash
-# Detect startup ordering conflicts (FTS rebuild before port-claim)
-grep -E "FTS.*rebuild|database.*locked|Port.*already" ~/.myco/daemon.log | head -20
+When troubleshooting daemon restart failures, consult this table of the four independent daemon state sources:
 
-# Timeline analysis for multi-instance startup attempts  
-awk '/Starting daemon|Port|FTS|database.*locked/ {print $1" "$2" "$0}' ~/.myco/daemon.log | tail -30
+| State Source | Location | Authority | Consistency Guarantee | Failure Mode |
+|--------------|----------|-----------|----------------------|--------------|
+| **daemon.json** | ~/.myco/daemon.json | Daemon self (intent-based) | Atomic write via temp-file rename; ownerPid prevents third-contender race | Stale PID; malformed JSON; third-contender deletion race |
+| **Process list** | /proc/[pid]/stat (Unix) or tasklist (Windows) | OS kernel | Real-time; immediate on kill | Race: process exits between check and reconciliation |
+| **Port claim** | Port 20915 (TCP socket) | OS kernel | Atomic on listen(); owner identifies PID | Port stuck in TIME_WAIT after unclean shutdown; EADDRINUSE false positive |
+| **Lifecycle lock** | ~/.myco/lifecycle.lock (file descriptor) | Daemon file-based lock | Process-scoped; released on fd close or ftruncate | Lock held by zombie process; fd leaks in crash scenarios |
 
-# Check for abandoned startup operations
-ps aux | grep myco | grep -v grep
-lsof | grep myco | grep -E "(db|socket|lock)"
-```
+**Reconciliation Strategy:**
 
-### Startup Resource Conflict Resolution
-
-```typescript
-export async function resolveStartupResourceConflicts() {
-  // 1. Detect and resolve database lock conflicts
-  const dbLocks = await detectDatabaseLocks();
-  if (dbLocks.length > 0) {
-    logger.warn('Database locks detected during startup', { locks: dbLocks });
-    await resolveDatabaseLockConflicts(dbLocks);
-  }
-
-  // 2. Detect and resolve port conflicts  
-  const portConflicts = await detectPortConflicts();
-  if (portConflicts.length > 0) {
-    logger.warn('Port conflicts detected during startup', { conflicts: portConflicts });
-    await resolvePortConflicts(portConflicts);
-  }
-
-  // 3. Clean up orphaned startup attempts
-  await cleanupOrphanedStartupAttempts();
-}
-```
+When daemon.json exists but daemon won't start, check these four sources in order. If all four agree (process gone, port free, lock free, JSON stale), safe to clear daemon.json and start fresh.
 
 ---
 
@@ -756,11 +428,11 @@ export async function resolveStartupResourceConflicts() {
 | Task shows "process aborted by user" without user action | Phase timeout, next phase runs under dead AbortController | Create fresh `AbortController` for each phase |
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |
 | Daemon restart leaves tasks in `running` status | Process interrupted during task execution | Reset interrupted tasks to `pending` with restart count |
-| "No daemon" false positive during restart | Race condition in daemon.json lifecycle | Apply intent + reconciliation: supervisor manages daemon.json |
+| "No daemon" false positive during restart | Race condition in daemon.json lifecycle | Apply intent + reconciliation: use DaemonStateAuthority |
 | Daemon state corruption after config updates | Non-atomic configuration changes with no rollback | Use intent + reconciliation for config updates with validation |
 | Process identity drift after daemon updates | Self-mutation during update process | Supervisor-owned lifecycle: external supervisor manages updates |
-| EPERM livelock during daemon restart | `reconcileExistingDaemon` loops on permission error | Distinguish ESRCH from EPERM; escalate EPERM to user intervention |
+| EPERM livelock during daemon restart | `reconcileExistingDaemon` loops on permission error | Distinguish ESRCH from EPERM; cross-check binary with cmdline; escalate EPERM if myco daemon confirmed |
 | MCP bridge indefinite reconnect loop | Mode 4 restart failure - bridge never establishes | Stop daemon, clean bridge state, restart with bridge health verification |
 | "Database is locked" during startup | FTS rebuild before port-claim allows orphan operations | Move port-claim check before expensive database operations |
 | Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |
-| daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority with ownerPid guard in removeDaemonState |
+| daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority.deleteIfOwnedBy() with ownerPid guard |
