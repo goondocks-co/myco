@@ -111,6 +111,38 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
+  describe('subagent-start envelope is capability-driven', () => {
+    it('Claude Code emits SubagentStart context in hookSpecificOutput JSON', () => {
+      writeHookResponse('claude-code', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStart',
+          additionalContext: 'myco primer',
+        },
+      });
+    });
+
+    it('Codex emits SubagentStart context in hookSpecificOutput JSON', () => {
+      writeHookResponse('codex', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'SubagentStart',
+          additionalContext: 'myco primer',
+        },
+      });
+    });
+
+    it('Copilot emits subagent additionalContext at the top level', () => {
+      writeHookResponse('copilot', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(JSON.parse(captured)).toEqual({ additionalContext: 'myco primer' });
+    });
+
+    it('unsupported symbionts do not get the SubagentStart envelope', () => {
+      writeHookResponse('cursor', 'subagent-start', { additionalContext: 'myco primer' });
+      expect(captured).toBe('');
+    });
+  });
+
   describe('unknown symbiont', () => {
     it('falls back to the plain-text default rather than crashing', () => {
       writeHookResponse('some-hypothetical-agent', 'stop', { additionalContext: 'ok' });

@@ -89,6 +89,7 @@ describe('PUT /api/config/scoped — cortex paths land at the v8 shape', () => {
   const cases: Array<{ path: string; value: unknown }> = [
     { path: CORTEX_PATHS.enabled, value: false },
     { path: CORTEX_PATHS.instructions.injectOnSessionStart, value: false },
+    { path: CORTEX_PATHS.instructions.injectOnSubagentStart, value: false },
     { path: CORTEX_PATHS.digest.tier, value: 10000 },
     { path: CORTEX_PATHS.digest.injectOnSessionStart, value: true },
     { path: CORTEX_PATHS.spores.injectOnPromptSubmit, value: false },

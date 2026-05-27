@@ -56,6 +56,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -192,6 +193,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
+      "subagentStartInjection": true,
       "canopyReadTools": [
         {
           "tool": "Read",
@@ -422,6 +424,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
+      "subagentStartInjection": true,
       "canopyReadTools": [
         {
           "tool": "Bash",
@@ -526,6 +529,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
+      "subagentStartInjection": true,
       "canopyReadTools": [
         {
           "tool": "read_file",
@@ -783,6 +787,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -833,6 +838,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -892,6 +898,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -940,6 +947,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
+      "subagentStartInjection": false,
       "canopyReadTools": [],
       "pathBearingTools": []
     },

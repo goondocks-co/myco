@@ -50,47 +50,59 @@ export async function sendEvent(
     if (!sessionId) return;
 
     const event = buildEvent(input);
-    const eventWithContext = {
-      ...event,
-      transcript_path: input.transcriptPath,
-    };
-
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
-    const result = await client.capturePost(
-      '/events',
-      { ...eventWithContext, session_id: sessionId, agent: symbiont },
-    );
-
-    // Buffer on transport failure OR server-side `ignored` so reconcile can replay it.
-    if (!result.ok || isIgnoredEventResponse(result.data)) {
-      // Project must be registered globally to receive a buffered write.
-      // No fallback location: Grove migration taught us that "if not in
-      // global, fall back to project-local" silently produces divergent
-      // state. Auto-registration on first hook (Step 13) covers live
-      // capture; until that lands, a daemon-unreachable hit on a
-      // pre-register project drops with a visible stderr trace.
-      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
-      if (!location) {
-        process.stderr.write(
-          `[myco] ${hookName} dropped (project-not-registered) session=${sessionId}\n`,
-        );
-        return;
-      }
-      const buffer = new EventBuffer(location.bufferDir, sessionId);
-      buffer.append(eventWithContext);
-      // Stderr log so "session not captured" investigations can see the
-      // buffer-fallback path firing — previously this was completely silent,
-      // which is exactly how the prod-daemon stop-responding-after-restart
-      // class of bug went undiagnosed for hours at a time. The agent
-      // captures hook stderr (or surfaces it in its log), so this is the
-      // shortest path to observability without a daemon round-trip.
-      process.stderr.write(
-        `[myco] ${hookName} buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
-      );
-    }
+    await captureHookEvent(VAULT_DIR, hookName, input, event);
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);
   } finally {
     writeHookResponse(symbiont, hookName);
+  }
+}
+
+export async function captureHookEvent(
+  vaultDir: string,
+  hookName: string,
+  input: NormalizedHookInput,
+  event: Record<string, unknown>,
+): Promise<void> {
+  const sessionId = input.sessionId;
+  if (!sessionId) return;
+
+  const eventWithContext = {
+    ...event,
+    transcript_path: input.transcriptPath,
+  };
+
+  const client = createHookDaemonClient(vaultDir, { sessionId });
+  const result = await client.capturePost(
+    '/events',
+    { ...eventWithContext, session_id: sessionId, agent: input.agent },
+  );
+
+  // Buffer on transport failure OR server-side `ignored` so reconcile can replay it.
+  if (!result.ok || isIgnoredEventResponse(result.data)) {
+    // Project must be registered globally to receive a buffered write.
+    // No fallback location: Grove migration taught us that "if not in
+    // global, fall back to project-local" silently produces divergent
+    // state. Auto-registration on first hook (Step 13) covers live
+    // capture; until that lands, a daemon-unreachable hit on a
+    // pre-register project drops with a visible stderr trace.
+    const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(vaultDir));
+    if (!location) {
+      process.stderr.write(
+        `[myco] ${hookName} dropped (project-not-registered) session=${sessionId}\n`,
+      );
+      return;
+    }
+    const buffer = new EventBuffer(location.bufferDir, sessionId);
+    buffer.append(eventWithContext);
+    // Stderr log so "session not captured" investigations can see the
+    // buffer-fallback path firing — previously this was completely silent,
+    // which is exactly how the prod-daemon stop-responding-after-restart
+    // class of bug went undiagnosed for hours at a time. The agent
+    // captures hook stderr (or surfaces it in its log), so this is the
+    // shortest path to observability without a daemon round-trip.
+    process.stderr.write(
+      `[myco] ${hookName} buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
+    );
   }
 }

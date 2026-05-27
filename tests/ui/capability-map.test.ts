@@ -14,6 +14,7 @@ function makeSymbiont(overrides: Partial<SymbiontInfo> = {}): SymbiontInfo {
     supportsPromptSubmitInjection: false,
     supportsSessions: false,
     supportsCanopyInjection: false,
+    supportsSubagentStartInjection: false,
     supportsPlanCapture: false,
     supportsSkills: false,
     supportsMcp: false,
@@ -65,6 +66,13 @@ describe('buildCapabilityChips', () => {
     expect(canopy?.to).toBe('/cortex?tab=canopy');
   });
 
+  it('Subagent context chip points at the Cortex instructions tab', () => {
+    const chips = buildCapabilityChips(makeSymbiont({ supportsSubagentStartInjection: true }));
+    const subagent = chips.find((c) => c.id === 'cortex-subagent');
+    expect(subagent?.label).toBe('Subagent context');
+    expect(subagent?.to).toBe('/cortex?tab=instructions');
+  });
+
   it('Plans chip combines agent + has_plan=true', () => {
     const chips = buildCapabilityChips(makeSymbiont({ name: 'cursor', supportsPlanCapture: true }));
     const plans = chips.find((c) => c.id === 'plans');
@@ -96,6 +104,7 @@ describe('buildCapabilityChips', () => {
       supportsSessions: true,
       supportsSessionStartInjection: true,
       supportsCanopyInjection: true,
+      supportsSubagentStartInjection: true,
       supportsPlanCapture: true,
       supportsSkills: true,
       supportsMcp: true,
@@ -106,6 +115,7 @@ describe('buildCapabilityChips', () => {
       'cortex-instructions',
       'cortex-digest',
       'cortex-canopy',
+      'cortex-subagent',
       'cortex-spores',
       'plans',
       'skills',

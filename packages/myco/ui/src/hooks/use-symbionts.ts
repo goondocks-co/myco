@@ -27,6 +27,7 @@ export interface SymbiontInfo {
   // Symbionts page.
   supportsSessions: boolean;
   supportsCanopyInjection: boolean;
+  supportsSubagentStartInjection: boolean;
   supportsPlanCapture: boolean;
   supportsSkills: boolean;
   supportsMcp: boolean;

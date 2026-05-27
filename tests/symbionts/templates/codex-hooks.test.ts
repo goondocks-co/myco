@@ -13,6 +13,7 @@ describe('codex hooks.json template', () => {
     expect(Array.isArray(tpl.SessionStart)).toBe(true);
     expect(Array.isArray(tpl.UserPromptSubmit)).toBe(true);
     expect(Array.isArray(tpl.PostToolUse)).toBe(true);
+    expect(Array.isArray(tpl.SubagentStart)).toBe(true);
   });
 
   it('PreToolUse invokes the pre-tool-use hook with the codex symbiont flag', () => {
@@ -37,6 +38,16 @@ describe('codex hooks.json template', () => {
     const t = groups[0].hooks[0].timeout;
     expect(typeof t).toBe('number');
     expect(t).toBeLessThanOrEqual(5);
+  });
+
+  it('SubagentStart invokes the subagent-start hook with the codex symbiont flag', () => {
+    const groups = tpl.SubagentStart as Array<{ hooks: Array<{ type: string; command: string; timeout?: number }> }>;
+    expect(groups).toHaveLength(1);
+    const handler = groups[0].hooks[0];
+    expect(handler.type).toBe('command');
+    expect(handler.command).toContain('hook subagent-start');
+    expect(handler.command).toContain('--symbiont codex');
+    expect(handler.timeout).toBeLessThanOrEqual(5);
   });
 
   it('does not bake a matcher into PreToolUse (handler resolves via manifest)', () => {

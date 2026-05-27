@@ -222,6 +222,9 @@ registration:
 capabilities:
   # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
+  # SubagentStart can inject additionalContext as extra developer context for
+  # the child agent.
+  subagentStartInjection: true
   # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
   # the agent's context.
   preToolUseInjection: true

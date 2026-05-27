@@ -41,3 +41,6 @@ registration:
 capabilities:
   sessionStartInjection: true
   preToolUseInjection: false
+  # Cursor currently exposes subagentStart for lifecycle allow/deny, not
+  # proven child model-context injection.
+  subagentStartInjection: false

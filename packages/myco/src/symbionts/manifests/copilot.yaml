@@ -102,6 +102,9 @@ capabilities:
   # the daemon already routes Cortex preamble + per-prompt spores
   # through these injection points.
   sessionStartInjection: true
+  # subagentStart can prepend additionalContext to the subagent prompt when
+  # the agent type emits subagent lifecycle events.
+  subagentStartInjection: true
   # File-read tools Copilot exposes whose tool_input carries a path
   # field Canopy can resolve into a code-intelligence summary. Each
   # entry maps the tool name (as it appears in tool.execution_start

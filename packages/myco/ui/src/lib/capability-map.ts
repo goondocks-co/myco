@@ -84,6 +84,16 @@ export function buildCapabilityChips(s: SymbiontInfo): CapabilityChipDescriptor[
     });
   }
 
+  if (s.supportsSubagentStartInjection) {
+    chips.push({
+      id: 'cortex-subagent',
+      label: 'Subagent context',
+      to: '/cortex?tab=instructions',
+      tone: 'sage',
+      title: 'Myco can inject a Cortex primer when this symbiont starts a subagent',
+    });
+  }
+
   // Spores are produced by any symbiont that records sessions — the
   // intelligence pipeline writes them after the fact. So the chip is
   // gated on `supportsSessions`, not on a separate manifest field.

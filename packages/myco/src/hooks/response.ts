@@ -36,6 +36,12 @@ export function writeHookResponse(
     process.stdout.write(serializePreToolUseEnvelope(response));
     return;
   }
+  if (hookEvent === 'subagent-start') {
+    if (symbiontHasCapability(symbiont, 'subagentStartInjection')) {
+      process.stdout.write(serializeSubagentStartEnvelope(symbiont, response));
+    }
+    return;
+  }
 
   const config = resolveHookResponseConfig(symbiont);
   switch (config.format) {
@@ -121,6 +127,22 @@ function serializePreToolUseEnvelope(response: HookResponse): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
+      additionalContext: response.additionalContext,
+    },
+  });
+}
+
+function serializeSubagentStartEnvelope(
+  symbiont: string | undefined,
+  response: HookResponse,
+): string {
+  if (!response.additionalContext) return '';
+  if (symbiont === 'copilot') {
+    return JSON.stringify({ additionalContext: response.additionalContext });
+  }
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SubagentStart',
       additionalContext: response.additionalContext,
     },
   });

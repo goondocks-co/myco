@@ -52,6 +52,7 @@ capabilities:
   # session-start hook. Cortex falls back to inline delivery via
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
   sessionStartInjection: false
+  subagentStartInjection: false
 hooks:
   # Windsurf splits turn-end across two events. `post_cascade_response`
   # fires immediately with `tool_info.response` (inline text). The

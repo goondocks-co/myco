@@ -24,6 +24,7 @@ import {
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -65,6 +66,13 @@ const ResumeContextBody = z.object({
 const PromptContextBody = z.object({
   prompt: z.string(),
   session_id: z.string().optional(),
+});
+
+const SubagentContextBody = z.object({
+  session_id: z.string().optional(),
+  agent: z.string().optional(),
+  agent_id: z.string().optional(),
+  agent_type: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -188,6 +196,93 @@ export function createSessionContextHandler(deps: ContextDeps) {
       };
     } catch (error) {
       logger.error(LOG_KINDS.CONTEXT_SESSION, 'Session context failed', { error: (error as Error).message });
+      return { body: { text: '' } };
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Subagent-start context handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a handler that injects a compact Myco primer into supported child agents.
+ */
+export function createSubagentContextHandler(deps: ContextDeps) {
+  return async function handleSubagentContext(req: RouteRequest): Promise<RouteResponse> {
+    const { session_id, agent, agent_id, agent_type } = SubagentContextBody.parse(req.body);
+    const { logger, liveConfig } = deps;
+    const config = liveConfig.current;
+
+    logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Subagent context query', {
+      session_id,
+      agent,
+      agent_id,
+      agent_type,
+    });
+
+    try {
+      if (!session_id) return { body: { text: '' } };
+      if (!config.cortex.enabled || !config.cortex.instructions.inject_on_subagent_start) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Subagent context disabled', { session_id, agent });
+        return { body: { text: '' } };
+      }
+      if (!symbiontHasCapability(agent, 'subagentStartInjection')) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Symbiont lacks subagent-start injection', {
+          session_id,
+          agent,
+        });
+        return { body: { text: '' } };
+      }
+
+      const text = buildSubagentPrimer();
+      const projectId = rowProjectIdFromRequestContext(req.requestContext);
+
+      try {
+        ensureSessionRowExists({
+          sessionId: session_id,
+          projectId: typeof projectId === 'string' ? projectId : null,
+          projectRoot: req.requestContext?.projectRoot ?? null,
+          machineId: req.requestContext?.machineId ?? 'local',
+          logger,
+          source: ENSURE_SESSION_SOURCE.CONTEXT,
+        });
+      } catch { /* defensive — never block child-agent startup */ }
+
+      const discriminator = subagentDiscriminator(agent_id, agent_type);
+      const { suppress } = await recordInjectionAndShouldSuppress({
+        sessionId: session_id,
+        projectId: typeof projectId === 'string' ? projectId : null,
+        injectionType: 'subagent',
+        discriminator,
+        trigger: {
+          metadata: {
+            source: 'subagent-start',
+            agent,
+            agent_id,
+            agent_type,
+          },
+        },
+        fetchContent: async () => ({ text, metadata: { source: 'subagent-primer' } }),
+      });
+      if (suppress) return { body: { text: '' } };
+
+      logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context injected', {
+        session_id,
+        agent,
+        agent_id,
+        agent_type,
+        text_length: text.length,
+        estimated_tokens: estimateTokens(text),
+      });
+
+      return { body: { text, source: 'subagent-primer' } };
+    } catch (error) {
+      logger.error(LOG_KINDS.CONTEXT_SESSION, 'Subagent context failed', {
+        session_id,
+        agent,
+        error: (error as Error).message,
+      });
       return { body: { text: '' } };
     }
   };
@@ -399,9 +494,23 @@ function hashPromptDiscriminator(prompt: string): string {
   return createHash('sha1').update(prompt).digest('hex').slice(0, 16);
 }
 
+function subagentDiscriminator(agentId: string | undefined, agentType: string | undefined): string {
+  return agentId?.trim() || agentType?.trim() || 'unknown';
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function buildSubagentPrimer(): string {
+  return [
+    'Myco project context:',
+    '- This repository is connected to Myco for project memory, Cortex guidance, spores, and Canopy code intelligence.',
+    '- If Myco MCP tools are available in this child context, call `myco_cortex({"op":"instructions"})` before broad exploration and follow the returned instructions verbatim.',
+    '- If Myco MCP tools are not available here, ask the parent agent to refresh Cortex instructions and pass them into the delegation prompt.',
+    '- Prefer Myco/Canopy context for project orientation before raw search when those tools are available.',
+  ].join('\n');
+}
 
 /**
  * Format hydrated spore search results as markdown context for injection.

@@ -197,6 +197,7 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   [CORTEX_PATHS.digest.tier]: 'Preferred Digest Tier',
   [CORTEX_PATHS.digest.injectOnSessionStart]: 'Session-Start Digest',
   [CORTEX_PATHS.instructions.injectOnSessionStart]: 'Session-Start Instructions',
+  [CORTEX_PATHS.instructions.injectOnSubagentStart]: 'Subagent Context',
   [CORTEX_PATHS.spores.injectOnPromptSubmit]: 'Prompt-Submit Spore Injection',
   [CORTEX_PATHS.spores.maxPerPrompt]: 'Max Spores per Prompt',
   [CORTEX_PATHS.canopy.injectOnPreToolUse]: 'PreToolUse Canopy Injection',

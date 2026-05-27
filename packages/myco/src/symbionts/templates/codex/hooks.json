@@ -43,6 +43,17 @@
       ]
     }
   ],
+  "SubagentStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook subagent-start --symbiont codex",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
   "Stop": [
     {
       "hooks": [

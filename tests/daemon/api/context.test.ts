@@ -12,12 +12,15 @@ import {
   createSessionContextHandler,
   createPromptContextHandler,
   createResumeContextHandler,
+  createSubagentContextHandler,
 } from '@myco/daemon/api/context';
 import type { ContextDeps } from '@myco/daemon/api/context';
 import type { RouteRequest } from '@myco/daemon/router';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 import type { DaemonLogger } from '@myco/daemon/logger';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
+import { listActivities } from '@myco/db/queries/activities';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeReq(body: unknown): RouteRequest {
@@ -243,6 +246,127 @@ describe('createResumeContextHandler', () => {
     expect(body.text).toContain('Branch:: `feat/opencode`');
     expect(body.text).toContain('Previous Session:: `parent-1`');
     expect(body.text).toContain('Session:: `resume-2`');
+  });
+});
+
+describe('createSubagentContextHandler', () => {
+  beforeAll(() => {
+    setupTestDb();
+  });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+  });
+
+  it('returns a Myco primer and records a subagent injection activity for supported symbionts', async () => {
+    const { insertBatch, getBatchById } = await import('@myco/db/queries/batches');
+    upsertSession({
+      id: 'sess-subagent',
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    const batch = insertBatch({
+      session_id: 'sess-subagent',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'spawn a reviewer',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-subagent',
+      agent: 'codex',
+      agent_id: 'agent-123',
+      agent_type: 'reviewer',
+    }));
+    const body = result.body as { text: string; source: string };
+
+    expect(body.source).toBe('subagent-primer');
+    expect(body.text).toContain('myco_cortex({"op":"instructions"})');
+    expect(body.text).toContain('Canopy code intelligence');
+
+    const activities = listActivities({ session_id: 'sess-subagent', scope: ALL_PROJECTS_SCOPE });
+    expect(activities).toHaveLength(1);
+    expect(activities[0]!.tool_name).toBe('myco:inject_subagent');
+    expect(activities[0]!.content_hash).toBe('myco:inject:subagent:sess-subagent:agent-123');
+    expect(JSON.parse(activities[0]!.tool_input!)).toMatchObject({
+      source: 'subagent-start',
+      agent: 'codex',
+      agent_id: 'agent-123',
+      agent_type: 'reviewer',
+    });
+    expect(getBatchById(batch.id, ALL_PROJECTS_SCOPE)!.activity_count).toBe(1);
+  });
+
+  it('suppresses duplicate subagent injection for the same child agent id', async () => {
+    const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertSession({
+      id: 'sess-subagent-dedup',
+      agent: 'claude-code',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    insertBatch({
+      session_id: 'sess-subagent-dedup',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'spawn a reviewer',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+
+    const handler = createSubagentContextHandler(makeDeps());
+    const payload = {
+      session_id: 'sess-subagent-dedup',
+      agent: 'claude-code',
+      agent_id: 'agent-dup',
+      agent_type: 'reviewer',
+    };
+
+    const first = await handler(makeReq(payload));
+    expect((first.body as { text: string }).text).toContain('Myco project context');
+
+    const second = await handler(makeReq(payload));
+    expect((second.body as { text: string }).text).toBe('');
+    expect(listActivities({ session_id: 'sess-subagent-dedup', scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+  });
+
+  it('returns empty for symbionts that do not declare subagent-start injection', async () => {
+    const handler = createSubagentContextHandler(makeDeps());
+    const result = await handler(makeReq({
+      session_id: 'sess-unsupported',
+      agent: 'cursor',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('returns empty when subagent context injection is disabled in config', async () => {
+    const handler = createSubagentContextHandler(makeDeps({
+      config: MycoConfigSchema.parse({
+        version: 3,
+        cortex: {
+          instructions: { inject_on_subagent_start: false },
+        },
+      }),
+    }));
+    const result = await handler(makeReq({
+      session_id: 'sess-disabled',
+      agent: 'codex',
+      agent_id: 'agent-1',
+      agent_type: 'reviewer',
+    }));
+
+    expect((result.body as { text: string }).text).toBe('');
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Universal Myco injection-record primitive.
  *
- * Records each Myco-side injection (Cortex, spores, Canopy) as a synthetic
+ * Records each Myco-side injection (Cortex, spores, Canopy, subagent primer) as a synthetic
  * row in `activities` with a deterministic `content_hash`. The UNIQUE
  * index on `(project_id, content_hash)` enforces dedup structurally.
  *
@@ -9,6 +9,7 @@
  *   myco:inject:cortex:<sessionId>
  *   myco:inject:spores:<sessionId>:<promptHash>
  *   myco:inject:canopy:<sessionId>:<filePath>
+ *   myco:inject:subagent:<sessionId>:<agentIdOrType>
  */
 
 import { getDatabase } from '@myco/db/client.js';
@@ -18,7 +19,7 @@ import { epochSeconds } from '@myco/constants.js';
 
 const INJECTION_OUTPUT_STORE_LIMIT = 8000;
 
-export type InjectionType = 'cortex' | 'spores' | 'canopy';
+export type InjectionType = 'cortex' | 'spores' | 'canopy' | 'subagent';
 
 export interface InjectionTrigger {
   /** What initiated this injection (e.g. for spores: prompt hash + preview). */
@@ -96,10 +97,10 @@ export async function recordInjectionActivity(
   // the 1:1 batch:turn mapping and keeps the cortex activity
   // attached to the right turn.
   //
-  // Spores and canopy injections fire AFTER a batch already exists
-  // (UserPromptSubmit / PreToolUse respectively), so the no-batch
-  // path stays the legacy 'no_batch' fall-through for those — they
-  // shouldn't manufacture sentinels.
+  // Spores, canopy, and subagent injections fire AFTER a batch already
+  // exists (UserPromptSubmit / PreToolUse / SubagentStart inside a
+  // delegated turn respectively), so the no-batch path stays the legacy
+  // 'no_batch' fall-through for those — they shouldn't manufacture sentinels.
   let latestBatch = getLatestBatch(sessionId);
   if (!latestBatch) {
     if (injectionType !== 'cortex') {

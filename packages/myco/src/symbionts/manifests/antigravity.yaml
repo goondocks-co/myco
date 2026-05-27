@@ -108,4 +108,5 @@ registration:
   # plugin bundle's plugin.json.
 capabilities:
   sessionStartInjection: true
+  subagentStartInjection: false
   preToolUseInjection: false

@@ -32,6 +32,10 @@ describe('buildInjectionContentHash', () => {
     expect(buildInjectionContentHash('spores', 'sess-abc', 'abc123'))
       .toBe('myco:inject:spores:sess-abc:abc123');
   });
+  it('encodes subagent injections as their own synthetic tool namespace', () => {
+    expect(buildInjectionContentHash('subagent', 'sess-abc', 'agent-123'))
+      .toBe('myco:inject:subagent:sess-abc:agent-123');
+  });
   it('omits trailing colon when discriminator is empty string', () => {
     expect(buildInjectionContentHash('cortex', 'sess-abc', ''))
       .toBe('myco:inject:cortex:sess-abc');
@@ -116,6 +120,41 @@ describe('recordInjectionActivity', () => {
     const { getBatchById } = await import('@myco/db/queries/batches.js');
     const batch = getBatchById(batchId, ALL_PROJECTS_SCOPE);
     expect(batch!.activity_count).toBe(1);
+  });
+
+  it('records subagent injection as a prompt-batch activity without incrementing session tool_count', async () => {
+    const sessionId = seedSession({ id: 's-subagent', agent: 'codex' });
+    const { batchId } = withOpenBatch(sessionId);
+
+    const result = await recordInjectionActivity({
+      sessionId,
+      projectId: null,
+      injectionType: 'subagent',
+      discriminator: 'agent-123',
+      trigger: { metadata: { source: 'subagent-start', agent_type: 'reviewer' } },
+      fetchContent: async () => ({ text: 'subagent primer', metadata: { source: 'subagent-primer' } }),
+    });
+
+    expect(result).toMatchObject({
+      injected: true,
+      text: 'subagent primer',
+      metadata: { source: 'subagent-primer' },
+    });
+
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+    expect(activities).toHaveLength(1);
+    expect(activities[0]!.tool_name).toBe('myco:inject_subagent');
+    expect(activities[0]!.content_hash).toBe('myco:inject:subagent:s-subagent:agent-123');
+    expect(JSON.parse(activities[0]!.tool_input!)).toEqual({
+      source: 'subagent-start',
+      agent_type: 'reviewer',
+    });
+
+    const { getBatchById } = await import('@myco/db/queries/batches.js');
+    expect(getBatchById(batchId, ALL_PROJECTS_SCOPE)!.activity_count).toBe(1);
+
+    const { getSession } = await import('@myco/db/queries/sessions.js');
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)!.tool_count).toBe(0);
   });
 
   it('returns already_recorded on the second call and never invokes the fetch', async () => {

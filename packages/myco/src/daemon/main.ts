@@ -95,7 +95,12 @@ import {
   handleGetDigest,
 } from './api/mycelium.js';
 import { createSearchHandler } from './api/search.js';
-import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
+import {
+  createSessionContextHandler,
+  createPromptContextHandler,
+  createResumeContextHandler,
+  createSubagentContextHandler,
+} from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
@@ -1213,6 +1218,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
+  server.registerRoute('POST', '/context/subagent', createSubagentContextHandler(contextDeps));
 
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({

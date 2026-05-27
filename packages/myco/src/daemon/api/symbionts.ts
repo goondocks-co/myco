@@ -46,6 +46,8 @@ export interface SymbiontInfo {
   supportsSessions: boolean;
   /** Canopy file-read context injection on PreToolUse hooks. */
   supportsCanopyInjection: boolean;
+  /** Cortex primer injection when this symbiont starts a subagent. */
+  supportsSubagentStartInjection: boolean;
   /** Plans the symbiont writes are picked up automatically. */
   supportsPlanCapture: boolean;
   /** Myco's skills are exposed inside the symbiont. */
@@ -113,6 +115,7 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
     const supportsCanopyInjection =
       (manifest.capabilities?.preToolUseInjection ?? false)
       && ((manifest.capabilities?.canopyReadTools?.length ?? 0) > 0);
+    const supportsSubagentStartInjection = manifest.capabilities?.subagentStartInjection ?? false;
     // Plans surface counts either mechanism: filesystem watch (`planDirs`)
     // or transcript tag extraction (`planTags`). Codex emits no on-disk
     // plans but ships an `update_plan` function-call tool whose JSON args
@@ -135,6 +138,7 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
       ...detectSymbiontInjectionSupport(manifest),
       supportsSessions,
       supportsCanopyInjection,
+      supportsSubagentStartInjection,
       supportsPlanCapture,
       supportsSkills,
       supportsMcp,

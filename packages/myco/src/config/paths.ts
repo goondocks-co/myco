@@ -23,6 +23,7 @@ export const CORTEX_PATHS = {
   enabled: 'cortex.enabled',
   instructions: {
     injectOnSessionStart: 'cortex.instructions.inject_on_session_start',
+    injectOnSubagentStart: 'cortex.instructions.inject_on_subagent_start',
   },
   digest: {
     tier: 'cortex.digest.tier',

@@ -318,6 +318,13 @@ const CapabilitiesSchema = z.object({
    */
   sessionStartInjection: z.boolean().default(false),
   /**
+   * Whether this symbiont has a subagent-start lifecycle hook whose
+   * response can place model-visible context into the child agent before
+   * its first prompt. This is distinct from merely observing or gating
+   * subagent lifecycle events.
+   */
+  subagentStartInjection: z.boolean().default(false),
+  /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
@@ -338,6 +345,7 @@ const CapabilitiesSchema = z.object({
 }).default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
+  subagentStartInjection: false,
   canopyReadTools: [],
   pathBearingTools: [],
 }));

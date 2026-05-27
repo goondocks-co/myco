@@ -35,6 +35,17 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   windsurf: { session: false, prompt: true },
 };
 
+const EXPECTED_SUBAGENT_START_INJECTION: Record<string, boolean> = {
+  'claude-code': true,
+  codex: true,
+  cursor: false,
+  antigravity: false,
+  opencode: false,
+  pi: false,
+  copilot: true,
+  windsurf: false,
+};
+
 describe('detectSymbiontInjectionSupport', () => {
   const manifests = loadManifests();
 
@@ -111,6 +122,37 @@ describe('detectSymbiontInjectionSupport', () => {
         declared,
         `${manifest.name}: manifest declares sessionStartInjection=${declared} but template scan = ${templateHasSignal}`,
       ).toBe(templateHasSignal);
+    }
+  });
+
+  it('pins the docs-grounded subagent-start injection capability matrix', () => {
+    const actual: Record<string, boolean> = {};
+    for (const manifest of manifests) {
+      actual[manifest.name] = manifest.capabilities?.subagentStartInjection ?? false;
+    }
+    expect(actual).toEqual(EXPECTED_SUBAGENT_START_INJECTION);
+  });
+
+  it('requires every true subagent-start injection capability to have a hook template entry', () => {
+    for (const manifest of manifests) {
+      if (!manifest.capabilities?.subagentStartInjection) continue;
+      const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
+        ? (manifest.registration.hooksTemplateFile ?? 'plugin.ts')
+        : 'hooks.json';
+      const templatePath = path.resolve(
+        import.meta.dirname,
+        '..',
+        '..',
+        'packages/myco/src/symbionts/templates',
+        manifest.name,
+        templateFile,
+      );
+      expect(fs.existsSync(templatePath), `${manifest.name}: missing hooks template`).toBe(true);
+      const template = fs.readFileSync(templatePath, 'utf-8');
+      expect(
+        template.includes('hook subagent-start'),
+        `${manifest.name}: subagentStartInjection=true but template does not invoke hook subagent-start`,
+      ).toBe(true);
     }
   });
 });

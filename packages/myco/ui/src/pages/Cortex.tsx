@@ -392,6 +392,18 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
+            path={CORTEX_PATHS.instructions.injectOnSubagentStart}
+            label="Inject subagent context"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? true} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField
             path={CORTEX_PATHS.digest.injectOnSessionStart}
             label="Inject preferred digest"
             defaultScope="project"
@@ -400,9 +412,7 @@ function InstructionsTab() {
               <Switch checked={value ?? false} onCheckedChange={onChange} />
             )}
           </ScopedField>
-        </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
             path={CORTEX_PATHS.spores.injectOnPromptSubmit}
             label="Prompt-time spore retrieval"
