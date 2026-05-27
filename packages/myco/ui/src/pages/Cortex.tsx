@@ -375,69 +375,112 @@ function InstructionsTab() {
         level="low"
         className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
       >
-        <div className="space-y-1">
+        <div className="space-y-1 max-w-3xl">
           <Eyebrow>Settings</Eyebrow>
-          <h3 className="myco-display-sm text-on-surface m-0">Instructions Settings</h3>
+          <h3 className="myco-display-sm text-on-surface m-0">Injection lifecycle</h3>
+          <p className="font-sans text-sm text-on-surface-variant">
+            Choose which Cortex context is added as symbionts move through session start,
+            subagent start, and prompt submit events.
+          </p>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField
-            path={CORTEX_PATHS.instructions.injectOnSessionStart}
-            label="Inject session-start instructions"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Switch checked={value ?? true} onCheckedChange={onChange} />
-            )}
-          </ScopedField>
+        <div className="space-y-6">
+          <div className="grid gap-4 border-t border-outline-variant/20 pt-5 lg:grid-cols-[minmax(16rem,0.9fr)_minmax(0,2fr)]">
+            <div className="space-y-1">
+              <h4 className="font-sans text-sm font-semibold text-on-surface m-0">Session start</h4>
+              <p className="font-sans text-sm text-on-surface-variant">
+                Context added when a new symbiont session begins.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <ScopedField
+                path={CORTEX_PATHS.instructions.injectOnSessionStart}
+                label="Managed instructions"
+                defaultScope="project"
+              >
+                {({ value, onChange }) => (
+                  <Switch checked={value ?? true} onCheckedChange={onChange} />
+                )}
+              </ScopedField>
 
-          <ScopedField
-            path={CORTEX_PATHS.instructions.injectOnSubagentStart}
-            label="Inject subagent context"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Switch checked={value ?? true} onCheckedChange={onChange} />
-            )}
-          </ScopedField>
-        </div>
+              <div className="space-y-2">
+                <ScopedField
+                  path={CORTEX_PATHS.digest.injectOnSessionStart}
+                  label="Preferred digest"
+                  defaultScope="project"
+                >
+                  {({ value, onChange }) => (
+                    <Switch checked={value ?? false} onCheckedChange={onChange} />
+                  )}
+                </ScopedField>
+                <p className="max-w-md font-sans text-xs text-on-surface-variant">
+                  Optional session-start context from the selected digest tier. Review the saved
+                  tiers on the{' '}
+                  <Link
+                    to={`?${CONFIG_FOCUS_TAB_PARAM}=digest`}
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    Digest tab
+                  </Link>
+                  .
+                </p>
+              </div>
+            </div>
+          </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField
-            path={CORTEX_PATHS.digest.injectOnSessionStart}
-            label="Inject preferred digest"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Switch checked={value ?? false} onCheckedChange={onChange} />
-            )}
-          </ScopedField>
+          <div className="grid gap-4 border-t border-outline-variant/20 pt-5 lg:grid-cols-[minmax(16rem,0.9fr)_minmax(0,2fr)]">
+            <div className="space-y-1">
+              <h4 className="font-sans text-sm font-semibold text-on-surface m-0">Subagent start</h4>
+              <p className="font-sans text-sm text-on-surface-variant">
+                Managed instructions passed into supported spawned child agents.
+              </p>
+            </div>
+            <ScopedField
+              path={CORTEX_PATHS.instructions.injectOnSubagentStart}
+              label="Subagent instructions"
+              defaultScope="project"
+            >
+              {({ value, onChange }) => (
+                <Switch checked={value ?? true} onCheckedChange={onChange} />
+              )}
+            </ScopedField>
+          </div>
 
-          <ScopedField
-            path={CORTEX_PATHS.spores.injectOnPromptSubmit}
-            label="Prompt-time spore retrieval"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Switch checked={value ?? true} onCheckedChange={onChange} />
-            )}
-          </ScopedField>
+          <div className="grid gap-4 border-t border-outline-variant/20 pt-5 lg:grid-cols-[minmax(16rem,0.9fr)_minmax(0,2fr)]">
+            <div className="space-y-1">
+              <h4 className="font-sans text-sm font-semibold text-on-surface m-0">Prompt submit</h4>
+              <p className="font-sans text-sm text-on-surface-variant">
+                Spore retrieval runs after the user prompt and attaches the most relevant memories.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-[minmax(12rem,1fr)_minmax(8rem,14rem)]">
+              <ScopedField
+                path={CORTEX_PATHS.spores.injectOnPromptSubmit}
+                label="Spore retrieval"
+                defaultScope="project"
+              >
+                {({ value, onChange }) => (
+                  <Switch checked={value ?? true} onCheckedChange={onChange} />
+                )}
+              </ScopedField>
 
-          <ScopedField
-            path={CORTEX_PATHS.spores.maxPerPrompt}
-            label="Max spores per prompt"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Input
-                type="number"
-                min={0}
-                max={10}
-                value={String(value ?? DEFAULT_MAX_SPORES)}
-                onChange={(event) => onChange(Number(event.target.value))}
-              />
-            )}
-          </ScopedField>
+              <ScopedField
+                path={CORTEX_PATHS.spores.maxPerPrompt}
+                label="Max spores"
+                defaultScope="project"
+              >
+                {({ value, onChange }) => (
+                  <Input
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={String(value ?? DEFAULT_MAX_SPORES)}
+                    onChange={(event) => onChange(Number(event.target.value))}
+                  />
+                )}
+              </ScopedField>
+            </div>
+          </div>
         </div>
       </Surface>
 
