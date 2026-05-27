@@ -12,7 +12,7 @@ import { HARNESS_CLAUDE_SDK } from './types.js';
 
 export interface PhaseCheckpoint {
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   summary?: string;
   turnsUsed?: number;
   tokensUsed?: number;
@@ -23,6 +23,10 @@ export interface PhaseCheckpoint {
   sessionData?: unknown;
   usage?: RuntimeUsage;
   updatedAt: number;
+  /** Set when the phase failed because the SDK hit the turn budget. */
+  capHit?: boolean;
+  /** The maxTurns budget the SDK enforced for this phase (post-overrides). */
+  allowedMaxTurns?: number;
 }
 
 export interface RunCheckpointState {

@@ -263,8 +263,9 @@ phases:
         rationale: <1 line>
       ```
 
-      Hard cap: emit at most 3 clusters per run. The downstream write
+      Hard cap: emit at most 2 clusters per run. The downstream write
       phase has a small budget; over-feeding it produces nothing extra.
+      Pick the highest-signal candidates first.
 
       If `vault_search_semantic` returns no results (embedding unavailable),
       report action "skip" and finish.
@@ -282,6 +283,10 @@ phases:
   - name: consolidate-write
     reasoningLevel: default
     dependsOn: [consolidate-shortlist]
+    # Same gate as the shortlist — when there's no recent activity, neither
+    # phase should spawn (otherwise this phase pays sonnet rates to discover
+    # nothing in the empty shortlist).
+    preCondition: has-recent-spore-activity
     prompt: |
       Execute the shortlist from `consolidate-shortlist`. The judgment
       work — content synthesis, preserving specific details — needs the
@@ -289,6 +294,15 @@ phases:
 
       If the shortlist was empty or marked SKIP, call `vault_report` with
       action "skip" and finish immediately.
+
+      ## Budget discipline
+
+      The shortlist may contain up to 2 clusters. Each cluster needs
+      roughly 4-6 turns (1 optional read + 1 create + 1-3 resolves).
+      Process clusters in order. If you're past turn 11 and still have
+      a cluster pending, STOP — call `vault_report` summarizing what
+      you completed and which clusters you skipped, then finish. A clean
+      partial result beats a failed full run.
 
       ## For each `action: wisdom` cluster
 
@@ -320,7 +334,7 @@ phases:
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
-    maxTurns: 10
+    maxTurns: 15
     required: false
 
   # ---- Digest: assess + 3 parallel tier writes ----

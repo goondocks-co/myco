@@ -481,6 +481,48 @@ describe('executePhasedQuery', () => {
     expect(checkpointState.phases.b.status).toBe('completed');
   });
 
+  it('persists capHit + allowedMaxTurns onto the checkpoint when SDK hits max-turns', async () => {
+    const phases = [phase('a', { maxTurns: 35 })];
+    defaultRuntimeBehavior = {
+      kind: 'error',
+      message: 'Claude Code returned an error result: Reached maximum number of turns (35)',
+    };
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('failed');
+    expect(checkpointState.phases.a.capHit).toBe(true);
+    expect(checkpointState.phases.a.allowedMaxTurns).toBe(35);
+  });
+
+  it('does not set capHit on the checkpoint for non-budget failures', async () => {
+    const phases = [phase('a', { maxTurns: 35 })];
+    defaultRuntimeBehavior = { kind: 'error', message: 'network timeout' };
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('failed');
+    expect(checkpointState.phases.a.capHit).toBeUndefined();
+    // allowedMaxTurns still recorded so audits know the budget the run had.
+    expect(checkpointState.phases.a.allowedMaxTurns).toBe(35);
+  });
+
+  it("persists 'skipped' status on the checkpoint when preCondition fails", async () => {
+    phasePreConditionResult = { passed: false, reason: 'not enough material' };
+    const phases = [
+      phase('a', { preCondition: 'has-recent-spore-activity' }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({
+      config: baseConfig(phases),
+      checkpointState,
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('skipped');
+    expect(capturedExecuteInputs).toHaveLength(0);
+  });
+
   it('invokes persistCheckpoints between waves', async () => {
     const phases = [phase('a'), phase('b')];
     const persistCheckpoints = vi.fn().mockResolvedValue(undefined);

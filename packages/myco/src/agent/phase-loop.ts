@@ -697,9 +697,14 @@ export async function executePhasedQuery(
     for (const result of waveResults) {
       const priorCheckpoint = state.phases[result.name];
       const fulfilled = fulfilledByName.get(result.name) ?? null;
+      const checkpointStatus = result.status === 'completed'
+        ? 'completed' as const
+        : result.status === 'skipped'
+          ? 'skipped' as const
+          : 'failed' as const;
       state.phases[result.name] = {
         name: result.name,
-        status: result.status === 'completed' ? 'completed' : 'failed',
+        status: checkpointStatus,
         summary: result.summary,
         turnsUsed: result.turnsUsed,
         tokensUsed: result.tokensUsed,
@@ -709,9 +714,14 @@ export async function executePhasedQuery(
         sessionRef: fulfilled?.sessionRef ?? priorCheckpoint?.sessionRef,
         sessionData: fulfilled?.sessionData ?? priorCheckpoint?.sessionData,
         usage: fulfilled?.usage ?? result.usage,
+        ...(result.capHit === true ? { capHit: true } : {}),
+        ...(result.allowedMaxTurns !== undefined ? { allowedMaxTurns: result.allowedMaxTurns } : {}),
         updatedAt: epochSeconds(),
       };
-      if (result.status === 'completed') {
+      // Skipped phases count as satisfied for downstream wave gating —
+      // their dependents shouldn't be blocked waiting on a phase that
+      // intentionally did nothing.
+      if (result.status === 'completed' || result.status === 'skipped') {
         completedPhaseNames.add(result.name);
       }
       phaseResults.push(result);
