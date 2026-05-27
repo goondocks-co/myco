@@ -455,7 +455,12 @@ phases:
       - vault_write_digest
       - vault_report
     maxTurns: 9
-    required: false
+    # Required because digest-assess is the rotation oracle — the
+    # orchestrator can't know upfront whether this tier was selected.
+    # The phase prompt self-skips cheaply (~3 turns of haiku) when this
+    # tier wasn't chosen, so the "required" cost on no-work runs is
+    # bounded and predictable.
+    required: true
 
   - name: digest-5000
     reasoningLevel: low
@@ -492,7 +497,9 @@ phases:
       - vault_write_digest
       - vault_report
     maxTurns: 7
-    required: false
+    # See digest-10000: required so orchestrator can't pre-skip; cheap
+    # self-skip handles the not-rotated case.
+    required: true
 
   - name: digest-1500
     reasoningLevel: low
@@ -528,7 +535,9 @@ phases:
       - vault_write_digest
       - vault_report
     maxTurns: 5
-    required: false
+    # See digest-10000: required so orchestrator can't pre-skip; cheap
+    # self-skip handles the not-rotated case.
+    required: true
 
   - name: report
     reasoningLevel: low

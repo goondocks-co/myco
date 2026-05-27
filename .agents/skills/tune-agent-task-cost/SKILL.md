@@ -46,6 +46,23 @@ Cost-tuning is a discipline, not a single trick. The same task can cost $0.40 or
 
 ---
 
+## Pattern 2b: `required: true` for Phases the Orchestrator Can't Plan For
+
+**Problem.** The orchestrator runs once at the start of a task with only pre-planning context (configured `contextQueries` like `vault_state`, `vault_unprocessed`). It cannot know what later phases will discover. If you let it skip a phase whose need to run depends on a *prior in-run phase's output* — e.g., a digest-write phase that should fire only when digest-assess selects its tier for rotation — the orchestrator's upfront skip silently loses legitimate work.
+
+We hit this on the first post-tuning dogfood run: `digest-assess` correctly identified tier 1500 for rotation and gathered the integration material, but `digest-1500` was already in the orchestrator's skip list and never wrote the new digest content.
+
+**Rule.** A phase is `required: false` (and therefore orchestrator-skippable) **only if its need to run is knowable from pre-planning context** — vault_state, vault_unprocessed counts, the contextQueries block. If the need is only knowable *after* an in-run phase computes it, the dependent phase MUST be `required: true`. Its own prompt handles the cheap self-skip when the prior phase decides it shouldn't write anything.
+
+**Examples.**
+- `extract`: orchestrator can know there are no unprocessed batches from pre-planning context → `required: false` ok.
+- `consolidate-shortlist`: deterministic preCondition (`has-recent-spore-activity`) makes the decision knowable upfront → `required: false` ok.
+- `digest-1500` / `digest-5000` / `digest-10000`: rotation decision is made *during* the run by `digest-assess` → `required: true` is mandatory. Each prompt self-skips in ~3 haiku turns when not selected (≈ $0.04 per skipped tier per no-work run — bounded, predictable, far cheaper than losing a legitimate digest write).
+
+**Spotting violations.** Look at a recent no-op run's checkpoints. Find phases that appear MISSING from the checkpoint despite their upstream completing. For each, ask: *could the orchestrator have known at planning time whether this phase had work?* If no, the phase must be `required: true`.
+
+---
+
 ## Pattern 3: Orchestrator as Narrower, Never Widener
 
 **Problem.** The orchestrator phase (`packages/myco/src/agent/orchestrator.ts`) is allowed to override per-phase `maxTurns` via `directive.maxTurns`. When the orchestrator widens a budget, the YAML stops being a spec — the same task can run 35 turns or 161 turns depending on how the orchestrator felt that day. This produced silent 4×+ cost variance in vault-evolve.
@@ -145,6 +162,7 @@ Before merging a new task YAML, walk this list explicitly:
 - [ ] **Per-run work cap.** Multi-item phases declare `max_items_per_run` in their `parameters`.
 - [ ] **Output discipline.** Every phase prompt ends with an explicit output-length cap.
 - [ ] **Orchestrator awareness.** YAML budgets are the spec; the orchestrator can only narrow them.
+- [ ] **Required-vs-optional discipline.** Every `required: false` phase has its skip-condition knowable from pre-planning context. Phases whose work depends on a prior in-run phase's output are `required: true` (see Pattern 2b).
 - [ ] **Audit plan.** After shipping, the task's actual cost is measurable via `agent_runs.actual_cost_usd` and per-phase breakdown via `agent_runs.checkpoints`. Capture a wisdom spore with the calibrated numbers.
 
 ---

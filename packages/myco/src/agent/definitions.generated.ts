@@ -712,7 +712,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 9,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
@@ -730,7 +730,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 7,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
@@ -746,7 +746,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 5,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
