@@ -60,6 +60,11 @@ export interface InstrumentedFetchOptions {
    *  streamed response. Disable only in tests that need deterministic
    *  back-to-back chunks. */
   yieldBetweenChunks?: boolean;
+  /** Whether the idle watchdog timer should keep the event loop alive.
+   *  Defaults to false so unconsumed response bodies do not pin short-lived
+   *  processes. Tests can enable this to exercise the watchdog in a bare Bun
+   *  process with no daemon/server handles. */
+  refIdleWatchdog?: boolean;
   /** Optional clock override (tests). */
   now?: () => number;
 }
@@ -74,6 +79,7 @@ interface ResolvedOptions {
   idleTimeoutMs: number;
   totalTimeoutMs: number | undefined;
   yieldBetweenChunks: boolean;
+  refIdleWatchdog: boolean;
   now: () => number;
 }
 
@@ -86,6 +92,7 @@ function resolveOptions(options: InstrumentedFetchOptions): ResolvedOptions {
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
     totalTimeoutMs: options.totalTimeoutMs,
     yieldBetweenChunks: options.yieldBetweenChunks ?? true,
+    refIdleWatchdog: options.refIdleWatchdog ?? false,
     now: options.now ?? Date.now,
   };
 }
@@ -319,7 +326,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
         ));
       }
     }, options.idleTimeoutMs);
-    watchdog.unref?.();
+    if (!options.refIdleWatchdog) watchdog.unref?.();
   };
 
   const disarmWatchdog = () => {

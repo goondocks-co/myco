@@ -60,18 +60,6 @@ function buildIdleStreamResponse(options: { neverResolveCancel?: boolean } = {})
   return new Response(body, { status: 200 });
 }
 
-async function withRefHandle<T>(fn: () => Promise<T>): Promise<T> {
-  // The production daemon has ref'd server handles. In bare Bun test
-  // processes, an unref'd watchdog timer may never get a turn while the
-  // only awaited work is a suspended Web Stream read.
-  const keepAlive = setTimeout(() => {}, 500);
-  try {
-    return await fn();
-  } finally {
-    clearTimeout(keepAlive);
-  }
-}
-
 describe('createInstrumentedFetch', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -146,16 +134,16 @@ describe('createInstrumentedFetch', () => {
       component: 'test.idle',
       logger,
       idleTimeoutMs: 60,
+      refIdleWatchdog: true,
     });
-    const caught = await withRefHandle(async () => {
-      const response = await fetchFn('http://example.test/api/drip');
-      try {
-        await response.text();
-      } catch (err) {
-        return err;
-      }
-      return undefined;
-    });
+    const response = await fetchFn('http://example.test/api/drip');
+
+    let caught: unknown;
+    try {
+      await response.text();
+    } catch (err) {
+      caught = err;
+    }
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
 
@@ -174,16 +162,16 @@ describe('createInstrumentedFetch', () => {
       component: 'test.idle.stubborn-cancel',
       logger,
       idleTimeoutMs: 60,
+      refIdleWatchdog: true,
     });
-    const caught = await withRefHandle(async () => {
-      const response = await fetchFn('http://example.test/api/drip');
-      try {
-        await response.text();
-      } catch (err) {
-        return err;
-      }
-      return undefined;
-    });
+    const response = await fetchFn('http://example.test/api/drip');
+
+    let caught: unknown;
+    try {
+      await response.text();
+    } catch (err) {
+      caught = err;
+    }
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
   });
