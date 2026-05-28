@@ -14,6 +14,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { USER_TASKS_DIR, USER_TASK_SOURCE, BUILT_IN_SOURCE, TASK_NAME_PATTERN, MAX_TASK_NAME_LENGTH } from '@myco/constants.js';
 import { loadAgentTasks, taskFromParsed } from './loader.js';
 import { AgentTaskSchema } from './schemas.js';
+import { validatePhaseGatesAgainstWaves } from './wave-computation.js';
 import type { AgentTask } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,12 @@ export function loadAllTasks(definitionsDir: string, vaultDir?: string): Map<str
   // Load built-in tasks first
   const builtIn = loadAgentTasks(definitionsDir);
   for (const task of builtIn) {
+    // Forward/same-wave gates are author errors caught at load time.
+    // Built-ins are vendored — a failed validation is a build-time bug
+    // (codegen would have produced an invalid task definition). Throw
+    // so the daemon refuses to boot rather than silently shipping a
+    // broken cross-phase contract.
+    if (task.phases) validatePhaseGatesAgainstWaves(task.phases);
     result.set(task.name, { ...task, isBuiltin: true, source: BUILT_IN_SOURCE });
   }
 
@@ -66,6 +73,11 @@ export function loadAllTasks(definitionsDir: string, vaultDir?: string): Map<str
             isBuiltin: false,
             source: USER_TASK_SOURCE,
           };
+          // User tasks: same cross-phase gate validation as built-ins.
+          // A forward/same-wave gate would silently misfire at runtime,
+          // so reject loudly. Skipping the task is safer than loading a
+          // broken one.
+          if (task.phases) validatePhaseGatesAgainstWaves(task.phases);
           result.set(task.name, task);
         } catch (err) {
           console.warn(`[registry] Skipping malformed user task file: ${filePath}`, err);
@@ -106,6 +118,10 @@ export function validateTaskName(name: string): boolean {
 export function writeUserTask(vaultDir: string, task: AgentTask): string {
   // Validate before touching the filesystem
   AgentTaskSchema.parse(task);
+  // Cross-phase gate validation — refuse to write a task whose gates
+  // would silently misfire at runtime. Throws with a clear authoring
+  // error pointing at the offending phase + wave gap.
+  if (task.phases) validatePhaseGatesAgainstWaves(task.phases);
 
   const tasksDir = path.join(vaultDir, USER_TASKS_DIR);
   fs.mkdirSync(tasksDir, { recursive: true });

@@ -326,6 +326,59 @@ export function countSporesSince(sinceEpoch: number): number {
 }
 
 /**
+ * Project-scoped variant of `countSporesSince` — narrows to a single
+ * project. Used by per-phase preConditions to decide whether a
+ * consolidation phase has enough recent material to be worth running
+ * (cheaper than an LLM "is there anything to do" probe).
+ */
+export function countSporesInProjectSince(
+  scope: ProjectScope,
+  sinceEpoch: number,
+): number {
+  const db = getDatabase();
+  const conditions: string[] = ['created_at > ?', "status = 'active'"];
+  const params: unknown[] = [sinceEpoch];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM spores WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as { count: number };
+  return row.count;
+}
+
+/**
+ * Project-scoped count of spores the consolidate phases can actually
+ * act on: active, non-wisdom (can't consolidate wisdoms into more
+ * wisdom), and already embedded (semantic search can't return un-embedded
+ * rows, so the LLM phase has no way to find them).
+ *
+ * Tighter than `countSporesInProjectSince` — used by the consolidate
+ * phases' preCondition to skip the entire LLM phase when there's nothing
+ * it could find via `vault_search_semantic`. The `embedded = 1` filter
+ * matters because embeddings run async in deep_sleep — a spore created
+ * in the immediate prior phase of the same run is `embedded = 0` and
+ * would not appear in semantic search results anyway. Gating the phase
+ * on what the LLM can actually retrieve is the whole point.
+ */
+export function countConsolidatableSporesInProjectSince(
+  scope: ProjectScope,
+  sinceEpoch: number,
+): number {
+  const db = getDatabase();
+  const conditions: string[] = [
+    'created_at > ?',
+    "status = 'active'",
+    "observation_type != 'wisdom'",
+    'embedded = 1',
+  ];
+  const params: unknown[] = [sinceEpoch];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM spores WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as { count: number };
+  return row.count;
+}
+
+/**
  * List active spore IDs created after a given timestamp, ordered newest first.
  */
 export function listSporeIdsSince(sinceEpoch: number, limit = 20): string[] {

@@ -126,6 +126,14 @@ const ProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
 /** Per-phase overrides within a task — keyed by phase name. */
 const PhaseOverrideSchema = rejectLegacyRuntimeKey(z.object({
   provider: ProviderOverrideSchema.optional(),
+  /**
+   * Tier override. Resolves through the provider's `reasoning_map` at
+   * run time, which keeps the override portable across model upgrades
+   * (sonnet 4.6 → 4.7) and runtime swaps (anthropic → ollama). Prefer
+   * this over `model:` for any tier-class change; `model:` is the
+   * escape hatch when you need to pin a specific SKU.
+   */
+  reasoningLevel: ReasoningLevelSchema.optional(),
   model: z.string().optional(),
   maxTurns: z.number().int().positive().optional(),
 }));

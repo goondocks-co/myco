@@ -10,13 +10,13 @@
     "check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260525.1",
+    "@cloudflare/workers-types": "^4.20260527.1",
     "typescript": "^6.0.3",
-    "wrangler": "^4.94.0"
+    "wrangler": "^4.95.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.13.2",
+    "agents": "^0.13.3",
     "zod": "^4.4.3"
   }
 }

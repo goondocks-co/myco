@@ -10,7 +10,13 @@ import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
-import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/batches.js';
+import {
+  getUnprocessedBatches,
+  INTELLIGENCE_DEFAULT_ORIGINS,
+  listBatchesBySession,
+  PROMPT_BATCH_ORIGIN,
+  type PromptBatchOrigin,
+} from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
@@ -97,20 +103,28 @@ export function createReadTools(deps: VaultToolDeps) {
   const { agentId, embeddingManager, teamClient, machineId, requestContext } = deps;
   const scope = projectScopeFromVaultToolDeps(deps);
 
+  const originValues = Object.values(PROMPT_BATCH_ORIGIN) as [PromptBatchOrigin, ...PromptBatchOrigin[]];
   const vaultUnprocessed = tool(
     'vault_unprocessed',
-    'Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Batches from in-flight sessions are excluded by default so intelligence tasks only process settled work; pass include_active=true only if you specifically need live data (e.g., title-summary).',
+    "Get unprocessed prompt batches, ordered by id ASC. Supports cursor-based pagination. Defaults exclude in-flight sessions AND non-human-origin batches (env_context, task notifications, sub-agent dispatches) — intelligence tasks should reason over user intent, not harness chatter. Pass include_active=true for live data (e.g., title-summary). Pass include_origins to broaden beyond the default ['human'].",
     {
       after_id: z.number().optional().describe('Return batches with id greater than this'),
       limit: z.number().optional().describe('Maximum number of batches to return'),
       include_active: z.boolean().optional().describe('Include batches from sessions still in active status (default: false)'),
       include_metadata: z.boolean().optional().describe('Return full batch metadata instead of the compact task-oriented projection'),
+      include_origins: z.array(z.enum(originValues)).optional().describe(
+        "Origin allowlist. Defaults to ['human'] so intelligence tasks skip harness-injected system batches. Pass ['human','system','agent_dispatch','hook_injected'] to see everything.",
+      ),
     },
     async (args) => {
+      const origins = args.include_origins && args.include_origins.length > 0
+        ? args.include_origins
+        : INTELLIGENCE_DEFAULT_ORIGINS;
       const batches = getUnprocessedBatches({
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
         includeActive: args.include_active === true,
+        origins,
         scope,
       });
       const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);

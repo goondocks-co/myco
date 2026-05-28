@@ -644,46 +644,66 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "onItemError": "skip"
       },
       {
-        "name": "consolidate",
-        "prompt": "Consolidate related spores into wisdom and clean up redundancy.\nThe vault must get SHARPER over time, not just bigger.\n\nSpores may exist that were created outside this run's extract phase\n(for example by a coding agent or manual curation). You may still\nconsolidate those when it materially sharpens the vault.\nStay focused on recent or high-signal active spores; do not perform an\nexhaustive crawl if the first few targeted searches show no action.\n\n## Step 1: Find clusters safely (budget: 5 turns)\n\n1. Start with targeted `vault_search_semantic` queries for themes from the\n   current extract phase and other likely consolidation targets.\n2. Use the semantic results as a shortlist: note their IDs, titles/previews,\n   and similarity scores.\n3. For any candidate you need to read in full, call `vault_spores` with\n   `ids: [...]` to fetch ONLY those exact spores. Do not bulk-read an\n   entire high-volume type when exact-ID reads will do.\n4. Use broad `vault_spores` listings only when the payload is small enough\n   to inspect safely.\n\n## Decision tree\n\n- **3+ related active spores on same topic** → create wisdom, consolidate all\n- **Exactly 2 related spores** → keep the better one, supersede the weaker\n- **1 spore (no duplicates)** → no action\n\n## Step 2: Create wisdom (budget: 8 turns)\n\nWhen you find 3+ related active spores on the same topic:\n1. Create a wisdom spore via `vault_create_spore`:\n   - observation_type: \"wisdom\"\n   - properties: '{\"consolidated_from\": [\"id-1\", \"id-2\", \"id-3\"]}'\n   - Content MUST preserve ALL specific details from sources —\n     file paths, error messages, concrete values. Wisdom is a\n     comprehensive reference, not a vague summary.\n2. Resolve EACH source via `vault_resolve_spore` action \"consolidate\"\n   — this removes them from search results and context injection\n\n## Step 3: Supersede stale spores (budget: 5 turns)\n\nAlso look for spores that are outdated or contradicted by newer ones:\n- If two spores describe the same thing but one is more recent/detailed,\n  supersede the older one via `vault_resolve_spore` action \"supersede\"\n- Never supersede a spore you have not actually read in full via\n  `vault_spores(ids: [...])`\n- Superseded spores stay in the DB but are removed from search and\n  context injection — this keeps the vault relevant\n\nSkip spores with status \"consolidated\" or \"superseded\" to prevent cycles.\n\nIf `vault_search_semantic` returns no results (embedding unavailable), report\naction \"skip\" and move on.\n",
+        "name": "consolidate-shortlist",
+        "prompt": "Find consolidation candidates. This is the cheap retrieval pass —\na later phase (`consolidate-write`) does any actual wisdom creation\nor supersession based on your shortlist.\n\nStay focused on recent or high-signal active spores; do not perform\nan exhaustive crawl if the first few targeted searches show no action.\n\n## Step 1: Search for clusters (budget: 6 turns)\n\n1. Run targeted `vault_search_semantic` queries for themes touched by\n   the current extract phase and other likely consolidation targets.\n2. For any candidate you need to inspect in full, call `vault_spores`\n   with `ids: [...]` — never bulk-read an entire high-volume type.\n3. Skip spores with status \"consolidated\" or \"superseded\" to prevent\n   cycles.\n\n## Step 2: Emit a STRUCTURED shortlist (budget: 2 turns)\n\nYour final message MUST be parseable by the next phase. Use this\nexact format. If no clusters meet the bar, emit only the SKIP line\nand call `vault_report` with action \"skip\".\n\n```\nSHORTLIST v1\ncluster: <one-line topic name>\n  action: wisdom           # 3+ related active spores on same topic\n  source_ids: [id1, id2, id3, ...]\n  rationale: <why these belong together — 1 line>\n\ncluster: <topic>\n  action: supersede        # exactly 2 spores; the newer/richer wins\n  keep_id: <id of winner>\n  old_id: <id to supersede>\n  rationale: <1 line>\n```\n\nHard cap: emit at most 2 clusters per run. The downstream write\nphase has a small budget; over-feeding it produces nothing extra.\nPick the highest-signal candidates first.\n\nIf `vault_search_semantic` returns no results (embedding unavailable),\nreport action \"skip\" and finish.\n\nFinal summary MUST be ≤ 25 lines (the shortlist block plus a brief\nheader). No prose recap of what you searched.\n",
         "tools": [
           "vault_spores",
           "vault_search_semantic",
+          "vault_release_state",
+          "vault_report"
+        ],
+        "maxTurns": 18,
+        "reasoningLevel": "low",
+        "required": false,
+        "dependsOn": [
+          "extract"
+        ],
+        "readOnly": true,
+        "preCondition": "has-recent-consolidatable-spores",
+        "onItemError": "skip"
+      },
+      {
+        "name": "consolidate-write",
+        "prompt": "Execute the shortlist from `consolidate-shortlist`. The judgment\nwork — content synthesis, preserving specific details — needs the\ndefault tier; cheap retrieval already happened upstream.\n\nIf the shortlist was empty or marked SKIP, call `vault_report` with\naction \"skip\" and finish immediately.\n\n## Budget discipline\n\nThe shortlist may contain up to 2 clusters. Each cluster needs\nroughly 4-6 turns (1 optional read + 1 create + 1-3 resolves).\nProcess clusters in order. If you're past turn 11 and still have\na cluster pending, STOP — call `vault_report` summarizing what\nyou completed and which clusters you skipped, then finish. A clean\npartial result beats a failed full run.\n\n## For each `action: wisdom` cluster\n\n1. (Optional, 1 turn) Re-read the source spores in full via\n   `vault_spores(ids: [...])` if the shortlist didn't include enough\n   body text to synthesize from. Skip if you already have what you need.\n2. Create a wisdom spore via `vault_create_spore`:\n   - observation_type: \"wisdom\"\n   - properties: '{\"consolidated_from\": [<source_ids>]}'\n   - Content MUST preserve ALL specific details from sources —\n     file paths, error messages, concrete values. Wisdom is a\n     comprehensive reference, not a vague summary.\n3. Resolve EACH source via `vault_resolve_spore` action \"consolidate\"\n   — this removes them from search and context injection.\n\n## For each `action: supersede` cluster\n\n1. (Required) Read the keep spore in full via `vault_spores(ids: [<keep_id>])`\n   to confirm it actually subsumes the old one. Never supersede on\n   the shortlist's word alone.\n2. Call `vault_resolve_spore` action \"supersede\" with new_spore_id =\n   keep_id and old_spore_id = old_id.\n\nFinal summary MUST be ≤ 5 lines: how many wisdom spores created, how\nmany supersedes applied, anything skipped. No retelling of the shortlist.\n",
+        "tools": [
+          "vault_spores",
           "vault_release_state",
           "vault_create_spore",
           "vault_resolve_spore",
           "vault_report"
         ],
-        "maxTurns": 25,
+        "maxTurns": 15,
         "reasoningLevel": "default",
         "required": false,
         "dependsOn": [
-          "extract"
+          "consolidate-shortlist"
         ],
+        "preCondition": "has-recent-consolidatable-spores",
         "onItemError": "skip"
       },
       {
         "name": "digest-assess",
-        "prompt": "Gather material for AT MOST ONE digest tier update per run. The\nrotation decision is made by the `vault_read_digest` tool, not\nby you — the tool returns which tier needs attention (or tells\nyou to skip). Over 3 runs every tier gets one deep pass.\n\nTotal budget: {{max_turns}} turns.\n\n## Step 1: Get the rotation decision (1 turn)\n\nCall `vault_read_digest` with:\n  pick: \"rotate_oldest\"\n  min_staleness_seconds: 1800\n\nThe tool returns one of two shapes:\n\n**Skip shape** — `{mode:\"rotate_oldest\", skip:true, reason, all_tiers}`.\nEvery tier was generated within the last 30 minutes. Call\n`vault_report` with action \"skip\" passing the reason through.\nSTOP — do not run steps 2-3.\n\n**Rotate shape** — `{mode:\"rotate_oldest\", selected_tier,\nselected_generated_at, selected_content, rotation_reason, all_tiers}`.\nProceed to step 2, scoped to `selected_tier`.\n\n## Step 2: Gather material for `selected_tier` (budget: half\nof remaining)\n\nScope the search to what belongs at the selected tier:\n- **1500 (executive briefing):** only critical decisions,\n  reversals, state-of-system changes.\n- **5000 (deep onboarding):** trade-offs, patterns, active\n  decisions, unresolved gotchas.\n- **10000 (full archive):** any new content worth preserving.\n\nUse `vault_search_semantic` for themes from new/superseded spores,\n`vault_spores` for specific content, `vault_sessions` for recent\nsession context. Make each call count — do not repeatedly search\nfor variations of the same theme. Accept \"good enough\" findings\nand move on.\n\n## Step 3: Produce findings\n\nYour final response is the per-tier phases' primary context\n(they cannot call vault_spores or vault_sessions). Structure it:\n\n**Chosen tier for this run: <selected_tier>**\nInclude the rotation_reason verbatim from the tool so readers\ncan audit the decision.\n\n**New material to integrate (scoped to the chosen tier):**\n- List each insight with enough detail that the tier writer can\n  incorporate it without re-searching\n- Include specific spore content, not just spore counts\n\n**Themes and connections** relevant to the chosen tier.\n\n**Per-tier directives** — mark exactly the `selected_tier` as\nUPDATE, the other two as SKIP, and include the tool's\nrotation_reason in the UPDATE line:\n- 10000: UPDATE or SKIP + one-line reason\n- 5000: UPDATE or SKIP + one-line reason\n- 1500: UPDATE or SKIP + one-line reason\n\nTools available: {{phase_tools}}.\n",
+        "prompt": "Gather material for AT MOST ONE digest tier update per run. The\nrotation decision is made by the `vault_read_digest` tool, not\nby you — the tool returns which tier needs attention (or tells\nyou to skip). Over 3 runs every tier gets one deep pass.\n\nTotal budget: {{max_turns}} turns.\n\n## Step 1: Get the rotation decision (1 turn)\n\nCall `vault_read_digest` with:\n  pick: \"rotate_oldest\"\n  min_staleness_seconds: 1800\n\nThe tool returns one of two shapes:\n\n**Skip shape** — `{mode:\"rotate_oldest\", skip:true, reason, all_tiers}`.\nEvery tier was generated within the last 30 minutes. Commit the\nskip via the metadata channel:\n\n  phase_emit_metadata({ key: \"selectedTier\", value: null })\n\nThen call `vault_report` with action \"skip\" passing the reason\nthrough. STOP — do not run steps 2-3. The downstream digest-N\nsibling phases gate on `selectedTier` and will short-circuit in\nzero LLM turns when the value is null or doesn't match their tier.\n\n**Rotate shape** — `{mode:\"rotate_oldest\", selected_tier,\nselected_generated_at, selected_content, rotation_reason, all_tiers}`.\nProceed to step 2, scoped to `selected_tier`.\n\n## Step 2: Gather material for `selected_tier` (budget: half\nof remaining)\n\nScope the search to what belongs at the selected tier:\n- **1500 (executive briefing):** only critical decisions,\n  reversals, state-of-system changes.\n- **5000 (deep onboarding):** trade-offs, patterns, active\n  decisions, unresolved gotchas.\n- **10000 (full archive):** any new content worth preserving.\n\nUse `vault_search_semantic` for themes from new/superseded spores,\n`vault_spores` for specific content, `vault_sessions` for recent\nsession context. Make each call count — do not repeatedly search\nfor variations of the same theme. Accept \"good enough\" findings\nand move on.\n\n## Step 3: Produce findings AND commit the rotation choice\n\nYour final response is the per-tier phases' primary context\n(they cannot call vault_spores or vault_sessions). Structure it:\n\n**Chosen tier for this run: <selected_tier>**\nInclude the rotation_reason verbatim from the tool so readers\ncan audit the decision.\n\n**New material to integrate (scoped to the chosen tier):**\n- List each insight with enough detail that the tier writer can\n  incorporate it without re-searching\n- Include specific spore content, not just spore counts\n\n**Themes and connections** relevant to the chosen tier.\n\n## Step 4: Commit the rotation via metadata (REQUIRED, last call)\n\nBefore finishing, you MUST call:\n\n  phase_emit_metadata({ key: \"selectedTier\", value: <number> })\n\nwhere `<number>` is the integer 1500, 5000, or 10000 matching the\ntier you selected. The downstream digest-N sibling phases gate on\nthis — non-selected tiers skip in zero LLM turns. If you forget\nthis call, all three digest phases skip and the rotation stalls\nfor this run.\n\nTools available: {{phase_tools}}.\n",
         "tools": [
           "vault_spores",
           "vault_sessions",
           "vault_search_semantic",
           "vault_release_state",
           "vault_read_digest",
-          "vault_report"
+          "vault_report",
+          "phase_emit_metadata"
         ],
         "maxTurns": 12,
         "reasoningLevel": "default",
         "required": true,
         "dependsOn": [
-          "consolidate"
+          "consolidate-write"
         ],
         "onItemError": "skip"
       },
       {
         "name": "digest-10000",
-        "prompt": "Update digest tier 10000 — Full institutional knowledge.\nBudget: 7 turns (1 read + 1-2 search + 1 write + buffer).\n\nIf the digest-assess phase said this tier should SKIP or reported\n\"no new intelligence material this run\", call `vault_report` with\naction \"skip\" for tier 10000 and finish immediately.\n\nThis is the largest tier (~10,000 tokens). Update if any new content\nwas found. The digest-assess phase summary in your context contains\nthe material to integrate and per-tier guidance.\n\n1. Call `vault_read_digest` with tier 10000 to get current content\n2. Call `vault_search_semantic` for themes identified in the assess\n   findings — gather specific details to weave in\n3. Integrate new material into the existing digest\n4. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nIf this tier genuinely has no new material to integrate, call\n`vault_report` with action \"skip\" for this tier.\n",
+        "prompt": "Update digest tier 10000 — Full institutional knowledge.\nBudget: {{max_turns}} turns.\n\nYou only reach this phase when digest-assess committed\n`selectedTier: 10000` — no STOP-FIRST check needed; the phase loop\ngate already filtered the rotation. The digest-assess phase\nsummary in your context contains the material to integrate.\n\n1. Call `vault_read_digest` with tier 10000 to get current content\n2. Call `vault_search_semantic` for themes identified in the assess\n   findings — gather specific details to weave in\n3. Integrate new material into the existing digest\n4. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nFinal summary MUST be ≤ 5 lines.\n",
         "tools": [
           "vault_search_semantic",
           "vault_release_state",
@@ -693,15 +713,20 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 9,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
+        "gateOnPriorMetadata": {
+          "phase": "digest-assess",
+          "key": "selectedTier",
+          "equals": 10000
+        },
         "onItemError": "skip"
       },
       {
         "name": "digest-5000",
-        "prompt": "Update digest tier 5000 — Deep onboarding.\nBudget: 5 turns (1 read + 1 search + 1 write + buffer).\n\nIf the digest-assess phase said this tier should SKIP or reported\n\"no new intelligence material this run\", call `vault_report` with\naction \"skip\" for tier 5000 and finish immediately.\n\nThis tier (~5,000 tokens) focuses on trade-offs and patterns. The\ndigest-assess phase summary in your context contains the material\nto integrate and per-tier guidance.\n\n1. Call `vault_read_digest` with tier 5000 to get current content\n2. Optionally call `vault_search_semantic` for additional context\n3. Integrate new material from the assess findings\n4. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nIf this tier genuinely has no new material to integrate, call\n`vault_report` with action \"skip\" for this tier.\n",
+        "prompt": "Update digest tier 5000 — Deep onboarding.\nBudget: {{max_turns}} turns.\n\nYou only reach this phase when digest-assess committed\n`selectedTier: 5000`. This tier (~5,000 tokens) focuses on\ntrade-offs and patterns. The digest-assess phase summary in your\ncontext contains the material to integrate.\n\n1. Call `vault_read_digest` with tier 5000 to get current content\n2. Optionally call `vault_search_semantic` for additional context\n3. Integrate new material from the assess findings\n4. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nFinal summary MUST be ≤ 5 lines.\n",
         "tools": [
           "vault_search_semantic",
           "vault_release_state",
@@ -711,15 +736,20 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 7,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
+        "gateOnPriorMetadata": {
+          "phase": "digest-assess",
+          "key": "selectedTier",
+          "equals": 5000
+        },
         "onItemError": "skip"
       },
       {
         "name": "digest-1500",
-        "prompt": "Update digest tier 1500 — Executive briefing.\nBudget: 3 turns (1 read + 1 write + buffer).\n\nIf the digest-assess phase said this tier should SKIP or reported\n\"no new intelligence material this run\", call `vault_report` with\naction \"skip\" for tier 1500 and finish immediately.\n\nThis is the most compressed tier (~1,500 tokens). Only update if\nimportant new decisions, gotchas, or critical changes were found.\nThe digest-assess phase summary in your context contains the material\nto integrate and per-tier guidance.\n\n1. Call `vault_read_digest` with tier 1500 to get current content\n2. Integrate new material from the assess findings — be very selective,\n   only critical changes belong at this tier\n3. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nIf this tier genuinely has no new material to integrate, call\n`vault_report` with action \"skip\" for this tier.\n",
+        "prompt": "Update digest tier 1500 — Executive briefing.\nBudget: {{max_turns}} turns.\n\nYou only reach this phase when digest-assess committed\n`selectedTier: 1500`. This is the most compressed tier\n(~1,500 tokens). Only update if\nimportant new decisions, gotchas, or critical changes were found.\nThe digest-assess phase summary in your context contains the material\nto integrate.\n\n1. Call `vault_read_digest` with tier 1500 to get current content\n2. Integrate new material from the assess findings — be very selective,\n   only critical changes belong at this tier\n3. Call `vault_write_digest` with the updated content\n\nThe existing digest is your baseline — integrate new material, don't\nrewrite from scratch. Preserve well-crafted existing content.\n\nPrioritize: recent insights > active decisions > unresolved gotchas >\narchitectural patterns > historical context.\n\nFinal summary MUST be ≤ 5 lines.\n",
         "tools": [
           "vault_read_digest",
           "vault_write_digest",
@@ -727,10 +757,15 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 5,
         "reasoningLevel": "low",
-        "required": false,
+        "required": true,
         "dependsOn": [
           "digest-assess"
         ],
+        "gateOnPriorMetadata": {
+          "phase": "digest-assess",
+          "key": "selectedTier",
+          "equals": 1500
+        },
         "onItemError": "skip"
       },
       {
@@ -745,7 +780,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "extract",
           "summarize",
-          "consolidate",
+          "consolidate-shortlist",
+          "consolidate-write",
           "digest-assess",
           "digest-10000",
           "digest-5000",
@@ -795,10 +831,11 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
       "accelerator": {
         "name": "unprocessed-settled-batches",
         "thresholds": {
-          "steady": 5,
-          "accelerated": 25
+          "steady": 25,
+          "accelerated": 100
         }
-      }
+      },
+      "maxRunsPerDay": 6
     }
   },
   {
