@@ -33,6 +33,8 @@ import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import { serviceVariantForState } from '../service/labels.js';
 import type { ServiceManager } from '../service/types.js';
+import { ensureProjectRegistered } from '../grove/registry.js';
+import { resolveProjectRoot } from '../vault/resolve.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -204,6 +206,10 @@ export class DaemonClient {
   ): Promise<ClientResult> {
     const info = await this.getInfoAsync();
     if (!info) {
+      if (recovery?.captureCritical && await this.ensureRunning({ checkStale: false })) {
+        const retryInfo = await this.getInfoAsync();
+        if (retryInfo) return this.postWithRecovery(endpoint, body, options);
+      }
       this.spawnDaemon();
       return { ok: false };
     }
@@ -467,8 +473,20 @@ export class DaemonClient {
   }
 
   private requestHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
-    if (Object.keys(this.defaultHeaders).length === 0) return headers;
-    return { ...this.defaultHeaders, ...(headers ?? {}) };
+    const refreshedHeaders = this.refreshedRequestContextHeaders();
+    const baseHeaders = { ...this.defaultHeaders, ...refreshedHeaders };
+    if (Object.keys(baseHeaders).length === 0) return headers;
+    return { ...baseHeaders, ...(headers ?? {}) };
+  }
+
+  private refreshedRequestContextHeaders(): Record<string, string> {
+    try {
+      ensureProjectRegistered(resolveProjectRoot(this.vaultDir));
+      const context = requestContextFromEnvironment(process.env, this.vaultDir);
+      return context.groveId ? requestContextHeaders(context) : {};
+    } catch {
+      return {};
+    }
   }
 
   /**

@@ -66,7 +66,7 @@ Once connected:
 
 - the local Team page shows Collective status
 - local `collective_*` tools become available automatically
-- shared settings flow through the team worker to the local daemon
+- shared settings flow through Team Sync to the local Myco service
 
 ## Upgrade path
 
@@ -78,7 +78,7 @@ If you already use Myco locally, your normal upgrade path does not change:
 npm update -g @goondocks/myco
 ```
 
-That updates the main Myco CLI, daemon, hooks, and dashboard. Users who are only *connecting* to an existing team don't need anything else.
+That updates the main Myco CLI, service, agent connections, and dashboard. Users who are only *connecting* to an existing team don't need anything else.
 
 ### Team operators
 
@@ -90,7 +90,7 @@ npm install -g @goondocks/myco-team
 
 That adds:
 
-- `myco-team install` — provision team sync (D1 + Vectorize + KV + Worker)
+- `myco-team install` — create Team Sync for a Grove
 - `myco-team upgrade` — redeploy the worker
 - `myco-team status` — show worker info and credentials
 - `myco-team rotate-tokens` — rotate API key and/or MCP token

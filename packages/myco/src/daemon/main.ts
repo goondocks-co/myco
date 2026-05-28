@@ -61,13 +61,16 @@ import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
 import {
+  createArchiveProjectHandler,
   createCreateGroveHandler,
   createDeleteGroveHandler,
+  createDeleteProjectHandler,
   createListGroveProjectsHandler,
   createListGrovesHandler,
   createMoveProjectHandler,
   createRenameGroveHandler,
   createSetDefaultGroveHandler,
+  createUnarchiveProjectHandler,
   servedGroveScopeForDaemon,
 } from './api/groves.js';
 import {
@@ -1421,6 +1424,9 @@ export async function main(): Promise<void> {
   server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler(groveDaemonStateDir));
   server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/projects/:projectId/archive', createArchiveProjectHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/projects/:projectId/unarchive', createUnarchiveProjectHandler(groveDaemonStateDir));
+  server.registerRoute('DELETE', '/api/groves/:id/projects/:projectId', createDeleteProjectHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
   server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));

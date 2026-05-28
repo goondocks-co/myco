@@ -4,6 +4,8 @@ export interface GroveProjectSummary {
   slug: string;
   root: string;
   binding_id: string | null;
+  status?: 'active' | 'archived';
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
