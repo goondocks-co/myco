@@ -157,7 +157,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/backup-multiline.test.ts',
       'tests/daemon/capture-images.test.ts',
       'tests/daemon/codex-plan-capture.test.ts',
-      'tests/daemon/event-loop-lag.test.ts',
       'tests/daemon/git-status.test.ts',
       'tests/daemon/handle-user-prompt-steering.test.ts',
       'tests/daemon/inflight-runs.test.ts',
@@ -179,6 +178,11 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/team-members-handler.test.ts',
       'tests/daemon/update-in-progress-sentinel.test.ts',
       'tests/daemon/update-installer.test.ts',
+      // tests/daemon/event-loop-lag.test.ts intentionally omitted: it uses
+      // real timers plus synchronous loop blocking. In the Linux shared Bun
+      // daemon-root phase, earlier timer-heavy daemon tests can leave enough
+      // scheduler state behind that this fixture stalls despite passing
+      // standalone. Running it isolated keeps the probe timing contract local.
     ],
   },
   {
