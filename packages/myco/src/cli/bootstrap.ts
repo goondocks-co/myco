@@ -35,6 +35,7 @@ import {
   type GlobalConfigMigrationResult,
 } from '../grove/global-config-migration.js';
 import { ensureDefaultGrove, type GroveRecord } from '../grove/registry.js';
+import { daemonVariantFromEnvValue } from '../grove/paths.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -167,8 +168,7 @@ export function runSymbiontDetection(
 export function runGlobalBootstrap(
   packageRoot: string = resolvePackageRoot(),
 ): BootstrapResult {
-  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
-  const servedBy = variant === 'dev' ? 'service-dev' : 'service';
+  const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
   const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
   const launchers = installGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);

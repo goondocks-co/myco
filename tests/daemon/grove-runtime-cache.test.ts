@@ -30,12 +30,29 @@ describe('GroveRuntimeCache', () => {
     return file;
   }
 
+  function emptyDbPath(name: string): string {
+    return path.join(workDir, `${name}.db`);
+  }
+
   it('returns the same DB handle for repeat lookups', () => {
     const cache = new GroveRuntimeCache();
     const a = dbPath('a');
     const first = cache.getDatabase(a);
     const second = cache.getDatabase(a);
     expect(first).toBe(second);
+    cache.closeAll();
+  });
+
+  it('initializes schema when opening a cold Grove database', () => {
+    const cache = new GroveRuntimeCache();
+    const cold = emptyDbPath('cold-grove');
+
+    const db = cache.getDatabase(cold);
+
+    const row = db.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'canopy_maps'",
+    ).get() as { present: number } | undefined;
+    expect(row?.present).toBe(1);
     cache.closeAll();
   });
 

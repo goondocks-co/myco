@@ -6,7 +6,7 @@ Expose your project's accumulated intelligence to cloud agents — Anthropic Man
 
 Cloud agents query the same intelligence your local agents already have — digest extracts, searchable spores, session history, the knowledge graph, and generated skills. Results stay fresh as your team syncs; there's no separate index to manage.
 
-The Cloud MCP server is **read-only by design**. It's a window into project intelligence, not a way to modify it. Writes remain the responsibility of local agents where the daemon owns the data lifecycle.
+The Cloud MCP server is **read-only by design**. It's a window into project intelligence, not a way to modify it. Local Myco remains the source of truth for writes.
 
 ## Tools
 
@@ -51,14 +51,14 @@ If you've already run `myco-team install`, the Cloud MCP server is deployed auto
 
 ## Finding your endpoint
 
-Open the Myco daemon UI → **Team** page. When team sync is connected, a **Cloud MCP Endpoint** section shows:
+Open the Myco dashboard → **Team** page. When team sync is connected, a **Cloud MCP Endpoint** section shows:
 
 - The MCP endpoint URL
 - The MCP access token (redacted by default; click the eye to reveal, copy button on hover)
 - A **Config snippet** button that expands a pre-formatted Anthropic Managed Agent configuration
 - A **Rotate token** action
 
-Every connected daemon gets the same endpoint and token automatically — there's nothing to distribute manually across teammates.
+Every connected teammate gets the same endpoint and token automatically — there's nothing to distribute manually across teammates.
 
 ## Connecting a cloud agent
 
@@ -105,11 +105,11 @@ You should see `myco` connected and all seven tools listed. Click any tool, fill
 
 ## Authentication
 
-The Cloud MCP server uses a bearer token distinct from the team sync API key. The token is managed by the Worker, stored encrypted at rest, and distributed automatically to every connected daemon. You never need to share it manually — open any teammate's Team page and it's there.
+The Cloud MCP server uses a bearer token distinct from the team sync API key. The token is managed by the Worker, stored encrypted at rest, and distributed automatically to connected teammates. You never need to share it manually — open any teammate's Team page and it's there.
 
 ### Rotation
 
-Click **Rotate token** in the Cloud MCP Endpoint section. A confirmation dialog makes the blast radius explicit — rotating invalidates the current token immediately, and every cloud agent currently using it will lose access until you reconfigure them with the new token. Other connected daemons pick up the new token automatically on their next health poll.
+Click **Rotate token** in the Cloud MCP Endpoint section. A confirmation dialog makes the blast radius explicit — rotating invalidates the current token immediately, and every cloud agent currently using it will lose access until you reconfigure them with the new token. Other connected teammates pick up the new token automatically.
 
 ## Troubleshooting
 
@@ -117,4 +117,4 @@ Click **Rotate token** in the Cloud MCP Endpoint section. A confirmation dialog 
 
 **`401 Missing Authorization header`** — Your cloud agent isn't sending `Authorization: Bearer <token>`. For MCP Inspector, make sure the custom header toggle is enabled.
 
-**Cloud MCP Endpoint section doesn't appear in the Team page** — The daemon hasn't fetched the token yet. Wait ~10 seconds for the next health poll to pick it up, or restart the daemon.
+**Cloud MCP Endpoint section doesn't appear in the Team page** — Myco may still be refreshing the team connection. Wait a few seconds, reopen the Team page, or restart Myco.

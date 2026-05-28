@@ -1,18 +1,18 @@
 # Team Sync
 
-Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Every teammate's agents benefit from the collective intelligence — the same digest, the same spores, the same graph — without you having to think about it.
+Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Each teammate keeps their local Grove database, and Team Sync mirrors connected teammates' Grove data into a queryable team store. Every teammate's agents benefit from the collective intelligence — the same digest, the same spores, the same graph — without you having to think about it.
 
-Team sync also deploys a [Cloud MCP Server](cloud-mcp.md) that exposes your project's knowledge to cloud agents (Anthropic Managed Agents, N8N, etc.). See [Cloud MCP docs](cloud-mcp.md) for that side of the feature.
+Team Sync also deploys a secure [Cloud MCP Server](cloud-mcp.md) that exposes synced Grove knowledge to cloud agents (Anthropic Managed Agents, N8N, etc.). See [Cloud MCP docs](cloud-mcp.md) for that side of the feature.
 
 ## What you get
 
 - Every new spore, session, plan, and graph edge syncs automatically in the background
 - Search queries fan out to both local and team data — results merge by relevance, tagged with source
 - Team context is additive — if the Worker is slow or unreachable, local results return alone
-- One-time backfill pushes all existing knowledge to the team store on first connect
+- One-time backfill pushes each teammate's existing Grove knowledge to the team store on first connect
 - Runs on the Cloudflare free tier for small teams
 
-Local databases remain the source of truth — the cloud store is a queryable mirror. Nothing is pulled back down. Each record carries a machine identity for attribution.
+Local Grove databases remain the source of truth — the cloud store is a queryable mirror of connected teammates' Grove data. Nothing is pulled back down. Each record carries a machine identity for attribution.
 
 ## Quick start
 
@@ -39,11 +39,11 @@ The full `myco-team` CLI surface: `install`, `upgrade`, `status`, `rotate-tokens
 
 ### 3. Connect teammates
 
-Each teammate opens the **Team** page in their Myco dashboard (`http://localhost:<port>/team`), pastes the Worker URL and Team key, and clicks **Connect**. Their node registers with the Worker and begins syncing immediately.
+Each teammate opens the **Team** page in their Myco dashboard (`http://localhost:20915/team`, or `myco open` if your install reports a different local URL), pastes the Worker URL and Team key, and clicks **Connect**. Their machine registers with the team and begins syncing immediately.
 
-On first connect, all existing local knowledge is backfilled into the outbox and pushed to the team store in batches. New writes sync automatically going forward.
+On first connect, existing local knowledge is backfilled to the team store in batches. New knowledge syncs automatically going forward.
 
-The daemon hands records off to the Worker via `POST /enqueue`. The Worker fans them into a Grove-scoped Cloudflare Queue (`myco-team-<grove>-<hash>-sync`); a queue consumer in the same Worker writes to D1 + Vectorize. Cloudflare's queue runtime owns retries, exponential backoff, and dead-lettering once a payload is accepted by `/enqueue`. Failures past `max_retries` (default 10) land in a Grove-scoped DLQ (`myco-team-<grove>-<hash>-sync-dlq`) where operators can retry or discard them from the Team page.
+Sync is durable: records are queued, retried, and surfaced on the Team page if an operator needs to retry or discard a stuck item.
 
 ## What syncs
 
@@ -91,7 +91,7 @@ Store your Cloudflare API token in `secrets.env`.
 
 ## Backup & restore
 
-Independent of team sync, Myco creates local SQL dump backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand dump. Restore supports a dry-run preview, and cross-machine restore preserves attribution so you can pull a teammate's backup file without losing who said what.
+Independent of Team Sync, Myco creates Grove-scoped backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution so you can pull a teammate's backup file without losing who said what.
 
 Backups include all knowledge tables but exclude logs, tool call activities, and vector embeddings (rebuilt automatically after restore).
 
@@ -105,7 +105,7 @@ Any team member with Wrangler and `@goondocks/myco-team` installed can update th
 myco-team upgrade
 ```
 
-Or click **Update Worker** on the Team page when an update is available (this runs the upgrade through the daemon, no local `myco-team` install required). The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
+Or click **Update Worker** on the Team page when an update is available. Teammates who already have Team Sync connected can update from the dashboard without installing `myco-team` locally.
 
 The Operations page detects and applies package updates to `@goondocks/myco-team` when that CLI is installed on the same machine. Manual npm updates still work:
 
@@ -116,13 +116,13 @@ myco-team upgrade
 
 ### Architecture
 
-The Worker is stateless — no WebSocket connections, no in-memory state. Each request reads from D1 or Vectorize, processes, and returns. Cloudflare handles scaling.
+The Worker keeps the cloud side lightweight. Local Grove databases remain the source of truth; the Worker stores a synced mirror for team search and Cloud MCP. Sync is queued and retryable, so transient Cloudflare or network failures do not block local work.
 
-Two Worker route groups:
+Three surfaces are exposed:
 
-- **Sync routes** (`/connect`, `/enqueue`, `/search`, `/config`, `/health`) — authenticated with the Team key, used by your daemon. `/enqueue` replaces the legacy `/sync` route; the new path hands records to a managed Cloudflare Queue rather than writing to D1 directly.
-- **Operator routes** (`/queue-stats`, `/dlq`, `/dlq/retry`, `/dlq/discard`) — also Team-key-authenticated; back the Sync tab on the Team page. The daemon first asks the Worker for operator data, then falls back to the local Wrangler login for Cloudflare queue inspection and DLQ actions when the Worker does not have account-level queue credentials.
-- **MCP routes** (`/mcp/*`, `/mcp/rotate`) — the [Cloud MCP Server](cloud-mcp.md) that cloud agents connect to
+- **Team sync** — connect teammates, receive synced Grove knowledge, and answer team search queries.
+- **Operator actions** — show sync status, retry stuck items, discard items you no longer want, and rotate credentials from the Team page.
+- **Cloud MCP** — the read-only [Cloud MCP Server](cloud-mcp.md) that cloud agents connect to.
 
 ### Cost
 

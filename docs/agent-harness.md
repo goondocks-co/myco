@@ -136,9 +136,9 @@ agent:
         intervalSeconds: 600         # Every 10 min when candidates might exist
 ```
 
-The two master switches (`scheduled_tasks_enabled` and `event_tasks_enabled`) silence the agent without editing per-task config — flip them off when you want the daemon to only capture, without processing.
+The two master switches (`scheduled_tasks_enabled` and `event_tasks_enabled`) silence intelligence work without editing per-task config — flip them off when you want Myco to capture only, without processing.
 
-Tasks only run when the daemon is in an active or idle power state. Background work never fires when the developer has stepped away.
+Tasks only run when Myco is active or recently active. Background work pauses when the developer has stepped away.
 
 ## Triggering tasks manually
 
@@ -153,14 +153,14 @@ myco agent run skill-survey            # Survey for new skill candidates
 
 ## Custom tasks
 
-Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll be loaded at daemon startup alongside the built-ins. Custom tasks have access to the same tool set and the same scheduling options as built-ins. The built-in task definitions are in `packages/myco/src/agent/definitions/tasks/` if you want reference examples.
+Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll load alongside the built-ins on restart. Custom tasks have access to the same tool set and scheduling options as built-ins. The built-in task definitions are in `packages/myco/src/agent/definitions/tasks/` if you want reference examples.
 
 ## Monitoring and troubleshooting
 
 | Command | What it shows |
 |---------|--------------|
-| `myco stats` | Daemon status, active sessions, database stats |
-| `myco doctor` | Health check — vault, DB, providers, agents, daemon |
-| `myco logs` | Tail daemon logs |
+| `myco stats` | Service status, active sessions, database stats |
+| `myco doctor` | Health check — data, providers, agents, service |
+| `myco logs` | Tail service logs |
 
 The dashboard's **Logs** page gives you real-time filtered output if you'd rather read it in the UI. Agent run details (which phases ran, what they produced) live on the **Operations** page.

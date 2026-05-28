@@ -5,6 +5,8 @@ $Package = "@goondocks/myco"
 $MinNodeMajor = 22
 
 Write-Host "Myco installer — Windows" -ForegroundColor Cyan
+Write-Host "Windows support is experimental in Myco 1.0. The macOS path is the primary supported release target." -ForegroundColor Yellow
+Write-Host "Please report Windows install issues; some service and launcher behavior is still being hardened." -ForegroundColor Yellow
 Write-Host ""
 
 # Check Node.js
@@ -48,13 +50,16 @@ npm install -g $Package
 Write-Host ""
 Write-Host "Myco installed successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "  The service is registered, the daemon is starting, and every coding agent on"
-Write-Host "  your machine has been wired into Myco at its global config location."
-Write-Host "  Projects auto-register on the first agent hook — no per-project setup."
+Write-Host "  Reminder: Windows support is experimental in Myco 1.0." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  The local service is starting, and supported coding agents on this"
+Write-Host "  machine are being connected to Myco."
+Write-Host "  Git projects register automatically when agents start working in them."
 Write-Host ""
 Write-Host "  Open the dashboard to confirm setup and configure intelligence providers:"
 Write-Host ""
 Write-Host "    myco open"
+Write-Host "    http://localhost:20915/"
 Write-Host ""
 Write-Host "  Optional operator CLIs:"
 Write-Host "    npm install -g @goondocks/myco-team        # https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md"

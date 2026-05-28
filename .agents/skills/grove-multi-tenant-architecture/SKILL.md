@@ -123,21 +123,18 @@ export async function loadMergedConfig(projectPath: string, options?: LoadMerged
   // Auto-resolve Grove from project manifest
   const projectConfig = await readProjectConfig(projectPath);
   const groveId = await resolveGroveIdFromBinding(projectConfig.grove.binding_id);
-  
+
   const machineConfig = await loadMachineConfig();
   const groveConfig = await loadGroveConfig(groveId);
   const projectConfig = await loadLocalConfig(projectPath);
-  
+
   return deepMergeConfig(machineConfig, groveConfig, projectConfig);
 }
 ```
 
-**Five call-site rethreading** impact:
+**Three call-site rethreading** impact:
 - CLI bootstrap in `packages/myco/src/cli/tool.ts` — removed explicit Grove resolution
 - Config API handler in `packages/myco/src/daemon/api/config.ts` — simplified Grove discovery
-- Symbiont initialization in `packages/myco/src/symbiont-bridge.ts` — auto-resolution enabled
-- Test harness setup in `test/integration/config.test.ts` — Grove context implicit
-- Agent runtime in `packages/myco/src/agent/runtime.ts` — simplified context threading
 
 **Migration**: If you have existing code that explicitly passes Grove context to `loadMergedConfig()`, remove the explicit `{ groveId }` parameter. The function now resolves it from the project manifest.
 
@@ -155,7 +152,7 @@ grove:
     model: "all-minilm-l6-v2"
     run_in_deep_sleep: true
     concurrency: 4
-  
+
   agent:
     provider: "claude"
     model: "claude-3-5-sonnet-20241022"
@@ -227,7 +224,7 @@ async function importCoreRows(sourceDb: Database, targetDb: Database, projectId:
   for (const session of sessions) {
     const newId = generateId();
     journal.mapSession(session.id, newId);
-    await targetDb.run(`INSERT INTO sessions (id, project_id, title, summary, ...) VALUES (?, ?, ?, ?, ...)`, 
+    await targetDb.run(`INSERT INTO sessions (id, project_id, title, summary, ...) VALUES (?, ?, ?, ?, ...)`,
       [newId, projectId, session.title, session.summary, ...]);
   }
 }
@@ -350,6 +347,42 @@ groves:
     status: "active"
 ```
 
+### Grove-Ownership and Migration Walker Safety
+
+When implementing project migration, bulk deletion, or Grove-wide operations, be aware of scope filtering requirements in `packages/myco/src/grove/migration-walker.ts`. The migration walker traverses ALL Groves by default unless explicitly filtered by `currentDaemonVariant` served_by constraints.
+
+**Critical safeguard**: Always filter migrations by the current daemon variant's served Grove(s):
+```typescript
+async function safeMigrateProjects(filter: { groveId?: string, projectId?: string }) {
+  const currentVariant = getCurrentDaemonVariant();
+  const targetGrove = filter.groveId ?? currentVariant.servedBy;
+
+  // Only migrate projects in the current daemon's served Grove
+  const projects = await db.all(`
+    SELECT * FROM registered_projects
+    WHERE grove_id = ?
+  `, [targetGrove]);
+
+  // ... perform migration ...
+}
+```
+
+### myco remove --purge Blast Radius
+
+The `myco remove --purge` command performs a registered-project walk that affects ALL projects in the Grove registry unless explicitly scoped. This can remove unintended projects if the registry has been polluted.
+
+**Safety**: Always use `--scope grove-id` or `--scope project-id` to limit the purge scope:
+```bash
+# DANGEROUS: affects all projects in registry
+myco remove --purge
+
+# SAFE: limits to specific Grove
+myco remove --purge --scope grove_abc123
+
+# SAFE: limits to specific project
+myco remove --purge --scope proj_xyz789
+```
+
 ## Procedure G: Security and Authorization Patterns
 
 Implement security enforcement across Grove multi-tenant architecture.
@@ -406,7 +439,7 @@ async function detectAndReconcileDrift(projectId: string, groveId: string) {
   const localVault = await loadLocalVault(projectId);
   const remoteState = await queryD1State(groveId, projectId);
   const driftAnalysis = analyzeDrift(localVault, remoteState);
-  
+
   if (driftAnalysis.hasDrift) {
     const reconciliationPlan = createReconciliationPlan(driftAnalysis);
     await sendToWorker(groveId, {
@@ -435,26 +468,26 @@ async function aggregateToolCallsForSession(sessionId: string, requestContext: M
   if (session.project_id !== requestContext.projectId) {
     throw new Error('Cross-project tool call aggregation denied');
   }
-  
+
   const toolCalls = await db.all(`
-    SELECT tool_name, COUNT(*) as call_count 
-    FROM tool_usage_log 
+    SELECT tool_name, COUNT(*) as call_count
+    FROM tool_usage_log
     WHERE session_id = ? AND project_id = ?
     GROUP BY tool_name
   `, [sessionId, requestContext.projectId]);
-  
+
   const metrics = {
     sessionId,
     projectId: requestContext.projectId,
     toolCallCounts: Object.fromEntries(toolCalls.map(tc => [tc.tool_name, tc.call_count])),
     excludeFromTeamSync: true // Always exclude sensitive metrics
   };
-  
+
   await db.run(`
     INSERT INTO session_metrics (session_id, project_id, metrics_data, exclude_team_sync)
     VALUES (?, ?, ?, 1)
   `, [sessionId, requestContext.projectId, JSON.stringify(metrics), 1]);
-  
+
   return metrics;
 }
 ```
@@ -469,22 +502,22 @@ async function validateProcessIdentityBeforeMutation(operation: string) {
   if (!fs.existsSync(daemonStatePath)) {
     throw new Error(`Cannot perform ${operation}: daemon identity not established`);
   }
-  
+
   const daemonState = JSON.parse(fs.readFileSync(daemonStatePath, 'utf8'));
-  
+
   // Verify process is still running
   try {
     process.kill(daemonState.pid, 0);
   } catch (error) {
     throw new Error(`Daemon process ${daemonState.pid} not running - cannot perform schema mutations`);
   }
-  
+
   // Verify startup ordering: minimum uptime required
   const uptimeMs = Date.now() - daemonState.startedAt;
   if (uptimeMs < 5000) {
     throw new Error(`Daemon startup incomplete (uptime: ${uptimeMs}ms) - deferring schema mutations`);
   }
-  
+
   const currentSchemaVersion = await getCurrentSchemaVersion();
   if (daemonState.schemaVersion !== currentSchemaVersion) {
     throw new Error(`Schema version mismatch: daemon=${daemonState.schemaVersion}, current=${currentSchemaVersion}`);
@@ -516,8 +549,6 @@ async function createTable(ddl: string) {
 
 **Machine Runtime Path Resolution**: Use machine runtime path primitives (`resolveMachineRuntimeDir`, `resolveMachineRuntimeCommandPath`) for operations requiring machine-local runtime state. Direct path construction bypasses Grove home resolution.
 
-**Registry File Format Drift**: Always use YAML format for Grove registry files to match the `GROVE_REGISTRY_FILENAME` constant. TOML format usage causes parsing errors.
-
 **Development Service Mode Isolation**: Development mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution.
 
 **Grove Secret File Permissions Reset**: File permissions on Grove-scoped `.myco/secrets.env` can be reset by git operations. Always verify permissions after deployment.
@@ -533,3 +564,9 @@ async function createTable(ddl: string) {
 **loadMergedConfig Grove Auto-Resolution**: After commit 17e3e923, `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
 
 **Embedding and Agent Configuration Inheritance**: After the scope boundary change, embedding and agent settings are read-only at the project level — they inherit from Grove configuration. If you need to customize these for a specific project, request Grove configuration changes or implement project-level environment variable overrides at the application level, not through config files.
+
+**Migration Walker Grove Filtering**: The migration walker in `packages/myco/src/grove/migration-walker.ts` traverses ALL Groves unless explicitly scoped by `currentDaemonVariant` served_by constraints. This creates cross-Grove mutation hazards if a daemon is configured to serve multiple Groves or if filtering is omitted. Always validate the daemon's served_by scope before executing walkers.
+
+**myco remove --purge Registry Blast**: The `myco remove --purge` command without scope modifiers affects all projects in the registered project inventory. Corrupted or overstocked registries can cause widespread project deletion. Always use `--scope grove-id` or `--scope project-id` to limit purge operations to the intended subset.
+
+**Global Uninstall .gitignore Strip Regression**: When globally uninstalling Myco via `myco uninstall --global`, the `.gitignore` file handling can regress in project repositories. Specifically, Myco-managed entries (typically `/node_modules/.myco`, `.myco/temp`, etc.) may fail to be properly restored or may be incorrectly retained after uninstallation, leading to project repository state corruption. **Mitigation**: Before uninstalling, explicitly clean up Myco-managed directories with `myco clean --all-groves`, and verify `.gitignore` contains no Myco-specific patterns before running the global uninstall. Consider a manual review and restoration of `.gitignore` after uninstall.

@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runGlobalBootstrap, runSymbiontDetection } from '@myco/cli/bootstrap.js';
+import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import {
   createGrove,
   registerProjectInGrove,
@@ -25,6 +26,7 @@ import {
   findProjectByRoot,
 } from '@myco/grove/registry.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
+import { ensureProjectVault } from '@myco/vault/provision.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -220,6 +222,16 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(result.defaultGrove.slug).toBe('default-dev');
   });
 
+  it('also accepts MYCO_SERVICE_VARIANT=service-dev for documented daemon-dir usage', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
+    clearGroveRegistryCaches();
+
+    const result = runGlobalBootstrap(PKG_ROOT);
+
+    expect(result.defaultGrove.served_by).toBe('service-dev');
+    expect(result.defaultGrove.slug).toBe('default-dev');
+  });
+
   it('is idempotent — second bootstrap returns the same default Grove without creating a duplicate', () => {
     const first = runGlobalBootstrap(PKG_ROOT);
     clearGroveRegistryCaches();
@@ -291,6 +303,31 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(listRegisteredProjects(defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
     expect(postBootstrap?.groveId).toBe(defaultGrove.id);
     expect(postBootstrap?.bufferDir).toContain(path.join(tmpHome, '.myco', 'groves', defaultGrove.id));
+  });
+
+  it('preserves the provisioned manifest identity when the first hook registers a project', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
+    clearGroveRegistryCaches();
+    const bootstrap = runGlobalBootstrap(PKG_ROOT);
+    expect(bootstrap.defaultGrove.served_by).toBe('service-dev');
+
+    const projectRoot = fs.mkdtempSync(path.join(tmpHome, 'born-global-proj-'));
+    execFileSync('git', ['init', '--quiet'], { cwd: projectRoot, stdio: 'pipe' });
+
+    const provisioned = ensureProjectVault(projectRoot);
+    const manifest = loadProjectManifest(path.join(projectRoot, '.myco'));
+    expect(manifest?.project.id).toBe(provisioned.projectId);
+    expect(manifest?.grove?.binding_id).toBeDefined();
+    expect(manifest?.grove?.slug).toBe('default-dev');
+
+    const buffer = resolveProjectBufferDirFromRoot(projectRoot, path.join(tmpHome, '.myco'));
+    expect(buffer?.groveId).toBe(bootstrap.defaultGrove.id);
+    expect(buffer?.projectId).toBe(provisioned.projectId);
+
+    const registered = findProjectByRoot(projectRoot, path.join(tmpHome, '.myco'));
+    expect(registered?.project.project_id).toBe(provisioned.projectId);
+    expect(registered?.project.binding_id).toBe(manifest?.grove?.binding_id);
+    expect(registered?.grove.id).toBe(bootstrap.defaultGrove.id);
   });
 
   it('multi-variant: dev+prod coexist + first hook registers into the daemon variant Grove, never cross-variant', () => {

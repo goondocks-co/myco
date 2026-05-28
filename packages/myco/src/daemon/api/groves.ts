@@ -5,6 +5,7 @@ import {
   deleteGrove,
   findRegisteredProject,
   getDefaultGroveId,
+  getRegisteredProjectInGrove,
   listGroves,
   listRegisteredProjects,
   loadGroveRecord,
@@ -15,6 +16,11 @@ import {
   type RegisteredProject,
 } from '@myco/grove/registry.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
+import {
+  archiveProject,
+  deleteProjectPermanently,
+  unarchiveProject,
+} from '@myco/grove/project-lifecycle.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
 import { errorBody } from './error-envelope.js';
@@ -29,6 +35,8 @@ export interface GroveProjectSummary {
   slug: string;
   root: string;
   binding_id: string | null;
+  status: 'active' | 'archived';
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
@@ -62,7 +70,11 @@ export function servedGroveScopeForDaemon(): ServedGroveScope {
 }
 
 export function createListGrovesHandler(scope: ServedGroveScope, daemonStateDir: string): RouteHandler {
-  return async () => ({ body: listGroveSummaries(scope, daemonVariant(daemonStateDir)) });
+  return async (req) => ({
+    body: listGroveSummaries(scope, daemonVariant(daemonStateDir), {
+      includeArchived: req.query.include_archived === 'true',
+    }),
+  });
 }
 
 export function createListGroveProjectsHandler(scope: ServedGroveScope, daemonStateDir: string): RouteHandler {
@@ -78,6 +90,7 @@ export function createListGroveProjectsHandler(scope: ServedGroveScope, daemonSt
 export function listGroveSummaries(
   scope: ServedGroveScope = { groveIds: null },
   servedBy?: DaemonVariant,
+  options: { includeArchived?: boolean } = {},
 ): GrovesResponse {
   const defaultGroveId = getDefaultGroveId();
   const allGroves = servedBy ? listGroves(undefined, { servedBy }) : listGroves();
@@ -85,7 +98,9 @@ export function listGroveSummaries(
     ? allGroves.filter((grove) => scope.groveIds!.includes(grove.id))
     : allGroves;
   const groves = filtered.map((grove) => {
-    const projects = listRegisteredProjects(grove.id)
+    const projects = listRegisteredProjects(grove.id, undefined, {
+      includeArchived: options.includeArchived,
+    })
       .map((project) => serializeProject(project));
     return {
       id: grove.id,
@@ -108,10 +123,79 @@ function serializeProject(project: RegisteredProject): GroveProjectSummary {
     slug: projectSlug(project),
     root: project.root,
     binding_id: project.binding_id ?? null,
+    status: project.status,
+    archived_at: project.archived_at ?? null,
     created_at: project.created_at,
     updated_at: project.updated_at,
     manifest_state: manifestState(project),
   };
+}
+
+export function createArchiveProjectHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => projectLifecycle(req.params.id, req.params.projectId, daemonStateDir, 'archive');
+}
+
+export function createUnarchiveProjectHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => projectLifecycle(req.params.id, req.params.projectId, daemonStateDir, 'unarchive');
+}
+
+export function createDeleteProjectHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => {
+    const groveId = req.params.id;
+    const projectId = req.params.projectId;
+    const servedBy = daemonVariant(daemonStateDir);
+    const grove = loadGroveRecord(groveId);
+    if (!grove || grove.served_by !== servedBy) {
+      return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
+    }
+    const project = getProjectForLifecycle(groveId, projectId);
+    if (!project) {
+      return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in Grove ${groveId}`) };
+    }
+
+    const body = (req.body ?? {}) as { confirmation_name?: unknown };
+    if (body.confirmation_name !== project.name) {
+      return {
+        status: 400,
+        body: errorBody('confirmation_name_mismatch', `Type ${project.name} to permanently delete this project`),
+      };
+    }
+
+    try {
+      return { body: { ok: true, delete: deleteProjectPermanently(groveId, projectId) } };
+    } catch (err) {
+      return { status: 500, body: errorBody('project_delete_failed', (err as Error).message) };
+    }
+  };
+}
+
+function projectLifecycle(
+  groveId: string,
+  projectId: string,
+  daemonStateDir: string,
+  action: 'archive' | 'unarchive',
+) {
+  const servedBy = daemonVariant(daemonStateDir);
+  const grove = loadGroveRecord(groveId);
+  if (!grove || grove.served_by !== servedBy) {
+    return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
+  }
+  const project = getProjectForLifecycle(groveId, projectId);
+  if (!project) {
+    return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in Grove ${groveId}`) };
+  }
+  try {
+    const result = action === 'archive'
+      ? archiveProject(groveId, projectId)
+      : unarchiveProject(groveId, projectId);
+    return { body: { ok: true, project: result } };
+  } catch (err) {
+    return { status: 500, body: errorBody(`project_${action}_failed`, (err as Error).message) };
+  }
+}
+
+function getProjectForLifecycle(groveId: string, projectId: string): RegisteredProject | null {
+  return getRegisteredProjectInGrove(groveId, projectId, undefined, { includeArchived: true });
 }
 
 function projectSlug(project: RegisteredProject): string {
@@ -180,7 +264,7 @@ export function createDeleteGroveHandler(daemonStateDir: string): RouteHandler {
     if (!existing || existing.served_by !== daemonVariant(daemonStateDir)) {
       return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
     }
-    const projects = listRegisteredProjects(groveId);
+    const projects = listRegisteredProjects(groveId, undefined, { includeArchived: true });
     if (projects.length > 0) {
       return {
         status: 409,

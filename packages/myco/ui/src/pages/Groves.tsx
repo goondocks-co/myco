@@ -2,7 +2,12 @@ import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
-import { useBackupProject, useSetDefaultGrove } from '../hooks/use-grove-mutations';
+import {
+  useArchiveProject,
+  useBackupProject,
+  useSetDefaultGrove,
+  useUnarchiveProject,
+} from '../hooks/use-grove-mutations';
 import {
   colorForProjectId,
   monogramFor,
@@ -23,6 +28,7 @@ import { NewGroveModal } from '../components/groves/NewGroveModal';
 import { RenameGroveModal } from '../components/groves/RenameGroveModal';
 import { DeleteGroveModal } from '../components/groves/DeleteGroveModal';
 import { MoveProjectModal } from '../components/groves/MoveProjectModal';
+import { DeleteProjectModal } from '../components/groves/DeleteProjectModal';
 import { showToast } from '../components/groves/toast';
 
 interface MoveTarget {
@@ -31,18 +37,42 @@ interface MoveTarget {
 }
 
 export default function Groves() {
-  const query = useGroves();
   const navigate = useNavigate();
   const backupProject = useBackupProject();
   const setDefaultGrove = useSetDefaultGrove();
+  const archiveProject = useArchiveProject();
+  const unarchiveProject = useUnarchiveProject();
 
   const [newOpen, setNewOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<GroveSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<GroveSummary | null>(null);
   const [moveTarget, setMoveTarget] = useState<MoveTarget | null>(null);
+  const [deleteProjectTarget, setDeleteProjectTarget] = useState<MoveTarget | null>(null);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
 
-  const groves = query.data?.groves ?? [];
+  const archiveAwareQuery = useGroves({ includeArchived });
+  const groves = archiveAwareQuery.data?.groves ?? [];
+
+  function handleArchive(grove: GroveSummary, project: GroveProjectSummary) {
+    archiveProject.mutate(
+      { groveId: grove.id, projectId: project.project_id },
+      {
+        onSuccess: () => showToast({ level: 'success', title: 'Project archived', detail: project.name }),
+        onError: (err) => showToast({ level: 'error', title: 'Archive failed', detail: err.message }),
+      },
+    );
+  }
+
+  function handleUnarchive(grove: GroveSummary, project: GroveProjectSummary) {
+    unarchiveProject.mutate(
+      { groveId: grove.id, projectId: project.project_id },
+      {
+        onSuccess: () => showToast({ level: 'success', title: 'Project unarchived', detail: project.name }),
+        onError: (err) => showToast({ level: 'error', title: 'Unarchive failed', detail: err.message }),
+      },
+    );
+  }
 
   function handleSetDefault(grove: GroveSummary) {
     setDefaultGrove.mutate(
@@ -79,7 +109,7 @@ export default function Groves() {
   }
 
   return (
-    <PageLoading isLoading={query.isLoading} error={query.error} loadingText="Loading Groves...">
+    <PageLoading isLoading={archiveAwareQuery.isLoading} error={archiveAwareQuery.error} loadingText="Loading Groves...">
       <PageContainer>
         <header className="flex items-end justify-between gap-4 flex-wrap">
           <div className="flex flex-col gap-1 min-w-0">
@@ -94,6 +124,16 @@ export default function Groves() {
             New Grove
           </Button>
         </header>
+
+        <label className="flex items-center gap-2 text-sm text-on-surface-variant">
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(event) => setIncludeArchived(event.target.checked)}
+            className="h-4 w-4 accent-primary"
+          />
+          Show archived projects
+        </label>
 
         <div className="flex flex-col gap-4">
           {groves.map((grove) => (
@@ -147,13 +187,18 @@ export default function Groves() {
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>
                             )}
+                            {project.status === 'archived' && <Badge variant="outline">archived</Badge>}
                           </NavLink>
                           <ProjectActionMenu
                             projectName={project.name}
+                            archived={project.status === 'archived'}
                             backupPending={pendingBackupId === project.project_id}
                             onOpen={() => navigate(projectPath({ grove, project }))}
                             onMove={() => setMoveTarget({ grove, project })}
                             onBackup={() => handleBackup(project)}
+                            onArchive={() => handleArchive(grove, project)}
+                            onUnarchive={() => handleUnarchive(grove, project)}
+                            onDelete={() => setDeleteProjectTarget({ grove, project })}
                           />
                         </div>
                       </Row>
@@ -195,6 +240,16 @@ export default function Groves() {
           projectId={moveTarget.project.project_id}
           projectName={moveTarget.project.name}
           groves={groves}
+        />
+      )}
+
+      {deleteProjectTarget && (
+        <DeleteProjectModal
+          open={deleteProjectTarget !== null}
+          onOpenChange={(open) => !open && setDeleteProjectTarget(null)}
+          groveId={deleteProjectTarget.grove.id}
+          projectId={deleteProjectTarget.project.project_id}
+          projectName={deleteProjectTarget.project.name}
         />
       )}
     </PageLoading>

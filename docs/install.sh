@@ -36,6 +36,10 @@ case "$OS" in
 esac
 
 info "Myco installer — $PLATFORM"
+if [ "$PLATFORM" = "linux" ]; then
+  warn "Linux support is experimental in Myco 1.0."
+  warn "The macOS path is the primary supported release target; please report Linux install issues."
+fi
 echo ""
 
 # Check Node.js
@@ -98,13 +102,18 @@ rm -f /tmp/myco-install-err.log
 echo ""
 success "Myco installed successfully!"
 echo ""
-echo "  The service is registered, the daemon is starting, and every coding agent on"
-echo "  your machine has been wired into Myco at its global config location."
-echo "  Projects auto-register on the first agent hook — no per-project setup."
+echo "  The local service is starting, and supported coding agents on this"
+echo "  machine are being connected to Myco."
+echo "  Git projects register automatically when agents start working in them."
+if [ "$PLATFORM" = "linux" ]; then
+  echo ""
+  warn "  Reminder: Linux service support is experimental in Myco 1.0."
+fi
 echo ""
 echo "  Open the dashboard to confirm setup and configure intelligence providers:"
 echo ""
 echo "    myco open"
+echo "    http://localhost:20915/"
 echo ""
 echo "  Optional operator CLIs:"
 echo "    npm install -g @goondocks/myco-team        # https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md"

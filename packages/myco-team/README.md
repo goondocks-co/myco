@@ -1,11 +1,9 @@
 # @goondocks/myco-team
 
 `@goondocks/myco-team` manages a Myco Team Sync deployment from the terminal.
-Installs require a Grove-bound Myco project, and the deployment is attached to
-the current Grove rather than one project-local vault. New installs name
-Cloudflare resources from the Grove slug, for example
-`myco-team-myco-dogfood-1a2b3c4d`, so the worker, D1 database, Vectorize index,
-KV namespace, and queues are recognizable in Cloudflare.
+Installs are Grove-scoped: run the command from a project that belongs to the
+Grove you want to share, and Team Sync connects that Grove's knowledge to your
+team's Cloudflare deployment.
 
 Install it to provision or administer a team worker:
 
@@ -13,7 +11,7 @@ Install it to provision or administer a team worker:
 npm install -g @goondocks/myco-team
 ```
 
-Team operators need this package; teammates who only *connect* to an existing team worker through the daemon UI do not.
+Team operators need this package; teammates who only *connect* to an existing team worker through the Myco dashboard do not.
 
 ## What you can do
 
@@ -49,4 +47,4 @@ npm update -g @goondocks/myco-team
 
 ## License
 
-MIT
+Apache-2.0

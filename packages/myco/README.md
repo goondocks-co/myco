@@ -1,20 +1,23 @@
 # @goondocks/myco
 
-`@goondocks/myco` is the main Myco package.
+`@goondocks/myco` is the main Myco package: the nervous system for AI-assisted software teams.
 
-Install it to add Myco to a project, run the local dashboard and daemon, connect supported coding agents, and use the built-in team sync workflow.
+Install it once to run the local dashboard and service, connect supported coding agents, capture project knowledge, and use the built-in intelligence pipeline.
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Open a project in any supported agent — Myco registers it automatically on the first hook.
+Open a git project in any supported agent and Myco registers it automatically when the agent starts working there.
+
+macOS is the primary supported platform for the 1.0 release. Linux and Windows packages are published for early testing, but they are experimental.
 
 ## What you can do
 
 - Capture coding sessions into a local Myco vault
-- Run the local dashboard, daemon, and MCP server
+- Run the local dashboard, service, and MCP server
 - Search sessions, spores, plans, and artifacts
+- Give agents shared project context without replacing their native memory or workflows
 - Share project intelligence with Team Sync
 - Connect multiple team workers to a Myco Collective
 
@@ -35,4 +38,4 @@ The Operations page can also detect and apply updates for installed Myco package
 
 ## License
 
-MIT
+Apache-2.0
