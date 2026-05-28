@@ -361,9 +361,15 @@ phases:
       The tool returns one of two shapes:
 
       **Skip shape** — `{mode:"rotate_oldest", skip:true, reason, all_tiers}`.
-      Every tier was generated within the last 30 minutes. Call
-      `vault_report` with action "skip" passing the reason through.
-      STOP — do not run steps 2-3.
+      Every tier was generated within the last 30 minutes. Commit the
+      skip via the metadata channel:
+
+        phase_emit_metadata({ key: "selectedTier", value: null })
+
+      Then call `vault_report` with action "skip" passing the reason
+      through. STOP — do not run steps 2-3. The downstream digest-N
+      sibling phases gate on `selectedTier` and will short-circuit in
+      zero LLM turns when the value is null or doesn't match their tier.
 
       **Rotate shape** — `{mode:"rotate_oldest", selected_tier,
       selected_generated_at, selected_content, rotation_reason, all_tiers}`.
@@ -385,7 +391,7 @@ phases:
       for variations of the same theme. Accept "good enough" findings
       and move on.
 
-      ## Step 3: Produce findings
+      ## Step 3: Produce findings AND commit the rotation choice
 
       Your final response is the per-tier phases' primary context
       (they cannot call vault_spores or vault_sessions). Structure it:
@@ -401,12 +407,17 @@ phases:
 
       **Themes and connections** relevant to the chosen tier.
 
-      **Per-tier directives** — mark exactly the `selected_tier` as
-      UPDATE, the other two as SKIP, and include the tool's
-      rotation_reason in the UPDATE line:
-      - 10000: UPDATE or SKIP + one-line reason
-      - 5000: UPDATE or SKIP + one-line reason
-      - 1500: UPDATE or SKIP + one-line reason
+      ## Step 4: Commit the rotation via metadata (REQUIRED, last call)
+
+      Before finishing, you MUST call:
+
+        phase_emit_metadata({ key: "selectedTier", value: <number> })
+
+      where `<number>` is the integer 1500, 5000, or 10000 matching the
+      tier you selected. The downstream digest-N sibling phases gate on
+      this — non-selected tiers skip in zero LLM turns. If you forget
+      this call, all three digest phases skip and the rotation stalls
+      for this run.
 
       Tools available: {{phase_tools}}.
     tools:
@@ -416,43 +427,29 @@ phases:
       - vault_release_state
       - vault_read_digest
       - vault_report
+      - phase_emit_metadata
     maxTurns: 12
     required: true
 
   - name: digest-10000
     reasoningLevel: low
     dependsOn: [digest-assess]
+    # Cross-phase skip: this phase runs ONLY when digest-assess committed
+    # selectedTier === 10000 via `phase_emit_metadata`. Any other value
+    # (5000, 1500, null) or missing metadata → phase loop skips in zero
+    # LLM turns BEFORE invoking the harness. Replaces the prior
+    # STOP-FIRST prompt block (was ~25 lines per phase).
+    gateOnPriorMetadata:
+      phase: digest-assess
+      key: selectedTier
+      equals: 10000
     prompt: |
-      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
-
-      Default to SKIP. Only proceed past this section if you find
-      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
-      that tier 10000 was selected this run.
-
-      Affirmative evidence means BOTH of:
-      - The summary contains the literal string `Chosen tier for this run: 10000`
-        (digit 1-0-0-0-0, not another tier).
-      - AND the per-tier directives section lists `10000: UPDATE` (not
-        `10000: SKIP`).
-
-      If you cannot find both of those, you MUST stop now. This includes:
-      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
-        "no rotation", "no new intelligence material this run") and never
-        emitted per-tier directives.
-      - digest-assess selected a different tier (5000 or 1500).
-      - The summary is ambiguous and you cannot tell.
-
-      On STOP: do not call `vault_read_digest`. Do not call
-      `vault_search_semantic`. Do not call `vault_write_digest`. Call
-      `vault_report` with action "skip" and reason "tier 10000 not selected
-      this rotation", then finish.
-
-      ## If you ARE the selected tier
-
       Update digest tier 10000 — Full institutional knowledge.
-      Budget: 9 turns total (you've already used 1 on the STOP check).
+      Budget: {{max_turns}} turns.
 
-      This is the largest tier (~10,000 tokens). The digest-assess phase
+      You only reach this phase when digest-assess committed
+      `selectedTier: 10000` — no STOP-FIRST check needed; the phase loop
+      gate already filtered the rotation. The digest-assess phase
       summary in your context contains the material to integrate.
 
       1. Call `vault_read_digest` with tier 10000 to get current content
@@ -485,39 +482,19 @@ phases:
   - name: digest-5000
     reasoningLevel: low
     dependsOn: [digest-assess]
+    # See digest-10000: gate-based selection, no STOP-FIRST needed.
+    gateOnPriorMetadata:
+      phase: digest-assess
+      key: selectedTier
+      equals: 5000
     prompt: |
-      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
-
-      Default to SKIP. Only proceed past this section if you find
-      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
-      that tier 5000 was selected this run.
-
-      Affirmative evidence means BOTH of:
-      - The summary contains the literal string `Chosen tier for this run: 5000`
-        (digit 5-0-0-0, not another tier).
-      - AND the per-tier directives section lists `5000: UPDATE` (not
-        `5000: SKIP`).
-
-      If you cannot find both of those, you MUST stop now. This includes:
-      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
-        "no rotation", "no new intelligence material this run") and never
-        emitted per-tier directives.
-      - digest-assess selected a different tier (10000 or 1500).
-      - The summary is ambiguous and you cannot tell.
-
-      On STOP: do not call `vault_read_digest`. Do not call
-      `vault_search_semantic`. Do not call `vault_write_digest`. Call
-      `vault_report` with action "skip" and reason "tier 5000 not selected
-      this rotation", then finish.
-
-      ## If you ARE the selected tier
-
       Update digest tier 5000 — Deep onboarding.
-      Budget: 7 turns total (you've already used 1 on the STOP check).
+      Budget: {{max_turns}} turns.
 
-      This tier (~5,000 tokens) focuses on trade-offs and patterns. The
-      digest-assess phase summary in your context contains the material
-      to integrate.
+      You only reach this phase when digest-assess committed
+      `selectedTier: 5000`. This tier (~5,000 tokens) focuses on
+      trade-offs and patterns. The digest-assess phase summary in your
+      context contains the material to integrate.
 
       1. Call `vault_read_digest` with tier 5000 to get current content
       2. Optionally call `vault_search_semantic` for additional context
@@ -545,36 +522,18 @@ phases:
   - name: digest-1500
     reasoningLevel: low
     dependsOn: [digest-assess]
+    # See digest-10000: gate-based selection, no STOP-FIRST needed.
+    gateOnPriorMetadata:
+      phase: digest-assess
+      key: selectedTier
+      equals: 1500
     prompt: |
-      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
-
-      Default to SKIP. Only proceed past this section if you find
-      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
-      that tier 1500 was selected this run.
-
-      Affirmative evidence means BOTH of:
-      - The summary contains the literal string `Chosen tier for this run: 1500`
-        (digit 1-5-0-0, not another tier).
-      - AND the per-tier directives section lists `1500: UPDATE` (not
-        `1500: SKIP`).
-
-      If you cannot find both of those, you MUST stop now. This includes:
-      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
-        "no rotation", "no new intelligence material this run") and never
-        emitted per-tier directives.
-      - digest-assess selected a different tier (10000 or 5000).
-      - The summary is ambiguous and you cannot tell.
-
-      On STOP: do not call `vault_read_digest`. Do not call
-      `vault_write_digest`. Call `vault_report` with action "skip" and
-      reason "tier 1500 not selected this rotation", then finish.
-
-      ## If you ARE the selected tier
-
       Update digest tier 1500 — Executive briefing.
-      Budget: 5 turns total (you've already used 1 on the STOP check).
+      Budget: {{max_turns}} turns.
 
-      This is the most compressed tier (~1,500 tokens). Only update if
+      You only reach this phase when digest-assess committed
+      `selectedTier: 1500`. This is the most compressed tier
+      (~1,500 tokens). Only update if
       important new decisions, gotchas, or critical changes were found.
       The digest-assess phase summary in your context contains the material
       to integrate.
