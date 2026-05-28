@@ -347,6 +347,34 @@ describe('StandardJsonlParser', () => {
       expect(turns[0].aiResponse).toBe('All done.');
     });
 
+    // Surfaced 2026-05-28 via live dogfood smoke: Claude Code v2.1.x emits
+    // real user prompts as `message.content: string` (and tool_result entries
+    // as the array form). Pre-fix, the parser only inspected array content,
+    // so every real user prompt was skipped and the parser returned zero
+    // turns — the entire transcript-mining path (populateBatchResponses,
+    // skill detection, plan-tag extraction) silently no-op'd. The prompt-kind
+    // walker already handled both forms via extractText; this mirrors that.
+    it('handles message.content as a plain string (Claude Code v2.1.x format)', () => {
+      const content = toJsonl([
+        {
+          type: 'user',
+          message: { role: 'user', content: 'fix the bug in foo.ts' },
+          timestamp: '2026-05-28T10:00:00Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Done.' }] },
+          timestamp: '2026-05-28T10:00:30Z',
+        },
+      ]);
+
+      const turns = parser.parseTurns(content);
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0].prompt).toBe('fix the bug in foo.ts');
+      expect(turns[0].aiResponse).toBe('Done.');
+    });
+
     // Surfaced 2026-05-28 via live dogfood smoke: a multi-block assistant turn
     // (text → tool_use → text → tool_use → text → …) emits one JSONL entry per
     // text/tool boundary, so the parser walks several entries that each carry

@@ -33,26 +33,37 @@ export class StandardJsonlParser implements TranscriptParser {
         // not real user prompts and should not appear as turns or influence the title.
         if (entry.isMeta === true) continue;
 
-        const msg = entry.message as { content?: Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
-        const blocks = Array.isArray(msg?.content) ? msg!.content : [];
-        const hasText = blocks.some((b) => b.type === 'text' && b.text?.trim());
+        const msg = entry.message as { content?: string | Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
 
-        if (!hasText) continue;
+        // Claude Code v2.1.x emits real user prompts as `message.content: string`
+        // and tool_result entries as `message.content: [{type:'tool_result', …}]`.
+        // Pre-v2.1, both used arrays; the prompt-kind walker handles both forms
+        // via extractText. Mirror that here so transcript mining sees real user
+        // turns again — without it every user entry's blocks are empty and the
+        // parser returns zero turns, breaking response_summary populateBatchResponses.
+        let rawPrompt = '';
+        let images: TranscriptImage[] = [];
+
+        if (typeof msg?.content === 'string') {
+          rawPrompt = msg.content;
+        } else if (Array.isArray(msg?.content)) {
+          const blocks = msg!.content;
+          rawPrompt = blocks
+            .filter((b) => b.type === 'text' && b.text)
+            .map((b) => b.text!)
+            .join('\n');
+          images = blocks
+            .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
+            .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
+        }
+
+        if (!rawPrompt.trim()) continue;
 
         if (current) turns.push(current);
-
-        const rawPrompt = blocks
-          .filter((b) => b.type === 'text' && b.text)
-          .map((b) => b.text!)
-          .join('\n');
 
         const promptText = (this.opts.stripImageTextRefs ? rawPrompt.replace(IMAGE_TEXT_REF_PATTERN, '') : rawPrompt)
           .trim()
           .slice(0, PROMPT_PREVIEW_CHARS);
-
-        const images: TranscriptImage[] = blocks
-          .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
-          .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
 
         current = { prompt: promptText, toolCount: 0, timestamp, ...(images.length > 0 ? { images } : {}) };
       } else if (role === 'assistant' && current) {
