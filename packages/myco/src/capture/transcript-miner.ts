@@ -7,6 +7,7 @@ import {
   updateBatchKind,
   insertBatchStateless,
   setBatchPromptNumber,
+  populateBatchResponses,
   PROMPT_PREFIX_MATCH_CHARS,
   BATCH_KIND,
   PROMPT_BATCH_ORIGIN,
@@ -324,6 +325,37 @@ export class TranscriptMiner {
     }
 
     return { reclassified, inserted, errors };
+  }
+
+  /**
+   * Reconcile batch kinds AND attribute responses from the transcript in one
+   * pass. This is the unit of work that makes capture visible:
+   * `reconcileBatchKinds` materializes/reclassifies prompt batches (including
+   * queued steering prompts), then the per-turn responses are matched onto
+   * those batches by prompt prefix.
+   *
+   * Stop runs this at turn end; the live path (PostToolUse, throttled) runs it
+   * mid-turn so queued prompts and in-flight responses surface in the dashboard
+   * during a long continuous turn instead of only at the next Stop. Both paths
+   * are idempotent — re-running over an unchanged transcript is a no-op beyond
+   * re-writing identical response_summary values.
+   *
+   * Returns the reconcile result (batches reclassified/inserted) for callers
+   * that want to log or short-circuit.
+   */
+  public reconcileAndAttributeResponses(
+    sessionId: string,
+    input: ReconcileInput,
+  ): ReconcileResult {
+    const result = this.reconcileBatchKinds(sessionId, input);
+    const { turns } = this.getAllTurnsWithSource(sessionId, input.transcriptPath);
+    const responses = turns
+      .filter((t) => t.prompt && t.aiResponse)
+      .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }));
+    if (responses.length > 0) {
+      populateBatchResponses(sessionId, responses);
+    }
+    return result;
   }
 
   private parseAllEvents(transcriptPath: string): Array<Record<string, unknown>> {

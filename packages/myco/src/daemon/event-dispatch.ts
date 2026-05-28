@@ -78,6 +78,14 @@ export interface EventDispatchDeps {
   liveConfig: { current: MycoConfig };
   vaultDir: string;
   reconcileSession: (sessionId: string) => void;
+  /**
+   * Throttled live transcript reconcile, invoked on tool events. Surfaces
+   * queued steering prompts and in-flight responses mid-turn (the daemon
+   * receives tool events live and has the transcript path) instead of waiting
+   * for Stop. Optional: when absent, capture stays Stop-only. The callee owns
+   * throttling — the dispatcher calls it on every tool event.
+   */
+  liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void;
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
   triggerTitleSummary: (
     sessionId: string,
@@ -120,6 +128,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     liveConfig,
     vaultDir: vaultDir,
     reconcileSession,
+    liveReconcile,
     planWatchConfig,
     triggerTitleSummary,
   } = deps;
@@ -564,6 +573,14 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
+      }
+      // Live capture: surface queued prompts + in-flight responses mid-turn.
+      // The agent writes each turn's prompts/responses to the transcript as it
+      // works; this tool event is the daemon's live signal to re-mine it. The
+      // callee throttles, so calling on every tool event is safe.
+      if (liveReconcile && typeof event.transcript_path === 'string' && event.transcript_path) {
+        const agent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
+        liveReconcile(event.session_id, agent, event.transcript_path);
       }
       // Canopy: rescan the touched file after acknowledging capture.
       // Best-effort; handleCanopyToolUse swallows its own errors.

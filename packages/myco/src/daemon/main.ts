@@ -202,6 +202,7 @@ import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
+import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
@@ -1171,6 +1172,14 @@ export async function main(): Promise<void> {
 
   // --- Event routes ---
 
+  // Live mid-turn capture: re-mine the transcript on tool events (throttled)
+  // so queued prompts + in-flight responses surface during a long turn instead
+  // of only at Stop. Shares the same transcriptMiner the Stop path uses.
+  const liveReconcile = createLiveReconcile({
+    reconcile: (sessionId, input) => transcriptMiner.reconcileAndAttributeResponses(sessionId, input),
+    logger,
+  });
+
   const eventDispatcher = createEventDispatcher({
     registry,
     sessionBuffers,
@@ -1180,6 +1189,7 @@ export async function main(): Promise<void> {
     liveConfig,
     vaultDir: bootstrapVaultDir,
     reconcileSession: reconciler.reconcileSession,
+    liveReconcile,
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
     projectStateTracker,

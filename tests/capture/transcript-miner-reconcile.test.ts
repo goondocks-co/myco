@@ -448,4 +448,32 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(q2.kind).toBe('steering');
     expect(q2.parent_prompt_batch_id).toBe(q1.id);
   });
+
+  // Live mid-turn capture (#11): reconcileAndAttributeResponses materializes
+  // batches AND attaches their responses in one pass — the unit the throttled
+  // PostToolUse path runs so queued prompts + in-flight responses surface
+  // before Stop. This asserts a queued prompt gets BOTH a batch and its
+  // response from a mid-turn transcript snapshot, with no stop event.
+  it('reconcileAndAttributeResponses materializes a queued prompt and attaches its response (no Stop)', () => {
+    const events = [
+      { type: 'user', promptId: 'u1', message: { role: 'user', content: 'start the work' } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'starting' }], stop_reason: 'tool_use' } },
+      { type: 'attachment', uuid: 'q1', attachment: { type: 'queued_command', prompt: 'also check the edge case' } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'edge case looks fine' }], stop_reason: 'tool_use' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    miner.reconcileAndAttributeResponses('s-reconcile', { agent: 'claude-code', transcriptPath });
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE }).sort((a, b) => a.id - b.id);
+    expect(after).toHaveLength(2);
+    const [initial, queued] = after;
+    expect(initial.user_prompt).toBe('start the work');
+    expect(initial.response_summary).toBe('starting');
+    // The queued prompt is captured AND carries the response that followed it —
+    // mid-turn, without any stop event having fired.
+    expect(queued.user_prompt).toBe('also check the edge case');
+    expect(queued.response_summary).toBe('edge case looks fine');
+  });
 });
