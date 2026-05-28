@@ -3,7 +3,9 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   type ReactNode,
 } from 'react';
 import { useScopedConfig } from '../hooks/use-scoped-config';
@@ -17,22 +19,10 @@ export type Density = AppearanceValues['density'];
 export type Appearance = AppearanceValues;
 
 interface AppearanceContextValue {
-  /** Merged values currently applied to the document (project + local overlay). */
+  /** Merged values currently applied to the document. Appearance is Grove-owned. */
   effective: Appearance;
-  /** Raw local overrides — keys present here are "sticky" per machine. */
-  local: Partial<Appearance>;
-  /** Patch a single appearance key into the given scope and refetch. */
-  set<K extends keyof Appearance>(
-    key: K,
-    value: Appearance[K],
-    scope: 'local' | 'project',
-  ): Promise<void>;
-  /** Drop a single key from local overrides so the project value shines through. */
-  resetKey<K extends keyof Appearance>(key: K): Promise<void>;
-  /** Promote the current effective appearance into the project config. */
-  saveAllAsProject(): Promise<void>;
-  /** Remove all local appearance overrides. */
-  resetAll(): Promise<void>;
+  /** Patch a single appearance key into the current Grove and refetch. */
+  set<K extends keyof Appearance>(key: K, value: Appearance[K]): Promise<void>;
 }
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
@@ -47,19 +37,16 @@ const DEFAULT_APPEARANCE: Appearance = {
 const LIGHT_MEDIA_QUERY = '(prefers-color-scheme: light)';
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
-  const { effective: cfg, local: localCfg, setField, resetField, promoteField } = useScopedConfig();
+  const { effective: cfg, setField } = useScopedConfig();
 
   const effective: Appearance = useMemo(
     () => ((cfg?.appearance as Appearance | undefined) ?? DEFAULT_APPEARANCE),
     [cfg?.appearance],
   );
+  const effectiveRef = useRef(effective);
+  effectiveRef.current = effective;
 
-  const localAppearance = useMemo(
-    () => (localCfg.appearance ?? {}) as Partial<Appearance>,
-    [localCfg.appearance],
-  );
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Only paint when the config fetch has resolved. The pre-bootstrap
     // script in `main.tsx` already applied the cached values
     // synchronously; running `applyAppearance(DEFAULT_APPEARANCE)` here
@@ -81,38 +68,28 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   }, [effective]);
 
   const set: AppearanceContextValue['set'] = useCallback(
-    (key, value, scope) => setField(`appearance.${key}`, value, scope),
+    async (key, value) => {
+      const previous = effectiveRef.current;
+      const next = { ...previous, [key]: value };
+      applyAppearance(next);
+      persistAppearance(next);
+      try {
+        await setField(`appearance.${key}`, value, 'grove');
+      } catch (err) {
+        applyAppearance(previous);
+        persistAppearance(previous);
+        throw err;
+      }
+    },
     [setField],
-  );
-
-  const resetKey: AppearanceContextValue['resetKey'] = useCallback(
-    (key) => resetField(`appearance.${key}`),
-    [resetField],
-  );
-
-  // Promote the WHOLE appearance block to project — single atomic write +
-  // local-clear via promoteField, which already does both steps.
-  const saveAllAsProject = useCallback(
-    () => promoteField('appearance'),
-    [promoteField],
-  );
-
-  // Reset all appearance overrides by clearing the entire local subtree.
-  const resetAll = useCallback(
-    () => resetField('appearance'),
-    [resetField],
   );
 
   const value = useMemo<AppearanceContextValue>(
     () => ({
       effective,
-      local: localAppearance,
       set,
-      resetKey,
-      saveAllAsProject,
-      resetAll,
     }),
-    [effective, localAppearance, set, resetKey, saveAllAsProject, resetAll],
+    [effective, set],
   );
 
   return (

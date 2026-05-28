@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { usePowerQuery } from './use-power-query';
 
 export interface ProgressState {
   status: 'running' | 'completed' | 'failed';
@@ -10,10 +10,11 @@ export interface ProgressState {
 }
 
 export function useProgress(token: string | null) {
-  return useQuery<ProgressState>({
+  return usePowerQuery<ProgressState>({
     queryKey: ['progress', token],
     queryFn: ({ signal }) => fetchJson(`/progress/${token}`, { signal }),
     enabled: !!token,
+    pollCategory: 'realtime',
     refetchInterval: (query) => {
       const data = query.state.data;
       if (data?.status === 'completed' || data?.status === 'failed') return false;

@@ -48,13 +48,14 @@ function buildStallingHeadersResponse(): Promise<Response> {
   return new Promise(() => {});
 }
 
-function buildIdleStreamResponse(): Response {
+function buildIdleStreamResponse(options: { neverResolveCancel?: boolean } = {}): Response {
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(new TextEncoder().encode('first'));
       // Then go silent — never closes, never enqueues. The wrapper's
       // idle watchdog must abort.
     },
+    cancel: options.neverResolveCancel ? () => new Promise(() => {}) : undefined,
   });
   return new Response(body, { status: 200 });
 }
@@ -133,6 +134,7 @@ describe('createInstrumentedFetch', () => {
       component: 'test.idle',
       logger,
       idleTimeoutMs: 60,
+      refIdleWatchdog: true,
     });
     const response = await fetchFn('http://example.test/api/drip');
 
@@ -147,6 +149,31 @@ describe('createInstrumentedFetch', () => {
 
     const stalls = logs.filter((l) => l.kind === LOG_KINDS.FETCH_STALL);
     expect(stalls.length).toBe(1);
+  });
+
+  it('aborts mid-stream even when upstream cancel never resolves', async () => {
+    const { logger } = captureLogger();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => buildIdleStreamResponse({ neverResolveCancel: true })),
+    );
+
+    const fetchFn = createInstrumentedFetch({
+      component: 'test.idle.stubborn-cancel',
+      logger,
+      idleTimeoutMs: 60,
+      refIdleWatchdog: true,
+    });
+    const response = await fetchFn('http://example.test/api/drip');
+
+    let caught: unknown;
+    try {
+      await response.text();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FetchStallError);
+    expect((caught as FetchStallError).kind).toBe('idle-timeout');
   });
 
   it('honors the caller-supplied AbortSignal without misclassifying as stall', async () => {

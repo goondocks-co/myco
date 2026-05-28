@@ -5,6 +5,7 @@ import { GitIdentityPill } from '../components/ui/git-identity-pill';
 import { DaemonStatusPill } from '../components/ui/daemon-status-pill';
 import { CortexStatusPill } from '../components/ui/cortex-status-pill';
 import { useGitIdentity } from '../hooks/use-git-identity';
+import { useProjectPath } from '../hooks/use-project-selection';
 
 const ROUTE_LABELS: Record<string, string> = {
   '/': 'Dashboard',
@@ -56,6 +57,7 @@ export function Topbar({
   const location = useLocation();
   const trail = breadcrumbFor(location.pathname);
   const gitIdentity = useGitIdentity();
+  const cortexPath = useProjectPath('/cortex');
 
   return (
     <header
@@ -86,12 +88,13 @@ export function Topbar({
         </kbd>
       </button>
 
-      <DaemonStatusPill />
-      <CortexStatusPill />
+      <DaemonStatusPill to="/settings?configSection=update#update" />
+      <CortexStatusPill to={cortexPath} />
       <GitIdentityPill
         data={gitIdentity.data}
         isPending={gitIdentity.isPending}
         isError={gitIdentity.isError}
+        to="/settings?configSection=release-provenance#release-provenance"
       />
 
       <button

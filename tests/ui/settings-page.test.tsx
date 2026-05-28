@@ -217,11 +217,11 @@ if (typeof Element !== 'undefined' && !(Element.prototype as { scrollIntoView?: 
 const { default: Settings } = await import('../../packages/myco/ui/src/pages/Settings');
 const { SETTINGS_GROUPS } = await import('../../packages/myco/ui/src/settings/manifest');
 
-function renderPage() {
+function renderPage(initialRoute = '/settings') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialRoute]}>
         <Settings />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -301,6 +301,18 @@ describe('Unified Settings page', () => {
     expect(tocBtn).toBeTruthy();
     if (tocBtn) fireEvent.click(tocBtn);
     expect(scrollSpy).toHaveBeenCalled();
+  });
+
+  it('scrolls to a settings section from configSection deep links', async () => {
+    const originalScroll = Element.prototype.scrollIntoView;
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    renderPage('/settings?configSection=update#update');
+
+    await waitFor(() => {
+      expect(scrollSpy).toHaveBeenCalled();
+    });
+    Element.prototype.scrollIntoView = originalScroll;
   });
 
   it('toggling a manifest-driven field calls writeField with correct scope', async () => {

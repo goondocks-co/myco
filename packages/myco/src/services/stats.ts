@@ -11,7 +11,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
 import { DIGEST_TIERS } from '@myco/constants.js';
 import { readDaemonState, resolveDaemonServiceState } from '@myco/daemon/service-state.js';
-import { getRuntimeOrigin, type RuntimeOrigin } from '@myco/daemon/update-checker.js';
+import { getRuntimeOrigin, getRuntimeVersionLabel, type RuntimeOrigin } from '@myco/daemon/update-checker.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -38,6 +38,7 @@ export interface V2Stats {
     pid: number;
     port: number;
     version: string;
+    version_label: string;
     uptime_seconds: number;
     active_sessions: string[];
     /** How the daemon binary was dispatched. UI uses this to render a sidebar badge. */
@@ -199,6 +200,7 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
         pid: daemonPid,
         port: daemonPort,
         version: daemonVersion,
+        version_label: getRuntimeVersionLabel(vaultDir, daemonVersion),
         uptime_seconds: daemonUptimeSeconds,
         active_sessions: active_session_ids,
         runtime: getRuntimeOrigin(vaultDir),

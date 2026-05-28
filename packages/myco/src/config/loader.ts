@@ -62,6 +62,7 @@ function stripLegacyProjectFields(
     ['maintenance'],
     ['embedding', 'run_in_deep_sleep'],
     ['agent', 'scheduled_tasks_active_window_days'],
+    ['appearance'],
     ['team'],
   ];
   const groveTierKeys = new Set(GROVE_TIER_FIELDS.map((seg) => seg.join('.')));
@@ -244,6 +245,7 @@ function migrateLegacyProjectFields(
     tryMove(['maintenance'], ['maintenance']);
     tryMove(['embedding', 'run_in_deep_sleep'], ['embedding', 'run_in_deep_sleep']);
     tryMove(['agent', 'scheduled_tasks_active_window_days'], ['agent', 'scheduled_tasks_active_window_days']);
+    tryMove(['appearance'], ['appearance']);
     tryMove(['team'], ['team']);
 
     if (groveDirty) {
@@ -540,6 +542,37 @@ export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
   return doc as Partial<MycoConfig>;
 }
 
+export function migrateLegacyLocalAppearanceToGrove(
+  vaultDir: string,
+  groveId: string | null,
+  mycoHome: string = resolveMycoHome(),
+): void {
+  if (!groveId) return;
+  const filePath = localConfigPath(vaultDir);
+  if (!fs.existsSync(filePath)) return;
+
+  const localRaw = readRawYamlDoc(filePath);
+  const appearance = getAtPath(localRaw, ['appearance']);
+  if (appearance === undefined) return;
+
+  const grovePath = resolveGroveConfigPath(groveId, mycoHome);
+  const groveRaw = readRawYamlDoc(grovePath);
+  if (getAtPath(groveRaw, ['appearance']) === undefined) {
+    setAtPath(groveRaw, ['appearance'], appearance);
+    try {
+      const validated = GroveConfigSchema.parse(groveRaw);
+      saveGroveConfig(groveId, validated, mycoHome);
+    } catch {
+      // Keep the no-local-appearance invariant even if the legacy value
+      // cannot be lifted into Grove config.
+    }
+  }
+
+  unsetAtPath(localRaw, ['appearance'], { pruneEmptyParents: true });
+  atomicWriteFileSync(filePath, YAML.stringify(localRaw), 'utf-8');
+  invalidateMergedConfigCache(vaultDir);
+}
+
 /**
  * Cache for `loadMergedConfig` keyed by (vaultDir, mtime+size of myco.yaml,
  * mtime+size of local.yaml). The merge involves two YAML parses, two
@@ -658,6 +691,7 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
     migrateTiers: true,
   });
 
+  migrateLegacyLocalAppearanceToGrove(vaultDir, groveId, mycoHome);
   const machineRaw = readRawYamlDoc(machinePath);
   const groveRaw = grovePath ? readRawYamlDoc(grovePath) : {};
   const local = loadLocalConfig(vaultDir);

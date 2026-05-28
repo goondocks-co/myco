@@ -60,6 +60,11 @@ export interface InstrumentedFetchOptions {
    *  streamed response. Disable only in tests that need deterministic
    *  back-to-back chunks. */
   yieldBetweenChunks?: boolean;
+  /** Whether the idle watchdog timer should keep the event loop alive.
+   *  Defaults to false so unconsumed response bodies do not pin short-lived
+   *  processes. Tests can enable this to exercise the watchdog in a bare Bun
+   *  process with no daemon/server handles. */
+  refIdleWatchdog?: boolean;
   /** Optional clock override (tests). */
   now?: () => number;
 }
@@ -74,6 +79,7 @@ interface ResolvedOptions {
   idleTimeoutMs: number;
   totalTimeoutMs: number | undefined;
   yieldBetweenChunks: boolean;
+  refIdleWatchdog: boolean;
   now: () => number;
 }
 
@@ -86,6 +92,7 @@ function resolveOptions(options: InstrumentedFetchOptions): ResolvedOptions {
     idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
     totalTimeoutMs: options.totalTimeoutMs,
     yieldBetweenChunks: options.yieldBetweenChunks ?? true,
+    refIdleWatchdog: options.refIdleWatchdog ?? false,
     now: options.now ?? Date.now,
   };
 }
@@ -319,7 +326,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
         ));
       }
     }, options.idleTimeoutMs);
-    watchdog.unref?.();
+    if (!options.refIdleWatchdog) watchdog.unref?.();
   };
 
   const disarmWatchdog = () => {
@@ -332,14 +339,21 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const reader = body.getReader();
+      let rejectPendingRead: ((reason: unknown) => void) | null = null;
+      const abortRead = new Promise<never>((_, reject) => {
+        rejectPendingRead = reject;
+      });
       // Forward any abort source (idle watchdog, total-timeout, caller
       // signal) to the inner reader. Without this, `reader.read()` blocks
       // indefinitely while the upstream sends nothing, even after our
       // own watchdog has set `idleAbort` — the reader doesn't observe
-      // signals on its own. Cancelling the reader causes the pending
-      // read promise to reject with the supplied reason.
+      // signals on its own. Some runtimes do not reliably wake a pending
+      // read from `reader.cancel()`, so race the read with an explicit
+      // abort rejection as the authoritative wake-up path.
       const cancelOnAbort = () => {
-        try { void reader.cancel(callerSignal.reason); } catch { /* ignore */ }
+        const reason = callerSignal.reason ?? new Error('Aborted');
+        rejectPendingRead?.(reason);
+        try { void reader.cancel(reason); } catch { /* ignore */ }
       };
       if (callerSignal.aborted) {
         cancelOnAbort();
@@ -353,7 +367,10 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
           if (callerSignal.aborted) {
             throw callerSignal.reason ?? new Error('Aborted');
           }
-          const { done, value } = await reader.read();
+          const { done, value } = await Promise.race([
+            reader.read(),
+            abortRead,
+          ]);
           if (callerSignal.aborted) {
             // Reader was cancelled mid-read. The read may return
             // `{ done: true }` quietly when cancelled — turn that into a
@@ -382,7 +399,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
         onAbort(err);
         try { controller.error(err); } catch { /* already errored */ }
         try { reader.releaseLock(); } catch { /* ignore */ }
-        try { await body.cancel(err); } catch { /* ignore */ }
+        try { void body.cancel(err).catch(() => {}); } catch { /* ignore */ }
       }
     },
     cancel(reason) {

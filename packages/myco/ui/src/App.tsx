@@ -18,6 +18,7 @@ import Onboarding from './pages/Onboarding';
 import Groves from './pages/Groves';
 import { useGroves } from './hooks/use-groves';
 import { GlobalSelectionBoundary, ProjectSelectionBoundary } from './hooks/use-project-selection';
+import { AppearanceProvider } from './providers/appearance';
 import {
   defaultSelection,
   findSelection,
@@ -31,7 +32,15 @@ export default function App() {
     <ToastViewport />
     <Routes>
       <Route path="/" element={<RootRedirect />} />
-      <Route element={<GlobalSelectionBoundary><Layout /></GlobalSelectionBoundary>}>
+      <Route
+        element={(
+          <GlobalSelectionBoundary>
+            <AppearanceProvider>
+              <Layout />
+            </AppearanceProvider>
+          </GlobalSelectionBoundary>
+        )}
+      >
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/groves" element={<Groves />} />
         <Route path="/symbionts" element={<Symbionts />} />
@@ -243,13 +252,17 @@ function SettingsRoute() {
   if (selection) {
     return (
       <ProjectSelectionBoundary selection={selection}>
-        <Settings />
+        <AppearanceProvider>
+          <Settings />
+        </AppearanceProvider>
       </ProjectSelectionBoundary>
     );
   }
   return (
     <GlobalSelectionBoundary>
-      <Settings />
+      <AppearanceProvider>
+        <Settings />
+      </AppearanceProvider>
     </GlobalSelectionBoundary>
   );
 }
@@ -263,7 +276,9 @@ function ProjectScopedLayout() {
   if (!selection) return <Navigate to="/" replace />;
   return (
     <ProjectSelectionBoundary selection={selection}>
-      <Layout />
+      <AppearanceProvider>
+        <Layout />
+      </AppearanceProvider>
     </ProjectSelectionBoundary>
   );
 }
@@ -286,7 +301,9 @@ function GroveScopedLayout() {
   if (!project) return <Navigate to="/onboarding" replace />;
   return (
     <ProjectSelectionBoundary selection={{ grove, project }}>
-      <Layout />
+      <AppearanceProvider>
+        <Layout />
+      </AppearanceProvider>
     </ProjectSelectionBoundary>
   );
 }

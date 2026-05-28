@@ -31,6 +31,7 @@ const fsMocks = {
     err.code = 'ENOENT';
     throw err;
   }),
+  realpathSync: mock((p: unknown) => String(p)),
   writeFileSync: mock(() => undefined),
   mkdirSync: mock(() => undefined),
   unlinkSync: mock(() => undefined),
@@ -92,6 +93,7 @@ import {
   statusFromCache,
   resolveGlobalPrefix,
   getInstalledVersion,
+  getRuntimeVersionLabel,
   detectDevBuild,
   type CachedCheck,
   type UpdateConfig,
@@ -179,6 +181,7 @@ beforeEach(() => {
   // "expect prod" assertion.
   setDevBuildCliEntry(null);
   vi.mocked(fs.existsSync).mockReturnValue(false);
+  vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
   vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
   vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
   vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
@@ -234,6 +237,42 @@ describe('resolveMycoBinary()', () => {
 
   it('returns the literal `myco` fallback when no dev entry is recorded', () => {
     expect(resolveMycoBinary()).toBe('myco');
+  });
+});
+
+describe('getRuntimeVersionLabel()', () => {
+  it('uses the protocol version for stable runtimes', () => {
+    expect(getRuntimeVersionLabel('/vault/.myco', '0.27.19')).toBe('0.27.19');
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it('describes dev runtimes from the nearest git release tag', () => {
+    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
+    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
+    vi.mocked(fs.existsSync).mockImplementation((p) => p === '/repo/.git');
+    vi.mocked(execFileSync).mockImplementation((cmd, args) => {
+      expect(cmd).toBe('git');
+      expect(args).toEqual([
+        '-C',
+        '/repo',
+        'describe',
+        '--tags',
+        '--match',
+        'v[0-9]*',
+        '--always',
+        '--dirty',
+      ]);
+      return 'v0.18.1-244-g63fe75a5-dirty\n';
+    });
+
+    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.0')).toBe('v0.18.1-244-g63fe75a5-dirty');
+  });
+
+  it('falls back to a dev-suffixed protocol version when git metadata is unavailable', () => {
+    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.1')).toBe('0.25.1+dev');
   });
 });
 
