@@ -48,18 +48,18 @@ Cost-tuning is a discipline, not a single trick. The same task can cost $0.40 or
 
 ## Pattern 2b: `required: true` for Phases the Orchestrator Can't Plan For
 
-**Problem.** The orchestrator runs once at the start of a task with only pre-planning context (configured `contextQueries` like `vault_state`, `vault_unprocessed`). It cannot know what later phases will discover. If you let it skip a phase whose need to run depends on a *prior in-run phase's output* — e.g., a digest-write phase that should fire only when digest-assess selects its tier for rotation — the orchestrator's upfront skip silently loses legitimate work.
+**Problem.** The orchestrator runs once at the start of a task with only pre-planning context (configured `contextQueries` like `vault_state`, `vault_unprocessed`). It cannot know what later phases will discover. If you let it skip a phase whose need to run depends on a *prior in-run phase's output*, the orchestrator's upfront skip silently loses legitimate work.
 
-We hit this on the first post-tuning dogfood run: `digest-assess` correctly identified tier 1500 for rotation and gathered the integration material, but `digest-1500` was already in the orchestrator's skip list and never wrote the new digest content.
+**Rule.** A phase is `required: false` (and therefore orchestrator-skippable) **only if its need to run is knowable from pre-planning context** — vault_state, vault_unprocessed counts, the contextQueries block. If the need is only knowable *after* an in-run phase computes it, the dependent phase MUST be `required: true`.
 
-**Rule.** A phase is `required: false` (and therefore orchestrator-skippable) **only if its need to run is knowable from pre-planning context** — vault_state, vault_unprocessed counts, the contextQueries block. If the need is only knowable *after* an in-run phase computes it, the dependent phase MUST be `required: true`. Its own prompt handles the cheap self-skip when the prior phase decides it shouldn't write anything.
+**Preferred follow-up — combine with Pattern 5b**: when a phase is `required: true` *and* an upstream in-run phase decides whether it should actually write anything, also add `gateOnPriorMetadata` so the phase loop short-circuits in zero LLM turns when not selected. The `required: true` keeps the orchestrator from pruning the phase; Pattern 5b keeps the phase from paying haiku turns to self-discover "not me." Both fixes are structural — neither relies on prompt compliance.
 
 **Examples.**
 - `extract`: orchestrator can know there are no unprocessed batches from pre-planning context → `required: false` ok.
 - `consolidate-shortlist`: deterministic preCondition (`has-recent-spore-activity`) makes the decision knowable upfront → `required: false` ok.
-- `digest-1500` / `digest-5000` / `digest-10000`: rotation decision is made *during* the run by `digest-assess` → `required: true` is mandatory. Each prompt self-skips in ~3 haiku turns when not selected (≈ $0.04 per skipped tier per no-work run — bounded, predictable, far cheaper than losing a legitimate digest write).
+- `digest-1500` / `digest-5000` / `digest-10000`: rotation decision is made *during* the run by `digest-assess` → `required: true` AND `gateOnPriorMetadata: { phase: digest-assess, key: selectedTier, equals: <tier> }`. Phase loop skips non-selected tiers in 0 LLM turns / $0.
 
-**Spotting violations.** Look at a recent no-op run's checkpoints. Find phases that appear MISSING from the checkpoint despite their upstream completing. For each, ask: *could the orchestrator have known at planning time whether this phase had work?* If no, the phase must be `required: true`.
+**Spotting violations.** Look at a recent no-op run's checkpoints. Find phases that appear MISSING from the checkpoint despite their upstream completing. For each, ask: *could the orchestrator have known at planning time whether this phase had work?* If no, the phase must be `required: true` (and consider Pattern 5b for the in-run skip).
 
 ---
 
@@ -99,6 +99,24 @@ The LLM phase only validates and acts on the mechanical signals. It does not *di
 **Rule.** Each phase carries its own preCondition. The phase is skipped entirely (no LLM call, no `vault_report`) if its preCondition is false. Phases also self-skip in their prompts as belt-and-suspenders, but the preCondition does the structural gating.
 
 **New preCondition kinds to add when a new stage needs one.** Add to `agent.PreConditionKind`, wire the resolver in `task-scheduling.ts`, document the SQL it runs. Keep them cheap — preConditions run on every scheduler tick.
+
+---
+
+## Pattern 5b: Cross-Phase Skip via `gateOnPriorMetadata`
+
+**Problem.** Fan-out-with-selector tasks have one upstream phase that picks exactly one of N siblings to run (the digest rotation is the canonical example: `digest-assess` picks one of `digest-1500` / `digest-5000` / `digest-10000`). Without a structural skip channel, the non-selected siblings each spend LLM turns reading the upstream summary and self-skipping — and they only self-skip correctly if the prompt regex is bulletproof, which it isn't (we hit this twice: the original wording failed on the `vault_read_digest` skip-shape; the post-review default-to-skip framing fixed it but still cost ~$0.04 per non-selected tier per run).
+
+**Rule.** When an upstream phase makes a runtime selection that decides whether a downstream sibling should run:
+
+1. **Upstream emits the decision via `phase_emit_metadata`** — committed as a structured tool call, not parsed from the LLM's final message. Mark the phase opt-in by adding `phase_emit_metadata` to its `tools:` list.
+2. **Downstream siblings declare `gateOnPriorMetadata: { phase, key, equals }`** — the phase loop checks BEFORE any harness invocation. Non-matching siblings register as `status: 'skipped'` with 0 turns / $0.
+3. **Default-to-skip on missing**: if the upstream forgot to emit (LLM compliance miss), all gated siblings skip. The upstream's prompt MUST make the emit call a required final step.
+
+**Validated at YAML load time.** Forward gates (upstream is in a later wave) and same-wave gates (upstream and gating phase are in the same wave) throw at task load — the gate would silently misfire at runtime because `priorPhaseResults` only carries completed waves.
+
+**Reference applied here.** Vault-evolve's three digest tier phases each declare `gateOnPriorMetadata: { phase: digest-assess, key: selectedTier, equals: <tier-number> }`. `digest-assess` calls `phase_emit_metadata({key: "selectedTier", value: <1500|5000|10000|null>})` as its final step. The prior STOP-FIRST prompt blocks (~25 lines each, three copies) are gone — the gate is the replacement.
+
+**When to use this vs Pattern 4 (mechanical preCondition).** Pattern 4 gates on project-scope SQL (counts in the DB). Pattern 5b gates on a sibling phase's runtime decision (carried via metadata). Use Pattern 4 when the decision is data-shaped and queryable; use Pattern 5b when the decision is computed by an LLM phase earlier in the same run.
 
 ---
 
@@ -163,6 +181,7 @@ Before merging a new task YAML, walk this list explicitly:
 - [ ] **Output discipline.** Every phase prompt ends with an explicit output-length cap.
 - [ ] **Orchestrator awareness.** YAML budgets are the spec; the orchestrator can only narrow them.
 - [ ] **Required-vs-optional discipline.** Every `required: false` phase has its skip-condition knowable from pre-planning context. Phases whose work depends on a prior in-run phase's output are `required: true` (see Pattern 2b).
+- [ ] **Fan-out-with-selector phases use `gateOnPriorMetadata`, not in-prompt STOP-FIRST.** When an upstream phase makes a runtime selection among siblings, the upstream calls `phase_emit_metadata` and the siblings declare `gateOnPriorMetadata` (see Pattern 5b). Don't rely on regex-on-summary for skip discipline — it has failed twice.
 - [ ] **Audit plan.** After shipping, the task's actual cost is measurable via `agent_runs.actual_cost_usd` and per-phase breakdown via `agent_runs.checkpoints`. Capture a wisdom spore with the calibrated numbers.
 
 ---
