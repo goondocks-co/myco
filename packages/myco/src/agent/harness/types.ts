@@ -109,10 +109,22 @@ export interface HarnessScopeRunInput {
  * from "run crashed before doing anything." Turn count lives on
  * `usage.requests` (same invariant as the success-path HarnessExecuteResult).
  */
+/**
+ * Classification of HarnessExecutionError causes. Set by the adapter at
+ * the throw site where the SDK's error type/wording is authoritative.
+ * `'max-turns'` means the configured maxTurns budget was the binding
+ * constraint; `'other'` covers everything else (timeouts, network,
+ * tool execution, etc.). Cost-audit tooling counts `capHit` separately
+ * from generic failures, so this classification matters at the phase
+ * checkpoint level.
+ */
+export type HarnessErrorKind = 'max-turns' | 'other';
+
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;
   sessionRef?: string;
   sessionData?: unknown;
+  kind?: HarnessErrorKind;
 }
 
 /**

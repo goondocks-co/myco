@@ -45,9 +45,14 @@ export interface AgentDefinition {
  * harness call is made — saving the turns that would otherwise be spent
  * discovering "nothing to do" via tool calls.
  */
-export type PhasePreConditionKind =
-  | 'has-recent-spore-activity'
-  | 'has-recent-consolidatable-spores';
+/**
+ * Per-phase preCondition kinds — re-exported from the zero-dep tuple
+ * module. The canonical list lives in `./phase-precondition-kinds.ts`;
+ * adding a new kind there + a matching entry in
+ * `./phase-preconditions.ts` is the whole change.
+ */
+import type { PhasePreConditionKind } from './phase-precondition-kinds.js';
+export type { PhasePreConditionKind };
 
 export interface PhaseDefinition {
   name: string;

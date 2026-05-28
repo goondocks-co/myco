@@ -137,9 +137,20 @@ async function consumeClaudeMessageStream(
     }
   } catch (err) {
     if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
+      const message = errorMessage(err);
+      // The Claude SDK throws with the literal message
+      // "Reached maximum number of turns (N)" when maxTurns is binding.
+      // Classify here so phase-loop doesn't have to regex the message.
+      const kind: 'max-turns' | 'other' = /reached.*maximum number of turns|max\s*turns/i.test(message)
+        ? 'max-turns'
+        : 'other';
       throw new HarnessExecutionError(
-        errorMessage(err),
-        { usage: buildUsage(), ...(options.sessionRef ? { sessionRef: options.sessionRef } : {}) },
+        message,
+        {
+          usage: buildUsage(),
+          ...(options.sessionRef ? { sessionRef: options.sessionRef } : {}),
+          kind,
+        },
         { cause: err },
       );
     }

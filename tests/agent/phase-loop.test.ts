@@ -20,6 +20,7 @@ import type {
   HarnessId,
 } from '@myco/agent/types.js';
 import type { AgentHarness, HarnessExecuteInput, HarnessExecuteResult } from '@myco/agent/harness/types.js';
+import { HarnessExecutionError } from '@myco/agent/harness/types.js';
 import type { RunCheckpointState } from '@myco/agent/executor-state.js';
 
 // ---------------------------------------------------------------------------
@@ -50,13 +51,29 @@ function nextBehavior(): RuntimeBehavior {
   return runtimeBehaviors.length > 0 ? runtimeBehaviors.shift()! : defaultRuntimeBehavior;
 }
 
+/**
+ * Mirror the real claude.ts adapter's throw shape so capHit classification
+ * tests exercise the real code path. The adapter wraps errors that happened
+ * after some usage was recorded as HarnessExecutionError with a `kind`
+ * field; phase-loop reads `kind === 'max-turns'` to set capHit.
+ */
+function throwLikeAdapter(message: string): never {
+  const kind: 'max-turns' | 'other' = /reached.*maximum number of turns|max\s*turns/i.test(message)
+    ? 'max-turns'
+    : 'other';
+  throw new HarnessExecutionError(
+    message,
+    { usage: DEFAULT_USAGE, kind },
+  );
+}
+
 const fakeRuntime: AgentHarness = {
   id: 'claude-sdk' as HarnessId,
   async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     capturedExecuteInputs.push(input);
     const behavior = nextBehavior();
     if (behavior.kind === 'error') {
-      throw new Error(behavior.message ?? 'runtime error');
+      throwLikeAdapter(behavior.message ?? 'runtime error');
     }
     if (behavior.kind === 'abort') {
       const c = input.abortController;

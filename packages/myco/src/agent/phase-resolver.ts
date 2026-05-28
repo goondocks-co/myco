@@ -19,6 +19,7 @@ import type {
   PhaseDefinition,
   ProviderConfig,
   ReasoningLevel,
+  RunLogger,
   RunOptions,
 } from './types.js';
 
@@ -94,6 +95,7 @@ export function resolvePhaseExecution(
   config: EffectiveConfig,
   provider: ProviderConfig | undefined,
   phaseProviderOverrides?: MycoYamlPhaseOverrides,
+  logger?: RunLogger,
 ): { reasoningLevel: ReasoningLevel | undefined; model: string; maxTurns: number; provider: ProviderConfig | undefined } {
   const runPhaseOverride = options?.executionOverrides?.phases?.[phase.name];
   const topOverride = options?.executionOverrides;
@@ -135,6 +137,28 @@ export function resolvePhaseExecution(
   const effectiveMaxTurns = runPhaseOverride?.maxTurns
     ?? mycoYamlPhase?.maxTurns
     ?? phase.maxTurns;
+
+  // grove.yaml is an explicit escape hatch — it CAN widen past the YAML
+  // default and past the orchestrator's hard cap (which only clamps to
+  // phase.maxTurns). When it does, surface the gap so cost-audit tooling
+  // sees the actual effective budget rather than trusting the YAML
+  // comment or the orchestrator widen-rejected log. Mirrors the "model:
+  // pinning is an escape hatch" framing in the tune-agent-task-cost skill.
+  if (
+    mycoYamlPhase?.maxTurns !== undefined
+    && mycoYamlPhase.maxTurns > phase.maxTurns
+    && runPhaseOverride?.maxTurns === undefined
+  ) {
+    logger?.warn(
+      'agent.phase-resolver.grove-widen',
+      `Phase "${phase.name}": grove.yaml maxTurns ${mycoYamlPhase.maxTurns} > YAML default ${phase.maxTurns}. The orchestrator hard cap protects the YAML default; this override is the explicit escape hatch.`,
+      {
+        phase: phase.name,
+        groveMaxTurns: mycoYamlPhase.maxTurns,
+        yamlMaxTurns: phase.maxTurns,
+      },
+    );
+  }
 
   return {
     reasoningLevel: effectiveReasoning,

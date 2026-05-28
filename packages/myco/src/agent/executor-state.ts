@@ -84,12 +84,18 @@ export function checkpointResultsForResume(
 ): PhaseResult[] {
   if (!config.phases) return [];
   const order = new Map(config.phases.map((phase, index) => [phase.name, index]));
+  // Resume preserves BOTH completed and skipped phases as decisions.
+  // Re-evaluating a skipped phase on resume would let intervening state
+  // change (e.g. embeddings settling, new spores) flip the gate, producing
+  // a different downstream context than the original attempt — breaking
+  // the invariant that a resumed run completes the same work the first
+  // attempt started.
   return Object.values(checkpointState.phases)
-    .filter((phase) => phase.status === 'completed')
+    .filter((phase) => phase.status === 'completed' || phase.status === 'skipped')
     .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
     .map((phase) => buildPhaseResult({
       name: phase.name,
-      status: 'completed',
+      status: phase.status === 'skipped' ? 'skipped' : 'completed',
       summary: phase.summary ?? '',
       turnsUsed: phase.turnsUsed,
       tokensUsed: phase.tokensUsed,

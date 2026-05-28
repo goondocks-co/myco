@@ -204,3 +204,81 @@ describe('resolvePhaseExecution — maxTurns chain (regression guard)', () => {
     expect(result.maxTurns).toBe(100);
   });
 });
+
+describe('resolvePhaseExecution — grove.yaml widen warning', () => {
+  function captureLogger() {
+    const warn = (..._args: unknown[]) => { (warn as unknown as { calls: unknown[][] }).calls.push(_args); };
+    (warn as unknown as { calls: unknown[][] }).calls = [];
+    return {
+      info: () => {},
+      debug: () => {},
+      warn,
+      error: () => {},
+    };
+  }
+
+  it('warns when grove.yaml maxTurns exceeds YAML default', () => {
+    const yamlOverrides: MycoYamlPhaseOverrides = { p: { maxTurns: 200 } };
+    const logger = captureLogger();
+    resolvePhaseExecution(
+      makePhase({ maxTurns: 35 }),
+      undefined,
+      makeConfig(),
+      SONNET_MAP_PROVIDER,
+      yamlOverrides,
+      logger,
+    );
+    const calls = (logger.warn as unknown as { calls: unknown[][] }).calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe('agent.phase-resolver.grove-widen');
+    expect(calls[0][1]).toContain('200');
+    expect(calls[0][1]).toContain('35');
+  });
+
+  it('does not warn when grove.yaml narrows below YAML default', () => {
+    const yamlOverrides: MycoYamlPhaseOverrides = { p: { maxTurns: 10 } };
+    const logger = captureLogger();
+    resolvePhaseExecution(
+      makePhase({ maxTurns: 35 }),
+      undefined,
+      makeConfig(),
+      SONNET_MAP_PROVIDER,
+      yamlOverrides,
+      logger,
+    );
+    expect((logger.warn as unknown as { calls: unknown[][] }).calls.length).toBe(0);
+  });
+
+  it('does not warn when grove.yaml matches YAML default', () => {
+    const yamlOverrides: MycoYamlPhaseOverrides = { p: { maxTurns: 35 } };
+    const logger = captureLogger();
+    resolvePhaseExecution(
+      makePhase({ maxTurns: 35 }),
+      undefined,
+      makeConfig(),
+      SONNET_MAP_PROVIDER,
+      yamlOverrides,
+      logger,
+    );
+    expect((logger.warn as unknown as { calls: unknown[][] }).calls.length).toBe(0);
+  });
+
+  it('does not warn when a runtime override is also present (suppresses the grove-vs-yaml signal)', () => {
+    // Runtime overrides outrank both — the user is explicitly choosing a
+    // value for this run. The grove-widen warning would be noise here.
+    const yamlOverrides: MycoYamlPhaseOverrides = { p: { maxTurns: 200 } };
+    const options: RunOptions = {
+      executionOverrides: { phases: { p: { maxTurns: 50 } } },
+    } as RunOptions;
+    const logger = captureLogger();
+    resolvePhaseExecution(
+      makePhase({ maxTurns: 35 }),
+      options,
+      makeConfig(),
+      SONNET_MAP_PROVIDER,
+      yamlOverrides,
+      logger,
+    );
+    expect((logger.warn as unknown as { calls: unknown[][] }).calls.length).toBe(0);
+  });
+});

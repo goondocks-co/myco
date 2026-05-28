@@ -169,11 +169,15 @@ const MapPhaseSinkSchema = z.object({
   argMap: z.record(z.string(), z.string()).default({}),
 });
 
-/** Phase-level preCondition kinds. See PhasePreConditionKind in types.ts. */
-const PhasePreConditionSchema = z.enum([
-  'has-recent-spore-activity',
-  'has-recent-consolidatable-spores',
-]);
+/**
+ * Phase-level preCondition kinds. Sourced from the zero-dep tuple module
+ * so codegen (which runs in Node and can't load bun:sqlite) doesn't
+ * transitively pull in the DB layer through the resolver. Adding a new
+ * kind in phase-precondition-kinds.ts automatically extends both the
+ * Zod enum and the TypeScript union.
+ */
+import { PHASE_PRECONDITION_KINDS } from './phase-precondition-kinds.js';
+const PhasePreConditionSchema = z.enum(PHASE_PRECONDITION_KINDS);
 
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({

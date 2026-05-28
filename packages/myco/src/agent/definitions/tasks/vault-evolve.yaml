@@ -425,18 +425,27 @@ phases:
     prompt: |
       ## STOP-FIRST CHECK (turn 1 — do this before anything else)
 
-      Read the prior `digest-assess` phase summary in your context. Find
-      the per-tier directives line for tier 10000. It will say either
-      `10000: UPDATE` or `10000: SKIP`.
+      Default to SKIP. Only proceed past this section if you find
+      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
+      that tier 10000 was selected this run.
 
-      **If you see `10000: SKIP` — or you see "Chosen tier for this run:"
-      followed by anything OTHER than `10000` — you MUST stop now.**
-      Do not call `vault_read_digest`. Do not call `vault_search_semantic`.
-      Do not call `vault_write_digest`. Call `vault_report` with action
-      "skip" and reason "tier 10000 not selected this rotation", then finish.
+      Affirmative evidence means BOTH of:
+      - The summary contains the literal string `Chosen tier for this run: 10000`
+        (digit 1-0-0-0-0, not another tier).
+      - AND the per-tier directives section lists `10000: UPDATE` (not
+        `10000: SKIP`).
 
-      Only proceed past this line if digest-assess explicitly selected
-      tier 10000 for this run.
+      If you cannot find both of those, you MUST stop now. This includes:
+      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
+        "no rotation", "no new intelligence material this run") and never
+        emitted per-tier directives.
+      - digest-assess selected a different tier (5000 or 1500).
+      - The summary is ambiguous and you cannot tell.
+
+      On STOP: do not call `vault_read_digest`. Do not call
+      `vault_search_semantic`. Do not call `vault_write_digest`. Call
+      `vault_report` with action "skip" and reason "tier 10000 not selected
+      this rotation", then finish.
 
       ## If you ARE the selected tier
 
@@ -479,18 +488,27 @@ phases:
     prompt: |
       ## STOP-FIRST CHECK (turn 1 — do this before anything else)
 
-      Read the prior `digest-assess` phase summary in your context. Find
-      the per-tier directives line for tier 5000. It will say either
-      `5000: UPDATE` or `5000: SKIP`.
+      Default to SKIP. Only proceed past this section if you find
+      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
+      that tier 5000 was selected this run.
 
-      **If you see `5000: SKIP` — or you see "Chosen tier for this run:"
-      followed by anything OTHER than `5000` — you MUST stop now.**
-      Do not call `vault_read_digest`. Do not call `vault_search_semantic`.
-      Do not call `vault_write_digest`. Call `vault_report` with action
-      "skip" and reason "tier 5000 not selected this rotation", then finish.
+      Affirmative evidence means BOTH of:
+      - The summary contains the literal string `Chosen tier for this run: 5000`
+        (digit 5-0-0-0, not another tier).
+      - AND the per-tier directives section lists `5000: UPDATE` (not
+        `5000: SKIP`).
 
-      Only proceed past this line if digest-assess explicitly selected
-      tier 5000 for this run.
+      If you cannot find both of those, you MUST stop now. This includes:
+      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
+        "no rotation", "no new intelligence material this run") and never
+        emitted per-tier directives.
+      - digest-assess selected a different tier (10000 or 1500).
+      - The summary is ambiguous and you cannot tell.
+
+      On STOP: do not call `vault_read_digest`. Do not call
+      `vault_search_semantic`. Do not call `vault_write_digest`. Call
+      `vault_report` with action "skip" and reason "tier 5000 not selected
+      this rotation", then finish.
 
       ## If you ARE the selected tier
 
@@ -530,18 +548,26 @@ phases:
     prompt: |
       ## STOP-FIRST CHECK (turn 1 — do this before anything else)
 
-      Read the prior `digest-assess` phase summary in your context. Find
-      the per-tier directives line for tier 1500. It will say either
-      `1500: UPDATE` or `1500: SKIP`.
+      Default to SKIP. Only proceed past this section if you find
+      AFFIRMATIVE evidence in the prior `digest-assess` phase summary
+      that tier 1500 was selected this run.
 
-      **If you see `1500: SKIP` — or you see "Chosen tier for this run:"
-      followed by anything OTHER than `1500` — you MUST stop now.**
-      Do not call `vault_read_digest`. Do not call `vault_write_digest`.
-      Call `vault_report` with action "skip" and reason "tier 1500 not
-      selected this rotation", then finish.
+      Affirmative evidence means BOTH of:
+      - The summary contains the literal string `Chosen tier for this run: 1500`
+        (digit 1-5-0-0, not another tier).
+      - AND the per-tier directives section lists `1500: UPDATE` (not
+        `1500: SKIP`).
 
-      Only proceed past this line if digest-assess explicitly selected
-      tier 1500 for this run.
+      If you cannot find both of those, you MUST stop now. This includes:
+      - digest-assess reported a skip-shape (e.g. "all tiers fresh",
+        "no rotation", "no new intelligence material this run") and never
+        emitted per-tier directives.
+      - digest-assess selected a different tier (10000 or 5000).
+      - The summary is ambiguous and you cannot tell.
+
+      On STOP: do not call `vault_read_digest`. Do not call
+      `vault_write_digest`. Call `vault_report` with action "skip" and
+      reason "tier 1500 not selected this rotation", then finish.
 
       ## If you ARE the selected tier
 

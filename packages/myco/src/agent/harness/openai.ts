@@ -328,9 +328,18 @@ async function runOpenAIAgent(
   } catch (err) {
     const partialRaw = extractPartialRawResponses(err);
     const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+    const message = err instanceof Error ? err.message : String(err);
+    // The OpenAI Agents SDK throws MaxTurnsExceededError when maxTurns is
+    // binding; the constructor name is the most reliable signal. Fall back
+    // to wording match for forward compatibility.
+    const errName = err && typeof err === 'object' ? (err as { constructor?: { name?: string } }).constructor?.name : undefined;
+    const kind: 'max-turns' | 'other' = errName === 'MaxTurnsExceededError'
+      || /max[\s_-]?turns/i.test(message)
+      ? 'max-turns'
+      : 'other';
     throw new HarnessExecutionError(
-      err instanceof Error ? err.message : String(err),
-      { usage, sessionRef: options.sessionRef, sessionData: persistedItems },
+      message,
+      { usage, sessionRef: options.sessionRef, sessionData: persistedItems, kind },
       { cause: err instanceof Error ? err : undefined },
     );
   }

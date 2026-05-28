@@ -54,17 +54,16 @@ import { checkPhasePreCondition } from './phase-preconditions.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 
 /**
- * Detect the SDK's "reached the max-turns budget" error from its message.
- * Used by the catch path to set `capHit: true` on the phase checkpoint so
- * cost-audit tooling can distinguish budget exhaustion from other failures.
+ * Pull the cap-hit classification off a caught error. Returns true when
+ * the harness adapter (claude.ts / openai.ts) authoritatively classified
+ * the error as max-turns at the throw site — adapters know their SDK's
+ * error type and don't have to rely on wording match.
  *
- * Each harness phrases this differently; this matcher is intentionally
- * permissive (case-insensitive) so a future harness wording change doesn't
- * silently drop the classification.
+ * Non-HarnessExecutionError throws (timeouts, abort, runtime crashes)
+ * never classify as cap-hit.
  */
-export function isMaxTurnsError(message: string): boolean {
-  if (!message) return false;
-  return /reached.*maximum number of turns|max\s*turns/i.test(message);
+export function isCapHitError(err: unknown): boolean {
+  return err instanceof HarnessExecutionError && err.telemetry.kind === 'max-turns';
 }
 
 // ---------------------------------------------------------------------------
@@ -152,30 +151,48 @@ export async function executePhase(
   // identically — if the data isn't there, an LLM run can't fabricate it.
   // Counter failure is non-fatal (logged + fall through) so a transient SQL
   // error never stops scheduled work.
-  if (phase.preCondition && ctx.requestContext) {
-    try {
-      const scope = projectScopeFromRequestContext(ctx.requestContext);
-      const result = checkPhasePreCondition(phase.preCondition, scope);
-      if (!result.passed) {
-        logger?.info('agent.phase.skip-precondition', `Phase ${phase.name} skipped: preCondition not met`, {
+  if (phase.preCondition) {
+    if (!ctx.requestContext) {
+      // The gate requires a project scope to query. A caller that builds
+      // a PhaseLoopContext without requestContext (CLI re-run, embedded
+      // test harness, future caller) bypasses the gate by necessity —
+      // but the bypass is silent without this log. Surfacing it loudly
+      // prevents "why did this phase run for $1.50 when there was no
+      // work to do" debugging without forensic traces.
+      logger?.warn(
+        'agent.phase.precondition-no-context',
+        `Phase ${phase.name} declares preCondition "${phase.preCondition}" but no requestContext is available — gate bypassed; phase will run at full LLM cost.`,
+        {
           runId: ctx.runId,
           phase: phase.name,
           preCondition: phase.preCondition,
-          reason: result.reason,
-        });
-        return buildPhaseResult({
-          name: phase.name,
-          status: 'skipped',
-          summary: `Skipped (preCondition "${phase.preCondition}"): ${result.reason}`,
+        },
+      );
+    } else {
+      try {
+        const scope = projectScopeFromRequestContext(ctx.requestContext);
+        const result = checkPhasePreCondition(phase.preCondition, scope);
+        if (!result.passed) {
+          logger?.info('agent.phase.skip-precondition', `Phase ${phase.name} skipped: preCondition not met`, {
+            runId: ctx.runId,
+            phase: phase.name,
+            preCondition: phase.preCondition,
+            reason: result.reason,
+          });
+          return buildPhaseResult({
+            name: phase.name,
+            status: 'skipped',
+            summary: `Skipped (preCondition "${phase.preCondition}"): ${result.reason}`,
+          });
+        }
+      } catch (err) {
+        logger?.warn('agent.phase.precondition-error', `Phase ${phase.name} preCondition check threw — proceeding to run`, {
+          runId: ctx.runId,
+          phase: phase.name,
+          preCondition: phase.preCondition,
+          error: toErrorMessage(err),
         });
       }
-    } catch (err) {
-      logger?.warn('agent.phase.precondition-error', `Phase ${phase.name} preCondition check threw — proceeding to run`, {
-        runId: ctx.runId,
-        phase: phase.name,
-        preCondition: phase.preCondition,
-        error: toErrorMessage(err),
-      });
     }
   }
 
@@ -267,7 +284,7 @@ export async function executePhase(
     const abortReason = abortReasonMessage(ctx.abortController);
     const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
     const errorText = toErrorMessage(err);
-    const capHit = isMaxTurnsError(errorText);
+    const capHit = isCapHitError(err);
     const costData = telemetry
       ? await resolveCost({
           harness: ctx.config.harness,
@@ -364,13 +381,24 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     });
   } catch (err) {
     const reason = toErrorMessage(err);
+    // Same capHit classification as the agent-mode catch — map phases that
+    // exhaust their per-item or overall turn budget must surface to the same
+    // cost-audit telemetry path. Reads HarnessExecutionError.telemetry.kind
+    // set authoritatively at the adapter throw site.
+    const capHit = isCapHitError(err);
+    const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
     logger?.error('agent.map.error', `Map phase "${phase.name}" threw`, {
-      runId: ctx.runId, phase: phase.name, error: reason,
+      runId: ctx.runId, phase: phase.name, error: reason, capHit,
+      allowedMaxTurns: phase.maxTurns ?? null,
     });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
       summary: `Error: ${reason}`,
+      usage: telemetry?.usage,
+      sessionRef: telemetry?.sessionRef,
+      capHit,
+      allowedMaxTurns: phase.maxTurns,
     });
   }
 }
@@ -582,6 +610,7 @@ export async function executePhasedQuery(
         config,
         ctx.taskProviderOverride ?? config.execution?.provider,
         ctx.phaseProviderOverrides,
+        ctx.options?.logger,
       );
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
