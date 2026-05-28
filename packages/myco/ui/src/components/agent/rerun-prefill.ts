@@ -108,9 +108,19 @@ export function buildRerunPrefill(
       const phaseProvider = fromWireProvider(entry.provider);
       const phaseModel = entry.model && entry.model.length > 0 ? entry.model : undefined;
       const phaseMaxTurns = typeof entry.maxTurns === 'number' ? entry.maxTurns : undefined;
-      if (phaseProvider !== undefined || phaseModel !== undefined || phaseMaxTurns !== undefined) {
+      // Tier override added in the cost-tuning work; same coercion as the
+      // top-level reasoningLevel above. Missing this dropped the user's
+      // explicit tier choice on every rerun.
+      const phaseReasoning = coerceReasoning(entry.reasoningLevel);
+      if (
+        phaseProvider !== undefined
+        || phaseModel !== undefined
+        || phaseMaxTurns !== undefined
+        || phaseReasoning !== undefined
+      ) {
         const po: PhaseOverride = {};
         if (phaseProvider) po.provider = phaseProvider;
+        if (phaseReasoning) po.reasoningLevel = phaseReasoning;
         if (phaseModel) po.model = phaseModel;
         if (phaseMaxTurns !== undefined) po.maxTurns = phaseMaxTurns;
         phaseOverrides[phaseName] = po;

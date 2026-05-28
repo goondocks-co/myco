@@ -24,6 +24,13 @@ export interface HarnessToolSurface {
    */
   dryRun?: boolean;
   /**
+   * Per-phase metadata accumulator. Threaded through from the phase loop
+   * to the `phase_emit_metadata` tool so calls land back on the phase
+   * loop's PhaseResult. Optional — absent for map-phase per-item surfaces,
+   * single-query tasks, and anywhere the cross-phase gate is unused.
+   */
+  metadataAccumulator?: Map<string, unknown>;
+  /**
    * Pre-materialized tool list. When set, the harness adapter MUST use
    * these tools as-is rather than rebuilding from `toolNames` via
    * createVaultTools. Required for map-phase mode, which builds a
@@ -109,10 +116,22 @@ export interface HarnessScopeRunInput {
  * from "run crashed before doing anything." Turn count lives on
  * `usage.requests` (same invariant as the success-path HarnessExecuteResult).
  */
+/**
+ * Classification of HarnessExecutionError causes. Set by the adapter at
+ * the throw site where the SDK's error type/wording is authoritative.
+ * `'max-turns'` means the configured maxTurns budget was the binding
+ * constraint; `'other'` covers everything else (timeouts, network,
+ * tool execution, etc.). Cost-audit tooling counts `capHit` separately
+ * from generic failures, so this classification matters at the phase
+ * checkpoint level.
+ */
+export type HarnessErrorKind = 'max-turns' | 'other';
+
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;
   sessionRef?: string;
   sessionData?: unknown;
+  kind?: HarnessErrorKind;
 }
 
 /**

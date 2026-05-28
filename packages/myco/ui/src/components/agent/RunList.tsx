@@ -42,7 +42,7 @@ function RunStatusBadge({ status }: { status: string }) {
   );
 }
 
-function phasePipState(phaseStatus: string): 'done' | 'active' | 'failed' | 'pending' {
+function phasePipState(phaseStatus: string): 'done' | 'active' | 'failed' | 'skipped' | 'pending' {
   switch (phaseStatus) {
     case 'completed':
     case 'complete':
@@ -56,6 +56,8 @@ function phasePipState(phaseStatus: string): 'done' | 'active' | 'failed' | 'pen
     case 'error':
     case 'cancelled':
       return 'failed';
+    case 'skipped':
+      return 'skipped';
     default:
       return 'pending';
   }
@@ -90,6 +92,10 @@ export function RunPhasePips({
               state === 'done' && 'bg-sage',
               state === 'active' && 'animate-pulse bg-gradient-to-r from-sage to-sage/45 shadow-[0_0_4px_color-mix(in_srgb,var(--sage)_50%,transparent)]',
               state === 'failed' && 'bg-terracotta',
+              // Skipped phases are an intentional decision (preCondition gated
+              // out, or orchestrator-skipped). Distinct from `pending` (never
+              // ran) and from `done` (did work) — a muted sage-tinted bar.
+              state === 'skipped' && 'bg-sage/30',
             )}
           />
         );

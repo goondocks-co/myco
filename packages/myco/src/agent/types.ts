@@ -33,6 +33,27 @@ export interface AgentDefinition {
  * run concurrently via `Promise.allSettled()`. Each phase gets its own `query()`
  * call with scoped tools, turn limit, and isolated provider env.
  */
+/**
+ * Per-phase preCondition kinds. Distinct from the daemon's task-level
+ * `PreCondition` enum because phase-level checks run at a different
+ * scope (during a task run, against the pinned project DB) and answer
+ * different questions ("does THIS phase have work?" vs "does the task
+ * have any work at all?").
+ *
+ * The phase-level check is mechanical: deterministic SQL, no LLM turns.
+ * When it returns false, the phase is recorded as `skipped` and no
+ * harness call is made — saving the turns that would otherwise be spent
+ * discovering "nothing to do" via tool calls.
+ */
+/**
+ * Per-phase preCondition kinds — re-exported from the zero-dep tuple
+ * module. The canonical list lives in `./phase-precondition-kinds.ts`;
+ * adding a new kind there + a matching entry in
+ * `./phase-preconditions.ts` is the whole change.
+ */
+import type { PhasePreConditionKind } from './phase-precondition-kinds.js';
+export type { PhasePreConditionKind };
+
 export interface PhaseDefinition {
   name: string;
   prompt: string;
@@ -49,6 +70,29 @@ export interface PhaseDefinition {
   skipPriorContext?: boolean;
   /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
   readOnly?: boolean;
+  /**
+   * Optional mechanical precondition. When set, the phase loop runs the
+   * registered SQL check before composing the prompt; on false the phase
+   * is recorded as `skipped` and the harness is not invoked. Use to
+   * prevent paying for LLM turns that would only discover "no work."
+   */
+  preCondition?: PhasePreConditionKind;
+  /**
+   * Optional cross-phase skip gate. When set, the phase loop reads the
+   * named upstream phase's emitted `metadata[key]` and skips THIS phase
+   * unless it strictly equals `equals`. Runs BEFORE preCondition and
+   * before any harness invocation — zero LLM turns when the gate
+   * mismatches.
+   *
+   * Default-to-skip: missing upstream metadata, missing key, or value
+   * mismatch all skip. The upstream phase must call `phase_emit_metadata`
+   * (and therefore must list it in its `tools:` array).
+   *
+   * The upstream phase MUST be in an earlier wave than this phase —
+   * `priorPhaseResults` only carries completed waves. Forward and
+   * same-wave gates throw at YAML load time.
+   */
+  gateOnPriorMetadata?: PhaseGateOnPriorMetadata;
 
   // --- Map mode (mode === 'map') -------------------------------------------
   /** Phase execution mode. Unset/`agent` = free-form (existing). `map` = drain mode. */
@@ -79,6 +123,41 @@ export interface PhaseResult {
   summary: string; // last assistant message or error
   usage?: RuntimeUsage;
   sessionRef?: string;
+  /**
+   * True when the phase failed because the SDK reported "Reached maximum
+   * number of turns". Set by the phase loop when classifying the error.
+   * Distinct from `status: 'failed'` (any error) so cost-audit tooling
+   * can count budget-exhaustion failures separately from other failures.
+   */
+  capHit?: boolean;
+  /**
+   * Turn budget the SDK was asked to enforce (the value of
+   * `maxTurns` after orchestrator directives + overrides have been
+   * applied). Populated alongside `capHit` so the auditor can compare
+   * the budget the run was given against the budget needed.
+   */
+  allowedMaxTurns?: number;
+  /**
+   * Key→value channel populated by the phase via `phase_emit_metadata`
+   * tool calls. Downstream phases gate on this via
+   * `PhaseDefinition.gateOnPriorMetadata`. Persisted on PhaseCheckpoint
+   * so resumed runs preserve the gate decision.
+   */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Cross-phase skip gate descriptor. See `PhaseDefinition.gateOnPriorMetadata`.
+ * Strict-equality only in v1 — extend to `oneOf`/`notEquals` only when a
+ * real consumer surfaces.
+ */
+export interface PhaseGateOnPriorMetadata {
+  /** Name of the upstream phase whose metadata is the gate signal. */
+  phase: string;
+  /** Key in that phase's metadata to inspect. */
+  key: string;
+  /** Skip this phase unless metadata[key] strictly equals this value. */
+  equals: string | number | boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +377,13 @@ export interface TaskSchedule {
    * additive — tasks without an accelerator use intervalSeconds verbatim.
    */
   accelerator?: AcceleratorConfig;
+  /**
+   * Hard ceiling on completed-or-failed runs in the trailing 24 hours per
+   * (grove, project, task) tuple. The accelerator decides cadence within
+   * the day; this caps the day. Omit to leave run frequency bounded only
+   * by `intervalSeconds`.
+   */
+  maxRunsPerDay?: number;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */

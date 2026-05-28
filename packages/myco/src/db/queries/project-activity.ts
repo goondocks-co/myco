@@ -88,6 +88,34 @@ export function getLastCompletedRunsForProject(
   return rows.map((r) => ({ task: r.task, last_completed_seconds: r.last_completed }));
 }
 
+/**
+ * Count completed-or-failed runs of `taskName` for `projectId` whose
+ * `started_at` is at-or-after `sinceSeconds`. Used by the scheduler to
+ * enforce the per-task `maxRunsPerDay` ceiling — the accelerator decides
+ * cadence within the window, this count caps the window.
+ *
+ * Counts terminal runs only; in-flight runs don't count toward the
+ * ceiling (the existing `isTaskRunning` guard already prevents overlap).
+ *
+ * Uses the existing `idx_agent_runs_task_status_started_at` index for
+ * cheap per-tick reads.
+ */
+export function countTaskRunsSince(
+  db: Database,
+  projectId: GroveProjectId,
+  taskName: string,
+  sinceSeconds: number,
+): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) AS n FROM agent_runs
+      WHERE project_id = ?
+        AND task = ?
+        AND status IN ('completed', 'failed')
+        AND started_at >= ?`,
+  ).get(projectId, taskName, sinceSeconds) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
 export interface ProjectActivityWithBacklog {
   /** Most recent session/prompt-batch `created_at`, epoch seconds, or null. */
   last_seconds: number | null;

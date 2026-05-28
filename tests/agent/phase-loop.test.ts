@@ -20,6 +20,7 @@ import type {
   HarnessId,
 } from '@myco/agent/types.js';
 import type { AgentHarness, HarnessExecuteInput, HarnessExecuteResult } from '@myco/agent/harness/types.js';
+import { HarnessExecutionError } from '@myco/agent/harness/types.js';
 import type { RunCheckpointState } from '@myco/agent/executor-state.js';
 
 // ---------------------------------------------------------------------------
@@ -50,13 +51,29 @@ function nextBehavior(): RuntimeBehavior {
   return runtimeBehaviors.length > 0 ? runtimeBehaviors.shift()! : defaultRuntimeBehavior;
 }
 
+/**
+ * Mirror the real claude.ts adapter's throw shape so capHit classification
+ * tests exercise the real code path. The adapter wraps errors that happened
+ * after some usage was recorded as HarnessExecutionError with a `kind`
+ * field; phase-loop reads `kind === 'max-turns'` to set capHit.
+ */
+function throwLikeAdapter(message: string): never {
+  const kind: 'max-turns' | 'other' = /reached.*maximum number of turns|max\s*turns/i.test(message)
+    ? 'max-turns'
+    : 'other';
+  throw new HarnessExecutionError(
+    message,
+    { usage: DEFAULT_USAGE, kind },
+  );
+}
+
 const fakeRuntime: AgentHarness = {
   id: 'claude-sdk' as HarnessId,
   async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     capturedExecuteInputs.push(input);
     const behavior = nextBehavior();
     if (behavior.kind === 'error') {
-      throw new Error(behavior.message ?? 'runtime error');
+      throwLikeAdapter(behavior.message ?? 'runtime error');
     }
     if (behavior.kind === 'abort') {
       const c = input.abortController;
@@ -87,6 +104,18 @@ const fakeRuntime: AgentHarness = {
 
 mock.module('@myco/agent/harness/index.js', () => ({
   getAgentHarness: () => fakeRuntime,
+}));
+
+// Per-phase preCondition resolver — programmable per test.
+let phasePreConditionResult: { passed: boolean; reason: string } = { passed: true, reason: 'default-pass' };
+mock.module('@myco/agent/phase-preconditions.js', () => ({
+  checkPhasePreCondition: () => phasePreConditionResult,
+}));
+
+// projectScopeFromRequestContext is called only when a requestContext is
+// present; tests that supply one need a non-throwing stub.
+mock.module('@myco/tools/request-context.js', () => ({
+  projectScopeFromRequestContext: () => ({ kind: 'all' as const }),
 }));
 
 // Cost resolution is async but doesn't need real numbers here.
@@ -185,6 +214,7 @@ beforeEach(() => {
   defaultRuntimeBehavior = { kind: 'success' };
   capturedExecuteInputs = [];
   runtimeSupportsSessionResume = false;
+  phasePreConditionResult = { passed: true, reason: 'default-pass' };
 });
 
 // ---------------------------------------------------------------------------
@@ -264,6 +294,95 @@ describe('executePhase', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.summary).toContain('boom');
+  });
+
+  it('records capHit + allowedMaxTurns when runtime hits the max-turns budget', async () => {
+    // Cost-audit tooling distinguishes budget exhaustion from other failures.
+    defaultRuntimeBehavior = {
+      kind: 'error',
+      message: 'Claude Code returned an error result: Reached maximum number of turns (35)',
+    };
+    const ctx = baseContext();
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('extract', { maxTurns: 35 }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.capHit).toBe(true);
+    expect(result.allowedMaxTurns).toBe(35);
+    expect(result.summary).toContain('maximum number of turns');
+  });
+
+  it('does not set capHit on non-budget failures', async () => {
+    defaultRuntimeBehavior = { kind: 'error', message: 'network timeout' };
+    const ctx = baseContext();
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('extract', { maxTurns: 35 }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.capHit).toBeUndefined();
+    // allowedMaxTurns is still recorded on every failure so the audit trail
+    // can show the budget the failure was operating against.
+    expect(result.allowedMaxTurns).toBe(35);
+  });
+
+  it('skips the phase entirely (no harness invocation) when preCondition fails', async () => {
+    phasePreConditionResult = { passed: false, reason: 'Only 1 active spores in last 24h (need ≥3)' };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.summary).toContain('has-recent-spore-activity');
+    expect(result.summary).toContain('Only 1 active spores');
+    expect(capturedExecuteInputs).toHaveLength(0);
+    expect(result.turnsUsed).toBe(0);
+    expect(result.costUsd).toBe(0);
+  });
+
+  it('runs the phase normally when preCondition passes', async () => {
+    phasePreConditionResult = { passed: true, reason: 'plenty of spores' };
+    const ctx = baseContext({
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('silently bypasses the preCondition check when no requestContext is available', async () => {
+    // requestContext-less paths (some test/embedded callers) should still
+    // run — the gate is opt-in, not a hard requirement.
+    phasePreConditionResult = { passed: false, reason: 'should not be consulted' };
+    const ctx = baseContext({ requestContext: undefined });
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'PROMPT',
+      phaseModel: 'claude-sonnet-4',
+      phase: phase('consolidate-shortlist', { preCondition: 'has-recent-spore-activity' }),
+      toolSurface: { agentId: ctx.agentId, runId: ctx.runId, toolNames: [], turnOffset: 0 },
+    });
+    expect(result.status).toBe('completed');
+    expect(capturedExecuteInputs).toHaveLength(1);
   });
 
   it('reports abort reason when the run is aborted mid-execution', async () => {
@@ -377,6 +496,89 @@ describe('executePhasedQuery', () => {
     expect(Object.keys(checkpointState.phases).sort()).toEqual(['a', 'b']);
     expect(checkpointState.phases.a.status).toBe('completed');
     expect(checkpointState.phases.b.status).toBe('completed');
+  });
+
+  it('persists capHit + allowedMaxTurns onto the checkpoint when SDK hits max-turns', async () => {
+    const phases = [phase('a', { maxTurns: 35 })];
+    defaultRuntimeBehavior = {
+      kind: 'error',
+      message: 'Claude Code returned an error result: Reached maximum number of turns (35)',
+    };
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('failed');
+    expect(checkpointState.phases.a.capHit).toBe(true);
+    expect(checkpointState.phases.a.allowedMaxTurns).toBe(35);
+  });
+
+  it('does not set capHit on the checkpoint for non-budget failures', async () => {
+    const phases = [phase('a', { maxTurns: 35 })];
+    defaultRuntimeBehavior = { kind: 'error', message: 'network timeout' };
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('failed');
+    expect(checkpointState.phases.a.capHit).toBeUndefined();
+    // allowedMaxTurns still recorded so audits know the budget the run had.
+    expect(checkpointState.phases.a.allowedMaxTurns).toBe(35);
+  });
+
+  it("persists 'skipped' status on the checkpoint when preCondition fails", async () => {
+    phasePreConditionResult = { passed: false, reason: 'not enough material' };
+    const phases = [
+      phase('a', { preCondition: 'has-recent-spore-activity' }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({
+      config: baseConfig(phases),
+      checkpointState,
+      requestContext: {} as PhaseLoopContext['requestContext'],
+    });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('skipped');
+    expect(capturedExecuteInputs).toHaveLength(0);
+  });
+
+  it('gateOnPriorMetadata skips downstream phase when upstream metadata does not match — zero harness invocations', async () => {
+    // upstream 'a' runs and (in this test scenario) does NOT emit
+    // metadata; downstream 'b' has a gate expecting selectedTier=1
+    // which won't be there. Expect b status='skipped' and only 'a'
+    // hits the harness.
+    const phases = [
+      phase('a'),
+      phase('b', {
+        dependsOn: ['a'],
+        gateOnPriorMetadata: { phase: 'a', key: 'selectedTier', equals: 1 },
+      }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('completed');
+    expect(checkpointState.phases.b.status).toBe('skipped');
+    // Only 'a' invoked the harness — 'b' short-circuited.
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('gateOnPriorMetadata default-to-skip when upstream is missing entirely', async () => {
+    // 'b' gates on a phase that doesn't exist in priorPhaseResults
+    // (load-time validation normally catches this, but the runtime
+    // gate must also default-to-skip rather than fail-open).
+    const phases = [
+      phase('a'),
+      phase('b', {
+        dependsOn: ['a'],
+        // Use 'a' but expect a value 'a' never emits — same default-to-skip path.
+        gateOnPriorMetadata: { phase: 'a', key: 'never-emitted', equals: 'expected' },
+      }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.b.status).toBe('skipped');
+    expect(checkpointState.phases.b.summary).toContain('did not match');
+    expect(checkpointState.phases.b.summary).toContain('missing');
   });
 
   it('invokes persistCheckpoints between waves', async () => {

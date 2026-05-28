@@ -52,6 +52,7 @@ interface FakeContextOptions {
   onTaskError?: ScheduledJobContext['onTaskError'];
   /** Override per-project state lookup. Defaults to always 'idle'. */
   getProjectPowerState?: ScheduledJobContext['getProjectPowerState'];
+  getRecentTaskRunCount?: ScheduledJobContext['getRecentTaskRunCount'];
 }
 
 function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
@@ -69,6 +70,7 @@ function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
     accelerators: opts.accelerators,
     onTaskError: opts.onTaskError,
     getProjectPowerState: opts.getProjectPowerState ?? (() => 'idle'),
+    getRecentTaskRunCount: opts.getRecentTaskRunCount,
   };
 }
 
@@ -646,5 +648,157 @@ describe('computeEffectiveInterval (adaptive cadence tier function)', () => {
     expect(computeEffectiveInterval(600, 0, canopyCfg.thresholds)).toBe(600);
     expect(computeEffectiveInterval(600, 250, canopyCfg.thresholds)).toBe(150);
     expect(computeEffectiveInterval(600, 1000, canopyCfg.thresholds)).toBe(50);
+  });
+});
+
+describe('maxRunsPerDay ceiling', () => {
+  it('dispatches when recent run count is below the ceiling', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: () => 3,
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips dispatch when recent run count is at the ceiling', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: () => 6,
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch when recent run count exceeds the ceiling', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: () => 12,
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('honors the ceiling even when a kick bypasses interval throttling', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 999_999,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: () => 6,
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    kicker.kick('cap-task', { groveId: GROVE_X, projectId: PROJECT_A });
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('falls through to interval throttling when the counter throws', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: () => {
+        throw new Error('boom');
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the ceiling check entirely when the counter is omitted', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        maxRunsPerDay: 6,
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    // No getRecentTaskRunCount provided.
+    const ctx = makeContext({ runTask });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consult the counter when maxRunsPerDay is unset', async () => {
+    const tasks = [
+      makeTask('cap-task', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        // maxRunsPerDay omitted.
+      }),
+    ];
+    const counter = vi.fn(() => 100);
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      getRecentTaskRunCount: counter,
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(counter).not.toHaveBeenCalled();
+    expect(runTask).toHaveBeenCalledTimes(1);
   });
 });

@@ -17,8 +17,8 @@ import {
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
-import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
-import { getLastCompletedRunsForProject } from '@myco/db/queries/project-activity.js';
+import { countUnprocessedSettledBatches, INTELLIGENCE_DEFAULT_ORIGINS } from '@myco/db/queries/batches.js';
+import { countTaskRunsSince, getLastCompletedRunsForProject } from '@myco/db/queries/project-activity.js';
 import { withDatabase } from '@myco/db/client.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
@@ -406,7 +406,9 @@ export async function registerScheduledTasks(
     },
     preConditions: {
       'has-unprocessed-batches': (scope) =>
-        countUnprocessedSettledBatches(toProjectScope(scope.projectId)) > 0,
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId), {
+          origins: INTELLIGENCE_DEFAULT_ORIGINS,
+        }) > 0,
       'has-pending-canopy-rows': (scope) =>
         countPendingCanopyDescribe(null, scope.projectId) > 0,
       'has-active-skills': (scope) =>
@@ -423,7 +425,14 @@ export async function registerScheduledTasks(
       'canopy-pending-describe': (scope, limit) =>
         countPendingCanopyDescribe(null, scope.projectId, limit),
       'unprocessed-settled-batches': (scope, limit) =>
-        countUnprocessedSettledBatches(toProjectScope(scope.projectId), limit),
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId), {
+          limit,
+          origins: INTELLIGENCE_DEFAULT_ORIGINS,
+        }),
+    },
+    getRecentTaskRunCount: (scope, taskName, windowSeconds) => {
+      const sinceSeconds = Math.floor(Date.now() / 1000) - windowSeconds;
+      return countTaskRunsSince(scope.db, scope.projectId, taskName, sinceSeconds);
     },
     onTaskError: (taskName, groveId, projectId, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {

@@ -92,6 +92,16 @@ export interface VaultToolDeps {
   dryRun?: boolean;
   /** Record a turn in the audit trail. Returns the inserted row id when available. */
   recordTurn: (toolName: string, toolInput: unknown) => number | null;
+  /**
+   * Per-phase metadata accumulator. When present, `phase_emit_metadata`
+   * tool calls write key→value pairs here; the phase loop reads it back
+   * after `harness.execute()` returns and attaches it to the PhaseResult
+   * so downstream phases can gate on it via
+   * `PhaseDefinition.gateOnPriorMetadata`. When absent, the tool is a
+   * structural no-op — it still returns success, but values are dropped
+   * (lets the same handler ship before the phase-loop wiring lands).
+   */
+  metadataAccumulator?: Map<string, unknown>;
 }
 
 export function rowProjectIdFromVaultToolDeps(deps: VaultToolDeps): string | null | undefined {

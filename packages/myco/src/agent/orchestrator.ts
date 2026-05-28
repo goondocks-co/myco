@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { extractJson } from '@myco/intelligence/response.js';
-import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
+import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective, RunLogger } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
 import { BUNDLED_AGENT_PROMPTS } from './definitions.generated.js';
 
@@ -199,7 +199,9 @@ export function parseOrchestratorPlan(
  *   excluded from the result.
  * - If the directive says `skip: true` but the phase IS required, it is kept
  *   and a warning is logged.
- * - If the directive provides `maxTurns`, the phase's turn limit is overridden.
+ * - If the directive provides `maxTurns`, the phase's turn limit is reduced
+ *   (clamped to the YAML value — orchestrators may narrow budgets but never
+ *   widen them; see applyNonSkipDirective).
  * - If the directive provides `contextNotes`, they are appended to the phase
  *   prompt under `## Orchestrator Guidance`.
  *
@@ -208,11 +210,14 @@ export function parseOrchestratorPlan(
  *
  * @param phases     - Original phase definitions.
  * @param directives - Directives from the orchestrator's plan.
+ * @param logger     - Optional logger; receives a warning when the orchestrator
+ *                     tries to widen a budget (the attempt is then clamped).
  * @returns Modified phase definitions.
  */
 export function applyDirectives(
   phases: PhaseDefinition[],
   directives: OrchestratorPhaseDirective[],
+  logger?: RunLogger,
 ): PhaseDefinition[] {
   const directiveMap = new Map<string, OrchestratorPhaseDirective>(
     directives.map((d) => [d.name, d]),
@@ -233,13 +238,13 @@ export function applyDirectives(
         console.warn(
           `[orchestrator] Cannot skip required phase "${phase.name}" — keeping it. Reason: ${directive.skipReason ?? 'none given'}`,
         );
-        result.push(applyNonSkipDirective(phase, directive));
+        result.push(applyNonSkipDirective(phase, directive, logger));
       }
       // Non-required phases with skip: true are simply excluded.
       continue;
     }
 
-    result.push(applyNonSkipDirective(phase, directive));
+    result.push(applyNonSkipDirective(phase, directive, logger));
   }
 
   return result;
@@ -251,15 +256,41 @@ export function applyDirectives(
 
 /**
  * Apply non-skip directive fields (maxTurns, contextNotes) to a phase.
+ *
+ * Budget rule (intentional and structural): the orchestrator may narrow a
+ * phase's `maxTurns` but may NEVER widen it beyond the YAML value. The
+ * YAML budget is the spec — turning it into a suggestion produces
+ * unpredictable cost (extract on vault-evolve drifted from 35 turns to
+ * 161 turns this way before the clamp landed). When the orchestrator
+ * tries to widen, we clamp to the YAML value and log a warning so the
+ * attempt is visible to cost-audit tooling.
+ *
+ * The escape hatch is the YAML itself or a `grove.yaml` `taskOverrides`
+ * block — both editable by humans with the budget context the
+ * orchestrator lacks.
  */
 function applyNonSkipDirective(
   phase: PhaseDefinition,
   directive: OrchestratorPhaseDirective,
+  logger?: RunLogger,
 ): PhaseDefinition {
   let updated = { ...phase };
 
   if (directive.maxTurns !== undefined) {
-    updated = { ...updated, maxTurns: directive.maxTurns };
+    const ceiling = phase.maxTurns;
+    const clamped = Math.min(directive.maxTurns, ceiling);
+    if (directive.maxTurns > ceiling) {
+      logger?.warn(
+        'agent.orchestrator.widen-rejected',
+        `Orchestrator tried to widen phase "${phase.name}" maxTurns ${ceiling} → ${directive.maxTurns}; clamped to ${ceiling}`,
+        {
+          phase: phase.name,
+          requested: directive.maxTurns,
+          ceiling,
+        },
+      );
+    }
+    updated = { ...updated, maxTurns: clamped };
   }
 
   if (directive.contextNotes) {

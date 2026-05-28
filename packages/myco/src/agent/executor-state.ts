@@ -12,7 +12,7 @@ import { HARNESS_CLAUDE_SDK } from './types.js';
 
 export interface PhaseCheckpoint {
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   summary?: string;
   turnsUsed?: number;
   tokensUsed?: number;
@@ -23,6 +23,17 @@ export interface PhaseCheckpoint {
   sessionData?: unknown;
   usage?: RuntimeUsage;
   updatedAt: number;
+  /** Set when the phase failed because the SDK hit the turn budget. */
+  capHit?: boolean;
+  /** The maxTurns budget the SDK enforced for this phase (post-overrides). */
+  allowedMaxTurns?: number;
+  /**
+   * Metadata emitted by the phase via `phase_emit_metadata`. Persisted
+   * so a resumed run preserves the same gate decisions for downstream
+   * phases — gates evaluate against this checkpoint, not against a
+   * re-execution of the upstream phase.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface RunCheckpointState {
@@ -80,12 +91,18 @@ export function checkpointResultsForResume(
 ): PhaseResult[] {
   if (!config.phases) return [];
   const order = new Map(config.phases.map((phase, index) => [phase.name, index]));
+  // Resume preserves BOTH completed and skipped phases as decisions.
+  // Re-evaluating a skipped phase on resume would let intervening state
+  // change (e.g. embeddings settling, new spores) flip the gate, producing
+  // a different downstream context than the original attempt — breaking
+  // the invariant that a resumed run completes the same work the first
+  // attempt started.
   return Object.values(checkpointState.phases)
-    .filter((phase) => phase.status === 'completed')
+    .filter((phase) => phase.status === 'completed' || phase.status === 'skipped')
     .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0))
     .map((phase) => buildPhaseResult({
       name: phase.name,
-      status: 'completed',
+      status: phase.status === 'skipped' ? 'skipped' : 'completed',
       summary: phase.summary ?? '',
       turnsUsed: phase.turnsUsed,
       tokensUsed: phase.tokensUsed,
@@ -94,6 +111,7 @@ export function checkpointResultsForResume(
       costData: phase.costData,
       usage: phase.usage,
       sessionRef: phase.sessionRef,
+      metadata: phase.metadata,
     }));
 }
 
@@ -120,11 +138,14 @@ export function buildPhaseResult(input: {
   costSource?: CostSource;
   sessionRef?: string;
   sessionData?: unknown;
+  capHit?: boolean;
+  allowedMaxTurns?: number;
+  metadata?: Record<string, unknown>;
 }): PhaseResult & { sessionData?: unknown } {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
-    sessionRef, sessionData,
+    sessionRef, sessionData, capHit, allowedMaxTurns, metadata,
   } = input;
   return {
     name,
@@ -136,6 +157,9 @@ export function buildPhaseResult(input: {
     ...(usage ? { usage } : {}),
     ...(sessionRef ? { sessionRef } : {}),
     ...(sessionData !== undefined ? { sessionData } : {}),
+    ...(capHit === true ? { capHit: true } : {}),
+    ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     summary,
   };
 }

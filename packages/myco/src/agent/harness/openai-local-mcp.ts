@@ -38,6 +38,7 @@ class LocalVaultMcpServer implements MCPServer {
       requestContext: toolSurface.requestContext,
       embeddingManager: toolSurface.embeddingManager,
       dryRun: toolSurface.dryRun,
+      metadataAccumulator: toolSurface.metadataAccumulator,
     }).filter((tool) => !toolSurface.readOnly || tool.annotations?.readOnlyHint === true);
     this.tools = (nameSet
       ? allTools.filter((tool) => nameSet.has(tool.name))

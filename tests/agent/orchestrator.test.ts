@@ -270,11 +270,49 @@ describe('applyDirectives', () => {
     warnSpy.mockRestore();
   });
 
-  it('applies maxTurns override from directive', () => {
-    const phases = [makePhase({ name: 'extract', maxTurns: 10 })];
-    const directives = [makeDirective({ name: 'extract', skip: false, maxTurns: 25 })];
+  it('narrows maxTurns when directive shrinks the budget', () => {
+    const phases = [makePhase({ name: 'extract', maxTurns: 35 })];
+    const directives = [makeDirective({ name: 'extract', skip: false, maxTurns: 10 })];
     const result = applyDirectives(phases, directives);
-    expect(result[0].maxTurns).toBe(25);
+    expect(result[0].maxTurns).toBe(10);
+  });
+
+  it('clamps maxTurns when directive tries to widen beyond the YAML budget', () => {
+    // Orchestrator-as-narrower invariant: YAML budget is the spec; the
+    // orchestrator may shrink it but never widen. Without the clamp,
+    // vault-evolve's extract phase drifted from 35 to 161 turns this way.
+    const phases = [makePhase({ name: 'extract', maxTurns: 35 })];
+    const directives = [makeDirective({ name: 'extract', skip: false, maxTurns: 200 })];
+    const result = applyDirectives(phases, directives);
+    expect(result[0].maxTurns).toBe(35);
+  });
+
+  it('logs a warning when the orchestrator tries to widen a budget', () => {
+    const phases = [makePhase({ name: 'extract', maxTurns: 35 })];
+    const directives = [makeDirective({ name: 'extract', skip: false, maxTurns: 200 })];
+    const warn = vi.fn();
+    const logger = {
+      info: vi.fn(),
+      debug: vi.fn(),
+      warn,
+      error: vi.fn(),
+    };
+    applyDirectives(phases, directives, logger);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [, msg, meta] = warn.mock.calls[0];
+    expect(msg).toContain('extract');
+    expect(msg).toContain('35');
+    expect(msg).toContain('200');
+    expect(meta).toMatchObject({ phase: 'extract', requested: 200, ceiling: 35 });
+  });
+
+  it('does not log when directive narrows or matches the YAML budget', () => {
+    const phases = [makePhase({ name: 'extract', maxTurns: 35 })];
+    const warn = vi.fn();
+    const logger = { info: vi.fn(), debug: vi.fn(), warn, error: vi.fn() };
+    applyDirectives(phases, [makeDirective({ name: 'extract', skip: false, maxTurns: 10 })], logger);
+    applyDirectives(phases, [makeDirective({ name: 'extract', skip: false, maxTurns: 35 })], logger);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('does not override maxTurns when directive has no maxTurns', () => {
@@ -331,14 +369,15 @@ describe('applyDirectives', () => {
       makePhase({ name: 'digest', maxTurns: 3, required: false }),
     ];
     const directives = [
-      makeDirective({ name: 'extract', skip: false, maxTurns: 20 }),
+      // Narrow within the ceiling — applied as-is.
+      makeDirective({ name: 'extract', skip: false, maxTurns: 7 }),
       makeDirective({ name: 'graph', skip: true }),
       makeDirective({ name: 'digest', skip: false, contextNotes: 'Regenerate all tiers.' }),
     ];
     const result = applyDirectives(phases, directives);
     expect(result).toHaveLength(2);
     expect(result[0].name).toBe('extract');
-    expect(result[0].maxTurns).toBe(20);
+    expect(result[0].maxTurns).toBe(7);
     expect(result[1].name).toBe('digest');
     expect(result[1].prompt).toContain('Regenerate all tiers.');
   });

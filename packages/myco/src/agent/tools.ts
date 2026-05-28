@@ -33,6 +33,7 @@ import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
 import { createReadTools } from './tools/read-tools.js';
 import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
+import { createPhaseMetadataTools, PHASE_METADATA_TOOL_NAMES } from './tools/phase-metadata-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
 import { createCanopyTools } from './tools/canopy-tools.js';
@@ -76,6 +77,14 @@ export interface VaultToolOptions {
    *   - vault_finalize_skill — promotion is a no-op under dry-run
    */
   dryRun?: boolean;
+  /**
+   * Per-phase metadata accumulator. Passed through to the
+   * `phase_emit_metadata` tool's deps so the tool can `set(key, value)`.
+   * The phase loop creates a fresh Map per phase and reads it back after
+   * `harness.execute()` returns. Absent for any caller outside the
+   * phase loop — the tool then no-ops gracefully.
+   */
+  metadataAccumulator?: Map<string, unknown>;
 }
 
 /**
@@ -185,6 +194,8 @@ const WRITE_TOOL_NAMES = new Set([
 
 const OBSERVABILITY_TOOL_NAMES = new Set(['vault_report']);
 
+const PHASE_METADATA_TOOL_NAMES_SET = new Set<string>(PHASE_METADATA_TOOL_NAMES);
+
 const SKILL_TOOL_NAMES = new Set([
   'vault_skill_survey_prepare', 'vault_skill_survey_bundle_decisions',
   'vault_skill_survey_reconciliation_plan',
@@ -229,7 +240,8 @@ export const VAULT_TOOL_COUNT =
   OBSERVABILITY_TOOL_NAMES.size +
   SKILL_TOOL_NAMES.size +
   EXPLORATION_TOOL_NAMES.size +
-  CANOPY_TOOL_NAMES.size;
+  CANOPY_TOOL_NAMES.size +
+  PHASE_METADATA_TOOL_NAMES_SET.size;
 
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
@@ -319,6 +331,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     vaultDir,
     requestContext,
     dryRun,
+    metadataAccumulator,
     onlyNames,
   } = options ?? {};
   const projectId = rowProjectIdFromRequestContext(requestContext);
@@ -383,6 +396,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     requestContext,
     dryRun,
     recordTurn,
+    metadataAccumulator,
   };
 
   // When onlyNames is provided, skip factory calls for groups with no overlap
@@ -394,6 +408,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, EXPLORATION_TOOL_NAMES) ? createExplorationTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, CANOPY_TOOL_NAMES) ? createCanopyTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, PHASE_METADATA_TOOL_NAMES_SET) ? createPhaseMetadataTools(deps) : []),
   ];
 
   return tools.map((toolDef) => {
@@ -649,7 +664,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
 export function createVaultToolServer(
   agentId: string,
   runId: string,
-  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun'>,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator'>,
 ) {
   const tools = createVaultTools(agentId, runId, options);
 
@@ -675,7 +690,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun' | 'metadataAccumulator'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });

@@ -92,6 +92,7 @@ describe('createInstrumentedFetch', () => {
     expect(completes[0].data?.status).toBe(200);
   });
 
+  // Same CI flake mitigation as the idle-timeout tests below.
   it('aborts with FetchStallError when response headers never arrive', async () => {
     const { logs, logger } = captureLogger();
     vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) =>
@@ -121,8 +122,14 @@ describe('createInstrumentedFetch', () => {
 
     const timeoutLogs = logs.filter((l) => l.kind === LOG_KINDS.FETCH_TIMEOUT);
     expect(timeoutLogs.length).toBe(1);
-  });
+  }, 30000);
 
+  // CI flake mitigation: Bun's default 5000ms per-test budget races against
+  // the 60ms watchdog under CI load, even though the watchdog fires within
+  // 60ms locally. Per project_ci_test_flakes_recurring.md, the standing
+  // pattern for these timer-sensitive tests in CI is to grant a generous
+  // wall-clock budget so the watchdog has overwhelming headroom relative
+  // to the timer it's measuring. 30s gives 500× margin over the 60ms target.
   it('aborts mid-stream when chunks stop arriving past idleTimeoutMs', async () => {
     const { logs, logger } = captureLogger();
     vi.stubGlobal(
@@ -149,7 +156,7 @@ describe('createInstrumentedFetch', () => {
 
     const stalls = logs.filter((l) => l.kind === LOG_KINDS.FETCH_STALL);
     expect(stalls.length).toBe(1);
-  });
+  }, 30000);
 
   it('aborts mid-stream even when upstream cancel never resolves', async () => {
     const { logger } = captureLogger();
@@ -174,7 +181,7 @@ describe('createInstrumentedFetch', () => {
     }
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
-  });
+  }, 30000);
 
   it('honors the caller-supplied AbortSignal without misclassifying as stall', async () => {
     const { logs, logger } = captureLogger();

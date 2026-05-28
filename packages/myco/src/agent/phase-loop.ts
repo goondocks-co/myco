@@ -50,6 +50,21 @@ import { aggregateUsage } from './executor-state.js';
 import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
+import { checkPhasePreCondition } from './phase-preconditions.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+
+/**
+ * Pull the cap-hit classification off a caught error. Returns true when
+ * the harness adapter (claude.ts / openai.ts) authoritatively classified
+ * the error as max-turns at the throw site — adapters know their SDK's
+ * error type and don't have to rely on wording match.
+ *
+ * Non-HarnessExecutionError throws (timeouts, abort, runtime crashes)
+ * never classify as cap-hit.
+ */
+export function isCapHitError(err: unknown): boolean {
+  return err instanceof HarnessExecutionError && err.telemetry.kind === 'max-turns';
+}
 
 // ---------------------------------------------------------------------------
 // PhaseLoopContext — parameter object carrying orchestrator state into the
@@ -118,18 +133,105 @@ export interface ExecutePhaseInput {
   provider?: ProviderConfig;
   sessionId?: string;
   sessionData?: unknown;
+  /**
+   * Results from earlier waves. Carried here so the cross-phase
+   * `gateOnPriorMetadata` check can read upstream metadata before the
+   * harness is invoked. (composePhasePrompt also consumes this via the
+   * wave loop, but the gate runs before the prompt is composed so it
+   * must arrive separately.)
+   */
+  priorPhaseResults?: PhaseResult[];
 }
 
 export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
+  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
 
   if (phase.mode === 'map') {
     return runMapPhaseAdapter(input);
   }
 
   const logger = ctx.options?.logger;
+
+  // Cross-phase skip gate — runs FIRST, before preCondition. Reads the
+  // named upstream phase's emitted metadata; skip THIS phase unless the
+  // gate value matches. Default-to-skip: missing upstream, missing key,
+  // or value mismatch all skip. Zero LLM turns when the gate doesn't
+  // match. See PhaseDefinition.gateOnPriorMetadata for the contract.
+  if (phase.gateOnPriorMetadata) {
+    const gate = phase.gateOnPriorMetadata;
+    const upstream = priorPhaseResults?.find((p) => p.name === gate.phase);
+    const actual = upstream?.metadata?.[gate.key];
+    if (actual !== gate.equals) {
+      logger?.info(
+        'agent.phase.skip-gate',
+        `Phase ${phase.name} skipped: gate "${gate.phase}.${gate.key}" expected ${JSON.stringify(gate.equals)}, got ${actual === undefined ? 'missing' : JSON.stringify(actual)}`,
+        {
+          runId: ctx.runId,
+          phase: phase.name,
+          gate,
+          actualMissing: actual === undefined,
+        },
+      );
+      return buildPhaseResult({
+        name: phase.name,
+        status: 'skipped',
+        summary: `Skipped (gate "${gate.phase}.${gate.key}" did not match): expected ${JSON.stringify(gate.equals)}, got ${actual === undefined ? 'missing' : JSON.stringify(actual)}`,
+      });
+    }
+  }
+
+  // Mechanical per-phase preCondition. Runs before harness invocation so a
+  // false check costs zero LLM turns. Required phases respect the check
+  // identically — if the data isn't there, an LLM run can't fabricate it.
+  // Counter failure is non-fatal (logged + fall through) so a transient SQL
+  // error never stops scheduled work.
+  if (phase.preCondition) {
+    if (!ctx.requestContext) {
+      // The gate requires a project scope to query. A caller that builds
+      // a PhaseLoopContext without requestContext (CLI re-run, embedded
+      // test harness, future caller) bypasses the gate by necessity —
+      // but the bypass is silent without this log. Surfacing it loudly
+      // prevents "why did this phase run for $1.50 when there was no
+      // work to do" debugging without forensic traces.
+      logger?.warn(
+        'agent.phase.precondition-no-context',
+        `Phase ${phase.name} declares preCondition "${phase.preCondition}" but no requestContext is available — gate bypassed; phase will run at full LLM cost.`,
+        {
+          runId: ctx.runId,
+          phase: phase.name,
+          preCondition: phase.preCondition,
+        },
+      );
+    } else {
+      try {
+        const scope = projectScopeFromRequestContext(ctx.requestContext);
+        const result = checkPhasePreCondition(phase.preCondition, scope);
+        if (!result.passed) {
+          logger?.info('agent.phase.skip-precondition', `Phase ${phase.name} skipped: preCondition not met`, {
+            runId: ctx.runId,
+            phase: phase.name,
+            preCondition: phase.preCondition,
+            reason: result.reason,
+          });
+          return buildPhaseResult({
+            name: phase.name,
+            status: 'skipped',
+            summary: `Skipped (preCondition "${phase.preCondition}"): ${result.reason}`,
+          });
+        }
+      } catch (err) {
+        logger?.warn('agent.phase.precondition-error', `Phase ${phase.name} preCondition check threw — proceeding to run`, {
+          runId: ctx.runId,
+          phase: phase.name,
+          preCondition: phase.preCondition,
+          error: toErrorMessage(err),
+        });
+      }
+    }
+  }
+
   const harness = getAgentHarness(ctx.config.harness);
   logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
     runId: ctx.runId,
@@ -213,10 +315,13 @@ export async function executePhase(
       costData,
       sessionRef: result.sessionRef,
       sessionData: result.sessionData,
+      metadata: snapshotMetadata(toolSurface),
     });
   } catch (err) {
     const abortReason = abortReasonMessage(ctx.abortController);
     const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
+    const errorText = toErrorMessage(err);
+    const capHit = isCapHitError(err);
     const costData = telemetry
       ? await resolveCost({
           harness: ctx.config.harness,
@@ -232,17 +337,37 @@ export async function executePhase(
       turnsUsed: telemetry?.usage.requests ?? 0,
       tokensUsed: telemetry?.usage.totalTokens ?? 0,
       costUsd: telemetry?.usage.costUsd ?? null,
-      error: abortReason ?? toErrorMessage(err),
+      capHit,
+      allowedMaxTurns: phase.maxTurns ?? null,
+      error: abortReason ?? errorText,
     });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
-      summary: abortReason ? `Error: ${abortReason}` : `Error: ${toErrorMessage(err)}`,
+      summary: abortReason ? `Error: ${abortReason}` : `Error: ${errorText}`,
       usage: telemetry?.usage,
       costData,
       sessionRef: telemetry?.sessionRef,
+      capHit,
+      allowedMaxTurns: phase.maxTurns,
+      // Carry over any metadata the phase emitted before the failure —
+      // a phase may have committed selectedTier before throwing on a
+      // later turn. Downstream gates still see the partial commit.
+      metadata: snapshotMetadata(toolSurface),
     });
   }
+}
+
+/**
+ * Snapshot the per-phase metadata accumulator on the tool surface into a
+ * plain object suitable for PhaseResult.metadata. Returns undefined when
+ * no accumulator was set up (phase doesn't include `phase_emit_metadata`
+ * in its tools list) or no values were committed.
+ */
+function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unknown> | undefined {
+  const accumulator = toolSurface.metadataAccumulator;
+  if (!accumulator || accumulator.size === 0) return undefined;
+  return Object.fromEntries(accumulator);
 }
 
 // ---------------------------------------------------------------------------
@@ -309,13 +434,24 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     });
   } catch (err) {
     const reason = toErrorMessage(err);
+    // Same capHit classification as the agent-mode catch — map phases that
+    // exhaust their per-item or overall turn budget must surface to the same
+    // cost-audit telemetry path. Reads HarnessExecutionError.telemetry.kind
+    // set authoritatively at the adapter throw site.
+    const capHit = isCapHitError(err);
+    const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
     logger?.error('agent.map.error', `Map phase "${phase.name}" threw`, {
-      runId: ctx.runId, phase: phase.name, error: reason,
+      runId: ctx.runId, phase: phase.name, error: reason, capHit,
+      allowedMaxTurns: phase.maxTurns ?? null,
     });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
       summary: `Error: ${reason}`,
+      usage: telemetry?.usage,
+      sessionRef: telemetry?.sessionRef,
+      capHit,
+      allowedMaxTurns: phase.maxTurns,
     });
   }
 }
@@ -490,7 +626,7 @@ export async function executePhasedQuery(
     });
 
     const plan = parseOrchestratorPlan(planResponse.finalText, phases, ctx.options?.logger);
-    effectivePhases = applyDirectives(phases, plan.phases);
+    effectivePhases = applyDirectives(phases, plan.phases, ctx.options?.logger);
     ctx.options?.logger?.debug('agent.orchestrator.plan', 'Orchestrator plan applied', {
       runId,
       reasoning: plan.reasoning,
@@ -527,6 +663,7 @@ export async function executePhasedQuery(
         config,
         ctx.taskProviderOverride ?? config.execution?.provider,
         ctx.phaseProviderOverrides,
+        ctx.options?.logger,
       );
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
@@ -570,6 +707,15 @@ export async function executePhasedQuery(
         updatedAt: epochSeconds(),
       };
 
+      // Allocate a per-phase metadata accumulator only when the phase
+      // opts in by including `phase_emit_metadata` in its tools list.
+      // Absence keeps the toolSurface (and harness adapter chain) shape
+      // identical to what existed before this feature — phases that
+      // don't emit metadata pay zero overhead.
+      const metadataAccumulator = phase.tools?.includes('phase_emit_metadata')
+        ? new Map<string, unknown>()
+        : undefined;
+
       return {
         phase,
         phasePrompt,
@@ -589,6 +735,7 @@ export async function executePhasedQuery(
           readOnly: phase.readOnly,
           embeddingManager: ctx.embeddingManager,
           dryRun: config.dryRun ?? false,
+          metadataAccumulator,
         },
       };
     });
@@ -608,6 +755,9 @@ export async function executePhasedQuery(
           provider: waveInput.phaseProvider,
           sessionId: waveInput.sessionId,
           sessionData: waveInput.sessionData,
+          // Carry prior-wave results so executePhase's gateOnPriorMetadata
+          // check has visibility into upstream emitted metadata.
+          priorPhaseResults: phaseResults,
         }),
       ),
     );
@@ -642,9 +792,14 @@ export async function executePhasedQuery(
     for (const result of waveResults) {
       const priorCheckpoint = state.phases[result.name];
       const fulfilled = fulfilledByName.get(result.name) ?? null;
+      const checkpointStatus = result.status === 'completed'
+        ? 'completed' as const
+        : result.status === 'skipped'
+          ? 'skipped' as const
+          : 'failed' as const;
       state.phases[result.name] = {
         name: result.name,
-        status: result.status === 'completed' ? 'completed' : 'failed',
+        status: checkpointStatus,
         summary: result.summary,
         turnsUsed: result.turnsUsed,
         tokensUsed: result.tokensUsed,
@@ -654,9 +809,20 @@ export async function executePhasedQuery(
         sessionRef: fulfilled?.sessionRef ?? priorCheckpoint?.sessionRef,
         sessionData: fulfilled?.sessionData ?? priorCheckpoint?.sessionData,
         usage: fulfilled?.usage ?? result.usage,
+        ...(result.capHit === true ? { capHit: true } : {}),
+        ...(result.allowedMaxTurns !== undefined ? { allowedMaxTurns: result.allowedMaxTurns } : {}),
+        // Persist cross-phase metadata so a resumed run re-evaluates
+        // downstream gates against the SAME upstream commitment, not a
+        // re-execution of the upstream phase.
+        ...(result.metadata && Object.keys(result.metadata).length > 0
+          ? { metadata: result.metadata }
+          : {}),
         updatedAt: epochSeconds(),
       };
-      if (result.status === 'completed') {
+      // Skipped phases count as satisfied for downstream wave gating —
+      // their dependents shouldn't be blocked waiting on a phase that
+      // intentionally did nothing.
+      if (result.status === 'completed' || result.status === 'skipped') {
         completedPhaseNames.add(result.name);
       }
       phaseResults.push(result);

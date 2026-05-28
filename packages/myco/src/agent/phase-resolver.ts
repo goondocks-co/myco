@@ -19,6 +19,7 @@ import type {
   PhaseDefinition,
   ProviderConfig,
   ReasoningLevel,
+  RunLogger,
   RunOptions,
 } from './types.js';
 
@@ -30,6 +31,14 @@ import type {
 export interface MycoYamlPhaseOverrides {
   [phaseName: string]: {
     provider?: ProviderConfig;
+    /**
+     * Tier override applied at the grove.yaml layer (task config is
+     * grove-scoped). Outranks the YAML phase default but loses to a
+     * runtime override. Resolves through the provider's `reasoning_map`
+     * at execution time — prefer this over `model:` for tier-class
+     * changes.
+     */
+    reasoningLevel?: ReasoningLevel;
     model?: string;
     maxTurns?: number;
   };
@@ -68,11 +77,12 @@ function firstDefined<T>(lookups: Array<() => T | undefined>): T | undefined {
  *      ?? config.model`
  *
  * Reasoning precedence (highest → lowest):
- *   1. `options.executionOverrides.phases[name].reasoningLevel`
- *   2. `phase.reasoningLevel` (task YAML)
- *   3. `options.executionOverrides.reasoningLevel`
- *   4. `config.execution.reasoningLevel`
- *   5. `config.reasoningLevel`
+ *   1. `options.executionOverrides.phases[name].reasoningLevel` — run override
+ *   2. `phaseProviderOverrides[name].reasoningLevel` — grove.yaml per-phase
+ *   3. `phase.reasoningLevel` (task YAML)
+ *   4. `options.executionOverrides.reasoningLevel`
+ *   5. `config.execution.reasoningLevel`
+ *   6. `config.reasoningLevel`
  *
  * maxTurns precedence (highest → lowest):
  *   1. `options.executionOverrides.phases[name].maxTurns`
@@ -85,6 +95,7 @@ export function resolvePhaseExecution(
   config: EffectiveConfig,
   provider: ProviderConfig | undefined,
   phaseProviderOverrides?: MycoYamlPhaseOverrides,
+  logger?: RunLogger,
 ): { reasoningLevel: ReasoningLevel | undefined; model: string; maxTurns: number; provider: ProviderConfig | undefined } {
   const runPhaseOverride = options?.executionOverrides?.phases?.[phase.name];
   const topOverride = options?.executionOverrides;
@@ -98,8 +109,13 @@ export function resolvePhaseExecution(
     () => provider,
   ]);
 
+  // Precedence mirrors the existing maxTurns chain: runtime > grove.yaml
+  // override > YAML default. Putting mycoYamlPhase ABOVE phase.reasoningLevel
+  // is what makes a per-phase tier override (e.g. bump extract from low to
+  // default in grove.yaml) take effect without editing the built-in YAML.
   const effectiveReasoning = firstDefined<ReasoningLevel>([
     () => runPhaseOverride?.reasoningLevel,
+    () => mycoYamlPhase?.reasoningLevel,
     () => phase.reasoningLevel,
     () => topOverride?.reasoningLevel,
     () => config.execution?.reasoningLevel,
@@ -121,6 +137,28 @@ export function resolvePhaseExecution(
   const effectiveMaxTurns = runPhaseOverride?.maxTurns
     ?? mycoYamlPhase?.maxTurns
     ?? phase.maxTurns;
+
+  // grove.yaml is an explicit escape hatch — it CAN widen past the YAML
+  // default and past the orchestrator's hard cap (which only clamps to
+  // phase.maxTurns). When it does, surface the gap so cost-audit tooling
+  // sees the actual effective budget rather than trusting the YAML
+  // comment or the orchestrator widen-rejected log. Mirrors the "model:
+  // pinning is an escape hatch" framing in the tune-agent-task-cost skill.
+  if (
+    mycoYamlPhase?.maxTurns !== undefined
+    && mycoYamlPhase.maxTurns > phase.maxTurns
+    && runPhaseOverride?.maxTurns === undefined
+  ) {
+    logger?.warn(
+      'agent.phase-resolver.grove-widen',
+      `Phase "${phase.name}": grove.yaml maxTurns ${mycoYamlPhase.maxTurns} > YAML default ${phase.maxTurns}. The orchestrator hard cap protects the YAML default; this override is the explicit escape hatch.`,
+      {
+        phase: phase.name,
+        groveMaxTurns: mycoYamlPhase.maxTurns,
+        yamlMaxTurns: phase.maxTurns,
+      },
+    );
+  }
 
   return {
     reasoningLevel: effectiveReasoning,

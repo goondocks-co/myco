@@ -138,6 +138,15 @@ export const TaskScheduleSchema = z.object({
    * during backlog according to the declared thresholds.
    */
   accelerator: AcceleratorConfigSchema.optional(),
+  /**
+   * Hard ceiling on completed-or-failed runs of this task per
+   * (grove, project) tuple in the trailing 24 hours. When the count is
+   * at-or-above the ceiling, the scheduler will not dispatch another run
+   * until the oldest run rolls out of the window. Pairs with `accelerator`:
+   * the accelerator decides cadence within the day, the ceiling caps the
+   * day. Omit to leave run frequency bounded only by `intervalSeconds`.
+   */
+  maxRunsPerDay: z.number().int().positive().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -160,6 +169,16 @@ const MapPhaseSinkSchema = z.object({
   argMap: z.record(z.string(), z.string()).default({}),
 });
 
+/**
+ * Phase-level preCondition kinds. Sourced from the zero-dep tuple module
+ * so codegen (which runs in Node and can't load bun:sqlite) doesn't
+ * transitively pull in the DB layer through the resolver. Adding a new
+ * kind in phase-precondition-kinds.ts automatically extends both the
+ * Zod enum and the TypeScript union.
+ */
+import { PHASE_PRECONDITION_KINDS } from './phase-precondition-kinds.js';
+const PhasePreConditionSchema = z.enum(PHASE_PRECONDITION_KINDS);
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -173,6 +192,13 @@ export const PhaseDefinitionSchema = z.object({
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
+  preCondition: PhasePreConditionSchema.optional(),
+  gateOnPriorMetadata: z.object({
+    phase: z.string().min(1),
+    key: z.string().min(1),
+    // strict-equality only in v1 — extend when a real consumer surfaces
+    equals: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  }).optional(),
 
   // --- Map mode -------------------------------------------------------------
   mode: z.enum(['agent', 'map']).optional(),

@@ -117,6 +117,9 @@ describe('buildRerunPrefill', () => {
       reasoning_map: { low: 'gpt-4', default: 'gpt-5', high: 'gpt-5-thinking' },
     });
     expect(prefill.phaseOverrides.extract).toEqual({
+      // reasoningLevel is now editable via the per-phase UI dropdown
+      // (commit b119b93c) — rerun must carry it.
+      reasoningLevel: 'high',
       model: 'gpt-5-thinking',
       maxTurns: 12,
     });
@@ -211,12 +214,30 @@ describe('buildRerunPrefill', () => {
     const run = makeRun({
       execution_overrides: {
         phases: {
-          extract: { reasoningLevel: 'high' }, // not editable by PhaseConfigRow
+          // truly empty entry — every editable field undefined
+          extract: {},
         },
       },
     });
     const prefill = buildRerunPrefill(run, [makeTask()]);
     expect(prefill.phaseOverrides).toEqual({});
     expect(prefill.hasAnyOverride).toBe(false);
+  });
+
+  it('carries reasoningLevel as an editable per-phase override', () => {
+    // reasoningLevel was promoted to the primary per-phase control in
+    // PhaseConfigRow (commit b119b93c). Rerun-with-same-settings must
+    // round-trip the tier the user chose, not silently drop it back to
+    // the YAML default.
+    const run = makeRun({
+      execution_overrides: {
+        phases: {
+          extract: { reasoningLevel: 'default' },
+        },
+      },
+    });
+    const prefill = buildRerunPrefill(run, [makeTask()]);
+    expect(prefill.phaseOverrides.extract).toEqual({ reasoningLevel: 'default' });
+    expect(prefill.hasAnyOverride).toBe(true);
   });
 });

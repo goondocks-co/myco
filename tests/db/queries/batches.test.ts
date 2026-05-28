@@ -12,10 +12,13 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import {
   insertBatch,
   closeBatch,
+  countUnprocessedSettledBatches,
   getUnprocessedBatches,
   incrementActivityCount,
+  INTELLIGENCE_DEFAULT_ORIGINS,
   listBatchesBySession,
   markBatchProcessed,
+  PROMPT_BATCH_ORIGIN,
   setResponseSummary,
 } from '@myco/db/queries/batches.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
@@ -309,6 +312,123 @@ describe('prompt batch query helpers', () => {
         const rows = getUnprocessedBatches({ includeActive: true, scope: ALL_PROJECTS_SCOPE });
         expect(rows).toHaveLength(1);
       });
+    });
+
+    describe('origins filter', () => {
+      it('returns batches of all origins when origins is omitted', () => {
+        insertBatch(makeBatch(sessionId, { user_prompt: 'human', origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+        insertBatch(makeBatch(sessionId, { user_prompt: 'system', origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+        insertBatch(makeBatch(sessionId, { user_prompt: 'dispatch', origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH }));
+
+        const rows = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
+        expect(rows.map((r) => r.origin).sort()).toEqual(
+          ['agent_dispatch', 'human', 'system'].sort(),
+        );
+      });
+
+      it('restricts to listed origins when origins is provided', () => {
+        insertBatch(makeBatch(sessionId, { user_prompt: 'human', origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+        insertBatch(makeBatch(sessionId, { user_prompt: 'system', origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+        insertBatch(makeBatch(sessionId, { user_prompt: 'dispatch', origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH }));
+
+        const rows = getUnprocessedBatches({
+          origins: INTELLIGENCE_DEFAULT_ORIGINS,
+          scope: ALL_PROJECTS_SCOPE,
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].origin).toBe('human');
+      });
+
+      it('treats empty origins list as no filter (permissive)', () => {
+        insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+        insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+
+        const rows = getUnprocessedBatches({ origins: [], scope: ALL_PROJECTS_SCOPE });
+        expect(rows).toHaveLength(2);
+      });
+
+      it('accepts multi-origin allowlist', () => {
+        insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+        insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+        insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH }));
+
+        const rows = getUnprocessedBatches({
+          origins: [PROMPT_BATCH_ORIGIN.HUMAN, PROMPT_BATCH_ORIGIN.AGENT_DISPATCH],
+          scope: ALL_PROJECTS_SCOPE,
+        });
+        expect(rows.map((r) => r.origin).sort()).toEqual(['agent_dispatch', 'human']);
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countUnprocessedSettledBatches
+  // ---------------------------------------------------------------------------
+
+  describe('countUnprocessedSettledBatches', () => {
+    function settledSessionId(): string {
+      const s = makeSession({ status: 'completed' });
+      upsertSession(s);
+      return s.id;
+    }
+
+    it('counts only batches in settled sessions', () => {
+      // sessionId from beforeEach is active by default
+      insertBatch(makeBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      const settled = settledSessionId();
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+
+      expect(countUnprocessedSettledBatches(ALL_PROJECTS_SCOPE)).toBe(2);
+    });
+
+    it('respects the origins filter — defaults to all when omitted', () => {
+      const settled = settledSessionId();
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH }));
+
+      expect(countUnprocessedSettledBatches(ALL_PROJECTS_SCOPE)).toBe(3);
+    });
+
+    it('respects the origins filter — narrows to listed origins', () => {
+      const settled = settledSessionId();
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+      insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.AGENT_DISPATCH }));
+
+      expect(
+        countUnprocessedSettledBatches(ALL_PROJECTS_SCOPE, {
+          origins: INTELLIGENCE_DEFAULT_ORIGINS,
+        }),
+      ).toBe(1);
+    });
+
+    it('honors the early-termination limit', () => {
+      const settled = settledSessionId();
+      for (let i = 0; i < 10; i++) {
+        insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      }
+      // limit clamps result regardless of true total
+      expect(
+        countUnprocessedSettledBatches(ALL_PROJECTS_SCOPE, { limit: 3 }),
+      ).toBe(3);
+    });
+
+    it('limit + origins combine correctly', () => {
+      const settled = settledSessionId();
+      for (let i = 0; i < 5; i++) {
+        insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.HUMAN }));
+      }
+      for (let i = 0; i < 5; i++) {
+        insertBatch(makeBatch(settled, { origin: PROMPT_BATCH_ORIGIN.SYSTEM }));
+      }
+      expect(
+        countUnprocessedSettledBatches(ALL_PROJECTS_SCOPE, {
+          limit: 3,
+          origins: INTELLIGENCE_DEFAULT_ORIGINS,
+        }),
+      ).toBe(3);
     });
   });
 
