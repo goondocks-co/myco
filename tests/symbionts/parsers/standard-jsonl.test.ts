@@ -414,5 +414,64 @@ describe('StandardJsonlParser', () => {
       expect(turns[0].toolCount).toBe(2);
       expect(turns[0].aiResponse).toBe('First thought.\n\nSecond thought.\n\nFinal answer.');
     });
+
+    // Surfaced 2026-05-28 via live capture audit: Claude Code's Esc→queue
+    // prompts arrive as `attachment` / `attachment.type: queued_command`
+    // entries (no UserPromptSubmit, no role:user message). The prompt-kind
+    // walker captures them as steering batches via the queued_command shape,
+    // but this parser — which drives response attribution — ignored attachment
+    // entries entirely, so the assistant text after a queued prompt globbed
+    // onto the PRECEDING turn and the steering batch got a NULL response.
+    // The parser must open a new turn on the queued_command, keyed on the same
+    // `attachment.prompt` the walker uses, so populateBatchResponses can
+    // prefix-match the response onto the steering batch.
+    it('treats queued_command attachments as turn boundaries so the response attaches to the queued prompt', () => {
+      const content = toJsonl([
+        {
+          type: 'user',
+          message: { content: [{ type: 'text', text: 'initial request' }] },
+          timestamp: '2026-05-28T10:00:00Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'working on it' }, { type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+          timestamp: '2026-05-28T10:00:05Z',
+        },
+        // Queued mid-turn steering prompt — attachment entry, not role:user.
+        {
+          type: 'attachment',
+          attachment: { type: 'queued_command', prompt: 'actually also handle the edge case' },
+          uuid: 'queued-1',
+          timestamp: '2026-05-28T10:00:10Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'edge case handled' }] },
+          timestamp: '2026-05-28T10:00:20Z',
+        },
+      ]);
+
+      const turns = parser.parseTurns(content);
+
+      expect(turns).toHaveLength(2);
+      // Initial turn keeps only its own pre-queue response.
+      expect(turns[0].prompt).toBe('initial request');
+      expect(turns[0].aiResponse).toBe('working on it');
+      // Queued prompt opens its own turn and claims the response that follows it.
+      expect(turns[1].prompt).toBe('actually also handle the edge case');
+      expect(turns[1].aiResponse).toBe('edge case handled');
+    });
+
+    it('ignores non-queued attachment entries (no spurious turn)', () => {
+      const content = toJsonl([
+        { type: 'user', message: { content: [{ type: 'text', text: 'req' }] }, timestamp: '2026-05-28T10:00:00Z' },
+        { type: 'attachment', attachment: { type: 'image', prompt: 'should-not-appear' }, timestamp: '2026-05-28T10:00:05Z' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] }, timestamp: '2026-05-28T10:00:10Z' },
+      ]);
+      const turns = parser.parseTurns(content);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].prompt).toBe('req');
+      expect(turns[0].aiResponse).toBe('done');
+    });
   });
 });

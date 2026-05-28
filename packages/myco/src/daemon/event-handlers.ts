@@ -254,9 +254,17 @@ export function handleUserPrompt(
   let parentId: number | null = null;
   let effectiveKind = incomingKind;
 
+  const incomingOrigin = options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;
+
   if (incomingKind === BATCH_KIND.STEERING || incomingKind === BATCH_KIND.INTERRUPT) {
     const openParent = findOpenParentBatch(sessionId);
-    if (openParent) {
+    // A human prompt must not nest under a non-human open parent (a system
+    // task-notification / agent_dispatch teammate-message batch) — it owns
+    // its own turn. Mirrors the Stop-time miner's resolveKindParent rule so
+    // the live and reconcile paths classify identically. Without it, a prompt
+    // arriving while a background-event batch is open became its steering child.
+    const parentIsNonHuman = openParent != null && openParent.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
+    if (openParent && !(incomingOrigin === PROMPT_BATCH_ORIGIN.HUMAN && parentIsNonHuman)) {
       parentId = openParent.id;
     } else {
       effectiveKind = BATCH_KIND.INITIAL;

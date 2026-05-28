@@ -28,6 +28,28 @@ export class StandardJsonlParser implements TranscriptParser {
       const role = entry[this.opts.roleField] as string;
       const timestamp = this.opts.extractTimestamp ? (entry.timestamp as string ?? '') : '';
 
+      // Queued steering prompts (Claude Code's Esc→queue UI) land as
+      // `attachment` entries, NOT role:user messages — Claude Code fires no
+      // UserPromptSubmit for them. The prompt-kind walker already captures
+      // them as steering batches via the manifest `queued_command` shape
+      // (textAt: attachment.prompt). This parser drives response attribution
+      // (getAllTurns → populateBatchResponses); without recognizing the same
+      // entries it builds no turn for the queued prompt, so the assistant text
+      // that follows globs onto the PRECEDING turn (e.g. a task-notification)
+      // and the steering batch is left with a NULL response_summary. Open a
+      // new turn here, keyed on the same `attachment.prompt` text the walker
+      // uses, so prefix-matching in populateBatchResponses lines the response
+      // up with the steering batch.
+      if (entry.type === 'attachment') {
+        const attachment = entry.attachment as { type?: string; prompt?: string } | undefined;
+        if (attachment?.type === 'queued_command' && typeof attachment.prompt === 'string' && attachment.prompt.trim()) {
+          if (current) turns.push(current);
+          current = { prompt: attachment.prompt.trim().slice(0, PROMPT_PREVIEW_CHARS), toolCount: 0, timestamp };
+        }
+        // Other attachment kinds (image side-logs, etc.) carry no turn text.
+        continue;
+      }
+
       if (role === 'user') {
         // Skip meta messages (skill injections, deprecation notices, etc.) — they are
         // not real user prompts and should not appear as turns or influence the title.

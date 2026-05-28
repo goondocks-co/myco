@@ -9,7 +9,9 @@ import {
   setBatchPromptNumber,
   PROMPT_PREFIX_MATCH_CHARS,
   BATCH_KIND,
+  PROMPT_BATCH_ORIGIN,
   type BatchRow,
+  type PromptBatchOrigin,
 } from '../db/queries/batches.js';
 import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
@@ -180,31 +182,50 @@ export class TranscriptMiner {
     // from transcript order after a recovery insert.
     const buckets = buildPrefixBuckets(batches);
     let currentParentId: number | null = null;
+    let currentParentOrigin: PromptBatchOrigin | null = null;
+
+    // Resolve a record's effective kind + parent against the open turn.
+    // A steering/interrupt record normally nests under the open initial
+    // batch. Two cases force it to start its own initial turn instead:
+    //   1. No open parent at all (existing behavior).
+    //   2. A HUMAN prompt whose only open parent is a non-human batch
+    //      (system task-notification / agent_dispatch teammate-message).
+    //      A real user prompt must never hang off a background-event batch:
+    //      it owns its own turn (and, via the parser, its own response).
+    //      Without this, a question queued while the agent was mid-
+    //      task-notification became a steering child of that notification.
+    const resolveKindParent = (
+      kind: string,
+      origin: PromptBatchOrigin,
+    ): { effectiveKind: string; parent: number | null } => {
+      if (kind === BATCH_KIND.INITIAL) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      if (currentParentId == null) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      if (origin === PROMPT_BATCH_ORIGIN.HUMAN && currentParentOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) {
+        return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      }
+      return { effectiveKind: kind, parent: currentParentId };
+    };
 
     for (const record of records) {
       const existing = buckets.consume(record.text);
 
       if (existing) {
-        const wantParent = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
-        if (record.kind !== BATCH_KIND.INITIAL && wantParent == null) {
-          errors.push(`batch ${existing.id} classified as ${record.kind} with no open parent`);
-          continue;
-        }
-        if (existing.kind !== record.kind || existing.parent_prompt_batch_id !== wantParent) {
-          updateBatchKind(existing.id, record.kind, wantParent);
+        const { effectiveKind, parent: wantParent } = resolveKindParent(record.kind, record.origin);
+        if (existing.kind !== effectiveKind || existing.parent_prompt_batch_id !== wantParent) {
+          updateBatchKind(existing.id, effectiveKind, wantParent);
           reclassified++;
         }
-        if (record.kind === BATCH_KIND.INITIAL) currentParentId = existing.id;
+        if (effectiveKind === BATCH_KIND.INITIAL) {
+          currentParentId = existing.id;
+          currentParentOrigin = record.origin;
+        }
         continue;
       }
 
-      const parentForNew = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
-      if (record.kind !== BATCH_KIND.INITIAL && parentForNew == null) {
+      const { effectiveKind, parent: parentForNew } = resolveKindParent(record.kind, record.origin);
+      if (record.kind !== BATCH_KIND.INITIAL && effectiveKind === BATCH_KIND.INITIAL && currentParentId == null) {
         errors.push(`transcript prompt classified as ${record.kind} with no open parent; inserting as initial instead`);
       }
-      const effectiveKind = record.kind !== BATCH_KIND.INITIAL && parentForNew == null
-        ? BATCH_KIND.INITIAL
-        : record.kind;
       const now = epochSeconds();
       const created = insertBatchStateless({
         session_id: sessionId,
@@ -221,7 +242,10 @@ export class TranscriptMiner {
         const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
       } catch { /* lineage best-effort */ }
-      if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
+      if (effectiveKind === BATCH_KIND.INITIAL) {
+        currentParentId = created.id;
+        currentParentOrigin = record.origin;
+      }
     }
 
     // Each capture.rules `drop` decision suppresses a transcript prompt the

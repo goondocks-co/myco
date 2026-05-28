@@ -80,4 +80,29 @@ describe('handleUserPrompt steering nesting', () => {
     expect(batches.find((b) => b.id === sysId)!.origin).toBe('system');
     expect(batches.find((b) => b.id === agentId)!.origin).toBe('agent_dispatch');
   });
+
+  // A human prompt arriving while a non-human batch (system task-notification /
+  // agent_dispatch teammate-message) is the open parent must NOT nest under it
+  // — it owns its own turn. Regression for the audit finding where a question
+  // queued during a task-notification became that notification's steering child
+  // with no response of its own.
+  it('promotes a human steering prompt to initial when the open parent is system-origin', () => {
+    const { batchId: notifId } = handleUserPrompt('s1', '<task-notification>done', { kind: 'initial', origin: 'system' });
+    const { batchId: humanId } = handleUserPrompt('s1', 'a real question', { kind: 'steering', origin: 'human' });
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
+    const human = batches.find((b) => b.id === humanId)!;
+    expect(human.kind).toBe('initial');
+    expect(human.parent_prompt_batch_id).toBeNull();
+    // The task-notification batch is untouched.
+    expect(batches.find((b) => b.id === notifId)!.kind).toBe('initial');
+  });
+
+  it('still nests a human steering prompt under a human initial parent', () => {
+    const { batchId: parentId } = handleUserPrompt('s1', 'human turn', { kind: 'initial', origin: 'human' });
+    const { batchId: steerId } = handleUserPrompt('s1', 'refine it', { kind: 'steering', origin: 'human' });
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
+    const steer = batches.find((b) => b.id === steerId)!;
+    expect(steer.kind).toBe('steering');
+    expect(steer.parent_prompt_batch_id).toBe(parentId);
+  });
 });

@@ -393,4 +393,59 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const numbers = after.map((b) => b.prompt_number).sort();
     expect(new Set(numbers).size).toBe(numbers.length);
   });
+
+  // Audit finding 2026-05-28: a user prompt queued (Esc→queue) while the agent
+  // was mid-turn on a <task-notification> continuation became a STEERING child
+  // of that system batch. A human prompt must own its own turn, never nest
+  // under a non-human (system / agent_dispatch) batch. resolveKindParent in the
+  // miner promotes it to initial; a subsequent queued human prompt then steers
+  // under THAT human initial (human-under-human nesting is preserved).
+  it('promotes a queued human prompt to initial instead of nesting under a task-notification', () => {
+    const events = [
+      // Turn 1: a task-notification triggers the agent (system-origin initial).
+      {
+        type: 'user', promptId: 'tn1',
+        message: { role: 'user', content: '<task-notification>\n<task-id>job1</task-id>\n<status>completed</status>\n</task-notification>' },
+      },
+      { type: 'assistant', message: { stop_reason: 'tool_use' } },
+      // The user queues a real question mid-turn → arrives as a queued_command
+      // attachment (no end_turn yet, so the walker classifies it steering).
+      {
+        type: 'attachment', uuid: 'q1',
+        attachment: { type: 'queued_command', prompt: 'why is the budget high?' },
+      },
+      { type: 'assistant', message: { stop_reason: 'tool_use' } },
+      // A second queued question, still mid-turn.
+      {
+        type: 'attachment', uuid: 'q2',
+        attachment: { type: 'queued_command', prompt: 'and what about the map count?' },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE })
+      .sort((a, b) => a.id - b.id);
+    expect(after).toHaveLength(3);
+    const [notif, q1, q2] = after;
+
+    // Task-notification: system-origin initial, no parent.
+    expect(notif.origin).toBe('system');
+    expect(notif.kind).toBe('initial');
+
+    // First queued human question: promoted to its OWN initial, NOT a child of
+    // the task-notification.
+    expect(q1.origin).toBe('human');
+    expect(q1.kind).toBe('initial');
+    expect(q1.parent_prompt_batch_id).toBeNull();
+
+    // Second queued human question: steers under the first human prompt
+    // (human-under-human nesting preserved).
+    expect(q2.origin).toBe('human');
+    expect(q2.kind).toBe('steering');
+    expect(q2.parent_prompt_batch_id).toBe(q1.id);
+  });
 });
