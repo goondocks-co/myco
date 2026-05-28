@@ -201,22 +201,28 @@ capture:
       # `<teammate-message ...>` envelope. These entries share the LEAD's
       # current turn `promptId`, so the generic `user_prompt` shape below
       # would collapse all teammate-messages into the lead's prompt batch
-      # via its `dedupeBy: promptId`. The discriminator: agent-team-routed
-      # entries carry a `teamName` field that human-typed prompts never have.
+      # via its `dedupeBy: promptId`.
+      #
+      # The discriminator is the CONTENT, not a structural field: once a team
+      # exists in the session, `teamName` is stamped on the lead's own prompts
+      # and on `/exit` / `/model` command artifacts too — it is not unique to
+      # teammate-messages. `textStartsWith` keys on the envelope prefix so only
+      # real teammate-messages match here; everything else falls through to the
+      # generic shape and keeps its `dedupeBy: promptId` collapse (which the
+      # slash-command dispatch path relies on to suppress command artifacts).
       #
       # First-match-wins, so listing this shape above `user_prompt` ensures
       # teammate-messages match here first with `dedupeBy: uuid` (one batch
-      # per discrete teammate dispatch) before the promptId-based dedupe
-      # can swallow them. The `set_origin: agent_dispatch` rule above then
-      # tags the resulting batch correctly.
+      # per discrete teammate dispatch). The `set_origin: agent_dispatch` rule
+      # above then tags the resulting batch correctly.
       - name: teammate_message
         match:
           type: user
-          hasField: teamName
           fieldNotEquals:
             isMeta: true
-        dedupeBy: uuid
         textAt: message.content
+        textStartsWith: "<teammate-message"
+        dedupeBy: uuid
       # Standard user prompts. Claude Code tags synthesized transcript entries
       # (local-command caveats, skill-basedir injections, expanded command
       # bodies, misc system notices) with `isMeta: true`. Filtering on that

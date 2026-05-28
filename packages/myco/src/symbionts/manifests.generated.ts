@@ -204,12 +204,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "name": "teammate_message",
             "match": {
               "type": "user",
-              "hasField": "teamName",
               "fieldNotEquals": {
                 "isMeta": true
               }
             },
             "textAt": "message.content",
+            "textStartsWith": "<teammate-message",
             "dedupeBy": "uuid"
           },
           {

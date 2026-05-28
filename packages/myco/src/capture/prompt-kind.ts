@@ -186,7 +186,16 @@ function findMatchingShape(
   event: Record<string, unknown>,
 ): PromptShape | undefined {
   for (const shape of shapes) {
-    if (matchExpression(shape.match, event)) return shape;
+    if (!matchExpression(shape.match, event)) continue;
+    // Content-prefix guard: when a shape declares `textStartsWith`, its
+    // structurally-identical siblings (e.g. lead prompts / command artifacts
+    // that share every top-level field with a teammate-message) are excluded
+    // by inspecting the resolved text. Falls through to the next shape so the
+    // generic user_prompt shape still claims those entries.
+    if (shape.textStartsWith && !extractText(event, shape.textAt).startsWith(shape.textStartsWith)) {
+      continue;
+    }
+    return shape;
   }
   return undefined;
 }

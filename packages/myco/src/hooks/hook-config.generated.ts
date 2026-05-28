@@ -31,12 +31,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "name": "teammate_message",
           "match": {
             "type": "user",
-            "hasField": "teamName",
             "fieldNotEquals": {
               "isMeta": true
             }
           },
           "textAt": "message.content",
+          "textStartsWith": "<teammate-message",
           "dedupeBy": "uuid"
         },
         {

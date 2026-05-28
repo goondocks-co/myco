@@ -558,15 +558,16 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     expect(records[0]?.origin).toBe('system');
   });
 
-  // Smoke test surfaced 2026-05-28: in Claude Code v2.1.32+ agent-team sessions,
+  // Smoke test surfaced 2026-05-28 (Claude Code v2.1.x agent-team sessions):
   // teammate-messages are injected into the lead's transcript as `type: user`
   // entries that share the LEAD's current-turn `promptId`. The generic
-  // `user_prompt` shape uses `dedupeBy: promptId` and was collapsing every
+  // `user_prompt` shape uses `dedupeBy: promptId` and collapses every
   // teammate-message into the lead's prompt batch. Fix: a dedicated
-  // `teammate_message` shape (listed first) discriminates on the `teamName`
-  // field that only agent-team-routed entries carry, dedupes by `uuid` so each
-  // discrete teammate dispatch becomes its own record. Without that shape,
-  // current-version teammate-messages are silently lost from capture.
+  // `teammate_message` shape (listed first) discriminates on the CONTENT
+  // prefix via `textStartsWith` (not on a structural field — `teamName` is
+  // stamped on the lead's own prompts and `/exit` / `/model` artifacts too
+  // once a team exists, so it can't distinguish teammate-messages) and
+  // dedupes by `uuid` so each discrete dispatch becomes its own record.
   it('Claude Code: emits a record for each teammate-message even when sharing promptId with the lead prompt', () => {
     const sharedPromptId = 'lead-turn-1';
     const events = [
@@ -574,6 +575,7 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
         type: 'user',
         promptId: sharedPromptId,
         uuid: 'uuid-lead-prompt',
+        teamName: 'origin-smoke',
         message: { role: 'user', content: 'lead asks something' },
       },
       {
@@ -599,7 +601,8 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     ];
     const records = extractUserPromptRecords('claude-code', events);
     expect(records).toHaveLength(3);
-    // First: the lead's actual prompt — origin='human'.
+    // First: the lead's actual prompt — origin='human'. Has teamName too, but
+    // doesn't start with the envelope prefix, so it falls through to user_prompt.
     expect(records[0]?.origin).toBe('human');
     expect(records[0]?.text).toBe('lead asks something');
     // Both teammate-messages survive the promptId-shared dedupe and get tagged.
@@ -607,6 +610,34 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     expect(records[1]?.text).toContain('first reply');
     expect(records[2]?.origin).toBe('agent_dispatch');
     expect(records[2]?.text).toContain('second reply');
+  });
+
+  // Regression for the teamName-shape bug: during an active team, `/exit` and
+  // `/model` command groups gain `teamName` on every entry. The earlier
+  // `hasField: teamName` + `dedupeBy: uuid` teammate_message shape matched the
+  // `<local-command-stdout>` sibling and, because uuid-dedup no longer let the
+  // `<command-name>` sibling collapse the group by promptId, leaked the stdout
+  // as a human prompt. The content-prefix shape must NOT match these, so the
+  // group falls back to the promptId-deduped user_prompt shape: the dropped
+  // `<command-name>` entry consumes the promptId slot and suppresses the rest.
+  it('Claude Code: does not leak /exit command artifacts as prompts during an active team', () => {
+    const sharedPromptId = 'exit-turn';
+    const events = [
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-caveat', teamName: 'origin-smoke', isMeta: true,
+        message: { role: 'user', content: '<local-command-caveat>Caveat: …</local-command-caveat>' },
+      },
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-cmdname', teamName: 'origin-smoke',
+        message: { role: 'user', content: '<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>' },
+      },
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-stdout', teamName: 'origin-smoke',
+        message: { role: 'user', content: '<local-command-stdout>See ya!</local-command-stdout>' },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(0);
   });
 });
 
