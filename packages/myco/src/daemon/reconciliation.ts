@@ -19,7 +19,9 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { STALE_BUFFER_MAX_AGE_MS, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
-import { isSystemMessage, handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
+import { handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
+import { toPromptBatchOrigin, countBatchesBySession, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches.js';
+import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
 import { eventDedupKey, eventTimestampMs, EVENT_DEDUP_WINDOW_MS } from '@myco/capture/dedup.js';
 
 // ---------------------------------------------------------------------------
@@ -124,8 +126,16 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
    */
   function replayEvent(sessionId: string, event: Record<string, unknown>): 'prompt' | 'activity' | null {
     if (event.type === 'user_prompt') {
-      if (isSystemMessage(String(event.prompt ?? ''))) return null;
-      handleUserPrompt(sessionId, String(event.prompt ?? ''));
+      // Live hooks forward `origin` from the manifest decision; pre-v49 buffer
+      // files have no `origin` field. Re-evaluate the manifest rule on the
+      // prompt text in that case so a buffered <task-notification> /
+      // <teammate-message> from before the upgrade still lands with the right
+      // origin instead of silently defaulting to 'human'. Forwarded values win.
+      const promptText = String(event.prompt ?? '');
+      const origin = typeof event.origin === 'string'
+        ? toPromptBatchOrigin(event.origin)
+        : classifyNextPromptOrigin(typeof event.agent === 'string' ? event.agent : undefined, promptText);
+      handleUserPrompt(sessionId, promptText, { origin });
       return 'prompt';
     }
     if (event.type === 'tool_use') {
@@ -219,20 +229,31 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       }
     }
 
-    // Find the divergence point: how many real prompts does the DB have?
-    const existingBatchCount = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length;
+    // Find the divergence point. Both sides count HUMAN-origin batches/events
+    // only. The asymmetric alternative — counting all origins — breaks on
+    // any DB that pre-dates the retirement of SYSTEM_MESSAGE_PREFIXES: those
+    // legacy DBs have no system/agent_dispatch rows (the live path used to
+    // drop them) but their buffer files still contain the underlying events.
+    // Counting all origins on the buffer side against a system-free DB would
+    // pick the wrong replay start and re-insert prior human prompts as
+    // duplicates. Counting only human-origin events stays symmetric across
+    // the upgrade boundary in both directions.
+    const existingBatchCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
 
     let promptsSeen = 0;
     let replayStartIndex = -1;
 
     for (let i = 0; i < allEvents.length; i++) {
       const e = allEvents[i];
-      if (e.type === 'user_prompt' && !isSystemMessage(String(e.prompt ?? ''))) {
-        promptsSeen++;
-        if (promptsSeen === existingBatchCount + 1) {
-          replayStartIndex = i;
-          break;
-        }
+      if (e.type !== 'user_prompt') continue;
+      const eventOrigin = typeof e.origin === 'string'
+        ? toPromptBatchOrigin(e.origin)
+        : classifyNextPromptOrigin(typeof e.agent === 'string' ? e.agent : undefined, String(e.prompt ?? ''));
+      if (eventOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) continue;
+      promptsSeen++;
+      if (promptsSeen === existingBatchCount + 1) {
+        replayStartIndex = i;
+        break;
       }
     }
 

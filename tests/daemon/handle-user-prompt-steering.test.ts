@@ -66,4 +66,18 @@ describe('handleUserPrompt steering nesting', () => {
     expect(batches[0].kind).toBe('initial');
     expect(batches[0].parent_prompt_batch_id).toBeNull();
   });
+
+  it('defaults origin to human when omitted', () => {
+    const { batchId } = handleUserPrompt('s1', 'legacy prompt');
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
+    expect(batches.find((b) => b.id === batchId)!.origin).toBe('human');
+  });
+
+  it('round-trips an origin override (system / agent_dispatch) onto the row', () => {
+    const { batchId: sysId } = handleUserPrompt('s1', '<task-notification>foo', { origin: 'system' });
+    const { batchId: agentId } = handleUserPrompt('s1', '<teammate-message ...', { origin: 'agent_dispatch' });
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
+    expect(batches.find((b) => b.id === sysId)!.origin).toBe('system');
+    expect(batches.find((b) => b.id === agentId)!.origin).toBe('agent_dispatch');
+  });
 });

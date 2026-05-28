@@ -106,6 +106,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 46, migrate: (db) => migrateV45ToV46(db) },
   { version: 47, migrate: (db) => migrateV46ToV47(db) },
   { version: 48, migrate: (db) => migrateV47ToV48(db) },
+  { version: 49, migrate: (db) => migrateV48ToV49(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2973,6 +2974,97 @@ function migrateV47ToV48(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(48, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v48 → v49: backfill `prompt_batches.origin` for agent-synthesized envelopes
+ * that the v38 schema split couldn't reach.
+ *
+ * v38 introduced the `origin` discriminator with default `'human'`. At that
+ * time the only producer that set non-human values was the Stop-time
+ * transcript miner, and even there only `<task-notification>` and `<skill>`
+ * had manifest rules. The live `/events` path threaded `kind` but not
+ * `origin`, and a hardcoded SYSTEM_MESSAGE_PREFIXES filter quietly dropped
+ * `<task-notification>` / `<system-reminder>` from insertion entirely.
+ *
+ * Net effect across the vault by 2026-05: 1182 `<teammate-message>` rows
+ * (agent-team teammate→lead messages), plus partial bleed-through of
+ * `<task-notification>`, `<skill>`, `<subagent_notification>`,
+ * `<environment_context>`, `<<autonomous-loop-dynamic>>`, `<local-command-caveat>`,
+ * and `<persisted-output>` envelopes — all tagged `origin='human'` and feeding
+ * inflated counts into vault-evolve and other INTELLIGENCE_DEFAULT_ORIGINS-
+ * filtered intelligence tasks.
+ *
+ * Prefix matching is sufficient: each envelope has a stable opening tag the
+ * runtime emits verbatim. The `(project_id, origin, created_at)` index from
+ * v38 plus the leading-anchored LIKE pattern keeps each UPDATE cheap.
+ *
+ * D1 sync: every UPDATEd row is enqueued into `team_outbox` so the team-sync
+ * drain propagates the reclassification to the cloud database. Pure SQL UPDATEs
+ * bypass the JS-level `syncRow` helper (which only fires on write-path query
+ * modules), so the migration enqueues outbox rows explicitly per backfilled batch.
+ */
+function migrateV48ToV49(db: Database): void {
+  const reclassifications: Array<{ origin: 'agent_dispatch' | 'system'; prefix: string }> = [
+    { origin: 'agent_dispatch', prefix: '<teammate-message ' },
+    { origin: 'agent_dispatch', prefix: '<subagent_notification>' },
+    { origin: 'system', prefix: '<task-notification>' },
+    { origin: 'system', prefix: '<system-reminder>' },
+    { origin: 'system', prefix: '<skill>' },
+    { origin: 'system', prefix: '<environment_context>' },
+    { origin: 'system', prefix: '<<autonomous-loop' },
+    { origin: 'system', prefix: '<local-command-caveat>' },
+    { origin: 'system', prefix: '<persisted-output>' },
+  ];
+
+  db.prepare('BEGIN').run();
+  try {
+    // Skip table-not-present case (e.g. early-init fixtures with a minimal
+    // schema). The reclassification is a no-op when the table doesn't exist.
+    const hasBatches = db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_batches'`,
+    ).get() as { 1: number } | undefined;
+    if (hasBatches) {
+      const updateStmt = db.prepare(
+        `UPDATE prompt_batches
+           SET origin = ?
+           WHERE origin = 'human' AND user_prompt LIKE ?
+         RETURNING id, session_id, project_id, parent_prompt_batch_id, kind, origin,
+                   prompt_number, user_prompt, response_summary, classification,
+                   started_at, ended_at, status, activity_count, processed,
+                   content_hash, created_at, machine_id, synced_at`,
+      );
+      const enqueueStmt = db.prepare(
+        `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+         VALUES ('prompt_batches', ?, 'upsert', ?, ?, ?)`,
+      );
+      const teamSyncEnabled = db.prepare(
+        `SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_outbox'`,
+      ).get() as { 1: number } | undefined;
+      const now = epochSeconds();
+      for (const { origin, prefix } of reclassifications) {
+        const rows = updateStmt.all(origin, `${prefix}%`) as Array<Record<string, unknown>>;
+        if (!teamSyncEnabled || rows.length === 0) continue;
+        for (const row of rows) {
+          enqueueStmt.run(
+            String(row.id),
+            JSON.stringify(row),
+            String(row.machine_id ?? 'local'),
+            now,
+          );
+        }
+      }
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(49, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

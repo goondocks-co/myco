@@ -130,10 +130,88 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "reason": "claude-code-skill-envelope",
           "trim": true,
           "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<teammate-message "
+          },
+          "action": "classify",
+          "reason": "claude-code-teammate-message",
+          "trim": true,
+          "set_origin": "agent_dispatch"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<environment_context>"
+          },
+          "action": "classify",
+          "reason": "claude-code-environment-context",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<<autonomous-loop"
+          },
+          "action": "classify",
+          "reason": "claude-code-autonomous-loop",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<local-command-caveat>"
+          },
+          "action": "classify",
+          "reason": "claude-code-local-command-caveat",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<persisted-output>"
+          },
+          "action": "classify",
+          "reason": "claude-code-persisted-output",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<system-reminder>"
+          },
+          "action": "classify",
+          "reason": "claude-code-system-reminder",
+          "trim": true,
+          "set_origin": "system"
         }
       ],
       "prompts": {
         "shapes": [
+          {
+            "name": "teammate_message",
+            "match": {
+              "type": "user",
+              "hasField": "teamName",
+              "fieldNotEquals": {
+                "isMeta": true
+              }
+            },
+            "textAt": "message.content",
+            "dedupeBy": "uuid"
+          },
           {
             "name": "user_prompt",
             "match": {

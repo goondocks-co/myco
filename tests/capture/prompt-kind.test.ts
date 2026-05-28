@@ -517,6 +517,97 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     expect(classifyNextPromptOrigin('codex', '<subagent_notification>x')).toBe('agent_dispatch');
     expect(classifyNextPromptOrigin(undefined, 'anything')).toBe('human');
   });
+
+  // K1 follow-up: agent-team teammate messages, environment context, autonomous
+  // loop self-prompts, local-command caveats, persisted-output reinjection, and
+  // system-reminder envelopes were all entering prompt_batches as origin='human'
+  // because the Claude Code manifest only declared rules for <task-notification>
+  // and <skill>. The hardcoded SYSTEM_MESSAGE_PREFIXES shortcut covered only
+  // <task-notification> and <system-reminder> and skipped them entirely, never
+  // surfacing them in the UI. Vault audit (eee9f25b): 1182 <teammate-message>
+  // batches across the vault, all human-origin.
+  it('Claude Code: tags <teammate-message> as origin=agent_dispatch', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'tm1',
+        message: {
+          role: 'user',
+          content:
+            '<teammate-message teammate_id="init-cli" color="blue">\nTask #1 complete.\n</teammate-message>',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('agent_dispatch');
+  });
+
+  it.each([
+    ['<environment_context>', '<environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>'],
+    ['<<autonomous-loop-dynamic>>', '<<autonomous-loop-dynamic>>'],
+    ['<local-command-caveat>', '<local-command-caveat>Caveat: ...'],
+    ['<persisted-output>', '<persisted-output>\nresumed turn\n</persisted-output>'],
+    ['<system-reminder>', '<system-reminder>\nThe task tools haven\'t been used recently.\n</system-reminder>'],
+  ])('Claude Code: tags %s envelopes as origin=system', (_label, content) => {
+    const events = [
+      { type: 'user', promptId: `sys-${_label}`, message: { role: 'user', content } },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('system');
+  });
+
+  // Smoke test surfaced 2026-05-28: in Claude Code v2.1.32+ agent-team sessions,
+  // teammate-messages are injected into the lead's transcript as `type: user`
+  // entries that share the LEAD's current-turn `promptId`. The generic
+  // `user_prompt` shape uses `dedupeBy: promptId` and was collapsing every
+  // teammate-message into the lead's prompt batch. Fix: a dedicated
+  // `teammate_message` shape (listed first) discriminates on the `teamName`
+  // field that only agent-team-routed entries carry, dedupes by `uuid` so each
+  // discrete teammate dispatch becomes its own record. Without that shape,
+  // current-version teammate-messages are silently lost from capture.
+  it('Claude Code: emits a record for each teammate-message even when sharing promptId with the lead prompt', () => {
+    const sharedPromptId = 'lead-turn-1';
+    const events = [
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-lead-prompt',
+        message: { role: 'user', content: 'lead asks something' },
+      },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-teammate-1',
+        teamName: 'origin-smoke',
+        message: {
+          role: 'user',
+          content: '<teammate-message teammate_id="echoer" color="blue">first reply</teammate-message>',
+        },
+      },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-teammate-2',
+        teamName: 'origin-smoke',
+        message: {
+          role: 'user',
+          content: '<teammate-message teammate_id="echoer" color="blue">second reply</teammate-message>',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(3);
+    // First: the lead's actual prompt — origin='human'.
+    expect(records[0]?.origin).toBe('human');
+    expect(records[0]?.text).toBe('lead asks something');
+    // Both teammate-messages survive the promptId-shared dedupe and get tagged.
+    expect(records[1]?.origin).toBe('agent_dispatch');
+    expect(records[1]?.text).toContain('first reply');
+    expect(records[2]?.origin).toBe('agent_dispatch');
+    expect(records[2]?.text).toContain('second reply');
+  });
 });
 
 describe('classifyNextPromptKind — tail predictions', () => {

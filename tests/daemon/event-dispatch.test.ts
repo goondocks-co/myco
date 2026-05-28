@@ -178,6 +178,72 @@ describe('createEventDispatcher', () => {
     fs.rmSync(transcriptDir, { recursive: true, force: true });
   });
 
+  it('forwards prompt origin from the live user_prompt event to the inserted batch', async () => {
+    const { handler, logger, vaultDir } = makeHandler();
+    const sessionId = 'claude-teammate-origin-001';
+    const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-teammate-'));
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+
+    const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
+      body: {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        prompt: '<teammate-message teammate_id="init-cli" color="blue">Task #1 done</teammate-message>',
+        origin: 'agent_dispatch',
+      },
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+
+    expect(res.body).toMatchObject({ ok: true });
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batches).toHaveLength(1);
+    expect(batches[0].origin).toBe('agent_dispatch');
+
+    logger.close();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('captures system-tagged prompts that the retired SYSTEM_MESSAGE_PREFIXES list used to drop', async () => {
+    // Pre-change behavior: a `<task-notification>` POST'd to /events was silently
+    // skipped (no batch inserted) by the hardcoded prefix filter. After the
+    // manifest-rule unification, the hook tags it origin='system' and the daemon
+    // creates the batch like any other — visible behind the UI toggle and
+    // excluded from INTELLIGENCE_DEFAULT_ORIGINS-filtered intelligence tasks.
+    const { handler, logger, vaultDir } = makeHandler();
+    const sessionId = 'claude-system-origin-001';
+    const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-system-'));
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+
+    await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
+      body: {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        prompt: '<task-notification>\n<task-id>tid-1</task-id>\n</task-notification>',
+        origin: 'system',
+      },
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batches).toHaveLength(1);
+    expect(batches[0].origin).toBe('system');
+
+    logger.close();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
   describe('DB-backed registry rehydration after daemon restart', () => {
     // Regression: an opencode session registered before a daemon restart used
     // to lose every post-restart event because the in-memory SessionRegistry

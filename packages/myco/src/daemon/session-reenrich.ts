@@ -23,6 +23,7 @@ import { getSession, updateSession } from '../db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '../grove/ids.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
+import { classifyNextPromptOrigin } from '../capture/prompt-kind.js';
 
 export interface ReEnrichDeps {
   transcriptMiner: TranscriptMiner;
@@ -92,7 +93,11 @@ export function reEnrichSessionFromTranscript(
     const batch = batches[i]!;
     const turnPrompt = turns[i]!.prompt;
     if (!turnPrompt || batch.user_prompt !== RECOVERED_BATCH_SENTINEL) continue;
-    if (replaceRecoveredBatchUserPrompt(batch.id, turnPrompt)) promptsReplaced++;
+    // Re-evaluate manifest rules so a sentinel claimed by a synthesized envelope
+    // (e.g. <task-notification>) inherits its non-human origin instead of
+    // silently regressing the v49 backfill on every session close.
+    const origin = classifyNextPromptOrigin(session.agent ?? undefined, turnPrompt);
+    if (replaceRecoveredBatchUserPrompt(batch.id, turnPrompt, origin)) promptsReplaced++;
   }
 
   const lastBatch = batches[batches.length - 1];

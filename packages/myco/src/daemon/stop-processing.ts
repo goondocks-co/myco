@@ -30,6 +30,7 @@ import {
   listBatchesBySession,
   findBatchByPromptPrefix,
   type BatchRow,
+  type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
@@ -236,8 +237,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     phases: z.array(z.enum(['response', 'transcript'])).optional(),
   });
 
-  const triggerTitleSummary = (sessionId: string) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
+  const triggerTitleSummary = (
+    sessionId: string,
+    trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
+  ) =>
+    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger }, trigger);
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);

@@ -109,7 +109,7 @@ const VALID_ORIGINS = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
  * outside the union — including a NULL leaked through a misconfigured
  * COALESCE — collapses to 'human' so legacy rows remain queryable.
  */
-function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
+export function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
   if (typeof value === 'string' && VALID_ORIGINS.has(value)) {
     return value as PromptBatchOrigin;
   }
@@ -868,17 +868,23 @@ export function setBatchPromptNumber(batchId: number, promptNumber: number): voi
 /**
  * Replace `user_prompt` (and reset `kind` to `'initial'`) on a batch only
  * when its `user_prompt` currently equals {@link RECOVERED_BATCH_SENTINEL}.
- * Returns true when a row was updated.
+ * Updates `origin` as well so a sentinel batch claimed by a system-origin
+ * prompt (e.g. a `<task-notification>` arriving first after recovery) is
+ * tagged correctly. Returns true when a row was updated.
  */
-export function replaceRecoveredBatchUserPrompt(batchId: number, realPrompt: string): boolean {
+export function replaceRecoveredBatchUserPrompt(
+  batchId: number,
+  realPrompt: string,
+  origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
+): boolean {
   if (!realPrompt) return false;
   const db = getDatabase();
   const info = db.prepare(
     `UPDATE prompt_batches
-       SET user_prompt = ?, kind = ?
+       SET user_prompt = ?, kind = ?, origin = ?
        WHERE id = ?
          AND user_prompt = ?`,
-  ).run(realPrompt, BATCH_KIND.INITIAL, batchId, RECOVERED_BATCH_SENTINEL);
+  ).run(realPrompt, BATCH_KIND.INITIAL, origin, batchId, RECOVERED_BATCH_SENTINEL);
   return info.changes > 0;
 }
 
@@ -910,9 +916,24 @@ export function hasAnyBatch(sessionId: string): boolean {
 
 /**
  * Count prompt batches for a session — authoritative prompt count.
+ *
+ * Pass `origins` to restrict the count (e.g. `['human']` to match the
+ * vault-evolve / title-summary consumer view that filters via
+ * `INTELLIGENCE_DEFAULT_ORIGINS`).
  */
-export function countBatchesBySession(sessionId: string): number {
+export function countBatchesBySession(
+  sessionId: string,
+  options?: { origins?: readonly PromptBatchOrigin[] },
+): number {
   const db = getDatabase();
+  const origins = options?.origins;
+  if (origins && origins.length > 0) {
+    const placeholders = origins.map(() => '?').join(', ');
+    const row = db.prepare(
+      `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ? AND origin IN (${placeholders})`,
+    ).get(sessionId, ...origins) as { count: number };
+    return row.count;
+  }
   const row = db.prepare(
     `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ?`,
   ).get(sessionId) as { count: number };

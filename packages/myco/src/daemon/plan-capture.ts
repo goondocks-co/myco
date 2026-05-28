@@ -14,6 +14,7 @@ import { CONTENT_HASH_ALGORITHM } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { getPlanByLogicalKey, upsertPlan } from '@myco/db/queries/plans.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
+import { PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import type { Logger } from './logger.js';
 import {
   buildPathPlanLogicalKey,
@@ -34,11 +35,20 @@ import {
  * Scans the input text for each declared tag name and returns all matches.
  * Tags are exact names (e.g., 'proposed_plan' matches `<proposed_plan>...</proposed_plan>`).
  * Returns all occurrences — the caller decides upsert semantics (e.g., last one wins).
+ *
+ * `origin` enforces the plan-capture contract: a captured plan represents
+ * user intent. Synthesized envelopes (`<system-reminder>`, `<teammate-message>`,
+ * `<task-notification>`, …) can contain quoted plan-tag fragments that would
+ * otherwise leak into the plans table. Non-`'human'` origins short-circuit
+ * to an empty list. Omit `origin` only for callers that have already filtered
+ * upstream (e.g. transcript miner walking user-typed turns).
  */
 export function extractTaggedPlans(
   text: string,
   tags: string[],
+  origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
 ): Array<{ tag: string; content: string }> {
+  if (origin !== PROMPT_BATCH_ORIGIN.HUMAN) return [];
   const results: Array<{ tag: string; content: string }> = [];
   for (const tag of tags) {
     const regex = new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
