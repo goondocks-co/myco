@@ -113,6 +113,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
+            "prompt_starts_with": "<local-command-stdout>"
+          },
+          "action": "drop",
+          "reason": "claude-code-builtin-command-stdout",
+          "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
             "prompt_starts_with": "<task-notification>"
           },
           "action": "classify",

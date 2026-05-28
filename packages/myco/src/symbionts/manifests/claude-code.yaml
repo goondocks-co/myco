@@ -77,6 +77,25 @@ capture:
         prompt_starts_with: "<command-name>"
       action: drop
       reason: claude-code-builtin-command-dispatch
+    # Built-in CLI command STDOUT capture (structural).
+    #
+    # Slash-command dispatches (`/exit`, `/model`, `/clear`, …) emit a third
+    # sibling entry holding the command's captured stdout:
+    #   <local-command-stdout>See ya!</local-command-stdout>
+    # It shares the dispatch group's promptId, so the `<command-name>` drop
+    # above already suppresses it via dedupeBy: promptId — BUT only when the
+    # `<command-name>` sibling is present and processed first. Dropping it
+    # explicitly removes that ordering dependency: command stdout is program
+    # output, never user input, so it must never become a prompt_batch
+    # regardless of how the dispatch group is structured. (Without this, a
+    # stdout entry that reached a prompt shape — e.g. via the now-fixed
+    # teamName-based teammate_message shape — leaked as a human prompt.)
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<local-command-stdout>"
+      action: drop
+      reason: claude-code-builtin-command-stdout
     # Async Agent-tool completion notifications.
     #
     # When Claude Code's Agent (Task) tool completes a background sub-agent

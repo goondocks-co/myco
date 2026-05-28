@@ -639,6 +639,20 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     const records = extractUserPromptRecords('claude-code', events);
     expect(records).toHaveLength(0);
   });
+
+  // <local-command-stdout> is command program output, never user input. The
+  // explicit drop rule must suppress it even when it reaches a prompt shape
+  // with a DISTINCT promptId (i.e. the `<command-name>` promptId-dedup safety
+  // net doesn't apply) — proving the drop is order- and grouping-independent.
+  it('Claude Code: drops <local-command-stdout> even with a standalone promptId', () => {
+    const events = [
+      {
+        type: 'user', promptId: 'standalone-stdout', uuid: 'u1',
+        message: { role: 'user', content: '<local-command-stdout>Set model to Opus 4.8</local-command-stdout>' },
+      },
+    ];
+    expect(extractUserPromptRecords('claude-code', events)).toHaveLength(0);
+  });
 });
 
 describe('classifyNextPromptKind — tail predictions', () => {
