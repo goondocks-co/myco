@@ -462,6 +462,37 @@ describe('StandardJsonlParser', () => {
       expect(turns[1].aiResponse).toBe('edge case handled');
     });
 
+    // Image-bearing queued prompts carry attachment.prompt as a typed-block
+    // ARRAY ([{type:text},{type:image}]), not a string. The walker handles both
+    // (so the batch exists); the parser must too or the image-bearing queued
+    // prompt gets no turn and no response attribution.
+    it('handles queued_command attachment.prompt as a typed-block array (image-bearing queued prompt)', () => {
+      const content = toJsonl([
+        { type: 'user', message: { content: [{ type: 'text', text: 'first' }] }, timestamp: '2026-05-28T10:00:00Z' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'ack' }, { type: 'tool_use', id: 't', name: 'Bash', input: {} }] }, timestamp: '2026-05-28T10:00:05Z' },
+        {
+          type: 'attachment', uuid: 'q-img',
+          attachment: {
+            type: 'queued_command',
+            prompt: [
+              { type: 'text', text: 'look at this screenshot [Image #1]' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+            ],
+          },
+          timestamp: '2026-05-28T10:00:10Z',
+        },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'analyzed the screenshot' }] }, timestamp: '2026-05-28T10:00:20Z' },
+      ]);
+
+      const turns = parser.parseTurns(content);
+
+      expect(turns).toHaveLength(2);
+      expect(turns[1].prompt).toBe('look at this screenshot [Image #1]');
+      expect(turns[1].aiResponse).toBe('analyzed the screenshot');
+      expect(turns[1].images).toHaveLength(1);
+      expect(turns[1].images![0].data).toBe('AAAA');
+    });
+
     it('ignores non-queued attachment entries (no spurious turn)', () => {
       const content = toJsonl([
         { type: 'user', message: { content: [{ type: 'text', text: 'req' }] }, timestamp: '2026-05-28T10:00:00Z' },

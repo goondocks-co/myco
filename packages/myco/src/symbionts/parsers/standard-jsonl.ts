@@ -41,10 +41,34 @@ export class StandardJsonlParser implements TranscriptParser {
       // uses, so prefix-matching in populateBatchResponses lines the response
       // up with the steering batch.
       if (entry.type === 'attachment') {
-        const attachment = entry.attachment as { type?: string; prompt?: string } | undefined;
-        if (attachment?.type === 'queued_command' && typeof attachment.prompt === 'string' && attachment.prompt.trim()) {
-          if (current) turns.push(current);
-          current = { prompt: attachment.prompt.trim().slice(0, PROMPT_PREVIEW_CHARS), toolCount: 0, timestamp };
+        const attachment = entry.attachment as
+          | { type?: string; prompt?: string | Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> }
+          | undefined;
+        if (attachment?.type === 'queued_command') {
+          // attachment.prompt is a plain string for text-only queued prompts,
+          // OR a typed-block array when the queued prompt carries an image
+          // ([{type:'text'}, {type:'image'}]). The prompt-kind walker handles
+          // both via extractText (first text block), so the batch exists either
+          // way; mirror that here or the image-bearing queued prompt gets no
+          // turn and thus no response attribution.
+          const raw = attachment.prompt;
+          let rawText = '';
+          let images: TranscriptImage[] = [];
+          if (typeof raw === 'string') {
+            rawText = raw;
+          } else if (Array.isArray(raw)) {
+            rawText = (raw.find((b) => b.type === 'text' && b.text)?.text) ?? '';
+            images = raw
+              .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
+              .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
+          }
+          if (rawText.trim()) {
+            if (current) turns.push(current);
+            const promptText = (this.opts.stripImageTextRefs ? rawText.replace(IMAGE_TEXT_REF_PATTERN, '') : rawText)
+              .trim()
+              .slice(0, PROMPT_PREVIEW_CHARS);
+            current = { prompt: promptText, toolCount: 0, timestamp, ...(images.length > 0 ? { images } : {}) };
+          }
         }
         // Other attachment kinds (image side-logs, etc.) carry no turn text.
         continue;
