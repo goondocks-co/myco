@@ -60,7 +60,18 @@ export class StandardJsonlParser implements TranscriptParser {
         if (Array.isArray(msg?.content)) {
           const textParts = msg!.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text!);
           const text = textParts.join('\n').trim();
-          if (text) current.aiResponse = text;
+          if (text) {
+            // A single turn can produce multiple assistant entries when text
+            // alternates with tool_use (text → tool → text → tool → text → …).
+            // Overwriting would lose every text fragment except the last, which
+            // is what the UI's stale-looking "response previews" surface: a
+            // trailing one-liner instead of the assistant's actual response.
+            // Concat with a blank line so the reconstructed turn round-trips
+            // multi-block content into prompt_batches.response_summary.
+            current.aiResponse = current.aiResponse
+              ? `${current.aiResponse}\n\n${text}`
+              : text;
+          }
           current.toolCount += msg!.content.filter((b) => b.type === 'tool_use').length;
         }
       }

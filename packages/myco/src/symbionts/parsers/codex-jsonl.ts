@@ -153,7 +153,15 @@ export class CodexJsonlParser implements TranscriptParser {
           .filter((b) => b.type === 'output_text' && b.text)
           .map((b) => b.text!);
         const text = textParts.join('\n').trim();
-        if (text) current.aiResponse = text;
+        if (text) {
+          // Append rather than overwrite — multi-message turns (text → tool →
+          // text → tool → text → …) emit separate assistant entries and
+          // overwriting collapses the turn to its last fragment. Matches the
+          // `update_plan` envelope path above which already uses this shape.
+          current.aiResponse = current.aiResponse
+            ? `${current.aiResponse}\n\n${text}`
+            : text;
+        }
       }
       // role === 'developer' is silently skipped
     }

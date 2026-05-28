@@ -97,11 +97,17 @@ function parseCursorJsonl(content: string): TranscriptTurn[] {
  * mask internal tool-reasoning / thinking. The real response text stays
  * alongside the marker; strip trailing and stand-alone occurrences so the
  * captured summary is the user-visible text only.
+ *
+ * Collapses runs of 3+ newlines that result from removing standalone
+ * `[REDACTED]` lines mid-transcript — without that pass, a multi-entry
+ * Cursor turn whose intermediate entries were entirely redacted leaves
+ * a stack of blank lines between the surviving fragments.
  */
 function stripCursorRedactionMarkers(text: string): string {
   return text
     .replace(/(^|\n)\s*\[REDACTED\]\s*(?=\n|$)/g, '')
     .replace(/\s*\[REDACTED\]\s*$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 

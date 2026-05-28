@@ -346,5 +346,45 @@ describe('StandardJsonlParser', () => {
       expect(turns[0].toolCount).toBe(3);
       expect(turns[0].aiResponse).toBe('All done.');
     });
+
+    // Surfaced 2026-05-28 via live dogfood smoke: a multi-block assistant turn
+    // (text → tool_use → text → tool_use → text → …) emits one JSONL entry per
+    // text/tool boundary, so the parser walks several entries that each carry
+    // a text fragment. The pre-fix `current.aiResponse = text` overwrote with
+    // each new entry, leaving only the trailing fragment in response_summary.
+    // The Sessions UI then surfaced "Test in flight…" — an interim status —
+    // as the apparent response to a turn that actually ended with a full
+    // implementation summary. Asserts the parser concatenates every text
+    // fragment with a blank-line separator so the full turn round-trips.
+    it('concatenates text fragments across alternating text/tool assistant entries', () => {
+      const content = toJsonl([
+        {
+          type: 'user',
+          message: { content: [{ type: 'text', text: 'Multi-step task' }] },
+          timestamp: '2026-03-15T10:00:00Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'First thought.' }, { type: 'tool_use', id: 't1', name: 'Read', input: {} }] },
+          timestamp: '2026-03-15T10:00:10Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Second thought.' }, { type: 'tool_use', id: 't2', name: 'Bash', input: {} }] },
+          timestamp: '2026-03-15T10:00:20Z',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Final answer.' }] },
+          timestamp: '2026-03-15T10:00:30Z',
+        },
+      ]);
+
+      const turns = parser.parseTurns(content);
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0].toolCount).toBe(2);
+      expect(turns[0].aiResponse).toBe('First thought.\n\nSecond thought.\n\nFinal answer.');
+    });
   });
 });
