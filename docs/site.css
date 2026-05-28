@@ -1425,6 +1425,34 @@ section.band + section.band { padding-top: 0; }
 .doc-card:hover .go::after { transform: translateX(3px); }
 
 /* ----------------------------------------------------------------------------
+   Sponsor band
+   ---------------------------------------------------------------------------- */
+
+.sponsor-band {
+  padding: 72px 0;
+  border-top: 1px solid var(--outline-variant);
+}
+.sponsor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 48px;
+}
+.sponsor-copy .sec-title {
+  margin-top: 16px;
+  font-size: 36px;
+}
+.sponsor-copy .sec-lede {
+  max-width: 720px;
+}
+.sponsor-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ----------------------------------------------------------------------------
    CTA band
    ---------------------------------------------------------------------------- */
 
@@ -1627,6 +1655,8 @@ section.band + section.band { padding-top: 0; }
   .lifecycle-line { display: none; }
   .lifecycle-payoff { grid-template-columns: 1fr; }
   .docs-grid { grid-template-columns: repeat(2, 1fr); }
+  .sponsor-row { grid-template-columns: 1fr; align-items: start; }
+  .sponsor-actions { justify-content: flex-start; }
   .agents-grid { grid-template-columns: repeat(3, 1fr); }
   .features { grid-template-columns: 1fr; }
 }

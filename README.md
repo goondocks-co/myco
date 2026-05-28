@@ -11,6 +11,7 @@
   <a href="https://github.com/goondocks-co/myco/actions/workflows/publish.yml"><img src="https://github.com/goondocks-co/myco/actions/workflows/publish.yml/badge.svg" alt="Release"></a>
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
+  <a href="https://github.com/sponsors/goondocks-co"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-22c55e" alt="Sponsor Myco"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
   <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20VS%20Code%20%7C%20Antigravity%20%7C%20Windsurf%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | VS Code | Antigravity | Windsurf | OpenCode | Pi">
 </p>
