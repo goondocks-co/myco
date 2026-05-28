@@ -16,7 +16,7 @@ user's machine.
 
 This is the same pattern esbuild, swc, rollup, and the Bun runtime use.
 
-Product support is narrower than package availability for 1.0: macOS is the primary supported platform, while Linux and Windows packages are published for early testing and remain experimental.
+Product support is narrower than package availability in the current release: macOS is the primary supported platform, while Linux and Windows packages are published for early testing and remain experimental.
 
 ## Why
 

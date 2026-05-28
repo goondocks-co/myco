@@ -5,7 +5,7 @@ $Package = "@goondocks/myco"
 $MinNodeMajor = 22
 
 Write-Host "Myco installer — Windows" -ForegroundColor Cyan
-Write-Host "Windows support is experimental in Myco 1.0. The macOS path is the primary supported release target." -ForegroundColor Yellow
+Write-Host "Windows support is experimental in the current Myco release. The macOS path is the primary supported release target." -ForegroundColor Yellow
 Write-Host "Please report Windows install issues; some service and launcher behavior is still being hardened." -ForegroundColor Yellow
 Write-Host ""
 
@@ -50,7 +50,7 @@ npm install -g $Package
 Write-Host ""
 Write-Host "Myco installed successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Reminder: Windows support is experimental in Myco 1.0." -ForegroundColor Yellow
+Write-Host "  Reminder: Windows support is experimental in the current Myco release." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  The local service is starting, and supported coding agents on this"
 Write-Host "  machine are being connected to Myco."

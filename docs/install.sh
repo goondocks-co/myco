@@ -37,7 +37,7 @@ esac
 
 info "Myco installer — $PLATFORM"
 if [ "$PLATFORM" = "linux" ]; then
-  warn "Linux support is experimental in Myco 1.0."
+  warn "Linux support is experimental in the current Myco release."
   warn "The macOS path is the primary supported release target; please report Linux install issues."
 fi
 echo ""
@@ -107,7 +107,7 @@ echo "  machine are being connected to Myco."
 echo "  Git projects register automatically when agents start working in them."
 if [ "$PLATFORM" = "linux" ]; then
   echo ""
-  warn "  Reminder: Linux service support is experimental in Myco 1.0."
+  warn "  Reminder: Linux service support is experimental in the current Myco release."
 fi
 echo ""
 echo "  Open the dashboard to confirm setup and configure intelligence providers:"

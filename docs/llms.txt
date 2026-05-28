@@ -4,7 +4,7 @@
 
 Myco is not a replacement coding agent or hosted harness. It lives with the project, captures development sessions into a local Grove, and routes useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Sync mirrors connected teammates' Grove knowledge through Cloudflare and exposes synced knowledge to cloud agents through secure MCP.
 
-The supported 1.0 path is macOS. Linux and Windows packages are published for early testing and are experimental.
+The supported path for the current release is macOS. Linux and Windows packages are published for early testing and are experimental.
 
 ## Start here
 
