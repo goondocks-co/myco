@@ -659,7 +659,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "extract"
         ],
         "readOnly": true,
-        "preCondition": "has-recent-spore-activity",
+        "preCondition": "has-recent-consolidatable-spores",
         "onItemError": "skip"
       },
       {
@@ -678,7 +678,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "consolidate-shortlist"
         ],
-        "preCondition": "has-recent-spore-activity",
+        "preCondition": "has-recent-consolidatable-spores",
         "onItemError": "skip"
       },
       {

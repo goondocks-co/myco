@@ -11,23 +11,28 @@
  * in `PhasePreConditionSchema` in schemas.ts, register the check here.
  */
 
-import { countSporesInProjectSince } from '@myco/db/queries/spores.js';
+import {
+  countConsolidatableSporesInProjectSince,
+  countSporesInProjectSince,
+} from '@myco/db/queries/spores.js';
 import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { PhasePreConditionKind } from './types.js';
 
 /**
- * Window (in seconds) for `has-recent-spore-activity` — counts spores
- * created in the trailing 24 hours. Sized so a project with no recent
- * curation activity skips consolidation work, but a project with even
- * a single user session that produced spores still runs the phase.
+ * Window (in seconds) for `has-recent-spore-activity` and
+ * `has-recent-consolidatable-spores` — counts spores created in the
+ * trailing 24 hours. Sized so a project with no recent curation activity
+ * skips dependent phases, but a project with even a single user session
+ * that produced spores still runs them.
  */
 export const RECENT_SPORE_ACTIVITY_WINDOW_SECONDS = 24 * 60 * 60;
 
 /**
- * Minimum count of active spores in the activity window required for
- * `has-recent-spore-activity` to pass. Three is the floor for any kind
- * of clustering ("3+ related spores" is the wisdom-creation rule), so
- * dropping below it means even the best case has nothing to consolidate.
+ * Minimum count of qualifying spores in the activity window required
+ * for either spore-activity preCondition to pass. Three is the floor
+ * for any kind of clustering ("3+ related spores" is the wisdom-creation
+ * rule), so dropping below it means even the best case has nothing to
+ * consolidate.
  */
 export const RECENT_SPORE_ACTIVITY_MIN_COUNT = 3;
 
@@ -51,6 +56,25 @@ export function checkPhasePreCondition(
         reason: passed
           ? `${count} active spores in last 24h`
           : `Only ${count} active spores in last 24h (need ≥${RECENT_SPORE_ACTIVITY_MIN_COUNT})`,
+      };
+    }
+    case 'has-recent-consolidatable-spores': {
+      // Tighter than has-recent-spore-activity: counts only spores the
+      // consolidate LLM phase can actually act on — active, non-wisdom
+      // (can't consolidate wisdoms into more wisdom), AND embedded
+      // (semantic search can't return un-embedded rows). Filters out the
+      // common no-op case where extract just created spores that haven't
+      // been embedded yet — the LLM would search, find nothing, and SKIP
+      // after burning $0.07–0.10. This gate makes that decision in zero
+      // LLM turns.
+      const since = Math.floor(Date.now() / 1000) - RECENT_SPORE_ACTIVITY_WINDOW_SECONDS;
+      const count = countConsolidatableSporesInProjectSince(scope, since);
+      const passed = count >= RECENT_SPORE_ACTIVITY_MIN_COUNT;
+      return {
+        passed,
+        reason: passed
+          ? `${count} consolidatable spores in last 24h (active, non-wisdom, embedded)`
+          : `Only ${count} consolidatable spores in last 24h (need ≥${RECENT_SPORE_ACTIVITY_MIN_COUNT} active, non-wisdom, embedded)`,
       };
     }
     default: {

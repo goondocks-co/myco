@@ -45,7 +45,9 @@ export interface AgentDefinition {
  * harness call is made — saving the turns that would otherwise be spent
  * discovering "nothing to do" via tool calls.
  */
-export type PhasePreConditionKind = 'has-recent-spore-activity';
+export type PhasePreConditionKind =
+  | 'has-recent-spore-activity'
+  | 'has-recent-consolidatable-spores';
 
 export interface PhaseDefinition {
   name: string;

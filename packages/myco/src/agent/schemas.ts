@@ -170,7 +170,10 @@ const MapPhaseSinkSchema = z.object({
 });
 
 /** Phase-level preCondition kinds. See PhasePreConditionKind in types.ts. */
-const PhasePreConditionSchema = z.enum(['has-recent-spore-activity']);
+const PhasePreConditionSchema = z.enum([
+  'has-recent-spore-activity',
+  'has-recent-consolidatable-spores',
+]);
 
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({

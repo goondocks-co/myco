@@ -225,7 +225,7 @@ phases:
     # consolidate phases exist to merge/supersede related spores, which
     # is impossible without at least 3 active spores in the recent
     # window. The check is project-scoped SQL, runs in zero LLM turns.
-    preCondition: has-recent-spore-activity
+    preCondition: has-recent-consolidatable-spores
     prompt: |
       Find consolidation candidates. This is the cheap retrieval pass —
       a later phase (`consolidate-write`) does any actual wisdom creation
@@ -286,7 +286,7 @@ phases:
     # Same gate as the shortlist — when there's no recent activity, neither
     # phase should spawn (otherwise this phase pays sonnet rates to discover
     # nothing in the empty shortlist).
-    preCondition: has-recent-spore-activity
+    preCondition: has-recent-consolidatable-spores
     prompt: |
       Execute the shortlist from `consolidate-shortlist`. The judgment
       work — content synthesis, preserving specific details — needs the
