@@ -399,7 +399,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
         onAbort(err);
         try { controller.error(err); } catch { /* already errored */ }
         try { reader.releaseLock(); } catch { /* ignore */ }
-        try { await body.cancel(err); } catch { /* ignore */ }
+        try { void body.cancel(err).catch(() => {}); } catch { /* ignore */ }
       }
     },
     cancel(reason) {
