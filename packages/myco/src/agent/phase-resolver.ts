@@ -30,6 +30,14 @@ import type {
 export interface MycoYamlPhaseOverrides {
   [phaseName: string]: {
     provider?: ProviderConfig;
+    /**
+     * Tier override applied at the grove.yaml layer (task config is
+     * grove-scoped). Outranks the YAML phase default but loses to a
+     * runtime override. Resolves through the provider's `reasoning_map`
+     * at execution time — prefer this over `model:` for tier-class
+     * changes.
+     */
+    reasoningLevel?: ReasoningLevel;
     model?: string;
     maxTurns?: number;
   };
@@ -68,11 +76,12 @@ function firstDefined<T>(lookups: Array<() => T | undefined>): T | undefined {
  *      ?? config.model`
  *
  * Reasoning precedence (highest → lowest):
- *   1. `options.executionOverrides.phases[name].reasoningLevel`
- *   2. `phase.reasoningLevel` (task YAML)
- *   3. `options.executionOverrides.reasoningLevel`
- *   4. `config.execution.reasoningLevel`
- *   5. `config.reasoningLevel`
+ *   1. `options.executionOverrides.phases[name].reasoningLevel` — run override
+ *   2. `phaseProviderOverrides[name].reasoningLevel` — grove.yaml per-phase
+ *   3. `phase.reasoningLevel` (task YAML)
+ *   4. `options.executionOverrides.reasoningLevel`
+ *   5. `config.execution.reasoningLevel`
+ *   6. `config.reasoningLevel`
  *
  * maxTurns precedence (highest → lowest):
  *   1. `options.executionOverrides.phases[name].maxTurns`
@@ -98,8 +107,13 @@ export function resolvePhaseExecution(
     () => provider,
   ]);
 
+  // Precedence mirrors the existing maxTurns chain: runtime > grove.yaml
+  // override > YAML default. Putting mycoYamlPhase ABOVE phase.reasoningLevel
+  // is what makes a per-phase tier override (e.g. bump extract from low to
+  // default in grove.yaml) take effect without editing the built-in YAML.
   const effectiveReasoning = firstDefined<ReasoningLevel>([
     () => runPhaseOverride?.reasoningLevel,
+    () => mycoYamlPhase?.reasoningLevel,
     () => phase.reasoningLevel,
     () => topOverride?.reasoningLevel,
     () => config.execution?.reasoningLevel,

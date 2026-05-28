@@ -70,8 +70,16 @@ export interface ProviderConfig {
   context_length?: number;
 }
 
+export type ReasoningLevelUi = 'low' | 'default' | 'high';
+
 export interface PhaseOverride {
   provider?: ProviderConfig;
+  /**
+   * Tier override — preferred over `model` for tier-class changes.
+   * Resolves through the provider's reasoning_map at execution time,
+   * so a future model swap (sonnet 4.6 → 4.7) propagates automatically.
+   */
+  reasoningLevel?: ReasoningLevelUi;
   model?: string;
   maxTurns?: number;
 }
