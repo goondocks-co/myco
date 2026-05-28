@@ -77,6 +77,22 @@ export interface PhaseDefinition {
    * prevent paying for LLM turns that would only discover "no work."
    */
   preCondition?: PhasePreConditionKind;
+  /**
+   * Optional cross-phase skip gate. When set, the phase loop reads the
+   * named upstream phase's emitted `metadata[key]` and skips THIS phase
+   * unless it strictly equals `equals`. Runs BEFORE preCondition and
+   * before any harness invocation — zero LLM turns when the gate
+   * mismatches.
+   *
+   * Default-to-skip: missing upstream metadata, missing key, or value
+   * mismatch all skip. The upstream phase must call `phase_emit_metadata`
+   * (and therefore must list it in its `tools:` array).
+   *
+   * The upstream phase MUST be in an earlier wave than this phase —
+   * `priorPhaseResults` only carries completed waves. Forward and
+   * same-wave gates throw at YAML load time.
+   */
+  gateOnPriorMetadata?: PhaseGateOnPriorMetadata;
 
   // --- Map mode (mode === 'map') -------------------------------------------
   /** Phase execution mode. Unset/`agent` = free-form (existing). `map` = drain mode. */
@@ -121,6 +137,27 @@ export interface PhaseResult {
    * the budget the run was given against the budget needed.
    */
   allowedMaxTurns?: number;
+  /**
+   * Key→value channel populated by the phase via `phase_emit_metadata`
+   * tool calls. Downstream phases gate on this via
+   * `PhaseDefinition.gateOnPriorMetadata`. Persisted on PhaseCheckpoint
+   * so resumed runs preserve the gate decision.
+   */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Cross-phase skip gate descriptor. See `PhaseDefinition.gateOnPriorMetadata`.
+ * Strict-equality only in v1 — extend to `oneOf`/`notEquals` only when a
+ * real consumer surfaces.
+ */
+export interface PhaseGateOnPriorMetadata {
+  /** Name of the upstream phase whose metadata is the gate signal. */
+  phase: string;
+  /** Key in that phase's metadata to inspect. */
+  key: string;
+  /** Skip this phase unless metadata[key] strictly equals this value. */
+  equals: string | number | boolean | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,13 @@ export interface PhaseCheckpoint {
   capHit?: boolean;
   /** The maxTurns budget the SDK enforced for this phase (post-overrides). */
   allowedMaxTurns?: number;
+  /**
+   * Metadata emitted by the phase via `phase_emit_metadata`. Persisted
+   * so a resumed run preserves the same gate decisions for downstream
+   * phases — gates evaluate against this checkpoint, not against a
+   * re-execution of the upstream phase.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 export interface RunCheckpointState {
@@ -104,6 +111,7 @@ export function checkpointResultsForResume(
       costData: phase.costData,
       usage: phase.usage,
       sessionRef: phase.sessionRef,
+      metadata: phase.metadata,
     }));
 }
 
@@ -132,11 +140,12 @@ export function buildPhaseResult(input: {
   sessionData?: unknown;
   capHit?: boolean;
   allowedMaxTurns?: number;
+  metadata?: Record<string, unknown>;
 }): PhaseResult & { sessionData?: unknown } {
   const {
     name, status, summary, usage, costData,
     turnsUsed, tokensUsed, costUsd, costSource,
-    sessionRef, sessionData, capHit, allowedMaxTurns,
+    sessionRef, sessionData, capHit, allowedMaxTurns, metadata,
   } = input;
   return {
     name,
@@ -150,6 +159,7 @@ export function buildPhaseResult(input: {
     ...(sessionData !== undefined ? { sessionData } : {}),
     ...(capHit === true ? { capHit: true } : {}),
     ...(allowedMaxTurns !== undefined ? { allowedMaxTurns } : {}),
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     summary,
   };
 }

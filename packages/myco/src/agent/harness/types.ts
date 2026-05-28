@@ -24,6 +24,13 @@ export interface HarnessToolSurface {
    */
   dryRun?: boolean;
   /**
+   * Per-phase metadata accumulator. Threaded through from the phase loop
+   * to the `phase_emit_metadata` tool so calls land back on the phase
+   * loop's PhaseResult. Optional — absent for map-phase per-item surfaces,
+   * single-query tasks, and anywhere the cross-phase gate is unused.
+   */
+  metadataAccumulator?: Map<string, unknown>;
+  /**
    * Pre-materialized tool list. When set, the harness adapter MUST use
    * these tools as-is rather than rebuilding from `toolNames` via
    * createVaultTools. Required for map-phase mode, which builds a

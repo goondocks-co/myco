@@ -540,6 +540,47 @@ describe('executePhasedQuery', () => {
     expect(capturedExecuteInputs).toHaveLength(0);
   });
 
+  it('gateOnPriorMetadata skips downstream phase when upstream metadata does not match — zero harness invocations', async () => {
+    // upstream 'a' runs and (in this test scenario) does NOT emit
+    // metadata; downstream 'b' has a gate expecting selectedTier=1
+    // which won't be there. Expect b status='skipped' and only 'a'
+    // hits the harness.
+    const phases = [
+      phase('a'),
+      phase('b', {
+        dependsOn: ['a'],
+        gateOnPriorMetadata: { phase: 'a', key: 'selectedTier', equals: 1 },
+      }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.a.status).toBe('completed');
+    expect(checkpointState.phases.b.status).toBe('skipped');
+    // Only 'a' invoked the harness — 'b' short-circuited.
+    expect(capturedExecuteInputs).toHaveLength(1);
+  });
+
+  it('gateOnPriorMetadata default-to-skip when upstream is missing entirely', async () => {
+    // 'b' gates on a phase that doesn't exist in priorPhaseResults
+    // (load-time validation normally catches this, but the runtime
+    // gate must also default-to-skip rather than fail-open).
+    const phases = [
+      phase('a'),
+      phase('b', {
+        dependsOn: ['a'],
+        // Use 'a' but expect a value 'a' never emits — same default-to-skip path.
+        gateOnPriorMetadata: { phase: 'a', key: 'never-emitted', equals: 'expected' },
+      }),
+    ];
+    const checkpointState = baseCheckpoint();
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+    expect(checkpointState.phases.b.status).toBe('skipped');
+    expect(checkpointState.phases.b.summary).toContain('did not match');
+    expect(checkpointState.phases.b.summary).toContain('missing');
+  });
+
   it('invokes persistCheckpoints between waves', async () => {
     const phases = [phase('a'), phase('b')];
     const persistCheckpoints = vi.fn().mockResolvedValue(undefined);

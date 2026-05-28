@@ -187,6 +187,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
         embeddingManager: toolSurface.embeddingManager,
         readOnly: toolSurface.readOnly,
         dryRun: toolSurface.dryRun,
+        metadataAccumulator: toolSurface.metadataAccumulator,
       },
     );
   }
@@ -197,6 +198,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
     vaultDir: toolSurface.vaultDir,
     requestContext: toolSurface.requestContext,
     dryRun: toolSurface.dryRun,
+    metadataAccumulator: toolSurface.metadataAccumulator,
   });
 }
 

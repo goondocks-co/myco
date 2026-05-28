@@ -133,18 +133,54 @@ export interface ExecutePhaseInput {
   provider?: ProviderConfig;
   sessionId?: string;
   sessionData?: unknown;
+  /**
+   * Results from earlier waves. Carried here so the cross-phase
+   * `gateOnPriorMetadata` check can read upstream metadata before the
+   * harness is invoked. (composePhasePrompt also consumes this via the
+   * wave loop, but the gate runs before the prompt is composed so it
+   * must arrive separately.)
+   */
+  priorPhaseResults?: PhaseResult[];
 }
 
 export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
+  const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData, priorPhaseResults } = input;
 
   if (phase.mode === 'map') {
     return runMapPhaseAdapter(input);
   }
 
   const logger = ctx.options?.logger;
+
+  // Cross-phase skip gate — runs FIRST, before preCondition. Reads the
+  // named upstream phase's emitted metadata; skip THIS phase unless the
+  // gate value matches. Default-to-skip: missing upstream, missing key,
+  // or value mismatch all skip. Zero LLM turns when the gate doesn't
+  // match. See PhaseDefinition.gateOnPriorMetadata for the contract.
+  if (phase.gateOnPriorMetadata) {
+    const gate = phase.gateOnPriorMetadata;
+    const upstream = priorPhaseResults?.find((p) => p.name === gate.phase);
+    const actual = upstream?.metadata?.[gate.key];
+    if (actual !== gate.equals) {
+      logger?.info(
+        'agent.phase.skip-gate',
+        `Phase ${phase.name} skipped: gate "${gate.phase}.${gate.key}" expected ${JSON.stringify(gate.equals)}, got ${actual === undefined ? 'missing' : JSON.stringify(actual)}`,
+        {
+          runId: ctx.runId,
+          phase: phase.name,
+          gate,
+          actualMissing: actual === undefined,
+        },
+      );
+      return buildPhaseResult({
+        name: phase.name,
+        status: 'skipped',
+        summary: `Skipped (gate "${gate.phase}.${gate.key}" did not match): expected ${JSON.stringify(gate.equals)}, got ${actual === undefined ? 'missing' : JSON.stringify(actual)}`,
+      });
+    }
+  }
 
   // Mechanical per-phase preCondition. Runs before harness invocation so a
   // false check costs zero LLM turns. Required phases respect the check
@@ -279,6 +315,7 @@ export async function executePhase(
       costData,
       sessionRef: result.sessionRef,
       sessionData: result.sessionData,
+      metadata: snapshotMetadata(toolSurface),
     });
   } catch (err) {
     const abortReason = abortReasonMessage(ctx.abortController);
@@ -313,8 +350,24 @@ export async function executePhase(
       sessionRef: telemetry?.sessionRef,
       capHit,
       allowedMaxTurns: phase.maxTurns,
+      // Carry over any metadata the phase emitted before the failure —
+      // a phase may have committed selectedTier before throwing on a
+      // later turn. Downstream gates still see the partial commit.
+      metadata: snapshotMetadata(toolSurface),
     });
   }
+}
+
+/**
+ * Snapshot the per-phase metadata accumulator on the tool surface into a
+ * plain object suitable for PhaseResult.metadata. Returns undefined when
+ * no accumulator was set up (phase doesn't include `phase_emit_metadata`
+ * in its tools list) or no values were committed.
+ */
+function snapshotMetadata(toolSurface: HarnessToolSurface): Record<string, unknown> | undefined {
+  const accumulator = toolSurface.metadataAccumulator;
+  if (!accumulator || accumulator.size === 0) return undefined;
+  return Object.fromEntries(accumulator);
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +707,15 @@ export async function executePhasedQuery(
         updatedAt: epochSeconds(),
       };
 
+      // Allocate a per-phase metadata accumulator only when the phase
+      // opts in by including `phase_emit_metadata` in its tools list.
+      // Absence keeps the toolSurface (and harness adapter chain) shape
+      // identical to what existed before this feature — phases that
+      // don't emit metadata pay zero overhead.
+      const metadataAccumulator = phase.tools?.includes('phase_emit_metadata')
+        ? new Map<string, unknown>()
+        : undefined;
+
       return {
         phase,
         phasePrompt,
@@ -673,6 +735,7 @@ export async function executePhasedQuery(
           readOnly: phase.readOnly,
           embeddingManager: ctx.embeddingManager,
           dryRun: config.dryRun ?? false,
+          metadataAccumulator,
         },
       };
     });
@@ -692,6 +755,9 @@ export async function executePhasedQuery(
           provider: waveInput.phaseProvider,
           sessionId: waveInput.sessionId,
           sessionData: waveInput.sessionData,
+          // Carry prior-wave results so executePhase's gateOnPriorMetadata
+          // check has visibility into upstream emitted metadata.
+          priorPhaseResults: phaseResults,
         }),
       ),
     );
@@ -745,6 +811,12 @@ export async function executePhasedQuery(
         usage: fulfilled?.usage ?? result.usage,
         ...(result.capHit === true ? { capHit: true } : {}),
         ...(result.allowedMaxTurns !== undefined ? { allowedMaxTurns: result.allowedMaxTurns } : {}),
+        // Persist cross-phase metadata so a resumed run re-evaluates
+        // downstream gates against the SAME upstream commitment, not a
+        // re-execution of the upstream phase.
+        ...(result.metadata && Object.keys(result.metadata).length > 0
+          ? { metadata: result.metadata }
+          : {}),
         updatedAt: epochSeconds(),
       };
       // Skipped phases count as satisfied for downstream wave gating —

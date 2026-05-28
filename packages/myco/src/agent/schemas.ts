@@ -193,6 +193,12 @@ export const PhaseDefinitionSchema = z.object({
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
   preCondition: PhasePreConditionSchema.optional(),
+  gateOnPriorMetadata: z.object({
+    phase: z.string().min(1),
+    key: z.string().min(1),
+    // strict-equality only in v1 — extend when a real consumer surfaces
+    equals: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  }).optional(),
 
   // --- Map mode -------------------------------------------------------------
   mode: z.enum(['agent', 'map']).optional(),

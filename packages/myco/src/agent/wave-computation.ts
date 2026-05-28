@@ -75,6 +75,66 @@ export function computeWaves(phases: PhaseDefinition[]): PhaseDefinition[][] {
   return waves;
 }
 
+/**
+ * Validate that every phase's `gateOnPriorMetadata` references a phase
+ * in an EARLIER wave than the gating phase. `priorPhaseResults` (which
+ * the gate reads) is only populated by completed waves — a same-wave
+ * or forward gate would silently fail at runtime, so we reject at
+ * task-load time with a clear authoring error instead.
+ *
+ * Also rejects self-references and references to unknown phases.
+ * Skipping these checks lets a typo or wave-graph mistake propagate
+ * into production where it shows up as "every run skips this phase
+ * mysteriously."
+ *
+ * Throws on the first violation. Run order matches `phases` so the
+ * error message points at the offending phase, not an arbitrary one.
+ */
+export function validatePhaseGatesAgainstWaves(phases: PhaseDefinition[]): void {
+  const gatingPhases = phases.filter((p) => p.gateOnPriorMetadata);
+  if (gatingPhases.length === 0) return;
+
+  // Compute wave index per phase so we can detect forward/same-wave gates.
+  // Reuses computeWaves to honor whatever dependency graph the task has,
+  // including any orchestrator-driven skip set the caller has already
+  // applied (validator runs on the YAML-loaded shape — pre-orchestrator).
+  const waves = computeWaves(phases);
+  const waveIndex = new Map<string, number>();
+  waves.forEach((wave, i) => wave.forEach((p) => waveIndex.set(p.name, i)));
+  const phaseNames = new Set(phases.map((p) => p.name));
+
+  for (const phase of gatingPhases) {
+    const gate = phase.gateOnPriorMetadata!;
+    if (gate.phase === phase.name) {
+      throw new Error(
+        `Phase "${phase.name}" gateOnPriorMetadata.phase is itself; a phase cannot gate on its own metadata.`,
+      );
+    }
+    if (!phaseNames.has(gate.phase)) {
+      throw new Error(
+        `Phase "${phase.name}" gateOnPriorMetadata.phase "${gate.phase}" is not a phase in this task. ` +
+        `Known phases: ${[...phaseNames].join(', ')}.`,
+      );
+    }
+    const upstreamWave = waveIndex.get(gate.phase);
+    const gatingWave = waveIndex.get(phase.name);
+    if (upstreamWave === undefined || gatingWave === undefined) {
+      // Defensive — computeWaves should always assign both. If not, surface.
+      throw new Error(
+        `Phase "${phase.name}" or its gate target "${gate.phase}" could not be placed in a wave. ` +
+        `Check the dependsOn graph.`,
+      );
+    }
+    if (upstreamWave >= gatingWave) {
+      throw new Error(
+        `Phase "${phase.name}" (wave ${gatingWave}) gateOnPriorMetadata references "${gate.phase}" (wave ${upstreamWave}). ` +
+        `The gate target must be in an earlier wave — priorPhaseResults only carries completed waves. ` +
+        `Add the upstream phase to "${phase.name}"'s dependsOn (directly or transitively) to push it into an earlier wave.`,
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Session ID generation
 // ---------------------------------------------------------------------------
