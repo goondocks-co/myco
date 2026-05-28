@@ -8,6 +8,7 @@ import {
   insertBatchStateless,
   setBatchPromptNumber,
   populateBatchResponses,
+  rehomeSystemActivitiesToHumanAnchor,
   PROMPT_PREFIX_MATCH_CHARS,
   BATCH_KIND,
   PROMPT_BATCH_ORIGIN,
@@ -355,6 +356,11 @@ export class TranscriptMiner {
     if (responses.length > 0) {
       populateBatchResponses(sessionId, responses);
     }
+    // Human-anchoring backstop for tool calls: re-home any activity stranded on
+    // a system-origin batch onto its enclosing human turn (legacy data + live
+    // races). The live path attributes correctly by construction; this keeps
+    // re-mined/older sessions consistent so the myco agent sees the tool calls.
+    rehomeSystemActivitiesToHumanAnchor(sessionId);
     return result;
   }
 

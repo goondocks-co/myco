@@ -205,6 +205,36 @@ describe('activity query helpers', () => {
       expect(row.prompt_batch_id).toBe(latest.id);
     });
 
+    it('prefers the most-recent HUMAN batch over a newer closed system batch when none is open', () => {
+      // Human-Anchored Turn fallback: with no open batch, a later system
+      // (point-in-time) batch must NOT steal attribution from the human turn
+      // it followed. System batches are excluded from myco-agent analysis, so
+      // activities stranded on them are never incorporated into knowledge.
+      const session = makeSession({ id: 'sess-human-anchor-fallback' });
+      upsertSession(session);
+      const human = insertBatch(makeBatch(session.id, { origin: 'human', started_at: epochNow() - 10 }));
+      const system = insertBatch(makeBatch(session.id, { origin: 'system', started_at: epochNow() }));
+      const { getDatabase } = require('@myco/db/client.js');
+      const db = getDatabase();
+      db.prepare('UPDATE prompt_batches SET ended_at = ? WHERE id = ?').run(epochNow(), human.id);
+      db.prepare('UPDATE prompt_batches SET ended_at = ? WHERE id = ?').run(epochNow(), system.id);
+
+      const row = insertActivityWithBatch(makeActivity(session.id));
+      // `system` has the higher id but the human turn is the anchor.
+      expect(row.prompt_batch_id).toBe(human.id);
+    });
+
+    it('still attaches to an OPEN batch even if a later HUMAN batch is closed', () => {
+      // Open-first dominates: an open turn is the active turn regardless of
+      // origin. (Post Step-1, only human batches are ever open on the live
+      // path, but the ordering must keep open-first ahead of human-preference.)
+      const session = makeSession({ id: 'sess-open-beats-human-pref' });
+      upsertSession(session);
+      const openHuman = insertBatch(makeBatch(session.id, { origin: 'human', started_at: epochNow() }));
+      const row = insertActivityWithBatch(makeActivity(session.id));
+      expect(row.prompt_batch_id).toBe(openHuman.id);
+    });
+
     it('throws on NOT NULL FK when the session has zero batches (caller must ensureOpenBatch first)', () => {
       // The v43 invariant forbids NULL prompt_batch_id. Callers in the
       // event-handlers module use ensureOpenBatch() to fabricate a row

@@ -105,4 +105,48 @@ describe('handleUserPrompt steering nesting', () => {
     expect(steer.kind).toBe('steering');
     expect(steer.parent_prompt_batch_id).toBe(parentId);
   });
+
+  // Human-Anchored Turn: a system-origin prompt is recorded as a point-in-time,
+  // already-closed batch. It must NOT close the open human batch (the human turn
+  // stays the active anchor for activities/responses), and the system batch is
+  // born closed (ended_at set), so it is never the "most-recent-open" target.
+  describe('system-origin prompts are point-in-time closed records', () => {
+    it('does not close the open human batch when a system prompt arrives', () => {
+      const { batchId: humanId } = handleUserPrompt('s1', 'real work', { kind: 'initial', origin: 'human' });
+      handleUserPrompt('s1', '<task-notification>done', { kind: 'initial', origin: 'system' });
+      const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
+      const human = batches.find((b) => b.id === humanId)!;
+      // The human turn remains the active anchor.
+      expect(human.ended_at).toBeNull();
+    });
+
+    it('records the system batch closed (ended_at == created_at)', () => {
+      const { batchId: sysId } = handleUserPrompt('s1', '<task-notification>done', { kind: 'initial', origin: 'system' });
+      const sys = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === sysId)!;
+      expect(sys.ended_at).not.toBeNull();
+      expect(sys.ended_at).toBe(sys.created_at);
+    });
+
+    it('records an agent_dispatch (teammate-message) batch closed too', () => {
+      const { batchId: agentId } = handleUserPrompt('s1', '<teammate-message ...', { kind: 'initial', origin: 'agent_dispatch' });
+      const agent = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === agentId)!;
+      expect(agent.ended_at).not.toBeNull();
+    });
+
+    it('leaves the human batch as the only open anchor after interleaved system events', () => {
+      handleUserPrompt('s1', 'human turn', { kind: 'initial', origin: 'human' });
+      handleUserPrompt('s1', '<task-notification>a', { kind: 'initial', origin: 'system' });
+      handleUserPrompt('s1', '<task-notification>b', { kind: 'initial', origin: 'system' });
+      const open = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE }).filter((b) => b.ended_at === null);
+      expect(open).toHaveLength(1);
+      expect(open[0].origin).toBe('human');
+    });
+
+    it('a human prompt still closes the prior human turn (normal turn boundary)', () => {
+      const { batchId: firstId } = handleUserPrompt('s1', 'first', { kind: 'initial', origin: 'human' });
+      handleUserPrompt('s1', 'second', { kind: 'initial', origin: 'human' });
+      const first = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === firstId)!;
+      expect(first.ended_at).not.toBeNull();
+    });
+  });
 });

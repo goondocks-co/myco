@@ -154,6 +154,28 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
               <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
             )}
 
+            {/* Myco tool calls made during this turn — surfaces CLI-routed calls
+                (recorded as "Bash" activities) and MCP calls under their canonical
+                Myco tool name + op, the way the myco agent attributes them. */}
+            {batch.myco_tool_calls && batch.myco_tool_calls.length > 0 && (
+              <div className="px-4 pb-3 flex flex-wrap items-center gap-1.5">
+                <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant mr-0.5">
+                  Myco
+                </span>
+                {batch.myco_tool_calls.map((c) => (
+                  <span
+                    key={`${c.tool_name}:${c.op}`}
+                    className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary"
+                    title={c.op ? `${c.tool_name} (${c.op})` : c.tool_name}
+                  >
+                    {c.tool_name}
+                    {c.op && <span className="text-primary/60">· {c.op}</span>}
+                    {c.count > 1 && <span className="text-primary/60">×{c.count}</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+
             {/* Steering / interrupt children nested beneath parent */}
             {steeringChildren.map((child) => (
               <SteeringChildCard key={child.id} child={child} />

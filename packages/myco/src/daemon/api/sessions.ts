@@ -1,6 +1,7 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities, countActivitiesBySessions } from '@myco/db/queries/activities.js';
+import { getBatchMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js';
@@ -134,7 +135,19 @@ export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteR
   const origins = parseOriginsQuery(req.query.origins);
   const rawBatches = listBatchesBySession(req.params.id, { scope, origins });
   const states = releaseStateAnnotationMap('prompt_batches', rawBatches.map((b) => String(b.id)), scope);
-  const batches = rawBatches.map((b) => ({ ...b, ...releaseStateField(states.get(String(b.id))) }));
+  // Per-batch Myco tool calls (MCP + CLI), so the UI surfaces the actual Myco
+  // tool under the human turn it ran in instead of a generic "Bash" activity.
+  const toolCalls = new Map<number, Array<{ tool_name: string; op: string; count: number }>>();
+  for (const row of getBatchMycoToolCalls(req.params.id)) {
+    const list = toolCalls.get(row.prompt_batch_id) ?? [];
+    list.push({ tool_name: row.tool_name, op: row.op, count: row.count });
+    toolCalls.set(row.prompt_batch_id, list);
+  }
+  const batches = rawBatches.map((b) => ({
+    ...b,
+    ...releaseStateField(states.get(String(b.id))),
+    myco_tool_calls: toolCalls.get(b.id) ?? [],
+  }));
   return { body: batches };
 }
 

@@ -109,6 +109,12 @@ export interface BatchRow {
   kind: string;
   origin: PromptBatchOrigin;
   release_state?: SessionReleaseState;
+  /**
+   * Myco tool calls made during this batch (MCP + CLI), each canonicalized to
+   * its tool name + op. Lets the UI surface the actual Myco tool under the
+   * human turn it ran in instead of a generic "Bash" activity. Empty when none.
+   */
+  myco_tool_calls?: Array<{ tool_name: string; op: string; count: number }>;
 }
 
 export interface ActivityRow {

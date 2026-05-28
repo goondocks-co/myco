@@ -415,6 +415,55 @@ export function populateBatchResponses(
 }
 
 /**
+ * Human-anchoring backstop for ACTIVITIES (the tool-call counterpart of
+ * `populateBatchResponses`' response rolling).
+ *
+ * The live path (Step 1) now keeps the human batch open and records system
+ * batches closed, so `insertActivityWithBatch` lands tool calls on the human
+ * turn by construction. This reconcile pass re-homes any activity still
+ * attributed to a system-origin batch onto the nearest preceding human batch —
+ * covering (a) legacy/again-mined data captured before the live fix, and
+ * (b) live races where a system batch was briefly the active turn.
+ *
+ * Why it matters: the myco agent reads activities by HUMAN batch (system
+ * batches are excluded from analysis). An activity stranded on a system batch
+ * is invisible to knowledge incorporation. System turns that precede any human
+ * prompt have no anchor and are left in place (the NOT-NULL FK forbids
+ * orphaning them). Idempotent: re-running over reconciled data is a no-op.
+ *
+ * Returns the number of activities re-homed.
+ */
+export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE activities
+        SET prompt_batch_id = (
+          SELECT h.id FROM prompt_batches h
+           WHERE h.session_id = ?
+             AND h.origin = ?
+             AND h.id < activities.prompt_batch_id
+           ORDER BY h.id DESC LIMIT 1
+        )
+      WHERE activities.session_id = ?
+        AND activities.prompt_batch_id IN (
+          SELECT id FROM prompt_batches WHERE session_id = ? AND origin != ?
+        )
+        AND EXISTS (
+          SELECT 1 FROM prompt_batches h
+           WHERE h.session_id = ?
+             AND h.origin = ?
+             AND h.id < activities.prompt_batch_id
+        )`,
+  ).run(
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+    sessionId,
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+  );
+  return info.changes;
+}
+
+/**
  * Get unprocessed batches, ordered by id ASC (insertion order).
  *
  * Supports cursor-based pagination via `after_id` and a `limit` cap.
@@ -648,6 +697,7 @@ export interface StatelessBatchInsert {
   created_at: number;
   user_prompt?: string | null;
   started_at?: number | null;
+  ended_at?: number | null;                 // set for point-in-time (born-closed) batches
   status?: string;
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
@@ -694,7 +744,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
          ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
-         NULL, ?, NULL, ?,
+         NULL, ?, ?, ?,
          ?, ?, NULL, ?, ?
        )`,
     ).run(
@@ -707,7 +757,10 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
       data.session_id,
       data.user_prompt ?? null,
       data.started_at ?? null,
-      data.status ?? DEFAULT_STATUS,
+      data.ended_at ?? null,
+      // A born-closed batch (ended_at set) is completed unless the caller
+      // overrides; an open batch defaults to active.
+      data.status ?? (data.ended_at != null ? STATUS_COMPLETED : DEFAULT_STATUS),
       DEFAULT_ACTIVITY_COUNT,
       DEFAULT_PROCESSED,
       data.created_at,

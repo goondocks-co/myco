@@ -255,6 +255,12 @@ export function handleUserPrompt(
   let effectiveKind = incomingKind;
 
   const incomingOrigin = options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;
+  // Human-Anchored Turn: only a human prompt owns/advances "the active turn".
+  // A system-origin prompt (task-notification, teammate-message, autonomous
+  // loop, injected context) is a point-in-time record — it must not close the
+  // open human batch and is itself born closed, so the human turn stays the
+  // anchor that insertActivityWithBatch's most-recent-open lookup resolves to.
+  const isSystemOrigin = incomingOrigin !== PROMPT_BATCH_ORIGIN.HUMAN;
 
   if (incomingKind === BATCH_KIND.STEERING || incomingKind === BATCH_KIND.INTERRUPT) {
     const openParent = findOpenParentBatch(sessionId);
@@ -270,12 +276,13 @@ export function handleUserPrompt(
       effectiveKind = BATCH_KIND.INITIAL;
       parentId = null;
     }
-  } else {
-    // Single entry point for "where does this initial prompt go?"
+  } else if (!isSystemOrigin) {
+    // Single entry point for "where does this human initial prompt go?"
     // The helper decides between sentinel-replace and fresh insert,
-    // hiding the branching from the call site.
+    // hiding the branching from the call site. System prompts skip this:
+    // they neither claim the recovered sentinel nor close the human turn.
     if (effectiveKind === BATCH_KIND.INITIAL && prompt) {
-      const claimed = claimInitialBatchSlot(sessionId, prompt, now, options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN);
+      const claimed = claimInitialBatchSlot(sessionId, prompt, now, incomingOrigin);
       if (claimed) return claimed;
     }
     closeOpenBatches(sessionId, now);
@@ -285,10 +292,13 @@ export function handleUserPrompt(
     session_id: sessionId,
     user_prompt: prompt ?? null,
     started_at: now,
+    // System batches are point-in-time records: born closed so they are never
+    // the active turn. Human batches stay open (ended_at left null).
+    ended_at: isSystemOrigin ? now : undefined,
     created_at: now,
     machine_id: getTeamMachineId(),
     kind: effectiveKind,
-    origin: options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
+    origin: incomingOrigin,
     parent_prompt_batch_id: parentId,
   });
 

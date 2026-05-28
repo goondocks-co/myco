@@ -27,6 +27,7 @@ import {
   aggregateSessionMycoToolCalls,
   materializeSessionMycoToolCalls,
   getSessionMycoToolCallCounts,
+  getBatchMycoToolCalls,
   parseCliMycoToolCalls,
 } from '@myco/db/queries/myco-tool-usage.js';
 
@@ -304,6 +305,88 @@ describe('materializeSessionMycoToolCalls — write side', () => {
     seedActivities(SESSION_ID, [{ tool_name: 'Read', tool_input: { file_path: '/x' } }]);
     expect(materializeSessionMycoToolCalls(SESSION_ID)).toBe(0);
     expect(getSessionMycoToolCallCounts(SESSION_ID)).toEqual([]);
+  });
+});
+
+describe('getBatchMycoToolCalls — per-batch attribution', () => {
+  /** Seed one batch and return its id (origin defaults to human). */
+  function seedBatch(sessionId: string, origin = 'human'): number {
+    const base = Math.floor(Date.now() / 1000);
+    const info = getDatabase()
+      .prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number,
+           started_at, created_at, status, origin)
+         VALUES (?, (SELECT COALESCE(MAX(prompt_number),0)+1 FROM prompt_batches WHERE session_id=?), ?, ?, 'active', ?)`,
+      )
+      .run(sessionId, sessionId, base, base, origin);
+    return Number(info.lastInsertRowid);
+  }
+
+  function addActivity(sessionId: string, batchId: number, tool_name: string, tool_input?: unknown) {
+    const ts = Math.floor(Date.now() / 1000);
+    getDatabase()
+      .prepare(
+        `INSERT INTO activities (session_id, prompt_batch_id, tool_name, tool_input,
+                                 timestamp, processed, created_at)
+         VALUES (?, ?, ?, ?, ?, 0, ?)`,
+      )
+      .run(
+        sessionId,
+        batchId,
+        tool_name,
+        tool_input === undefined ? null : typeof tool_input === 'string' ? tool_input : JSON.stringify(tool_input),
+        ts,
+        ts,
+      );
+  }
+
+  it('attributes MCP-routed calls to the batch they occurred in', () => {
+    seedSession();
+    const b1 = seedBatch(SESSION_ID);
+    const b2 = seedBatch(SESSION_ID);
+    addActivity(SESSION_ID, b1, 'mcp__myco__myco_search', { query: 'x' });
+    addActivity(SESSION_ID, b2, 'mcp__myco__myco_cortex', { op: 'canopy_map' });
+    addActivity(SESSION_ID, b2, 'mcp__myco__myco_cortex', { op: 'canopy_map' });
+
+    const rows = getBatchMycoToolCalls(SESSION_ID).sort((a, b) => a.prompt_batch_id - b.prompt_batch_id);
+    expect(rows).toEqual([
+      { prompt_batch_id: b1, tool_name: 'myco_search', op: '', count: 1 },
+      { prompt_batch_id: b2, tool_name: 'myco_cortex', op: 'canopy_map', count: 2 },
+    ]);
+  });
+
+  it('attributes CLI-routed (Bash) calls to the batch, surfacing the myco tool not "Bash"', () => {
+    seedSession();
+    const b1 = seedBatch(SESSION_ID);
+    addActivity(SESSION_ID, b1, 'Bash', {
+      command: `node .agents/myco-cli.cjs tool call myco_spores --json --input '{"op":"save"}'`,
+    });
+
+    const rows = getBatchMycoToolCalls(SESSION_ID);
+    expect(rows).toEqual([{ prompt_batch_id: b1, tool_name: 'myco_spores', op: 'save', count: 1 }]);
+  });
+
+  it('merges MCP + CLI calls under the same batch without double-counting', () => {
+    seedSession();
+    const b1 = seedBatch(SESSION_ID);
+    addActivity(SESSION_ID, b1, 'mcp__myco__myco_search', { query: 'x' });
+    addActivity(SESSION_ID, b1, 'Bash', { command: `myco tool call myco_search --input '{"query":"y"}'` });
+
+    const rows = getBatchMycoToolCalls(SESSION_ID);
+    expect(rows).toEqual([{ prompt_batch_id: b1, tool_name: 'myco_search', op: '', count: 2 }]);
+  });
+
+  it('ignores non-Myco activities', () => {
+    seedSession();
+    const b1 = seedBatch(SESSION_ID);
+    addActivity(SESSION_ID, b1, 'Read', { file_path: '/x' });
+    addActivity(SESSION_ID, b1, 'Bash', { command: 'ls -la' });
+    expect(getBatchMycoToolCalls(SESSION_ID)).toEqual([]);
+  });
+
+  it('returns empty for a session with no Myco tool calls', () => {
+    seedSession();
+    expect(getBatchMycoToolCalls(SESSION_ID)).toEqual([]);
   });
 });
 

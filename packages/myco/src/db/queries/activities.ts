@@ -246,7 +246,7 @@ export function insertActivityWithBatch(
          (SELECT project_id FROM sessions WHERE id = ?),
          ?,
          (SELECT id FROM prompt_batches WHERE session_id = ?
-            ORDER BY (ended_at IS NULL) DESC, id DESC LIMIT 1),
+            ORDER BY (ended_at IS NULL) DESC, (origin = 'human') DESC, id DESC LIMIT 1),
          ?, ?,
          ?, ?, ?, ?,
          ?, ?, ?, ?,
