@@ -423,16 +423,28 @@ phases:
     reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
+      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
+
+      Read the prior `digest-assess` phase summary in your context. Find
+      the per-tier directives line for tier 10000. It will say either
+      `10000: UPDATE` or `10000: SKIP`.
+
+      **If you see `10000: SKIP` — or you see "Chosen tier for this run:"
+      followed by anything OTHER than `10000` — you MUST stop now.**
+      Do not call `vault_read_digest`. Do not call `vault_search_semantic`.
+      Do not call `vault_write_digest`. Call `vault_report` with action
+      "skip" and reason "tier 10000 not selected this rotation", then finish.
+
+      Only proceed past this line if digest-assess explicitly selected
+      tier 10000 for this run.
+
+      ## If you ARE the selected tier
+
       Update digest tier 10000 — Full institutional knowledge.
-      Budget: 7 turns (1 read + 1-2 search + 1 write + buffer).
+      Budget: 9 turns total (you've already used 1 on the STOP check).
 
-      If the digest-assess phase said this tier should SKIP or reported
-      "no new intelligence material this run", call `vault_report` with
-      action "skip" for tier 10000 and finish immediately.
-
-      This is the largest tier (~10,000 tokens). Update if any new content
-      was found. The digest-assess phase summary in your context contains
-      the material to integrate and per-tier guidance.
+      This is the largest tier (~10,000 tokens). The digest-assess phase
+      summary in your context contains the material to integrate.
 
       1. Call `vault_read_digest` with tier 10000 to get current content
       2. Call `vault_search_semantic` for themes identified in the assess
@@ -446,8 +458,7 @@ phases:
       Prioritize: recent insights > active decisions > unresolved gotchas >
       architectural patterns > historical context.
 
-      If this tier genuinely has no new material to integrate, call
-      `vault_report` with action "skip" for this tier.
+      Final summary MUST be ≤ 5 lines.
     tools:
       - vault_search_semantic
       - vault_release_state
@@ -466,16 +477,29 @@ phases:
     reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
-      Update digest tier 5000 — Deep onboarding.
-      Budget: 5 turns (1 read + 1 search + 1 write + buffer).
+      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
 
-      If the digest-assess phase said this tier should SKIP or reported
-      "no new intelligence material this run", call `vault_report` with
-      action "skip" for tier 5000 and finish immediately.
+      Read the prior `digest-assess` phase summary in your context. Find
+      the per-tier directives line for tier 5000. It will say either
+      `5000: UPDATE` or `5000: SKIP`.
+
+      **If you see `5000: SKIP` — or you see "Chosen tier for this run:"
+      followed by anything OTHER than `5000` — you MUST stop now.**
+      Do not call `vault_read_digest`. Do not call `vault_search_semantic`.
+      Do not call `vault_write_digest`. Call `vault_report` with action
+      "skip" and reason "tier 5000 not selected this rotation", then finish.
+
+      Only proceed past this line if digest-assess explicitly selected
+      tier 5000 for this run.
+
+      ## If you ARE the selected tier
+
+      Update digest tier 5000 — Deep onboarding.
+      Budget: 7 turns total (you've already used 1 on the STOP check).
 
       This tier (~5,000 tokens) focuses on trade-offs and patterns. The
       digest-assess phase summary in your context contains the material
-      to integrate and per-tier guidance.
+      to integrate.
 
       1. Call `vault_read_digest` with tier 5000 to get current content
       2. Optionally call `vault_search_semantic` for additional context
@@ -488,8 +512,7 @@ phases:
       Prioritize: recent insights > active decisions > unresolved gotchas >
       architectural patterns > historical context.
 
-      If this tier genuinely has no new material to integrate, call
-      `vault_report` with action "skip" for this tier.
+      Final summary MUST be ≤ 5 lines.
     tools:
       - vault_search_semantic
       - vault_release_state
@@ -505,17 +528,30 @@ phases:
     reasoningLevel: low
     dependsOn: [digest-assess]
     prompt: |
-      Update digest tier 1500 — Executive briefing.
-      Budget: 3 turns (1 read + 1 write + buffer).
+      ## STOP-FIRST CHECK (turn 1 — do this before anything else)
 
-      If the digest-assess phase said this tier should SKIP or reported
-      "no new intelligence material this run", call `vault_report` with
-      action "skip" for tier 1500 and finish immediately.
+      Read the prior `digest-assess` phase summary in your context. Find
+      the per-tier directives line for tier 1500. It will say either
+      `1500: UPDATE` or `1500: SKIP`.
+
+      **If you see `1500: SKIP` — or you see "Chosen tier for this run:"
+      followed by anything OTHER than `1500` — you MUST stop now.**
+      Do not call `vault_read_digest`. Do not call `vault_write_digest`.
+      Call `vault_report` with action "skip" and reason "tier 1500 not
+      selected this rotation", then finish.
+
+      Only proceed past this line if digest-assess explicitly selected
+      tier 1500 for this run.
+
+      ## If you ARE the selected tier
+
+      Update digest tier 1500 — Executive briefing.
+      Budget: 5 turns total (you've already used 1 on the STOP check).
 
       This is the most compressed tier (~1,500 tokens). Only update if
       important new decisions, gotchas, or critical changes were found.
       The digest-assess phase summary in your context contains the material
-      to integrate and per-tier guidance.
+      to integrate.
 
       1. Call `vault_read_digest` with tier 1500 to get current content
       2. Integrate new material from the assess findings — be very selective,
@@ -528,8 +564,7 @@ phases:
       Prioritize: recent insights > active decisions > unresolved gotchas >
       architectural patterns > historical context.
 
-      If this tier genuinely has no new material to integrate, call
-      `vault_report` with action "skip" for this tier.
+      Final summary MUST be ≤ 5 lines.
     tools:
       - vault_read_digest
       - vault_write_digest
