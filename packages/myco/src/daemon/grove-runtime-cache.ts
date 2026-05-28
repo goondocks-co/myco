@@ -1,4 +1,5 @@
 import { openDatabase, type Database } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import type { EmbeddingManager, SqliteVecVectorStore } from './embedding/index.js';
 
 export interface GroveRuntimeEntry {
@@ -108,11 +109,11 @@ export class GroveRuntimeCache {
   }
 
   getDatabase(databasePath: string): Database {
-    return this.touch(databasePath, () => ({ databasePath, db: openDatabase(databasePath) })).db;
+    return this.touch(databasePath, () => ({ databasePath, db: openInitializedDatabase(databasePath) })).db;
   }
 
   getEmbeddingRuntime(databasePath: string, factory: EmbeddingRuntimeFactory): GroveRuntimeEntry {
-    const entry = this.touch(databasePath, () => ({ databasePath, db: openDatabase(databasePath) }));
+    const entry = this.touch(databasePath, () => ({ databasePath, db: openInitializedDatabase(databasePath) }));
     if (!entry.vectorStore || !entry.embeddingManager) {
       const built = factory(entry.db, databasePath);
       entry.vectorStore = built.vectorStore;
@@ -225,6 +226,12 @@ export class GroveRuntimeCache {
       closeEntry(target);
     }
   }
+}
+
+function openInitializedDatabase(databasePath: string): Database {
+  const db = openDatabase(databasePath);
+  createSchema(db);
+  return db;
 }
 
 function closeEntry(entry: GroveRuntimeEntry): void {

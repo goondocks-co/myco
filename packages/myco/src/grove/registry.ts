@@ -12,18 +12,21 @@ import {
   resolveGlobalConfigPath,
   resolveGroveDir,
   resolveGroveMetadataPath,
+  resolveProjectVaultDir,
   resolveGroveProjectsPath,
   resolveGroveRegistryDir,
   resolveGroveRegistryPath,
   resolveGroveRootsPath,
   resolveGrovesDir,
   resolveMycoHome,
+  daemonVariantFromEnvValue,
 } from './paths.js';
 import { slugifyGroveName } from './ids.js';
 import {
   findRegisteredProjectByBinding as findRegisteredProjectByBindingResolve,
   type RegistryResolvedProject,
 } from './registry-resolve.js';
+import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 
 export type DaemonVariant = 'service' | 'service-dev';
 
@@ -45,6 +48,8 @@ export interface RegisteredProject {
   name: string;
   root: string;
   binding_id?: string;
+  status: 'active' | 'archived';
+  archived_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -74,6 +79,10 @@ export interface RegisterProjectInput {
   projectName: string;
   projectRoot: string;
   bindingId?: string;
+}
+
+export interface ListRegisteredProjectsOptions {
+  includeArchived?: boolean;
 }
 
 export interface ResolvedRegisteredProject {
@@ -445,6 +454,7 @@ export function registerProjectInGrove(
     name: input.projectName,
     root,
     ...(input.bindingId ? { binding_id: input.bindingId } : {}),
+    status: 'active',
     created_at: createdAt,
     updated_at: now,
   };
@@ -468,6 +478,7 @@ export function registerProjectInGrove(
 export function listRegisteredProjects(
   groveId: string,
   mycoHome = resolveMycoHome(),
+  options: ListRegisteredProjectsOptions = {},
 ): RegisteredProject[] {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) return [];
@@ -476,19 +487,81 @@ export function listRegisteredProjects(
   return Object.values(projects)
     .filter(isPlainTable)
     .map((row) => normalizeRegisteredProject(row as Record<string, unknown>))
-    .filter((row): row is RegisteredProject => !!row);
+    .filter((row): row is RegisteredProject => !!row)
+    .filter((row) => options.includeArchived || row.status !== 'archived');
+}
+
+export function archiveProjectInGrove(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): RegisteredProject {
+  return updateProjectLifecycle(groveId, projectId, 'archived', mycoHome);
+}
+
+export function unarchiveProjectInGrove(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): RegisteredProject {
+  return updateProjectLifecycle(groveId, projectId, 'active', mycoHome);
+}
+
+function updateProjectLifecycle(
+  groveId: string,
+  projectId: string,
+  status: RegisteredProject['status'],
+  mycoHome: string,
+): RegisteredProject {
+  const grove = loadGroveRecord(groveId, mycoHome);
+  if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
+
+  const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
+  const projectsDoc = readToml(projectsPath);
+  const projects = isPlainTable(projectsDoc.projects)
+    ? projectsDoc.projects as Record<string, unknown>
+    : {};
+  const raw = isPlainTable(projects[projectId])
+    ? { ...(projects[projectId] as Record<string, unknown>) }
+    : null;
+  if (!raw) throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
+
+  const now = new Date().toISOString();
+  raw.status = status;
+  raw.updated_at = now;
+  if (status === 'archived') raw.archived_at = now;
+  else delete raw.archived_at;
+
+  projectsDoc.projects = {
+    ...projects,
+    [projectId]: raw as TomlTableWithoutBigInt,
+  } as unknown as TomlTableWithoutBigInt;
+  writeToml(projectsPath, projectsDoc);
+
+  const normalized = normalizeRegisteredProject(raw);
+  if (!normalized) throw new Error(`Project ${projectId} registry row is invalid after lifecycle update`);
+  return normalized;
+}
+
+export function listAllRegisteredProjects(
+  groveId: string,
+  mycoHome = resolveMycoHome(),
+): RegisteredProject[] {
+  return listRegisteredProjects(groveId, mycoHome, { includeArchived: true });
 }
 
 export function getRegisteredProjectInGrove(
   groveId: string,
   projectId: string,
   mycoHome = resolveMycoHome(),
+  options: ListRegisteredProjectsOptions = {},
 ): RegisteredProject | null {
   const projectsDoc = readToml(resolveGroveProjectsPath(groveId, mycoHome));
   const projects = isPlainTable(projectsDoc.projects) ? projectsDoc.projects as Record<string, unknown> : {};
   const row = isPlainTable(projects[projectId])
     ? normalizeRegisteredProject(projects[projectId] as Record<string, unknown>)
     : null;
+  if (row?.status === 'archived' && !options.includeArchived) return null;
   return row;
 }
 
@@ -551,7 +624,8 @@ export function ensureProjectRegistered(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
 ): ResolvedRegisteredProject | null {
-  const existing = findProjectByRoot(projectRoot, mycoHome);
+  const existing = findProjectByRoot(projectRoot, mycoHome, { includeArchived: true });
+  if (existing?.project.status === 'archived') return null;
   if (existing) return existing;
   if (!isSafeProjectRoot(projectRoot)) return null;
 
@@ -562,17 +636,28 @@ export function ensureProjectRegistered(
   // Grove. `resolveDefaultGroveForVariant` honors the pointer only
   // when its target matches the current variant, otherwise falls
   // back to the canonical slug lookup.
-  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
-  const servedBy = variant === 'dev' ? 'service-dev' : 'service';
+  const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
   const grove = resolveDefaultGroveForVariant(mycoHome, { servedBy });
   if (!grove) return null;
 
-  const projectId = createProjectId();
   const projectName = path.basename(path.resolve(projectRoot));
+  let manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
+  if (manifest && !manifest.grove?.binding_id) {
+    manifest = ensureProjectManifest(resolveProjectVaultDir(projectRoot), {
+      projectName,
+      groveId: grove.id,
+      groveSlug: grove.slug,
+      groveName: grove.name,
+    });
+  }
+  const projectId = manifest?.project.id && isGroveEraId(manifest.project.id, 'project')
+    ? manifest.project.id
+    : createProjectId();
   registerProjectInGrove(grove.id, {
     projectId,
     projectName,
     projectRoot,
+    bindingId: manifest?.grove?.binding_id,
   }, mycoHome);
   return findProjectByRoot(projectRoot, mycoHome);
 }
@@ -580,10 +665,11 @@ export function ensureProjectRegistered(
 export function findProjectByRoot(
   projectRoot: string,
   mycoHome = resolveMycoHome(),
+  options: ListRegisteredProjectsOptions = {},
 ): ResolvedRegisteredProject | null {
   if (!projectRoot) return null;
   for (const grove of listGroves(mycoHome)) {
-    for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+    for (const project of listRegisteredProjects(grove.id, mycoHome, options)) {
       if (pathsEquivalent(project.root, projectRoot)) {
         return { grove, project };
       }
@@ -1041,8 +1127,9 @@ function normalizeRegisteredProject(row: Record<string, unknown>): RegisteredPro
     name: row.name,
     root: row.root,
     ...(typeof row.binding_id === 'string' ? { binding_id: row.binding_id } : {}),
+    status: row.status === 'archived' ? 'archived' : 'active',
+    ...(typeof row.archived_at === 'string' ? { archived_at: row.archived_at } : {}),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
-

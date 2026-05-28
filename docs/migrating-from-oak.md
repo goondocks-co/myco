@@ -13,7 +13,8 @@ This guide covers the one-time import: pull your OAK history into a Myco vault s
 - A project that has either:
   - A live OAK install with `<project>/.oak/ci/activities.db`, **or**
   - At least one OAK backup file under `<project>/oak/history/<machine-id>.sql`.
-- Myco installed and running. The global install (`npm install -g @goondocks/myco` or the install script) is sufficient — the daemon auto-registers projects into your default Grove the first time an agent fires a hook. If you want a project's Myco wiring committed to the repo (portable Grove identity for teammates, dogfood binary pinning), open the dashboard's Symbionts page and use the **Commit Myco config to this repo** affordance.
+- Myco installed and running. The install script is sufficient — Myco registers projects into your default Grove when a supported agent starts working in a git repo. If you want a project's Myco identity committed to the repo for teammates, open the dashboard's Symbionts page and use **Commit Myco config to this repo**.
+- The target Grove database path. Register the project first, then use the dashboard's Groves page to confirm which Grove owns it. Grove databases live under `~/.myco/groves/<grove-id>/myco.db`.
 
 You don't need to remove OAK before running the import. OAK and Myco coexist — they each manage their own hooks, MCP servers, and configuration, and neither touches the other's. You can clean up OAK whenever you like (see "Cleaning up OAK" below).
 
@@ -53,25 +54,21 @@ curl -fsSL \
 
 ### Step 2 — Run it
 
-The script picks its source automatically:
+Pass the Myco Grove database as `--target` and the OAK source explicitly:
 
-1. If `<project>/.oak/ci/activities.db` exists, it's used directly.
-2. Otherwise, the most recent `*.sql` backup in `<project>/oak/history/` is loaded into a temporary SQLite database and used as the source.
-3. You can override either with `--source <path>` (live SQLite DB) or `--backup <path>` (SQL file).
+1. Use `--source <path>` when `<project>/.oak/ci/activities.db` exists.
+2. Use `--backup <path>` when importing from an `oak/history/*.sql` backup.
 
 ```bash
-# Auto-detect source — run from inside your project
-bun /tmp/migrate-from-oak-to-myco.ts --target ./.myco/myco.db
-
 # Explicit live database
 bun /tmp/migrate-from-oak-to-myco.ts \
   --source ./.oak/ci/activities.db \
-  --target ./.myco/myco.db
+  --target ~/.myco/groves/<grove-id>/myco.db
 
 # Explicit backup file
 bun /tmp/migrate-from-oak-to-myco.ts \
   --backup ./oak/history/<machine-id>.sql \
-  --target ./.myco/myco.db
+  --target ~/.myco/groves/<grove-id>/myco.db
 ```
 
 A `--dry-run` flag is available to preview row counts without writing.
@@ -162,4 +159,4 @@ The cleanest path is to restore your Myco vault DB from a backup taken before th
 
 ## Doing it twice (multiple OAK projects)
 
-Each OAK project has its own activity database and backup directory. Run the import once per project, against the corresponding Myco vault. Don't mix multiple OAK databases into a single Myco vault — sessions in different projects share id space and may collide.
+Each OAK project has its own activity database and backup directory. Run the import once per project, against the Grove that owns that Myco project. Don't mix unrelated OAK project histories into the wrong Grove or project.

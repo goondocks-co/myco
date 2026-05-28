@@ -47,4 +47,4 @@ npm update -g @goondocks/myco-collective
 
 ## License
 
-MIT
+Apache-2.0

@@ -1,24 +1,24 @@
 # Agent Tools
 
-Myco exposes two sets of MCP tools and a few slash-command skills that your agents can use. The local MCP server runs inside your daemon and serves your coding agent. The [Cloud MCP server](cloud-mcp.md) runs on the Cloudflare Worker and serves cloud agents. Both speak [Model Context Protocol](https://modelcontextprotocol.io) and discover their tools automatically.
+Myco exposes MCP tools and slash-command skills that your agents can use without leaving their native workflows. Local tools serve coding agents on your machine, and the [Cloud MCP server](cloud-mcp.md) serves cloud agents from synced Grove knowledge. Both speak [Model Context Protocol](https://modelcontextprotocol.io) and discover their tools automatically.
 
 ## Automatic context injection
 
-Before any tool is called, Myco injects context at three points automatically:
+Before any tool is called, Myco can route context at three points automatically:
 
-- **Session start** — the Cortex digest is injected, giving the agent a pre-computed understanding of the project before it asks a single question
-- **Per prompt** — relevant spores are retrieved via vector search and injected, providing targeted context for the current task
-- **Pre-Read** — [Canopy](canopy.md) injects per-file anatomy so the agent can decide whether to follow through with a full read
+- **Session start** — a Cortex project briefing gives the agent a pre-computed understanding of the project before it asks a single question
+- **Per prompt** — relevant spores are retrieved via vector search, providing targeted context for the current task
+- **Pre-Read** — [Canopy](canopy.md) provides per-file anatomy so the agent can decide whether to follow through with a full read
 
-All three flow through the same `recordInjectionActivity()` helper, get UNIQUE-index deduplicated, and surface as distinct `myco:inject_cortex`, `myco:inject_spores`, and `myco:inject_canopy` rows in the session timeline. See the [Lifecycle docs](lifecycle.md) for more on how this works.
+These context routes augment the agent's native memory and tools. Myco does not replace the agent's reasoning or workflow. See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-7 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any Symbiont (Claude Code, Cursor, etc.) Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
+Seven local tools are available to any symbiont Myco has connected. When the project is connected to a Myco Collective, four additional `collective_*` tools are also registered.
 
-The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they don't control the daemon. Administrative operations (restart, update, backup, restore, database maintenance) live in the **CLI** and **UI**, not on the MCP wire. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
+The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they do not administer Myco. Administrative operations such as restart, update, backup, restore, and maintenance live in the **CLI** and **UI**. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
-Every vault-scoped tool accepts optional `grove_id` / `project_id` body fields that pivot the call to a different (Grove, project) than the harness launched under — mirroring the daemon UI's project switcher.
+Every vault-scoped tool accepts optional `grove_id` and `project_id` fields so agents can work with the same Grove/project selection model shown in the dashboard.
 
 ### Search & Cortex
 

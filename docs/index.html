@@ -3,16 +3,70 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Myco — The intelligence layer for your projects and team</title>
-<meta name="description" content="Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.">
-<meta property="og:title" content="Myco — The intelligence layer for your projects and team">
-<meta property="og:description" content="Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.">
+<title>Myco — The nervous system for AI-assisted software teams</title>
+<meta name="description" content="Give your coding agents shared project knowledge, richer senses, codebase awareness, and learned workflows that evolve with your project.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="https://myco.sh/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Myco">
+<meta property="og:title" content="Myco — The nervous system for AI-assisted software teams">
+<meta property="og:description" content="Give your coding agents shared project knowledge, richer senses, codebase awareness, and learned workflows that evolve with your project.">
 <meta property="og:image" content="https://myco.sh/assets/myco-hero-wide.jpg">
-<meta property="og:url" content="https://myco.sh">
+<meta property="og:url" content="https://myco.sh/">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Myco — The nervous system for AI-assisted software teams">
+<meta name="twitter:description" content="Give your coding agents shared project knowledge, richer senses, codebase awareness, and learned workflows that evolve with your project.">
+<meta name="twitter:image" content="https://myco.sh/assets/myco-hero-wide.jpg">
+<link rel="alternate" type="text/plain" href="https://myco.sh/llms.txt" title="LLM-readable Myco docs index">
 <link rel="icon" type="image/svg+xml" href="assets/favicon-sage.svg">
 <link rel="stylesheet" href="colors_and_type.css">
 <link rel="stylesheet" href="site.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://myco.sh/#organization",
+      "name": "Goondocks",
+      "url": "https://goondocks.co",
+      "sameAs": [
+        "https://github.com/goondocks-co"
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://myco.sh/#website",
+      "name": "Myco",
+      "url": "https://myco.sh/",
+      "description": "The nervous system for AI-assisted software teams.",
+      "publisher": {
+        "@id": "https://myco.sh/#organization"
+      }
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://myco.sh/#software",
+      "name": "Myco",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS",
+      "url": "https://myco.sh/",
+      "downloadUrl": "https://www.npmjs.com/package/@goondocks/myco",
+      "installUrl": "https://myco.sh/install.sh",
+      "license": "https://www.apache.org/licenses/LICENSE-2.0",
+      "description": "Myco gives coding agents shared project knowledge, codebase awareness, and learned workflows that evolve with the project.",
+      "softwareRequirements": "Node.js 22+",
+      "sameAs": [
+        "https://github.com/goondocks-co/myco",
+        "https://www.npmjs.com/package/@goondocks/myco"
+      ],
+      "publisher": {
+        "@id": "https://myco.sh/#organization"
+      }
+    }
+  ]
+}
+</script>
 </head>
 <body>
 
@@ -68,14 +122,14 @@
 
   <div class="hero-inner">
     <span class="hero-badge"><span class="dot"></span><span id="hero-version">Loading latest release…</span> · Apache 2.0 licensed</span>
-    <h1 class="hero-title">The intelligence layer <em>beneath</em><br>your projects and team</h1>
-    <p class="hero-sub">Capture what your team learns. Turn it into <strong>skills your agents follow</strong>. Evolve them as your code does.</p>
+    <h1 class="hero-title">The nervous system for <em>AI-assisted</em><br> software teams</h1>
+    <p class="hero-sub">Myco works alongside the coding agents, subagents, and agent teams you already use — giving them richer senses, durable project knowledge, semantic codebase awareness, and workflows that evolve with your code.</p>
     <div class="hero-actions">
       <a class="btn btn-primary btn-lg" href="#install">Get started<span class="chev">→</span></a>
       <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">View on GitHub</a>
     </div>
     <div class="hero-meta">
-      <span><span class="k">Works with</span> Claude Code · Cursor · Codex · Copilot · Antigravity · Windsurf · OpenCode · Pi</span>
+      <span><span class="k">Augments</span> Claude Code · Cursor · Codex · Copilot · Antigravity · Windsurf · OpenCode · Pi</span>
     </div>
   </div>
 
@@ -94,16 +148,17 @@
 <section class="band" id="install" style="padding-top: 40px;">
   <div class="wrap-narrow">
     <div class="sec-head center">
-      <span class="eyebrow no-bar"><span class="dot"></span>One command</span>
+      <span class="eyebrow no-bar"><span class="dot"></span>macOS supported · Linux and Windows experimental</span>
       <h2 class="sec-title">Install in <em>sixty seconds</em></h2>
-      <p class="sec-lede">One install, every project. Myco auto-detects the coding agents on your machine, installs hooks at each agent's global config, registers a background service, and starts the daemon — no per-project setup.</p>
+      <p class="sec-lede">One install, every project. Myco connects to the coding agents on your machine, starts a local service, and registers git projects as you work.</p>
 
     </div>
 
     <div class="install-shell">
       <div class="install-tabs">
-        <button class="install-tab active" data-install="mac">macOS / Linux</button>
-        <button class="install-tab" data-install="windows">Windows</button>
+        <button class="install-tab active" data-install="mac">macOS</button>
+        <button class="install-tab" data-install="linux">Linux · experimental</button>
+        <button class="install-tab" data-install="windows">Windows · experimental</button>
         <button class="install-tab" data-install="npm">npm</button>
       </div>
 
@@ -119,16 +174,33 @@
               <span class="line"><span class="prompt">$</span><span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="str">https://myco.sh/install.sh</span> | <span class="cmd">sh</span></span>
               <span class="blank"></span>
               <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">service registered (launchd / systemd-user)</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">local service started</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="out">global symbiont install:</span></span>
-              <span class="indent"><span class="out-ok">✓</span> <span class="out">claude-code</span> <span class="comment">(hooks, mcp, skills)</span></span>
-              <span class="indent"><span class="out-ok">✓</span> <span class="out">cursor</span>      <span class="comment">(hooks, skills)</span></span>
+              <span class="line"><span class="out">agents connected:</span></span>
+              <span class="indent"><span class="out-ok">✓</span> <span class="out">claude-code</span> <span class="comment">(context, tools, skills)</span></span>
+              <span class="indent"><span class="out-ok">✓</span> <span class="out">cursor</span>      <span class="comment">(context, skills)</span></span>
               <span class="indent"><span class="out-warn">·</span> <span class="out">codex</span>       <span class="comment">(detected)</span></span>
               <span class="blank"></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">dashboard ready —</span> <span class="cmd">myco</span> open<span class="caret"></span></span>
-              <span class="line"><span class="comment"># projects auto-register on first agent hook</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">dashboard ready —</span> <span class="cmd">http://localhost:20915/</span><span class="caret"></span></span>
+              <span class="line"><span class="comment"># projects register automatically as agents work</span></span>
+            </div>
+          </div>
+        </div>
+        <div data-panel="linux">
+          <div class="terminal">
+            <div class="terminal-chrome">
+              <div class="terminal-dots"><span></span><span></span><span></span></div>
+              <span class="terminal-title">~/your-project</span>
+              <button class="terminal-copy" data-copy="curl -fsSL https://myco.sh/install.sh | sh">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <span class="line"><span class="prompt">$</span><span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="str">https://myco.sh/install.sh</span> | <span class="cmd">sh</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="out-warn">!</span> <span class="out">Linux support is experimental</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">local service setup attempted</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> open<span class="caret"></span></span>
             </div>
           </div>
         </div>
@@ -142,9 +214,9 @@
             <div class="terminal-body">
               <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">irm</span> <span class="str">https://myco.sh/install.ps1</span> | <span class="cmd">iex</span></span>
               <span class="blank"></span>
+              <span class="line"><span class="out-warn">!</span> <span class="out">Windows support is experimental</span></span>
               <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">service registered</span></span>
-              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started</span></span>
+              <span class="line"><span class="out-warn">·</span> <span class="out">service behavior is still being hardened</span></span>
               <span class="blank"></span>
               <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">myco</span> open<span class="caret"></span></span>
             </div>
@@ -162,7 +234,7 @@
               <span class="blank"></span>
               <span class="line"><span class="out-ok">+</span> <span class="out">@goondocks/myco</span></span>
               <span class="line"><span class="out">added 1 package in 3s</span></span>
-              <span class="line"><span class="comment"># postinstall: service registered, daemon started</span></span>
+              <span class="line"><span class="comment"># postinstall: service registered on supported platforms</span></span>
               <span class="blank"></span>
               <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> open<span class="caret"></span></span>
             </div>
@@ -172,7 +244,7 @@
 
       <div class="install-next">
         <span class="n">Requires</span>
-        <span class="txt">Node <code>22+</code> and at least one supported coding agent.</span>
+        <span class="txt">Node <code>22+</code>, macOS for the supported path, and at least one supported coding agent.</span>
         <span style="margin-left:auto;"><a class="arrow-link" href="#docs">Quickstart</a></span>
       </div>
     </div>
@@ -184,8 +256,8 @@
   <div class="wrap">
     <div class="sec-head">
       <span class="eyebrow">What it does</span>
-      <h2 class="sec-title">Memory is table stakes — <em>Myco goes further</em>.</h2>
-      <p class="sec-lede">Three things, working together beneath the surface of every session — so your agents get smarter as your team does.</p>
+      <h2 class="sec-title">Memory is table stakes — <em>Myco turns it into wisdom</em>.</h2>
+      <p class="sec-lede">Myco augments the agents you already use with richer senses, shared project knowledge, semantic codebase awareness, and learned workflows that stay current as the project changes.</p>
     </div>
 
     <div class="features">
@@ -194,8 +266,8 @@
           <span class="feature-dot"></span>
           <span class="feature-kicker">01 · Capture</span>
         </div>
-        <h3>Every session, deposited as spores.</h3>
-        <p>Rich multi-agent local data collection — your prompts, tools, agent summaries, plans, screenshots. Browse and search semantically via a local daemon. Agents access via local MCP.</p>
+        <h3>Every session strengthens shared project knowledge.</h3>
+        <p>Prompts, tool use, summaries, plans, screenshots, decisions, and pitfalls land in a local Grove vault. Myco keeps what still matters, supersedes stale observations, and turns repeated lessons into wisdom your agents can reuse.</p>
         <div class="feature-meta">
           <span class="tag">prompts</span>
           <span class="tag">tool calls</span>
@@ -209,8 +281,8 @@
           <span class="feature-dot"></span>
           <span class="feature-kicker">02 · Curate</span>
         </div>
-        <h3>Repeated patterns become skills.</h3>
-        <p>Myco's intelligence agent surveys your vault for procedural patterns with cross-session evidence, drafts a SKILL.md, runs it through quality gates, and — with your nod — promotes it to <code>.agents/skills/</code>.</p>
+        <h3>Repeated patterns become evolving workflows.</h3>
+        <p>The agent harness surveys your vault for procedural patterns with cross-session evidence, drafts a SKILL.md, runs quality checks, and — with your approval — promotes it to <code>.agents/skills/</code>. As the code changes, those skills can evolve too.</p>
         <div class="feature-meta">
           <span class="tag">survey</span>
           <span class="tag">approve</span>
@@ -224,8 +296,8 @@
           <span class="feature-dot"></span>
           <span class="feature-kicker">03 · Connect</span>
         </div>
-        <h3>A shared mycelium, across the team.</h3>
-        <p>Teammates' agents contribute and share project intelligence, synchronized automatically through a Cloudflare-backed worker. Cloud MCP exposes the same knowledge to managed agents beyond your laptop.</p>
+        <h3>A shared nervous system across the team.</h3>
+        <p>Each teammate's Grove knowledge synchronizes through a Cloudflare-backed worker. Secure Cloud MCP exposes that synced knowledge to managed agents beyond your laptop.</p>
         <div class="feature-meta">
           <span class="tag">team sync</span>
           <span class="tag">cloud mcp</span>
@@ -242,15 +314,15 @@
     <div class="showcase">
       <div class="showcase-copy">
         <span class="eyebrow">Local dashboard</span>
-        <h2 class="sec-title" style="margin-top: 16px;">A quiet command deck for your <em>mycelium</em>.</h2>
-        <p class="sec-lede">Myco ships a local web dashboard. Configure providers, approve skill candidates, monitor session pods, and tail daemon logs — all on <code style="font-family:var(--font-data); color: var(--sage);">localhost</code>, all yours.</p>
+        <h2 class="sec-title" style="margin-top: 16px;">A quiet command deck for your <em>Grove</em>.</h2>
+        <p class="sec-lede">Myco ships a local web dashboard. Configure providers, manage Groves and projects, approve skill candidates, review sessions, and watch Myco work — all on <code style="font-family:var(--font-data); color: var(--sage);">localhost</code>, all yours.</p>
 
         <ul class="showcase-bullets">
           <li>
             <span class="num">01</span>
             <div>
-              <h4>Session pods</h4>
-              <p>Live view of every concurrent agent thread on your machine — spore events, wisdom extractions, stability signals. Click any pod to walk its full activity trail.</p>
+              <h4>Sessions</h4>
+              <p>Live view of concurrent agent work on your machine — prompts, tools, summaries, and extracted project knowledge. Click any session to walk its activity trail.</p>
             </div>
           </li>
           <li>
@@ -263,8 +335,8 @@
           <li>
             <span class="num">03</span>
             <div>
-              <h4>Power-aware daemon</h4>
-              <p>Four states — active, idle, sleep, deep-sleep — so Myco costs nothing on idle laptops and wakes instantly when you sit back down.</p>
+              <h4>Quiet background work</h4>
+              <p>Myco slows down when the project is idle and wakes back up when work resumes, so intelligence keeps moving without demanding attention.</p>
             </div>
           </li>
         </ul>
@@ -273,7 +345,7 @@
       <div class="showcase-frame">
         <div class="showcase-frame-chrome">
           <div class="dots"><span></span><span></span><span></span></div>
-          <span class="url">localhost/dashboard</span>
+          <span class="url">localhost:20915</span>
         </div>
         <img src="assets/myco-dashboard.png" alt="Myco dashboard showing session pods, stats, and a mycelial network graph">
       </div>
@@ -286,8 +358,8 @@
   <div class="wrap">
     <div class="sec-head">
       <span class="eyebrow">Skill lifecycle</span>
-      <h2 class="sec-title">From <em>spore</em> to <em>skill</em> — automatically.</h2>
-      <p class="sec-lede">Every session deposits spores. Myco digests them, proposes plans, and — with your nod — promotes them into skills your agents follow on the next run.</p>
+      <h2 class="sec-title">From <em>spore</em> to <em>skill</em>.</h2>
+      <p class="sec-lede">Every session can produce durable observations. Myco turns repeated, evidenced patterns into skills your connected agents can follow on the next run.</p>
     </div>
 
     <div class="lifecycle-scene">
@@ -299,7 +371,7 @@
           </div>
           <div class="life-label"><span>Step 01</span><span class="actor">Agent</span></div>
           <h3>Survey</h3>
-          <p>Myco's agent scans spores, sessions, and plans for procedural patterns with cross-session evidence. One-off observations don't qualify.</p>
+        <p>The agent harness scans spores, sessions, and plans for procedural patterns with cross-session evidence. One-off observations don't qualify.</p>
           <div class="life-tag"><code>myco:survey</code><span class="n">≥ 0.7 conf</span></div>
         </article>
 
@@ -319,7 +391,7 @@
           </div>
           <div class="life-label"><span>Step 03</span><span class="actor">Agent</span></div>
           <h3>Generate</h3>
-          <p>A SKILL.md is drafted from the source material, staged, and passed through quality gates before being promoted to <code>.agents/skills/</code>.</p>
+          <p>A reusable skill is drafted from the source material, reviewed, and made available to your connected agents.</p>
           <div class="life-tag"><code>.agents/skills/</code><span class="n">gen 1</span></div>
         </article>
 
@@ -337,8 +409,8 @@
       <div class="lifecycle-payoff">
         <div class="payoff">
           <span class="metric">Day 01</span>
-          <h4>New teammates ship correctly</h4>
-          <p>Skills install once to the <code style="font-family:var(--font-data);color:var(--sage);">.agents/skills/</code> standard and symlink into each agent's native directory — so every teammate works the way your best session did.</p>
+          <h4>New teammates inherit the path</h4>
+          <p>Approved skills reach each connected agent in its native format, so every teammate can follow the workflows your best sessions established.</p>
         </div>
         <div class="payoff">
           <span class="metric" style="color: var(--ochre);">Every run</span>
@@ -348,7 +420,7 @@
         <div class="payoff">
           <span class="metric" style="color: var(--terracotta);">Over time</span>
           <h4>Knowledge compounds</h4>
-          <p>Skills rewrite themselves as the code does. Every generation records rationale, content snapshot, and source IDs — a complete audit trail.</p>
+          <p>Skills refresh as the code does. Each generation keeps enough lineage to understand why the workflow changed.</p>
         </div>
       </div>
     </div>
@@ -361,19 +433,19 @@
     <div class="canopy-grid">
       <div class="canopy-copy">
         <span class="eyebrow">Cortex</span>
-        <h2 class="sec-title" style="margin-top: 16px;">The <em>brain of Myco</em> — context, instructions, and a map of your code.</h2>
-        <p class="sec-lede">Cortex is where everything Myco knows about this project becomes context your agent can use — an operating brief written from your team's accumulated knowledge, plus a living map of the codebase your agent can navigate before opening a single file.</p>
+        <h2 class="sec-title" style="margin-top: 16px;">Project context, instructions, and a map of your code.</h2>
+        <p class="sec-lede">Cortex is Myco's synthesis layer: the place where accumulated Grove knowledge becomes project context your agent can use — an operating brief, relevant memory, and a living map of the codebase your agent can navigate before opening a single file.</p>
 
         <ul class="canopy-bullets">
-          <li><span class="mark">✓</span><span><strong>Operating instructions, written for this project</strong> — auto-generated from your spores, sessions, and plans. Surfaced at session start so agents arrive oriented, refreshed as the project evolves.</span></li>
-          <li><span class="mark">✓</span><span><strong>Anatomy on every Read</strong> — Canopy injects exports, imports, and top comment before each file opens. Most reads end early because the summary already answered.</span></li>
-          <li><span class="mark">✓</span><span><strong>Project map + behavior search</strong> — one MCP call returns the directory shape and golden paths; another finds files by what they <em>do</em>, not what they're named.</span></li>
-          <li><span class="mark">✓</span><span><strong>Cortex command deck</strong> — the dashboard tab where you read the brief, browse the index, regenerate the map, and watch token-savings tick up.</span></li>
+          <li><span class="mark">✓</span><span><strong>Project briefing, written for this project</strong> — generated from your spores, sessions, and plans. Surfaced at session start so agents arrive oriented, refreshed as the project evolves.</span></li>
+          <li><span class="mark">✓</span><span><strong>File anatomy before agents read</strong> — Canopy surfaces exports, imports, and the top comment before a file opens, helping agents choose the right file faster.</span></li>
+          <li><span class="mark">✓</span><span><strong>Project map + behavior search</strong> — agents can ask for the directory shape, golden paths, or files by what they <em>do</em>, not just what they're named.</span></li>
+          <li><span class="mark">✓</span><span><strong>Cortex command deck</strong> — the dashboard tab where you read the brief, browse the index, regenerate the map, and watch token savings tick up.</span></li>
         </ul>
 
         <div style="margin-top: 28px; display:flex; gap: 14px;">
-          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/canopy.md" target="_blank" rel="noopener">Canopy guide<span class="chev">→</span></a>
-          <a class="btn btn-ghost" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">MCP tools →</a>
+          <a class="btn btn-outline" href="canopy.md">Canopy guide<span class="chev">→</span></a>
+          <a class="btn btn-ghost" href="agent-tools.md">MCP tools →</a>
         </div>
       </div>
 
@@ -402,14 +474,14 @@
           <div class="canopy-card-head">
             <span class="canopy-mark">02</span>
             <div>
-              <div class="canopy-card-name">Read injection · canopy</div>
-              <div class="canopy-card-sub">PreToolUse · automatic</div>
+              <div class="canopy-card-name">File anatomy</div>
+              <div class="canopy-card-sub">before agent reads</div>
             </div>
           </div>
           <div class="canopy-snippet">
             <span class="cs-line"><span class="cs-key">exports</span> Daemon, runDaemon</span>
             <span class="cs-line"><span class="cs-key">imports</span> ./capture, ./mcp</span>
-            <span class="cs-line cs-mute">// Owns daemon lifecycle …</span>
+            <span class="cs-line cs-mute">// Starts and manages Myco …</span>
           </div>
         </div>
 
@@ -417,8 +489,8 @@
           <div class="canopy-card-head">
             <span class="canopy-mark">03</span>
             <div>
-              <div class="canopy-card-name">myco_cortex · myco_search</div>
-              <div class="canopy-card-sub">MCP · on demand</div>
+              <div class="canopy-card-name">Ask the project</div>
+              <div class="canopy-card-sub">search by behavior</div>
             </div>
           </div>
           <div class="canopy-snippet">
@@ -438,19 +510,19 @@
     <div class="team-grid">
       <div class="team-copy">
         <span class="eyebrow">Team sync</span>
-        <h2 class="sec-title" style="margin-top: 16px;">A shared vault, <em>without a backend.</em></h2>
-        <p class="sec-lede">Every teammate's agents benefit from the collective intelligence. Runs on Cloudflare's free tier for small teams. Local databases remain the source of truth — the cloud store is a queryable mirror.</p>
+        <h2 class="sec-title" style="margin-top: 16px;">A shared Grove, <em>without making cloud the source of truth.</em></h2>
+        <p class="sec-lede">Every teammate's agents benefit from the same project intelligence. Runs on Cloudflare's free tier for small teams. Local Grove databases remain the source of truth — the cloud store mirrors connected teammates' Grove data.</p>
 
         <ul class="team-bullets">
-          <li><span class="mark">✓</span><span><strong>Automatic backfill</strong> — every spore, session, plan, and graph edge syncs in the background.</span></li>
-          <li><span class="mark">✓</span><span><strong>Fanned-out search</strong> — queries hit local and team databases in parallel and merge by relevance.</span></li>
+          <li><span class="mark">✓</span><span><strong>Automatic backfill</strong> — existing Grove knowledge syncs when a teammate connects, then new knowledge follows in the background.</span></li>
+          <li><span class="mark">✓</span><span><strong>Team-aware search</strong> — results include your local knowledge and synced teammate knowledge, merged by relevance.</span></li>
           <li><span class="mark">✓</span><span><strong>Machine-identity attribution</strong> — results are tagged with who said what, so nothing is anonymised.</span></li>
-          <li><span class="mark">✓</span><span><strong>Cloud MCP endpoint</strong> — expose your team's knowledge to managed agents and N8N automations.</span></li>
+          <li><span class="mark">✓</span><span><strong>Cloud MCP endpoint</strong> — securely expose synced Grove knowledge to managed agents and N8N automations.</span></li>
         </ul>
 
         <div style="margin-top: 28px; display:flex; gap: 14px;">
-          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md" target="_blank" rel="noopener">Team sync guide<span class="chev">→</span></a>
-          <a class="btn btn-ghost" href="https://github.com/goondocks-co/myco/blob/main/docs/cloud-mcp.md" target="_blank" rel="noopener">Cloud MCP →</a>
+          <a class="btn btn-outline" href="team-sync.md">Team sync guide<span class="chev">→</span></a>
+          <a class="btn btn-ghost" href="cloud-mcp.md">Cloud MCP →</a>
         </div>
       </div>
 
@@ -489,15 +561,15 @@
           <span class="ns">syncing · 12</span>
         </div>
         <div class="team-node terra" style="bottom: 12%; right: 5%;">
-          <span class="nh">managed</span>
+          <span class="nh">secure</span>
           <span class="nn">cloud mcp</span>
-          <span class="ns">bearer · rotated</span>
+          <span class="ns">token access</span>
         </div>
 
         <div class="team-core">
-          <span class="label">worker · cf</span>
-          <div class="title">myco-sync</div>
-          <div class="meta">D1 · Vectorize · KV</div>
+          <span class="label">team mirror</span>
+          <div class="title">synced Grove knowledge</div>
+          <div class="meta">local stays source of truth</div>
         </div>
       </div>
     </div>
@@ -509,8 +581,8 @@
   <div class="wrap">
     <div class="sec-head">
       <span class="eyebrow">Works with your agent</span>
-      <h2 class="sec-title">Drop Myco <em>beneath</em> the agent you already use.</h2>
-      <p class="sec-lede">Hooks-based integration. No wrappers, no forked CLIs — the agent keeps its voice, Myco captures its surface.</p>
+      <h2 class="sec-title">Augment the agent you already use.</h2>
+      <p class="sec-lede">No wrappers, no forked CLIs, no ecosystem lock-in. Your agent keeps its reasoning, memory, tools, and native workflow; Myco adds shared project context around it. Because Myco lives with the project, every connected agent can benefit as that knowledge evolves.</p>
     </div>
 
     <div class="agents-grid">
@@ -519,7 +591,7 @@
           <span class="agent-mark">cc</span>
           <div>
             <div class="agent-name">Claude Code</div>
-            <div class="agent-sub">hooks · mcp · skills</div>
+            <div class="agent-sub">context · tools · skills</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -529,7 +601,7 @@
           <span class="agent-mark">cs</span>
           <div>
             <div class="agent-name">Cursor</div>
-            <div class="agent-sub">hooks · skills</div>
+            <div class="agent-sub">context · skills</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -539,7 +611,7 @@
           <span class="agent-mark">cx</span>
           <div>
             <div class="agent-name">Codex</div>
-            <div class="agent-sub">hooks · mcp</div>
+            <div class="agent-sub">context · tools</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -549,7 +621,7 @@
           <span class="agent-mark">vs</span>
           <div>
             <div class="agent-name">Copilot</div>
-            <div class="agent-sub">CLI + IDE · hooks · mcp</div>
+            <div class="agent-sub">CLI + IDE · context</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -569,7 +641,7 @@
           <span class="agent-mark">ws</span>
           <div>
             <div class="agent-name">Windsurf</div>
-            <div class="agent-sub">hooks · skills</div>
+            <div class="agent-sub">context · skills</div>
           </div>
         </div>
         <span class="agent-status partial">Hooks + skills</span>
@@ -579,7 +651,7 @@
           <span class="agent-mark">oc</span>
           <div>
             <div class="agent-name">OpenCode</div>
-            <div class="agent-sub">hooks · mcp</div>
+            <div class="agent-sub">context · tools</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -589,7 +661,7 @@
           <span class="agent-mark">pi</span>
           <div>
             <div class="agent-name">Pi</div>
-            <div class="agent-sub">hooks · skills</div>
+            <div class="agent-sub">context · skills</div>
           </div>
         </div>
         <span class="agent-status full">Full support</span>
@@ -604,62 +676,62 @@
     <div class="sec-head">
       <span class="eyebrow">Docs</span>
       <h2 class="sec-title">Dig in.</h2>
-      <p class="sec-lede">Nine guides cover everything from your first install to running a Collective across dozens of projects.</p>
+      <p class="sec-lede">Guides cover everything from your first install to running a Collective across dozens of projects.</p>
     </div>
 
     <div class="docs-grid">
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="quickstart.md">
         <span class="kind">Getting started</span>
         <h4>Quickstart</h4>
-        <p>Install Myco, confirm the daemon is running, and configure providers. The happy path from zero to your first spore.</p>
+        <p>Install Myco, open the dashboard, and configure providers. The supported path for the current release is macOS; Linux and Windows are experimental.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/lifecycle.md" target="_blank" rel="noopener">
-        <span class="kind">Daemon</span>
-        <h4>Daemon lifecycle</h4>
-        <p>What gets captured, how the daemon manages itself, and what to do when things go sideways.</p>
+      <a class="doc-card" href="lifecycle.md">
+        <span class="kind">Service</span>
+        <h4>Local service lifecycle</h4>
+        <p>What gets captured, how the local service behaves, and what to do when something needs attention.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="skills.md">
         <span class="kind">Skills</span>
         <h4>Skill auto-curation</h4>
         <p>The four stages — survey, approve, generate, evolve — and the SKILL.md format Myco uses.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="team-sync.md">
         <span class="kind">Team</span>
         <h4>Team sync</h4>
-        <p>Provision the Cloudflare worker, connect teammates, fan out searches, and configure cloud embeddings.</p>
+        <p>Create Team Sync, connect teammates, include team knowledge in search, and configure cloud embeddings.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/cloud-mcp.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="cloud-mcp.md">
         <span class="kind">Integration</span>
         <h4>Cloud MCP</h4>
         <p>Expose your knowledge to Anthropic Managed Agents, N8N workflows, and other cloud-resident agents.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/collective.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="collective.md">
         <span class="kind">Scale</span>
         <h4>Collective</h4>
         <p>Connect multiple Myco-enabled teams into a single Collective with cross-project agent access.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="agent-harness.md">
         <span class="kind">Advanced</span>
         <h4>Agent harness</h4>
-        <p>The intelligence pipeline — phases, providers, task scheduling, and per-phase model overrides.</p>
+        <p>The background intelligence pipeline — phases, providers, task scheduling, and per-phase model overrides.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="agent-tools.md">
         <span class="kind">Reference</span>
         <h4>Agent MCP tools</h4>
         <p>Full reference for the MCP tools Myco exposes — search, recall, remember, graph traversal, skills.</p>
         <span class="go">Read guide</span>
       </a>
-      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/symbionts.md" target="_blank" rel="noopener">
+      <a class="doc-card" href="symbionts.md">
         <span class="kind">Advanced</span>
         <h4>Symbionts</h4>
-        <p>How Myco integrates with each coding agent's hooks, transcript formats, and native skill directories.</p>
+        <p>How Myco connects to each coding agent while preserving its native workflow.</p>
         <span class="go">Read guide</span>
       </a>
     </div>
@@ -671,8 +743,8 @@
   <div class="cta-band-bg"></div>
   <div class="cta-inner">
     <span class="eyebrow no-bar"><span class="dot"></span>Local-first · Apache 2.0 licensed</span>
-    <h2 class="cta-title">Install once. Let the <em>forest floor</em> do the rest.</h2>
-    <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Layer team sync and a Collective on top when you're ready.</p>
+    <h2 class="cta-title">Install once. Give your agents a <em>shared nervous system</em>.</h2>
+    <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Layer Team Sync and a Collective on top when you're ready.</p>
     <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top: 10px;">
       <a class="btn btn-primary btn-lg" href="#install">Get started<span class="chev">→</span></a>
       <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">Star on GitHub</a>
@@ -689,7 +761,7 @@
           <img class="brand-mark" src="assets/logo-mark.svg" alt="Myco">
           <span class="brand-wm">myco</span>
         </a>
-        <p>Named after mycorrhizal networks — the underground systems that connect <em>trees</em> in a forest.</p>
+        <p>Named after mycorrhizal networks — the underground systems that connect a forest beneath the surface.</p>
         <p style="margin-top: 10px; font-family: var(--font-ui); font-style: normal; font-size: 12px;">By <a href="https://goondocks.co" target="_blank" rel="noopener" style="color: var(--sage);">Goondocks Consulting ↗</a></p>
       </div>
       <div class="footer-col">
@@ -701,10 +773,10 @@
       </div>
       <div class="footer-col">
         <h5>Docs</h5>
-        <a href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">Quickstart</a>
-        <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Skills</a>
-        <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent harness</a>
-        <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">MCP tools</a>
+        <a href="quickstart.md">Quickstart</a>
+        <a href="skills.md">Skills</a>
+        <a href="agent-harness.md">Agent harness</a>
+        <a href="agent-tools.md">MCP tools</a>
       </div>
       <div class="footer-col">
         <h5>Community</h5>
@@ -719,7 +791,7 @@
         <span><span style="color: var(--outline-variant);">@goondocks/myco-team</span> <span id="pkg-team">—</span></span>
         <span><span style="color: var(--outline-variant);">@goondocks/myco-collective</span> <span id="pkg-collective">—</span></span>
       </span>
-      <span>© myco — the intelligence layer for your projects and team</span>
+      <span>© myco — the nervous system for AI-assisted software teams</span>
     </div>
   </div>
 </footer>

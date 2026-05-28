@@ -5,15 +5,19 @@ import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
+  createArchiveProjectHandler,
   createCreateGroveHandler,
   createDeleteGroveHandler,
+  createDeleteProjectHandler,
   createMoveProjectHandler,
   createRenameGroveHandler,
   createSetDefaultGroveHandler,
+  createUnarchiveProjectHandler,
   listGroveSummaries,
 } from '@myco/daemon/api/groves.js';
+import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
 import { createProjectId } from '@myco/grove/ids.js';
-import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { resolveGroveDbPath, resolveGroveDir, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
@@ -29,12 +33,15 @@ describe('Grove CRUD API', () => {
   let serviceDir: string;
   let serviceDevDir: string;
   let previousHome: string | undefined;
+  let previousBackupsDir: string | undefined;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-groves-crud-'));
     mycoHome = path.join(testDir, 'home');
     previousHome = process.env.MYCO_HOME;
+    previousBackupsDir = process.env.MYCO_BACKUPS_DIR;
     process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_BACKUPS_DIR = path.join(testDir, 'backups');
     fs.mkdirSync(mycoHome, { recursive: true });
     serviceDir = path.join(mycoHome, 'service');
     serviceDevDir = path.join(mycoHome, 'service-dev');
@@ -46,6 +53,9 @@ describe('Grove CRUD API', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousHome;
+    if (previousBackupsDir === undefined) delete process.env.MYCO_BACKUPS_DIR;
+    else process.env.MYCO_BACKUPS_DIR = previousBackupsDir;
+    resetTeamContext();
     fs.rmSync(testDir, { recursive: true, force: true });
     clearGroveRegistryCaches();
   });
@@ -152,6 +162,25 @@ describe('Grove CRUD API', () => {
       expect(loadGroveRecord(grove.id)).not.toBeNull();
     });
 
+    it('returns 409 when only archived projects remain', async () => {
+      const grove = createGrove('Archived Busy');
+      const projectId = createProjectId();
+      registerProjectInGrove(grove.id, {
+        projectId,
+        projectName: 'Archived',
+        projectRoot: path.join(testDir, 'archived'),
+      });
+      await call(createArchiveProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+      });
+
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
+
+      expect(response.status).toBe(409);
+      expect((response.body as { error: { code: string }; project_count: number }).project_count).toBe(1);
+      expect(loadGroveRecord(grove.id)).not.toBeNull();
+    });
+
     it('returns 404 for unknown Grove id', async () => {
       const response = await call(createDeleteGroveHandler(serviceDir), {
         params: { id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
@@ -247,6 +276,111 @@ describe('Grove CRUD API', () => {
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+    });
+  });
+
+  describe('project archive/delete lifecycle', () => {
+    function ensureGroveDb(groveId: string) {
+      const dbPath = resolveGroveDbPath(groveId, mycoHome);
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      const db = openDatabase(dbPath);
+      try {
+        createSchema(db);
+        return dbPath;
+      } finally {
+        db.close();
+      }
+    }
+
+    it('archives projects, hides them by default, and restores them', async () => {
+      const grove = createGrove('Work');
+      const projectId = createProjectId();
+      registerProjectInGrove(grove.id, {
+        projectId,
+        projectName: 'Temp',
+        projectRoot: path.join(testDir, 'temp'),
+      });
+
+      const archive = await call(createArchiveProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+      });
+      expect(archive.status).toBeUndefined();
+      expect(listGroveSummaries().groves[0]!.projects).toHaveLength(0);
+      expect(listGroveSummaries({ groveIds: null }, undefined, { includeArchived: true }).groves[0]!.projects[0]!.status).toBe('archived');
+
+      const unarchive = await call(createUnarchiveProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+      });
+      expect(unarchive.status).toBeUndefined();
+      expect(listGroveSummaries().groves[0]!.projects[0]!.status).toBe('active');
+    });
+
+    it('permanently deletes project rows, creates a snapshot, and enqueues Team Sync tombstones', async () => {
+      const grove = createGrove('Work');
+      const projectId = createProjectId();
+      const siblingProjectId = createProjectId();
+      const projectRoot = path.join(testDir, 'temp');
+      const siblingRoot = path.join(testDir, 'sibling');
+      registerProjectInGrove(grove.id, {
+        projectId,
+        projectName: 'Temp',
+        projectRoot,
+      });
+      registerProjectInGrove(grove.id, {
+        projectId: siblingProjectId,
+        projectName: 'Sibling',
+        projectRoot: siblingRoot,
+      });
+      const dbPath = ensureGroveDb(grove.id);
+      const db = openDatabase(dbPath);
+      try {
+        db.prepare(
+          `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
+           VALUES ('sess-delete', 'codex', ?, ?, 1, 1, 'machine_test')`,
+        ).run(projectRoot, projectId);
+        db.prepare(
+          `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
+           VALUES ('sess-sibling', 'codex', ?, ?, 1, 1, 'machine_test')`,
+        ).run(siblingRoot, siblingProjectId);
+      } finally {
+        db.close();
+      }
+      initTeamContext(true, 'machine_test');
+
+      const rejected = await call(createDeleteProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+        body: { confirmation_name: 'wrong' },
+      });
+      expect(rejected.status).toBe(400);
+
+      const response = await call(createDeleteProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+        body: { confirmation_name: 'Temp' },
+      });
+      expect(response.status).toBeUndefined();
+      const body = response.body as { delete: { snapshot_path: string; tombstones_enqueued: number } };
+      expect(fs.existsSync(body.delete.snapshot_path)).toBe(true);
+      expect(body.delete.snapshot_path.startsWith(path.join(resolveGroveDir(grove.id, mycoHome), 'backups'))).toBe(true);
+      const snapshotSql = fs.readFileSync(body.delete.snapshot_path, 'utf-8');
+      expect(snapshotSql).toContain('sess-delete');
+      expect(snapshotSql).toContain('sess-sibling');
+      expect(body.delete.tombstones_enqueued).toBe(1);
+      expect(listRegisteredProjects(grove.id, mycoHome, { includeArchived: true }).map((p) => p.project_id)).toEqual([siblingProjectId]);
+
+      const verifyDb = openDatabase(dbPath);
+      try {
+        expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(projectId) as { n: number }).n).toBe(0);
+        expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(siblingProjectId) as { n: number }).n).toBe(1);
+        const outbox = verifyDb.prepare(
+          `SELECT table_name, row_id, operation, json_extract(payload, '$.project_id') AS project_id
+             FROM team_outbox`,
+        ).all() as Array<{ table_name: string; row_id: string; operation: string; project_id: string }>;
+        expect(outbox).toEqual([
+          { table_name: 'sessions', row_id: 'sess-delete', operation: 'delete', project_id: projectId },
+        ]);
+      } finally {
+        verifyDb.close();
+      }
     });
   });
 

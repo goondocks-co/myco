@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveVaultDir } from './resolve.js';
 import {
+  daemonVariantFromEnvValue,
   resolveMycoHome,
   PROJECT_MANIFEST_FILENAME,
   SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord } from '../grove/registry.js';
-import { serviceVariantToDirName } from '../service/labels.js';
 import { createProjectId } from '../grove/ids.js';
 
 /**
@@ -178,8 +178,7 @@ function hasProjectManifest(vaultDir: string): boolean {
 
 function firstProjectVaultFromRegistry(): string | null {
   const mycoHome = resolveMycoHome();
-  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
-  const targetServedBy = serviceVariantToDirName(variant === 'dev' ? 'dev' : 'prod');
+  const targetServedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
 
   if (targetServedBy === SERVICE_DEV_DIRNAME) {
     // Dev variant: find any Grove whose grove.toml says served_by = "service-dev".

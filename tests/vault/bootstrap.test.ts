@@ -153,6 +153,24 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 
+  test('documented service-dev variant picks a Grove with served_by = service-dev', () => {
+    const prodGrove = 'grove_1111111111111111111111111111111a';
+    const devGrove = 'grove_1111111111111111111111111111111b';
+    const prodRoot = makeProject('prod-service-name');
+    const devRoot = makeProject('dev-service-name');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod_service_name', root: prodRoot }]);
+    writeProjectsToml(devGrove, [{ id: 'proj_dev_service_name', root: devRoot }]);
+    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
+    try {
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(devRoot, '.myco'));
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
   test('prod variant refuses to bind a default Grove with served_by=service-dev (task #9)', () => {
     // The cross-variant escape hatch: a user sets a dev Grove as
     // default_grove_id and then installs the prod daemon. Before

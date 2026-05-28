@@ -1,6 +1,6 @@
 ---
 name: myco:write-myco-user-documentation
-description: "Use this skill when writing, reviewing, or editing user-facing Myco documentation — README sections, feature docs, onboarding guides, CLI reference pages, or any content intended for people who use Myco (not people who build it). Activate this skill even if the user doesn't explicitly ask for a documentation review — if you're finishing a feature implementation and documentation is the next step, invoke this skill before writing or committing any docs. This skill enforces the Myco doc-voice contract: capability-first language, zero internal mechanics leakage, and user-vocabulary only."
+description: "Use this skill when writing, reviewing, or editing user-facing Myco documentation — README sections, feature docs, onboarding guides, CLI reference pages, docs site SEO/crawler files, or any content intended for people who use Myco (not people who build it). Activate this skill even if the user doesn't explicitly ask for a documentation review — if you're finishing a feature implementation and documentation is the next step, invoke this skill before writing or committing any docs. This skill enforces the Myco doc-voice contract: user guides rather than user manuals, capability-first language, zero internal mechanics leakage, crawler-friendly public docs, and user-vocabulary only."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -26,7 +26,20 @@ Ask: *Who reads this?* User-facing docs appear in:
 
 Design specs (`docs/superpowers/specs/`), commit messages, and CHANGELOG entries are **not** user-facing docs. This skill does not apply to those artifacts.
 
-### 2. Draft capability-first
+### 2. Write guides, not manuals
+
+Default to **user guides**, not user manuals. A guide helps the user accomplish a real outcome in the order they are likely to need it. A manual exhaustively catalogs the system. Myco public docs should read like guides unless the page is explicitly a reference page.
+
+| Prefer | Avoid |
+|---|---|
+| Outcome-first sections: install, configure, connect, verify, recover | Implementation catalogs and subsystem inventories |
+| Scenario flow: "If you want Team Sync, do this" | Abstract capability lists without an adoption path |
+| Progressive disclosure: start with the happy path, then troubleshooting | Front-loading edge cases, internals, or historical migrations |
+| User-facing names from the UI/CLI | Codebase names, file ownership, table names, or daemon internals |
+
+Reference docs are allowed when the user is intentionally looking something up, such as CLI commands, MCP tools, config fields, or install scripts. Even then, introduce the reference with a short guide paragraph that says what the user can do with it.
+
+### 3. Draft capability-first
 
 Every sentence should start from the user's perspective. The mental model: *"The user can ___."*
 
@@ -40,7 +53,7 @@ Every sentence should start from the user's perspective. The mental model: *"The
 
 Lead with the user action, then the outcome. Mechanism comes last — or not at all.
 
-### 3. Strip internal mechanics
+### 4. Strip internal mechanics
 
 Read each paragraph and remove any sentence that:
 - Names internal classes (`SymbiontInstaller`, `PowerManager`, `DaemonClient`, `outbox`)
@@ -51,7 +64,7 @@ Read each paragraph and remove any sentence that:
 
 > **Gotcha — internal vocabulary leakage**: Terms like "spore," "symbiont," and "vault" appear in the Myco UI and CLI output — they are user vocabulary. Terms like "outbox," "PowerManager," "SymbiontInstaller," and "schema version" are codebase vocabulary. Never use codebase vocabulary in user docs.
 
-### 4. Generalize patterns — don't enumerate variants
+### 5. Generalize patterns — don't enumerate variants
 
 Describe the rule once with one canonical example. Enumerations go stale and bloat docs.
 
@@ -63,7 +76,7 @@ Describe the rule once with one canonical example. Enumerations go stale and blo
     Claude Code, Copilot CLI, and Gemini CLI are supported out of the box."
 ```
 
-### 5. Write in present tense, not change-voice
+### 6. Write in present tense, not change-voice
 
 User docs describe the *current state* of the tool. They do not describe what changed in this release, why a design decision was made, or what the previous behavior was.
 
@@ -71,7 +84,7 @@ If you catch yourself writing "now supports," "we've added," or "previously," re
 
 > **Gotcha — commit message creep**: It's easy to write docs that read like a commit message, especially immediately after implementing a feature. Step back and describe the tool as if the user is encountering it for the first time.
 
-### 6. Document multi-symbiont vault usage patterns
+### 7. Document multi-symbiont vault usage patterns
 
 When documenting features that work across multiple AI agents in a project, emphasize the vault as the shared memory system and document the saving requirements:
 
@@ -101,7 +114,7 @@ Document skill discovery and layout patterns that users encounter:
     that allow agents to discover and load them automatically."
 ```
 
-### 7. Document Three-Surface Rule for user-facing content
+### 8. Document Three-Surface Rule for user-facing content
 
 Myco documentation is consumed across three surfaces: code comments, CLI help, and narrative docs. Apply consistent capability-first voice across all three:
 
@@ -118,7 +131,7 @@ The voice contract applies equally across all three surfaces. When documenting a
 
 Never leak implementation detail in any surface. All three should be readable by users who don't understand the system architecture.
 
-### 8. Document CLI help and command patterns
+### 9. Document CLI help and command patterns
 
 When writing CLI help text or documenting command usage, follow consistent patterns that match user expectations:
 
@@ -134,7 +147,7 @@ Document auto-completion and discovery features:
     Run `myco --help` to see all available commands."
 ```
 
-### 9. Ensure legal/IP clarity in public messaging
+### 10. Ensure legal/IP clarity in public messaging
 
 When writing public-facing content that references Myco's relationship to other tools or projects, be precise about intellectual property boundaries:
 
@@ -152,19 +165,36 @@ If mentioning predecessor tools is necessary for context, frame it as user migra
 ✅ "Users migrating from OAK can import their activity history with `myco migrate`"
 ```
 
-### 10. Apply the voice checklist
+### 11. Keep public docs discoverable
+
+When editing the public docs site (`docs/index.html`, top-level files under `docs/`, README content that should be discoverable, or install pages), preserve both traditional search and AI-search readability.
+
+Required checks for public docs changes:
+
+- The homepage has a clear `<title>`, meta description, canonical URL, Open Graph tags, Twitter card tags, and JSON-LD structured data.
+- `docs/robots.txt` allows public crawling and points to `https://myco.sh/sitemap.xml`.
+- `docs/sitemap.xml` lists the homepage and core user guides on `https://myco.sh/`, not only GitHub URLs.
+- `docs/llms.txt` gives LLMs a concise project summary and curated links to the highest-signal user guides.
+- The docs homepage links to local `myco.sh/*.md` guide URLs where possible. Use GitHub links for source code, issues, releases, and repository context, not as the primary path for user guides.
+- Do not include internal plans, design specs, scratch docs, or `docs/superpowers/` content in sitemap or `llms.txt`.
+
+AI-readable docs are still user docs. Do not make `llms.txt` a keyword dump or implementation catalog. Keep it concise, current, and aligned with the public product framing.
+
+### 12. Apply the voice checklist
 
 After drafting, read each paragraph through this gate:
 
 | Question | Keep if yes | Rewrite if no |
 |---|---|---|
 | Does this tell the user what they can do? | ✅ | Rewrite capability-first |
+| Is this a guide when the user needs a guide, rather than a manual? | ✅ | Reframe around outcomes and adoption flow |
 | Is every term user-vocabulary (appears in UI/CLI output)? | ✅ | Replace with user term or remove |
 | Does this describe current state, not past changes? | ✅ | Rewrite in present tense |
 | Could a user act on this information directly? | ✅ | Consider removing |
+| If public, is it discoverable through metadata, sitemap, and `llms.txt` where appropriate? | ✅ | Update the public crawler surfaces |
 | Are any IP/legal claims clear and accurate? | ✅ | Clarify relationships and boundaries |
 
-### 11. Add docs to the PR as the final step
+### 13. Add docs to the PR as the final step
 
 Documentation is a merge gate, not a mid-implementation artifact. Write docs after implementation is complete and review them with fresh eyes — ideally after stepping away from the implementation context.
 

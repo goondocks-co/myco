@@ -122,7 +122,7 @@
 
   <!-- Wordmark -->
   <text x="640" y="440" text-anchor="middle" font-family="'Geist Mono', 'SF Mono', 'Fira Code', monospace" font-size="52" font-weight="700" fill="#e2e8f0" letter-spacing="-2">myco</text>
-  <text x="640" y="470" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="15" fill="#86efac" letter-spacing="0.5" opacity="0.8">The connected intelligence layer for agents and AI-assisted teams</text>
+  <text x="640" y="470" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="15" fill="#86efac" letter-spacing="0.5" opacity="0.8">The nervous system for AI-assisted software teams</text>
 
   <!-- Subtle vignette -->
   <rect width="1280" height="640" fill="url(#networkFade)" opacity="0.05"/>

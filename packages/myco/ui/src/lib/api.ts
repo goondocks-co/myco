@@ -53,11 +53,23 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   });
   checkApiVersion(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
+    const body = await parseResponseBody<unknown>(res).catch(() => ({}));
     maybeReloadForStaleAuth(res.status, body);
     throw new ApiError(res.status, body);
   }
-  return res.json();
+  return parseResponseBody<T>(res);
+}
+
+async function parseResponseBody<T>(res: Response): Promise<T> {
+  if (res.status === 204 || res.status === 205 || res.headers.get('Content-Length') === '0') {
+    return undefined as T;
+  }
+  if (typeof res.text === 'function') {
+    const text = await res.text();
+    if (text.length === 0) return undefined as T;
+    return JSON.parse(text) as T;
+  }
+  return res.json() as Promise<T>;
 }
 
 /**
@@ -84,9 +96,7 @@ export function __setReloadPageForTests(impl?: () => void): void {
 
 function maybeReloadForStaleAuth(status: number, body: unknown): void {
   if (status !== 401) return;
-  const errorCode = typeof body === 'object' && body !== null && 'error' in body
-    ? (body as { error: unknown }).error
-    : null;
+  const errorCode = apiErrorCode(body);
   if (errorCode !== 'unauthorized_context_switch') return;
   if (typeof window === 'undefined' || typeof window.sessionStorage === 'undefined') return;
 
@@ -194,9 +204,34 @@ export class ApiError extends Error {
   constructor(public status: number, public body: unknown) {
     // Include the server's error message if present so UI callers that
     // only render err.message still surface the actual failure reason.
-    const detail = typeof body === 'object' && body !== null && 'error' in body
-      ? String((body as { error: unknown }).error)
-      : null;
+    const detail = apiErrorMessage(body);
     super(detail ? `${detail} (API ${status})` : `API error ${status}`);
   }
+}
+
+function apiErrorCode(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || !('error' in body)) return null;
+  const error = (body as { error: unknown }).error;
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code: unknown }).code;
+    return typeof code === 'string' ? code : null;
+  }
+  return null;
+}
+
+function apiErrorMessage(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null) return null;
+  if ('error' in body) {
+    const error = (body as { error: unknown }).error;
+    if (typeof error === 'string') return error;
+    if (typeof error === 'object' && error !== null) {
+      const message = 'message' in error ? (error as { message: unknown }).message : null;
+      if (typeof message === 'string' && message.length > 0) return message;
+      const code = 'code' in error ? (error as { code: unknown }).code : null;
+      if (typeof code === 'string' && code.length > 0) return code;
+    }
+  }
+  const message = 'message' in body ? (body as { message: unknown }).message : null;
+  return typeof message === 'string' && message.length > 0 ? message : null;
 }

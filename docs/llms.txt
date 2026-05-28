@@ -1,0 +1,39 @@
+# Myco
+
+> Myco is the nervous system for AI-assisted software teams. It works alongside coding agents, subagents, and agent teams to provide shared project knowledge, semantic codebase awareness, and learned workflows that evolve with the project.
+
+Myco is not a replacement coding agent or hosted harness. It lives with the project, captures development sessions into a local Grove, and routes useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Sync mirrors connected teammates' Grove knowledge through Cloudflare and exposes synced knowledge to cloud agents through secure MCP.
+
+The supported path for the current release is macOS. Linux and Windows packages are published for early testing and are experimental.
+
+## Start here
+
+- [Homepage](https://myco.sh/): Product overview, install command, feature summary, and supported agents.
+- [Quickstart](https://myco.sh/quickstart.md): Install Myco, open the local dashboard, configure providers, and understand what happens after setup.
+- [README](https://github.com/goondocks-co/myco/blob/main/README.md): Repository overview and release-facing product framing.
+
+## Core concepts
+
+- [Skills](https://myco.sh/skills.md): How accumulated project knowledge becomes reviewed workflows that connected agents can follow.
+- [Symbionts](https://myco.sh/symbionts.md): How Myco connects to supported coding agents while preserving each agent's native workflow.
+- [Canopy](https://myco.sh/canopy.md): Codebase awareness that helps agents understand files and architecture before they read deeply.
+- [Agent tools](https://myco.sh/agent-tools.md): MCP tools and slash-command skills available to connected agents.
+- [Agent harness](https://myco.sh/agent-harness.md): Background intelligence work that extracts spores, summaries, digests, and evolving skills.
+
+## Team features
+
+- [Team Sync](https://myco.sh/team-sync.md): Share Grove knowledge across machines and teammates while keeping local data as the source of truth.
+- [Cloud MCP](https://myco.sh/cloud-mcp.md): Read-only access to synced Grove knowledge for cloud agents and automations.
+- [Collective](https://myco.sh/collective.md): Cross-project search and shared settings for multiple Team Sync deployments.
+
+## Operations
+
+- [Local service lifecycle](https://myco.sh/lifecycle.md): What gets captured, how the local service behaves, and what to do when something needs attention.
+- [Upgrade guide](https://myco.sh/upgrade.md): Upgrade Myco, preserve existing agent settings, and verify the install.
+- [Install script for macOS and Linux](https://myco.sh/install.sh): Shell installer. Linux support is experimental.
+- [Install script for Windows](https://myco.sh/install.ps1): PowerShell installer. Windows support is experimental.
+
+## Optional
+
+- [Migrating from OAK](https://myco.sh/migrating-from-oak.md): Import OAK activity history into Myco when relevant.
+- [GitHub repository](https://github.com/goondocks-co/myco): Source code, issues, releases, and package details.

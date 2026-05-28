@@ -33,12 +33,35 @@ export interface SetDefaultGroveResponse {
   is_default: true;
 }
 
+export interface ProjectLifecycleResponse {
+  ok: boolean;
+  project: {
+    grove_id: string;
+    project_id: string;
+    project_name: string;
+    status: 'active' | 'archived';
+    archived_at?: string;
+  };
+}
+
+export interface DeleteProjectResponse {
+  ok: boolean;
+  delete: {
+    grove_id: string;
+    project_id: string;
+    project_name: string;
+    snapshot_path: string;
+    table_counts: Record<string, number>;
+    tombstones_enqueued: number;
+  };
+}
+
 export function useCreateGrove() {
   const qc = useQueryClient();
   return useMutation<CreateGroveResponse, Error, { name: string }>({
     mutationFn: (body) => postJson<CreateGroveResponse>('/groves', body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['groves'] });
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
     },
   });
 }
@@ -52,7 +75,7 @@ export function useRenameGrove() {
         body: JSON.stringify({ name }),
       }),
     onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: ['groves'] });
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
       qc.invalidateQueries({ queryKey: ['grove', variables.id] });
     },
   });
@@ -64,7 +87,7 @@ export function useDeleteGrove() {
     mutationFn: ({ id }) =>
       fetchJson<void>(`/groves/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['groves'] });
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
     },
   });
 }
@@ -81,7 +104,7 @@ export function useMoveProject() {
         `/groves/${encodeURIComponent(targetGroveId)}/projects/${encodeURIComponent(projectId)}`,
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['groves'] });
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
     },
   });
 }
@@ -92,7 +115,50 @@ export function useSetDefaultGrove() {
     mutationFn: ({ id }) =>
       postJson<SetDefaultGroveResponse>(`/groves/${encodeURIComponent(id)}/default`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['groves'] });
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
+    },
+  });
+}
+
+export function useArchiveProject() {
+  const qc = useQueryClient();
+  return useMutation<ProjectLifecycleResponse, Error, { groveId: string; projectId: string }>({
+    mutationFn: ({ groveId, projectId }) =>
+      postJson<ProjectLifecycleResponse>(
+        `/groves/${encodeURIComponent(groveId)}/projects/${encodeURIComponent(projectId)}/archive`,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
+    },
+  });
+}
+
+export function useUnarchiveProject() {
+  const qc = useQueryClient();
+  return useMutation<ProjectLifecycleResponse, Error, { groveId: string; projectId: string }>({
+    mutationFn: ({ groveId, projectId }) =>
+      postJson<ProjectLifecycleResponse>(
+        `/groves/${encodeURIComponent(groveId)}/projects/${encodeURIComponent(projectId)}/unarchive`,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation<DeleteProjectResponse, Error, { groveId: string; projectId: string; confirmationName: string }>({
+    mutationFn: ({ groveId, projectId, confirmationName }) =>
+      fetchJson<DeleteProjectResponse>(
+        `/groves/${encodeURIComponent(groveId)}/projects/${encodeURIComponent(projectId)}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ confirmation_name: confirmationName }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['groves'], exact: false });
     },
   });
 }

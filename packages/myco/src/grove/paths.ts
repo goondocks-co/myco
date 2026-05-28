@@ -140,7 +140,17 @@ export function isDevServiceMode(): boolean {
  * Grove-ownership boundary.
  */
 export function currentDaemonVariant(): DaemonVariant {
+  if (process.env.MYCO_SERVICE_VARIANT !== undefined) {
+    return daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
+  }
   return devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
+}
+
+export function daemonVariantFromEnvValue(value: string | undefined | null): DaemonVariant {
+  const normalized = value?.trim();
+  return normalized === 'dev' || normalized === SERVICE_DEV_DIRNAME
+    ? SERVICE_DEV_DIRNAME
+    : SERVICE_DIRNAME;
 }
 
 export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonVariant {
@@ -151,7 +161,7 @@ export function resolveServiceDirName(stateDir: string, mycoHome: string): Daemo
 }
 
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME);
+  return path.join(mycoHome, currentDaemonVariant());
 }
 
 export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {

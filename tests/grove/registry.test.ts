@@ -6,11 +6,13 @@ import { parse } from 'smol-toml';
 import YAML from 'yaml';
 import {
   clearGroveRegistryCaches,
+  archiveProjectInGrove,
   createGrove,
   deleteGrove,
   deregisterProjectInGrove,
   ensureDefaultGrove,
   ensureGroveExistsLocally,
+  ensureProjectRegistered,
   getDefaultGroveId,
   listGroves,
   listRegisteredProjects,
@@ -19,6 +21,7 @@ import {
   renameGrove,
   resolveGrove,
   setDefaultGrove,
+  unarchiveProjectInGrove,
 } from '@myco/grove/registry.js';
 import { createGroveId } from '@myco/grove/ids.js';
 
@@ -200,6 +203,49 @@ describe('Grove registry', () => {
       expect(listRegisteredProjects(grove.id, home)).toHaveLength(2);
       deregisterProjectInGrove(grove.id, 'proj_a', home);
       expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).toEqual(['proj_b']);
+    });
+  });
+
+  describe('project archive lifecycle', () => {
+    it('hides archived projects by default and can list them explicitly', () => {
+      const grove = createGrove('Work', home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_demo',
+        projectName: 'Demo',
+        projectRoot: '/tmp/demo',
+        bindingId: 'gbind_demo',
+      }, home);
+
+      archiveProjectInGrove(grove.id, 'proj_demo', home);
+
+      expect(listRegisteredProjects(grove.id, home)).toEqual([]);
+      const archived = listRegisteredProjects(grove.id, home, { includeArchived: true });
+      expect(archived).toHaveLength(1);
+      expect(archived[0]!.status).toBe('archived');
+      expect(typeof archived[0]!.archived_at).toBe('string');
+
+      unarchiveProjectInGrove(grove.id, 'proj_demo', home);
+      expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).toEqual(['proj_demo']);
+    });
+
+    it('does not silently reactivate an archived project on auto-registration', () => {
+      const grove = createGrove('Work', home);
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-archived-root-'));
+      fs.mkdirSync(path.join(projectRoot, '.git'));
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_demo',
+        projectName: 'Demo',
+        projectRoot,
+        bindingId: 'gbind_demo',
+      }, home);
+      archiveProjectInGrove(grove.id, 'proj_demo', home);
+
+      const registered = ensureProjectRegistered(projectRoot, home);
+
+      expect(registered).toBeNull();
+      expect(listRegisteredProjects(grove.id, home)).toEqual([]);
+      expect(listRegisteredProjects(grove.id, home, { includeArchived: true })[0]!.status).toBe('archived');
+      fs.rmSync(projectRoot, { recursive: true, force: true });
     });
   });
 

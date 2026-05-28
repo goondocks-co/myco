@@ -75,4 +75,25 @@ describe('fetchJson stale-auth recovery', () => {
     try { await fetchJson('/grove/list'); } catch { /* expected */ }
     expect(reloadCalls).toBe(2);
   });
+
+  it('resolves undefined for 204 No Content responses', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      headers: { get: () => null } as unknown as Headers,
+    } as Response) as unknown as typeof fetch;
+
+    await expect(fetchJson('/groves/grove_123', { method: 'DELETE' })).resolves.toBeUndefined();
+  });
+
+  it('uses nested error envelope messages instead of [object Object]', async () => {
+    stubFetch(404, {
+      error: {
+        code: 'grove_not_found',
+        message: 'Unknown Grove: smoke test',
+      },
+    });
+
+    await expect(fetchJson('/groves/grove_missing')).rejects.toThrow('Unknown Grove: smoke test (API 404)');
+  });
 });

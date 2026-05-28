@@ -455,12 +455,15 @@ section.band + section.band { padding-top: 0; }
 
 .install-tabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 2px;
   padding: 4px;
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: 10px;
   width: fit-content;
+  max-width: 100%;
   margin: 0 auto 20px;
 }
 .install-tab {

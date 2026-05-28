@@ -549,6 +549,32 @@ jobs:
             *)               DISPLAY_NAME="$PACKAGE_NAME" ;;
           esac
 
+          if [ "$TAG_PREFIX" = "myco" ]; then
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              INSTALL_BLOCK='```bash
+          npm install -g @goondocks/myco@beta
+          myco open
+          ```'
+            else
+              INSTALL_BLOCK='```bash
+          curl -fsSL https://myco.sh/install.sh | sh  # fresh install
+          npm update -g @goondocks/myco              # upgrade existing
+          myco open
+          ```'
+            fi
+          else
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              INSTALL_BLOCK='```bash
+          npm install -g '"${PACKAGE_NAME}"'@beta
+          ```'
+            else
+              INSTALL_BLOCK='```bash
+          npm install -g '"${PACKAGE_NAME}"'        # fresh install
+          npm update  -g '"${PACKAGE_NAME}"'        # upgrade existing
+          ```'
+            fi
+          fi
+
           if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_TITLE="${DISPLAY_NAME} ${VERSION} · Pre-release"
             cat > release-notes.md <<NOTES_EOF
@@ -558,9 +584,7 @@ jobs:
 
           ## Install
 
-          \`\`\`bash
-          npm install -g ${PACKAGE_NAME}@beta
-          \`\`\`
+          ${INSTALL_BLOCK}
 
           ## What's Changed
 
@@ -573,10 +597,7 @@ jobs:
 
           ## Install / Upgrade
 
-          \`\`\`bash
-          npm install -g ${PACKAGE_NAME}        # fresh install
-          npm update  -g ${PACKAGE_NAME}        # upgrade existing
-          \`\`\`
+          ${INSTALL_BLOCK}
 
           ## What's Changed
 
