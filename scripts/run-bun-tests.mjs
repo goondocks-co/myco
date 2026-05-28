@@ -8,6 +8,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// ---------------------------------------------------------------------------
+// Watchdog diagnostics
+// ---------------------------------------------------------------------------
+// Hangs in CI used to be opaque: the runner emitted a single
+// `=== bun test (label) ===` line at phase start and then sat silent until
+// either the subprocess exited or GitHub Actions killed the job. Recovering
+// "which test was running when it hung" meant scrolling through thousands
+// of log lines, often impossible mid-run.
+//
+// These constants drive a per-phase quiet-line detector. Every `INTERVAL`
+// ms the runner checks how long it's been since the subprocess last wrote
+// a non-empty line. If that quiet window exceeds `QUIET_MS`, the runner
+// emits a structured `[run-bun-tests] STILL RUNNING …` line with the
+// elapsed time AND the last non-empty line the subprocess produced —
+// which is usually the test name Bun was about to or just started running.
+// That single grepable line is enough to identify the hanger without
+// re-reading the full log.
+//
+// Override via env vars to tighten/relax for local debugging:
+//   MYCO_RUNNER_QUIET_MS — quiet threshold before a heartbeat is emitted
+//   MYCO_RUNNER_HEARTBEAT_INTERVAL_MS — how often to check
+const WATCHDOG_QUIET_MS = Number(process.env.MYCO_RUNNER_QUIET_MS ?? 30000);
+const WATCHDOG_INTERVAL_MS = Number(process.env.MYCO_RUNNER_HEARTBEAT_INTERVAL_MS ?? 10000);
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const FAST_EXCLUDES = [
@@ -679,7 +703,7 @@ function resetReportDir() {
   fs.mkdirSync(REPORT_DIR, { recursive: true });
 }
 
-function runPhase(label, extraArgs, bunfig, { isolate }) {
+async function runPhase(label, extraArgs, bunfig, { isolate }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
   // `BUN_CONFIG_FILE` is not observed by `bun test` for the bunfig; the only
   // reliable way to swap configs is to move the file on disk for the
@@ -709,7 +733,7 @@ function runPhase(label, extraArgs, bunfig, { isolate }) {
       `--reporter-outfile=${reportFile}`,
       ...extraArgs,
     ];
-    const status = runWithTee('bun', args, teeFile);
+    const status = await runWithTeeAndHeartbeat('bun', args, teeFile, label);
     return status;
   } finally {
     if (restored) {
@@ -795,6 +819,101 @@ function runWithTee(command, args, teeFile) {
     env: process.env,
   });
   return result.status ?? 1;
+}
+
+/**
+ * Async variant of `runWithTee` with a quiet-line watchdog. Pipes child
+ * stdout/stderr through Node so we can:
+ *   - tee to the terminal (preserves live progress in CI logs)
+ *   - tee to the per-phase log file (preserves the existing artifact)
+ *   - track the last non-empty line and timestamp
+ *
+ * Every `WATCHDOG_INTERVAL_MS` we check whether the child has produced
+ * output recently. If `WATCHDOG_QUIET_MS` has passed since the last
+ * non-empty line, we emit a heartbeat that includes that last line —
+ * which is usually a Bun test name. This makes hangs grepable: after
+ * the run, `grep STILL RUNNING <log>` points straight at the file/test
+ * that was stuck.
+ *
+ * Behavior is otherwise identical to `runWithTee` — same shell command,
+ * same pipefail handling, same exit-code semantics.
+ */
+async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
+  const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
+  const shellCmd = `set -o pipefail; ${command} ${escaped}`;
+  const startMs = Date.now();
+  process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
+
+  return new Promise((resolve) => {
+    const child = spawn('/bin/bash', ['-c', shellCmd], {
+      cwd: REPO,
+      env: process.env,
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+
+    let lastNonEmptyLine = '';
+    let lastOutputMs = Date.now();
+    // Buffer partial lines across chunks so we attribute the last
+    // non-empty line correctly even when chunks arrive mid-line.
+    let stdoutTail = '';
+    let stderrTail = '';
+
+    function ingest(chunk, stream, tailRef) {
+      const text = chunk.toString();
+      // Mirror to terminal verbatim — preserves ANSI/formatting for
+      // anyone watching the live log.
+      stream.write(text);
+      // Mirror to the log file. Sync append: chunks are small, sync
+      // I/O here matches the prior runWithTee behavior (shell tee was
+      // also sync per write).
+      try { fs.appendFileSync(teeFile, text); } catch { /* best-effort */ }
+      // Track the last non-empty line for the watchdog heartbeat.
+      const combined = tailRef.value + text;
+      const lines = combined.split(/\r?\n/);
+      tailRef.value = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          lastNonEmptyLine = trimmed;
+          lastOutputMs = Date.now();
+        }
+      }
+    }
+    const stdoutRef = { value: stdoutTail };
+    const stderrRef = { value: stderrTail };
+    child.stdout.on('data', (c) => ingest(c, process.stdout, stdoutRef));
+    child.stderr.on('data', (c) => ingest(c, process.stderr, stderrRef));
+
+    const watchdog = setInterval(() => {
+      const sinceLastOutput = Date.now() - lastOutputMs;
+      if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
+        const totalElapsed = Date.now() - startMs;
+        const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
+        process.stderr.write(msg);
+        try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
+      }
+    }, WATCHDOG_INTERVAL_MS);
+    // Don't keep the event loop alive purely for the heartbeat — the
+    // child's pipes are the load-bearing references that hold the
+    // process open.
+    watchdog.unref?.();
+
+    child.on('error', (err) => {
+      clearInterval(watchdog);
+      process.stderr.write(`[run-bun-tests] FAILED TO SPAWN ${label}: ${err?.message ?? err}\n`);
+      resolve(1);
+    });
+
+    child.on('close', (code) => {
+      clearInterval(watchdog);
+      const totalMs = Date.now() - startMs;
+      const tail = lastNonEmptyLine ? ` (last line: ${lastNonEmptyLine})` : '';
+      const completion = `[run-bun-tests] FINISHED ${label} in ${totalMs}ms (exit ${code ?? 1})${tail}\n`;
+      process.stderr.write(completion);
+      try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
+      resolve(code ?? 1);
+    });
+  });
 }
 
 function decodeXmlEntities(input) {
@@ -976,7 +1095,7 @@ resetReportDir();
 
 let nonDomStatus = 0;
 for (const phase of nonDomPhases) {
-  const status = runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate });
+  const status = await runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate });
   nonDomStatus ||= status;
   phaseReports.push({
     label: phase.label,
@@ -988,7 +1107,7 @@ for (const phase of nonDomPhases) {
 let domStatus = 0;
 if (dom !== null) {
   stripDuplicateReact();
-  domStatus = runPhase(
+  domStatus = await runPhase(
     'jsdom',
     dom,
     path.join(REPO, 'bunfig.dom.toml'),
