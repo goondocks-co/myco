@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import { PowerProvider } from './providers/power';
-import { AppearanceProvider } from './providers/appearance';
 import App from './App';
 import { STALE_TIME } from './lib/constants';
 import './index.css';
@@ -23,11 +22,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <PowerProvider>
       <QueryClientProvider client={queryClient}>
-        <AppearanceProvider>
-          <BrowserRouter basename={getBasePath() || undefined}>
-            <App />
-          </BrowserRouter>
-        </AppearanceProvider>
+        <BrowserRouter basename={getBasePath() || undefined}>
+          <App />
+        </BrowserRouter>
       </QueryClientProvider>
     </PowerProvider>
   </React.StrictMode>,

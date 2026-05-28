@@ -210,12 +210,11 @@ describe('Local config overlay', () => {
     expect(loadLocalConfig(tmpDir)).toEqual({});
   });
 
-  it('loadMergedConfig overlays local onto project at leaf', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n  mode: dark\n`);
-    writeLocal(tmpDir, `appearance:\n  theme: moss\n`);
+  it('loadMergedConfig overlays local onto project at leaf for project-scoped fields', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
+    writeLocal(tmpDir, `notifications:\n  enabled: false\n`);
     const merged = loadMergedConfig(tmpDir);
-    expect(merged.appearance.theme).toBe('moss');
-    expect(merged.appearance.mode).toBe('dark');
+    expect(merged.notifications.enabled).toBe(false);
   });
 
   it('loadMergedConfig returns project unchanged when no local', () => {
@@ -224,18 +223,25 @@ describe('Local config overlay', () => {
     expect(merged.appearance.theme).toBe('sage');
   });
 
-  it('saveLocalConfig creates local.yaml and deep-merges', () => {
+  it('saveLocalConfig creates local.yaml and deep-merges project-local fields', () => {
     writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
-    saveLocalConfig(tmpDir, { appearance: { theme: 'plum' } });
-    saveLocalConfig(tmpDir, { appearance: { font: 'geist-mono' } });
+    saveLocalConfig(tmpDir, { notifications: { enabled: false } });
+    saveLocalConfig(tmpDir, { notifications: { default_mode: 'banner' } });
     const local = loadLocalConfig(tmpDir);
-    expect(local.appearance).toEqual({ theme: 'plum', font: 'geist-mono' });
+    expect(local.notifications).toEqual({ enabled: false, default_mode: 'banner' });
   });
 
   it('updateLocalConfig round-trips through callback', () => {
     writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n`);
-    updateLocalConfig(tmpDir, (local) => ({ ...local, appearance: { ...local.appearance, theme: 'dusk' } }));
-    expect(loadLocalConfig(tmpDir).appearance?.theme).toBe('dusk');
+    updateLocalConfig(tmpDir, (local) => ({ ...local, notifications: { ...local.notifications, enabled: false } }));
+    expect(loadLocalConfig(tmpDir).notifications?.enabled).toBe(false);
+  });
+
+  it('loadLocalConfig preserves legacy appearance until a Grove-aware migration can lift it', () => {
+    writeLocal(tmpDir, `appearance:\n  theme: moss\nnotifications:\n  enabled: false\n`);
+    const local = loadLocalConfig(tmpDir);
+    expect(local.appearance?.theme).toBe('moss');
+    expect(local.notifications?.enabled).toBe(false);
   });
 
   it('merged-array policy: local arrays replace project arrays', () => {
@@ -313,6 +319,43 @@ describe('Grove-tier promotion — merge verification', () => {
     expect(config.embedding.model).toBe('nomic-embed-text');
   });
 
+  it('Grove-tier appearance reaches merged config', () => {
+    writeMinimalProject(tmpDir);
+    writeGroveConfig('appearance:\n  theme: plum\n  mode: light\n');
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.appearance.theme).toBe('plum');
+    expect(config.appearance.mode).toBe('light');
+  });
+
+  it('legacy project appearance is lifted to Grove config and stripped from myco.yaml', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(tmpDir, `version: 3\nappearance:\n  theme: dusk\n`);
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.appearance.theme).toBe('dusk');
+    const groveRaw = YAML.parse(fs.readFileSync(path.join(mycoHomeDir, 'groves', groveId, 'grove.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect((groveRaw.appearance as Record<string, unknown>).theme).toBe('dusk');
+    const projectRaw = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+    expect(projectRaw.appearance).toBeUndefined();
+  });
+
+  it('legacy local appearance is lifted to Grove config and stripped from local.yaml', () => {
+    writeMinimalProject(tmpDir);
+    writeLocal(tmpDir, `appearance:\n  theme: terracotta\nnotifications:\n  enabled: false\n`);
+
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(config.appearance.theme).toBe('terracotta');
+    const groveRaw = YAML.parse(fs.readFileSync(path.join(mycoHomeDir, 'groves', groveId, 'grove.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect((groveRaw.appearance as Record<string, unknown>).theme).toBe('terracotta');
+    const localRaw = YAML.parse(fs.readFileSync(path.join(tmpDir, 'local.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect(localRaw.appearance).toBeUndefined();
+    expect((localRaw.notifications as Record<string, unknown>).enabled).toBe(false);
+  });
+
   it('legacy agent.provider in myco.yaml is preserved on disk until migration', () => {
     // Simulate a pre-promotion myco.yaml that still carries agent.provider.
     // The loader must NOT strip it from disk — runAgentConfigGrovePromotion
@@ -364,42 +407,42 @@ describe('loadMergedConfig caching', () => {
   });
 
   it('returns the same object reference on a back-to-back call', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
     const first = loadMergedConfig(tmpDir);
     const second = loadMergedConfig(tmpDir);
     expect(second).toBe(first);
   });
 
   it('reloads when myco.yaml changes on disk', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
     const first = loadMergedConfig(tmpDir);
-    expect(first.appearance.theme).toBe('sage');
+    expect(first.notifications.enabled).toBe(true);
 
     // Bump mtime + content to invalidate the fingerprint deterministically.
-    const next = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: moss\n`;
+    const next = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: false\n`;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), next);
     fs.utimesSync(path.join(tmpDir, 'myco.yaml'), new Date(), new Date(Date.now() + 2000));
 
     const second = loadMergedConfig(tmpDir);
-    expect(second.appearance.theme).toBe('moss');
+    expect(second.notifications.enabled).toBe(false);
     expect(second).not.toBe(first);
   });
 
   it('reloads when local.yaml is added', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
     const first = loadMergedConfig(tmpDir);
-    expect(first.appearance.theme).toBe('sage');
+    expect(first.notifications.enabled).toBe(true);
 
-    writeLocal(tmpDir, `appearance:\n  theme: moss\n`);
+    writeLocal(tmpDir, `notifications:\n  enabled: false\n`);
     const second = loadMergedConfig(tmpDir);
-    expect(second.appearance.theme).toBe('moss');
+    expect(second.notifications.enabled).toBe(false);
     expect(second).not.toBe(first);
   });
 
   it('saveLocalConfig invalidates the cached merge', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
     loadMergedConfig(tmpDir);
-    saveLocalConfig(tmpDir, { appearance: { theme: 'plum' } });
-    expect(loadMergedConfig(tmpDir).appearance.theme).toBe('plum');
+    saveLocalConfig(tmpDir, { notifications: { enabled: false } });
+    expect(loadMergedConfig(tmpDir).notifications.enabled).toBe(false);
   });
 });

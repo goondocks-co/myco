@@ -1,7 +1,6 @@
 ---
 name: myco:cost-optimization-performance-telemetry
-description: |
-  Comprehensive procedures for analyzing, optimizing, and monitoring LLM costs and performance in Myco's agent harness system. Covers cost leak identification, performance bottleneck analysis, resource allocation optimization, SDK execution telemetry, and budget calibration patterns. Use when investigating cost spikes, optimizing agent task efficiency, calibrating turn budgets, or implementing cost control measures, even if the user doesn't explicitly ask for cost optimization analysis.
+description: Comprehensive procedures for analyzing, optimizing, and monitoring LLM costs and performance in Myco's agent harness system. Covers cost leak identification, performance bottleneck analysis, resource allocation optimization, SDK execution telemetry, and budget calibration patterns. Use when investigating cost spikes, optimizing agent task efficiency, calibrating turn budgets, or implementing cost control measures, even if the user doesn't explicitly ask for cost optimization analysis.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -33,17 +32,22 @@ Identify cost leak patterns and calibrate budgets for sustainable operation acro
    - **Grove-specific**: Analyze global daemon cost allocation across multiple projects and groves
    - **Grove coordination overhead**: Monitor cross-grove communication costs
 
-2. **Calibrate grove-scoped task budgets**:
+2. **Calibrate grove-scoped task budgets with cadence defaults**:
    ```yaml
    # In packages/myco/src/agent/definitions/tasks/*.yaml
    phases:
      analyze:
        turnBudget: 15  # Start conservative
        groveMultiplier: 1.2  # Account for cross-grove coordination
+       cadence: 360  # minutes (6h standard) — DO NOT use 5-min default
      optimize:
        turnBudget: 25  # Scale based on complexity
        groveMultiplier: 1.1  # Lighter coordination overhead
+       cadence: 360  # 6h standard reduces cost 72× vs 5-min default
    ```
+   - **Cadence cost trap**: 5-minute task intervals cost 72× more than 6-hour intervals over a day
+   - **Default guidance**: Start at 360m (6h) unless rapid feedback is explicitly required
+   - **No-op detection**: Mechanical checks (drift detection, fingerprinting) beat expensive verification at 5m intervals
 
 3. **Model grove cost-per-operation baselines**:
    - Document typical token consumption per grove and project type
@@ -188,11 +192,13 @@ Implement comprehensive cost and performance tracking with grove attribution and
    - Validate phased executor resource boundaries with grove awareness
    - Track global daemon resource usage across multiple groves
 
-5. **Improved telemetry accuracy for tool call counting**:
+5. **Improved telemetry accuracy for tool call counting and system batch filtering**:
    - **Accurate tool emission tracking**: Fix telemetry that undercounts tool calls in multi-tool turns
    - **Emission ceiling validation**: Monitor tasks hitting tool emission limits vs budget limits
    - **Tool-heavy vs token-heavy workload classification**: Categorize tasks by dominant resource consumption
    - **Tool consolidation effectiveness measurement**: Track performance improvements from tool usage optimization
+   - **System batch origin filtering**: Exclude system-generated batches (~11% telemetry noise) from cost attribution
+   - **Origin filtering implementation**: Check batch origin field before counting in cost models
 
 ## Procedure E: Agent Harness Cost Control Patterns
 
@@ -214,11 +220,14 @@ Implement systematic cost control and budget management across grove boundaries.
    }
    ```
 
-2. **Implement grove model selection via advisor pattern**:
+2. **Implement grove model selection via advisor pattern with model tier architecture**:
    - Route simple tasks to cheaper models within grove boundaries
    - Use performance models for complex reasoning across groves
    - Implement fallback chains for budget exhaustion with grove context
    - Consider grove coordination costs in model selection decisions
+   - **Haiku-extract/Sonnet-consolidate pattern**: Use Haiku for low-overhead extraction (batch processing, spore generation), Sonnet for consolidation (semantic merges, wisdom synthesis)
+   - **Write-first pipeline optimization**: Haiku reduces extraction costs; Sonnet at consolidation handles semantic complexity without repeated re-processing
+   - **Per-stage model gating**: Match model tier to operation type—Haiku for high-volume single-pass work, Sonnet for multi-pass semantic tasks
 
 3. **Add grove phase-level cost overrides**:
    - Allow per-phase budget adjustments based on grove historical data
@@ -248,7 +257,7 @@ Optimize costs specifically for map-phase architectures with accelerator systems
    - Cache agent configurations across map-phase iterations with grove context
    - Optimize grove coordination patterns in map-phase operations
 
-2. **Grove adaptive scheduling with accelerator awareness**:
+2. **Grove adaptive scheduling with accelerator awareness and threshold calibration**:
    ```typescript
    // Configure tick-rate reality for accelerator systems with grove coordination
    const groveTickRate = acceleratorConfig.enabled
@@ -259,7 +268,18 @@ Optimize costs specifically for map-phase architectures with accelerator systems
    if (groveAcceleratorQueue.length > GROVE_THRESHOLD) {
      scheduleConfig.backoffMs *= 2; // Reduce pressure across groves
    }
+
+   // Accelerator threshold calibration: prevent low steady-state from locking accelerated mode
+   const steadyThreshold = 15;  // Raise default from 5 to prevent persistent acceleration
+   if (metrics.steady_state_cost < steadyThreshold) {
+     acceleratorConfig.enabled = false;  // Disable accelerator in low-cost periods
+   } else {
+     acceleratorConfig.enabled = true;
+   }
    ```
+   - **Threshold trap**: Default steady threshold of 5 permanently triggers accelerated mode during normal operations
+   - **Calibration guidance**: Set steady-state threshold >= 15 to avoid persistent acceleration cost overhead
+   - **Cost modeling**: Accelerated mode multiplies costs; reserve it for genuine bottlenecks, not sustained operation
 
 3. **Grove prompt caching benefits in map-phase**:
    - Leverage shared context across map iterations within grove boundaries
@@ -385,7 +405,10 @@ Optimize test execution and build performance to reduce development cycle costs 
 - **KV-cache reuse patterns vary by SDK** — OpenAI SDK can be 15× faster than Claude SDK for similar workloads due to better caching
 - **Mechanical drift detection beats expensive verification** — File fingerprinting and structural analysis costs cents vs. dollars for LLM verification phases
 - **Map-phase context sharing is cost-critical** — Proper prompt caching in map architectures can reduce costs by 60-80% for repeated operations
-- **Accelerator tick-rate reality affects cost modeling** — Real-world accelerator performance varies significantly from configuration; measure actual costs not theoretical ones
+- **Cadence defaults are a cost trap** — 5-minute intervals cost 72× more than 6-hour intervals; verify cadence settings before deploying intelligence tasks
+- **Accelerator threshold calibration is critical** — Default threshold of 5 permanently locks accelerated mode during normal work; raise to ≥15 to prevent cost multiplication
+- **Haiku-extract/Sonnet-consolidate pattern reduces costs** — Use cheaper Haiku for high-volume extraction, Sonnet only for multi-pass semantic work
+- **Origin filtering prevents system batch noise** — System-generated batches account for ~11% telemetry noise; exclude them from cost attribution
 - **Agent scoping overhead scales with map size** — Large map operations require careful agent scope management to prevent context bloat
 - **Grove coordination has measurable overhead** — Multi-grove environments need cost attribution and coordination overhead tracking
 - **Direct MCP transport eliminates loopback costs** — New transport architecture removes HTTP overhead but requires grove-aware optimization patterns

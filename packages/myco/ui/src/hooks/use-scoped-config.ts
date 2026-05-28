@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import {
   fetchMergedConfig,
   fetchLocalConfig,
@@ -10,6 +10,8 @@ import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
 import type { ConfigPath } from '../lib/config-paths';
 import { useUpdateGroveConfig } from './use-grove-config';
+import { useActiveProjectSelection } from './use-project-selection';
+import { requestContextHeadersForSelection, selectionKey } from '../lib/selection';
 
 export type Scope = 'project' | 'local' | 'grove';
 
@@ -18,9 +20,7 @@ const LOCAL_KEY = ['config', 'local'] as const;
 const NOTIFICATIONS_KEY = ['notifications'] as const;
 
 /**
- * Scoped config hook — generalizes the Appearance provider pattern so any
- * dotted path in MycoConfig can be read from the merged (project + local)
- * view and written to either scope.
+ * Scoped config hook for field-level settings writes.
  *
  * - `effective` is the merged view used for display.
  * - `local` is the raw local overlay; a key present here means that path is
@@ -38,14 +38,20 @@ const NOTIFICATIONS_KEY = ['notifications'] as const;
 export function useScopedConfig() {
   const qc = useQueryClient();
   const updateGroveConfig = useUpdateGroveConfig();
+  const activeSelection = useActiveProjectSelection();
+  const activeSelectionKey = activeSelection ? selectionKey(activeSelection) : 'none';
+  const contextHeaders = useMemo(
+    () => requestContextHeadersForSelection(activeSelection),
+    [activeSelection],
+  );
 
   const merged = useQuery({
-    queryKey: MERGED_KEY,
-    queryFn: ({ signal }) => fetchMergedConfig(signal),
+    queryKey: [...MERGED_KEY, activeSelectionKey],
+    queryFn: ({ signal }) => fetchMergedConfig(signal, contextHeaders),
   });
   const local = useQuery({
-    queryKey: LOCAL_KEY,
-    queryFn: ({ signal }) => fetchLocalConfig(signal),
+    queryKey: [...LOCAL_KEY, activeSelectionKey],
+    queryFn: ({ signal }) => fetchLocalConfig(signal, contextHeaders),
   });
 
   const mergedRef = useRef(merged.data);
@@ -84,11 +90,11 @@ export function useScopedConfig() {
         await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
         invalidateNotifications();
       } else {
-        await writeScopedConfig(scope, patch);
+        await writeScopedConfig(scope, patch, undefined, contextHeaders);
         invalidateForScope(scope);
       }
     },
-    [invalidateForScope, invalidateNotifications, updateGroveConfig],
+    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   /**
@@ -114,32 +120,32 @@ export function useScopedConfig() {
         await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
         invalidateNotifications();
       } else {
-        await writeScopedConfig(scope, patch, clearPaths as string[] | undefined);
+        await writeScopedConfig(scope, patch, clearPaths as string[] | undefined, contextHeaders);
         invalidateForScope(scope);
       }
     },
-    [invalidateForScope, invalidateNotifications, updateGroveConfig],
+    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig],
   );
 
   const resetField = useCallback(async (path: ConfigPath): Promise<void> => {
-    await clearLocalConfigKeys([path]);
+    await clearLocalConfigKeys([path], contextHeaders);
     invalidateLocal();
-  }, [invalidateLocal]);
+  }, [contextHeaders, invalidateLocal]);
 
   const resetFields = useCallback(async (paths: ConfigPath[]): Promise<void> => {
     if (paths.length === 0) return;
-    await clearLocalConfigKeys(paths as string[]);
+    await clearLocalConfigKeys(paths as string[], contextHeaders);
     invalidateLocal();
-  }, [invalidateLocal]);
+  }, [contextHeaders, invalidateLocal]);
 
   const promoteField = useCallback(async (path: ConfigPath): Promise<void> => {
     const value = getAtPath((mergedRef.current ?? {}) as Record<string, unknown>, path);
     const patch: Record<string, unknown> = {};
     setAtPath(patch, path, value);
-    await writeScopedConfig('project', patch);
-    await clearLocalConfigKeys([path]);
+    await writeScopedConfig('project', patch, undefined, contextHeaders);
+    await clearLocalConfigKeys([path], contextHeaders);
     invalidateLocal();
-  }, [invalidateLocal]);
+  }, [contextHeaders, invalidateLocal]);
 
   const isLocalOverride = useCallback(
     (path: ConfigPath): boolean =>

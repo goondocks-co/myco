@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { MoreVertical, Monitor, Moon, Sun, Check, ChevronDown } from 'lucide-react';
+import { Monitor, Moon, Sun, Check, ChevronDown } from 'lucide-react';
 import {
   APPEARANCE_THEMES,
   APPEARANCE_MODES,
@@ -14,7 +14,7 @@ import {
   type FontKey,
   type Appearance,
 } from '../providers/appearance';
-import { ScopeBadge, ScopePill } from '../components/config/ScopePill';
+import { ScopeBadge } from '../components/config/ScopePill';
 
 const THEME_LABELS: Record<Theme, { label: string; swatch: string }> = {
   sage: { label: 'Sage', swatch: '#abcfb8' },
@@ -50,18 +50,15 @@ function readSectionExpanded(): boolean {
 }
 
 export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
-  const { effective, local, set, resetKey, saveAllAsProject, resetAll } = useAppearance();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const { effective, set } = useAppearance();
   const [expanded, setExpanded] = useState<boolean>(readSectionExpanded);
 
   useEffect(() => {
     localStorage.setItem(SECTION_EXPANDED_KEY, String(expanded));
   }, [expanded]);
 
-  const isPersonal = (key: keyof Appearance) => local[key] !== undefined;
-
-  const setLocal = <K extends keyof Appearance>(key: K, value: Appearance[K]) => {
-    set(key, value, 'local').catch((err) => console.error('[appearance] write failed', err));
+  const setGrove = <K extends keyof Appearance>(key: K, value: Appearance[K]) => {
+    set(key, value).catch((err) => console.error('[appearance] grove write failed', err));
   };
 
   // Collapsed sidebar hides section; no icon-mode affordance.
@@ -79,15 +76,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
     >
       <div className="flex items-center text-xs text-on-surface-variant">
         {label}
-        {isPersonal(controlKey) ? (
-          <ScopePill
-            mode="local-default"
-            onPromote={() => set(controlKey, effective[controlKey], 'project').catch((err) => console.error('[appearance] promote failed', err))}
-            onReset={() => resetKey(controlKey).catch((err) => console.error('[appearance] reset failed', err))}
-          />
-        ) : (
-          <ScopeBadge scope="project" />
-        )}
+        <ScopeBadge scope="grove" />
       </div>
       {children}
     </div>
@@ -109,36 +98,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
           <ChevronDown className={`h-3 w-3 text-on-surface-variant transition-transform ${expanded ? '' : '-rotate-90'}`} />
           <h3 className="text-[10px] uppercase tracking-[0.22em] text-on-surface-variant">Appearance</h3>
         </button>
-        {expanded && (
-          <button
-            type="button"
-            onClick={() => setMenuOpen((o) => !o)}
-            className="rounded p-1 hover:bg-surface-container-high"
-            aria-label="Appearance menu"
-          >
-            <MoreVertical className="h-3.5 w-3.5" />
-          </button>
-        )}
       </div>
-
-      {expanded && menuOpen && (
-        <div className="flex flex-col gap-1 text-sm">
-          <button
-            type="button"
-            onClick={() => { saveAllAsProject(); setMenuOpen(false); }}
-            className="rounded px-2 py-1 text-left hover:bg-surface-container-high"
-          >
-            Save current as project defaults
-          </button>
-          <button
-            type="button"
-            onClick={() => { resetAll(); setMenuOpen(false); }}
-            className="rounded px-2 py-1 text-left hover:bg-surface-container-high"
-          >
-            Reset all to project defaults
-          </button>
-        </div>
-      )}
 
       {expanded && (
         <>
@@ -150,7 +110,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
                   <button
                     key={key}
                     type="button"
-                    onClick={() => setLocal('theme', key)}
+                    onClick={() => setGrove('theme', key)}
                     title={meta.label}
                     aria-label={meta.label}
                     className={`relative aspect-square rounded-md border ${effective.theme === key ? 'border-primary' : 'border-[var(--ghost-border)]'}`}
@@ -171,7 +131,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
                   <button
                     key={key}
                     type="button"
-                    onClick={() => setLocal('mode', key)}
+                    onClick={() => setGrove('mode', key)}
                     className={`flex items-center justify-center gap-1 rounded-md border py-1 text-xs ${effective.mode === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
                     aria-label={label}
                   >
@@ -185,7 +145,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
           {controlRow('Font', 'font', (
             <select
               value={effective.font}
-              onChange={(e) => setLocal('font', e.target.value as FontKey)}
+              onChange={(e) => setGrove('font', e.target.value as FontKey)}
               className="mt-2 h-8 w-full rounded-md border border-[var(--ghost-border)] bg-[var(--surface-container-lowest)] px-2 text-xs"
             >
               {APPEARANCE_FONTS.map((key) => (
@@ -200,7 +160,7 @@ export function AppearanceSection({ collapsed }: { collapsed: boolean }) {
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setLocal('density', key)}
+                  onClick={() => setGrove('density', key)}
                   className={`rounded-md border py-1 text-xs capitalize ${effective.density === key ? 'border-primary text-on-surface' : 'border-[var(--ghost-border)] text-on-surface-variant'}`}
                 >
                   {key}

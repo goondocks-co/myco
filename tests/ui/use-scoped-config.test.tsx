@@ -63,6 +63,8 @@ describe('useScopedConfig.setField', () => {
     expect(writeScopedConfigMock).toHaveBeenCalledWith(
       'project',
       { agent: { model: 'claude-opus-4' } },
+      undefined,
+      {},
     );
     expect(putJsonMock).not.toHaveBeenCalledWith(
       '/grove-config',
@@ -78,6 +80,8 @@ describe('useScopedConfig.setField', () => {
     expect(writeScopedConfigMock).toHaveBeenCalledWith(
       'local',
       { agent: { model: 'claude-sonnet-4-5' } },
+      undefined,
+      {},
     );
     expect(putJsonMock).not.toHaveBeenCalledWith('/grove-config', expect.anything());
   });
@@ -89,6 +93,8 @@ describe('useScopedConfig.setField', () => {
     });
     expect(putJsonMock).toHaveBeenCalledWith('/grove-config', {
       patch: { agent: { model: 'claude-opus-4' } },
+    }, {
+      headers: {},
     });
     expect(writeScopedConfigMock).not.toHaveBeenCalled();
   });
@@ -100,6 +106,8 @@ describe('useScopedConfig.setField', () => {
     });
     expect(putJsonMock).toHaveBeenCalledWith('/grove-config', {
       patch: { agent: { model: 'my-model' } },
+    }, {
+      headers: {},
     });
   });
 

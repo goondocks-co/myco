@@ -30,6 +30,7 @@ export interface StatsResponse {
     pid: number;
     port: number;
     version: string;
+    version_label?: string;
     uptime_seconds: number;
     active_sessions: string[];
     runtime?: { source: 'stable' | 'dev' | 'beta'; command: string | null };

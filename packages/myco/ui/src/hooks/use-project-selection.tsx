@@ -2,13 +2,14 @@ import { createContext, useCallback, useContext, useLayoutEffect, useState, type
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import {
   projectPath,
+  defaultSelection,
   selectionFromLast,
   selectionKey,
   setCurrentRequestSelection,
   writeLastSelection,
-  type GrovesResponse,
   type ProjectSelection,
 } from '../lib/selection';
+import { useGroves } from './use-groves';
 
 const ProjectSelectionContext = createContext<ProjectSelection | null>(null);
 
@@ -73,13 +74,10 @@ export function useProjectSelection(): ProjectSelection | null {
  */
 export function useActiveProjectSelection(): ProjectSelection | null {
   const ctx = useContext(ProjectSelectionContext);
-  // Sip the `['groves']` cache the layout already populates via useGroves.
-  // We don't fetch ourselves to avoid duplicating the query plumbing.
-  const qc = useQueryClient();
+  const groves = useGroves();
   if (ctx) return ctx;
-  const groves = qc.getQueryData<GrovesResponse>(['groves']);
-  if (!groves) return null;
-  return selectionFromLast(groves.groves);
+  const list = groves.data?.groves ?? [];
+  return selectionFromLast(list) ?? defaultSelection(list);
 }
 
 export function useProjectPath(suffix = ''): string {

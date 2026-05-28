@@ -191,14 +191,14 @@ describe('multi-tenancy invariant — end-to-end through dispatcher', () => {
         vaultA,
         MycoConfigSchema.parse({
           version: 3,
-          appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'compact' },
+          notifications: { enabled: false },
         }),
       );
       saveConfig(
         vaultB,
         MycoConfigSchema.parse({
           version: 3,
-          appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
+          notifications: { enabled: true },
         }),
       );
 
@@ -206,26 +206,26 @@ describe('multi-tenancy invariant — end-to-end through dispatcher', () => {
       // vaultDir we passed — never the other project's.
       const resA = await handleGetConfig(vaultA);
       const resB = await handleGetConfig(vaultB);
-      const bodyA = resA.body as { appearance?: { density?: string } };
-      const bodyB = resB.body as { appearance?: { density?: string } };
+      const bodyA = resA.body as { notifications?: { enabled?: boolean } };
+      const bodyB = resB.body as { notifications?: { enabled?: boolean } };
 
-      // Density is a stable, low-side-effect field. Both reads should
+      // Notifications is a stable project-tier field. Both reads should
       // come back as the value we wrote, never crossed.
-      expect(bodyA.appearance?.density).toBe('compact');
-      expect(bodyB.appearance?.density).toBe('normal');
+      expect(bodyA.notifications?.enabled).toBe(false);
+      expect(bodyB.notifications?.enabled).toBe(true);
 
       // And a PUT under vaultA must never bleed into vaultB. handlePutScopedConfig
       // writes to the project tier (vaultDir/myco.yaml), so the post-write
-      // re-read should show the patched density only in the vault we
+      // re-read should show the patched notification setting only in the vault we
       // targeted.
       await handlePutScopedConfig(vaultA, {
         scope: 'project',
-        patch: { appearance: { density: 'comfy' } },
+        patch: { notifications: { enabled: true } },
       });
       const resA2 = await handleGetConfig(vaultA);
       const resB2 = await handleGetConfig(vaultB);
-      expect((resA2.body as { appearance?: { density?: string } }).appearance?.density).toBe('comfy');
-      expect((resB2.body as { appearance?: { density?: string } }).appearance?.density).toBe('normal');
+      expect((resA2.body as { notifications?: { enabled?: boolean } }).notifications?.enabled).toBe(true);
+      expect((resB2.body as { notifications?: { enabled?: boolean } }).notifications?.enabled).toBe(true);
     } finally {
       fs.rmSync(vaultA, { recursive: true, force: true });
       fs.rmSync(vaultB, { recursive: true, force: true });

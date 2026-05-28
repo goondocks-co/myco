@@ -13,6 +13,10 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+mock.module('../../packages/myco/ui/src/components/ui/list-filter-bar', () => ({
+  ListFilterBar: () => <div data-testid="list-filter-bar" />,
+}));
+
 // Stub data hooks so Agent renders without network.
 mock.module('../../packages/myco/ui/src/hooks/use-agent', () => ({
   useAgentRuns: () => ({ data: { runs: [], total: 0, offset: 0, limit: 20 }, isLoading: false, isFetching: false, refetch: () => {} }),

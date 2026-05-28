@@ -42,7 +42,10 @@ export function getCurrentRequestSelection(): ProjectSelection | null {
 }
 
 export function requestContextHeadersFromSelection(): Record<string, string> {
-  const selection = getCurrentRequestSelection();
+  return requestContextHeadersForSelection(getCurrentRequestSelection());
+}
+
+export function requestContextHeadersForSelection(selection: ProjectSelection | null | undefined): Record<string, string> {
   if (!selection) return {};
   return {
     'x-myco-grove-id': selection.grove.id,

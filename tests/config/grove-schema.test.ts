@@ -69,6 +69,20 @@ describe('GroveEmbeddingSchema', () => {
   });
 });
 
+describe('Grove appearance scope', () => {
+  test('accepts appearance values at the Grove tier', () => {
+    const parsed = GroveConfigSchema.parse({
+      appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
+    });
+    expect(parsed.appearance).toEqual({
+      theme: 'plum',
+      mode: 'light',
+      font: 'jetbrains-mono',
+      density: 'compact',
+    });
+  });
+});
+
 describe('ProjectConfigSchema', () => {
   test('does not declare agent or embedding blocks', () => {
     const parsed = ProjectConfigSchema.parse({
@@ -79,7 +93,7 @@ describe('ProjectConfigSchema', () => {
     expect(parsed).not.toHaveProperty('embedding');
   });
 
-  test('still accepts cortex, capture, notifications, appearance', () => {
+  test('still accepts cortex, capture, notifications, and strips appearance', () => {
     const parsed = ProjectConfigSchema.parse({
       version: 3,
       config_version: 10,
@@ -89,6 +103,7 @@ describe('ProjectConfigSchema', () => {
       appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
     });
     expect(parsed.cortex.enabled).toBe(true);
+    expect(parsed).not.toHaveProperty('appearance');
   });
 });
 
@@ -123,5 +138,6 @@ describe('PROJECT_TIER_LEGACY_FIELDS', () => {
     expect(stringified).toContain('team');
     expect(stringified).toContain('embedding.run_in_deep_sleep');
     expect(stringified).toContain('agent.scheduled_tasks_active_window_days');
+    expect(stringified).toContain('appearance');
   });
 });

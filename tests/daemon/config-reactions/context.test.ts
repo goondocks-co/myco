@@ -21,7 +21,7 @@ describe('loadReactionContext', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-reaction-context-'));
     fs.writeFileSync(
       path.join(tmpDir, 'myco.yaml'),
-      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n',
+      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n',
     );
   });
 
@@ -30,10 +30,10 @@ describe('loadReactionContext', () => {
   });
 
   it('returns merged config when project and local config are valid', () => {
-    fs.writeFileSync(path.join(tmpDir, 'local.yaml'), 'appearance:\n  theme: moss\n');
+    fs.writeFileSync(path.join(tmpDir, 'local.yaml'), 'notifications:\n  enabled: false\n');
     const logger = makeLogger();
     const ctx = loadReactionContext(tmpDir, logger);
-    expect(ctx?.appearance.theme).toBe('moss');
+    expect(ctx?.notifications.enabled).toBe(false);
     expect(logger.warn).not.toHaveBeenCalled();
   });
 

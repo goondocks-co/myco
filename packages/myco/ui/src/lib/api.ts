@@ -146,8 +146,8 @@ export async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return fetchJson(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
 }
 
-export async function putJson<T>(path: string, body: unknown): Promise<T> {
-  return fetchJson(path, { method: 'PUT', body: JSON.stringify(body) });
+export async function putJson<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
+  return fetchJson(path, { ...init, method: 'PUT', body: JSON.stringify(body) });
 }
 
 export async function patchJson<T>(path: string, body: unknown): Promise<T> {
@@ -162,31 +162,32 @@ export async function deleteJson<T>(path: string, body?: unknown): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Scoped config fetchers (used by AppearanceProvider)
+// Scoped config fetchers
 // ---------------------------------------------------------------------------
 
-export function fetchMergedConfig(signal?: AbortSignal): Promise<MergedConfigShape> {
-  return fetchJson<MergedConfigShape>('/config/merged', { signal });
+export function fetchMergedConfig(signal?: AbortSignal, headers?: HeadersInit): Promise<MergedConfigShape> {
+  return fetchJson<MergedConfigShape>('/config/merged', { signal, headers });
 }
 
-export function fetchLocalConfig(signal?: AbortSignal): Promise<Partial<MergedConfigShape>> {
-  return fetchJson<Partial<MergedConfigShape>>('/config/local', { signal });
+export function fetchLocalConfig(signal?: AbortSignal, headers?: HeadersInit): Promise<Partial<MergedConfigShape>> {
+  return fetchJson<Partial<MergedConfigShape>>('/config/local', { signal, headers });
 }
 
 export function writeScopedConfig(
   scope: 'project' | 'local',
   patch: Record<string, unknown>,
   clear?: string[],
+  headers?: HeadersInit,
 ): Promise<unknown> {
   const body: Record<string, unknown> = { scope, patch };
   if (clear && clear.length > 0) body.clear = clear;
-  return putJson<unknown>('/config/scoped', body);
+  return putJson<unknown>('/config/scoped', body, { headers });
 }
 
-export function clearLocalConfigKeys(keys: string[]): Promise<unknown> {
+export function clearLocalConfigKeys(keys: string[], headers?: HeadersInit): Promise<unknown> {
   // Unified scoped write: clear-only request. Empty patch is allowed when
   // clear is non-empty (server validates this).
-  return putJson<unknown>('/config/scoped', { scope: 'local', patch: {}, clear: keys });
+  return putJson<unknown>('/config/scoped', { scope: 'local', patch: {}, clear: keys }, { headers });
 }
 
 export class ApiError extends Error {

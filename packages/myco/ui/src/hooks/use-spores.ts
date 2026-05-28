@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 import { useProjectScopedQueryKey } from './use-project-selection';
+import { usePowerQuery } from './use-power-query';
 
 /* ---------- Constants ---------- */
 
@@ -133,12 +134,12 @@ export function useSpores(filters?: {
   if (filters?.session_id) params.set('session_id', filters.session_id);
   const qs = params.toString();
   const path = qs ? `/spores?${qs}` : '/spores';
-  const queryKey = useProjectScopedQueryKey(['spores', filters]);
 
-  return useQuery<SporesResponse>({
-    queryKey,
+  return usePowerQuery<SporesResponse>({
+    queryKey: ['spores', filters],
     queryFn: ({ signal }) => fetchJson<SporesResponse>(path, { signal }),
     staleTime: SPORES_STALE_TIME,
+    pollCategory: 'standard',
     refetchInterval: POLL_INTERVALS.SPORES,
   });
 }

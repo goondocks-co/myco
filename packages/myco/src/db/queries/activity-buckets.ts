@@ -1,9 +1,9 @@
 /**
  * Activity-bucket helpers for the session/run rail cards.
  *
- * Each list row in the v6 design shows a mini sparkline of recent activity.
+ * Each list row in the v6 design shows a mini activity distribution.
  * The wire payload is a fixed-length array of integers — one count per
- * 1-minute bucket over the last `BUCKET_COUNT` minutes, newest bucket last.
+ * bucket across the session/run lifetime, oldest bucket first.
  *
  * The naive shape is one subquery per session × 8 buckets. For lists of
  * 50–200 rows that's 400–1600 round-trips per page load. We instead issue a
@@ -19,17 +19,22 @@ import { epochSeconds } from '@myco/constants.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Number of 1-minute buckets returned per row. Matches the v6 sparkline width. */
+/** Number of lifetime buckets returned per row. Matches the rail chart width. */
 export const BUCKET_COUNT = 8;
 
-/** Width of each bucket, in seconds. */
-const BUCKET_WIDTH_SECONDS = 60;
-
-/** Total window width, in seconds (BUCKET_COUNT × BUCKET_WIDTH). */
-const WINDOW_SECONDS = BUCKET_COUNT * BUCKET_WIDTH_SECONDS;
-
-/** Wire shape: integers, newest bucket last (index BUCKET_COUNT-1 is the most recent minute). */
+/** Wire shape: integers, oldest bucket first. */
 export type ActivityBuckets = number[];
+
+interface ActivityRange {
+  id: string;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+interface ObservedActivityRange {
+  started_at: number;
+  ended_at: number;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,29 +44,81 @@ function emptyBuckets(): ActivityBuckets {
   return new Array(BUCKET_COUNT).fill(0) as number[];
 }
 
+function observeActivityRows(
+  rows: Array<{ id: string; started_at: number }>,
+): Map<string, ObservedActivityRange> {
+  const observed = new Map<string, ObservedActivityRange>();
+  for (const row of rows) {
+    const current = observed.get(row.id);
+    if (!current) {
+      observed.set(row.id, { started_at: row.started_at, ended_at: row.started_at });
+      continue;
+    }
+    current.started_at = Math.min(current.started_at, row.started_at);
+    current.ended_at = Math.max(current.ended_at, row.started_at);
+  }
+  return observed;
+}
+
+function resolveActivityRange(
+  explicit: ActivityRange | undefined,
+  observed: ObservedActivityRange | undefined,
+  nowSeconds: number,
+): { started_at: number; ended_at: number } | null {
+  if (!explicit && !observed) return null;
+
+  const explicitStart = explicit?.started_at ?? null;
+  const observedStart = observed?.started_at ?? null;
+  const startCandidates = [explicitStart, observedStart].filter((value): value is number => value !== null);
+  if (startCandidates.length === 0) return null;
+
+  const start = Math.min(...startCandidates);
+  const explicitEnd = explicit?.started_at !== null && explicit?.started_at !== undefined
+    ? (explicit.ended_at ?? nowSeconds)
+    : null;
+  const endCandidates = [explicitEnd, observed?.ended_at ?? null].filter((value): value is number => value !== null);
+  const end = Math.max(start + 1, ...endCandidates);
+
+  return { started_at: start, ended_at: end };
+}
+
 /**
  * Build the buckets map from a flat (id, started_at) result set.
  *
- * Buckets are anchored at `nowSeconds`: index 0 covers
- * `[now - WINDOW_SECONDS, now - WINDOW_SECONDS + 60)` and the last index
- * covers `[now - 60, now)`. A row outside the window is silently dropped.
+ * Buckets are anchored to each item's lifetime. Stored session/run ranges are
+ * treated as hints and widened from observed activity rows so resumed or
+ * defensively re-registered rows do not hide older captured activity.
  */
 function bucketByIdFromRows(
   rows: Array<{ id: string; started_at: number }>,
   ids: readonly string[],
+  ranges: readonly ActivityRange[],
   nowSeconds: number,
 ): Map<string, ActivityBuckets> {
   const map = new Map<string, ActivityBuckets>();
   for (const id of ids) map.set(id, emptyBuckets());
 
-  const windowStart = nowSeconds - WINDOW_SECONDS;
+  const rangeById = new Map<string, ActivityRange>();
+  for (const range of ranges) rangeById.set(range.id, range);
+  const observedById = observeActivityRows(rows);
+
   for (const row of rows) {
     const buckets = map.get(row.id);
     if (!buckets) continue;
-    const offset = row.started_at - windowStart;
-    if (offset < 0 || offset >= WINDOW_SECONDS) continue;
-    const idx = Math.floor(offset / BUCKET_WIDTH_SECONDS);
-    if (idx < 0 || idx >= BUCKET_COUNT) continue;
+    const range = resolveActivityRange(
+      rangeById.get(row.id),
+      observedById.get(row.id),
+      nowSeconds,
+    );
+    if (!range) continue;
+
+    const start = range.started_at;
+    const end = range.ended_at;
+    if (row.started_at < start || row.started_at > end) continue;
+
+    const span = Math.max(1, end - start);
+    const offset = Math.max(0, Math.min(span, row.started_at - start));
+    const idx = Math.min(BUCKET_COUNT - 1, Math.floor((offset / span) * BUCKET_COUNT));
     buckets[idx] += 1;
   }
   return map;
@@ -76,32 +133,29 @@ function bucketByIdFromRows(
  *
  * "Activity" for a session is a captured prompt_batch. Returns a map keyed
  * by session id; every input id appears in the map (with all-zero buckets
- * when the session has no recent activity).
+ * when the session has no captured prompt batches).
  *
  * An empty input list short-circuits without hitting the database.
  */
 export function getSessionActivityBuckets(
   sessionIds: readonly string[],
-  options: { nowSeconds?: number } = {},
+  options: { ranges?: readonly ActivityRange[]; nowSeconds?: number } = {},
 ): Map<string, ActivityBuckets> {
   const now = options.nowSeconds ?? epochSeconds();
   if (sessionIds.length === 0) return new Map();
 
   const db = getDatabase();
   const placeholders = sessionIds.map(() => '?').join(', ');
-  const windowStart = now - WINDOW_SECONDS;
   const rows = db
     .prepare(
       `SELECT session_id AS id, started_at
          FROM prompt_batches
         WHERE session_id IN (${placeholders})
-          AND started_at IS NOT NULL
-          AND started_at >= ?
-          AND started_at < ?`,
+          AND started_at IS NOT NULL`,
     )
-    .all(...sessionIds, windowStart, now) as Array<{ id: string; started_at: number }>;
+    .all(...sessionIds) as Array<{ id: string; started_at: number }>;
 
-  return bucketByIdFromRows(rows, sessionIds, now);
+  return bucketByIdFromRows(rows, sessionIds, options.ranges ?? [], now);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,26 +174,23 @@ export function getSessionActivityBuckets(
  */
 export function getRunActivityBuckets(
   runIds: readonly string[],
-  options: { nowSeconds?: number } = {},
+  options: { ranges?: readonly ActivityRange[]; nowSeconds?: number } = {},
 ): Map<string, ActivityBuckets> {
   const now = options.nowSeconds ?? epochSeconds();
   if (runIds.length === 0) return new Map();
 
   const db = getDatabase();
   const placeholders = runIds.map(() => '?').join(', ');
-  const windowStart = now - WINDOW_SECONDS;
   const rows = db
     .prepare(
       `SELECT run_id AS id, started_at
          FROM agent_turns
         WHERE run_id IN (${placeholders})
-          AND started_at IS NOT NULL
-          AND started_at >= ?
-          AND started_at < ?`,
+          AND started_at IS NOT NULL`,
     )
-    .all(...runIds, windowStart, now) as Array<{ id: string; started_at: number }>;
+    .all(...runIds) as Array<{ id: string; started_at: number }>;
 
-  return bucketByIdFromRows(rows, runIds, now);
+  return bucketByIdFromRows(rows, runIds, options.ranges ?? [], now);
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { usePowerQuery } from './use-power-query';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,7 +70,7 @@ export function useLogStream(paused: boolean = false) {
   // null = tail mode (first fetch); number = follow mode from this cursor
   const cursorRef = useRef<number | null>(null);
 
-  const { data, refetch } = useQuery({
+  const { data, refetch } = usePowerQuery({
     queryKey: ['logs-stream'],
     queryFn: ({ signal }) => {
       const path = cursorRef.current === null
@@ -77,7 +78,9 @@ export function useLogStream(paused: boolean = false) {
         : `/logs/stream?since=${cursorRef.current}`;
       return fetchJson<LogStreamResponse>(path, { signal });
     },
+    pollCategory: 'realtime',
     refetchInterval: paused ? false : POLL_INTERVALS.LOGS,
+    contextFree: true,
   });
 
   // Immediate refetch on resume so the UI catches up without waiting for the

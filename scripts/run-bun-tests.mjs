@@ -100,7 +100,6 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/deploy',
   'tests/embedding',
   'tests/grove',
-  'tests/hooks',
   'tests/intelligence',
   'tests/logs',
   'tests/mcp',
@@ -119,6 +118,9 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/vault',
   'tests/worker',
   'tests/semantic-search-filters.test.ts',
+  // tests/hooks intentionally omitted: response-shape tests depend on
+  // process-global manifest capability state and have failed under Linux
+  // shared Bun after neighboring hook fixtures mutate globals.
 ];
 
 const NO_ISOLATE_NODE_GROUPS = [
@@ -157,7 +159,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/backup-multiline.test.ts',
       'tests/daemon/capture-images.test.ts',
       'tests/daemon/codex-plan-capture.test.ts',
-      'tests/daemon/event-loop-lag.test.ts',
       'tests/daemon/git-status.test.ts',
       'tests/daemon/handle-user-prompt-steering.test.ts',
       'tests/daemon/inflight-runs.test.ts',
@@ -179,6 +180,11 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/team-members-handler.test.ts',
       'tests/daemon/update-in-progress-sentinel.test.ts',
       'tests/daemon/update-installer.test.ts',
+      // tests/daemon/event-loop-lag.test.ts intentionally omitted: it uses
+      // real timers plus synchronous loop blocking. In the Linux shared Bun
+      // daemon-root phase, earlier timer-heavy daemon tests can leave enough
+      // scheduler state behind that this fixture stalls despite passing
+      // standalone. Running it isolated keeps the probe timing contract local.
     ],
   },
   {
@@ -238,23 +244,10 @@ const NO_ISOLATE_NODE_GROUPS = [
       // mock-induced leak contained to its own bun process.
     ],
   },
-  {
-    label: 'tests-agent-tools-core',
-    targets: [
-      'tests/agent/instruction-builders.test.ts',
-      'tests/agent/tools-release-provenance.test.ts',
-      'tests/agent/context.test.ts',
-      'tests/agent/openai-local-mcp.test.ts',
-      'tests/agent/registry.test.ts',
-      'tests/agent/cost-resolver.test.ts',
-      'tests/agent/tools.test.ts',
-      'tests/agent/map-phase-tool-surface.test.ts',
-      'tests/agent/loader.test.ts',
-      'tests/agent/executor-dry-run.test.ts',
-      'tests/agent/executor-cleanup.test.ts',
-      'tests/agent/tools/canopy-list.test.ts',
-    ],
-  },
+  // tests-agent-tools-core intentionally omitted: these files pass
+  // standalone, but context/loader/registry/tool-surface tests mutate
+  // process-global agent/tool/resource state that can leak across one
+  // Linux shared Bun process.
   {
     label: 'tests-agent-skill-tools',
     targets: [

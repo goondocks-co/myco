@@ -116,10 +116,9 @@ export interface RunRow {
     costSource?: 'actual' | 'estimated' | 'unavailable';
   }>;
   /**
-   * Recent-activity sparkline data — one `agent_turns` count per 1-minute
-   * bucket over the recent window, newest bucket last. Length matches
-   * `BUCKET_COUNT` on the server. Empty array when the run has no activity
-   * in the window. Optional because legacy/serialized rows may omit it.
+   * Lifetime activity distribution for the rail chart — `agent_turns`
+   * bucketed across the run duration, oldest bucket first. Optional because
+   * legacy/serialized rows may omit it.
    */
   activity_buckets?: number[];
   /**
@@ -426,12 +425,12 @@ export function useAgentRuns(filters?: {
 }
 
 export function useAgentRun(id: string | undefined) {
-  const queryKey = useProjectScopedQueryKey(['agent-run', id]);
-  const result = useQuery<RunDetailResponse>({
-    queryKey,
+  const result = usePowerQuery<RunDetailResponse>({
+    queryKey: ['agent-run', id],
     queryFn: ({ signal }) =>
       fetchJson<RunDetailResponse>(`/agent/runs/${id}`, { signal }),
     enabled: id !== undefined,
+    pollCategory: 'standard',
     refetchInterval: (query) => {
       const status = query.state.data?.run?.status;
       if (status && TERMINAL_STATUSES.has(status)) return false;
@@ -450,7 +449,7 @@ export function useAgentReports(runId: string | undefined, runStatus?: string) {
       fetchJson<ReportsResponse>(`/agent/runs/${runId}/reports`, { signal }),
     enabled: runId !== undefined,
     pollCategory: 'standard',
-    refetchInterval: isTerminal ? 0 : REPORTS_POLL_INTERVAL,
+    refetchInterval: isTerminal ? false : REPORTS_POLL_INTERVAL,
   });
 }
 
@@ -463,7 +462,7 @@ export function useAgentTurns(runId: string | undefined, runStatus?: string) {
       fetchJson<TurnRow[]>(`/agent/runs/${runId}/turns`, { signal }),
     enabled: runId !== undefined,
     pollCategory: 'standard',
-    refetchInterval: isTerminal ? 0 : TURNS_POLL_INTERVAL,
+    refetchInterval: isTerminal ? false : TURNS_POLL_INTERVAL,
   });
 }
 

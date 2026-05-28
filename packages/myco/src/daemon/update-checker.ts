@@ -359,6 +359,15 @@ export interface RuntimeOriginInfo {
   command: string | null;
 }
 
+interface RuntimeVersionLabelCacheEntry {
+  key: string;
+  label: string;
+  expiresAt: number;
+}
+
+const RUNTIME_VERSION_LABEL_CACHE_MS = 30_000;
+let runtimeVersionLabelCache: RuntimeVersionLabelCacheEntry | null = null;
+
 export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
   if (devBuildCliEntry !== null) {
     return { source: 'dev', command: devBuildCliEntry };
@@ -368,6 +377,72 @@ export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
     return { source: 'beta', command: runtimeCommand };
   }
   return { source: 'stable', command: runtimeCommand };
+}
+
+/**
+ * Human-facing daemon version label.
+ *
+ * `getPluginVersion()` remains the protocol/update version: compiled dev
+ * binaries embed package.json and can legitimately lag release automation.
+ * For dogfood/dev runtimes, the UI should instead show where that build sits
+ * relative to the nearest release tag, e.g. `v0.18.1-244-g63fe75a5-dirty`.
+ */
+export function getRuntimeVersionLabel(vaultDir: string | undefined, currentVersion: string): string {
+  const runtime = getRuntimeOrigin(vaultDir);
+  if (runtime.source !== 'dev') return currentVersion;
+
+  const cacheKey = `${runtime.source}:${runtime.command ?? ''}:${currentVersion}`;
+  const now = Date.now();
+  if (
+    runtimeVersionLabelCache
+    && runtimeVersionLabelCache.key === cacheKey
+    && runtimeVersionLabelCache.expiresAt > now
+  ) {
+    return runtimeVersionLabelCache.label;
+  }
+
+  const repoRoot = findGitRepoForRuntime(runtime.command ?? process.execPath);
+  const label = repoRoot
+    ? describeGitVersion(repoRoot) ?? `${currentVersion}+dev`
+    : `${currentVersion}+dev`;
+
+  runtimeVersionLabelCache = {
+    key: cacheKey,
+    label,
+    expiresAt: now + RUNTIME_VERSION_LABEL_CACHE_MS,
+  };
+  return label;
+}
+
+function findGitRepoForRuntime(runtimeCommand: string): string | null {
+  const resolved = (() => {
+    try {
+      return fs.realpathSync(runtimeCommand);
+    } catch {
+      return runtimeCommand;
+    }
+  })();
+
+  let dir = path.dirname(resolved);
+  while (true) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function describeGitVersion(repoRoot: string): string | null {
+  try {
+    const described = execFileSync(
+      'git',
+      ['-C', repoRoot, 'describe', '--tags', '--match', 'v[0-9]*', '--always', '--dirty'],
+      { encoding: 'utf-8', timeout: 2_000 },
+    ).trim();
+    return described || null;
+  } catch {
+    return null;
+  }
 }
 
 /**

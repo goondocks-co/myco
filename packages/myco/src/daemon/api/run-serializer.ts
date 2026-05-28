@@ -109,10 +109,10 @@ export interface SerializeRunOptions {
    */
   logger?: DaemonLogger;
   /**
-   * Length-`BUCKET_COUNT` activity sparkline for the v6 rail cards. Each
-   * entry counts `agent_turns` rows for that run in a 1-minute bucket over
-   * the recent window. Omit (or pass undefined) to skip — MCP / legacy
-   * call sites that don't need it stay slim.
+   * Length-`BUCKET_COUNT` activity distribution for the rail cards. Each
+   * entry counts `agent_turns` rows bucketed across that run's lifetime.
+   * Omit (or pass undefined) to skip — MCP / legacy call sites that don't
+   * need it stay slim.
    */
   activityBuckets?: number[];
   /**

@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'bun:test';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { GitIdentityPill } from '../../packages/myco/ui/src/components/ui/git-identity-pill';
 import type { GitIdentity } from '../../packages/myco/ui/src/hooks/use-git-identity';
 import { gitIdentityInitials } from '../../packages/myco/ui/src/hooks/use-git-identity';
@@ -18,6 +19,22 @@ function renderWithIdentity(identity: GitIdentity | undefined, opts?: { isPendin
         isError={opts?.isError ?? false}
       />
     </QueryClientProvider>,
+  );
+}
+
+function renderLinkedIdentity(identity: GitIdentity, to: string) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <GitIdentityPill
+          data={identity}
+          isPending={false}
+          isError={false}
+          to={to}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -66,6 +83,19 @@ describe('GitIdentityPill', () => {
   it('renders an em dash when pending', () => {
     renderWithIdentity(undefined, { isPending: true });
     expect(screen.getByText('—')).toBeDefined();
+  });
+
+  it('links to release provenance settings when given a target', () => {
+    renderLinkedIdentity({
+      branch: 'main',
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      author: 'Chris Kirby',
+      author_email: 'chris@example.com',
+      head_sha: 'deadbeef',
+    }, '/settings?configSection=release-provenance#release-provenance');
+    expect(screen.getByRole('link', { name: /main/i }).getAttribute('href')).toBe('/settings?configSection=release-provenance#release-provenance');
   });
 });
 

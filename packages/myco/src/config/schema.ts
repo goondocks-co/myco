@@ -525,6 +525,7 @@ export const GroveConfigSchema = z.object({
   embedding: GroveEmbeddingSchema.default(() => GroveEmbeddingSchema.parse({})),
   agent: GroveAgentSchema.default(() => GroveAgentSchema.parse({})),
   release_provenance: GroveReleaseProvenanceSchema.default(() => GroveReleaseProvenanceSchema.parse({})),
+  appearance: AppearanceConfigSchema,
   /** Team sync activation — Grove-scoped per the migration plan. */
   team: TeamSchema.default(() => TeamSchema.parse({})),
 }).strict();
@@ -543,7 +544,6 @@ export const ProjectConfigSchema = z.object({
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),
-  appearance: AppearanceConfigSchema,
   symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
 });
 
@@ -574,6 +574,7 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['team'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
+  ['appearance'],
   // The 11 agent-config paths promoted to Grove tier (embedding.provider/model/
   // base_url, agent.provider/harness/model/tasks/summary_batch_interval/
   // scheduled_tasks_enabled/event_tasks_enabled/cold_project_threshold_days)

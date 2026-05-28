@@ -9,6 +9,7 @@ import {
   loadMachineConfig,
   saveMachineConfig,
   deepMergeConfig,
+  migrateLegacyLocalAppearanceToGrove,
 } from '../../config/loader.js';
 import { z } from 'zod';
 import {
@@ -42,7 +43,13 @@ export async function handleGetMergedConfig(
 }
 
 /** GET /api/config/local — raw local overrides (may be empty). */
-export async function handleGetLocalConfig(vaultDir: string): Promise<RouteResponse> {
+export async function handleGetLocalConfig(
+  vaultDir: string,
+  options: { groveId?: string | null } = {},
+): Promise<RouteResponse> {
+  if (options.groveId !== undefined) {
+    migrateLegacyLocalAppearanceToGrove(vaultDir, options.groveId ?? null);
+  }
   return { body: loadLocalConfig(vaultDir) };
 }
 
@@ -111,6 +118,20 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   const overlap = patchLeaves.filter((leaf) => clearList.some((clearPath) => pathsOverlap(leaf, clearPath)));
   if (overlap.length > 0) {
     return { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } };
+  }
+  const appearancePaths = [
+    ...patchLeaves.filter((leaf) => pathsOverlap(leaf, 'appearance')),
+    ...clearList.filter((clearPath) => pathsOverlap(clearPath, 'appearance')),
+  ];
+  if (appearancePaths.length > 0) {
+    return {
+      status: 400,
+      body: {
+        error: 'appearance_is_grove_scoped',
+        message: 'appearance settings must be written through Grove config',
+        keys: appearancePaths,
+      },
+    };
   }
 
   if (scope === 'local') {

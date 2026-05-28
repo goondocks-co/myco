@@ -20,6 +20,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import {
   handleGetMergedConfig,
+  handlePutGroveConfig,
   handlePutScopedConfig,
 } from '@myco/daemon/api/config';
 import { CORTEX_PATHS, NOTIFICATIONS_PATHS } from '@myco/config/paths';
@@ -217,12 +218,13 @@ describe('non-cortex paths still work post-v8 (regression check)', () => {
     expect((merged.body as MycoConfig).notifications.enabled).toBe(false);
   });
 
-  it('appearance.theme toggle is unaffected by the cortex move', async () => {
-    await handlePutScopedConfig(tmpDir, {
-      scope: 'project',
+  it('appearance.theme writes through Grove config', async () => {
+    const groveId = 'grove_' + 'c'.repeat(32);
+    const res = await handlePutGroveConfig(groveId, {
       patch: { appearance: { theme: 'moss' } },
     });
-    const merged = await handleGetMergedConfig(tmpDir);
+    expect(res.response.status).toBeUndefined();
+    const merged = await handleGetMergedConfig(tmpDir, { groveId });
     expect((merged.body as MycoConfig).appearance.theme).toBe('moss');
   });
 });

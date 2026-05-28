@@ -7,6 +7,7 @@ import { CORTEX_PATHS } from '@myco/config/paths';
 import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
+import { usePowerQuery } from '../hooks/use-power-query';
 import { PageHeader } from '../components/ui/page-header';
 import { PageContainer } from '../components/ui/page-container';
 import { Surface } from '../components/ui/surface';
@@ -213,11 +214,12 @@ function useCortexInstructions() {
 }
 
 function useCortexBuilderResult(runId: string | null) {
-  return useQuery<CortexBuilderResponse>({
+  return usePowerQuery<CortexBuilderResponse>({
     queryKey: ['cortex-prompt-builder', runId],
     queryFn: ({ signal }) => fetchJson<CortexBuilderResponse>(`/cortex/prompt-builder/${runId}`, { signal }),
     enabled: Boolean(runId),
     staleTime: 0,
+    pollCategory: 'realtime',
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && CORTEX_TERMINAL_STATUSES.has(status)

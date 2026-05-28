@@ -33,19 +33,26 @@ let canonicalPort: number;
 let server: http.Server | null;
 let previousHome: string | undefined;
 
-beforeEach(() => {
+beforeEach(async () => {
   previousHome = process.env.MYCO_HOME;
-  vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-get-info-async-'));
-  mycoHome = path.join(vaultDir, 'home');
-  fs.mkdirSync(mycoHome, { recursive: true });
-  process.env.MYCO_HOME = mycoHome;
-  ensureProjectManifest(vaultDir, { projectName: 'getinfoasync-test' });
-  canonicalPort = resolveGlobalDaemonPort(mycoHome);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-get-info-async-'));
+    mycoHome = path.join(vaultDir, 'home');
+    canonicalPort = resolveGlobalDaemonPort(mycoHome);
+    if (await canBindPort(canonicalPort)) {
+      fs.mkdirSync(mycoHome, { recursive: true });
+      process.env.MYCO_HOME = mycoHome;
+      ensureProjectManifest(vaultDir, { projectName: 'getinfoasync-test' });
 
-  // Make sure no stale daemon.json exists — discoverViaHealth must be hit.
-  const statePath = resolveServiceDaemonStatePath(mycoHome);
-  try { fs.unlinkSync(statePath); } catch { /* gone */ }
-  server = null;
+      // Make sure no stale daemon.json exists — discoverViaHealth must be hit.
+      const statePath = resolveServiceDaemonStatePath(mycoHome);
+      try { fs.unlinkSync(statePath); } catch { /* gone */ }
+      server = null;
+      return;
+    }
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  }
+  throw new Error('Could not find a bindable derived daemon port for getInfoAsync tests');
 });
 
 afterEach(async () => {
@@ -56,6 +63,16 @@ afterEach(async () => {
   if (previousHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = previousHome;
 });
+
+async function canBindPort(port: number): Promise<boolean> {
+  const probe = http.createServer((_req, res) => res.end());
+  return new Promise<boolean>((resolve) => {
+    probe.once('error', () => resolve(false));
+    probe.listen(port, '127.0.0.1', () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
 
 async function startServer(handler: http.RequestListener): Promise<void> {
   server = http.createServer(handler);

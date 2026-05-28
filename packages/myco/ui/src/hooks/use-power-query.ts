@@ -1,4 +1,4 @@
-import { useQuery, type UseQueryOptions, type UseQueryResult } from '@tanstack/react-query';
+import { useQuery, type Query, type UseQueryOptions, type UseQueryResult } from '@tanstack/react-query';
 import { usePowerState, POWER_MULTIPLIERS, type PowerState } from '../providers/power';
 import { useProjectScopedQueryKey } from './use-project-selection';
 
@@ -11,7 +11,7 @@ const HEARTBEAT_DEEP_SLEEP_CAP_MS = 30_000;
 
 export interface UsePowerQueryOptions<T> extends Omit<UseQueryOptions<T>, 'refetchInterval'> {
   pollCategory: PollCategory;
-  refetchInterval: number | false;
+  refetchInterval: number | false | ((query: Query<T, Error, T>) => number | false | undefined);
   contextFree?: boolean;
 }
 
@@ -50,9 +50,14 @@ export function usePowerQuery<T>(options: UsePowerQueryOptions<T>): UseQueryResu
   const { pollCategory, refetchInterval: baseInterval, contextFree = false, ...queryOptions } = options;
   const scopedQueryKey = useProjectScopedQueryKey(queryOptions.queryKey ?? []);
 
-  const effectiveInterval = baseInterval === false
-    ? false
-    : computePollInterval(baseInterval, pollCategory, powerState);
+  const scaleInterval = (interval: number | false | undefined): number | false | undefined => {
+    if (interval === false || interval === undefined) return interval;
+    return computePollInterval(interval, pollCategory, powerState);
+  };
+
+  const effectiveInterval = typeof baseInterval === 'function'
+    ? (query: Query<T, Error, T>) => scaleInterval(baseInterval(query))
+    : scaleInterval(baseInterval);
 
   return useQuery({
     ...queryOptions,

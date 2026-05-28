@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useSearchParams, useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Play } from 'lucide-react';
 import { Button } from '../components/ui/button';
@@ -7,6 +7,7 @@ import { Surface } from '../components/ui/surface';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { EmptyDetailHint } from '../components/ui/empty-detail-hint';
 import { TileTabs } from '../components/ui/tile-tabs';
+import { ListFilterBar, type FilterDefinition } from '../components/ui/list-filter-bar';
 import { RunList } from '../components/agent/RunList';
 import { RunDetail } from '../components/agent/RunDetail';
 import { RunTaskDialog } from '../components/agent/RunTaskDialog';
@@ -14,7 +15,8 @@ import { TaskList } from '../components/agent/TaskList';
 import { TaskDetail } from '../components/agent/TaskDetail';
 import { AgentConfig } from '../components/agent/AgentConfig';
 import { ComparisonView } from '../components/agent/ComparisonView';
-import { useRunsByIds } from '../hooks/use-agent';
+import { useAgentTasks, useRunsByIds } from '../hooks/use-agent';
+import { useListFilters, FILTER_ALL } from '../hooks/use-list-filters';
 
 type AgentTab = 'runs' | 'tasks' | 'config' | 'comparisons';
 
@@ -94,6 +96,18 @@ const TABS = [
   { id: 'config', label: 'Config', description: 'agent settings' },
 ] as const;
 
+const RUN_STATUS_FILTER: FilterDefinition = {
+  key: 'status',
+  label: 'Status',
+  options: [
+    { value: FILTER_ALL, label: 'All statuses' },
+    { value: 'running', label: 'Running' },
+    { value: 'completed', label: 'Completed' },
+    { value: 'failed', label: 'Failed' },
+    { value: 'cancelled', label: 'Cancelled' },
+  ],
+};
+
 /* ---------- Component ---------- */
 
 /**
@@ -138,6 +152,17 @@ export default function Agent() {
   const tab: AgentTab = selectedRunId ? 'runs' : urlState.tab;
   const { taskId: selectedTaskId, compareRunIds } = urlState;
   const [triggerOpen, setTriggerOpen] = useState(false);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const {
+    searchInput,
+    debouncedSearch,
+    filterValues,
+    offset,
+    setOffset,
+    handleSearchChange,
+    handleFilterChange,
+    activeFilter,
+  } = useListFilters({ initialFilters: { status: FILTER_ALL, task: FILTER_ALL } });
 
   /** Base path of the Agent page (`/g/<grove>/p/<project>/agent`), with any
    *  trailing `/<runId>` stripped. Used to build sibling URLs for tab/comparison
@@ -223,6 +248,25 @@ export default function Agent() {
     );
   }
 
+  const { data: tasksData } = useAgentTasks();
+  const runFilters = useMemo<FilterDefinition[]>(() => {
+    const taskFilter: FilterDefinition = {
+      key: 'task',
+      label: 'Task',
+      options: [
+        { value: FILTER_ALL, label: 'All tasks' },
+        ...(tasksData?.tasks ?? []).map((task) => ({
+          value: task.name,
+          label: task.displayName,
+        })),
+      ],
+    };
+    return [RUN_STATUS_FILTER, taskFilter];
+  }, [tasksData]);
+
+  const activeStatus = activeFilter('status');
+  const activeTask = activeFilter('task');
+
   return (
     <div className="flex h-full flex-col">
       <div className="shrink-0 p-6 pb-0 space-y-6">
@@ -237,6 +281,17 @@ export default function Agent() {
           onTabChange={switchTab}
           columns={4}
         />
+        {tab === 'runs' && (
+          <ListFilterBar
+            searchPlaceholder="Search runs..."
+            searchValue={searchInput}
+            onSearchChange={handleSearchChange}
+            filters={runFilters}
+            filterValues={filterValues}
+            onFilterChange={handleFilterChange}
+            inputRef={filterInputRef}
+          />
+        )}
       </div>
 
       {/* Runs tab — master/detail split */}
@@ -250,6 +305,12 @@ export default function Agent() {
             master={
               <RunList
                 selectedId={selectedRunId}
+                search={debouncedSearch}
+                statusFilter={activeStatus}
+                taskFilter={activeTask}
+                offset={offset}
+                onOffsetChange={setOffset}
+                filterInputRef={filterInputRef}
                 onSelectRun={selectRun}
                 onTriggerRun={() => setTriggerOpen(true)}
                 onCompareRuns={(ids) => navigateState('comparisons', undefined, ids)}
