@@ -344,28 +344,19 @@ export function populateBatchResponses(
 ): void {
   const db = getDatabase();
   const batches = db.prepare(
-    `SELECT id, user_prompt, response_summary
+    `SELECT id, user_prompt, response_summary, origin
        FROM prompt_batches
       WHERE session_id = ?
       ORDER BY id ASC`,
-  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null }>;
+  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null; origin: string }>;
 
   const prefixOf = (s: string | null | undefined) =>
     (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
 
-  // Match every batch (not just NULL-summary ones); the transcript is the
-  // authoritative source so a newer response overwrites stale data from an
-  // earlier Stop in the same logical turn.
-  const available = batches.map((b) => ({
-    id: b.id,
-    key: prefixOf(b.user_prompt),
-    existing: b.response_summary,
-  }));
-
-  const update = db.prepare(
-    `UPDATE prompt_batches SET response_summary = ? WHERE id = ?`,
-  );
-
+  // Phase 1 — match each transcript turn to a batch by prompt prefix. The
+  // transcript is authoritative, so a newer response overwrites stale data.
+  const available = batches.map((b) => ({ id: b.id, key: prefixOf(b.user_prompt) }));
+  const matched = new Map<number, string>();
   for (const { prompt, response } of turns) {
     const key = prefixOf(prompt);
     if (!key) continue;
@@ -375,8 +366,51 @@ export function populateBatchResponses(
     if (idx === -1) continue;
     const target = available[idx]!;
     available.splice(idx, 1);
-    if (target.existing === response) continue;
-    update.run(response, target.id);
+    matched.set(target.id, response);
+  }
+
+  // Phase 2 — human-anchored attribution. A human prompt's answer is every
+  // assistant response from that prompt until the next human prompt, INCLUDING
+  // work done across interleaved system events (background-job task-notifications,
+  // teammate-messages). Those system batches fire mid-turn and would otherwise
+  // each open a turn that steals the answer onto a batch the dashboard hides by
+  // default — so the user's human prompt showed no response. Roll each system
+  // batch's matched response into the nearest preceding human batch and clear
+  // the system batch's own summary so the answer lives on the prompt the user
+  // actually sees. System turns before any human prompt keep their own response
+  // (nothing to anchor to). Batches are id-ordered ≈ transcript order.
+  //
+  // Only batches with matched content this pass are touched: a batch whose
+  // prompt isn't in this transcript snapshot keeps its existing response_summary
+  // (Cursor starts its transcript mid-session; partial mid-turn snapshots don't
+  // cover every prior batch). `newResponse` rebuilds from matched turns (so the
+  // attribution is idempotent across re-mines); `clear` holds system batches
+  // whose answer was moved to an anchor.
+  const newResponse = new Map<number, string>();
+  const clear = new Set<number>();
+  let anchorId: number | null = null;
+  for (const b of batches) {
+    const resp = matched.get(b.id);
+    if (b.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
+      anchorId = b.id;
+      if (resp !== undefined) newResponse.set(b.id, resp);
+    } else if (resp !== undefined && anchorId !== null) {
+      clear.add(b.id);
+      const base = newResponse.get(anchorId) ?? '';
+      newResponse.set(anchorId, base ? `${base}\n\n${resp}` : resp);
+    } else if (resp !== undefined) {
+      newResponse.set(b.id, resp); // orphan system turn — keep its own
+    }
+  }
+
+  const update = db.prepare(`UPDATE prompt_batches SET response_summary = ? WHERE id = ?`);
+  for (const b of batches) {
+    let final: string | null;
+    if (newResponse.has(b.id)) final = newResponse.get(b.id)!;
+    else if (clear.has(b.id)) final = null;
+    else continue; // no matched content this pass — preserve existing
+    if (final === b.response_summary) continue;
+    update.run(final, b.id);
   }
 }
 

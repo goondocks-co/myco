@@ -476,4 +476,39 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(queued.user_prompt).toBe('also check the edge case');
     expect(queued.response_summary).toBe('edge case looks fine');
   });
+
+  // Audit finding 2026-05-28: background-job <task-notification>s fire mid-turn
+  // and each opens a turn that STEALS the response the user's question was
+  // getting — parking it on a system batch the dashboard hides by default, so
+  // the human prompt showed no answer. Response attribution must be
+  // human-anchored: a human prompt's response spans the assistant work across
+  // interleaved system events, and the system batch carries no response itself.
+  it('rolls a mid-turn task-notification response into the preceding human prompt', () => {
+    const events = [
+      { type: 'user', promptId: 'u1', message: { role: 'user', content: 'answer my question' } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'here is the first part' }], stop_reason: 'tool_use' } },
+      // A background job completes mid-answer — system task-notification.
+      {
+        type: 'user', promptId: 'tn',
+        message: { role: 'user', content: '<task-notification>\n<task-id>job9</task-id>\n<status>completed</status>\n</task-notification>' },
+      },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'tests passed, here is the rest' }], stop_reason: 'end_turn' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    miner.reconcileAndAttributeResponses('s-reconcile', { agent: 'claude-code', transcriptPath });
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE }).sort((a, b) => a.id - b.id);
+    expect(after).toHaveLength(2);
+    const [human, taskNotif] = after;
+
+    // The human prompt owns the FULL answer, spanning the task-notification.
+    expect(human.origin).toBe('human');
+    expect(human.response_summary).toBe('here is the first part\n\ntests passed, here is the rest');
+    // The system task-notification batch carries no response of its own —
+    // its content moved to the human prompt the user actually sees.
+    expect(taskNotif.origin).toBe('system');
+    expect(taskNotif.response_summary).toBeNull();
+  });
 });
