@@ -62,13 +62,22 @@ mock.module('../../../packages/myco/ui/src/hooks/use-groves', () => ({
   useGroves: () => ({ data: grovesResponse }),
 }));
 
+// Switcher now reads per-project activity to sort recently-active first.
+// Mock it so the component renders deterministically without an async query.
+mock.module('../../../packages/myco/ui/src/hooks/use-maintenance-summary', () => ({
+  useProjectsActivity: () => ({ data: { projects: [] } }),
+}));
+
 import { ProjectSwitcher } from '../../../packages/myco/ui/src/components/ProjectSwitcher';
+import { PowerProvider } from '../../../packages/myco/ui/src/providers/power';
 
 function renderSwitcher(): void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[ '/groves' ]}>{children}</MemoryRouter>
+      <PowerProvider>
+        <MemoryRouter initialEntries={[ '/groves' ]}>{children}</MemoryRouter>
+      </PowerProvider>
     </QueryClientProvider>
   );
   render(<ProjectSwitcher />, { wrapper });
