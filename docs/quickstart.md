@@ -58,7 +58,7 @@ Once Myco is installed, the local service starts automatically. On first boot it
 
 New agent installed later? Myco detects it automatically, or you can re-detect from the dashboard's Symbionts page.
 
-If you want a project's Myco identity committed to the repo for teammates, open the dashboard's **Symbionts page** and use **Commit Myco config to this repo**.
+To share a project with teammates, commit the `.myco/project.toml` file — Myco creates it automatically and tracks it in git. It carries the project's identity, so when a teammate clones the repo their sessions land in the same project. Everything else under `.myco/` is per-machine and stays out of git.
 
 Session capture starts immediately and you get full-text search out of the box. To enable the deeper intelligence features, configure an agent provider in the dashboard's **Myco Agent** section.
 

@@ -76,8 +76,6 @@ import {
 import {
   createProjectBackupHandler,
   createProjectRestoreHandler,
-  createCommitToRepoHandler,
-  createUncommitFromRepoHandler,
 } from './api/projects.js';
 import {
   handleListSessions,
@@ -1446,8 +1444,6 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
   server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/commit-to-repo', createCommitToRepoHandler(groveDaemonStateDir));
-  server.registerRoute('DELETE', '/api/projects/:projectId/commit-to-repo', createUncommitFromRepoHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 

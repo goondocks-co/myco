@@ -9,9 +9,9 @@
 // The launcher distinguishes its mode from `path.basename(__filename)` and
 // honors a layered project-local override before doing anything else: when
 // a project ships its own `.agents/myco-run.cjs` / `.agents/myco-cli.cjs`
-// (the dogfood / dev pin written by `make dev-link-worktree` and by the
-// dashboard's commit-to-repo opt-in), this launcher delegates to it. Every
-// other invocation falls through to the runtime-resolution chain.
+// (a dogfood / dev pin, or a legacy stub from a pre-global install), this
+// launcher delegates to it. Every other invocation falls through to the
+// runtime-resolution chain.
 //
 // Runtime resolution chain (first match wins):
 //   1. Project-local `<projectRoot>/.myco/runtime.command` (highest)
@@ -89,8 +89,7 @@ if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'ant
 // 0. Project-local launcher override.
 // Preserves the dogfood path (`make dev-link-worktree` writes
 // `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and
-// the deliberate per-project escape hatch from the dashboard's
-// commit-to-repo opt-in.
+// tolerates a legacy project-local stub from a pre-global install.
 // Walk up from cwd so the check is worktree-aware.
 //
 // Pre-upgrade brownfield projects also have a `.agents/myco-run.cjs`
