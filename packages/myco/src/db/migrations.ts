@@ -3039,17 +3039,26 @@ function migrateV48ToV49(db: Database): void {
                    started_at, ended_at, status, activity_count, processed,
                    content_hash, created_at, machine_id, synced_at`,
       );
-      const enqueueStmt = db.prepare(
-        `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-         VALUES ('prompt_batches', ?, 'upsert', ?, ?, ?)`,
-      );
+      // Only prepare the enqueue statement when team_outbox actually exists.
+      // bun:sqlite validates prepare() against the live schema eagerly, so
+      // preparing an INSERT against a missing table throws immediately — which
+      // would abort the whole migration for the partial-schema vaults the
+      // hasBatches guard above exists to tolerate (prompt_batches present,
+      // team_outbox absent). Deferring the prepare behind the existence check
+      // makes the guard actually protective instead of dead defense.
       const teamSyncEnabled = db.prepare(
         `SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_outbox'`,
       ).get() as { 1: number } | undefined;
+      const enqueueStmt = teamSyncEnabled
+        ? db.prepare(
+            `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+             VALUES ('prompt_batches', ?, 'upsert', ?, ?, ?)`,
+          )
+        : null;
       const now = epochSeconds();
       for (const { origin, prefix } of reclassifications) {
         const rows = updateStmt.all(origin, `${prefix}%`) as Array<Record<string, unknown>>;
-        if (!teamSyncEnabled || rows.length === 0) continue;
+        if (!enqueueStmt || rows.length === 0) continue;
         for (const row of rows) {
           enqueueStmt.run(
             String(row.id),

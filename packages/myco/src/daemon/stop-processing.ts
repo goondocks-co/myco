@@ -26,9 +26,11 @@ import {
   getBatchById,
   setResponseSummary,
   populateBatchResponses,
+  rehomeSystemActivitiesToHumanAnchor,
   closeOpenBatches,
   listBatchesBySession,
   findBatchByPromptPrefix,
+  PROMPT_BATCH_ORIGIN,
   type BatchRow,
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
@@ -394,10 +396,21 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       // model, where the file is rewritten each turn and only contains the
       // current one — we always want that single turn's response on the latest
       // batch, regardless of prompt_number alignment.
-      if (resolvedResponse && latestBatch && !latestBatch.response_summary) {
-        const summaryTarget = latestBatch.parent_prompt_batch_id
-          ? findOwningParent(latestBatch)
-          : latestBatch;
+      // Anchor the response to the latest HUMAN turn, never a point-in-time
+      // system batch (a <system-reminder> / <task-notification> born-closed
+      // after the human prompt carries a higher prompt_number and would be
+      // `latestBatch`, stranding the turn's answer on a dashboard-hidden row
+      // that populateBatchResponses never clears — it only clears system
+      // batches whose prompt matched a transcript turn, which an envelope is
+      // not). populateBatchResponses handles the matched case; this is the
+      // per-turn-transcript fallback (Cursor), so target the human anchor.
+      const responseTarget = latestBatch && latestBatch.origin !== PROMPT_BATCH_ORIGIN.HUMAN
+        ? getLatestBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN })
+        : latestBatch;
+      if (resolvedResponse && responseTarget && !responseTarget.response_summary) {
+        const summaryTarget = responseTarget.parent_prompt_batch_id
+          ? findOwningParent(responseTarget)
+          : responseTarget;
         if (summaryTarget && !summaryTarget.response_summary) {
           try { setResponseSummary(summaryTarget.id, resolvedResponse); }
           catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
@@ -508,6 +521,19 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     if (transcriptResponses.length > 0) {
       try { populateBatchResponses(sessionId, transcriptResponses); }
       catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to populate batch responses', { error: String(err) }); }
+    }
+
+    // Human-anchoring backstop for tool-call activities — the counterpart of
+    // populateBatchResponses' response rolling. The live path pairs reconcile +
+    // rehome; the Stop path (and session re-enrich, which re-mines legacy
+    // sessions) reconciles too, so it must also re-home activities stranded on
+    // system batches onto their human anchor. Without this, Stop-only sessions
+    // (live reconcile disabled, short turns, symbionts without tool events)
+    // leave tool calls on system batches the myco agent never analyzes. Runs
+    // after reconcileBatchKinds (Phase 1) has set the origins/anchors.
+    if (runTranscriptPhase) {
+      try { rehomeSystemActivitiesToHumanAnchor(sessionId); }
+      catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to re-home system activities', { error: String(err) }); }
     }
 
     // --- Plan tag extraction from transcript responses ---

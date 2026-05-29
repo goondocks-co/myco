@@ -577,10 +577,16 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       // Live capture: surface queued prompts + in-flight responses mid-turn.
       // The agent writes each turn's prompts/responses to the transcript as it
       // works; this tool event is the daemon's live signal to re-mine it. The
-      // callee throttles, so calling on every tool event is safe.
+      // callee throttles (≤1 run/interval/session), but a single run still does
+      // a full transcript re-parse + DB writes — too heavy to run inline on the
+      // /events handler thread. Defer it off the hot path with setTimeout(0),
+      // exactly like the Canopy rescan below, so the hook's HTTP response isn't
+      // blocked by capture work (avoids the main-loop-wedge class fixed in
+      // project_main_loop_yield_pattern).
       if (liveReconcile && typeof event.transcript_path === 'string' && event.transcript_path) {
         const agent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
-        liveReconcile(event.session_id, agent, event.transcript_path);
+        const transcriptPath = event.transcript_path;
+        setTimeout(() => liveReconcile(event.session_id, agent, transcriptPath), 0);
       }
       // Canopy: rescan the touched file after acknowledging capture.
       // Best-effort; handleCanopyToolUse swallows its own errors.

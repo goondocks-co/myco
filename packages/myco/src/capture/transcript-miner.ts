@@ -202,7 +202,19 @@ export class TranscriptMiner {
     ): { effectiveKind: string; parent: number | null } => {
       if (kind === BATCH_KIND.INITIAL) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
       if (currentParentId == null) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
-      if (origin === PROMPT_BATCH_ORIGIN.HUMAN && currentParentOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) {
+      // System / agent_dispatch prompts are point-in-time records: they own a
+      // top-level initial batch and never nest, exactly as the live
+      // handleUserPrompt path classifies them. A mid-turn <task-notification>
+      // (walker-classified steering because it isn't at an end_turn boundary)
+      // must therefore NOT become a steering child of the human turn — that
+      // would diverge from the live row and thread system noise into a human
+      // turn's children. Subsumes the old human-under-nonhuman special case.
+      if (origin !== PROMPT_BATCH_ORIGIN.HUMAN) {
+        return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      }
+      // A human prompt must not nest under a non-human open parent — it owns
+      // its own turn.
+      if (currentParentOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) {
         return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
       }
       return { effectiveKind: kind, parent: currentParentId };
@@ -217,7 +229,11 @@ export class TranscriptMiner {
           updateBatchKind(existing.id, effectiveKind, wantParent);
           reclassified++;
         }
-        if (effectiveKind === BATCH_KIND.INITIAL) {
+        // Only a HUMAN initial batch becomes the open anchor. A system batch is
+        // a point-in-time record that must not steal the steering anchor from
+        // the human turn — mirrors the live path, where system prompts are
+        // born-closed and never become the open parent.
+        if (effectiveKind === BATCH_KIND.INITIAL && record.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
           currentParentId = existing.id;
           currentParentOrigin = record.origin;
         }
@@ -229,10 +245,17 @@ export class TranscriptMiner {
         errors.push(`transcript prompt classified as ${record.kind} with no open parent; inserting as initial instead`);
       }
       const now = epochSeconds();
+      const isSystemOrigin = record.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
       const created = insertBatchStateless({
         session_id: sessionId,
         user_prompt: record.text,
         started_at: now,
+        // System / agent_dispatch batches are born CLOSED point-in-time records,
+        // identical to the live handleUserPrompt path. Born OPEN, a miner-created
+        // system batch would outrank a closed human batch on
+        // insertActivityWithBatch's `(ended_at IS NULL) DESC` sort and could be
+        // returned by findOpenParentBatch — defeating the human-anchoring.
+        ended_at: isSystemOrigin ? now : undefined,
         created_at: now,
         machine_id: getTeamMachineId(),
         kind: effectiveKind,
@@ -244,7 +267,9 @@ export class TranscriptMiner {
         const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
       } catch { /* lineage best-effort */ }
-      if (effectiveKind === BATCH_KIND.INITIAL) {
+      // Only a HUMAN initial batch becomes the open anchor (see existing-branch
+      // note above) — system batches never claim the steering anchor.
+      if (effectiveKind === BATCH_KIND.INITIAL && record.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
         currentParentId = created.id;
         currentParentOrigin = record.origin;
       }

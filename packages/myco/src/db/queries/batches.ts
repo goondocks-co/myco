@@ -389,17 +389,27 @@ export function populateBatchResponses(
   const newResponse = new Map<number, string>();
   const clear = new Set<number>();
   let anchorId: number | null = null;
+  // Whether the current human anchor matched a transcript turn THIS pass. A
+  // system batch's response is rolled into the anchor ONLY when the anchor was
+  // itself matched — otherwise we'd synthesize the human turn's answer purely
+  // from an interleaved system batch's text and CLOBBER the human's real
+  // response_summary already in the DB (a partial/mid-session snapshot can
+  // contain the system batch's prompt but not the human's). When the anchor
+  // isn't matched this pass, the system batch keeps its own response and the
+  // human row is left untouched by the write loop's "preserve existing" guard.
+  let anchorMatched = false;
   for (const b of batches) {
     const resp = matched.get(b.id);
     if (b.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
       anchorId = b.id;
+      anchorMatched = resp !== undefined;
       if (resp !== undefined) newResponse.set(b.id, resp);
-    } else if (resp !== undefined && anchorId !== null) {
+    } else if (resp !== undefined && anchorId !== null && anchorMatched) {
       clear.add(b.id);
       const base = newResponse.get(anchorId) ?? '';
       newResponse.set(anchorId, base ? `${base}\n\n${resp}` : resp);
     } else if (resp !== undefined) {
-      newResponse.set(b.id, resp); // orphan system turn — keep its own
+      newResponse.set(b.id, resp); // orphan system turn (no matched anchor) — keep its own
     }
   }
 
@@ -862,14 +872,22 @@ export function setResponseSummary(
  */
 export function getLatestBatch(
   sessionId: string,
+  opts: { origin?: PromptBatchOrigin } = {},
 ): BatchRow | null {
   const db = getDatabase();
 
+  // Optional origin filter: response stamping must target the human turn, never
+  // a point-in-time system batch (e.g. a <system-reminder> inserted after the
+  // human prompt with a higher prompt_number that would otherwise win the
+  // ORDER BY and absorb the turn's response onto a dashboard-hidden row).
+  const originClause = opts.origin ? 'AND origin = ?' : '';
+  const params = opts.origin ? [sessionId, opts.origin] : [sessionId];
+
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ?
+     WHERE session_id = ? ${originClause}
      ORDER BY prompt_number DESC, id DESC LIMIT 1`,
-  ).get(sessionId) as Record<string, unknown> | undefined;
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toBatchRow(row);

@@ -4,7 +4,7 @@
  */
 
 import { getAtPath } from '../utils/dot-path.js';
-import { evaluateUserPromptRules, type PromptOrigin } from '../hooks/capture-rules.js';
+import { evaluateUserPromptRules, type PromptOrigin, type UserPromptDecision } from '../hooks/capture-rules.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import type {
   CapturePrompts,
@@ -94,13 +94,29 @@ export function classifyNextPromptOrigin(
   prompt: string,
   transcriptPath?: string,
 ): PromptOrigin {
-  if (!agent) return 'human';
-  const decision = evaluateUserPromptRules(
+  const decision = classifyNextPromptDecision(agent, prompt, transcriptPath);
+  if (decision.action === 'drop') return 'human';
+  return decision.origin ?? 'human';
+}
+
+/**
+ * Full manifest decision for a hypothetical next prompt — the drop-aware
+ * superset of {@link classifyNextPromptOrigin}. Buffer replay/reconciliation
+ * uses this so a buffered envelope the manifest would DROP (e.g. a
+ * `<command-name>` / `<local-command-stdout>` from a pre-rule buffer file) is
+ * suppressed rather than collapsed to an origin='human' prompt the user never
+ * typed. Returns a pass decision when the agent is unknown (nothing to match).
+ */
+export function classifyNextPromptDecision(
+  agent: string | undefined,
+  prompt: string,
+  transcriptPath?: string,
+): UserPromptDecision {
+  if (!agent) return { action: 'pass', prompt, origin: 'human' };
+  return evaluateUserPromptRules(
     agent,
     { prompt, transcriptPath: transcriptPath ?? '<transcript-walker>' },
   );
-  if (decision.action === 'drop') return 'human';
-  return decision.origin ?? 'human';
 }
 
 // ---------------------------------------------------------------------------

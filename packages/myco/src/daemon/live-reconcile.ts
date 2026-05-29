@@ -57,6 +57,22 @@ export function createLiveReconcile(
   const clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h));
   const state = new Map<string, SessionThrottleState>();
 
+  // An entry idle this long carries no live throttle state worth keeping: the
+  // next event would be a leading-edge run regardless (elapsed >> intervalMs).
+  // Without eviction the Map grows one entry per session for the daemon's whole
+  // lifetime — an unbounded leak in a long-lived process. Sweep stale entries
+  // opportunistically (at most once per interval) so the Map stays bounded to
+  // sessions active in the recent window.
+  const idleEvictMs = intervalMs * 10;
+  let lastSweep = 0;
+  const sweepIdle = (ts: number): void => {
+    for (const [sid, s] of state) {
+      if (s.timer === null && s.pending === null && ts - s.lastRun > idleEvictMs) {
+        state.delete(sid);
+      }
+    }
+  };
+
   const run = (sessionId: string, input: LiveReconcileInput, st: SessionThrottleState): void => {
     st.lastRun = now();
     st.pending = null;
@@ -71,6 +87,12 @@ export function createLiveReconcile(
   };
 
   return (sessionId: string, agent: string, transcriptPath: string): void => {
+    const ts = now();
+    if (ts - lastSweep > intervalMs) {
+      lastSweep = ts;
+      sweepIdle(ts);
+    }
+
     const input: LiveReconcileInput = { agent, transcriptPath };
     let st = state.get(sessionId);
     if (!st) {
@@ -78,7 +100,7 @@ export function createLiveReconcile(
       state.set(sessionId, st);
     }
 
-    const elapsed = now() - st.lastRun;
+    const elapsed = ts - st.lastRun;
     if (elapsed >= intervalMs && st.timer === null) {
       // Leading edge: enough idle time has passed, run now.
       run(sessionId, input, st);

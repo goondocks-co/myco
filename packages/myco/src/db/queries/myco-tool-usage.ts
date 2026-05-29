@@ -175,7 +175,16 @@ export function parseCliMycoToolCalls(command: string): Array<{ tool_name: strin
     // end of command) for an inline `--input '{"op":"…"}'`. `--input @file`
     // and op-less calls resolve to '' — the same empty-op key the SQL path uses.
     const segStart = m.index! + m[0].length;
-    const segEnd = i + 1 < matches.length ? matches[i + 1]!.index! : command.length;
+    let segEnd = i + 1 < matches.length ? matches[i + 1]!.index! : command.length;
+    // Bound the op scan to THIS call's own command segment. Without this, an
+    // op-less call (e.g. `--input @file`) followed by an unrelated command,
+    // argument, or piped stage containing an `"op":"…"` JSON fragment would
+    // mis-attribute that op to the call — most acutely the LAST call, whose
+    // segment otherwise runs to the end of the whole command. Cut at the first
+    // shell separator (newline, `;`, `|`, `&`) after the tool name; this call's
+    // inline `--input '{"op":…}'` carries op before any such separator.
+    const sepMatch = /[\n;|&]/.exec(command.slice(segStart, segEnd));
+    if (sepMatch) segEnd = segStart + sepMatch.index;
     const opMatch = CLI_OP_RE.exec(command.slice(segStart, segEnd));
     out.push({ tool_name, op: opMatch ? opMatch[1]! : '' });
   }

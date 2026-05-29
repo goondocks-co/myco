@@ -434,6 +434,29 @@ describe('parseCliMycoToolCalls — CLI command parsing', () => {
     expect(parseCliMycoToolCalls(`echo "how to tool call something"`)).toEqual([]);
     expect(parseCliMycoToolCalls(`myco tool call something_else --input '{}'`)).toEqual([]);
   });
+
+  // Regression: an op-less call followed by an unrelated command/argument
+  // containing an "op" JSON fragment must NOT bleed that op onto the call.
+  it('does not bleed an op from a trailing piped/chained command into an op-less call', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_spores --input @/tmp/p.json && echo '{"op":"canopy_map"}'`),
+    ).toEqual([{ tool_name: 'myco_spores', op: '' }]);
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_search --input @file | grep '{"op":"x"}'`),
+    ).toEqual([{ tool_name: 'myco_search', op: '' }]);
+  });
+
+  it('does not bleed an op from a trailing redirect/arg after the LAST call', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_search --input @file ; cat results.json`),
+    ).toEqual([{ tool_name: 'myco_search', op: '' }]);
+  });
+
+  it('still captures the op from this call own --input before any separator', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_cortex --input '{"op":"digest"}' 2>&1`),
+    ).toEqual([{ tool_name: 'myco_cortex', op: 'digest' }]);
+  });
 });
 
 describe('aggregateSessionMycoToolCalls — CLI-routed calls (Bash activities)', () => {

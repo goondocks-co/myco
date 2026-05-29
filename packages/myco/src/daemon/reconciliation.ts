@@ -20,8 +20,8 @@ import { STALE_BUFFER_MAX_AGE_MS, DEFAULT_SYMBIONT_NAME } from '@myco/constants.
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
 import { handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
-import { toPromptBatchOrigin, countBatchesBySession, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches.js';
-import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
+import { toPromptBatchOrigin, countBatchesBySession, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
+import { classifyNextPromptDecision } from '@myco/capture/prompt-kind.js';
 import { eventDedupKey, eventTimestampMs, EVENT_DEDUP_WINDOW_MS } from '@myco/capture/dedup.js';
 
 // ---------------------------------------------------------------------------
@@ -132,10 +132,23 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       // <teammate-message> from before the upgrade still lands with the right
       // origin instead of silently defaulting to 'human'. Forwarded values win.
       const promptText = String(event.prompt ?? '');
-      const origin = typeof event.origin === 'string'
-        ? toPromptBatchOrigin(event.origin)
-        : classifyNextPromptOrigin(typeof event.agent === 'string' ? event.agent : undefined, promptText);
-      handleUserPrompt(sessionId, promptText, { origin });
+      const agent = typeof event.agent === 'string' ? event.agent : undefined;
+      if (typeof event.origin === 'string') {
+        // Post-rule hooks apply the drop decision BEFORE buffering, so a
+        // forwarded origin means the event passed the rules; trust it.
+        handleUserPrompt(sessionId, promptText, { origin: toPromptBatchOrigin(event.origin) });
+        return 'prompt';
+      }
+      // Pre-rule buffer (no forwarded origin): re-evaluate the manifest rule
+      // with full drop-awareness. A buffered <command-name> / <local-command-
+      // stdout> envelope must be DROPPED here too — classifyNextPromptOrigin
+      // collapses drop→'human', which would re-insert a prompt the user never
+      // typed. Honor rewrite as well so a preamble-stripped prompt replays
+      // identically to the live path.
+      const decision = classifyNextPromptDecision(agent, promptText);
+      if (decision.action === 'drop') return null;
+      const replayText = decision.action === 'rewrite' ? decision.prompt : promptText;
+      handleUserPrompt(sessionId, replayText, { origin: toPromptBatchOrigin(decision.origin ?? 'human') });
       return 'prompt';
     }
     if (event.type === 'tool_use') {
@@ -246,9 +259,22 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     for (let i = 0; i < allEvents.length; i++) {
       const e = allEvents[i];
       if (e.type !== 'user_prompt') continue;
-      const eventOrigin = typeof e.origin === 'string'
-        ? toPromptBatchOrigin(e.origin)
-        : classifyNextPromptOrigin(typeof e.agent === 'string' ? e.agent : undefined, String(e.prompt ?? ''));
+      let eventOrigin: PromptBatchOrigin | null;
+      if (typeof e.origin === 'string') {
+        eventOrigin = toPromptBatchOrigin(e.origin);
+      } else {
+        // Mirror replayEvent: a pre-rule buffered prompt the manifest would
+        // DROP must NOT be counted as a human prompt here, or it inflates
+        // promptsSeen and skews the replay-start index (re-inserting prior
+        // human prompts as duplicates).
+        const decision = classifyNextPromptDecision(
+          typeof e.agent === 'string' ? e.agent : undefined,
+          String(e.prompt ?? ''),
+        );
+        eventOrigin = decision.action === 'drop'
+          ? null
+          : toPromptBatchOrigin(decision.origin ?? 'human');
+      }
       if (eventOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) continue;
       promptsSeen++;
       if (promptsSeen === existingBatchCount + 1) {

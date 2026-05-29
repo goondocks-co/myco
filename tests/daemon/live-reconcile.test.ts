@@ -88,4 +88,37 @@ describe('createLiveReconcile throttle', () => {
     });
     expect(() => reconcile('s1', 'claude-code', '/t.jsonl')).not.toThrow();
   });
+
+  // Regression: the per-session Map must not grow unbounded. An idle entry
+  // (no timer/pending, lastRun older than idleEvictMs = intervalMs*10) is
+  // swept on a later call so a long-lived daemon doesn't leak one entry per
+  // session forever. We assert via behavior: after eviction, a stale session's
+  // next call is a fresh leading-edge run (proving its state was reclaimed).
+  it('evicts idle session state so the throttle map stays bounded', () => {
+    let nowMs = 1_000_000;
+    const calls: string[] = [];
+    const reconcile = createLiveReconcile({
+      intervalMs: 3000,
+      reconcile: (sid) => calls.push(sid),
+      now: () => nowMs,
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (h) => clearTimeout(h),
+    });
+
+    reconcile('stale', 'claude-code', '/a.jsonl'); // s=stale leading run (1)
+    expect(calls).toEqual(['stale']);
+
+    // Advance well past idleEvictMs (3000*10 = 30000ms) so 'stale' is sweepable.
+    nowMs += 40_000;
+    // A call for ANOTHER session triggers the opportunistic sweep, reclaiming
+    // 'stale'. (Also a leading run for 'other'.)
+    reconcile('other', 'claude-code', '/b.jsonl');
+    expect(calls).toEqual(['stale', 'other']);
+
+    // 'stale' returning is a clean leading-edge run (its old lastRun is gone);
+    // the throttle behaves as first-contact, confirming the entry was evicted
+    // rather than carrying stale window state.
+    reconcile('stale', 'claude-code', '/a.jsonl');
+    expect(calls).toEqual(['stale', 'other', 'stale']);
+  });
 });
