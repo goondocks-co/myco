@@ -14,6 +14,7 @@ const {
   markSourceRowsSyncedMock,
   pruneOldMock,
   backfillUnsyncedMock,
+  backfillAllMock,
   discardRowsMock,
   enqueueOutboxMock,
   upsertSelfMemberMock,
@@ -26,6 +27,7 @@ const {
   markSourceRowsSyncedMock: vi.fn(),
   pruneOldMock: vi.fn(),
   backfillUnsyncedMock: vi.fn(),
+  backfillAllMock: vi.fn(),
   discardRowsMock: vi.fn(),
   enqueueOutboxMock: vi.fn(),
   upsertSelfMemberMock: vi.fn(),
@@ -38,6 +40,7 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   markSourceRowsSynced: markSourceRowsSyncedMock,
   pruneOld: pruneOldMock,
   backfillUnsynced: backfillUnsyncedMock,
+  backfillAll: backfillAllMock,
   discardRows: discardRowsMock,
   countPending: vi.fn(() => 0),
   enqueueOutbox: enqueueOutboxMock,
@@ -100,6 +103,7 @@ describe('initTeamSync.reconcileClient', () => {
     enqueueBatchMock.mockResolvedValue({ accepted: 0, rejected: [] });
     listPendingMock.mockReturnValue([]);
     backfillUnsyncedMock.mockReturnValue(3);
+    backfillAllMock.mockReturnValue(2);
     upsertSelfMemberMock.mockReturnValue({
       inserted: true,
       row: {
@@ -347,4 +351,102 @@ describe('initTeamSync.reconcileClient', () => {
       source: 'headers',
     } as const;
   }
+});
+
+describe('initTeamSync.rebuildFromLocal', () => {
+  let tmpDir: string;
+  let vaultDir: string;
+  let previousMycoHome: string | undefined;
+
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+
+  function writeTeamConfig(enabled: boolean): void {
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
+      'version: 3',
+      'config_version: 9',
+      'team:',
+      `  enabled: ${enabled ? 'true' : 'false'}`,
+      '  worker_url: https://team.example.workers.dev',
+    ].join('\n'), 'utf-8');
+  }
+
+  function makeTeamSync() {
+    return initTeamSync({
+      liveConfig: {
+        current: {
+          team: { enabled: true, worker_url: 'https://team.example.workers.dev' },
+        },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebuild-from-local-'));
+    vaultDir = path.join(tmpDir, '.myco');
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmpDir, 'home');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    listPendingMock.mockReturnValue([]);
+    backfillAllMock.mockReturnValue(2);
+    fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=secret-token\n', 'utf-8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
+  });
+
+  it('happy path: truncates cloud, backfills, and flushes — returns a clean TeamFlushResult', async () => {
+    writeTeamConfig(true);
+    const teamSync = makeTeamSync();
+    const rebuildSpy = vi.fn().mockResolvedValue(undefined);
+    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
+
+    const result = await teamSync.rebuildFromLocal();
+
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(backfillAllMock).toHaveBeenCalledWith('machine-1');
+    expect(result.error).toBeUndefined();
+    expect(result).toMatchObject({ handedOff: expect.any(Number), rejected: expect.any(Number), batches: expect.any(Number) });
+  });
+
+  it('rebuild throws: aborts before backfill/flush and returns an error result', async () => {
+    writeTeamConfig(true);
+    const teamSync = makeTeamSync();
+    const rebuildSpy = vi.fn().mockRejectedValue(new Error('worker truncate failed'));
+    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
+
+    const result = await teamSync.rebuildFromLocal();
+
+    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    // The load-bearing invariant: a failed truncate must NOT proceed to
+    // re-enqueue the Grove. Without the abort, backfillAll would run and
+    // push rows against a half-truncated cloud mirror.
+    expect(backfillAllMock).not.toHaveBeenCalled();
+    expect(result.error).toBe('worker truncate failed');
+  });
+
+  it('disabled config: early-returns the empty result without touching the client', async () => {
+    writeTeamConfig(false);
+    const teamSync = makeTeamSync();
+    const rebuildSpy = vi.fn().mockResolvedValue(undefined);
+    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
+
+    const result = await teamSync.rebuildFromLocal();
+
+    expect(rebuildSpy).not.toHaveBeenCalled();
+    expect(backfillAllMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ handedOff: 0, rejected: 0, batches: 0 });
+  });
 });
