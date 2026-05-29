@@ -93,6 +93,11 @@ describe('session cascade journals child deletes via triggers', () => {
       `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
        VALUES (101, 's1', 'proj_x', 1, 'local')`,
     ).run();
+    db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('a1', 'agent-1', 1)`).run();
+    db.prepare(
+      `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at, machine_id)
+       VALUES ('sp_c1', 'a1', 's1', 'decision', 'c', 1, 'local')`,
+    ).run();
     deleteSessionCascade('s1');
     const deletes = db.prepare(
       `SELECT DISTINCT table_name FROM team_outbox WHERE operation='delete'`,
@@ -100,6 +105,7 @@ describe('session cascade journals child deletes via triggers', () => {
     const tables = new Set(deletes.map((d) => d.table_name));
     expect(tables.has('sessions')).toBe(true);
     expect(tables.has('prompt_batches')).toBe(true);
+    expect(tables.has('spores')).toBe(true);
   });
 
   it('no duplicate outbox rows — each child table appears exactly once', () => {
@@ -113,6 +119,11 @@ describe('session cascade journals child deletes via triggers', () => {
       `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
        VALUES (201, 's2', 'proj_x', 1, 'local')`,
     ).run();
+    db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('a2', 'agent-2', 1)`).run();
+    db.prepare(
+      `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at, machine_id)
+       VALUES ('sp_c2', 'a2', 's2', 'decision', 'c', 1, 'local')`,
+    ).run();
     deleteSessionCascade('s2');
     const sessRows = db.prepare(
       `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='sessions' AND operation='delete'`,
@@ -120,7 +131,11 @@ describe('session cascade journals child deletes via triggers', () => {
     const batchRows = db.prepare(
       `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='prompt_batches' AND operation='delete'`,
     ).get() as { n: number };
+    const sporeRows = db.prepare(
+      `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='spores' AND operation='delete'`,
+    ).get() as { n: number };
     expect(sessRows.n).toBe(1);
     expect(batchRows.n).toBe(1);
+    expect(sporeRows.n).toBe(1);
   });
 });

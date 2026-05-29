@@ -679,9 +679,12 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   // Spores can also reference prompt_batches from a different session
   // (cross-session prompt_batch_id linkage). We must delete those spores
   // BEFORE deleting prompt_batches to avoid FK violations.
-  // bun:sqlite's `info.changes` includes trigger-induced writes; read
-  // `changes()` after each `.run()` to get the outer statement's affected
-  // rows only.
+  //
+  // Counting: each `changesSince(db)` below reads the just-run DELETE's own
+  // affected-row count. The AFTER DELETE team-sync triggers (and the FTS
+  // triggers) insert into team_outbox / *_fts inside the same statement, but
+  // those writes are excluded from `changes()`, so the per-table counts stay
+  // accurate — they reflect only the rows removed from the named table.
   const result = db.transaction(() => {
     db.prepare(
       `DELETE FROM knowledge_release_state
