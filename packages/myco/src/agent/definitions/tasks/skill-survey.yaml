@@ -19,6 +19,10 @@ schedule:
     - idle
     - sleep
   preCondition: has-skill-survey-evidence
+  # Cheap insurance ceiling. The 6h interval + evidence preCondition
+  # already keep cadence at ~2-3 runs/day; this caps a runaway day if the
+  # preCondition trips repeatedly under heavy vault churn.
+  maxRunsPerDay: 4
 phases:
   - name: prepare
     prompt: |
@@ -119,6 +123,13 @@ phases:
          components, files, commands, or conventions.
 
       Store your domain clusters in working notes for the next phase.
+
+      ## Output discipline (cost)
+
+      Output tokens dominate this phase's cost. Keep working notes
+      compact: per domain, a few lines — core theme, the procedures it
+      covers, and source IDs as evidence. Reference sources by ID; do
+      not paste spore or session content into your notes.
     tools:
       - vault_spores
       - vault_sessions
@@ -278,6 +289,21 @@ phases:
       and quality score so the Skills UI can explain the confidence.
       Do not rely on narrative phase output as the source of truth for
       later persistence.
+
+      ## Output discipline (cost)
+
+      Output tokens dominate this phase's cost. Be economical without
+      thinning the durable record:
+      - Keep each decision's `rationale` to ≤ 80 words. State each
+        criterion verdict as a short phrase ("procedure: yes — extends
+        task YAML"), not a paragraph. Cite source/bundle IDs rather than
+        restating their content.
+      - Never echo bundle bodies, spore text, or session summaries back
+        in your output — reference them by ID.
+      - The assistant message itself (outside tool calls) MUST be ≤ 6
+        lines: counts of CREATE/UPDATE/DEFER/DISMISS/SKIP plus any
+        unreviewed bundle IDs. All durable detail goes through
+        `vault_skill_survey_bundle_decisions`, not the narrative.
     tools:
       - vault_skill_survey_prepare
       - vault_skill_candidates
@@ -444,6 +470,15 @@ phases:
       candidate does not actually have. For example, do not use
       missing-evidence-bundle for a candidate whose current queue row
       already has evidence_bundle_id.
+
+      ## Output discipline (cost)
+
+      Output tokens dominate this phase's cost. Keep each plan entry's
+      rationale to ≤ 80 words — criterion verdicts as short phrases plus
+      the failure codes, citing source/candidate IDs rather than
+      restating their content. The assistant message outside tool calls
+      MUST be ≤ 6 lines (counts per action). Durable detail goes through
+      `vault_skill_survey_reconciliation_plan`, not the narrative.
     tools:
       - vault_skill_survey_prepare
       - vault_state
