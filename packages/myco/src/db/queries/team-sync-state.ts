@@ -1,10 +1,9 @@
 /**
  * Per-Grove team-sync enablement flag.
  *
- * A single row in each Grove DB. Read by BOTH the TS upsert gate
- * (`syncRow`) and the SQL `AFTER DELETE` triggers — both via the current
- * `getDatabase()` — so "is this Grove syncing" is Grove-correct by
- * construction. Absent row == disabled.
+ * A single row in each Grove DB recording whether this Grove syncs to the
+ * team cloud. Read via the current `getDatabase()`, so enablement is scoped
+ * to the Grove being written. An absent row means disabled.
  */
 
 import { getDatabase } from '@myco/db/client.js';
