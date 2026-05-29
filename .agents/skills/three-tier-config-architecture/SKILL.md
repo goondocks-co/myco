@@ -184,7 +184,7 @@ Create UI components that indicate and enforce scope boundaries with portable pr
 
 ```typescript
 // packages/myco/ui/src/components/ScopedSettingField.tsx
-export function ScopedSettingField<K extends keyof MycoConfig>({
+export function ScopedSettingField<K extends keyof MycoConfig>(
   settingKey,
   context,
   value,
@@ -315,9 +315,9 @@ class PortableProjectMergeStrategy<T extends Record<string, any>> {
 
 ## Procedure E: Migration Patterns for Scope Boundary Changes
 
-### 1. Two-Layer Automatic Migration Model
+### 1. Promote-Before-Strip Pattern: Two-Layer Automatic Migration Model
 
-Myco uses a two-layer automatic migration model for scope boundary evolution:
+Myco uses a **promote-before-strip** two-layer automatic migration model for scope boundary evolution. Legacy fields are promoted (recognized) before being stripped (removed), ensuring zero data loss during migrations.
 
 **Layer 1: PROJECT_TIER_LEGACY_FIELDS Silent Recognition**
 
@@ -430,7 +430,7 @@ async function migrateAllProjectConfigToGroveTier() {
 }
 ```
 
-**Key properties of the two-layer model:**
+**Key properties of the promote-before-strip model:**
 
 1. **Preservation**: Configuration VALUES are preserved during migration — they move from project to Grove tier, they are never lost or stripped
 2. **Atomicity**: The `myco update --all-projects` operation is atomic at the transaction level — either all projects migrate successfully or none do
@@ -589,9 +589,13 @@ class MigrationValidator {
 
 - **Project.toml dependency**: Project-scoped configuration access requires a valid `.myco/project.toml` file. Always validate project.toml presence and binding_id format before attempting project configuration operations.
 
+- **Promote-before-strip pattern**: The two-layer automatic migration model PROMOTES (recognizes) legacy project-tier fields in Layer 1 before STRIPPING (removing) them in Layer 2. This ensures zero data loss. Never skip the promotion phase or attempt direct removal without atomic lift validation.
+
 - **Legacy project ID migration**: When migrating from legacy project identifiers, preserve configuration continuity by mapping legacy values to binding_id-based storage before removing legacy entries.
 
-- **Grove identity coordination**: Project configuration changes may affect Grove-level settings inheritance. Always consider the Grove/project relationship when modifying project-scoped configuration patterns.
+- **Grove identity coordination**: Project configuration changes may affect Grove-level settings inheritance. Always consider the Grove/project relationship when modifying project-scoped configuration patterns. Changes at Grove tier affect all projects unless overridden at project scope.
+
+- **No-Grove-context in project-scope-only operations**: When operating on project-scoped configuration without Grove context, ensure you don't try to read or write Grove-tier fields. Project scope has a flat hierarchy — no inheritance from Grove layer without explicit context passing.
 
 - **Automatic migration semantics**: The `myco update` command performs a TWO-LAYER automatic migration for scope boundary changes: (1) legacy project-tier fields are silently recognized but not used, (2) the atomic update operation lifts those values to Grove tier. Legacy fields are PRESERVED and MIGRATED, never stripped or lost. Running `myco update` multiple times is safe and idempotent.
 
@@ -600,3 +604,7 @@ class MigrationValidator {
 - **Scope boundary change coordination**: Before moving a configuration field from project to Grove tier, verify that all projects in the Grove will tolerate the same value. Different projects requiring different values for the same field indicates the field should remain project-scoped. Grove-tier migration is appropriate only when field values should be consistent across all projects in a Grove.
 
 - **Atomic update failure recovery**: If `myco update` fails partway through the migration, Grove config may have been partially updated. Always check Grove and project config consistency after a failed update and re-run `myco update` to complete the migration.
+
+- **Cross-Grove project configuration**: When projects span multiple Groves or migrate between Groves, ensure portable project identity (binding_id) remains stable. Configuration access must use the current Grove context to resolve appropriate Grove-tier overrides.
+
+- **No-Grove gotcha — project-scope-only read paths**: Code paths that read project-scoped configuration without Grove context cannot access Grove-tier settings. This is intentional for security. If you need Grove settings in a project-only context, pass Grove context explicitly or redesignate the setting as project-scoped.
