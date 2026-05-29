@@ -148,6 +148,9 @@ describe('initTeamSync.reconcileClient', () => {
       row_id: 'machine-1',
       machine_id: 'machine-1',
     }));
+    // reconcileClient must keep this Grove's write-path gate in lockstep with
+    // its config — enabled config => team_sync_state.enabled = true.
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(true);
     expect(teamSync.getTeamClient()).not.toBeNull();
   });
 
@@ -258,6 +261,8 @@ describe('initTeamSync.reconcileClient', () => {
     await teamSync.reconcileClient();
 
     expect(teamSync.getTeamClient()).toBeNull();
+    // The gate follows config down too — disabled config => flag set false.
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
   });
 
   it('keeps live clients separated by Grove context', () => {
