@@ -36,6 +36,21 @@ describe('team delete triggers', () => {
     expect(JSON.parse(rows[0].payload as string)).toEqual({ id: 'sp1', machine_id: 'local' });
   });
 
+  it('an INTEGER-PK delete journals row_id as the decimal string of the id', () => {
+    const db = newDb();
+    setTeamSyncEnabled(true, db);
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
+       VALUES (101, 's1', 'proj_x', 1, 'local')`,
+    ).run();
+    db.prepare(`DELETE FROM prompt_batches WHERE id = 101`).run();
+    const row = db.prepare(
+      `SELECT row_id, payload FROM team_outbox WHERE table_name='prompt_batches' AND operation='delete'`,
+    ).get() as { row_id: string; payload: string };
+    expect(row.row_id).toBe('101');
+    expect(JSON.parse(row.payload).id).toBe(101);
+  });
+
   it('deletes do NOT journal when sync is disabled (default)', () => {
     const db = newDb();
     db.prepare(
