@@ -17,6 +17,7 @@ const {
   discardRowsMock,
   enqueueOutboxMock,
   upsertSelfMemberMock,
+  setTeamSyncEnabledMock,
 } = vi.hoisted(() => ({
   connectMock: vi.fn(),
   enqueueBatchMock: vi.fn(),
@@ -28,6 +29,7 @@ const {
   discardRowsMock: vi.fn(),
   enqueueOutboxMock: vi.fn(),
   upsertSelfMemberMock: vi.fn(),
+  setTeamSyncEnabledMock: vi.fn(),
 }));
 
 mock.module('@myco/db/queries/team-outbox.js', () => ({
@@ -43,6 +45,14 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
 
 mock.module('@myco/db/queries/team-members.js', () => ({
   upsertSelfMember: upsertSelfMemberMock,
+}));
+
+// reconcileClient + flushPending write this Grove's team_sync_state via the
+// real query layer; here getDatabase() is a transaction-only stub with no
+// .prepare, so stub the flag write (these tests assert client reconciliation,
+// not the per-Grove flag — that is covered by team-sync-state.test.ts).
+mock.module('@myco/db/queries/team-sync-state.js', () => ({
+  setTeamSyncEnabled: setTeamSyncEnabledMock,
 }));
 
 // reconcileSelfMember wraps upsertSelfMember + enqueueOutbox in a

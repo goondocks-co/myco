@@ -853,7 +853,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Team context ---
-  initTeamContext(config.team.enabled, machineId);
+  initTeamContext(machineId);
 
   // Wire logger to SQLite persistence. Every log row is scoped to the
   // daemon's resolved Grove project id — there is no NULL fallback.

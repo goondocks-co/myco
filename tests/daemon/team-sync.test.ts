@@ -8,7 +8,6 @@ import { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 import {
   initTeamContext,
-  isTeamSyncEnabled,
   getTeamMachineId,
   getTeamSyncProtocolVersion,
   resetTeamContext,
@@ -390,23 +389,8 @@ describe('team context', () => {
     resetTeamContext();
   });
 
-  it('defaults to disabled', () => {
-    expect(isTeamSyncEnabled()).toBe(false);
+  it('defaults machine id to local', () => {
     expect(getTeamMachineId()).toBe('local');
-  });
-
-  it('enables when initialized', () => {
-    initTeamContext(true, 'chris_abc123');
-
-    expect(isTeamSyncEnabled()).toBe(true);
-    expect(getTeamMachineId()).toBe('chris_abc123');
-  });
-
-  it('disables when initialized with false', () => {
-    initTeamContext(true, 'chris_abc123');
-    initTeamContext(false, 'chris_abc123');
-
-    expect(isTeamSyncEnabled()).toBe(false);
   });
 
   it('returns sync protocol version', () => {
@@ -418,10 +402,9 @@ describe('team context', () => {
   });
 
   it('resets to defaults', () => {
-    initTeamContext(true, 'chris_abc123');
+    initTeamContext('chris_abc123');
     resetTeamContext();
 
-    expect(isTeamSyncEnabled()).toBe(false);
     expect(getTeamMachineId()).toBe('local');
   });
 });

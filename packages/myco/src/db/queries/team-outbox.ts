@@ -11,7 +11,8 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -208,7 +209,7 @@ export function syncRow(
   tableName: string,
   row: object & { id: string | number; created_at?: number },
 ): void {
-  if (!isTeamSyncEnabled()) return;
+  if (!getTeamSyncEnabled()) return;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
@@ -398,7 +399,7 @@ export function forceEnqueueRows(
   ids: ReadonlyArray<string | number>,
 ): number {
   if (ids.length === 0) return 0;
-  if (!isTeamSyncEnabled()) return 0;
+  if (!getTeamSyncEnabled()) return 0;
   const db = getDatabase();
 
   const placeholders = ids.map(() => '?').join(', ');

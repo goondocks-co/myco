@@ -20,6 +20,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import { buildPlanId } from '@myco/plans/identity.js';
 import { getDatabase } from '@myco/db/client.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
 import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
@@ -199,21 +200,38 @@ describe('plan query helpers', () => {
       expect(deletePlan('missing-plan', ALL_PROJECTS_SCOPE)).toBeNull();
     });
 
-    it('includes project_id in team-sync delete tombstones', () => {
+    it('journals a delete tombstone via the plans_team_ad trigger when enabled', () => {
       const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       const data = makePlan({ id: 'plan-delete-scoped', project_id: projectId, title: 'Delete scoped' });
       upsertPlan(data);
-      initTeamContext(true, 'machine-a');
+      initTeamContext('machine-a');
+      // The delete tombstone is journaled by the plans_team_ad trigger, which
+      // gates on this Grove's per-Grove team_sync_state flag.
+      setTeamSyncEnabled(true);
 
       deletePlan(data.id, projectScope(projectId as GroveProjectId));
 
       const row = getDatabase().prepare(
         "SELECT payload FROM team_outbox WHERE table_name = 'plans' AND row_id = ? AND operation = 'delete'",
       ).get(data.id) as { payload: string };
-      expect(JSON.parse(row.payload)).toMatchObject({
-        id: data.id,
-        project_id: projectId,
-      });
+      // The trigger payload carries id + machine_id (no project_id — D1 only
+      // needs the row id to apply the delete).
+      expect(JSON.parse(row.payload)).toMatchObject({ id: data.id });
+    });
+
+    it('does not journal a delete tombstone when the Grove flag is disabled', () => {
+      const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const data = makePlan({ id: 'plan-delete-disabled', project_id: projectId, title: 'Delete disabled' });
+      upsertPlan(data);
+      initTeamContext('machine-a');
+      setTeamSyncEnabled(false);
+
+      deletePlan(data.id, projectScope(projectId as GroveProjectId));
+
+      const n = getDatabase().prepare(
+        "SELECT COUNT(*) AS n FROM team_outbox WHERE table_name = 'plans' AND row_id = ? AND operation = 'delete'",
+      ).get(data.id) as { n: number };
+      expect(n.n).toBe(0);
     });
   });
 

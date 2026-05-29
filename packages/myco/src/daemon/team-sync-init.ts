@@ -55,6 +55,7 @@ import {
   TEAM_SYNC_BACKFILL_TABLES,
 } from '@myco/db/queries/team-outbox.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -205,7 +206,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
-    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return result;
+    const enabled = loadTeamConnectionConfig(vaultDir, requestContext).enabled;
+    // Keep the write-path gate (delete triggers + syncRow) in lockstep with
+    // this Grove's config, every tick, for whichever Grove getDatabase() points at.
+    setTeamSyncEnabled(enabled);
+    if (!enabled) return result;
     const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
     if (!client) return result;
 
@@ -409,6 +414,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
     const key = teamConnectionKey(vaultDir, requestContext);
     const teamConfig = loadTeamConnectionConfig(vaultDir, requestContext);
+    setTeamSyncEnabled(teamConfig.enabled);
     const workerUrl = teamConfig.worker_url?.trim() || null;
     const apiKey = readTeamConnectionSecrets(vaultDir, requestContext)[TEAM_API_KEY_SECRET]?.trim() || null;
     const nextSignature = teamConfig.enabled && workerUrl && apiKey

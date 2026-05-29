@@ -3,12 +3,9 @@ import os from 'node:os';
 import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
-import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 import { createBackup, pruneBackups } from '@myco/daemon/backup.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
-import { getTeamMachineId, isTeamSyncEnabled } from '@myco/daemon/team-context.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
-import { epochSeconds } from '@myco/constants.js';
 import { ensureGroveDatabase } from './database.js';
 import {
   resolveGroveDir,
@@ -38,10 +35,7 @@ export interface DeleteProjectResult {
   project_name: string;
   snapshot_path: string;
   table_counts: Record<string, number>;
-  tombstones_enqueued: number;
 }
-
-const SYNC_DELETE_TABLE_SET = new Set<string>(TEAM_SYNC_OBSERVED_TABLES);
 
 export function archiveProject(
   groveId: string,
@@ -85,7 +79,10 @@ export function deleteProjectPermanently(
     );
     pruneBackups(backupDir, groveConfig.backup.retention);
     const tableCounts = countProjectRows(db, project.project_id);
-    const tombstonesEnqueued = enqueueProjectDeleteTombstones(db, project.project_id);
+    // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
+    // fires that table's `_team_ad` trigger, which journals the delete to
+    // team_outbox when this Grove's team_sync_state.enabled = 1. No manual
+    // tombstone enqueue is needed (it would double-journal).
     deleteProjectRows(db, project.project_id);
     deregisterProjectInGrove(groveId, project.project_id, mycoHome);
     return {
@@ -94,7 +91,6 @@ export function deleteProjectPermanently(
       project_name: project.name,
       snapshot_path: snapshotPath,
       table_counts: tableCounts,
-      tombstones_enqueued: tombstonesEnqueued,
     };
   } finally {
     db.close();
@@ -138,43 +134,6 @@ function countProjectRows(db: Database, projectId: string): Record<string, numbe
   return counts;
 }
 
-function enqueueProjectDeleteTombstones(db: Database, projectId: string): number {
-  if (!isTeamSyncEnabled()) return 0;
-  const machineId = getTeamMachineId();
-  const now = epochSeconds();
-  let total = 0;
-
-  const insert = db.prepare(
-    `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-     VALUES (?, ?, 'delete', ?, ?, ?)`,
-  );
-
-  const tx = db.transaction(() => {
-    for (const table of GROVE_PROJECT_SCOPED_TABLES) {
-      if (!SYNC_DELETE_TABLE_SET.has(table)) continue;
-      if (!tableHasColumn(db, table, 'id')) continue;
-      let rows: Array<{ id: string | number }> = [];
-      try {
-        rows = db.prepare(`SELECT id FROM ${table} WHERE project_id = ?`).all(projectId) as Array<{ id: string | number }>;
-      } catch {
-        continue;
-      }
-      for (const row of rows) {
-        insert.run(
-          table,
-          String(row.id),
-          JSON.stringify({ id: row.id, project_id: projectId, machine_id: machineId }),
-          machineId,
-          now,
-        );
-        total += 1;
-      }
-    }
-  });
-  tx();
-  return total;
-}
-
 function deleteProjectRows(db: Database, projectId: string): void {
   db.run('PRAGMA foreign_keys = OFF');
   try {
@@ -190,14 +149,5 @@ function deleteProjectRows(db: Database, projectId: string): void {
     tx();
   } finally {
     db.run('PRAGMA foreign_keys = ON');
-  }
-}
-
-function tableHasColumn(db: Database, table: string, column: string): boolean {
-  try {
-    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    return rows.some((row) => row.name === column);
-  } catch {
-    return false;
   }
 }

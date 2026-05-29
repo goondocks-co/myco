@@ -209,7 +209,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     setupTestDb();
 
-    initTeamContext(false, LOCAL_MACHINE);
+    initTeamContext(LOCAL_MACHINE);
 
     server = new DaemonServer({ vaultDir, logger });
 

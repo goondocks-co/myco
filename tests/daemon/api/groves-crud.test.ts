@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import {
   createArchiveProjectHandler,
   createCreateGroveHandler,
@@ -315,7 +316,7 @@ describe('Grove CRUD API', () => {
       expect(listGroveSummaries().groves[0]!.projects[0]!.status).toBe('active');
     });
 
-    it('permanently deletes project rows, creates a snapshot, and enqueues Team Sync tombstones', async () => {
+    it('permanently deletes project rows, creates a snapshot, and journals Team Sync delete tombstones via triggers', async () => {
       const grove = createGrove('Work');
       const projectId = createProjectId();
       const siblingProjectId = createProjectId();
@@ -342,10 +343,13 @@ describe('Grove CRUD API', () => {
           `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
            VALUES ('sess-sibling', 'codex', ?, ?, 1, 1, 'machine_test')`,
         ).run(siblingRoot, siblingProjectId);
+        // Enable this Grove's per-Grove flag so the sessions_team_ad trigger
+        // journals the deletes during deleteProjectPermanently.
+        setTeamSyncEnabled(true, db);
       } finally {
         db.close();
       }
-      initTeamContext(true, 'machine_test');
+      initTeamContext('machine_test');
 
       const rejected = await call(createDeleteProjectHandler(serviceDir), {
         params: { id: grove.id, projectId },
@@ -358,25 +362,26 @@ describe('Grove CRUD API', () => {
         body: { confirmation_name: 'Temp' },
       });
       expect(response.status).toBeUndefined();
-      const body = response.body as { delete: { snapshot_path: string; tombstones_enqueued: number } };
+      const body = response.body as { delete: { snapshot_path: string } };
       expect(fs.existsSync(body.delete.snapshot_path)).toBe(true);
       expect(body.delete.snapshot_path.startsWith(path.join(resolveGroveDir(grove.id, mycoHome), 'backups'))).toBe(true);
       const snapshotSql = fs.readFileSync(body.delete.snapshot_path, 'utf-8');
       expect(snapshotSql).toContain('sess-delete');
       expect(snapshotSql).toContain('sess-sibling');
-      expect(body.delete.tombstones_enqueued).toBe(1);
       expect(listRegisteredProjects(grove.id, mycoHome, { includeArchived: true }).map((p) => p.project_id)).toEqual([siblingProjectId]);
 
       const verifyDb = openDatabase(dbPath);
       try {
         expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(projectId) as { n: number }).n).toBe(0);
         expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(siblingProjectId) as { n: number }).n).toBe(1);
+        // The sessions_team_ad trigger journals the delete for the removed
+        // project's session only (the sibling's session is untouched). The
+        // trigger payload carries id + machine_id (no project_id).
         const outbox = verifyDb.prepare(
-          `SELECT table_name, row_id, operation, json_extract(payload, '$.project_id') AS project_id
-             FROM team_outbox`,
-        ).all() as Array<{ table_name: string; row_id: string; operation: string; project_id: string }>;
+          `SELECT table_name, row_id, operation FROM team_outbox`,
+        ).all() as Array<{ table_name: string; row_id: string; operation: string }>;
         expect(outbox).toEqual([
-          { table_name: 'sessions', row_id: 'sess-delete', operation: 'delete', project_id: projectId },
+          { table_name: 'sessions', row_id: 'sess-delete', operation: 'delete' },
         ]);
       } finally {
         verifyDb.close();
