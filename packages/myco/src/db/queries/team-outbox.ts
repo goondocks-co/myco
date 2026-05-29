@@ -352,47 +352,6 @@ export function countPendingByTable(): Record<string, number> {
 }
 
 /**
- * Enqueue a single row deletion for team sync. Same pattern as `syncRow`
- * but for the `'delete'` operation: gates on `isTeamSyncEnabled()`, emits
- * a payload the worker's `handleDelete` can consume.
- *
- * Without this, locally-deleted rows accumulate on D1 forever — the
- * source of the positive remote delta on `sessions`, `prompt_batches`,
- * `knowledge_release_state`, etc. Every direct DELETE on a synced table
- * should pair with a call here, otherwise local and remote drift apart.
- *
- * `extra` is optional payload metadata for audit/debug. The worker only
- * uses `id` and `machine_id` for the actual DELETE statement; `extra`
- * makes outbox rows self-describing for operator inspection.
- */
-export function enqueueDelete(
-  tableName: string,
-  id: string | number,
-  extra: Record<string, unknown> = {},
-): void {
-  if (!isTeamSyncEnabled()) return;
-  const machineId = getTeamMachineId();
-  enqueueOutbox({
-    table_name: tableName,
-    row_id: String(id),
-    operation: 'delete',
-    payload: JSON.stringify({ id, machine_id: machineId, ...extra }),
-    machine_id: machineId,
-    created_at: epochSeconds(),
-  });
-}
-
-/** Batch variant of `enqueueDelete` — silently no-ops on an empty list. */
-export function enqueueDeletes(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): void {
-  if (ids.length === 0) return;
-  if (!isTeamSyncEnabled()) return;
-  for (const id of ids) enqueueDelete(tableName, id);
-}
-
-/**
  * Insert pre-selected source rows into `team_outbox` as `'upsert'` records.
  *
  * Shared write contract used by both `forceEnqueueRows` (drift reconciler)

@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createSchema } from '@myco/db/schema.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
+import { getDatabase } from '@myco/db/client.js';
+import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 
 const TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
@@ -71,5 +74,53 @@ describe('team delete triggers', () => {
     for (const table of TRIGGER_TABLES) {
       expect(triggers.has(`${table}_team_ad`)).toBe(true);
     }
+  });
+});
+
+describe('session cascade journals child deletes via triggers', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('deleting a session enqueues delete rows for the session and its synced children', () => {
+    const db = getDatabase();
+    setTeamSyncEnabled(true, db);
+    db.prepare(
+      `INSERT INTO sessions (id, agent, started_at, created_at, machine_id)
+       VALUES ('s1', 'claude-code', 1, 1, 'local')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
+       VALUES (101, 's1', 'proj_x', 1, 'local')`,
+    ).run();
+    deleteSessionCascade('s1');
+    const deletes = db.prepare(
+      `SELECT DISTINCT table_name FROM team_outbox WHERE operation='delete'`,
+    ).all() as Array<{ table_name: string }>;
+    const tables = new Set(deletes.map((d) => d.table_name));
+    expect(tables.has('sessions')).toBe(true);
+    expect(tables.has('prompt_batches')).toBe(true);
+  });
+
+  it('no duplicate outbox rows — each child table appears exactly once', () => {
+    const db = getDatabase();
+    setTeamSyncEnabled(true, db);
+    db.prepare(
+      `INSERT INTO sessions (id, agent, started_at, created_at, machine_id)
+       VALUES ('s2', 'claude-code', 1, 1, 'local')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prompt_batches (id, session_id, project_id, created_at, machine_id)
+       VALUES (201, 's2', 'proj_x', 1, 'local')`,
+    ).run();
+    deleteSessionCascade('s2');
+    const sessRows = db.prepare(
+      `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='sessions' AND operation='delete'`,
+    ).get() as { n: number };
+    const batchRows = db.prepare(
+      `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='prompt_batches' AND operation='delete'`,
+    ).get() as { n: number };
+    expect(sessRows.n).toBe(1);
+    expect(batchRows.n).toBe(1);
   });
 });
