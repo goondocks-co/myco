@@ -87,10 +87,10 @@ describe('migrateV49ToV50 — activities Myco tool identity backfill', () => {
     expect(row(ids.plain)).toEqual({ myco_tool: null, myco_op: null });
   });
 
-  it('records schema version 50', () => {
+  it('records schema version 50 (and all subsequent migrations up to current)', () => {
     seedActivities();
     runMigrations();
-    const v = getDatabase().prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(v.v).toBe(50);
+    const v = getDatabase().prepare('SELECT version FROM schema_version WHERE version = 50').get() as { version: number } | undefined;
+    expect(v?.version).toBe(50);
   });
 });

@@ -43,6 +43,7 @@ import {
   TABLE_DDLS,
   FTS_TABLES,
   SECONDARY_INDEXES,
+  TEAM_DELETE_TRIGGERS,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -109,6 +110,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 48, migrate: (db) => migrateV47ToV48(db) },
   { version: 49, migrate: (db) => migrateV48ToV49(db) },
   { version: 50, migrate: (db) => migrateV49ToV50(db) },
+  { version: 51, migrate: (db) => migrateV50ToV51(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3128,6 +3130,36 @@ function migrateV49ToV50(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(50, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v50 → v51: Grove-scoped Team-sync write path.
+ *
+ * Adds the per-Grove `team_sync_state` flag and the AFTER DELETE triggers
+ * that journal deletes into `team_outbox`. Both are also in the fresh-install
+ * DDL and the reapply sweep, so this just guarantees they exist for vaults
+ * upgrading from v50. The flag stays at its default (disabled); the daemon
+ * reconciles it from each Grove's `team.enabled` config at runtime.
+ */
+function migrateV50ToV51(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS team_sync_state (
+        rowid_guard INTEGER PRIMARY KEY CHECK (rowid_guard = 1),
+        enabled     INTEGER NOT NULL DEFAULT 0
+      )`);
+    for (const trg of TEAM_DELETE_TRIGGERS) { db.exec(trg); }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(51, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
