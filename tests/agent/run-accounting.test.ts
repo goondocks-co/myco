@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { analyzeRuntimeTokenBudget, buildRunAccountingUpdate } from '@myco/agent/run-accounting.js';
+import { analyzeRuntimeTokenBudget, buildRunAccountingUpdate, summarizePhaseCosts } from '@myco/agent/run-accounting.js';
 import type { CostResolution } from '@myco/agent/cost/types.js';
+import type { PhaseResult } from '@myco/agent/types.js';
 
 describe('analyzeRuntimeTokenBudget', () => {
   it('computes utilization and headroom when context length is known', () => {
@@ -202,5 +203,98 @@ describe('buildRunAccountingUpdate', () => {
       peakRequestTotalTokens: 20_900,
       utilizationPercent: 64,
     });
+  });
+});
+
+describe('summarizePhaseCosts', () => {
+  const actualCost = (usd: number): CostResolution => ({
+    source: 'actual',
+    costUsd: usd,
+    actualCostUsd: usd,
+    estimatedCostUsd: null,
+    pricingVersion: null,
+    breakdown: {
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      uncachedInputTokens: 100,
+      outputTokens: 50,
+      reasoningTokens: 0,
+      requestCount: 1,
+    },
+  });
+
+  const completedPhase = (name: string, usd: number): PhaseResult => ({
+    name,
+    status: 'completed',
+    turnsUsed: 3,
+    tokensUsed: 150,
+    costUsd: usd,
+    costSource: 'actual',
+    costData: actualCost(usd),
+    summary: `${name} done`,
+  });
+
+  const skippedPhase = (name: string): PhaseResult => ({
+    name,
+    status: 'skipped',
+    turnsUsed: 0,
+    tokensUsed: 0,
+    costUsd: 0,
+    summary: `${name} skipped`,
+  });
+
+  it('reports actual provenance when skipped phases carry no cost data', () => {
+    // Regression: gated/skipped phases (non-selected digest tiers,
+    // preCondition short-circuits) used to drag the whole run to
+    // source="estimated" / actual_cost_usd=null because the provenance
+    // check ran over every phase rather than only the costed ones.
+    const result = summarizePhaseCosts([
+      completedPhase('extract', 0.3),
+      completedPhase('consolidate-write', 0.05),
+      skippedPhase('digest-10000'),
+      skippedPhase('digest-1500'),
+    ]);
+
+    expect(result.source).toBe('actual');
+    expect(result.actualCostUsd).toBeCloseTo(0.35, 6);
+    expect(result.estimatedCostUsd).toBeNull();
+    expect(result.costUsd).toBeCloseTo(0.35, 6);
+  });
+
+  it('falls back to estimated when a costed phase is itself estimated', () => {
+    const estimated: CostResolution = {
+      source: 'estimated',
+      costUsd: 0.1,
+      actualCostUsd: null,
+      estimatedCostUsd: 0.1,
+      pricingVersion: null,
+      breakdown: {
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        uncachedInputTokens: 100,
+        outputTokens: 50,
+        reasoningTokens: 0,
+        requestCount: 1,
+      },
+    };
+    const estimatedPhase: PhaseResult = {
+      name: 'extract',
+      status: 'completed',
+      turnsUsed: 3,
+      tokensUsed: 150,
+      costUsd: 0.1,
+      costSource: 'estimated',
+      costData: estimated,
+      summary: 'extract done',
+    };
+
+    const result = summarizePhaseCosts([
+      completedPhase('consolidate-write', 0.05),
+      estimatedPhase,
+      skippedPhase('digest-1500'),
+    ]);
+
+    expect(result.source).toBe('estimated');
+    expect(result.actualCostUsd).toBeNull();
   });
 });

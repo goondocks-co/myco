@@ -101,8 +101,16 @@ phases:
     required: true
     readOnly: true
 
+  # ---- Extract: the judgment-heaviest phase, runs on the default tier ----
+  # Deciding which insights from raw session work are worth capturing — and
+  # phrasing them so they stay retrievable later — is multi-evidence judgment,
+  # not mechanical parsing. It was briefly routed to `low` (haiku) for cost,
+  # but extraction quality is what every downstream phase (consolidate,
+  # digest) builds on, so it belongs on `default` (sonnet). Per-run cost is
+  # bounded structurally two ways: the 35-turn cap, and the 40-batch fetch
+  # limit below, so a large backlog can't drive a single run hot.
   - name: extract
-    reasoningLevel: low
+    reasoningLevel: default
     dependsOn: [read-state]
     prompt: |
       Extract observations from unprocessed batches as spores.
@@ -113,8 +121,12 @@ phases:
 
       ## Step 1: Read batches and identify observations (budget: ~10 turns)
 
-      PASS 1: Read all batches via `vault_unprocessed`. For each, note candidate
-      insights as a mental list. Focus on genuine insights, not activity logs.
+      PASS 1: Call `vault_unprocessed` with `after_id` set to the cursor from
+      the prior phase AND `limit: 40`. This is a hard per-run cap — process at
+      most 40 batches. The cursor advances by what you process, so any larger
+      backlog drains across subsequent scheduled runs rather than overheating
+      one. For each batch, note candidate insights as a mental list. Focus on
+      genuine insights, not activity logs.
 
       PASS 2: Group similar insights into topics. Batches often repeat the same
       theme — group before searching to minimize tool calls.
@@ -140,7 +152,10 @@ phases:
       - Include session_id, prompt_batch_id, importance 1-10, tags
       - Supersede rather than duplicate — the vault gets sharper, not bigger
       - Group batches by topic to minimize search calls
-      - If approaching the turn budget, stop and move on
+      - If approaching the turn budget or the 40-batch cap, stop and move on
+
+      Final summary MUST be ≤ 6 lines: batches processed, spores created (by
+      type), and supersedes applied. No per-spore retelling.
     tools:
       - vault_unprocessed
       - vault_spores
