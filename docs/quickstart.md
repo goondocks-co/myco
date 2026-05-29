@@ -60,6 +60,8 @@ New agent installed later? Myco detects it automatically, or you can re-detect f
 
 To share a project with teammates, commit the `.myco/project.toml` file — Myco creates it automatically and tracks it in git. It carries the project's identity, so when a teammate clones the repo their sessions land in the same project. Everything else under `.myco/` is per-machine and stays out of git.
 
+Myco captures inside **git repositories only** — a project is a git repo. Work in a non-git folder isn't recorded; open a git repo (or run `git init`) to start capturing.
+
 Session capture starts immediately and you get full-text search out of the box. To enable the deeper intelligence features, configure an agent provider in the dashboard's **Myco Agent** section.
 
 ### Configure Providers in the Dashboard
