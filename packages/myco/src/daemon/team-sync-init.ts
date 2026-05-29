@@ -45,14 +45,12 @@ import {
   markSourceRowsSynced,
   pruneOld,
   backfillUnsynced,
+  backfillAll,
   discardRows,
   countPending,
   countPendingByTable,
   purgePendingOutbox,
-  resetSyncedAtForIds,
-  forceEnqueueRows,
   enqueueOutbox,
-  TEAM_SYNC_BACKFILL_TABLES,
 } from '@myco/db/queries/team-outbox.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
@@ -91,13 +89,10 @@ export interface TeamSyncResult {
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
-   * Walk every synced table, ask the worker which locally-marked-synced
-   * rows actually exist in D1, clear `synced_at` on the missing ones, and
-   * trigger a backfill so they get re-enqueued. Heals the "synced_at set
-   * locally but row never reached D1" drift class produced by DLQ'd
-   * messages.
+   * One-way repair: truncate THIS machine's cloud mirror, then re-push every
+   * local row. Replaces the retired /verify drift reconciler.
    */
-  reconcileD1Drift: (requestContext?: MycoRequestContext) => Promise<D1DriftReport>;
+  rebuildFromLocal: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
    * Run flushPending across every registered Grove. Each Grove's outbox
    * lives in its own SQLite DB, so this fans out via `forEachGrove` and
@@ -121,37 +116,6 @@ export interface TeamFlushAggregate {
   rejected: number;
   batches: number;
   errors: number;
-}
-
-/** Per-table drift detail returned by `reconcileD1Drift`. */
-export interface D1DriftTableReport {
-  table: string;
-  /** Local rows that were checked via `/verify` (had `synced_at IS NOT NULL`). */
-  checked: number;
-  /** Of those, how many D1 reports as missing. */
-  missing: number;
-  /** Drift-path rows: `synced_at` cleared + outbox row force-enqueued. */
-  reset: number;
-  /**
-   * Pre-drift rescue path: rows with `synced_at IS NULL` AND no pending
-   * outbox entry (stranded by a prior reset whose follow-up backfill
-   * skipped them). Counted separately from `reset` so the UI can show the
-   * two healing paths distinctly.
-   */
-  stranded_enqueued: number;
-  /**
-   * Populated when one or more verify chunks failed (e.g. worker missing the
-   * `/verify` endpoint, or a transient HTTP error). Operators need to know
-   * that `missing=0` for this table reflects "verify never completed", not
-   * "everything is clean."
-   */
-  verify_error?: string;
-}
-
-export interface D1DriftReport {
-  tables: D1DriftTableReport[];
-  /** Total rows re-enqueued by the post-reset `backfillUnsynced` pass. */
-  reenqueued: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,149 +230,20 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     return result;
   }
 
-  /**
-   * Detect and heal D1 drift for the active Grove.
-   *
-   * The `synced_at` stamp on local source rows is set on /enqueue
-   * success — which only means the worker queued the message. If the
-   * queue consumer dead-letters the message (column mismatch, DLQ
-   * replay bug, constraint violation), local thinks the row is synced
-   * but D1 never received it, and `backfillUnsynced` (which only scans
-   * `synced_at IS NULL`) never gets a second chance.
-   *
-   * For each backfill-tracked table, this asks the worker which of the
-   * local row IDs actually exist in D1 (`/verify`), then clears
-   * `synced_at` on the missing ones so the next backfill+flush pass
-   * re-enqueues them. The 500-id chunk size matches the worker-side
-   * cap; tables with no marked-synced rows are skipped entirely.
-   *
-   * Returns a per-table report so the caller (HTTP endpoint, CLI, or
-   * scheduled job) can log or display what was healed.
-   */
-  async function reconcileD1Drift(requestContext = defaultRequestContext): Promise<D1DriftReport> {
-    const report: D1DriftReport = { tables: [], reenqueued: 0 };
-    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return report;
+  async function rebuildFromLocal(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
+    const empty: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
+    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return empty;
     const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
-    if (!client) return report;
-
-    const VERIFY_CHUNK = 500;
-    const db = getDatabase();
-    let totalReset = 0;
-
-    // Each table is fully independent — its verify chunks hit the worker
-    // as standalone HTTP calls, and the local SELECT/UPDATE/INSERT touch
-    // disjoint rows. Run the tables in parallel via Promise.all so 12
-    // sequential roundtrips collapse to one wall-clock roundtrip.
-    const tableReports = await Promise.all(TEAM_SYNC_BACKFILL_TABLES.map(async (table) => {
-      const tableReport: D1DriftTableReport = {
-        table, checked: 0, missing: 0, reset: 0, stranded_enqueued: 0,
-      };
-
-      // Rescue path: rows with `synced_at IS NULL` AND no pending outbox
-      // entry — stranded by a prior reset whose follow-up backfill skipped
-      // them (the NOT EXISTS guard matches any prior outbox row, including
-      // long-since-sent ones). Without this they stay un-enqueued forever.
-      try {
-        const strandedRows = db.prepare(
-          `SELECT id FROM ${table}
-            WHERE machine_id = ? AND synced_at IS NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM team_outbox
-                 WHERE table_name = ?
-                   AND row_id = CAST(${table}.id AS TEXT)
-                   AND sent_at IS NULL
-              )`,
-        ).all(machineId, table) as Array<{ id: string | number }>;
-        if (strandedRows.length > 0) {
-          const enqueued = forceEnqueueRows(table, strandedRows.map((r) => r.id));
-          tableReport.stranded_enqueued = enqueued;
-          report.reenqueued += enqueued;
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Drift reconcile: force-enqueued stranded rows', {
-            table, stranded: strandedRows.length, enqueued,
-          });
-        }
-      } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: stranded scan failed', {
-          table, error: (err as Error).message,
-        });
-      }
-
-      // Drift path: rows with `synced_at IS NOT NULL` — ask the worker
-      // whether D1 actually has them, reset + re-enqueue any missing.
-      let rows: Array<{ id: string | number }>;
-      try {
-        rows = db.prepare(
-          `SELECT id FROM ${table} WHERE machine_id = ? AND synced_at IS NOT NULL`,
-        ).all(machineId) as Array<{ id: string | number }>;
-      } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: select failed', {
-          table, error: (err as Error).message,
-        });
-        return tableReport;
-      }
-      tableReport.checked = rows.length;
-      if (rows.length === 0) return tableReport;
-
-      // The SELECT already returned ids with the correct type. Stringify
-      // only at the worker-call boundary (verify expects string[]); the
-      // local UPDATE/INSERT below reuses the typed array so we avoid the
-      // string→number round-trip for INTEGER-id tables.
-      const idsTyped: Array<string | number> = rows.map((r) => r.id);
-      const missingIdSet = new Set<string>();
-      let firstVerifyError: string | undefined;
-      for (let offset = 0; offset < idsTyped.length; offset += VERIFY_CHUNK) {
-        const slice = idsTyped.slice(offset, offset + VERIFY_CHUNK).map(String);
-        try {
-          const { missing } = await client.verify(table, slice);
-          for (const id of missing) missingIdSet.add(id);
-        } catch (err) {
-          const message = (err as Error).message;
-          if (!firstVerifyError) firstVerifyError = message;
-          logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: verify call failed', {
-            table, chunk_size: slice.length, error: message,
-          });
-        }
-      }
-      tableReport.missing = missingIdSet.size;
-      if (firstVerifyError) tableReport.verify_error = firstVerifyError;
-
-      if (missingIdSet.size > 0) {
-        // Filter the typed local ids by missing-set membership — that
-        // keeps the original numeric/string type for the UPDATE+INSERT
-        // and avoids a Number(id) round-trip for integer-id tables.
-        const missingTyped = idsTyped.filter((id) => missingIdSet.has(String(id)));
-        try {
-          const reset = resetSyncedAtForIds(table, missingTyped);
-          const enqueued = forceEnqueueRows(table, missingTyped);
-          tableReport.reset = reset;
-          totalReset += reset;
-          report.reenqueued += enqueued;
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Drift reconcile: reset + force-enqueued missing rows', {
-            table, checked: tableReport.checked, missing: tableReport.missing, reset, enqueued,
-          });
-        } catch (err) {
-          logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: reset/enqueue failed', {
-            table, missing_count: missingIdSet.size, error: (err as Error).message,
-          });
-        }
-      }
-      return tableReport;
-    }));
-    report.tables.push(...tableReports);
-
-    if (totalReset > 0 || report.reenqueued > 0) {
-      try {
-        // Kick a flush so the freshly force-enqueued rows leave the local
-        // outbox promptly instead of waiting for the next scheduled drain.
-        await flushPending(requestContext);
-      } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: flush failed', {
-          error: (err as Error).message,
-        });
-      }
+    if (!client) return empty;
+    try {
+      await client.rebuild();                    // truncate this machine's cloud rows (D1 + Vectorize)
+      const enqueued = backfillAll(machineId);    // re-enqueue every local row for this machine
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', { enqueued });
+      return await flushPending(requestContext);  // push them
+    } catch (err) {
+      logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Rebuild from local failed', { error: (err as Error).message });
+      return { ...empty, error: (err as Error).message };
     }
-
-    return report;
   }
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
@@ -578,7 +413,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     },
     reconcileClient,
     flushPending,
-    reconcileD1Drift,
+    rebuildFromLocal,
     flushAllGroves,
     registerFlushJob: (powerManager, cache) => {
       // Registered unconditionally; team.enabled is checked at run time so

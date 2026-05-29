@@ -427,22 +427,12 @@ export class TeamSyncClient {
   }
 
   /**
-   * Ask the worker which of the supplied `ids` actually exist in D1 for
-   * this machine. Drives the local drift reconciler — see
-   * `reconcileD1Drift` in `team-sync-init.ts`. The daemon's `synced_at`
-   * stamp is set on /enqueue success, which only confirms the worker
-   * queued the message; if the queue consumer dead-letters that
-   * message (column mismatch, constraint violation), local thinks the
-   * row is synced but D1 doesn't have it. The worker's `/verify`
-   * endpoint is the only authoritative source of truth here.
+   * Truncate THIS machine's rows in the Grove's cloud mirror (D1 + Vectorize)
+   * so the daemon can re-push this machine's full local Grove. One-way repair;
+   * never reconciles. Worker scopes all deletes to the supplied machine_id.
    */
-  async verify(table: string, ids: string[]): Promise<{ present: string[]; missing: string[] }> {
-    if (ids.length === 0) return { present: [], missing: [] };
-    return await this.request('POST', '/verify', {
-      machine_id: this.machineId,
-      table,
-      ids,
-    }) as { present: string[]; missing: string[] };
+  async rebuild(): Promise<void> {
+    await this.request('POST', '/rebuild', { machine_id: this.machineId });
   }
 
   /** Permanently discard DLQ messages. */

@@ -355,11 +355,10 @@ export function countPendingByTable(): Record<string, number> {
 /**
  * Insert pre-selected source rows into `team_outbox` as `'upsert'` records.
  *
- * Shared write contract used by both `forceEnqueueRows` (drift reconciler)
- * and `backfillRows` (startup unsynced sweep). Centralizes the
- * `INSERT INTO team_outbox` SQL, the `sanitizeSyncPayload` call, and the
- * single-table transaction wrapping so the two callers can't drift on the
- * payload shape.
+ * Shared write contract used by `backfillRows` (startup unsynced sweep and
+ * operator rebuild). Centralizes the `INSERT INTO team_outbox` SQL, the
+ * `sanitizeSyncPayload` call, and the single-table transaction wrapping so
+ * callers can't drift on the payload shape.
  */
 function insertOutboxRowsForUpsert(
   db: ReturnType<typeof getDatabase>,
@@ -378,65 +377,6 @@ function insertOutboxRowsForUpsert(
       stmt.run(tableName, String(row.id), JSON.stringify(sanitizeSyncPayload(tableName, row)), machineId, now);
     }
   })(rows);
-}
-
-/**
- * Force-enqueue specific source rows into the outbox, bypassing the
- * NOT EXISTS guard `backfillUnsynced` uses against `team_outbox`.
- *
- * The backfill path deliberately skips rows that already have an outbox
- * entry (sent or not) to avoid duplicate sends on normal restart. But the
- * drift reconciler needs the opposite behavior: rows that were marked
- * synced (and have a long-since-sent outbox entry) but never actually
- * landed in D1 need a fresh enqueue. Without this, calling backfill
- * after the reconciler's `resetSyncedAtForIds` produces zero re-enqueues
- * because the prior sent-outbox row blocks it.
- *
- * Returns the number of new outbox rows written.
- */
-export function forceEnqueueRows(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): number {
-  if (ids.length === 0) return 0;
-  if (!getTeamSyncEnabled()) return 0;
-  const db = getDatabase();
-
-  const placeholders = ids.map(() => '?').join(', ');
-  const rows = db.prepare(
-    `SELECT * FROM ${tableName} WHERE id IN (${placeholders})`,
-  ).all(...ids) as Record<string, unknown>[];
-  if (rows.length === 0) return 0;
-
-  insertOutboxRowsForUpsert(db, tableName, rows, getTeamMachineId(), epochSeconds());
-  return rows.length;
-}
-
-/**
- * Reset `synced_at` to NULL on the listed source rows so the next
- * `backfillUnsynced` pass re-enqueues them to the team outbox.
- *
- * Used by the D1-drift reconciler when the worker's `/verify` endpoint
- * reports rows the daemon marked synced but D1 doesn't actually have.
- * Returns the number of rows whose `synced_at` was cleared (capped by
- * D1's bound-parameter limit; the caller chunks larger inputs).
- *
- * The table name comes from the worker's verify response, which is
- * already gated against `SYNCED_TABLES_SET`; we don't re-validate here,
- * but the SQL is parameterized so a malformed name would just produce a
- * SQL error rather than execute arbitrary code.
- */
-export function resetSyncedAtForIds(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): number {
-  if (ids.length === 0) return 0;
-  const db = getDatabase();
-  const placeholders = ids.map(() => '?').join(', ');
-  const info = db.prepare(
-    `UPDATE ${tableName} SET synced_at = NULL WHERE id IN (${placeholders})`,
-  ).run(...ids);
-  return info.changes;
 }
 
 /**
@@ -582,8 +522,7 @@ function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
 
   // Process one table at a time in separate transactions to avoid long locks.
   // INSERT happens via the shared `insertOutboxRowsForUpsert` helper so the
-  // sanitization contract stays in one place — backfill and the drift
-  // reconciler's `forceEnqueueRows` cannot drift on payload shape.
+  // sanitization contract stays in one place.
   for (const table of TEAM_SYNC_BACKFILL_TABLES) {
     const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
     const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';

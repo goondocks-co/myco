@@ -1886,13 +1886,14 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleClearCfApiToken(req);
   });
-  // POST /api/team/reconcile-drift — query the worker for rows the
-  // daemon thinks were synced but D1 doesn't actually have, reset
-  // synced_at on the missing ones, and re-enqueue them. Heals the
-  // "marked-synced before D1-confirmed" drift class.
-  server.registerRoute('POST', '/api/team/reconcile-drift', async (req) => {
+  // POST /api/team/rebuild — destructive one-way repair: truncate this
+  // machine's cloud mirror (D1 + Vectorize), then re-push the full local
+  // Grove. The local Grove is the source of truth; we re-push rather than
+  // reconcile. Retired the old drift-reconciler endpoint in favour of this.
+  server.registerRoute('POST', '/api/team/rebuild', async (req) => {
     await reconcileTeamRoute(req);
-    return { body: await teamSync.reconcileD1Drift(req.requestContext) };
+    const result = await teamSync.rebuildFromLocal(req.requestContext);
+    return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
 
   const collectiveHandlers = createCollectiveHandlers({
