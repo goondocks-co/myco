@@ -454,6 +454,12 @@ export const TEAM_OUTBOX_TABLE = `
     last_attempt_at INTEGER
   )`;
 
+export const TEAM_SYNC_STATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_sync_state (
+    rowid_guard INTEGER PRIMARY KEY CHECK (rowid_guard = 1),
+    enabled     INTEGER NOT NULL DEFAULT 0
+  )`;
+
 // -- Logging Layer ----------------------------------------------------------
 
 export const LOG_ENTRIES_TABLE = `
@@ -1092,6 +1098,7 @@ export const TABLE_DDLS = [
   SESSION_MYCO_TOOL_CALLS_TABLE,
   // Sync layer
   TEAM_OUTBOX_TABLE,
+  TEAM_SYNC_STATE_TABLE,
   // Logging layer
   LOG_ENTRIES_TABLE,
   // Notifications layer
