@@ -92,7 +92,6 @@ describe('createInstrumentedFetch', () => {
     expect(completes[0].data?.status).toBe(200);
   });
 
-  // Same CI flake mitigation as the idle-timeout tests below.
   it('aborts with FetchStallError when response headers never arrive', async () => {
     const { logs, logger } = captureLogger();
     vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) =>
@@ -122,14 +121,12 @@ describe('createInstrumentedFetch', () => {
 
     const timeoutLogs = logs.filter((l) => l.kind === LOG_KINDS.FETCH_TIMEOUT);
     expect(timeoutLogs.length).toBe(1);
-  }, 30000);
+  });
 
-  // CI flake mitigation: Bun's default 5000ms per-test budget races against
-  // the 60ms watchdog under CI load, even though the watchdog fires within
-  // 60ms locally. Per project_ci_test_flakes_recurring.md, the standing
-  // pattern for these timer-sensitive tests in CI is to grant a generous
-  // wall-clock budget so the watchdog has overwhelming headroom relative
-  // to the timer it's measuring. 30s gives 500× margin over the 60ms target.
+  // Exercises the real-timer path. The watchdog re-arms when it wakes early,
+  // so a silent stream always trips within ~idleTimeoutMs regardless of timer
+  // jitter — the deterministic early-fire case is pinned by the injected-clock
+  // test below.
   it('aborts mid-stream when chunks stop arriving past idleTimeoutMs', async () => {
     const { logs, logger } = captureLogger();
     vi.stubGlobal(
@@ -156,7 +153,7 @@ describe('createInstrumentedFetch', () => {
 
     const stalls = logs.filter((l) => l.kind === LOG_KINDS.FETCH_STALL);
     expect(stalls.length).toBe(1);
-  }, 30000);
+  });
 
   it('aborts mid-stream even when upstream cancel never resolves', async () => {
     const { logger } = captureLogger();
@@ -181,7 +178,44 @@ describe('createInstrumentedFetch', () => {
     }
     expect(caught).toBeInstanceOf(FetchStallError);
     expect((caught as FetchStallError).kind).toBe('idle-timeout');
-  }, 30000);
+  });
+
+  // Regression for the recurring CI idle-timeout flake: the watchdog is a
+  // one-shot timer that previously did nothing (and never re-armed) when it
+  // woke a millisecond early — `setTimeout` rounds down and `Date.now()`
+  // truncates, so the fire could observe `sinceLastMs === idleTimeoutMs - 1`.
+  // A silent stream then hung until the test budget expired. An injected clock
+  // forces that early fire deterministically: the first watchdog read is one
+  // tick short, and the wrapper must re-arm and still trip on the next fire.
+  it('re-arms and still trips when the watchdog fires a tick early', async () => {
+    const idleTimeoutMs = 40;
+    // now() order for a silent (bodied) response: startedAt, lastChunkAt,
+    // then each watchdog fire. Hold the first two at 0, make the first fire
+    // land one tick short of the threshold (early fire), then jump past it.
+    const ticks = [0, 0, idleTimeoutMs - 1, idleTimeoutMs * 2];
+    let i = 0;
+    const now = () => ticks[Math.min(i++, ticks.length - 1)];
+
+    const silentBody = new ReadableStream<Uint8Array>({ start() { /* never enqueue/close */ } });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(silentBody, { status: 200 })));
+
+    const fetchFn = createInstrumentedFetch({
+      component: 'test.idle.early-fire',
+      idleTimeoutMs,
+      refIdleWatchdog: true,
+      now,
+    });
+    const response = await fetchFn('http://example.test/api/drip');
+
+    let caught: unknown;
+    try {
+      await response.text();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FetchStallError);
+    expect((caught as FetchStallError).kind).toBe('idle-timeout');
+  });
 
   it('honors the caller-supplied AbortSignal without misclassifying as stall', async () => {
     const { logs, logger } = captureLogger();
