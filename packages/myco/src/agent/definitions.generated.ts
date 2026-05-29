@@ -192,7 +192,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     ],
     "schedule": {
       "enabled": true,
-      "intervalSeconds": 14400,
+      "intervalSeconds": 28800,
       "runIn": [
         "idle",
         "sleep"
