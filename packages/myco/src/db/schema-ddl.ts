@@ -895,6 +895,36 @@ export const FTS_TABLES = [
    END`,
 ];
 
+// -- Team-sync delete triggers ----------------------------------------------
+
+/**
+ * Team-sync delete triggers — one per synced table.
+ *
+ * Auto-journal every local delete into `team_outbox` so the one-way push
+ * to D1 mirrors deletions. Gated on the Grove's own `team_sync_state.enabled`
+ * (NULL/absent row => disabled). Widens the FTS auto-sync-trigger pattern
+ * above. `entity_mentions` is intentionally absent — no single `id` column,
+ * never reaches D1.
+ */
+const TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLES.map(
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN (SELECT enabled FROM team_sync_state) = 1
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id, CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
 // -- Indexes ----------------------------------------------------------------
 
 export const SECONDARY_INDEXES = [
