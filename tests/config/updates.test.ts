@@ -140,6 +140,28 @@ describe('withTaskConfig', () => {
     expect(phase?.maxTurns).toBe(3);
   });
 
+  it('persists phase-level reasoningLevel overrides', () => {
+    // Regression: the phase-override merge copied provider/model/maxTurns but
+    // dropped reasoningLevel, so a UI tier change persisted as `extract: {}`
+    // and the phase silently fell back to its YAML tier.
+    const result = withTaskConfig(baseConfig(), 'vault-evolve', {
+      phases: { extract: { reasoningLevel: 'default' } },
+    });
+    expect(result.agent.tasks?.['vault-evolve']?.phases?.extract?.reasoningLevel).toBe('default');
+  });
+
+  it('updates reasoningLevel while preserving other phase fields', () => {
+    let config = withTaskConfig(baseConfig(), 'vault-evolve', {
+      phases: { extract: { reasoningLevel: 'low', maxTurns: 35 } },
+    });
+    config = withTaskConfig(config, 'vault-evolve', {
+      phases: { extract: { reasoningLevel: 'high' } },
+    });
+    const phase = config.agent.tasks?.['vault-evolve']?.phases?.extract;
+    expect(phase?.reasoningLevel).toBe('high');
+    expect(phase?.maxTurns).toBe(35);
+  });
+
   it('null phase removes a specific phase', () => {
     let config = withTaskConfig(baseConfig(), 'vault-evolve', {
       phases: {

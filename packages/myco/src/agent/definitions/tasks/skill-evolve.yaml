@@ -284,7 +284,12 @@ phases:
       - inventory
 
   - name: act
-    reasoningLevel: low
+    # Skill-writing is synthesis: it rewrites and merges SKILL.md content
+    # that every agent loads as authoritative procedure. On the cheap tier
+    # this phase fabricated code symbols (invented functions/env vars) into
+    # a skill — the same judgment-on-cheap-tier failure that hurt spore
+    # extraction, but worse because skills are trusted. Runs on `default`.
+    reasoningLevel: default
     prompt: |
       Read classifications from vault_state
       (key: skill-evolve-classifications). Parse the JSON.
@@ -340,6 +345,34 @@ phases:
       skill, delete the narrow one. The narrow skill becomes a section
       within the broader skill.
 
+      ## Verify before you write — NEVER fabricate (critical)
+
+      You are EVOLVING existing skills, not authoring from imagination.
+      Every concrete claim you add or change must be verified against the
+      real codebase before it goes into a skill — agents load these as
+      authoritative procedure, so a confident-but-wrong detail is worse
+      than no detail.
+
+      - **File path claim** → `fs_read` (narrow window). If it does not
+        exist, do not write it.
+      - **Identifier claim** (function, symbol, env var, type) →
+        `code_grep` with a path/glob filter. If `code_grep` finds no
+        match, the symbol does not exist — do NOT write it. Never invent
+        a function name, env var, or API to make an example look complete.
+      - **Behavior claim** → `code_grep` for the signature/pattern.
+
+      If you cannot verify a claim, omit it. An accurate, shorter skill
+      beats a padded one with invented details.
+
+      ## Edit surgically — minimal diff
+
+      Evolution means targeted edits, not rewrites. Start from the
+      existing content verbatim and change ONLY what the classification
+      requires. Do NOT add large speculative sections or code examples
+      the classification didn't call for — that is how fabrication and
+      runaway output happen. If a skill needs broad new authored content,
+      that is a survey/generate concern, not evolve.
+
       ## Important
 
       - Process MERGE/NARROW actions AFTER STALE updates, so you're
@@ -369,8 +402,13 @@ phases:
       - vault_write_skill
       - vault_skill_records
       - vault_search_fts
+      - fs_read
+      - code_grep
       - vault_report
-    maxTurns: 18
+    # Bumped from 18: verifying claims via fs_read/code_grep before each
+    # write costs turns. Better to spend a few cheap verification turns
+    # than cap out mid-skill and ship an unverified write.
+    maxTurns: 24
     required: true
     dependsOn:
       - assess

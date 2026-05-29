@@ -14,7 +14,13 @@ maxTurns: 12
 timeoutSeconds: 180
 schedule:
   enabled: true
-  intervalSeconds: 14400
+  # 8h, not 4h. Session-start instructions reflect durable project state
+  # plus a few recent hotspots that move over days, not hours; regenerating
+  # every 4h re-derived near-identical output. Both phases are judgment
+  # (research selects/verifies hotspots; author synthesizes the artifact
+  # every agent reads) so they stay on the default tier — cadence is the
+  # only safe lever here.
+  intervalSeconds: 28800
   runIn:
     - idle
     - sleep
