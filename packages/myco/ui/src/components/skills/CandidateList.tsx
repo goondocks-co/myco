@@ -386,9 +386,24 @@ export function CandidateList() {
     );
   }
 
+  const failedAction = updateCandidate.isError ? updateCandidate.variables : undefined;
+  const failedTopic = failedAction ? candidates.find((c) => c.id === failedAction.id)?.topic : undefined;
+
   return (
     <div className="space-y-3">
       {toolbar}
+
+      {updateCandidate.isError && (
+        <div className="flex items-start gap-2 rounded-md border border-terracotta/40 bg-terracotta/5 px-3 py-2 font-sans text-sm text-on-surface">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-terracotta" />
+          <div>
+            <span className="font-medium">Couldn't update {failedTopic ? `"${failedTopic}"` : 'candidate'}.</span>{' '}
+            <span className="text-on-surface-variant">
+              {updateCandidate.error instanceof Error ? updateCandidate.error.message : 'Unknown error'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 text-on-surface-variant">
