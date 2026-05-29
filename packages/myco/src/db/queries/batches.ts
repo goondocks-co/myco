@@ -109,7 +109,7 @@ const VALID_ORIGINS = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
  * outside the union — including a NULL leaked through a misconfigured
  * COALESCE — collapses to 'human' so legacy rows remain queryable.
  */
-function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
+export function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
   if (typeof value === 'string' && VALID_ORIGINS.has(value)) {
     return value as PromptBatchOrigin;
   }
@@ -344,28 +344,19 @@ export function populateBatchResponses(
 ): void {
   const db = getDatabase();
   const batches = db.prepare(
-    `SELECT id, user_prompt, response_summary
+    `SELECT id, user_prompt, response_summary, origin
        FROM prompt_batches
       WHERE session_id = ?
       ORDER BY id ASC`,
-  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null }>;
+  ).all(sessionId) as Array<{ id: number; user_prompt: string | null; response_summary: string | null; origin: string }>;
 
   const prefixOf = (s: string | null | undefined) =>
     (s ?? '').trim().slice(0, PROMPT_PREFIX_MATCH_CHARS);
 
-  // Match every batch (not just NULL-summary ones); the transcript is the
-  // authoritative source so a newer response overwrites stale data from an
-  // earlier Stop in the same logical turn.
-  const available = batches.map((b) => ({
-    id: b.id,
-    key: prefixOf(b.user_prompt),
-    existing: b.response_summary,
-  }));
-
-  const update = db.prepare(
-    `UPDATE prompt_batches SET response_summary = ? WHERE id = ?`,
-  );
-
+  // Phase 1 — match each transcript turn to a batch by prompt prefix. The
+  // transcript is authoritative, so a newer response overwrites stale data.
+  const available = batches.map((b) => ({ id: b.id, key: prefixOf(b.user_prompt) }));
+  const matched = new Map<number, string>();
   for (const { prompt, response } of turns) {
     const key = prefixOf(prompt);
     if (!key) continue;
@@ -375,9 +366,111 @@ export function populateBatchResponses(
     if (idx === -1) continue;
     const target = available[idx]!;
     available.splice(idx, 1);
-    if (target.existing === response) continue;
-    update.run(response, target.id);
+    matched.set(target.id, response);
   }
+
+  // Phase 2 — human-anchored attribution. A human prompt's answer is every
+  // assistant response from that prompt until the next human prompt, INCLUDING
+  // work done across interleaved system events (background-job task-notifications,
+  // teammate-messages). Those system batches fire mid-turn and would otherwise
+  // each open a turn that steals the answer onto a batch the dashboard hides by
+  // default — so the user's human prompt showed no response. Roll each system
+  // batch's matched response into the nearest preceding human batch and clear
+  // the system batch's own summary so the answer lives on the prompt the user
+  // actually sees. System turns before any human prompt keep their own response
+  // (nothing to anchor to). Batches are id-ordered ≈ transcript order.
+  //
+  // Only batches with matched content this pass are touched: a batch whose
+  // prompt isn't in this transcript snapshot keeps its existing response_summary
+  // (Cursor starts its transcript mid-session; partial mid-turn snapshots don't
+  // cover every prior batch). `newResponse` rebuilds from matched turns (so the
+  // attribution is idempotent across re-mines); `clear` holds system batches
+  // whose answer was moved to an anchor.
+  const newResponse = new Map<number, string>();
+  const clear = new Set<number>();
+  let anchorId: number | null = null;
+  // Whether the current human anchor matched a transcript turn THIS pass. A
+  // system batch's response is rolled into the anchor ONLY when the anchor was
+  // itself matched — otherwise we'd synthesize the human turn's answer purely
+  // from an interleaved system batch's text and CLOBBER the human's real
+  // response_summary already in the DB (a partial/mid-session snapshot can
+  // contain the system batch's prompt but not the human's). When the anchor
+  // isn't matched this pass, the system batch keeps its own response and the
+  // human row is left untouched by the write loop's "preserve existing" guard.
+  let anchorMatched = false;
+  for (const b of batches) {
+    const resp = matched.get(b.id);
+    if (b.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
+      anchorId = b.id;
+      anchorMatched = resp !== undefined;
+      if (resp !== undefined) newResponse.set(b.id, resp);
+    } else if (resp !== undefined && anchorId !== null && anchorMatched) {
+      clear.add(b.id);
+      const base = newResponse.get(anchorId) ?? '';
+      newResponse.set(anchorId, base ? `${base}\n\n${resp}` : resp);
+    } else if (resp !== undefined) {
+      newResponse.set(b.id, resp); // orphan system turn (no matched anchor) — keep its own
+    }
+  }
+
+  const update = db.prepare(`UPDATE prompt_batches SET response_summary = ? WHERE id = ?`);
+  for (const b of batches) {
+    let final: string | null;
+    if (newResponse.has(b.id)) final = newResponse.get(b.id)!;
+    else if (clear.has(b.id)) final = null;
+    else continue; // no matched content this pass — preserve existing
+    if (final === b.response_summary) continue;
+    update.run(final, b.id);
+  }
+}
+
+/**
+ * Human-anchoring backstop for ACTIVITIES (the tool-call counterpart of
+ * `populateBatchResponses`' response rolling).
+ *
+ * The live path (Step 1) now keeps the human batch open and records system
+ * batches closed, so `insertActivityWithBatch` lands tool calls on the human
+ * turn by construction. This reconcile pass re-homes any activity still
+ * attributed to a system-origin batch onto the nearest preceding human batch —
+ * covering (a) legacy/again-mined data captured before the live fix, and
+ * (b) live races where a system batch was briefly the active turn.
+ *
+ * Why it matters: the myco agent reads activities by HUMAN batch (system
+ * batches are excluded from analysis). An activity stranded on a system batch
+ * is invisible to knowledge incorporation. System turns that precede any human
+ * prompt have no anchor and are left in place (the NOT-NULL FK forbids
+ * orphaning them). Idempotent: re-running over reconciled data is a no-op.
+ *
+ * Returns the number of activities re-homed.
+ */
+export function rehomeSystemActivitiesToHumanAnchor(sessionId: string): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `UPDATE activities
+        SET prompt_batch_id = (
+          SELECT h.id FROM prompt_batches h
+           WHERE h.session_id = ?
+             AND h.origin = ?
+             AND h.id < activities.prompt_batch_id
+           ORDER BY h.id DESC LIMIT 1
+        )
+      WHERE activities.session_id = ?
+        AND activities.prompt_batch_id IN (
+          SELECT id FROM prompt_batches WHERE session_id = ? AND origin != ?
+        )
+        AND EXISTS (
+          SELECT 1 FROM prompt_batches h
+           WHERE h.session_id = ?
+             AND h.origin = ?
+             AND h.id < activities.prompt_batch_id
+        )`,
+  ).run(
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+    sessionId,
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+    sessionId, PROMPT_BATCH_ORIGIN.HUMAN,
+  );
+  return info.changes;
 }
 
 /**
@@ -614,6 +707,7 @@ export interface StatelessBatchInsert {
   created_at: number;
   user_prompt?: string | null;
   started_at?: number | null;
+  ended_at?: number | null;                 // set for point-in-time (born-closed) batches
   status?: string;
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
@@ -660,7 +754,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
          ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
-         NULL, ?, NULL, ?,
+         NULL, ?, ?, ?,
          ?, ?, NULL, ?, ?
        )`,
     ).run(
@@ -673,7 +767,10 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
       data.session_id,
       data.user_prompt ?? null,
       data.started_at ?? null,
-      data.status ?? DEFAULT_STATUS,
+      data.ended_at ?? null,
+      // A born-closed batch (ended_at set) is completed unless the caller
+      // overrides; an open batch defaults to active.
+      data.status ?? (data.ended_at != null ? STATUS_COMPLETED : DEFAULT_STATUS),
       DEFAULT_ACTIVITY_COUNT,
       DEFAULT_PROCESSED,
       data.created_at,
@@ -775,14 +872,22 @@ export function setResponseSummary(
  */
 export function getLatestBatch(
   sessionId: string,
+  opts: { origin?: PromptBatchOrigin } = {},
 ): BatchRow | null {
   const db = getDatabase();
 
+  // Optional origin filter: response stamping must target the human turn, never
+  // a point-in-time system batch (e.g. a <system-reminder> inserted after the
+  // human prompt with a higher prompt_number that would otherwise win the
+  // ORDER BY and absorb the turn's response onto a dashboard-hidden row).
+  const originClause = opts.origin ? 'AND origin = ?' : '';
+  const params = opts.origin ? [sessionId, opts.origin] : [sessionId];
+
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches
-     WHERE session_id = ?
+     WHERE session_id = ? ${originClause}
      ORDER BY prompt_number DESC, id DESC LIMIT 1`,
-  ).get(sessionId) as Record<string, unknown> | undefined;
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toBatchRow(row);
@@ -868,17 +973,23 @@ export function setBatchPromptNumber(batchId: number, promptNumber: number): voi
 /**
  * Replace `user_prompt` (and reset `kind` to `'initial'`) on a batch only
  * when its `user_prompt` currently equals {@link RECOVERED_BATCH_SENTINEL}.
- * Returns true when a row was updated.
+ * Updates `origin` as well so a sentinel batch claimed by a system-origin
+ * prompt (e.g. a `<task-notification>` arriving first after recovery) is
+ * tagged correctly. Returns true when a row was updated.
  */
-export function replaceRecoveredBatchUserPrompt(batchId: number, realPrompt: string): boolean {
+export function replaceRecoveredBatchUserPrompt(
+  batchId: number,
+  realPrompt: string,
+  origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
+): boolean {
   if (!realPrompt) return false;
   const db = getDatabase();
   const info = db.prepare(
     `UPDATE prompt_batches
-       SET user_prompt = ?, kind = ?
+       SET user_prompt = ?, kind = ?, origin = ?
        WHERE id = ?
          AND user_prompt = ?`,
-  ).run(realPrompt, BATCH_KIND.INITIAL, batchId, RECOVERED_BATCH_SENTINEL);
+  ).run(realPrompt, BATCH_KIND.INITIAL, origin, batchId, RECOVERED_BATCH_SENTINEL);
   return info.changes > 0;
 }
 
@@ -910,9 +1021,24 @@ export function hasAnyBatch(sessionId: string): boolean {
 
 /**
  * Count prompt batches for a session — authoritative prompt count.
+ *
+ * Pass `origins` to restrict the count (e.g. `['human']` to match the
+ * vault-evolve / title-summary consumer view that filters via
+ * `INTELLIGENCE_DEFAULT_ORIGINS`).
  */
-export function countBatchesBySession(sessionId: string): number {
+export function countBatchesBySession(
+  sessionId: string,
+  options?: { origins?: readonly PromptBatchOrigin[] },
+): number {
   const db = getDatabase();
+  const origins = options?.origins;
+  if (origins && origins.length > 0) {
+    const placeholders = origins.map(() => '?').join(', ');
+    const row = db.prepare(
+      `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ? AND origin IN (${placeholders})`,
+    ).get(sessionId, ...origins) as { count: number };
+    return row.count;
+  }
   const row = db.prepare(
     `SELECT COUNT(*) as count FROM prompt_batches WHERE session_id = ?`,
   ).get(sessionId) as { count: number };

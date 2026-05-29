@@ -42,7 +42,13 @@ function seedV42Database(dbPath: string): void {
       canopy_injection_tokens INTEGER
     )
   `);
-  db.exec(`INSERT INTO activities_legacy SELECT * FROM activities`);
+  // Explicit column list (not SELECT *) so adding columns to the current
+  // `activities` schema in later versions can't break this v42-snapshot copy.
+  db.exec(`INSERT INTO activities_legacy SELECT
+    id, project_id, session_id, prompt_batch_id, tool_name, tool_input,
+    tool_output_summary, file_path, files_affected, duration_ms, success,
+    error_message, timestamp, processed, content_hash, created_at,
+    canopy_injection_tokens FROM activities`);
   db.exec('DROP TABLE activities');
   db.exec('ALTER TABLE activities_legacy RENAME TO activities');
   db.exec('DELETE FROM schema_version');

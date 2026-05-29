@@ -128,9 +128,21 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
         ) : (
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
         )}
-        <span className="font-mono text-xs font-medium text-on-surface">
-          {activity.tool_name}
-        </span>
+        {/* A CLI-routed Myco call is recorded as a shell activity (tool_name
+            'Bash'); its canonical Myco identity is resolved at capture onto
+            activity.myco_tool, so we surface that instead of the bare shell
+            name. MCP-routed calls carry myco_tool too, for a consistent label.
+            Plain shell/Read/Edit activities keep their tool_name. */}
+        {activity.myco_tool ? (
+          <span className="font-mono text-xs font-medium text-primary">
+            {activity.myco_tool}
+            {activity.myco_op && <span className="text-primary/60"> · {activity.myco_op}</span>}
+          </span>
+        ) : (
+          <span className="font-mono text-xs font-medium text-on-surface">
+            {activity.tool_name}
+          </span>
+        )}
         {activity.file_path && (
           <span className="truncate font-sans text-xs text-on-surface-variant flex-1">
             {activity.file_path}

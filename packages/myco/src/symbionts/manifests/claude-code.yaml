@@ -77,6 +77,25 @@ capture:
         prompt_starts_with: "<command-name>"
       action: drop
       reason: claude-code-builtin-command-dispatch
+    # Built-in CLI command STDOUT capture (structural).
+    #
+    # Slash-command dispatches (`/exit`, `/model`, `/clear`, …) emit a third
+    # sibling entry holding the command's captured stdout:
+    #   <local-command-stdout>See ya!</local-command-stdout>
+    # It shares the dispatch group's promptId, so the `<command-name>` drop
+    # above already suppresses it via dedupeBy: promptId — BUT only when the
+    # `<command-name>` sibling is present and processed first. Dropping it
+    # explicitly removes that ordering dependency: command stdout is program
+    # output, never user input, so it must never become a prompt_batch
+    # regardless of how the dispatch group is structured. (Without this, a
+    # stdout entry that reached a prompt shape — e.g. via the now-fixed
+    # teamName-based teammate_message shape — leaked as a human prompt.)
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<local-command-stdout>"
+      action: drop
+      reason: claude-code-builtin-command-stdout
     # Async Agent-tool completion notifications.
     #
     # When Claude Code's Agent (Task) tool completes a background sub-agent
@@ -114,8 +133,115 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-skill-envelope
+    # Agent-team teammate-to-lead messages.
+    #
+    # Claude Code's experimental agent-team runtime (v2.1.32+) delivers
+    # teammate reports back to the lead by injecting a `<teammate-message
+    # teammate_id="..." color="...">...` envelope as a synthetic user-type
+    # entry on the lead's transcript. These are agent-to-agent coordination,
+    # not user input — same provenance class as Codex's <subagent_notification>.
+    # Prefix includes the trailing space (the tag always carries attributes,
+    # so the next char is the whitespace before `teammate_id`); this avoids
+    # false-matching hypothetical neighbours like `<teammate-message-batch>`.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<teammate-message "
+      action: classify
+      set_origin: agent_dispatch
+      reason: claude-code-teammate-message
+    # Environment-context headers.
+    #
+    # Claude Code prepends `<environment_context>` blocks (cwd, shell, etc.)
+    # when the runtime wants the model to refresh environmental awareness.
+    # Not user input. Mirrors the equivalent Codex rule.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<environment_context>"
+      action: classify
+      set_origin: system
+      reason: claude-code-environment-context
+    # Autonomous-loop runtime self-prompts.
+    #
+    # The `/loop` skill's autonomous mode rewakes the agent by sending
+    # `<<autonomous-loop-dynamic>>` (or `<<autonomous-loop>>`) as the next
+    # user prompt. Runtime-synthesized, not human-typed.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<<autonomous-loop"
+      action: classify
+      set_origin: system
+      reason: claude-code-autonomous-loop
+    # Local-command caveats.
+    #
+    # Claude Code emits `<local-command-caveat>Caveat: ...` after certain
+    # built-in command dispatches. Meta-content, not a user prompt.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<local-command-caveat>"
+      action: classify
+      set_origin: system
+      reason: claude-code-local-command-caveat
+    # Persisted-output reinjection.
+    #
+    # On session resume, Claude Code replays the prior turn's `<persisted-output>`
+    # block as a synthetic user-type entry so the model regains context.
+    # Runtime-synthesized, not human-typed.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<persisted-output>"
+      action: classify
+      set_origin: system
+      reason: claude-code-persisted-output
+    # System-reminder envelopes.
+    #
+    # Claude Code wraps runtime nudges (task-tracker reminders, automated
+    # background-task events, etc.) in `<system-reminder>...` blocks. These
+    # were previously filtered by a hardcoded SYSTEM_MESSAGE_PREFIXES list in
+    # event-handlers.ts; declaring them here folds that special case into the
+    # manifest-driven rule path.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<system-reminder>"
+      action: classify
+      set_origin: system
+      reason: claude-code-system-reminder
   prompts:
     shapes:
+      # Agent-team teammate-message envelopes (Claude Code v2.1.32+).
+      #
+      # When a teammate sends a message to the lead, Claude Code injects a
+      # synthetic `type: user` entry into the lead's transcript carrying the
+      # `<teammate-message ...>` envelope. These entries share the LEAD's
+      # current turn `promptId`, so the generic `user_prompt` shape below
+      # would collapse all teammate-messages into the lead's prompt batch
+      # via its `dedupeBy: promptId`.
+      #
+      # The discriminator is the CONTENT, not a structural field: once a team
+      # exists in the session, `teamName` is stamped on the lead's own prompts
+      # and on `/exit` / `/model` command artifacts too — it is not unique to
+      # teammate-messages. `textStartsWith` keys on the envelope prefix so only
+      # real teammate-messages match here; everything else falls through to the
+      # generic shape and keeps its `dedupeBy: promptId` collapse (which the
+      # slash-command dispatch path relies on to suppress command artifacts).
+      #
+      # First-match-wins, so listing this shape above `user_prompt` ensures
+      # teammate-messages match here first with `dedupeBy: uuid` (one batch
+      # per discrete teammate dispatch). The `set_origin: agent_dispatch` rule
+      # above then tags the resulting batch correctly.
+      - name: teammate_message
+        match:
+          type: user
+          fieldNotEquals:
+            isMeta: true
+        textAt: message.content
+        textStartsWith: "<teammate-message"
+        dedupeBy: uuid
       # Standard user prompts. Claude Code tags synthesized transcript entries
       # (local-command caveats, skill-basedir injections, expanded command
       # bodies, misc system notices) with `isMeta: true`. Filtering on that

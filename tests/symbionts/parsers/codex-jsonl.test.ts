@@ -129,6 +129,26 @@ describe('CodexJsonlParser', () => {
     expect(turns[0].aiResponse).toBe('First part.\nSecond part.');
   });
 
+  // Surfaced 2026-05-28 alongside the StandardJsonlParser fix: a multi-step
+  // turn emits a sequence of message items, each carrying part of the
+  // assistant text. The pre-fix `current.aiResponse = text` overwrote with
+  // each entry, leaving only the final fragment in response_summary. Matches
+  // the existing `update_plan` envelope path in this parser which already
+  // appends rather than overwrites.
+  it('concatenates text across multiple assistant message items in one turn', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Multi-step task' }], '2026-04-12T10:00:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'First thought.' }], '2026-04-12T10:00:10Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Second thought.' }], '2026-04-12T10:00:20Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Final answer.' }], '2026-04-12T10:00:30Z'),
+    ]);
+
+    const turns = parser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].aiResponse).toBe('First thought.\n\nSecond thought.\n\nFinal answer.');
+  });
+
   it('preserves proposed_plan tags in aiResponse', () => {
     const planText = '<proposed_plan>\n## Phase 1\nDo the thing\n</proposed_plan>\n\nHere is my plan.';
     const content = toJsonl([

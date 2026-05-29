@@ -39,9 +39,13 @@ describe('cursorAdapter.parseTurns — [REDACTED] handling', () => {
     expect(turns[0].aiResponse).toBeUndefined();
   });
 
-  it('keeps the final substantive text when earlier assistant entries redact', () => {
-    // Real Cursor transcript shape: assistant entries appear line-by-line.
-    // The last one carries the visible response.
+  it('preserves substantive text fragments across multiple assistant entries, stripping interleaved [REDACTED] scratch', () => {
+    // Real Cursor transcript shape: assistant entries appear line-by-line in a
+    // multi-step turn (text → tool → text → tool → text). Before the
+    // parser-concat fix the response was overwritten per entry so only the
+    // trailing fragment survived; with concat both substantive fragments are
+    // kept, and the redaction strip removes the [REDACTED] markers + collapses
+    // the empty middle so the captured summary reads naturally.
     const content = build([
       { role: 'user', message: { content: [{ type: 'text', text: 'tell me about X' }] } },
       {
@@ -64,6 +68,6 @@ describe('cursorAdapter.parseTurns — [REDACTED] handling', () => {
     ]);
     const turns = cursorAdapter.parseTurns(content);
     expect(turns).toHaveLength(1);
-    expect(turns[0].aiResponse).toBe('Here is the answer.');
+    expect(turns[0].aiResponse).toBe('Gathering info.\nHere is the answer.');
   });
 });

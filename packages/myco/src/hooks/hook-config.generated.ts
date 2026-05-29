@@ -28,6 +28,18 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capturePrompts": {
       "shapes": [
         {
+          "name": "teammate_message",
+          "match": {
+            "type": "user",
+            "fieldNotEquals": {
+              "isMeta": true
+            }
+          },
+          "textAt": "message.content",
+          "textStartsWith": "<teammate-message",
+          "dedupeBy": "uuid"
+        },
+        {
           "name": "user_prompt",
           "match": {
             "type": "user",
@@ -88,6 +100,16 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "event": "user_prompt",
         "scope": "this_agent",
         "when": {
+          "prompt_starts_with": "<local-command-stdout>"
+        },
+        "action": "drop",
+        "reason": "claude-code-builtin-command-stdout",
+        "trim": true
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
           "prompt_starts_with": "<task-notification>"
         },
         "action": "classify",
@@ -103,6 +125,72 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "claude-code-skill-envelope",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<teammate-message "
+        },
+        "action": "classify",
+        "reason": "claude-code-teammate-message",
+        "trim": true,
+        "set_origin": "agent_dispatch"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<environment_context>"
+        },
+        "action": "classify",
+        "reason": "claude-code-environment-context",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<<autonomous-loop"
+        },
+        "action": "classify",
+        "reason": "claude-code-autonomous-loop",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<local-command-caveat>"
+        },
+        "action": "classify",
+        "reason": "claude-code-local-command-caveat",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<persisted-output>"
+        },
+        "action": "classify",
+        "reason": "claude-code-persisted-output",
+        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<system-reminder>"
+        },
+        "action": "classify",
+        "reason": "claude-code-system-reminder",
         "trim": true,
         "set_origin": "system"
       }

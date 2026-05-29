@@ -128,6 +128,9 @@ export interface ActivityRow {
   content_hash: string | null;
   created_at: number;
   canopy_injection_tokens: number | null;
+  /** Canonical Myco tool identity (resolved at capture), or null for non-Myco. */
+  myco_tool: string | null;
+  myco_op: string | null;
 }
 
 export interface AttachmentRow {

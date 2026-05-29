@@ -28,31 +28,88 @@ export class StandardJsonlParser implements TranscriptParser {
       const role = entry[this.opts.roleField] as string;
       const timestamp = this.opts.extractTimestamp ? (entry.timestamp as string ?? '') : '';
 
+      // Queued steering prompts (Claude Code's Esc→queue UI) land as
+      // `attachment` entries, NOT role:user messages — Claude Code fires no
+      // UserPromptSubmit for them. The prompt-kind walker already captures
+      // them as steering batches via the manifest `queued_command` shape
+      // (textAt: attachment.prompt). This parser drives response attribution
+      // (getAllTurns → populateBatchResponses); without recognizing the same
+      // entries it builds no turn for the queued prompt, so the assistant text
+      // that follows globs onto the PRECEDING turn (e.g. a task-notification)
+      // and the steering batch is left with a NULL response_summary. Open a
+      // new turn here, keyed on the same `attachment.prompt` text the walker
+      // uses, so prefix-matching in populateBatchResponses lines the response
+      // up with the steering batch.
+      if (entry.type === 'attachment') {
+        const attachment = entry.attachment as
+          | { type?: string; prompt?: string | Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> }
+          | undefined;
+        if (attachment?.type === 'queued_command') {
+          // attachment.prompt is a plain string for text-only queued prompts,
+          // OR a typed-block array when the queued prompt carries an image
+          // ([{type:'text'}, {type:'image'}]). The prompt-kind walker handles
+          // both via extractText (first text block), so the batch exists either
+          // way; mirror that here or the image-bearing queued prompt gets no
+          // turn and thus no response attribution.
+          const raw = attachment.prompt;
+          let rawText = '';
+          let images: TranscriptImage[] = [];
+          if (typeof raw === 'string') {
+            rawText = raw;
+          } else if (Array.isArray(raw)) {
+            rawText = (raw.find((b) => b.type === 'text' && b.text)?.text) ?? '';
+            images = raw
+              .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
+              .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
+          }
+          if (rawText.trim()) {
+            if (current) turns.push(current);
+            const promptText = (this.opts.stripImageTextRefs ? rawText.replace(IMAGE_TEXT_REF_PATTERN, '') : rawText)
+              .trim()
+              .slice(0, PROMPT_PREVIEW_CHARS);
+            current = { prompt: promptText, toolCount: 0, timestamp, ...(images.length > 0 ? { images } : {}) };
+          }
+        }
+        // Other attachment kinds (image side-logs, etc.) carry no turn text.
+        continue;
+      }
+
       if (role === 'user') {
         // Skip meta messages (skill injections, deprecation notices, etc.) — they are
         // not real user prompts and should not appear as turns or influence the title.
         if (entry.isMeta === true) continue;
 
-        const msg = entry.message as { content?: Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
-        const blocks = Array.isArray(msg?.content) ? msg!.content : [];
-        const hasText = blocks.some((b) => b.type === 'text' && b.text?.trim());
+        const msg = entry.message as { content?: string | Array<{ type: string; text?: string; source?: { type?: string; data?: string; media_type?: string } }> } | undefined;
 
-        if (!hasText) continue;
+        // Claude Code v2.1.x emits real user prompts as `message.content: string`
+        // and tool_result entries as `message.content: [{type:'tool_result', …}]`.
+        // Pre-v2.1, both used arrays; the prompt-kind walker handles both forms
+        // via extractText. Mirror that here so transcript mining sees real user
+        // turns again — without it every user entry's blocks are empty and the
+        // parser returns zero turns, breaking response_summary populateBatchResponses.
+        let rawPrompt = '';
+        let images: TranscriptImage[] = [];
+
+        if (typeof msg?.content === 'string') {
+          rawPrompt = msg.content;
+        } else if (Array.isArray(msg?.content)) {
+          const blocks = msg!.content;
+          rawPrompt = blocks
+            .filter((b) => b.type === 'text' && b.text)
+            .map((b) => b.text!)
+            .join('\n');
+          images = blocks
+            .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
+            .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
+        }
+
+        if (!rawPrompt.trim()) continue;
 
         if (current) turns.push(current);
-
-        const rawPrompt = blocks
-          .filter((b) => b.type === 'text' && b.text)
-          .map((b) => b.text!)
-          .join('\n');
 
         const promptText = (this.opts.stripImageTextRefs ? rawPrompt.replace(IMAGE_TEXT_REF_PATTERN, '') : rawPrompt)
           .trim()
           .slice(0, PROMPT_PREVIEW_CHARS);
-
-        const images: TranscriptImage[] = blocks
-          .filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data)
-          .map((b) => ({ data: b.source!.data!, mediaType: b.source!.media_type ?? 'image/png' }));
 
         current = { prompt: promptText, toolCount: 0, timestamp, ...(images.length > 0 ? { images } : {}) };
       } else if (role === 'assistant' && current) {
@@ -60,7 +117,18 @@ export class StandardJsonlParser implements TranscriptParser {
         if (Array.isArray(msg?.content)) {
           const textParts = msg!.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text!);
           const text = textParts.join('\n').trim();
-          if (text) current.aiResponse = text;
+          if (text) {
+            // A single turn can produce multiple assistant entries when text
+            // alternates with tool_use (text → tool → text → tool → text → …).
+            // Overwriting would lose every text fragment except the last, which
+            // is what the UI's stale-looking "response previews" surface: a
+            // trailing one-liner instead of the assistant's actual response.
+            // Concat with a blank line so the reconstructed turn round-trips
+            // multi-block content into prompt_batches.response_summary.
+            current.aiResponse = current.aiResponse
+              ? `${current.aiResponse}\n\n${text}`
+              : text;
+          }
           current.toolCount += msg!.content.filter((b) => b.type === 'tool_use').length;
         }
       }

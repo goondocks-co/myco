@@ -27,6 +27,8 @@ import {
   aggregateSessionMycoToolCalls,
   materializeSessionMycoToolCalls,
   getSessionMycoToolCallCounts,
+  parseCliMycoToolCalls,
+  resolveMycoToolIdentity,
 } from '@myco/db/queries/myco-tool-usage.js';
 
 const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -306,6 +308,109 @@ describe('materializeSessionMycoToolCalls — write side', () => {
   });
 });
 
+describe('parseCliMycoToolCalls — CLI command parsing', () => {
+  it('parses the skill-recommended launcher form with inline op', () => {
+    expect(
+      parseCliMycoToolCalls(`node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'`),
+    ).toEqual([{ tool_name: 'myco_cortex', op: 'canopy_map' }]);
+  });
+
+  it('resolves op to empty string for --input @file (op not inline)', () => {
+    expect(
+      parseCliMycoToolCalls(`node .agents/myco-cli.cjs tool call myco_spores --json --input @/tmp/payload.json`),
+    ).toEqual([{ tool_name: 'myco_spores', op: '' }]);
+  });
+
+  it('parses bare `myco` / `myco-dev` / `myco-run` launchers', () => {
+    expect(parseCliMycoToolCalls(`myco tool call myco_search --input '{"query":"x"}'`)).toEqual([
+      { tool_name: 'myco_search', op: '' },
+    ]);
+    expect(parseCliMycoToolCalls(`myco-dev tool call myco_plans --input '{"op":"list"}'`)).toEqual([
+      { tool_name: 'myco_plans', op: 'list' },
+    ]);
+    expect(parseCliMycoToolCalls(`node .agents/myco-run.cjs tool call collective_search --input '{"query":"y"}'`)).toEqual([
+      { tool_name: 'collective_search', op: '' },
+    ]);
+  });
+
+  it('parses the plugin-bundle dist/src/cli.js launcher', () => {
+    expect(
+      parseCliMycoToolCalls(`node /opt/p/dist/src/cli.js tool call myco_cortex --input '{"op":"digest"}'`),
+    ).toEqual([{ tool_name: 'myco_cortex', op: 'digest' }]);
+  });
+
+  it('parses multiple calls in one command, each with its own op', () => {
+    const cmd = `myco tool call myco_cortex --input '{"op":"canopy_map"}' && myco tool call myco_plans --input '{"op":"list"}'`;
+    expect(parseCliMycoToolCalls(cmd)).toEqual([
+      { tool_name: 'myco_cortex', op: 'canopy_map' },
+      { tool_name: 'myco_plans', op: 'list' },
+    ]);
+  });
+
+  it('does not match prose or non-Myco tool names containing "tool call"', () => {
+    expect(parseCliMycoToolCalls(`grep -r "tool call" packages/`)).toEqual([]);
+    expect(parseCliMycoToolCalls(`echo "how to tool call something"`)).toEqual([]);
+    expect(parseCliMycoToolCalls(`myco tool call something_else --input '{}'`)).toEqual([]);
+  });
+
+  // Regression: an op-less call followed by an unrelated command/argument
+  // containing an "op" JSON fragment must NOT bleed that op onto the call.
+  it('does not bleed an op from a trailing piped/chained command into an op-less call', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_spores --input @/tmp/p.json && echo '{"op":"canopy_map"}'`),
+    ).toEqual([{ tool_name: 'myco_spores', op: '' }]);
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_search --input @file | grep '{"op":"x"}'`),
+    ).toEqual([{ tool_name: 'myco_search', op: '' }]);
+  });
+
+  it('does not bleed an op from a trailing redirect/arg after the LAST call', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_search --input @file ; cat results.json`),
+    ).toEqual([{ tool_name: 'myco_search', op: '' }]);
+  });
+
+  it('still captures the op from this call own --input before any separator', () => {
+    expect(
+      parseCliMycoToolCalls(`myco tool call myco_cortex --input '{"op":"digest"}' 2>&1`),
+    ).toEqual([{ tool_name: 'myco_cortex', op: 'digest' }]);
+  });
+});
+
+describe('aggregateSessionMycoToolCalls — CLI-routed calls (Bash activities)', () => {
+  it('counts CLI tool calls embedded in shell activities', () => {
+    seedSession();
+    seedActivities(SESSION_ID, [
+      { tool_name: 'Bash', tool_input: { command: `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'` } },
+      { tool_name: 'Bash', tool_input: { command: `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'` } },
+      { tool_name: 'Bash', tool_input: { command: `node .agents/myco-cli.cjs tool call myco_search --json --input '{"query":"x"}'` } },
+    ]);
+    const result = aggregateSessionMycoToolCalls(null, SESSION_ID).sort((a, b) => a.tool_name.localeCompare(b.tool_name) || a.op.localeCompare(b.op));
+    expect(result).toEqual([
+      { tool_name: 'myco_cortex', op: 'canopy_map', count: 2 },
+      { tool_name: 'myco_search', op: '', count: 1 },
+    ]);
+  });
+
+  it('merges CLI-routed and MCP-routed calls into one canonical bucket', () => {
+    seedSession();
+    seedActivities(SESSION_ID, [
+      { tool_name: 'mcp__myco__myco_cortex', tool_input: { op: 'canopy_map' } },
+      { tool_name: 'Bash', tool_input: { command: `node .agents/myco-cli.cjs tool call myco_cortex --input '{"op":"canopy_map"}'` } },
+    ]);
+    const result = aggregateSessionMycoToolCalls(null, SESSION_ID);
+    expect(result).toEqual([{ tool_name: 'myco_cortex', op: 'canopy_map', count: 2 }]);
+  });
+
+  it('does not count plain shell activities with no myco-cli tool call', () => {
+    seedSession();
+    seedActivities(SESSION_ID, [
+      { tool_name: 'Bash', tool_input: { command: 'ls -la && grep "tool call" file' } },
+    ]);
+    expect(aggregateSessionMycoToolCalls(null, SESSION_ID)).toEqual([]);
+  });
+});
+
 describe('getSessionMycoToolCallCounts — read side', () => {
   it('orders results by descending count, then tool_name, then op', () => {
     seedSession();
@@ -323,5 +428,50 @@ describe('getSessionMycoToolCallCounts — read side', () => {
       { tool_name: 'myco_search', op: '',           count: 2 },
       { tool_name: 'myco_cortex', op: 'canopy_map', count: 1 },
     ]);
+  });
+});
+
+describe('resolveMycoToolIdentity — capture-time identity resolution', () => {
+  it('canonicalizes an MCP-routed tool name + extracts op', () => {
+    expect(resolveMycoToolIdentity('mcp__myco__myco_cortex', JSON.stringify({ op: 'canopy_map' })))
+      .toEqual({ tool: 'myco_cortex', op: 'canopy_map' });
+  });
+
+  it('passes through a bare myco_ name with empty op when absent', () => {
+    expect(resolveMycoToolIdentity('myco_search', JSON.stringify({ query: 'x' })))
+      .toEqual({ tool: 'myco_search', op: '' });
+  });
+
+  it('strips the legacy doubled prefix', () => {
+    expect(resolveMycoToolIdentity('myco_myco_search', null)).toEqual({ tool: 'myco_search', op: '' });
+  });
+
+  it('resolves a collective_ tool', () => {
+    expect(resolveMycoToolIdentity('collective_search', null)).toEqual({ tool: 'collective_search', op: '' });
+  });
+
+  it('recovers identity from a CLI-routed Bash command (first call)', () => {
+    const cmd = `node .agents/myco-cli.cjs tool call myco_spores --json --input '{"op":"save"}'`;
+    expect(resolveMycoToolIdentity('Bash', JSON.stringify({ command: cmd })))
+      .toEqual({ tool: 'myco_spores', op: 'save' });
+  });
+
+  it('returns the FIRST call when a Bash command chains several', () => {
+    const cmd = `myco tool call myco_cortex --input '{"op":"canopy_map"}' && myco tool call myco_plans --input '{"op":"list"}'`;
+    expect(resolveMycoToolIdentity('Bash', JSON.stringify({ command: cmd })))
+      .toEqual({ tool: 'myco_cortex', op: 'canopy_map' });
+  });
+
+  it('returns null for a plain shell command with no myco call', () => {
+    expect(resolveMycoToolIdentity('Bash', JSON.stringify({ command: 'ls -la' }))).toBeNull();
+  });
+
+  it('returns null for non-Myco tools (Read/Edit) and injection records', () => {
+    expect(resolveMycoToolIdentity('Read', JSON.stringify({ file_path: '/x' }))).toBeNull();
+    expect(resolveMycoToolIdentity('myco:inject_cortex', null)).toBeNull();
+  });
+
+  it('returns null for malformed tool_input', () => {
+    expect(resolveMycoToolIdentity('Bash', '{not valid json')).toBeNull();
   });
 });

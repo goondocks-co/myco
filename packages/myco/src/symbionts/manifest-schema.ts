@@ -76,6 +76,18 @@ const PromptShapeSchema = z.object({
    */
   textAt: z.string(),
   /**
+   * Optional content-prefix guard. When set, the shape only matches when the
+   * resolved `textAt` value starts with this literal. Use to disambiguate
+   * entries that are STRUCTURALLY identical but semantically distinct — e.g.
+   * Claude Code agent-team `<teammate-message …>` entries carry the exact same
+   * top-level fields as the lead's own prompts and as `/exit` / `/model`
+   * command artifacts (all gain `teamName` once a team exists in the session),
+   * so the only reliable discriminator is the content itself. Evaluated after
+   * the structural `match`, using the same string/typed-block resolution as
+   * `textAt`.
+   */
+  textStartsWith: z.string().optional(),
+  /**
    * Dot-path to a stable identifier for the prompt. Used to dedupe events
    * that appear more than once in the transcript (e.g. a `promptId` that
    * shows up on both the user prompt line and on tool_result entries for
