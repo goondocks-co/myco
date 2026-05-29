@@ -87,7 +87,7 @@ describe('migrateV49ToV50 — activities Myco tool identity backfill', () => {
     expect(row(ids.plain)).toEqual({ myco_tool: null, myco_op: null });
   });
 
-  it('records schema version 50 (and all subsequent migrations up to current)', () => {
+  it('stamps schema version 50 during the migration chain', () => {
     seedActivities();
     runMigrations();
     const v = getDatabase().prepare('SELECT version FROM schema_version WHERE version = 50').get() as { version: number } | undefined;
