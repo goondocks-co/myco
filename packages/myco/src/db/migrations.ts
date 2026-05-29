@@ -48,7 +48,7 @@ import {
   buildPlanId,
   deriveStoredPlanLogicalKey,
 } from '@myco/plans/identity.js';
-import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-usage.js';
+import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-identity.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry

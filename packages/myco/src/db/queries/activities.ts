@@ -7,7 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
-import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-usage.js';
+import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-identity.js';
 
 // ---------------------------------------------------------------------------
 // Constants
