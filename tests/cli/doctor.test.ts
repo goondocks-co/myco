@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type DoctorCheck, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, runChecks } from '@myco/cli/doctor';
+import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, runChecks } from '@myco/cli/doctor';
 import { loadManifests } from '@myco/symbionts/detect';
-import { openDatabase, withDatabase } from '@myco/db/client.js';
+import { expandHome } from '@myco/grove/paths';
+import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { resolveDaemonDataPaths } from '@myco/daemon/data-paths.js';
 import { recordMigrationPass, listMigrationErrors } from '@myco/db/queries/migration-log.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 
 function findManifest(name: string) {
   const manifest = loadManifests().find((entry) => entry.name === name);
@@ -381,5 +385,129 @@ describe('isSymbiontRegistered', () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('isSymbiontRegisteredGlobally', () => {
+  let savedHome: string | undefined;
+  let home: string;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-global-'));
+    process.env.HOME = home;
+  });
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns false when no global agent config has Myco wired in', () => {
+    const manifest = findManifest('windsurf');
+    expect(isSymbiontRegisteredGlobally({
+      manifest,
+      binaryFound: false,
+      configDirFound: true,
+    })).toBe(false);
+  });
+
+  it('returns true when the global hooks file carries a Myco hook group', () => {
+    const manifest = findManifest('windsurf');
+    const target = manifest.registration!.globalHooksTarget;
+    expect(target, 'windsurf should declare a globalHooksTarget').toBeTruthy();
+    const file = expandHome(target!);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      hooks: {
+        pre_user_prompt: [
+          { command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .myco/launcher.cjs hook user-prompt-submit --symbiont windsurf' },
+        ],
+      },
+    }), 'utf-8');
+
+    // Project-scope check is false (no project config), but global is wired —
+    // the exact post-migration state that used to produce a false
+    // "enabled but not registered" warning.
+    expect(isSymbiontRegisteredGlobally({
+      manifest,
+      binaryFound: false,
+      configDirFound: true,
+    })).toBe(true);
+  });
+});
+
+describe('checkCaptureFlow', () => {
+  const roots: string[] = [];
+  let savedMycoHome: string | undefined;
+
+  afterEach(() => {
+    closeDatabase();
+    clearGroveRegistryCaches();
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
+    savedMycoHome = undefined;
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  /**
+   * Provision a grove-bound vault (myco.yaml + project.toml + registry entry)
+   * the way production does, then seed its Grove DB with sessions of the given
+   * ages (in days). Returns the vault dir checkCaptureFlow reads.
+   */
+  function seedVault(ages: number[]): string {
+    const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-capture-'));
+    roots.push(vaultRoot);
+    const mycoHome = path.join(vaultRoot, 'home');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    savedMycoHome ??= process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    const vaultDir = path.join(vaultRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+
+    const grove = createGrove('cap', mycoHome);
+    const manifest = ensureProjectManifest(vaultDir, {
+      projectName: 'cap',
+      groveId: grove.id,
+      groveSlug: grove.slug,
+      groveName: grove.name,
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: manifest.project.id,
+      projectName: 'cap',
+      projectRoot: vaultRoot,
+      bindingId: manifest.grove?.binding_id,
+    }, mycoHome);
+
+    const { databasePath } = resolveDaemonDataPaths(vaultDir);
+    const db = initDatabase(databasePath);
+    createSchema(db);
+    const now = Math.floor(Date.now() / 1000);
+    ages.forEach((ageDays, i) => {
+      const at = now - ageDays * 86_400;
+      upsertSession({ id: `cap-${i}`, agent: 'claude-code', started_at: at, created_at: at });
+    });
+    closeDatabase();
+    return vaultDir;
+  }
+
+  it('reports ok with a friendly nudge for a vault that has captured nothing yet', async () => {
+    const check = await checkCaptureFlow(seedVault([]));
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain('No sessions captured yet');
+  });
+
+  it('reports ok when a session landed within the freshness window', async () => {
+    const check = await checkCaptureFlow(seedVault([1]));
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain('in the last 7 days');
+  });
+
+  it('warns when the newest session is stale (silent-capture-loss signature)', async () => {
+    const check = await checkCaptureFlow(seedVault([30, 45]));
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('No sessions in the last 7 days');
   });
 });
