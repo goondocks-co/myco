@@ -128,9 +128,9 @@ const CURSOR_PROJECT_ROOT_CD =
  * for the active `installScope`:
  *
  *   - `'project'`: `node .agents/myco-run.cjs` — invokes the project-local
- *     guard, which is what historical templates hard-coded. Templates
- *     remain meaningful in project-scope installs (the dashboard
- *     commit-to-repo opt-in).
+ *     guard that historical templates hard-coded. Project scope survives
+ *     only for the migration's marker-bounded strip and `.gitignore`
+ *     reconciliation; Myco no longer installs project-local launchers.
  *   - `'global'`: `node "<home>/.myco/launcher.cjs"` — invokes the shared
  *     absolute-path launcher installed by `installGlobalLaunchers`. The
  *     launcher itself layers a project-local override (`<projectRoot>/.agents/
@@ -449,9 +449,9 @@ export class SymbiontInstaller {
    * agent's config dir on its behalf (Decision 7's "never create the
    * agent's dir" rule).
    *
-   * Always returns true for `installScope: 'project'` — project-local
-   * installs are explicitly opted into via the dashboard's commit-to-repo
-   * affordance, so the gate doesn't apply.
+   * Always returns true for `installScope: 'project'` — the detection
+   * gate only applies to global installs, where the agent's user-level
+   * config dir must already exist before Myco writes into it.
    */
   isAvailableForScope(): boolean {
     if (this.installScope !== 'global') return true;

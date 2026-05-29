@@ -2,13 +2,18 @@ import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { writeHookResponse } from './response.js';
 import { captureHookEvent } from './send-event.js';
-import { resolveVaultDir } from '../vault/resolve.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import { resolveProvisionedVaultDir } from './vault-gate.js';
 
 export async function main() {
-  const VAULT_DIR = resolveVaultDir();
-  if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
+  // Use the shared provisioning gate like every other event hook
+  // (send-event, post-tool-use, user-prompt-submit). The legacy
+  // `resolveVaultDir() + existsSync(myco.yaml)` pattern bailed in a
+  // never-provisioned git project where the sibling hooks would
+  // auto-provision and capture — an inconsistent gate that could hide a
+  // capture gap. `resolveProvisionedVaultDir` git-gates, auto-provisions
+  // the cold path, and runs the one-shot migration.
+  const VAULT_DIR = resolveProvisionedVaultDir();
+  if (!VAULT_DIR) return;
 
   let symbiont: string | undefined;
   try {

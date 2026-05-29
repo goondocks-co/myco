@@ -230,10 +230,12 @@ export async function handleListSymbionts(vaultDir: string, groveId?: string | n
  *   - `runSymbiontDetection`: install Myco's global config into every
  *     detected symbiont.
  *   - `runGlobalInstallMigrationPass`: walk every registered project and
- *     strip stale per-project Myco state, honoring the `symbionts:`
- *     opt-in. Without this step here the UI's "Re-detect now" button
- *     skipped the walker entirely — a real defect the unit tests
- *     missed because they hit `runSymbiontDetection` directly.
+ *     strip stale per-project Myco state. The strip is unconditional —
+ *     the global model has no project-local install to preserve, and the
+ *     `symbionts:` block is a capture-time opt-out, not an install switch.
+ *     Without this step here the UI's "Re-detect now" button skipped the
+ *     walker entirely — a real defect the unit tests missed because they
+ *     hit `runSymbiontDetection` directly.
  *
  * Returns `results` (per-symbiont install outcomes) and `migration`
  * (per-project walker outcomes) so the UI can surface both.

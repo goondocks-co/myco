@@ -101,6 +101,58 @@ describe('resolveProvisionedVaultDir', () => {
     }
   });
 
+  it('logs a provision-failed trace instead of dropping silently', () => {
+    const projectRoot = makeGitProject();
+    try {
+      // Make `.myco` a FILE so ensureProjectVault's mkdir/write throws.
+      fs.writeFileSync(path.join(projectRoot, '.myco'), 'not a dir');
+      const writes: string[] = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      // @ts-expect-error test shim over stderr.write
+      process.stderr.write = (chunk: string) => { writes.push(String(chunk)); return true; };
+      let vaultDir: string | null = null;
+      try {
+        vaultDir = resolveProvisionedVaultDir(projectRoot);
+      } finally {
+        process.stderr.write = orig;
+      }
+      expect(vaultDir).toBeNull();
+      expect(writes.join('')).toContain('provision-failed');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('traces a non-git skip only when MYCO_AGENT_DEBUG is set', () => {
+    const projectRoot = makeTmpProject(); // NOT a git repo
+    const prior = process.env.MYCO_AGENT_DEBUG;
+    const orig = process.stderr.write.bind(process.stderr);
+    try {
+      // Without debug: silent.
+      let writes: string[] = [];
+      delete process.env.MYCO_AGENT_DEBUG;
+      // @ts-expect-error test shim over stderr.write
+      process.stderr.write = (chunk: string) => { writes.push(String(chunk)); return true; };
+      expect(resolveProvisionedVaultDir(projectRoot)).toBeNull();
+      process.stderr.write = orig;
+      expect(writes.join('')).not.toContain('non-git');
+
+      // With debug: traced.
+      writes = [];
+      process.env.MYCO_AGENT_DEBUG = '1';
+      // @ts-expect-error test shim over stderr.write
+      process.stderr.write = (chunk: string) => { writes.push(String(chunk)); return true; };
+      expect(resolveProvisionedVaultDir(projectRoot)).toBeNull();
+      process.stderr.write = orig;
+      expect(writes.join('')).toContain('non-git-or-unsafe-root');
+    } finally {
+      process.stderr.write = orig;
+      if (prior === undefined) delete process.env.MYCO_AGENT_DEBUG;
+      else process.env.MYCO_AGENT_DEBUG = prior;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it('is cheap on the hot path: second call after the first does not rewrite the sentinel', () => {
     const projectRoot = makeGitProject();
     try {

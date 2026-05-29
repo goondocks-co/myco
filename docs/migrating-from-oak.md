@@ -13,7 +13,7 @@ This guide covers the one-time import: pull your OAK history into a Myco vault s
 - A project that has either:
   - A live OAK install with `<project>/.oak/ci/activities.db`, **or**
   - At least one OAK backup file under `<project>/oak/history/<machine-id>.sql`.
-- Myco installed and running. The install script is sufficient — Myco registers projects into your default Grove when a supported agent starts working in a git repo. If you want a project's Myco identity committed to the repo for teammates, open the dashboard's Symbionts page and use **Commit Myco config to this repo**.
+- Myco installed and running. The install script is sufficient — Myco registers projects into your default Grove when a supported agent starts working in a git repo. To share a project with teammates, commit the `.myco/project.toml` file Myco creates — it carries the project's identity so everyone's sessions land in the same project.
 - The target Grove database path. Register the project first, then use the dashboard's Groves page to confirm which Grove owns it. Grove databases live under `~/.myco/groves/<grove-id>/myco.db`.
 
 You don't need to remove OAK before running the import. OAK and Myco coexist — they each manage their own hooks, MCP servers, and configuration, and neither touches the other's. You can clean up OAK whenever you like (see "Cleaning up OAK" below).

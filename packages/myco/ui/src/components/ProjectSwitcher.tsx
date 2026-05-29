@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Search } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
+import { useProjectsActivity } from '../hooks/use-maintenance-summary';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import {
   colorForProjectId,
@@ -13,11 +14,13 @@ import {
   type GroveSummary,
   type ProjectSelection,
 } from '../lib/selection';
+import { formatTimeAgo } from '../lib/format';
 import { cn } from '../lib/cn';
 
 export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) {
   const contextSelection = useProjectSelection();
   const { data } = useGroves();
+  const { data: activity } = useProjectsActivity();
   const navigate = useNavigate();
   const location = useLocation();
   const [open, setOpen] = useState(false);
@@ -31,18 +34,35 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
   );
   const selection = contextSelection ?? rememberedSelection;
 
-  const filteredGroves = useMemo(() => {
+  // Per-project last-activity (ISO string) — used to surface recently-worked
+  // projects at the top so the list stays scannable as auto-registration
+  // accumulates projects.
+  const lastActivityById = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of activity?.projects ?? []) m.set(p.project_id, p.last_activity_at);
+    return m;
+  }, [activity]);
+
+  const activityMs = (projectId: string): number => {
+    const iso = lastActivityById.get(projectId);
+    return iso ? Date.parse(iso) : 0;
+  };
+
+  const displayGroves = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return groves;
+    const byRecency = (a: GroveProjectSummary, b: GroveProjectSummary) =>
+      activityMs(b.project_id) - activityMs(a.project_id);
     return groves
-      .map((grove) => ({
-        ...grove,
-        projects: grove.projects.filter((project) =>
-          `${grove.name} ${project.name}`.toLowerCase().includes(needle),
-        ),
-      }))
-      .filter((grove) => grove.projects.length > 0);
-  }, [groves, query]);
+      .map((grove) => {
+        const projects = needle
+          ? grove.projects.filter((project) =>
+              `${grove.name} ${project.name}`.toLowerCase().includes(needle))
+          : grove.projects;
+        return { ...grove, projects: [...projects].sort(byRecency) };
+      })
+      .filter((grove) => grove.projects.length > 0 || !needle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groves, query, lastActivityById]);
 
   useEffect(() => {
     if (!open) return;
@@ -119,7 +139,7 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
             />
           </label>
           <div className="mt-2 max-h-80 overflow-auto">
-            {filteredGroves.map((grove) => (
+            {displayGroves.map((grove) => (
               <div key={grove.id} className="py-1">
                 <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-on-surface-variant">
                   {grove.name}
@@ -127,6 +147,7 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
                 {grove.projects.map((project) => {
                   const active = selection.grove.id === grove.id
                     && selection.project.project_id === project.project_id;
+                  const lastActivity = lastActivityById.get(project.project_id);
                   return (
                     <button
                       key={project.project_id}
@@ -141,7 +162,11 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
                     >
                       <ProjectAvatar project={project} color={colorForProjectId(project.project_id)} />
                       <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                      {active && <Check className="h-4 w-4" />}
+                      {active ? (
+                        <Check className="h-4 w-4 shrink-0" />
+                      ) : lastActivity ? (
+                        <span className="shrink-0 text-[10px] text-on-surface-variant">{formatTimeAgo(lastActivity)}</span>
+                      ) : null}
                     </button>
                   );
                 })}

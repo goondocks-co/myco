@@ -19,12 +19,6 @@ Myco captures project memory in a local vault and serves it back through context
 - In git worktrees, use `make dev-link-worktree`; it writes a worktree-local `.myco/runtime.command` directly to that worktree's compiled binary without changing shared symlinks. Hook capture still routes through the main checkout runtime so data collection stays attached to the main vault.
 - `make dev-unlink` removes shared dev symlinks and `.myco/runtime.command`; `make dev-unlink-worktree` removes only the worktree runtime pin.
 
-## Non-Goals
-
-- Myco is not a general-purpose note-taking app or external web service.
-- Myco is not a framework. Do not add plugin systems or abstractions for hypothetical consumers.
-- Do not add mandatory cloud-service dependencies for core local intelligence flows.
-
 ## Core Invariants
 
 - `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
@@ -35,6 +29,27 @@ Myco captures project memory in a local vault and serves it back through context
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
 - License is **Apache 2.0** (relicensed from MIT on 2026-04-29). New files must carry the Apache header; do not introduce GPL- or AGPL-licensed dependencies.
+
+## Non-Negotiable Rules
+
+- Think before coding. Surface assumptions and ambiguities instead of guessing.
+- Prefer extending existing patterns over one-off patches.
+- Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
+- Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
+- Preserve clear domain ownership. Do not blur module boundaries without a reason. Callout and fix when you see this happening.
+- Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
+- Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.
+- Prefer explicit configuration and user choice over heuristic detection when both are viable.
+- When in doubt, ask whether the rule belongs here or should live in Myco context instead.
+
+## Quality Gates
+
+- For local test loops, target the smallest relevant scope first: `npm test -- <test-file-or-dir>` or `npm run test:debug -- <test-file-or-dir>`. Do not repeatedly pipe the full `npm test` suite through `grep` just to find one failure.
+- Before finishing a feature, run `make build` (it runs the checks too — no need to run `make check` separately).
+- Before finishing a feature, smoke-test the changed behavior.
+- When changing an installed, generated, or user-facing surface, verify it through the real command or runtime path, not only through unit tests.
+- Use `make build-only` when you need the distributable build or when dogfooding hook or daemon changes.
+- For code changes, add or update tests when behavior changes.
 
 ## Global Install Architecture
 
@@ -102,31 +117,7 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 - Wrap per-state-class writes in a helper that runs the invariant guard FIRST (e.g. `_writePerMachineFile(fn)` calls `_ensureGitignore()` before invoking `fn`).
 - Compute responses from a FRESH read of the resource, not by piggy-backing the response on the last write's return value (an empty batch must still return the live state).
 - When refactoring a function that had defensive try/catch or validation, audit each removed line for the question *"what input or filesystem state was this defending against?"* — the answer is almost always load-bearing, not cleanup.
-- Pin externally observable behavior with contract-diff regression tests: every (input → status, error code, response shape) tuple the old code honored must survive the refactor. Happy-path tests catch zero of these regressions.
-
-## Working Style
-
-- Think before coding. Surface assumptions and ambiguities instead of guessing.
-- Prefer the smallest correct change.
-- Make surgical edits. Do not refactor adjacent code without a concrete need.
-- Match the existing style of the code you touch.
-- Prefer extending existing patterns over one-off patches.
-- Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
-- Preserve clear domain ownership. Do not blur module boundaries without a reason.
-- Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
-- Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.
-- Prefer explicit configuration and user choice over heuristic detection when both are viable.
-- When in doubt, ask whether the rule belongs here or should live in Myco context instead.
-
-## Quality Gates
-
-- For local test loops, target the smallest relevant scope first: `npm test -- <test-file-or-dir>` or `npm run test:debug -- <test-file-or-dir>`. Do not repeatedly pipe the full `npm test` suite through `grep` just to find one failure.
-- Before finishing a feature, run `make build`.
-- Before finishing a feature, smoke-test the changed behavior.
-- When changing an installed, generated, or user-facing surface, verify it through the real command or runtime path, not only through unit tests.
-- Before committing, run `make check`.
-- Use `make build` when you need the distributable build or when dogfooding hook or daemon changes.
-- For code changes, add or update tests when behavior changes.
+- Pin externally observable behavior with contract-diff regression tests: every (input → status, error code, response shape) tuple the old code honored must survive the refactor. Happy-path tests catch zero of these regressions
 
 ## Update Safety
 
@@ -136,7 +127,6 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 - Use `@myco/*` path aliases for imports from `src/*`.
 - Mirror source tests at `tests/<module>.test.ts`.
-
 
 <!-- myco:managed:start -->
 ## Myco Managed Guidance

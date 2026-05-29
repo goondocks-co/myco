@@ -5,6 +5,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from '../helpers/vi-shim.js';
+import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 
 /* ---------- Substrate state used by the mocks ---------- */
 
@@ -299,9 +300,11 @@ async function renderAppAt(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <App />
-      </MemoryRouter>
+      <PowerProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <App />
+        </MemoryRouter>
+      </PowerProvider>
     </QueryClientProvider>,
   );
 }

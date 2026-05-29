@@ -12,16 +12,14 @@
 //
 // See https://opencode.ai/docs/plugins/
 //
-// Degraded-mode safety: this plugin ships committed inside any project that has
-// used the dashboard's commit-to-repo opt-in — the file lives at
-// .opencode/plugins/myco.ts in that project's repo. When a teammate clones such
-// a project WITHOUT having Myco installed
-// locally, opencode will still load this plugin (the file is right there in the
-// cloned repo). To stay invisible in that case, the plugin has NO external
+// Degraded-mode safety: this plugin is installed globally (it lives at
+// ~/.config/opencode/plugins/myco.ts) and therefore loads for every opencode
+// session on the machine — including in non-git folders or when the Myco
+// daemon is down. To stay invisible in those cases, the plugin has NO external
 // runtime imports — only node:fs and node:path, which are always available in
 // Bun's runtime. Every path that would contact the Myco daemon gracefully no-ops
-// when `.myco/daemon.json` is absent or the daemon is unreachable, so the plugin
-// becomes invisible rather than throwing. Do NOT add runtime imports from
+// when the daemon endpoint is absent or unreachable, so the plugin becomes
+// invisible rather than throwing. Do NOT add runtime imports from
 // @opencode-ai/plugin or any other package — that would break this guarantee.
 
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";

@@ -171,13 +171,9 @@ export function resolveMainRepoRoot(cwd: string = process.cwd()): string {
 
 /**
  * True when `cwd` is inside a git worktree that is NOT the main repo
- * checkout. The capture stack ships its hook bootstrap files
- * (`.claude/settings.json`, `.agents/myco-run.cjs`, optionally
- * `.myco/runtime.command`) as untracked or gitignored — so a freshly
- * created worktree has none of them and capture silently goes dark
- * until they're written. The dashboard's commit-to-repo opt-in is
- * the supported recovery path; this helper is what it uses to gate
- * behavior.
+ * checkout. Myco resolves a worktree's capture to the main checkout's
+ * `.myco` vault so sessions from every worktree of a repo land in one
+ * place; this helper detects the worktree case so callers can redirect.
  */
 export function isInsideWorktree(cwd: string = process.cwd()): boolean {
   const worktreeRoot = resolveWorktreeRoot(cwd);

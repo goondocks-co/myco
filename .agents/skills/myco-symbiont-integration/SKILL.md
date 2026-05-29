@@ -13,8 +13,8 @@ description: >-
   Runtime.command redirect mechanisms, substituteRuntimeCommand flag for
   PATH collision handling, universal stop buffer fallback patterns, scratchProbe()
   session validation, installer skill discovery, MCP tool registration verification
-  procedures, API verification discipline, source==exec capture filter for
-  sub-agent phantom defense.
+  procedures, API verification discipline, ephemeral sub-invocation capture
+  filter for sub-agent phantom defense.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -285,26 +285,31 @@ if (!isValidSession) {
 
 ---
 
-## Procedure 6: source==exec Filter — 4th Phantom Defense Layer
+## Procedure 6: Ephemeral Sub-Invocation Filter — 4th Phantom Defense Layer
 
-**Problem:** Agents spawn sub-agent processes that also have hooks installed. Without filtering, each creates phantom sessions.
+**Problem:** Some agents spawn internal LLM sub-invocations (e.g. Codex's UI title generation) that fire `SessionStart`/`UserPromptSubmit` with their own `session_id`. Without filtering, each creates a phantom session.
 
-**Solution:** Add a rule in the manifest to filter `source==exec` calls:
+**Solution:** Add a `session_start` rule in the manifest that `drop`s the phantom on a structural signal. The robust signal is `transcript_path_missing`: real user-facing sessions always have a rollout/transcript file, ephemeral sub-invocations never do. Key on the protocol contract, not on prompt text that can drift. (The `CaptureRule` schema matches via `when:` — `transcript_path_missing` or a `session_meta` dot-path — and supports `drop` / `rewrite_prompt` / `classify`; there is no `source` field.)
 
 ```yaml
 capture:
   rules:
-    - source: exec
-      event: session_start
-      action: skip
-      reason: Filter sub-agent spawns
+    # Layer 1 — stop the phantom from ever being registered.
+    - event: session_start
+      scope: any_agent
+      when:
+        transcript_path_missing: true
+      action: drop
+      reason: ephemeral-sub-invocation
+    # Layer 2 — safety net for a phantom row that slipped past SessionStart
+    #           (e.g. the rollout file hadn't flushed when SessionStart fired).
 ```
 
-All four phantom defense layers must be present:
+See `codex.yaml` for the live two-layer example. All four phantom defense layers must be present:
 1. **Zod schema must accept null** for `transcript_path`
 2. **Filter BEFORE daemon wake** via `evaluateSessionStartRules()`
 3. **Complete drop filter** covering project path matching, symbiont identity
-4. **source==exec filter** for sub-agent invocations
+4. **Ephemeral sub-invocation filter** (`transcript_path_missing` drop) for agents that spawn hooked sub-invocations
 
 ---
 
@@ -442,7 +447,7 @@ All four layers must be present:
 1. **Zod schema must accept null:** `transcript_path: z.string().nullable()`
 2. **Filter BEFORE daemon wake:** `evaluateSessionStartRules()` fires first
 3. **Complete drop filter:** project path matching, symbiont identity
-4. **source==exec filter:** blocks sub-agent invocations
+4. **Ephemeral sub-invocation filter:** `session_start` + `transcript_path_missing` drop rule blocks sub-agent phantoms
 
 ---
 

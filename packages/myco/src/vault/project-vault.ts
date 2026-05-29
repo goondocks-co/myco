@@ -132,153 +132,6 @@ export class ProjectVault {
   }
 
   // -------------------------------------------------------------------
-  // Lifecycle operations
-  // -------------------------------------------------------------------
-
-  /**
-   * Commit Myco config to the repo: portable Grove identity in
-   * `project.toml`, per-machine binding in `project.local.toml`,
-   * optional project-local launchers and runtime-command pin.
-   *
-   * Refuses (409-shaped) when an existing project.toml binds a
-   * different `project.id` — the caller must reconcile before
-   * overwriting a foreign identity.
-   *
-   * Idempotent: re-running with the same identity is a no-op against
-   * the file contents (the manifest writers merge), but the gitignore
-   * and binding_id are refreshed on every call.
-   */
-  commitToRepo(opts: CommitToRepoOptions): CommitResult {
-    // Defensive read: a corrupt project.toml shouldn't block the repair
-    // endpoint. If parse/Zod fails, treat as no-existing-manifest and
-    // proceed to overwrite — the user's only recovery path. Both the
-    // capability's read AND the underlying primitive's merge-read can
-    // throw on bad bytes, so when we hit a parse error we also unlink
-    // the file so the primitive starts fresh.
-    let existing: ProjectManifest | null;
-    try {
-      existing = this.readManifest();
-    } catch {
-      existing = null;
-      const manifestPath = resolveProjectManifestPath(this.vaultDir);
-      if (fs.existsSync(manifestPath)) {
-        try { fs.unlinkSync(manifestPath); } catch { /* best effort */ }
-      }
-    }
-    if (existing && existing.project.id !== opts.project.id) {
-      throw new ProjectIdMismatchError(existing.project.id, opts.project.id);
-    }
-
-    // Validate runtime_command BEFORE any disk writes — keeps the
-    // partial-failure surface tight. path.isAbsolute throws on non-string
-    // input, so guard the type first.
-    if (opts.runtimeCommand !== undefined) {
-      if (typeof opts.runtimeCommand !== 'string' || opts.runtimeCommand.length === 0) {
-        throw new InvalidRuntimeCommandError(String(opts.runtimeCommand));
-      }
-      if (!path.isAbsolute(opts.runtimeCommand)) {
-        throw new InvalidRuntimeCommandError(opts.runtimeCommand);
-      }
-    }
-
-    // Pre-resolve the binding_id so a later writer can't change it. The
-    // existing binding is preserved (re-commit is stable); absence mints
-    // a fresh one.
-    const existingLocal = this.readLocalManifest();
-    const bindingId =
-      existingLocal?.grove_binding?.binding_id ?? createGroveBindingId();
-
-    const wrote: string[] = [];
-
-    // project.toml is portable (committed). Per-machine companions go
-    // through `_writePerMachineFile` so the gitignore covering them is
-    // structurally guaranteed to hit disk before they do.
-    saveProjectManifest(this.vaultDir, {
-      project: {
-        id: assertGroveProjectId(opts.project.id),
-        name: opts.project.name,
-      },
-      grove: {
-        id: opts.grove.id,
-        slug: opts.grove.slug,
-        name: opts.grove.name,
-        mode: 'local',
-      },
-    });
-    wrote.push(this.rel(resolveProjectManifestPath(this.vaultDir)));
-
-    this._writePerMachineFile(resolveProjectLocalManifestPath(this.vaultDir), () => {
-      saveProjectLocalManifest(this.vaultDir, {
-        grove_binding: { binding_id: bindingId, mode: 'local' },
-      });
-    });
-
-    if (opts.writeLaunchers) {
-      const template = BUNDLED_TEMPLATES['myco-run.cjs'];
-      if (!template) throw new Error('Bundled myco-run.cjs template is unavailable');
-      const agentsDir = path.join(this.projectRoot, '.agents');
-      fs.mkdirSync(agentsDir, { recursive: true });
-      for (const rel of LAUNCHER_FILES) {
-        const absPath = path.join(this.projectRoot, rel);
-        this._writePerMachineFile(absPath, () => {
-          atomicWriteFileSync(absPath, template);
-        });
-        wrote.push(rel);
-      }
-    }
-
-    if (opts.runtimeCommand !== undefined) {
-      const absPath = path.join(this.projectRoot, RUNTIME_COMMAND_REL);
-      fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      this._writePerMachineFile(absPath, () => {
-        atomicWriteFileSync(absPath, `${opts.runtimeCommand!.trim()}\n`);
-      });
-      wrote.push(RUNTIME_COMMAND_REL);
-    }
-
-    return { wrote, bindingId };
-  }
-
-  /**
-   * Remove the committed Myco config. By default sweeps everything
-   * `commitToRepo` could have written: project.toml, project.local.toml,
-   * launchers, runtime.command. Power users can preserve the launchers
-   * and/or runtime pin via opts.
-   *
-   * The retired `.agents/myco-hook.cjs` guard is ALWAYS swept,
-   * regardless of opts — it's never something a deliberate workflow
-   * wants to keep, and the migration walker invariant assumes it's
-   * cleaned on every removal opportunity.
-   */
-  uncommitFromRepo(opts: UncommitFromRepoOptions = {}): UncommitResult {
-    const removeLaunchers = opts.removeLaunchers !== false;
-    const removeRuntime = opts.removeRuntimeCommand !== false;
-    const removed: string[] = [];
-
-    for (const target of [
-      resolveProjectManifestPath(this.vaultDir),
-      resolveProjectLocalManifestPath(this.vaultDir),
-    ]) {
-      if (!fs.existsSync(target)) continue;
-      try {
-        fs.unlinkSync(target);
-        removed.push(this.rel(target));
-      } catch (err) {
-        throw new VaultWriteError(`Could not remove ${target}: ${(err as Error).message}`);
-      }
-    }
-
-    const swept = removeProjectLaunchers(this.projectRoot, {
-      legacy: true,
-      active: removeLaunchers,
-      runtimeCommand: removeRuntime,
-    });
-    removed.push(...swept);
-
-    return { removed };
-  }
-
-  // -------------------------------------------------------------------
   // Symbiont overrides
   // -------------------------------------------------------------------
 
@@ -498,27 +351,6 @@ export type ProjectLifecycleState =
   }
   | { kind: 'committed-broken'; reason: 'invalid-manifest' };
 
-export interface CommitToRepoOptions {
-  project: { id: string; name: string };
-  grove: { id: string; slug: string; name: string };
-  writeLaunchers?: boolean;
-  runtimeCommand?: string;
-}
-
-export interface CommitResult {
-  wrote: string[];
-  bindingId: string;
-}
-
-export interface UncommitFromRepoOptions {
-  removeLaunchers?: boolean;
-  removeRuntimeCommand?: boolean;
-}
-
-export interface UncommitResult {
-  removed: string[];
-}
-
 export interface WriteIdentityOptions {
   manifest: ProjectManifest;
   /** Explicit local manifest override (e.g., when migrating from a combined manifest). */
@@ -544,34 +376,6 @@ export interface WriteIdentityResult {
 }
 
 // =====================================================================
-// Errors (typed so HTTP handlers can map to specific envelopes)
-// =====================================================================
-
-export class ProjectIdMismatchError extends Error {
-  constructor(public readonly committedId: string, public readonly requestedId: string) {
-    super(
-      `Committed project.toml binds id ${committedId}; the request supplied ${requestedId}. ` +
-      `Reconcile before re-committing.`,
-    );
-    this.name = 'ProjectIdMismatchError';
-  }
-}
-
-export class InvalidRuntimeCommandError extends Error {
-  constructor(public readonly value: string) {
-    super(`runtime_command must be an absolute path; got ${JSON.stringify(value)}`);
-    this.name = 'InvalidRuntimeCommandError';
-  }
-}
-
-export class VaultWriteError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'VaultWriteError';
-  }
-}
-
-// =====================================================================
 // Constants (private to this module)
 // =====================================================================
 
@@ -583,15 +387,15 @@ const LAUNCHER_FILES = [
 const RUNTIME_COMMAND_REL = path.join('.myco', 'runtime.command');
 
 // =====================================================================
-// Migration walker helper — single source of truth for "opted in"
+// Committed-config helper — single source of truth
 // =====================================================================
 
 /**
- * Single source of truth for whether a project at `projectRoot` has
- * opted into the dashboard's commit-to-repo flow. Used by the migration
- * walker (which must preserve committed-project launchers) and by UI
- * status badges. Defined here, not in global-install-migration.ts, so the
- * marker definition cannot drift from the writer.
+ * Single source of truth for whether a project at `projectRoot` has its
+ * Myco identity committed to the repo (a tracked `project.toml`). Used by
+ * the migration and UI status badges. Defined here, not in
+ * global-install-migration.ts, so the marker definition cannot drift from
+ * the writer.
  */
 export function projectHasCommittedConfig(projectRoot: string): boolean {
   return new ProjectVault(projectRoot).isCommittedToRepo();

@@ -38,13 +38,16 @@ afterEach(() => {
   fs.rmSync(projectRoot, { recursive: true, force: true });
 });
 
-function defaultCommitOpts() {
+function defaultIdentity() {
+  const id = createProjectId();
   return {
-    project: { id: createProjectId(), name: 'subject' },
-    grove: {
-      id: 'grove_00000000000000000000000000000001',
-      slug: 'default',
-      name: 'Default',
+    manifest: {
+      project: { id, name: 'subject' },
+      grove: {
+        id: 'grove_00000000000000000000000000000001',
+        slug: 'default',
+        name: 'Default',
+      },
     },
   };
 }
@@ -108,38 +111,16 @@ describe('ProjectVault invariants — held after every public method', () => {
     assertInvariants('ensureGitignore');
   });
 
-  it('after commitToRepo (basic)', () => {
-    vault.commitToRepo(defaultCommitOpts());
-    assertInvariants('commitToRepo basic');
+  it('after writeIdentity (both)', () => {
+    vault.writeIdentity(defaultIdentity());
+    assertInvariants('writeIdentity both');
   });
 
-  it('after commitToRepo with launchers', () => {
-    vault.commitToRepo({ ...defaultCommitOpts(), writeLaunchers: true });
-    assertInvariants('commitToRepo writeLaunchers');
-  });
-
-  it('after commitToRepo with runtime_command', () => {
-    vault.commitToRepo({
-      ...defaultCommitOpts(),
-      runtimeCommand: '/usr/local/bin/myco-dev',
-    });
-    assertInvariants('commitToRepo runtime_command');
-  });
-
-  it('after commitToRepo with all flags', () => {
-    vault.commitToRepo({
-      ...defaultCommitOpts(),
-      writeLaunchers: true,
-      runtimeCommand: '/usr/local/bin/myco-dev',
-    });
-    assertInvariants('commitToRepo all flags');
-  });
-
-  it('after re-commit (binding_id preserved)', () => {
-    const opts = defaultCommitOpts();
-    vault.commitToRepo(opts);
-    vault.commitToRepo(opts);
-    assertInvariants('re-commit');
+  it('after re-writeIdentity (binding_id preserved)', () => {
+    const identity = defaultIdentity();
+    vault.writeIdentity(identity);
+    vault.writeIdentity(identity);
+    assertInvariants('re-writeIdentity');
   });
 
   it('after setSymbiontEnabled (auto-registered project)', () => {
@@ -156,35 +137,18 @@ describe('ProjectVault invariants — held after every public method', () => {
   });
 
   it('after patchSymbiontOverrides ({}) — empty patch is a no-op', () => {
-    vault.commitToRepo(defaultCommitOpts());
+    vault.writeIdentity(defaultIdentity());
     vault.patchSymbiontOverrides({});
     assertInvariants('patchSymbiontOverrides empty');
   });
 
-  it('after uncommitFromRepo (after commit)', () => {
-    vault.commitToRepo({ ...defaultCommitOpts(), writeLaunchers: true });
-    vault.uncommitFromRepo();
-    assertInvariants('uncommitFromRepo');
-  });
-
-  it('after writeIdentity (both)', () => {
-    const opts = defaultCommitOpts();
-    vault.writeIdentity({
-      manifest: {
-        project: { id: opts.project.id, name: opts.project.name },
-        grove: { id: opts.grove.id, slug: opts.grove.slug, name: opts.grove.name },
-      },
-    });
-    assertInvariants('writeIdentity both');
-  });
-
   it('after writeIdentity (manifest-only) — pre-existing local preserved', () => {
-    const opts = defaultCommitOpts();
-    vault.commitToRepo(opts);
+    const identity = defaultIdentity();
+    vault.writeIdentity(identity);
     vault.writeIdentity({
       manifest: {
-        project: { id: opts.project.id, name: 'renamed' },
-        grove: { id: opts.grove.id, slug: opts.grove.slug, name: opts.grove.name },
+        project: { id: identity.manifest.project.id, name: 'renamed' },
+        grove: identity.manifest.grove,
       },
       mode: 'manifest-only',
     });
@@ -192,49 +156,12 @@ describe('ProjectVault invariants — held after every public method', () => {
   });
 
   it('after writeIdentity (local-only) — pre-existing manifest preserved', () => {
-    const opts = defaultCommitOpts();
-    vault.commitToRepo(opts);
+    const identity = defaultIdentity();
+    vault.writeIdentity(identity);
     vault.writeIdentity({
-      manifest: {
-        project: { id: opts.project.id, name: opts.project.name },
-        grove: { id: opts.grove.id, slug: opts.grove.slug, name: opts.grove.name },
-      },
+      manifest: identity.manifest,
       mode: 'local-only',
     });
     assertInvariants('writeIdentity local-only');
-  });
-});
-
-/* ---------- Failure-path property: invariants hold even when an op throws ---------- */
-
-describe('ProjectVault invariants — held even on failure', () => {
-  it('commitToRepo with writeLaunchers: gitignore is on disk before launcher write attempts', () => {
-    // Block .agents/ from being created (file in the way).
-    fs.mkdirSync(projectRoot, { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.agents'), 'blocker');
-
-    expect(() => vault.commitToRepo({
-      ...defaultCommitOpts(),
-      writeLaunchers: true,
-    })).toThrow();
-
-    // I1 must still hold: gitignore was written before the launcher
-    // step threw. This is the structural-invariant property that
-    // procedural ordering can't guarantee.
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    expect(fs.existsSync(path.join(vaultDir, '.gitignore'))).toBe(true);
-  });
-
-  it('commitToRepo with invalid runtime_command: vault state remains consistent', () => {
-    expect(() => vault.commitToRepo({
-      ...defaultCommitOpts(),
-      runtimeCommand: 'relative-path',
-    })).toThrow();
-
-    // Validation throws BEFORE any disk I/O, so the vault is still
-    // empty — no half-committed state.
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    expect(fs.existsSync(path.join(vaultDir, 'project.toml'))).toBe(false);
-    expect(fs.existsSync(path.join(vaultDir, 'project.local.toml'))).toBe(false);
   });
 });

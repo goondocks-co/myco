@@ -12,7 +12,13 @@ interface Props {
 
 export function GroveProjectsPanel({ groveSlug }: Props) {
   const { data, isLoading } = useProjectsActivity();
-  const rows = (data?.projects ?? []).filter((p) => p.grove_slug === groveSlug);
+  // Most-recently-active first so the list stays scannable as projects
+  // accumulate; projects with no activity sink to the bottom.
+  const rows = (data?.projects ?? [])
+    .filter((p) => p.grove_slug === groveSlug)
+    .sort((a, b) =>
+      (b.last_activity_at ? Date.parse(b.last_activity_at) : 0) -
+      (a.last_activity_at ? Date.parse(a.last_activity_at) : 0));
 
   return (
     <Panel

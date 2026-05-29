@@ -1,8 +1,6 @@
 /**
  * Wave 1 API stubs for the per-project Symbiont page:
  *   PATCH  /api/projects/:projectId/symbionts
- *   POST   /api/projects/:projectId/commit-to-repo
- *   DELETE /api/projects/:projectId/commit-to-repo
  *   POST   /api/symbionts/drain-migration
  *
  * Wave 2 (the UI implementation) consumes these. The contract is locked
@@ -15,31 +13,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  createCommitToRepoHandler,
-  createUncommitFromRepoHandler,
-} from '@myco/daemon/api/projects.js';
-import {
   createProjectSymbiontsPatchHandler,
   handleDrainMigration,
 } from '@myco/daemon/api/symbionts.js';
 import { createProjectId } from '@myco/grove/ids.js';
-import {
-  resolveProjectManifestPath,
-  resolveProjectVaultDir,
-} from '@myco/grove/paths.js';
+import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import {
-  loadProjectLocalManifest,
-  loadProjectManifest,
-  saveProjectLocalManifest,
-  saveProjectManifest,
-} from '@myco/config/project-manifest.js';
 import { loadConfig } from '@myco/config/loader.js';
-import { assertGroveProjectId } from '@myco/grove/ids.js';
 import type { RouteHandler, RouteResponse } from '@myco/daemon/router.js';
 
 let testDir: string;
@@ -148,162 +132,6 @@ describe('PATCH /api/projects/:projectId/symbionts', () => {
   });
 });
 
-describe('POST /api/projects/:projectId/commit-to-repo', () => {
-  it('writes project.toml with project + grove identity', async () => {
-    const { projectId, projectRoot, grove } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-
-    expect(response.status).toBeUndefined();
-    const body = response.body as {
-      ok: boolean;
-      project_id: string;
-      grove_id: string;
-      manifest_path: string;
-      wrote: string[];
-    };
-    expect(body.ok).toBe(true);
-    expect(body.project_id).toBe(projectId);
-    expect(body.grove_id).toBe(grove.id);
-    expect(body.wrote).toEqual([path.join('.myco', 'project.toml')]);
-
-    const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
-    expect(manifest?.project.id).toBe(projectId);
-    expect(manifest?.grove?.id).toBe(grove.id);
-    expect(manifest?.grove?.slug).toBe(grove.slug);
-    // binding_id is per-machine (lives in project.local.toml). Without it,
-    // the daemon's `assertGroveBound` refuses to start against this vault.
-    const local = loadProjectLocalManifest(resolveProjectVaultDir(projectRoot));
-    expect(local?.grove_binding?.binding_id).toMatch(/^gbind_[a-f0-9]+$/);
-    expect(local?.grove_binding?.mode).toBe('local');
-  });
-
-  it('writes project-local launchers when write_launchers=true', async () => {
-    const { projectId, projectRoot } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId }, body: { write_launchers: true } },
-    );
-    expect(response.status).toBeUndefined();
-    const body = response.body as { wrote: string[] };
-    expect(body.wrote).toContain(path.join('.agents', 'myco-run.cjs'));
-    expect(body.wrote).toContain(path.join('.agents', 'myco-cli.cjs'));
-
-    const runCjs = fs.readFileSync(path.join(projectRoot, '.agents', 'myco-run.cjs'), 'utf-8');
-    const cliCjs = fs.readFileSync(path.join(projectRoot, '.agents', 'myco-cli.cjs'), 'utf-8');
-    expect(runCjs).toContain('MYCO_LAUNCHER_PROTOCOL=v2');
-    expect(cliCjs).toEqual(runCjs);
-  });
-
-  it('writes runtime.command pin when runtime_command is set', async () => {
-    const { projectId, projectRoot } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      {
-        params: { projectId },
-        body: { runtime_command: '/usr/local/bin/myco-dev' },
-      },
-    );
-    expect(response.status).toBeUndefined();
-    const body = response.body as { wrote: string[] };
-    expect(body.wrote).toContain(path.join('.myco', 'runtime.command'));
-
-    const pin = fs.readFileSync(path.join(projectRoot, '.myco', 'runtime.command'), 'utf-8');
-    expect(pin.trim()).toBe('/usr/local/bin/myco-dev');
-  });
-
-  it('rejects relative runtime_command', async () => {
-    const { projectId } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      {
-        params: { projectId },
-        body: { runtime_command: 'myco-dev' },
-      },
-    );
-    expect(response.status).toBe(400);
-    const body = response.body as { error?: { code?: string } };
-    expect(body.error?.code).toBe('invalid_runtime_command');
-  });
-
-  it('returns 404 for an unregistered project', async () => {
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId: createProjectId() } },
-    );
-    expect(response.status).toBe(404);
-  });
-});
-
-describe('DELETE /api/projects/:projectId/commit-to-repo', () => {
-  it('removes project.toml + local.toml + launchers + runtime.command by default', async () => {
-    const { projectId, projectRoot } = seededProject();
-    await call(
-      createCommitToRepoHandler(daemonStateDir),
-      {
-        params: { projectId },
-        body: { write_launchers: true, runtime_command: '/usr/local/bin/myco-dev' },
-      },
-    );
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    const manifestPath = resolveProjectManifestPath(vaultDir);
-    const localManifestPath = path.join(vaultDir, 'project.local.toml');
-    const runCjs = path.join(projectRoot, '.agents', 'myco-run.cjs');
-    const pin = path.join(projectRoot, '.myco', 'runtime.command');
-    expect(fs.existsSync(manifestPath)).toBe(true);
-    expect(fs.existsSync(localManifestPath)).toBe(true);
-    expect(fs.existsSync(runCjs)).toBe(true);
-    expect(fs.existsSync(pin)).toBe(true);
-
-    const response = await call(
-      createUncommitFromRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    expect(response.status).toBeUndefined();
-    const body = response.body as { ok: boolean; removed: string[] };
-    expect(body.ok).toBe(true);
-    expect(body.removed).toContain(path.join('.myco', 'project.toml'));
-    expect(body.removed).toContain(path.join('.myco', 'project.local.toml'));
-    expect(body.removed).toContain(path.join('.agents', 'myco-run.cjs'));
-    expect(body.removed).toContain(path.join('.agents', 'myco-cli.cjs'));
-    expect(body.removed).toContain(path.join('.myco', 'runtime.command'));
-    expect(fs.existsSync(manifestPath)).toBe(false);
-    expect(fs.existsSync(localManifestPath)).toBe(false);
-    expect(fs.existsSync(runCjs)).toBe(false);
-    expect(fs.existsSync(pin)).toBe(false);
-  });
-
-  it('preserves launchers when remove_launchers=false', async () => {
-    const { projectId, projectRoot } = seededProject();
-    await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId }, body: { write_launchers: true } },
-    );
-    const runCjs = path.join(projectRoot, '.agents', 'myco-run.cjs');
-    expect(fs.existsSync(runCjs)).toBe(true);
-
-    await call(
-      createUncommitFromRepoHandler(daemonStateDir),
-      { params: { projectId }, body: { remove_launchers: false } },
-    );
-    expect(fs.existsSync(runCjs)).toBe(true);
-  });
-
-  it('is idempotent when nothing has been committed', async () => {
-    const { projectId } = seededProject();
-    const response = await call(
-      createUncommitFromRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    expect(response.status).toBeUndefined();
-    const body = response.body as { ok: boolean; removed: string[] };
-    expect(body.ok).toBe(true);
-    expect(body.removed).toEqual([]);
-  });
-});
-
 describe('POST /api/symbionts/drain-migration', () => {
   it('returns a migration pass result with the expected shape', async () => {
     const response = await handleDrainMigration();
@@ -332,62 +160,6 @@ describe('Regression coverage for /code-review high-effort fixes', () => {
   // is the only project-level surface and lives in myco.yaml's
   // `symbionts.<name>.enabled: false`.
 
-  it('Fix #2: commit-to-repo writes .myco/.gitignore', async () => {
-    const { projectId, projectRoot } = seededProject();
-    await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    const gitignorePath = path.join(resolveProjectVaultDir(projectRoot), '.gitignore');
-    expect(fs.existsSync(gitignorePath)).toBe(true);
-    const body = fs.readFileSync(gitignorePath, 'utf-8');
-    // Verify the per-machine files we now write are covered.
-    expect(body).toMatch(/project\.local\.toml|local\.yaml/);
-  });
-
-  it('Fix #3: uncommit sweeps the retired .agents/myco-hook.cjs guard', async () => {
-    const { projectId, projectRoot } = seededProject();
-    // Plant a legacy guard alongside the modern launchers.
-    fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'), '// legacy\n');
-    await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId }, body: { write_launchers: true } },
-    );
-    expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'))).toBe(true);
-
-    const response = await call(
-      createUncommitFromRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    const body = response.body as { removed: string[] };
-    expect(body.removed).toContain(path.join('.agents', 'myco-hook.cjs'));
-    expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-hook.cjs'))).toBe(false);
-  });
-
-  it('Fix #5: commit-to-repo refuses to overwrite a foreign committed project.id', async () => {
-    const { projectId, projectRoot } = seededProject();
-    // Plant an existing project.toml whose project.id belongs to
-    // somebody else (e.g. a teammate committed it from another machine).
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    fs.mkdirSync(vaultDir, { recursive: true });
-    const foreignId = 'proj_ffffffffffffffffffffffffffffffff';
-    saveProjectManifest(vaultDir, {
-      project: { id: assertGroveProjectId(foreignId), name: 'remote' },
-      grove: { slug: 'whatever' },
-    });
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    expect(response.status).toBe(409);
-    const body = response.body as { error?: { code?: string } };
-    expect(body.error?.code).toBe('project_id_mismatch');
-    // Original file untouched.
-    const after = loadProjectManifest(vaultDir);
-    expect(after?.project.id).toBe(foreignId);
-  });
-
   it('Fix #7: PATCH symbionts writes .myco/.gitignore alongside myco.yaml', async () => {
     const { projectId, projectRoot } = seededProject();
     await call(
@@ -399,24 +171,6 @@ describe('Regression coverage for /code-review high-effort fixes', () => {
     );
     const gitignorePath = path.join(resolveProjectVaultDir(projectRoot), '.gitignore');
     expect(fs.existsSync(gitignorePath)).toBe(true);
-  });
-
-  it('Fix #8: commit-to-repo preserves an existing grove_binding.mode', async () => {
-    const { projectId, projectRoot } = seededProject();
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    fs.mkdirSync(vaultDir, { recursive: true });
-    saveProjectLocalManifest(vaultDir, {
-      grove_binding: { binding_id: 'gbind_preexisting1234', mode: 'local' as const },
-    });
-    await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    const local = loadProjectLocalManifest(vaultDir);
-    // binding_id must be preserved exactly, and mode must remain whatever
-    // was there before — the handler must never silently downgrade.
-    expect(local?.grove_binding?.binding_id).toBe('gbind_preexisting1234');
-    expect(local?.grove_binding?.mode).toBe('local');
   });
 
   it('Fix #9: PATCH symbionts rejects non-object entries with invalid_entry', async () => {
@@ -483,47 +237,6 @@ describe('Regression coverage for /code-review high-effort fixes', () => {
     // Sanity: the on-disk config is unchanged.
     const cfg = loadConfig(resolveProjectVaultDir(projectRoot));
     expect(cfg.symbionts?.['claude-code']?.enabled).toBe(false);
-  });
-
-  it('contract: non-string runtime_command returns 400 invalid_runtime_command (not 500)', async () => {
-    const { projectId } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      {
-        params: { projectId },
-        body: { runtime_command: 42 as unknown as string },
-      },
-    );
-    expect(response.status).toBe(400);
-    const body = response.body as { error?: { code?: string } };
-    expect(body.error?.code).toBe('invalid_runtime_command');
-  });
-
-  it('contract: empty-string runtime_command returns 400 invalid_runtime_command', async () => {
-    const { projectId } = seededProject();
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId }, body: { runtime_command: '' } },
-    );
-    expect(response.status).toBe(400);
-    const body = response.body as { error?: { code?: string } };
-    expect(body.error?.code).toBe('invalid_runtime_command');
-  });
-
-  it('contract: corrupt project.toml on disk does not block re-commit', async () => {
-    const { projectId, projectRoot } = seededProject();
-    // Pre-seed a malformed project.toml — simulates a partial write or
-    // hand-edit. The repair endpoint must still succeed.
-    const vaultDir = resolveProjectVaultDir(projectRoot);
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.writeFileSync(path.join(vaultDir, 'project.toml'), 'this is not [valid toml');
-    const response = await call(
-      createCommitToRepoHandler(daemonStateDir),
-      { params: { projectId } },
-    );
-    expect(response.status).toBeUndefined();
-    const body = response.body as { ok: boolean };
-    expect(body.ok).toBe(true);
   });
 
   it('contract: multi-entry PATCH is atomic (one updateConfig, not N)', async () => {

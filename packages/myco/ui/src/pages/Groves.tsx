@@ -1,7 +1,9 @@
-import { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, Search } from 'lucide-react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
+import { useProjectsActivity } from '../hooks/use-maintenance-summary';
+import { formatTimeAgo } from '../lib/format';
 import {
   useArchiveProject,
   useBackupProject,
@@ -50,9 +52,34 @@ export default function Groves() {
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<MoveTarget | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   const archiveAwareQuery = useGroves({ includeArchived });
   const groves = archiveAwareQuery.data?.groves ?? [];
+
+  // Per-project last-activity, so the list sorts most-recently-worked first
+  // and stays scannable as auto-registration accumulates projects.
+  const { data: activity } = useProjectsActivity();
+  const lastActivityById = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of activity?.projects ?? []) m.set(p.project_id, p.last_activity_at);
+    return m;
+  }, [activity]);
+
+  const activityMs = (projectId: string): number => {
+    const iso = lastActivityById.get(projectId);
+    return iso ? Date.parse(iso) : 0;
+  };
+
+  /** Search-filtered + recency-sorted projects for a grove. */
+  const visibleProjects = (grove: GroveSummary): GroveProjectSummary[] => {
+    const needle = search.trim().toLowerCase();
+    const filtered = needle
+      ? grove.projects.filter((p) => `${p.name} ${p.root}`.toLowerCase().includes(needle))
+      : grove.projects;
+    return [...filtered].sort((a, b) => activityMs(b.project_id) - activityMs(a.project_id));
+  };
+  const searching = search.trim().length > 0;
 
   function handleArchive(grove: GroveSummary, project: GroveProjectSummary) {
     archiveProject.mutate(
@@ -125,18 +152,33 @@ export default function Groves() {
           </Button>
         </header>
 
-        <label className="flex items-center gap-2 text-sm text-on-surface-variant">
-          <input
-            type="checkbox"
-            checked={includeArchived}
-            onChange={(event) => setIncludeArchived(event.target.checked)}
-            className="h-4 w-4 accent-primary"
-          />
-          Show archived projects
-        </label>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="flex w-full max-w-xs items-center gap-2 rounded-md border border-outline-variant/30 bg-surface px-2 py-1.5 text-sm">
+            <Search className="h-4 w-4 text-on-surface-variant" />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search projects by name or path"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-on-surface-variant"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-on-surface-variant">
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(event) => setIncludeArchived(event.target.checked)}
+              className="h-4 w-4 accent-primary"
+            />
+            Show archived projects
+          </label>
+        </div>
 
         <div className="flex flex-col gap-4">
-          {groves.map((grove) => (
+          {groves.map((grove) => {
+            const projects = visibleProjects(grove);
+            // When searching, hide Groves that have no matching projects.
+            if (searching && projects.length === 0) return null;
+            return (
             <Panel
               key={grove.id}
               tone="sage"
@@ -146,7 +188,9 @@ export default function Groves() {
                 <div className="flex items-center gap-2">
                   {grove.is_default && <Badge variant="outline">default</Badge>}
                   <span className="font-mono text-[11px] text-on-surface-variant">
-                    {grove.project_count} project{grove.project_count === 1 ? '' : 's'}
+                    {searching
+                      ? `${projects.length} of ${grove.project_count}`
+                      : `${grove.project_count} project${grove.project_count === 1 ? '' : 's'}`}
                   </span>
                   <GroveActionMenu
                     groveName={grove.name}
@@ -160,13 +204,15 @@ export default function Groves() {
               }
               padded={false}
             >
-              {grove.projects.length === 0 ? (
+              {projects.length === 0 ? (
                 <p className="px-5 py-4 text-sm text-on-surface-variant">
-                  No projects in this Grove.
+                  {searching ? 'No matching projects.' : 'No projects in this Grove.'}
                 </p>
               ) : (
                 <ul className="m-0 p-0 list-none">
-                  {grove.projects.map((project) => (
+                  {projects.map((project) => {
+                    const lastActivity = lastActivityById.get(project.project_id);
+                    return (
                     <li key={project.project_id}>
                       <Row accent="sage">
                         <div className="flex items-center gap-3">
@@ -183,6 +229,9 @@ export default function Groves() {
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-sm font-medium text-on-surface">{project.name}</span>
                               <span className="block truncate text-xs text-on-surface-variant font-mono">{project.root}</span>
+                              <span className="block truncate text-[11px] text-on-surface-variant">
+                                {lastActivity ? `last active ${formatTimeAgo(lastActivity)}` : 'no activity yet'}
+                              </span>
                             </span>
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>
@@ -203,11 +252,13 @@ export default function Groves() {
                         </div>
                       </Row>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               )}
             </Panel>
-          ))}
+            );
+          })}
         </div>
       </PageContainer>
 

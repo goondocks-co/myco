@@ -315,7 +315,7 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
   let chunkCount = 0;
   let totalBytes = 0;
 
-  const armWatchdog = () => {
+  const armWatchdog = (delayMs: number = options.idleTimeoutMs) => {
     if (watchdog) clearTimeout(watchdog);
     watchdog = setTimeout(() => {
       const sinceLastMs = options.now() - lastChunkAt;
@@ -324,8 +324,17 @@ function wrapBodyWithIdleWatchdog(args: WrapBodyArgs): ReadableStream<Uint8Array
           'idle-timeout',
           `No chunk received in ${sinceLastMs}ms (threshold ${options.idleTimeoutMs}ms)`,
         ));
+        return;
       }
-    }, options.idleTimeoutMs);
+      // The timer can wake a hair early: setTimeout rounds down and the
+      // wall-clock now() (Date.now) truncates to whole milliseconds, so a
+      // one-shot timer armed for exactly idleTimeoutMs can fire with
+      // sinceLastMs === idleTimeoutMs - 1 and fall through here. A silent
+      // stream has no further chunk to re-arm it, so it would otherwise hang
+      // until the total timeout or caller aborts. Re-arm for the remaining
+      // time so a genuinely idle stream always trips.
+      armWatchdog(Math.max(1, options.idleTimeoutMs - sinceLastMs));
+    }, delayMs);
     if (!options.refIdleWatchdog) watchdog.unref?.();
   };
 

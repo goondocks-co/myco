@@ -142,11 +142,13 @@ function parseJsonStringArray(
 }
 
 /**
- * Returns the subset of `refs` whose target vault record does not
- * exist under `scope`. One DB round-trip per source TYPE (spore /
- * session / plan / artifact), batched via `WHERE id IN (...)`. The
- * earlier `sourceRefExists`-per-ref pattern was N round-trips per
- * approval which compounded badly on bundle-rich candidates.
+ * Returns the subset of `refs` whose target vault record does not exist under
+ * `scope`. One DB round-trip per source TYPE (spore / session / plan /
+ * artifact). A ref resolves when a stored id equals it OR begins with it —
+ * source refs are frequently recorded in Myco's 8-char short-id form (the
+ * display/reference format used everywhere else), while the tables store full
+ * ids. An exact-only `id IN (...)` match silently reported short-id refs as
+ * "missing" and 400'd otherwise-valid candidate approvals.
  */
 function missingSourceRefs(
   refs: ReadonlyArray<ReturnType<typeof parseSourceRefsWithRawCount>['refs'][number]>,
@@ -159,11 +161,11 @@ function missingSourceRefs(
     ids.push(ref.id);
     byType.set(ref.type, ids);
   }
-  const present = new Map<string, Set<string>>();
+  const resolved = new Map<string, Set<string>>();
   for (const [type, ids] of byType) {
-    present.set(type, presentIdsForType(type, ids, scope));
+    resolved.set(type, resolvedRefIdsForType(type, ids, scope));
   }
-  return refs.filter((ref) => !(present.get(ref.type)?.has(ref.id) ?? false));
+  return refs.filter((ref) => !(resolved.get(ref.type)?.has(ref.id) ?? false));
 }
 
 const SOURCE_REF_TABLE_BY_TYPE: Record<string, string> = {
@@ -173,13 +175,28 @@ const SOURCE_REF_TABLE_BY_TYPE: Record<string, string> = {
   artifact: 'artifacts',
 };
 
-function presentIdsForType(type: string, ids: string[], scope: ProjectScope): Set<string> {
+/**
+ * Of the given `refIds`, return those that resolve to a stored record under
+ * `scope` — by exact id OR by prefix (a short id is a prefix of the full
+ * stored id). Uses `substr(id, 1, length(ref)) = ref` rather than `LIKE` to
+ * sidestep wildcard characters in ids; the JS pass re-confirms the prefix.
+ */
+function resolvedRefIdsForType(type: string, refIds: string[], scope: ProjectScope): Set<string> {
   const table = SOURCE_REF_TABLE_BY_TYPE[type];
-  if (!table || ids.length === 0) return new Set();
+  if (!table || refIds.length === 0) return new Set();
   const clause = projectScopeClause(scope);
-  const placeholders = ids.map(() => '?').join(', ');
+  const conds = refIds.map(() => '(id = ? OR substr(id, 1, ?) = ?)').join(' OR ');
+  const params: Array<string | number> = [];
+  for (const id of refIds) params.push(id, id.length, id);
   const rows = getDatabase()
-    .prepare(`SELECT id FROM ${table} WHERE id IN (${placeholders})${clause.sql}`)
-    .all(...ids, ...clause.params) as Array<{ id: string }>;
-  return new Set(rows.map((row) => row.id));
+    .prepare(`SELECT id FROM ${table} WHERE (${conds})${clause.sql}`)
+    .all(...params, ...clause.params) as Array<{ id: string }>;
+  const storedIds = rows.map((row) => row.id);
+  const resolved = new Set<string>();
+  for (const ref of refIds) {
+    if (storedIds.some((stored) => stored === ref || stored.startsWith(ref))) {
+      resolved.add(ref);
+    }
+  }
+  return resolved;
 }
