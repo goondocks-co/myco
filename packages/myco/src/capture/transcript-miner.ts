@@ -7,9 +7,13 @@ import {
   updateBatchKind,
   insertBatchStateless,
   setBatchPromptNumber,
+  populateBatchResponses,
+  rehomeSystemActivitiesToHumanAnchor,
   PROMPT_PREFIX_MATCH_CHARS,
   BATCH_KIND,
+  PROMPT_BATCH_ORIGIN,
   type BatchRow,
+  type PromptBatchOrigin,
 } from '../db/queries/batches.js';
 import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
@@ -180,36 +184,78 @@ export class TranscriptMiner {
     // from transcript order after a recovery insert.
     const buckets = buildPrefixBuckets(batches);
     let currentParentId: number | null = null;
+    let currentParentOrigin: PromptBatchOrigin | null = null;
+
+    // Resolve a record's effective kind + parent against the open turn.
+    // A steering/interrupt record normally nests under the open initial
+    // batch. Two cases force it to start its own initial turn instead:
+    //   1. No open parent at all (existing behavior).
+    //   2. A HUMAN prompt whose only open parent is a non-human batch
+    //      (system task-notification / agent_dispatch teammate-message).
+    //      A real user prompt must never hang off a background-event batch:
+    //      it owns its own turn (and, via the parser, its own response).
+    //      Without this, a question queued while the agent was mid-
+    //      task-notification became a steering child of that notification.
+    const resolveKindParent = (
+      kind: string,
+      origin: PromptBatchOrigin,
+    ): { effectiveKind: string; parent: number | null } => {
+      if (kind === BATCH_KIND.INITIAL) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      if (currentParentId == null) return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      // System / agent_dispatch prompts are point-in-time records: they own a
+      // top-level initial batch and never nest, exactly as the live
+      // handleUserPrompt path classifies them. A mid-turn <task-notification>
+      // (walker-classified steering because it isn't at an end_turn boundary)
+      // must therefore NOT become a steering child of the human turn — that
+      // would diverge from the live row and thread system noise into a human
+      // turn's children. Subsumes the old human-under-nonhuman special case.
+      if (origin !== PROMPT_BATCH_ORIGIN.HUMAN) {
+        return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      }
+      // A human prompt must not nest under a non-human open parent — it owns
+      // its own turn.
+      if (currentParentOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) {
+        return { effectiveKind: BATCH_KIND.INITIAL, parent: null };
+      }
+      return { effectiveKind: kind, parent: currentParentId };
+    };
 
     for (const record of records) {
       const existing = buckets.consume(record.text);
 
       if (existing) {
-        const wantParent = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
-        if (record.kind !== BATCH_KIND.INITIAL && wantParent == null) {
-          errors.push(`batch ${existing.id} classified as ${record.kind} with no open parent`);
-          continue;
-        }
-        if (existing.kind !== record.kind || existing.parent_prompt_batch_id !== wantParent) {
-          updateBatchKind(existing.id, record.kind, wantParent);
+        const { effectiveKind, parent: wantParent } = resolveKindParent(record.kind, record.origin);
+        if (existing.kind !== effectiveKind || existing.parent_prompt_batch_id !== wantParent) {
+          updateBatchKind(existing.id, effectiveKind, wantParent);
           reclassified++;
         }
-        if (record.kind === BATCH_KIND.INITIAL) currentParentId = existing.id;
+        // Only a HUMAN initial batch becomes the open anchor. A system batch is
+        // a point-in-time record that must not steal the steering anchor from
+        // the human turn — mirrors the live path, where system prompts are
+        // born-closed and never become the open parent.
+        if (effectiveKind === BATCH_KIND.INITIAL && record.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
+          currentParentId = existing.id;
+          currentParentOrigin = record.origin;
+        }
         continue;
       }
 
-      const parentForNew = record.kind === BATCH_KIND.INITIAL ? null : currentParentId;
-      if (record.kind !== BATCH_KIND.INITIAL && parentForNew == null) {
+      const { effectiveKind, parent: parentForNew } = resolveKindParent(record.kind, record.origin);
+      if (record.kind !== BATCH_KIND.INITIAL && effectiveKind === BATCH_KIND.INITIAL && currentParentId == null) {
         errors.push(`transcript prompt classified as ${record.kind} with no open parent; inserting as initial instead`);
       }
-      const effectiveKind = record.kind !== BATCH_KIND.INITIAL && parentForNew == null
-        ? BATCH_KIND.INITIAL
-        : record.kind;
       const now = epochSeconds();
+      const isSystemOrigin = record.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
       const created = insertBatchStateless({
         session_id: sessionId,
         user_prompt: record.text,
         started_at: now,
+        // System / agent_dispatch batches are born CLOSED point-in-time records,
+        // identical to the live handleUserPrompt path. Born OPEN, a miner-created
+        // system batch would outrank a closed human batch on
+        // insertActivityWithBatch's `(ended_at IS NULL) DESC` sort and could be
+        // returned by findOpenParentBatch — defeating the human-anchoring.
+        ended_at: isSystemOrigin ? now : undefined,
         created_at: now,
         machine_id: getTeamMachineId(),
         kind: effectiveKind,
@@ -221,7 +267,12 @@ export class TranscriptMiner {
         const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
       } catch { /* lineage best-effort */ }
-      if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
+      // Only a HUMAN initial batch becomes the open anchor (see existing-branch
+      // note above) — system batches never claim the steering anchor.
+      if (effectiveKind === BATCH_KIND.INITIAL && record.origin === PROMPT_BATCH_ORIGIN.HUMAN) {
+        currentParentId = created.id;
+        currentParentOrigin = record.origin;
+      }
     }
 
     // Each capture.rules `drop` decision suppresses a transcript prompt the
@@ -300,6 +351,42 @@ export class TranscriptMiner {
     }
 
     return { reclassified, inserted, errors };
+  }
+
+  /**
+   * Reconcile batch kinds AND attribute responses from the transcript in one
+   * pass. This is the unit of work that makes capture visible:
+   * `reconcileBatchKinds` materializes/reclassifies prompt batches (including
+   * queued steering prompts), then the per-turn responses are matched onto
+   * those batches by prompt prefix.
+   *
+   * Stop runs this at turn end; the live path (PostToolUse, throttled) runs it
+   * mid-turn so queued prompts and in-flight responses surface in the dashboard
+   * during a long continuous turn instead of only at the next Stop. Both paths
+   * are idempotent — re-running over an unchanged transcript is a no-op beyond
+   * re-writing identical response_summary values.
+   *
+   * Returns the reconcile result (batches reclassified/inserted) for callers
+   * that want to log or short-circuit.
+   */
+  public reconcileAndAttributeResponses(
+    sessionId: string,
+    input: ReconcileInput,
+  ): ReconcileResult {
+    const result = this.reconcileBatchKinds(sessionId, input);
+    const { turns } = this.getAllTurnsWithSource(sessionId, input.transcriptPath);
+    const responses = turns
+      .filter((t) => t.prompt && t.aiResponse)
+      .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }));
+    if (responses.length > 0) {
+      populateBatchResponses(sessionId, responses);
+    }
+    // Human-anchoring backstop for tool calls: re-home any activity stranded on
+    // a system-origin batch onto its enclosing human turn (legacy data + live
+    // races). The live path attributes correctly by construction; this keeps
+    // re-mined/older sessions consistent so the myco agent sees the tool calls.
+    rehomeSystemActivitiesToHumanAnchor(sessionId);
+    return result;
   }
 
   private parseAllEvents(transcriptPath: string): Array<Record<string, unknown>> {

@@ -46,11 +46,16 @@ export async function main() {
     if (decision.action === 'rewrite') {
       process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);
     }
+    // Forward `origin` only when the rule actually classified it. The daemon's
+    // toPromptBatchOrigin coerces missing/invalid values to 'human', so omitting
+    // is equivalent — and keeps a single source of truth for the default.
+    const originField = decision.origin ? { origin: decision.origin } : undefined;
 
     // Kind classification happens on the daemon; Stop-time reconciler repairs it.
     const eventResult = await client.capturePost('/events', {
       type: 'user_prompt',
       prompt,
+      ...originField,
       session_id: sessionId,
       agent: input.agent,
       transcript_path: input.transcriptPath,
@@ -65,7 +70,7 @@ export async function main() {
       const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
       if (location) {
         const buffer = new EventBuffer(location.bufferDir, sessionId);
-        buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
+        buffer.append({ type: 'user_prompt', prompt, ...originField, transcript_path: input.transcriptPath });
         process.stderr.write(
           `[myco] user-prompt-submit buffered (${classifyBufferFallback(eventResult)}) session=${sessionId}\n`,
         );

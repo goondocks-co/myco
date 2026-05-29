@@ -9,7 +9,8 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
+import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
@@ -33,18 +34,6 @@ export const TOOL_OUTPUT_STORE_LIMIT = 2000;
 
 /** Max chars for deriving a title from the first user prompt. */
 export const TITLE_PREVIEW_CHARS = 80;
-
-/** Prefixes that identify system-injected messages (not real user prompts). */
-export const SYSTEM_MESSAGE_PREFIXES = [
-  '<task-notification>',
-  '<system-reminder>',
-] as const;
-
-/** Returns true if the prompt is a system-injected message, not a real user prompt. */
-export function isSystemMessage(prompt: string): boolean {
-  const trimmed = prompt.trimStart();
-  return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
 
 /**
  * Extract a file path from tool input via the agent's manifest.
@@ -83,6 +72,13 @@ function relativizeToolPath(filePath: string, projectRoot: string): string {
 
 export interface UserPromptOptions {
   kind?: string;
+  /**
+   * Provenance of the prompt. Defaults to `'human'` when omitted so callers
+   * that haven't been migrated continue to behave like the legacy live path.
+   * The live `/events` route and the buffer replayer both forward the
+   * manifest-driven origin computed by `evaluateUserPromptRules`.
+   */
+  origin?: PromptBatchOrigin;
 }
 
 /**
@@ -136,13 +132,14 @@ function claimInitialBatchSlot(
   sessionId: string,
   prompt: string,
   now: number,
+  origin: PromptBatchOrigin = PROMPT_BATCH_ORIGIN.HUMAN,
 ): { batchId: number; promptNumber: number } | null {
   const latest = getLatestBatch(sessionId);
   if (!latest) return null;
   if (latest.user_prompt !== RECOVERED_BATCH_SENTINEL) return null;
   if (countBatchesBySession(sessionId) !== 1) return null;
 
-  replaceRecoveredBatchUserPrompt(latest.id, prompt);
+  replaceRecoveredBatchUserPrompt(latest.id, prompt, origin);
   try {
     const lineageProjectId = latest.project_id ? assertGroveProjectId(latest.project_id) : null;
     createBatchLineage(DEFAULT_AGENT_ID, sessionId, latest.id, now, lineageProjectId);
@@ -201,7 +198,12 @@ function selfHealAntigravityPromptFromTranscript(
   // returns false if the row has already been healed by another
   // event (e.g. a parallel post-tool-use, or session-reenrich at
   // Stop). Either path leaves the user with the right answer.
-  replaceRecoveredBatchUserPrompt(earliest[0].id, prompts[0]);
+  // Origin is derived from the manifest so a sentinel claimed by a
+  // synthesized envelope is tagged correctly (Antigravity manifest
+  // has no set_origin rules today, so this resolves to 'human' —
+  // contract is symmetric with the live path either way).
+  const origin = classifyNextPromptOrigin('antigravity', prompts[0]);
+  replaceRecoveredBatchUserPrompt(earliest[0].id, prompts[0], origin);
 
   // If the transcript advanced beyond the sentinel turn while no
   // user_prompt hook ever fired for the tail (Antigravity does not
@@ -252,20 +254,35 @@ export function handleUserPrompt(
   let parentId: number | null = null;
   let effectiveKind = incomingKind;
 
+  const incomingOrigin = options.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;
+  // Human-Anchored Turn: only a human prompt owns/advances "the active turn".
+  // A system-origin prompt (task-notification, teammate-message, autonomous
+  // loop, injected context) is a point-in-time record — it must not close the
+  // open human batch and is itself born closed, so the human turn stays the
+  // anchor that insertActivityWithBatch's most-recent-open lookup resolves to.
+  const isSystemOrigin = incomingOrigin !== PROMPT_BATCH_ORIGIN.HUMAN;
+
   if (incomingKind === BATCH_KIND.STEERING || incomingKind === BATCH_KIND.INTERRUPT) {
     const openParent = findOpenParentBatch(sessionId);
-    if (openParent) {
+    // A human prompt must not nest under a non-human open parent (a system
+    // task-notification / agent_dispatch teammate-message batch) — it owns
+    // its own turn. Mirrors the Stop-time miner's resolveKindParent rule so
+    // the live and reconcile paths classify identically. Without it, a prompt
+    // arriving while a background-event batch is open became its steering child.
+    const parentIsNonHuman = openParent != null && openParent.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
+    if (openParent && !(incomingOrigin === PROMPT_BATCH_ORIGIN.HUMAN && parentIsNonHuman)) {
       parentId = openParent.id;
     } else {
       effectiveKind = BATCH_KIND.INITIAL;
       parentId = null;
     }
-  } else {
-    // Single entry point for "where does this initial prompt go?"
+  } else if (!isSystemOrigin) {
+    // Single entry point for "where does this human initial prompt go?"
     // The helper decides between sentinel-replace and fresh insert,
-    // hiding the branching from the call site.
+    // hiding the branching from the call site. System prompts skip this:
+    // they neither claim the recovered sentinel nor close the human turn.
     if (effectiveKind === BATCH_KIND.INITIAL && prompt) {
-      const claimed = claimInitialBatchSlot(sessionId, prompt, now);
+      const claimed = claimInitialBatchSlot(sessionId, prompt, now, incomingOrigin);
       if (claimed) return claimed;
     }
     closeOpenBatches(sessionId, now);
@@ -275,9 +292,13 @@ export function handleUserPrompt(
     session_id: sessionId,
     user_prompt: prompt ?? null,
     started_at: now,
+    // System batches are point-in-time records: born closed so they are never
+    // the active turn. Human batches stay open (ended_at left null).
+    ended_at: isSystemOrigin ? now : undefined,
     created_at: now,
     machine_id: getTeamMachineId(),
     kind: effectiveKind,
+    origin: incomingOrigin,
     parent_prompt_batch_id: parentId,
   });
 

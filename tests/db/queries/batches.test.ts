@@ -14,10 +14,12 @@ import {
   closeBatch,
   countUnprocessedSettledBatches,
   getUnprocessedBatches,
+  getLatestBatch,
   incrementActivityCount,
   INTELLIGENCE_DEFAULT_ORIGINS,
   listBatchesBySession,
   markBatchProcessed,
+  populateBatchResponses,
   PROMPT_BATCH_ORIGIN,
   setResponseSummary,
 } from '@myco/db/queries/batches.js';
@@ -549,6 +551,59 @@ describe('prompt batch query helpers', () => {
       const after = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
         .find((b) => b.id === a.id);
       expect(after?.response_summary).toBe('original');
+    });
+  });
+
+  describe('populateBatchResponses — human-anchoring', () => {
+    const summaryOf = (id: number) =>
+      listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === id)?.response_summary;
+
+    it('does NOT clobber a human batch existing response when only a later system batch matches this pass', () => {
+      // Partial/mid-session snapshot: the human prompt is out of window
+      // (unmatched), but an interleaved system batch IS matched. The human's
+      // real answer must be preserved, not replaced by the system fragment.
+      const human = insertBatch(makeBatch(sessionId, {
+        user_prompt: 'real human prompt', origin: 'human', prompt_number: 1, response_summary: 'the real answer',
+      }));
+      const system = insertBatch(makeBatch(sessionId, {
+        user_prompt: '<task-notification>done', origin: 'system', prompt_number: 2,
+      }));
+
+      populateBatchResponses(sessionId, [{ prompt: '<task-notification>done', response: 'system fragment' }]);
+
+      expect(summaryOf(human.id)).toBe('the real answer');     // preserved
+      expect(summaryOf(system.id)).toBe('system fragment');     // orphan keeps its own
+    });
+
+    it('rolls a system batch response into the human anchor when the anchor IS matched this pass', () => {
+      const human = insertBatch(makeBatch(sessionId, {
+        user_prompt: 'human prompt', origin: 'human', prompt_number: 1,
+      }));
+      const system = insertBatch(makeBatch(sessionId, {
+        user_prompt: '<task-notification>done', origin: 'system', prompt_number: 2,
+      }));
+
+      populateBatchResponses(sessionId, [
+        { prompt: 'human prompt', response: 'human answer' },
+        { prompt: '<task-notification>done', response: 'mid-turn system note' },
+      ]);
+
+      expect(summaryOf(human.id)).toBe('human answer\n\nmid-turn system note');
+      expect(summaryOf(system.id)).toBeNull(); // cleared — rolled into the anchor
+    });
+  });
+
+  describe('getLatestBatch — origin filter', () => {
+    it('returns the most recent batch of any origin by default', () => {
+      insertBatch(makeBatch(sessionId, { user_prompt: 'h', origin: 'human', prompt_number: 1 }));
+      const system = insertBatch(makeBatch(sessionId, { user_prompt: '<system-reminder>', origin: 'system', prompt_number: 2 }));
+      expect(getLatestBatch(sessionId)?.id).toBe(system.id);
+    });
+
+    it('returns the latest HUMAN batch when origin is constrained, skipping a newer system batch', () => {
+      const human = insertBatch(makeBatch(sessionId, { user_prompt: 'h', origin: 'human', prompt_number: 1 }));
+      insertBatch(makeBatch(sessionId, { user_prompt: '<system-reminder>', origin: 'system', prompt_number: 2 }));
+      expect(getLatestBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN })?.id).toBe(human.id);
     });
   });
 });

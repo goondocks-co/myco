@@ -7,6 +7,7 @@ import {
   type GitProvenanceRow,
   type ReleaseCapturePoint,
 } from '@myco/db/queries/release-provenance.js';
+import { PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { captureGitSnapshot, type GitSnapshot } from './git-snapshot.js';
 
@@ -19,6 +20,14 @@ export interface CaptureGitProvenanceInput {
   capturePoint: ReleaseCapturePoint;
   capturedAt?: number;
   productionRef?: string | null;
+  /**
+   * Provenance is a user-intent signal: it stamps the code state at the
+   * moment the user made a decision. Synthesized envelopes (system reminders,
+   * teammate messages, task notifications, …) are not user decisions; the
+   * capture is a no-op for any non-`'human'` origin. Omit to default to
+   * `'human'` for callers that have already filtered upstream.
+   */
+  promptOrigin?: PromptBatchOrigin;
   logger?: Pick<DaemonLogger, 'debug' | 'warn'>;
   snapshotProvider?: (projectRoot: string, options: { productionRef?: string | null }) => GitSnapshot;
 }
@@ -37,6 +46,10 @@ export function deferGitProvenance(
   input: CaptureGitProvenanceInput,
   onCaptured?: (row: GitProvenanceRow | null) => void,
 ): void {
+  if ((input.promptOrigin ?? PROMPT_BATCH_ORIGIN.HUMAN) !== PROMPT_BATCH_ORIGIN.HUMAN) {
+    onCaptured?.(null);
+    return;
+  }
   setImmediate(() => {
     const row = captureGitProvenance(input);
     if (onCaptured) {
@@ -53,6 +66,7 @@ export function deferGitProvenance(
 }
 
 export function captureGitProvenance(input: CaptureGitProvenanceInput): GitProvenanceRow | null {
+  if ((input.promptOrigin ?? PROMPT_BATCH_ORIGIN.HUMAN) !== PROMPT_BATCH_ORIGIN.HUMAN) return null;
   const capturedAt = input.capturedAt ?? epochSeconds();
   const snapshotProvider = input.snapshotProvider ?? captureGitSnapshot;
 

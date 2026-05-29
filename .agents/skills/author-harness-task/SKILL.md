@@ -133,18 +133,28 @@ Tasks should emit notifications for multi-project visibility.
 
 Use `advisor` field per-phase for optimal model routing:
 
-| Tag | Best for |
-|-----|----------|
-| `cloud-reasoning` | Open-ended judgment phases |
-| `cloud-fast` | Recipe phases where speed matters |
-| `local-draft` | Cost-sensitive judgment phases |
+| Tag | Best for | Reasoning capability |
+|-----|----------|----------------------|
+| `cloud-reasoning` | Open-ended judgment phases | Full reasoning capability, largest context window, slowest |
+| `cloud-fast` | Recipe phases where speed matters | Standard reasoning, medium context, fast turnaround |
+| `local-draft` | Cost-sensitive judgment phases | Local reasoning, limited context, cheapest |
 
-**Local model gotcha**: Multiply all turn budgets by 3–4× for local Ollama models.
+### reasoningLevel abstraction
+
+Model selection integrates with reasoning capability levels:
+
+1. **Heavy reasoning** (`cloud-reasoning`): For phases that require complex multi-step reasoning, cross-file analysis, or semantic understanding. Turn budgets 15–25 (cloud) or 45–75 (local).
+2. **Standard reasoning** (`cloud-fast`): For phases with moderate reasoning needs or tight latency budgets. Turn budgets 8–15 (cloud) or 25–45 (local).
+3. **Minimal reasoning** (recipe phases): For deterministic operations, dedup gates, cursor updates. Turn budgets 2–5.
+
+Assign `advisor` tags based on required reasoning intensity, not just speed. A fast model on a heavy-reasoning phase will exhaust budget or produce low-quality results. A slow model on a recipe phase wastes cost.
+
+**Local model gotcha**: Multiply all turn budgets by 3–4× for local Ollama models due to lower context compression and reasoning depth.
 
 ## Procedure 4: Calibrate Turn Budgets
 
 | Phase type | Cloud budget | Local budget |
-|------------|--------------|--------------|
+|------------|--------------|--------------| 
 | Discovery / read-only | 8–12 | 25–40 |
 | Write / consolidation | 10–20 | 30–60 |
 | Map-phase (per item) | 2–4 | 6–12 |
@@ -190,27 +200,6 @@ Any task reading session transcripts **must** gate on settled sessions to preven
 
 **Settlement conditions**: SessionEnd hook OR `last_prompt_at` older than `settledSessionIdleMinutes`.
 
-### Cortex Instructions Requirement
-
-The lead (top-level agent orchestrator) must establish Cortex instructions context before delegating work to sub-agents:
-
-1. **Instructions acquisition**: Lead agent calls `myco_cortex({op:"instructions"})` BEFORE delegating to sub-agents
-2. **Context propagation**: Pass acquired instructions through delegation chain
-3. **Consistency validation**: Verify all delegates operating under same instruction set
-4. **Fail-fast**: Sub-agents must fail if delegation proceeds without instructions
-
-This prevents inconsistent or divergent behavior across the delegation hierarchy.
-
-### Harness-Task Session Coordination
-
-Tasks coordinate with session lifecycle to ensure proper state transitions:
-
-1. **Validate session state before processing**: Ensure session has completed capture phase and is ready for intelligence processing
-2. **Respect session gating**: Only process sessions that have settled (idle for configured minutes) to ensure no new captures arrive
-3. **Preserve session boundaries**: Tasks must not modify session status directly — that's the session orchestration layer's role
-4. **Handle runtime boundaries**: Enforce tool access and resource limits within session context
-5. **Error isolation**: Contain task failures within session scope to prevent cascade effects
-
 ## Procedure 6: Design the Tool Surface
 
 ### Recipe vs. Judgment surfaces
@@ -247,7 +236,7 @@ Every phase execution writes to `agent_runs`:
 ### Silent failure patterns
 
 | Symptom | Likely cause |
-|---------|--------------
+|---------|--------------|
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly |
 | `turn_count = 1`, empty `tool_output_summary` | Malformed prompt or injected context |
 | Task never appears in `agent_runs` | TaskDefinition export malformed |
@@ -302,6 +291,18 @@ Every phase execution writes to `agent_runs`:
 
 ## Procedure 11: Session Lifecycle Orchestration for Tasks
 
+### Cortex Instructions Requirement
+
+The lead (top-level agent orchestrator) must establish Cortex instructions context before delegating work to sub-agents:
+
+1. **Instructions acquisition**: Lead agent calls `myco_cortex({op:"instructions"})` BEFORE delegating to sub-agents
+2. **Context propagation**: Pass acquired instructions through delegation chain via unified path
+3. **Consistency validation**: Verify all delegates operating under same instruction set
+4. **Sub-agent enforcement**: Sub-agents must fail if delegation proceeds without cortex-injection-context
+5. **Unified injection path**: All task phases receive cortex context injected uniformly — lead establishes context once, all child phases inherit it
+
+This prevents inconsistent or divergent behavior across the delegation hierarchy.
+
 ### Session initialization and validation
 
 1. **Generate session ID**: Use deterministic UUID generation based on timestamp and project context
@@ -345,7 +346,7 @@ Every phase execution writes to `agent_runs`:
 - **TaskDefinition export malformed** → task never runs, no error. Verify export structure and check `agent_runs`.
 - **No session gate on transcript-reading task** → stale artifacts. Always set `requireSettledSessions: true`.
 - **Static turn budget on unbounded input** → unpredictable runtime. Cap input size, not budget.
-- **Single model for all phases** → overpaying or underperforming. Use per-phase `advisor` field.
+- **Single model for all phases** → overpaying or underperforming. Use per-phase `advisor` field with reasoning-level awareness.
 - **Local model without budget multiplier** → phase exhausts. Multiply budgets by 3–4× for Ollama.
 - **Map-phase sink schema expectation** → `args.sink_schema` doesn't exist in map mode. Use `argMap` instead.
 - **Abort controller propagation** → Thread controllers through all iterations to prevent resource leaks.
@@ -361,5 +362,6 @@ Every phase execution writes to `agent_runs`:
 - **Session gating prevents intelligence feedback loops** → Tasks reading transcripts must gate on settled sessions (completed/processed status) to ensure session data is stable during analysis and prevent processing incomplete sessions.
 - **Session state consistency** → Always validate session status before operations — intelligence tasks must gate on session-terminal state (completed/processed) as active sessions produce stale artifacts.
 - **Cortex instructions requirement** → Lead agent MUST call `myco_cortex({op:"instructions"})` before delegating to sub-agents — delegation without instructions causes sub-agents to operate with inconsistent scope.
+- **Cortex injection uniformity** → All task phases must receive cortex context via unified injection path. Tasks that bypass cortex context propagation or re-acquire it per-phase introduce inconsistency.
 - **Cross-platform hook deployment** → The `.agents/myco-run.cjs` guard handles OSS contributor safety across platforms. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
 - **Runtime resource management** → Agent harness execution consumes resources — implement proper cleanup. Concurrent sessions must coordinate vault database access to prevent corruption.

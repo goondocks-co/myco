@@ -517,6 +517,142 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
     expect(classifyNextPromptOrigin('codex', '<subagent_notification>x')).toBe('agent_dispatch');
     expect(classifyNextPromptOrigin(undefined, 'anything')).toBe('human');
   });
+
+  // K1 follow-up: agent-team teammate messages, environment context, autonomous
+  // loop self-prompts, local-command caveats, persisted-output reinjection, and
+  // system-reminder envelopes were all entering prompt_batches as origin='human'
+  // because the Claude Code manifest only declared rules for <task-notification>
+  // and <skill>. The hardcoded SYSTEM_MESSAGE_PREFIXES shortcut covered only
+  // <task-notification> and <system-reminder> and skipped them entirely, never
+  // surfacing them in the UI. Vault audit (eee9f25b): 1182 <teammate-message>
+  // batches across the vault, all human-origin.
+  it('Claude Code: tags <teammate-message> as origin=agent_dispatch', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'tm1',
+        message: {
+          role: 'user',
+          content:
+            '<teammate-message teammate_id="init-cli" color="blue">\nTask #1 complete.\n</teammate-message>',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('agent_dispatch');
+  });
+
+  it.each([
+    ['<environment_context>', '<environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>'],
+    ['<<autonomous-loop-dynamic>>', '<<autonomous-loop-dynamic>>'],
+    ['<local-command-caveat>', '<local-command-caveat>Caveat: ...'],
+    ['<persisted-output>', '<persisted-output>\nresumed turn\n</persisted-output>'],
+    ['<system-reminder>', '<system-reminder>\nThe task tools haven\'t been used recently.\n</system-reminder>'],
+  ])('Claude Code: tags %s envelopes as origin=system', (_label, content) => {
+    const events = [
+      { type: 'user', promptId: `sys-${_label}`, message: { role: 'user', content } },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('system');
+  });
+
+  // Smoke test surfaced 2026-05-28 (Claude Code v2.1.x agent-team sessions):
+  // teammate-messages are injected into the lead's transcript as `type: user`
+  // entries that share the LEAD's current-turn `promptId`. The generic
+  // `user_prompt` shape uses `dedupeBy: promptId` and collapses every
+  // teammate-message into the lead's prompt batch. Fix: a dedicated
+  // `teammate_message` shape (listed first) discriminates on the CONTENT
+  // prefix via `textStartsWith` (not on a structural field — `teamName` is
+  // stamped on the lead's own prompts and `/exit` / `/model` artifacts too
+  // once a team exists, so it can't distinguish teammate-messages) and
+  // dedupes by `uuid` so each discrete dispatch becomes its own record.
+  it('Claude Code: emits a record for each teammate-message even when sharing promptId with the lead prompt', () => {
+    const sharedPromptId = 'lead-turn-1';
+    const events = [
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-lead-prompt',
+        teamName: 'origin-smoke',
+        message: { role: 'user', content: 'lead asks something' },
+      },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-teammate-1',
+        teamName: 'origin-smoke',
+        message: {
+          role: 'user',
+          content: '<teammate-message teammate_id="echoer" color="blue">first reply</teammate-message>',
+        },
+      },
+      {
+        type: 'user',
+        promptId: sharedPromptId,
+        uuid: 'uuid-teammate-2',
+        teamName: 'origin-smoke',
+        message: {
+          role: 'user',
+          content: '<teammate-message teammate_id="echoer" color="blue">second reply</teammate-message>',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(3);
+    // First: the lead's actual prompt — origin='human'. Has teamName too, but
+    // doesn't start with the envelope prefix, so it falls through to user_prompt.
+    expect(records[0]?.origin).toBe('human');
+    expect(records[0]?.text).toBe('lead asks something');
+    // Both teammate-messages survive the promptId-shared dedupe and get tagged.
+    expect(records[1]?.origin).toBe('agent_dispatch');
+    expect(records[1]?.text).toContain('first reply');
+    expect(records[2]?.origin).toBe('agent_dispatch');
+    expect(records[2]?.text).toContain('second reply');
+  });
+
+  // Regression for the teamName-shape bug: during an active team, `/exit` and
+  // `/model` command groups gain `teamName` on every entry. The earlier
+  // `hasField: teamName` + `dedupeBy: uuid` teammate_message shape matched the
+  // `<local-command-stdout>` sibling and, because uuid-dedup no longer let the
+  // `<command-name>` sibling collapse the group by promptId, leaked the stdout
+  // as a human prompt. The content-prefix shape must NOT match these, so the
+  // group falls back to the promptId-deduped user_prompt shape: the dropped
+  // `<command-name>` entry consumes the promptId slot and suppresses the rest.
+  it('Claude Code: does not leak /exit command artifacts as prompts during an active team', () => {
+    const sharedPromptId = 'exit-turn';
+    const events = [
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-caveat', teamName: 'origin-smoke', isMeta: true,
+        message: { role: 'user', content: '<local-command-caveat>Caveat: …</local-command-caveat>' },
+      },
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-cmdname', teamName: 'origin-smoke',
+        message: { role: 'user', content: '<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>' },
+      },
+      {
+        type: 'user', promptId: sharedPromptId, uuid: 'u-stdout', teamName: 'origin-smoke',
+        message: { role: 'user', content: '<local-command-stdout>See ya!</local-command-stdout>' },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(0);
+  });
+
+  // <local-command-stdout> is command program output, never user input. The
+  // explicit drop rule must suppress it even when it reaches a prompt shape
+  // with a DISTINCT promptId (i.e. the `<command-name>` promptId-dedup safety
+  // net doesn't apply) — proving the drop is order- and grouping-independent.
+  it('Claude Code: drops <local-command-stdout> even with a standalone promptId', () => {
+    const events = [
+      {
+        type: 'user', promptId: 'standalone-stdout', uuid: 'u1',
+        message: { role: 'user', content: '<local-command-stdout>Set model to Opus 4.8</local-command-stdout>' },
+      },
+    ];
+    expect(extractUserPromptRecords('claude-code', events)).toHaveLength(0);
+  });
 });
 
 describe('classifyNextPromptKind — tail predictions', () => {

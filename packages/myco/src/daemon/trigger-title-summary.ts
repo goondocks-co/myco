@@ -15,6 +15,11 @@ import {
   tryResolveRequestContextForVault,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import {
+  countBatchesBySession,
+  PROMPT_BATCH_ORIGIN,
+  type PromptBatchOrigin,
+} from '@myco/db/queries/batches.js';
 
 export interface TriggerTitleSummaryDeps {
   vaultDir: string;
@@ -40,7 +45,15 @@ export interface TriggerTitleSummaryDeps {
  * Returns without scheduling a run when:
  * - `agent.summary_batch_interval <= 0` (summaries disabled entirely), or
  * - `agent.event_tasks_enabled === false` (event-driven tasks globally off), or
- * - the agent module can't be loaded.
+ * - the agent module can't be loaded, or
+ * - `trigger.evaluateBoundary` is set and the human-origin batch count
+ *   has not crossed a `summary_batch_interval` boundary (live `/events`
+ *   path). The summary task consumes human-origin batches via
+ *   `INTELLIGENCE_DEFAULT_ORIGINS`, so the cadence is measured against
+ *   the same population — system/agent_dispatch batches don't move it.
+ *
+ * Stop-phase callers omit `trigger`; they want an unconditional fire
+ * if the session still needs a title (the wrapper already decided that).
  *
  * Rejections from the executor surface via `logger.warn` — the task's own
  * per-task concurrency guard handles overlap with in-flight runs.
@@ -48,12 +61,19 @@ export interface TriggerTitleSummaryDeps {
 export async function triggerTitleSummary(
   sessionId: string,
   deps: TriggerTitleSummaryDeps,
+  trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
 ): Promise<void> {
   const { vaultDir, embeddingManager, liveConfig, logger } = deps;
   const config = liveConfig.current;
 
   if (config.agent.summary_batch_interval <= 0) return;
   if (config.agent.event_tasks_enabled === false) return;
+
+  if (trigger?.evaluateBoundary) {
+    if (trigger.promptOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) return;
+    const humanCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
+    if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
+  }
 
   // runAgent calls projectScopeFromRequestContext, which throws when no
   // context is supplied. The Stop pipeline used to pass no context here

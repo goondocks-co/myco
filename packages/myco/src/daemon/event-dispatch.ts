@@ -25,7 +25,6 @@ import {
   extractTaggedPlans,
 } from './plan-capture.js';
 import {
-  isSystemMessage,
   handleUserPrompt,
   handleToolUse,
   handleToolFailure,
@@ -44,7 +43,7 @@ import {
 } from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
-import { getLatestBatch } from '@myco/db/queries/batches.js';
+import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
@@ -79,8 +78,19 @@ export interface EventDispatchDeps {
   liveConfig: { current: MycoConfig };
   vaultDir: string;
   reconcileSession: (sessionId: string) => void;
+  /**
+   * Throttled live transcript reconcile, invoked on tool events. Surfaces
+   * queued steering prompts and in-flight responses mid-turn (the daemon
+   * receives tool events live and has the transcript path) instead of waiting
+   * for Stop. Optional: when absent, capture stays Stop-only. The callee owns
+   * throttling — the dispatcher calls it on every tool event.
+   */
+  liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void;
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
-  triggerTitleSummary: (sessionId: string) => Promise<void>;
+  triggerTitleSummary: (
+    sessionId: string,
+    trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
+  ) => Promise<void>;
   /**
    * Per-project power state. user_prompt events on a session count as
    * activity for that session's project, keeping its scheduler ticking
@@ -118,6 +128,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     liveConfig,
     vaultDir: vaultDir,
     reconcileSession,
+    liveReconcile,
     planWatchConfig,
     triggerTitleSummary,
   } = deps;
@@ -392,113 +403,113 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         );
       }
       const promptText = String(event.prompt ?? '');
-
-      // Skip system-injected messages (task notifications, system reminders) —
-      // they trigger UserPromptSubmit but are not real user prompts.
-      if (isSystemMessage(promptText)) {
-        logger.debug(LOG_KINDS.HOOKS_PROMPT, 'Skipped system-injected message', {
-          session_id: event.session_id,
-          prefix: promptText.trimStart().slice(0, LOG_PROMPT_PREVIEW_CHARS),
-        });
+      // Origin is forwarded by the hook from manifest set_origin rules;
+      // toPromptBatchOrigin coerces unknowns to 'human'.
+      const promptOrigin = toPromptBatchOrigin(event.origin);
+      // Non-human batches (system reminders, teammate messages, task
+      // notifications, …) are high-volume background traffic — log at
+      // debug so they don't drown out real user activity in default logs.
+      const promptLogPayload = {
+        session_id: event.session_id,
+        prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
+        prompt_length: promptText.length,
+        origin: promptOrigin,
+      };
+      if (promptOrigin === 'human') {
+        logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', promptLogPayload);
       } else {
-        logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', {
+        logger.debug(LOG_KINDS.HOOKS_PROMPT, 'User prompt received', promptLogPayload);
+      }
+      // Flip a completed session back to active on genuine user activity.
+      // The auto-register branch above only reactivates when the session
+      // isn't in the in-memory registry (e.g., after daemon restart) —
+      // without this, a manually-completed or stale-swept session stays
+      // hidden from intelligence-task queries even after the user resumes.
+      if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
+        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
           session_id: event.session_id,
-          prompt_preview: promptText.slice(0, LOG_PROMPT_PREVIEW_CHARS),
-          prompt_length: promptText.length,
         });
-        // Flip a completed session back to active on genuine user activity.
-        // The auto-register branch above only reactivates when the session
-        // isn't in the in-memory registry (e.g., after daemon restart) —
-        // without this, a manually-completed or stale-swept session stays
-        // hidden from intelligence-task queries even after the user resumes.
-        if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
-          logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
-            session_id: event.session_id,
-          });
-        }
-        try {
-          // Defensive layer: the registry-gated auto-register above is an
-          // optimization, not the contract. The contract is that a
-          // sessions.id row must exist by the time we open a prompt_batch.
-          // If anything upstream missed (e.g. an event arrived before
-          // session-start, or a future refactor breaks the gate), this
-          // recovers via an INSERT-IF-MISSING + WARN log so the bug
-          // surfaces instead of cascading into FK violations downstream.
-          ensureSessionRowExists({
-            sessionId: event.session_id,
-            agent: ((event as Record<string, unknown>).agent as string) ?? undefined,
-            projectId: requestProjectId,
-            projectRoot: requestProjectRoot,
-            machineId: requestMachineId,
-            logger,
-            source: ENSURE_SESSION_SOURCE.USER_PROMPT,
-          });
-          const kind = typeof event.kind === 'string' ? event.kind : 'initial';
-          const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
-          userPromptBatchId = batchId;
-          logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
-          deferGitProvenance({
-            projectRoot: requestProjectRoot,
-            projectId: requestProjectId,
-            machineId: requestMachineId,
-            sessionId: event.session_id,
-            promptBatchId: batchId,
-            capturePoint: 'prompt_batch_start',
-            productionRef: primaryProductionRef(configForRequest(req)),
-            logger,
-          });
+      }
+      try {
+        // Defensive layer: the registry-gated auto-register above is an
+        // optimization, not the contract. The contract is that a
+        // sessions.id row must exist by the time we open a prompt_batch.
+        // If anything upstream missed (e.g. an event arrived before
+        // session-start, or a future refactor breaks the gate), this
+        // recovers via an INSERT-IF-MISSING + WARN log so the bug
+        // surfaces instead of cascading into FK violations downstream.
+        ensureSessionRowExists({
+          sessionId: event.session_id,
+          agent: ((event as Record<string, unknown>).agent as string) ?? undefined,
+          projectId: requestProjectId,
+          projectRoot: requestProjectRoot,
+          machineId: requestMachineId,
+          logger,
+          source: ENSURE_SESSION_SOURCE.USER_PROMPT,
+        });
+        const kind = typeof event.kind === 'string' ? event.kind : 'initial';
+        const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind, origin: promptOrigin });
+        userPromptBatchId = batchId;
+        logger.debug(LOG_KINDS.CAPTURE_BATCH, 'Batch opened', { session_id: event.session_id, batch_id: batchId, prompt_number: promptNumber });
+        deferGitProvenance({
+          projectRoot: requestProjectRoot,
+          projectId: requestProjectId,
+          machineId: requestMachineId,
+          sessionId: event.session_id,
+          promptBatchId: batchId,
+          capturePoint: 'prompt_batch_start',
+          productionRef: primaryProductionRef(configForRequest(req)),
+          promptOrigin,
+          logger,
+        });
 
-          const taggedPlans = extractTaggedPlans(promptText, getPlanTagsForAgent(event.agent));
-          for (const { tag, content } of taggedPlans) {
-            try {
-              captureTaggedPlan({
-                tag,
-                content,
-                sessionId: event.session_id,
-                projectId: requestProjectId,
-                promptBatchId: batchId,
-                logger,
-              });
-              logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from prompt tag', {
-                session_id: event.session_id,
-                tag,
-                content_length: content.length,
-              });
-            } catch (err) {
-              logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan from prompt tag', {
-                session_id: event.session_id,
-                tag,
-                error: (err as Error).message,
-              });
-            }
-          }
-
-          // Plugin-based symbionts (opencode) ship image attachments in the
-          // user_prompt event payload rather than in an on-disk transcript.
-          // The stop-event transcript-mining path handles claude-code/cursor;
-          // the persistence logic is shared between both paths via
-          // captureBatchImages.
-          const eventImages = event.images as CapturedImage[] | undefined;
-          if (Array.isArray(eventImages) && eventImages.length > 0) {
-            captureBatchImages({
+        const taggedPlans = extractTaggedPlans(promptText, getPlanTagsForAgent(event.agent), promptOrigin);
+        for (const { tag, content } of taggedPlans) {
+          try {
+            captureTaggedPlan({
+              tag,
+              content,
               sessionId: event.session_id,
+              projectId: requestProjectId,
               promptBatchId: batchId,
-              promptNumber,
-              images: eventImages,
               logger,
-              projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
+            });
+            logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan captured from prompt tag', {
+              session_id: event.session_id,
+              tag,
+              content_length: content.length,
+            });
+          } catch (err) {
+            logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to capture plan from prompt tag', {
+              session_id: event.session_id,
+              tag,
+              error: (err as Error).message,
             });
           }
-
-          // Batch-threshold summary trigger
-          const batchCount = promptNumber;
-          const summaryInterval = liveConfig.current.agent.summary_batch_interval;
-          if (summaryInterval > 0 && batchCount > 0 && batchCount % summaryInterval === 0) {
-            triggerTitleSummary(event.session_id);
-          }
-        } catch (err) {
-          logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
         }
+
+        // Plugin-based symbionts (opencode) ship image attachments in the
+        // user_prompt event payload rather than in an on-disk transcript.
+        // The stop-event transcript-mining path handles claude-code/cursor;
+        // the persistence logic is shared between both paths via
+        // captureBatchImages.
+        const eventImages = event.images as CapturedImage[] | undefined;
+        if (Array.isArray(eventImages) && eventImages.length > 0) {
+          captureBatchImages({
+            sessionId: event.session_id,
+            promptBatchId: batchId,
+            promptNumber,
+            images: eventImages,
+            logger,
+            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
+          });
+        }
+
+        // Boundary policy (origin filter + N-th human-batch crossing) lives
+        // inside the trigger; the dispatcher just hands it the event's origin.
+        triggerTitleSummary(event.session_id, { evaluateBoundary: true, promptOrigin });
+      } catch (err) {
+        logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
@@ -562,6 +573,20 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
+      }
+      // Live capture: surface queued prompts + in-flight responses mid-turn.
+      // The agent writes each turn's prompts/responses to the transcript as it
+      // works; this tool event is the daemon's live signal to re-mine it. The
+      // callee throttles (≤1 run/interval/session), but a single run still does
+      // a full transcript re-parse + DB writes — too heavy to run inline on the
+      // /events handler thread. Defer it off the hot path with setTimeout(0),
+      // exactly like the Canopy rescan below, so the hook's HTTP response isn't
+      // blocked by capture work (avoids the main-loop-wedge class fixed in
+      // project_main_loop_yield_pattern).
+      if (liveReconcile && typeof event.transcript_path === 'string' && event.transcript_path) {
+        const agent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
+        const transcriptPath = event.transcript_path;
+        setTimeout(() => liveReconcile(event.session_id, agent, transcriptPath), 0);
       }
       // Canopy: rescan the touched file after acknowledging capture.
       // Best-effort; handleCanopyToolUse swallows its own errors.

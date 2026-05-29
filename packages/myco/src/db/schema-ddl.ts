@@ -153,7 +153,9 @@ export const ACTIVITIES_TABLE = `
     processed            INTEGER DEFAULT 0,
     content_hash         TEXT,
     created_at           INTEGER NOT NULL,
-    canopy_injection_tokens INTEGER
+    canopy_injection_tokens INTEGER,
+    myco_tool            TEXT,
+    myco_op              TEXT
   )`;
 
 const PLANS_TABLE = `

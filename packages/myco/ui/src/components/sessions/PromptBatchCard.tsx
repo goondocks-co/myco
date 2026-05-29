@@ -149,7 +149,10 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
               )}
             </div>
 
-            {/* Activities — header is built into ActivityList for expand/collapse */}
+            {/* Activities — header is built into ActivityList for expand/collapse.
+                CLI-routed Myco calls surface under their canonical tool name
+                inside the activity row itself (activity.myco_tool, resolved at
+                capture), so no separate overlay is needed here. */}
             {batch.activity_count > 0 && (
               <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
             )}
