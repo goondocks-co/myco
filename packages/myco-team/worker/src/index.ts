@@ -1432,19 +1432,27 @@ async function handleSyncSummary(env: Env): Promise<Response> {
 }
 
 /**
- * `POST /rebuild` — destructive one-way repair. Truncates this Grove's D1
- * tables and clears their Vectorize entries so the daemon can re-push the
- * full local Grove (`backfillAll`) and land an exact mirror. The local Grove
- * is the source of truth; this never reconciles, it replaces.
+ * `POST /rebuild` — destructive one-way repair. Truncates the requesting
+ * machine's rows from this Grove's D1 tables and clears their Vectorize
+ * entries so the daemon can re-push the full local Grove (`backfillAll`)
+ * and land an exact mirror. The D1 is shared across team machines (rows
+ * keyed by `(id, machine_id)`) and the daemon only re-pushes the local
+ * machine's data, so the wipe is scoped to `body.machine_id` — never the
+ * whole Grove — to avoid destroying teammates' cloud data. The local
+ * Grove is the source of truth; this never reconciles, it replaces.
  */
-async function handleRebuild(env: Env): Promise<Response> {
+async function handleRebuild(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { machine_id?: string };
+  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
+  if (!machineId) return errorResponse('machine_id is required', 400);
+
   // Clear Vectorize for embeddable tables first (best-effort, non-fatal):
-  // collect current D1 ids and delete their vectors by deterministic id.
+  // collect this machine's D1 ids and delete their vectors by deterministic id.
   for (const table of Object.keys(EMBEDDABLE_TABLES)) {
     try {
       const rows = await env.MYCO_TEAM_DB.prepare(
-        `SELECT id, machine_id FROM ${table}`,
-      ).all<{ id: string; machine_id: string }>();
+        `SELECT id, machine_id FROM ${table} WHERE machine_id = ?`,
+      ).bind(machineId).all<{ id: string; machine_id: string }>();
       const ids: string[] = [];
       for (const r of rows.results ?? []) {
         ids.push(await vectorId(table, String(r.id), String(r.machine_id)));
@@ -1460,11 +1468,14 @@ async function handleRebuild(env: Env): Promise<Response> {
     }
   }
 
-  // Truncate every D1 table in one batch.
-  const statements = SYNCED_TABLES.map((t) => env.MYCO_TEAM_DB.prepare(`DELETE FROM ${t}`));
+  // Truncate this machine's rows from every D1 table in one batch.
+  const statements = SYNCED_TABLES.map((t) =>
+    env.MYCO_TEAM_DB.prepare(`DELETE FROM ${t} WHERE machine_id = ?`).bind(machineId),
+  );
   await env.MYCO_TEAM_DB.batch(statements);
 
-  return jsonResponse({ ok: true, truncated_tables: SYNCED_TABLES.length });
+  console.error('team-sync.rebuild.completed', { machine_id: machineId, truncated_tables: SYNCED_TABLES.length });
+  return jsonResponse({ ok: true, machine_id: machineId, truncated_tables: SYNCED_TABLES.length });
 }
 
 async function handlePutConfig(request: Request, env: Env): Promise<Response> {
@@ -1724,7 +1735,7 @@ export default {
         return await handleEnqueue(request, env);
       }
       if (method === 'POST' && path === '/rebuild') {
-        return await handleRebuild(env);
+        return await handleRebuild(request, env);
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
