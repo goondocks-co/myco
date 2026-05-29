@@ -167,6 +167,10 @@ export interface TeamRemoteSyncSummaryResponse {
   generated_at: number;
   total_records: number;
   tables: Record<string, number>;
+  /** Per-table cloud row counts scoped to the requested machine_id. Null/absent when no machine_id was passed. */
+  machine_tables?: Record<string, number> | null;
+  /** The machine_id used to scope machine_tables, echoed from the request. */
+  machine_id?: string;
   vector_count: number | null;
   vector_index_healthy: boolean;
   vector_index_error: string | null;
@@ -397,8 +401,11 @@ export class TeamSyncClient {
     }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
   }
 
-  async getSyncSummary(): Promise<TeamRemoteSyncSummaryResponse> {
-    return await this.request('GET', '/sync-summary') as TeamRemoteSyncSummaryResponse;
+  async getSyncSummary(machineId?: string): Promise<TeamRemoteSyncSummaryResponse> {
+    const path = machineId
+      ? `/sync-summary?machine_id=${encodeURIComponent(machineId)}`
+      : '/sync-summary';
+    return await this.request('GET', path) as TeamRemoteSyncSummaryResponse;
   }
 
   /**

@@ -1367,7 +1367,9 @@ async function handleGetConfig(env: Env): Promise<Response> {
   });
 }
 
-async function handleSyncSummary(env: Env): Promise<Response> {
+async function handleSyncSummary(request: Request, env: Env): Promise<Response> {
+  const machineId = new URL(request.url).searchParams.get('machine_id')?.trim() || null;
+
   const selectList = SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table}) AS ${table}`).join(', ');
   const row = await env.MYCO_TEAM_DB.prepare(`SELECT ${selectList}`).first<Record<string, unknown>>() ?? {};
   const tables: Record<string, number> = {};
@@ -1378,6 +1380,24 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     const count = Number.isFinite(value) ? value : 0;
     tables[table] = count;
     totalRecords += count;
+  }
+
+  // Per-machine table counts — only computed when machine_id is supplied so
+  // the caller can compare THIS machine's local rows against THIS machine's
+  // cloud rows without false-positive drift from other machines' data.
+  let machine_tables: Record<string, number> | null = null;
+  if (machineId) {
+    const machineSelectList = SYNCED_TABLES.map(
+      (table) => `(SELECT COUNT(*) FROM ${table} WHERE machine_id = ?) AS ${table}`,
+    ).join(', ');
+    const machineRow = await env.MYCO_TEAM_DB.prepare(`SELECT ${machineSelectList}`)
+      .bind(...SYNCED_TABLES.map(() => machineId))
+      .first<Record<string, unknown>>() ?? {};
+    machine_tables = {};
+    for (const table of SYNCED_TABLES) {
+      const value = Number(machineRow[table] ?? 0);
+      machine_tables[table] = Number.isFinite(value) ? value : 0;
+    }
   }
 
   // Vectorize index probe — `describe()` JSON has the count field as
@@ -1421,6 +1441,8 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     generated_at: epochSeconds(),
     total_records: totalRecords,
     tables,
+    machine_id: machineId ?? undefined,
+    machine_tables: machine_tables ?? undefined,
     vector_count: vectorCount,
     vector_index_healthy: vectorIndexHealthy,
     vector_index_error: vectorIndexError,
@@ -1775,7 +1797,7 @@ export default {
         return await handleQueueStats(env);
       }
       if (method === 'GET' && path === '/sync-summary') {
-        return await handleSyncSummary(env);
+        return await handleSyncSummary(request, env);
       }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);

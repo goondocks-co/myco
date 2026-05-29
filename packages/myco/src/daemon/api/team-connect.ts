@@ -477,6 +477,34 @@ function resolveLocalTeamPackageVersion(globalPrefix: string | null): LocalTeamP
 }
 
 // ---------------------------------------------------------------------------
+// Drift helpers
+// ---------------------------------------------------------------------------
+
+export interface TableDrift {
+  table: string;
+  local: number;
+  cloud: number;
+  delta: number;
+}
+
+/**
+ * Compare per-table local row counts against per-table cloud row counts
+ * (both scoped to THIS machine). Returns one entry per table, sorted by
+ * table name. `delta` is `cloud - local`; negative means cloud is behind.
+ */
+export function computeDrift(
+  local: Record<string, number>,
+  cloud: Record<string, number>,
+): TableDrift[] {
+  const tables = new Set([...Object.keys(local), ...Object.keys(cloud)]);
+  return [...tables].sort().map((table) => {
+    const l = local[table] ?? 0;
+    const c = cloud[table] ?? 0;
+    return { table, local: l, cloud: c, delta: c - l };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -898,11 +926,17 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     let remote: TeamRemoteSyncSummaryResponse | null = null;
     let remoteError: string | null = null;
     try {
-      remote = await guard.client.getSyncSummary();
+      remote = await guard.client.getSyncSummary(machineId);
     } catch (err) {
       remoteError = errorMessage(err);
       logger.warn('team-sync.summary.remote-failed', 'Remote sync summary unavailable', { error: remoteError });
     }
+
+    const drift = computeDrift(
+      localTables as Record<string, number>,
+      remote?.machine_tables ?? {},
+    );
+    const total_delta = drift.reduce((s, d) => s + Math.abs(d.delta), 0);
 
     return {
       body: {
@@ -916,6 +950,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         remote,
         remote_error: remoteError,
         last_handoff: latestHandoffSummary(),
+        drift,
+        total_delta,
       },
     };
   }
