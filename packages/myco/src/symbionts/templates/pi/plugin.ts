@@ -12,15 +12,12 @@
 //
 // See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
 //
-// Degraded-mode safety: this extension ships committed inside any project that has
-// used the dashboard's commit-to-repo opt-in — the file lives at
-// .pi/extensions/myco/index.ts in that project's repo. When a teammate clones
-// such a project WITHOUT having Myco installed
-// locally, pi will still load this extension. Every path that would contact the
-// Myco daemon gracefully no-ops when `.myco/daemon.json` is absent or the daemon
-// is unreachable, so the extension becomes invisible rather than throwing.
-// Do NOT add runtime imports from Myco packages — only use pi's own exports
-// and Node.js built-ins.
+// Degraded-mode safety: this extension is installed globally and therefore
+// loads for every pi session on the machine — including in non-git folders or
+// when the Myco daemon is down. Every path that would contact the Myco daemon
+// gracefully no-ops when the daemon endpoint is absent or unreachable, so the
+// extension becomes invisible rather than throwing. Do NOT add runtime imports
+// from Myco packages — only use pi's own exports and Node.js built-ins.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";

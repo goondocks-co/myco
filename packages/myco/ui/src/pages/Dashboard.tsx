@@ -34,6 +34,8 @@ function runStatusTone(status: string): StatusTone {
 export default function Dashboard() {
   const { data: stats, isLoading, isError, error } = useDaemon();
   const { data: activeSessionsData } = useSessions({ status: 'active', limit: ACTIVE_SESSIONS_LIMIT });
+  // Most recent session (any status) for the capture-health signal.
+  const { data: recentSessionData } = useSessions({ limit: 1 });
   const { data: runsData } = useAgentRuns({ limit: RUNS_LIMIT });
   const { data: skillsData } = useSkillRecords({ limit: SKILLS_LIMIT });
   const { data: canopyData } = useCanopyEntries({
@@ -54,6 +56,7 @@ export default function Dashboard() {
             stats={stats}
             activeSessionCount={activeSessionsData?.total ?? 0}
             inFlightRunCount={(runsData?.runs ?? []).filter((r) => r.status === 'running').length}
+            lastSession={recentSessionData?.sessions?.[0]}
           />
           <ScopeRow stats={stats} />
           <ActiveSessionsHero
@@ -80,10 +83,12 @@ function DashboardHead({
   stats,
   activeSessionCount,
   inFlightRunCount,
+  lastSession,
 }: {
   stats: StatsResponse;
   activeSessionCount: number;
   inFlightRunCount: number;
+  lastSession: SessionSummary | undefined;
 }) {
   const projectName = stats.context.project.name || basename(stats.context.project.root);
   const sub = describeActivity(activeSessionCount, inFlightRunCount, stats.embedding.queue_depth);
@@ -94,7 +99,60 @@ function DashboardHead({
         <h1 className="myco-display-lg text-on-surface m-0">Dashboard</h1>
         <p className="font-sans text-sm text-on-surface-variant m-0">{sub}</p>
       </div>
+      <CaptureHealthPill
+        lastSession={lastSession}
+        activeCount={activeSessionCount}
+        totalSessions={stats.vault.session_count}
+      />
     </header>
+  );
+}
+
+/** Seconds within which the last capture counts as "fresh". */
+const CAPTURE_FRESH_WINDOW_S = 7 * 24 * 60 * 60;
+
+/**
+ * At-a-glance capture health for the current project — the dashboard twin of
+ * the `myco doctor` Capture check. "Capturing now" while a session is live;
+ * otherwise the time of the LAST CAPTURE (a session's end, not its start),
+ * green when recent and amber when stale (the silent-capture-loss signature);
+ * neutral for a project that hasn't captured anything yet.
+ */
+function CaptureHealthPill({
+  lastSession,
+  activeCount,
+  totalSessions,
+}: {
+  lastSession: SessionSummary | undefined;
+  activeCount: number;
+  totalSessions: number;
+}) {
+  let tone: StatusTone;
+  let label: string;
+  if (activeCount > 0) {
+    tone = 'sage';
+    label = 'Capturing now';
+  } else if (totalSessions === 0 || !lastSession) {
+    tone = 'outline';
+    label = 'No sessions captured yet';
+  } else {
+    // Last capture = when the most recent session ENDED (its last batch
+    // landed), falling back to its start for a session with no recorded end.
+    const lastCaptureAt = lastSession.ended_at ?? lastSession.started_at;
+    const fresh = Date.now() / 1000 - lastCaptureAt <= CAPTURE_FRESH_WINDOW_S;
+    tone = fresh ? 'sage' : 'ochre';
+    label = fresh
+      ? `Last captured ${formatEpochAgo(lastCaptureAt)}`
+      : `No capture in 7 days · last ${formatEpochAgo(lastCaptureAt)}`;
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full border border-outline-variant/40 bg-surface-container/40 px-2.5 py-1 font-sans text-xs text-on-surface-variant"
+      title="Capture health for this project — when a session last landed"
+    >
+      <StatusDot tone={tone} />
+      <span>{label}</span>
+    </span>
   );
 }
 

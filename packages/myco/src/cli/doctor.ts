@@ -19,6 +19,7 @@ import { loadProjectManifest } from '../config/project-manifest.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
+import { expandHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
 
 // --- Named constants (no magic literals) ---
@@ -89,6 +90,62 @@ async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
     // Ensure DB is closed even on error
     try { const { closeDatabase } = await import('../db/client.js'); closeDatabase(); } catch { /* ignore */ }
     return { name: 'Database', status: 'fail', detail: `Database error: ${(err as Error).message}`, fixable: false };
+  }
+}
+
+/** Sessions newer than this count as "capture is flowing". */
+const CAPTURE_FRESH_WINDOW_DAYS = 7;
+
+/** Human-readable age of an epoch-seconds timestamp, e.g. "3d ago". */
+function formatSessionAge(epochSeconds: number | null): string {
+  if (!epochSeconds) return 'never';
+  const deltaSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
+  if (deltaSec < 3600) return 'within the hour';
+  if (deltaSec < 86_400) return `${Math.floor(deltaSec / 3600)}h ago`;
+  return `${Math.floor(deltaSec / 86_400)}d ago`;
+}
+
+/**
+ * Report whether capture is actually FLOWING, not just whether the DB exists.
+ * `checkDatabase` reports a total session count; this answers the question a
+ * user with a memory tool most wants answered — "is my work being captured?"
+ *
+ * A vault that has sessions but none recently is the silent-capture-loss
+ * signature (the daemon stopped, hooks aren't firing, a symbiont got
+ * disabled) — exactly the failure mode that has recurred in this project and
+ * that nothing surfaced before. A brand-new vault with zero sessions is
+ * healthy, not alarming.
+ */
+export async function checkCaptureFlow(vaultDir: string): Promise<DoctorCheck> {
+  try {
+    const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
+    // Resolved inside the try: an unbound/half-provisioned vault makes
+    // request-context resolution throw, and a diagnostic must never crash
+    // the whole `myco doctor` run.
+    const { databasePath } = resolveDaemonDataPaths(vaultDir);
+    if (!fs.existsSync(databasePath)) {
+      // checkDatabase already reports the missing-DB failure in detail; keep
+      // this row quiet-but-honest rather than duplicating the alarm.
+      return { name: 'Capture', status: 'warn', detail: 'No database yet — start the daemon (`myco service start`)', fixable: false };
+    }
+    const { initDatabase, closeDatabase } = await import('../db/client.js');
+    const db = initDatabase(databasePath);
+    const total = (db.prepare('SELECT count(*) AS c FROM sessions').get() as { c: number }).c;
+    const last = (db.prepare('SELECT max(started_at) AS t FROM sessions').get() as { t: number | null }).t;
+    const windowStart = Math.floor(Date.now() / 1000) - CAPTURE_FRESH_WINDOW_DAYS * 86_400;
+    const recent = (db.prepare('SELECT count(*) AS c FROM sessions WHERE started_at >= ?').get(windowStart) as { c: number }).c;
+    closeDatabase();
+
+    if (total === 0) {
+      return { name: 'Capture', status: 'ok', detail: 'No sessions captured yet — open a project in your agent to begin', fixable: false };
+    }
+    if (recent > 0) {
+      return { name: 'Capture', status: 'ok', detail: `${recent} session${recent === 1 ? '' : 's'} in the last ${CAPTURE_FRESH_WINDOW_DAYS} days (last ${formatSessionAge(last)})`, fixable: false };
+    }
+    return { name: 'Capture', status: 'warn', detail: `No sessions in the last ${CAPTURE_FRESH_WINDOW_DAYS} days (last ${formatSessionAge(last)}) — if you've been working, capture may not be flowing; check the Symbionts page`, fixable: false };
+  } catch (err) {
+    try { const { closeDatabase } = await import('../db/client.js'); closeDatabase(); } catch { /* ignore */ }
+    return { name: 'Capture', status: 'fail', detail: `Capture check failed: ${(err as Error).message}`, fixable: false };
   }
 }
 
@@ -165,6 +222,18 @@ async function checkAgents(vaultDir: string, config: import('../config/schema.js
           detail: `${d.manifest.displayName} (enabled, registered)`,
           fixable: false,
         });
+      } else if (enabled && !registered && isSymbiontRegisteredGlobally(d)) {
+        // Opted IN via the `symbionts:` block but no project-scope config:
+        // the global-install migration strips project config and capture
+        // runs through the global agent install. Reporting "not registered"
+        // here is a false alarm whose `myco update` remedy just re-runs the
+        // strip — so when the global install is present, this is healthy.
+        checks.push({
+          name: checks.length === 0 ? 'Agents' : '',
+          status: 'ok',
+          detail: `${d.manifest.displayName} (enabled, registered globally)`,
+          fixable: false,
+        });
       } else if (enabled && !registered) {
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
@@ -212,21 +281,50 @@ export function isSymbiontRegistered(
   // Windsurf that intentionally omit mcpTarget, treat their hook/plugin
   // registration as the source of truth instead of forcing a false warning.
   if (registration.mcpTarget) {
-    return isMcpRegistered(d, projectRoot, registration.mcpTarget);
+    return isMcpRegisteredAt(d, path.join(projectRoot, registration.mcpTarget), registration.mcpTarget);
   }
   if (registration.hooksTarget) {
-    return isHooksRegistered(d, projectRoot, registration.hooksTarget);
+    return isHooksRegisteredAt(d, path.join(projectRoot, registration.hooksTarget));
   }
   return false;
 }
 
-function isMcpRegistered(
+/**
+ * Check if Myco is wired into a symbiont's GLOBAL agent config
+ * (`~/.claude/...`, etc.). Under the global-install model this is where
+ * capture is actually configured — project-scope config is stripped by the
+ * migration. Used to suppress the false "enabled but not registered" warning
+ * for projects that opted a symbiont IN via the `symbionts:` block: they are
+ * still captured through the global install, and the warning's suggested
+ * `myco update` would only re-run the strip.
+ */
+export function isSymbiontRegisteredGlobally(
   d: import('../symbionts/detect.js').DetectedSymbiont,
-  projectRoot: string,
+): boolean {
+  const registration = d.manifest.registration;
+  if (!registration) return false;
+  // globalMcpTarget can be a string or an array of string/object entries;
+  // only the simple-string shape is checked here. The global hooks target is
+  // the reliable cross-agent signal, so an exotic MCP shape just falls
+  // through to it rather than this check trying to model every variant.
+  const globalMcp = registration.globalMcpTarget;
+  if (typeof globalMcp === 'string'
+    && isMcpRegisteredAt(d, expandHome(globalMcp), globalMcp)) {
+    return true;
+  }
+  if (registration.globalHooksTarget
+    && isHooksRegisteredAt(d, expandHome(registration.globalHooksTarget))) {
+    return true;
+  }
+  return false;
+}
+
+function isMcpRegisteredAt(
+  d: import('../symbionts/detect.js').DetectedSymbiont,
+  mcpFile: string,
   mcpTarget: string,
 ): boolean {
   try {
-    const mcpFile = path.join(projectRoot, mcpTarget);
     const raw = fs.readFileSync(mcpFile, 'utf-8');
 
     // TOML: check for section header
@@ -245,13 +343,11 @@ function isMcpRegistered(
   return false;
 }
 
-function isHooksRegistered(
+function isHooksRegisteredAt(
   d: import('../symbionts/detect.js').DetectedSymbiont,
-  projectRoot: string,
-  hooksTarget: string,
+  hooksFile: string,
 ): boolean {
   try {
-    const hooksFile = path.join(projectRoot, hooksTarget);
     const raw = fs.readFileSync(hooksFile, 'utf-8');
 
     if (d.manifest.registration?.hooksFormat === 'plugin-file') {
@@ -413,6 +509,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   }
 
   checks.push(await checkDatabase(vaultDir));
+  checks.push(await checkCaptureFlow(vaultDir));
   checks.push(await checkIntelligence(config));
   checks.push(await checkEmbeddings(config));
   checks.push(...await checkAgents(vaultDir, config));

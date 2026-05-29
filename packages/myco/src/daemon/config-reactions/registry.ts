@@ -13,7 +13,21 @@
 import type { Logger } from '../logger.js';
 import type { MycoConfig } from '../../config/schema.js';
 
-export type ConfigReaction = (ctx: MycoConfig) => void | Promise<void>;
+/**
+ * Identity of the project whose scoped-config write triggered this fire.
+ * Reactions that touch project-scoped filesystem state (e.g. a project's
+ * `.gitignore`) need this — the merged `ctx` carries config values but not
+ * WHICH project was written, so a reaction that hardcodes a bootstrap vault
+ * dir would mutate the wrong project.
+ */
+export interface ReactionScope {
+  /** Vault dir of the project whose scoped config was just written. */
+  vaultDir: string;
+  /** Grove id for the four-tier merge, or null when unbound. */
+  groveId: string | null;
+}
+
+export type ConfigReaction = (ctx: MycoConfig, scope: ReactionScope) => void | Promise<void>;
 
 export interface ConfigReactionRegistry {
   /**
@@ -36,7 +50,7 @@ export interface ConfigReactionRegistry {
    * If a reaction throws, the error is logged and subsequent reactions still
    * run — the scoped write itself has already succeeded by this point.
    */
-  fire(touchedPaths: string[], ctx: MycoConfig): Promise<void>;
+  fire(touchedPaths: string[], ctx: MycoConfig, scope: ReactionScope): Promise<void>;
 }
 
 interface Entry {
@@ -51,11 +65,11 @@ export function createConfigReactionRegistry(logger: Logger): ConfigReactionRegi
     on(paths, fn) {
       entries.push({ paths, fn });
     },
-    async fire(touchedPaths, ctx) {
+    async fire(touchedPaths, ctx, scope) {
       for (const entry of entries) {
         if (!shouldFire(entry.paths, touchedPaths)) continue;
         try {
-          await entry.fn(ctx);
+          await entry.fn(ctx, scope);
         } catch (err) {
           logger.error('config-reactions', 'reaction threw', { error: String(err) });
         }

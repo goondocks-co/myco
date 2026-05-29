@@ -92,6 +92,56 @@ describe('validateSkillCandidateQualityContract', () => {
       );
       expect(issues).toEqual([]);
     });
+
+    it('resolves source refs recorded in short/abbreviated id form (prefix match)', () => {
+      // Records are stored with full ids; the candidate references them by an
+      // 8-char short id — the form skill-survey frequently records. An
+      // exact-only match used to report these as missing and 400 the approval.
+      const now = epochNow();
+      registerAgent({ id: TEST_AGENT, name: TEST_AGENT, created_at: now });
+      upsertSession({
+        id: 'session-abbrev-full-0001', project_id: null, agent: 'claude-code',
+        started_at: now - 100, ended_at: now - 50, status: 'completed',
+        title: 't', summary: 's', created_at: now - 100,
+      });
+      for (const id of [
+        '8f2403c3-1cf4-45f4-953c-aaaaaaaaaaaa',
+        'a31edf92-60d4-4923-822f-bbbbbbbbbbbb',
+      ]) {
+        insertSpore({
+          id, project_id: null, agent_id: TEST_AGENT, session_id: 'session-abbrev-full-0001',
+          observation_type: 'decision', content: 'c', importance: 5, created_at: now - 90,
+        });
+      }
+      const candidate = validCandidate({
+        source_ids: JSON.stringify([
+          { type: 'spore', id: '8f2403c3' },
+          { type: 'spore', id: 'a31edf92' },
+          { type: 'session', id: 'session-abbrev' },
+        ]),
+      });
+      const issues = validateSkillCandidateQualityContract(
+        candidate,
+        { requireResolvedSources: true, scope: ALL_PROJECTS_SCOPE },
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it('still flags a genuinely missing source ref (prefix match does not mask real misses)', () => {
+      seedSources(ALL_PROJECTS_SCOPE);
+      const candidate = validCandidate({
+        source_ids: JSON.stringify([
+          { type: 'spore', id: 'spore-q-001' },
+          { type: 'spore', id: 'spore-q-002' },
+          { type: 'spore', id: 'deadbeef' }, // no stored spore id begins with this
+        ]),
+      });
+      const issues = validateSkillCandidateQualityContract(
+        candidate,
+        { requireResolvedSources: true, scope: ALL_PROJECTS_SCOPE },
+      );
+      expect(issues.some((i) => i.includes('missing vault records') && i.includes('deadbeef'))).toBe(true);
+    });
   });
 
   describe('evidence_bundle_id', () => {

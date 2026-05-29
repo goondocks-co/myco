@@ -1,36 +1,40 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { getEnabledSymbiontNames, loadMergedConfig } from '../config/loader.js';
-import type { MycoConfig } from '../config/schema.js';
 import { loadManifests, resolvePackageRoot } from './detect.js';
 import { SymbiontInstaller } from './installer.js';
 
-export function getConfiguredManifests(projectRoot: string, config: MycoConfig) {
-  const allManifests = loadManifests();
-  const enabledNames = getEnabledSymbiontNames(config);
-  if (enabledNames) {
-    return allManifests.filter((manifest) => enabledNames.has(manifest.name));
-  }
-
-  return allManifests.filter((manifest) => fs.existsSync(path.join(projectRoot, manifest.configDir)));
-}
-
+/**
+ * Reconcile the project-scoped artefacts that a `capture` / `symbionts`
+ * config change can affect under the global-install model: the project
+ * `.gitignore` (bundled skill dirs + configured plan dirs + wrangler cache).
+ *
+ * Symbiont hooks are installed GLOBALLY by bootstrap / `myco update`. They are
+ * deliberately NOT re-created at project scope here. The previous version
+ * called `installer.install()` at project scope, which re-created
+ * `.agents/myco-run.cjs` and repointed the agent hook command at the
+ * project-local launcher — silently re-coupling a migrated project to exactly
+ * the project-local launcher the global-install migration had just stripped.
+ * Capture kept working (the re-created stub carried the v2 sentinel), so the
+ * regression was invisible: a clean-break un-done with no user-facing symptom,
+ * leaving stray `.agents/` churn in `git status`.
+ *
+ * The only project-scoped write the global model needs on a capture/symbionts
+ * change is the `.gitignore` reconciliation (mirrors the migration pass's
+ * `reconcileProjectGitignore` call). Idempotent: re-running with the same
+ * config produces the same `.gitignore`.
+ */
 export function reconcileConfiguredSymbionts(
   projectRoot: string,
-  vaultDir = path.join(projectRoot, '.myco'),
-  preloadedConfig?: MycoConfig,
+  vaultDir: string = path.join(projectRoot, '.myco'),
   groveId?: string | null,
 ): number {
-  const config = preloadedConfig ?? loadMergedConfig(vaultDir, { groveId });
-  const manifests = getConfiguredManifests(projectRoot, config);
-  const packageRoot = resolvePackageRoot();
-  let updatedCount = 0;
-
-  for (const manifest of manifests) {
-    const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId);
-    installer.install();
-    updatedCount++;
-  }
-
-  return updatedCount;
+  const manifests = loadManifests();
+  if (manifests.length === 0) return 0;
+  // Gitignore reconciliation is symbiont-agnostic (it manages canonical skill
+  // dirs + plan dirs + wrangler cache), so any manifest serves — mirrors the
+  // migration pass, which also reconciles via `manifests[0]`.
+  const installer = new SymbiontInstaller(
+    manifests[0], projectRoot, resolvePackageRoot(), false, vaultDir, groveId ?? null, 'project',
+  );
+  installer.reconcileProjectGitignore();
+  return 1;
 }

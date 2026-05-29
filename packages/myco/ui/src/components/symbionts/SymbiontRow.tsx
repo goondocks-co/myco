@@ -77,6 +77,15 @@ export function SymbiontRow({ symbiont, onSetOverride, overrideDisabled = false,
               </span>
             </div>
 
+            {/* Detected but Myco isn't wired into its global config yet — the
+                one in-between state with no implicit fix. Give it a path
+                forward instead of a dead-end "Detected" label. */}
+            {symbiont.detected && !symbiont.globallyInstalled && (
+              <p className="mt-1 text-xs text-on-surface-variant">
+                Not connected yet — use <span className="font-medium text-on-surface">Re-detect now</span> above to wire Myco into this agent, or run <code className="rounded bg-surface-container px-1 py-0.5 font-mono text-[11px]">myco update</code>.
+              </p>
+            )}
+
             {chips.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {chips.map((chip) => (

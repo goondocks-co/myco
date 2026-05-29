@@ -27,7 +27,7 @@ Myco's edits to shared config files (Codex's `config.toml`, OpenCode's `opencode
 
 ## Agents
 
-Eight symbionts ship today. Each entry below lists the **global** install targets. Per-project workspace targets are still honored when present, but global is the default.
+Eight symbionts ship today. Each entry below lists the **global** install targets — Myco wires into each agent's user-level config, so a single install covers every project on your machine.
 
 ### Claude Code
 
