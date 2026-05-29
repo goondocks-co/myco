@@ -363,6 +363,14 @@ function SettingsInner() {
           title="Settings"
           subtitle="Project, Grove, and Machine settings in one place. Use the filter bar to narrow by scope."
         />
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-md border border-outline-variant/30 bg-surface-container/40 px-3 py-2 text-xs text-on-surface-variant">
+          <span className="font-medium text-on-surface">Scopes</span>
+          <span className="inline-flex items-center gap-1.5"><ScopeBadge scope="personal" /> only you, this machine</span>
+          <span className="inline-flex items-center gap-1.5"><ScopeBadge scope="project" /> shared via the repo</span>
+          <span className="inline-flex items-center gap-1.5"><ScopeBadge scope="grove" /> all projects in this Grove</span>
+          <span className="inline-flex items-center gap-1.5"><ScopeBadge scope="machine" /> every Grove on this machine</span>
+          <span className="text-on-surface-variant/70">Precedence: Personal &rsaquo; Project &rsaquo; Grove &rsaquo; Machine.</span>
+        </div>
         {!hasProject && (
           <div className="mb-3 rounded-md border border-outline-variant/30 bg-surface-container/40 px-3 py-2 font-sans text-sm text-on-surface-variant">
             Select a project to edit Project and Grove settings. Machine-scoped settings are still editable below.
