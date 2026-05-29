@@ -1287,10 +1287,13 @@ export async function main(): Promise<void> {
   // toggle flips immediately.
   reactions.on([], (ctx) => { liveConfig.current = ctx; });
 
-  // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
-  // or symbiont enablement change. The reconcile has no other config inputs.
-  reactions.on(['capture', 'symbionts'], (ctx) => {
-    reconcileConfiguredSymbionts(resolveProjectRoot(bootstrapVaultDir), bootstrapVaultDir, ctx);
+  // Reconcile the WRITTEN project's `.gitignore` when its capture dirs or
+  // symbiont enablement change. Uses the per-write scope (not bootstrapVaultDir)
+  // so a write for project B reconciles project B — the old code hardcoded the
+  // bootstrap project. Reconcile no longer re-installs project-local launchers;
+  // symbiont hooks are global.
+  reactions.on(['capture', 'symbionts'], (_ctx, scope) => {
+    reconcileConfiguredSymbionts(resolveProjectRoot(scope.vaultDir), scope.vaultDir, scope.groveId);
   });
 
   // Refresh the in-memory plan-watch list on capture changes.
@@ -1346,7 +1349,10 @@ export async function main(): Promise<void> {
       configHash = computeConfigHash(scope.vaultDir);
       return null;
     }
-    await reactions.fire(touchedPaths, reactionContext);
+    await reactions.fire(touchedPaths, reactionContext, {
+      vaultDir: scope.vaultDir,
+      groveId: scope.groveId,
+    });
     return reactionContext;
   }
 

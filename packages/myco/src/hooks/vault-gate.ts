@@ -68,15 +68,32 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
     return vaultDir;
   }
 
-  if (!isSafeProjectRoot(projectRoot)) return null;
+  if (!isSafeProjectRoot(projectRoot)) {
+    // Non-git / unsafe root: capture is git-project-scoped by design, so
+    // dropping here is correct — but make it diagnosable. Gated behind
+    // MYCO_AGENT_DEBUG because this fires on every event in an unwatched
+    // directory; an unconditional trace would spam an agent run whose cwd
+    // happens to be non-git.
+    if (process.env.MYCO_AGENT_DEBUG) {
+      process.stderr.write(`[myco] capture skipped (non-git-or-unsafe-root) root=${projectRoot}\n`);
+    }
+    return null;
+  }
 
   try {
     ensureProjectVault(projectRoot);
     return vaultDir;
-  } catch {
-    // Hook silently bails — capture failures must never break the
-    // user's tool use. The daemon's audit log will surface the
-    // pattern if it recurs.
+  } catch (err) {
+    // Provisioning failed (permissions, full disk, a half-written `.myco/`).
+    // The hook still bails so a capture failure never breaks the user's tool
+    // use — but it bails LOUDLY. This path never reaches the daemon, so the
+    // daemon log cannot surface it; a stderr trace is the only signal, and a
+    // silent drop here is exactly the "capture went dark with no log line"
+    // failure mode that has recurred in this project. Mirrors the
+    // buffer-fallback traces in send-event.ts.
+    process.stderr.write(
+      `[myco] capture skipped (provision-failed) root=${projectRoot}: ${(err as Error).message}\n`,
+    );
     return null;
   }
 }

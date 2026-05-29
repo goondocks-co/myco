@@ -17,12 +17,16 @@ function makeLogger() {
 // value cast a literal into MycoConfig directly.
 const ctx = {} as MycoConfig;
 
+// Every fire() now carries the write scope (which project was written) so
+// project-scoped reactions target the right vault.
+const scope = { vaultDir: '/tmp/reaction-test/.myco', groveId: null };
+
 describe('ConfigReactionRegistry', () => {
   it('fires reaction when touched path matches registered prefix', async () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['capture'], fn);
-    await r.fire(['capture.plan_dirs'], ctx);
+    await r.fire(['capture.plan_dirs'], ctx, scope);
     expect(fn).toHaveBeenCalledOnce();
   });
 
@@ -30,7 +34,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['capture'], fn);
-    await r.fire(['daemon.log_level'], ctx);
+    await r.fire(['daemon.log_level'], ctx, scope);
     expect(fn).not.toHaveBeenCalled();
   });
 
@@ -38,7 +42,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on([], fn);
-    await r.fire(['anything.at.all'], ctx);
+    await r.fire(['anything.at.all'], ctx, scope);
     expect(fn).toHaveBeenCalledOnce();
   });
 
@@ -46,7 +50,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['daemon.log_level'], fn);
-    await r.fire(['daemon.log_level'], ctx);
+    await r.fire(['daemon.log_level'], ctx, scope);
     expect(fn).toHaveBeenCalledOnce();
   });
 
@@ -54,7 +58,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['daemon.log_level'], fn);
-    await r.fire(['daemon.log_level_details'], ctx);
+    await r.fire(['daemon.log_level_details'], ctx, scope);
     expect(fn).not.toHaveBeenCalled();
   });
 
@@ -62,7 +66,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['capture', 'daemon.log_level'], fn);
-    await r.fire(['daemon.log_level'], ctx);
+    await r.fire(['daemon.log_level'], ctx, scope);
     expect(fn).toHaveBeenCalledOnce();
   });
 
@@ -72,7 +76,7 @@ describe('ConfigReactionRegistry', () => {
     r.on([], () => { order.push(1); });
     r.on([], () => { order.push(2); });
     r.on([], () => { order.push(3); });
-    await r.fire(['x'], ctx);
+    await r.fire(['x'], ctx, scope);
     expect(order).toEqual([1, 2, 3]);
   });
 
@@ -83,7 +87,7 @@ describe('ConfigReactionRegistry', () => {
       await new Promise((res) => setTimeout(res, 5));
       done = true;
     });
-    await r.fire(['x'], ctx);
+    await r.fire(['x'], ctx, scope);
     expect(done).toBe(true);
   });
 
@@ -92,8 +96,17 @@ describe('ConfigReactionRegistry', () => {
     const fn = vi.fn();
     const sharedCtx = { daemon: { log_level: 'debug' } } as unknown as MycoConfig;
     r.on([], fn);
-    await r.fire(['daemon.log_level'], sharedCtx);
-    expect(fn).toHaveBeenCalledWith(sharedCtx);
+    await r.fire(['daemon.log_level'], sharedCtx, scope);
+    expect(fn).toHaveBeenCalledWith(sharedCtx, scope);
+  });
+
+  it('passes the write scope to each reaction', async () => {
+    const r = createConfigReactionRegistry(makeLogger());
+    const fn = vi.fn();
+    const writeScope = { vaultDir: '/tmp/project-b/.myco', groveId: 'grove-b' };
+    r.on(['capture'], fn);
+    await r.fire(['capture.plan_dirs'], ctx, writeScope);
+    expect(fn).toHaveBeenCalledWith(ctx, writeScope);
   });
 
   it('logs and continues when a reaction throws', async () => {
@@ -102,7 +115,7 @@ describe('ConfigReactionRegistry', () => {
     const after = vi.fn();
     r.on([], () => { throw new Error('boom'); });
     r.on([], after);
-    await r.fire(['x'], ctx);
+    await r.fire(['x'], ctx, scope);
     expect(after).toHaveBeenCalledOnce();
     expect(logger.error).toHaveBeenCalledWith('config-reactions', expect.any(String), expect.objectContaining({ error: expect.stringContaining('boom') }));
   });
@@ -111,7 +124,7 @@ describe('ConfigReactionRegistry', () => {
     const r = createConfigReactionRegistry(makeLogger());
     const fn = vi.fn();
     r.on(['capture'], fn);
-    await r.fire([], ctx);
+    await r.fire([], ctx, scope);
     expect(fn).not.toHaveBeenCalled();
   });
 });
