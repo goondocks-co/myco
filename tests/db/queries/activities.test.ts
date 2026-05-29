@@ -235,6 +235,27 @@ describe('activity query helpers', () => {
       expect(row.prompt_batch_id).toBe(openHuman.id);
     });
 
+    it('resolves the Myco tool identity at capture for MCP and CLI activities', () => {
+      const session = makeSession({ id: 'sess-myco-identity' });
+      upsertSession(session);
+      insertBatch(makeBatch(session.id));
+      const mcp = insertActivityWithBatch(makeActivity(session.id, {
+        tool_name: 'mcp__myco__myco_cortex', tool_input: JSON.stringify({ op: 'canopy_map' }),
+      }));
+      const cli = insertActivityWithBatch(makeActivity(session.id, {
+        tool_name: 'Bash',
+        tool_input: JSON.stringify({ command: `myco tool call myco_spores --input '{"op":"save"}'` }),
+      }));
+      const plain = insertActivityWithBatch(makeActivity(session.id, {
+        tool_name: 'Read', tool_input: JSON.stringify({ file_path: '/x' }),
+      }));
+      expect({ tool: mcp.myco_tool, op: mcp.myco_op }).toEqual({ tool: 'myco_cortex', op: 'canopy_map' });
+      expect({ tool: cli.myco_tool, op: cli.myco_op }).toEqual({ tool: 'myco_spores', op: 'save' });
+      // tool_name stays truthful — identity is additive, not a rewrite.
+      expect(cli.tool_name).toBe('Bash');
+      expect(plain.myco_tool).toBeNull();
+    });
+
     it('throws on NOT NULL FK when the session has zero batches (caller must ensureOpenBatch first)', () => {
       // The v43 invariant forbids NULL prompt_batch_id. Callers in the
       // event-handlers module use ensureOpenBatch() to fabricate a row

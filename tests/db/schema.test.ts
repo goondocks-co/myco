@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(49);
+      expect(SCHEMA_VERSION).toBe(50);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -274,6 +274,8 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
+        expect(colNames).toContain('myco_tool');
+        expect(colNames).toContain('myco_op');
       });
 
       it('plans table has correct columns', () => {

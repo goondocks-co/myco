@@ -7,6 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-usage.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,6 +64,15 @@ export interface ActivityRow {
   content_hash: string | null;
   created_at: number;
   canopy_injection_tokens: number | null;
+  /**
+   * Canonical Myco tool identity this activity represents, resolved ONCE at the
+   * capture write boundary (see resolveMycoToolIdentity) regardless of entry
+   * point — MCP (`mcp__myco__myco_search`) or CLI (a `Bash` activity wrapping
+   * `myco tool call myco_search`). Null for non-Myco activities. Consumers read
+   * these instead of re-deriving identity from `tool_name`/`tool_input`.
+   */
+  myco_tool: string | null;
+  myco_op: string | null;
 }
 
 /** Filter options for `listActivities`. */
@@ -95,6 +105,8 @@ const ACTIVITY_COLUMNS = [
   'content_hash',
   'created_at',
   'canopy_injection_tokens',
+  'myco_tool',
+  'myco_op',
 ] as const;
 
 const SELECT_COLUMNS = ACTIVITY_COLUMNS.join(', ');
@@ -123,6 +135,8 @@ function toActivityRow(row: Record<string, unknown>): ActivityRow {
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
     canopy_injection_tokens: (row.canopy_injection_tokens as number) ?? null,
+    myco_tool: (row.myco_tool as string) ?? null,
+    myco_op: (row.myco_op as string) ?? null,
   };
 }
 
@@ -139,17 +153,18 @@ function toActivityRow(row: Record<string, unknown>): ActivityRow {
 export function insertActivity(data: ActivityInsert): ActivityRow {
   const db = getDatabase();
 
+  const myco = resolveMycoToolIdentity(data.tool_name, data.tool_input ?? null);
   const info = db.prepare(
     `INSERT INTO activities (
        project_id, session_id, prompt_batch_id, tool_name, tool_input,
        tool_output_summary, file_path, files_affected, duration_ms,
        success, error_message, timestamp, processed,
-       content_hash, created_at
+       content_hash, created_at, myco_tool, myco_op
      ) VALUES (
        COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?
+       ?, ?, ?, ?
      )`,
   ).run(
     data.project_id ?? null,
@@ -168,6 +183,8 @@ export function insertActivity(data: ActivityInsert): ActivityRow {
     data.processed ?? DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
+    myco?.tool ?? null,
+    myco?.op ?? null,
   );
 
   const activityId = Number(info.lastInsertRowid);
@@ -235,13 +252,14 @@ export function insertActivityWithBatch(
   // bump and drifted the cached counter. The single-writer tenet
   // (AGENTS.md) applies here too: this function is THE writer for
   // `activities`, so it also owns the cache the column maintains.
+  const myco = resolveMycoToolIdentity(data.tool_name, data.tool_input ?? null);
   const tx = db.transaction(() => {
     const info = db.prepare(
       `INSERT INTO activities (
          project_id, session_id, prompt_batch_id, tool_name, tool_input,
          tool_output_summary, file_path, files_affected, duration_ms,
          success, error_message, timestamp, processed,
-         content_hash, created_at, canopy_injection_tokens
+         content_hash, created_at, canopy_injection_tokens, myco_tool, myco_op
        ) VALUES (
          (SELECT project_id FROM sessions WHERE id = ?),
          ?,
@@ -250,7 +268,7 @@ export function insertActivityWithBatch(
          ?, ?,
          ?, ?, ?, ?,
          ?, ?, ?, ?,
-         ?, ?, ?
+         ?, ?, ?, ?, ?
        )`,
     ).run(
       data.session_id,
@@ -269,6 +287,8 @@ export function insertActivityWithBatch(
       data.content_hash ?? null,
       data.created_at,
       data.canopy_injection_tokens ?? null,
+      myco?.tool ?? null,
+      myco?.op ?? null,
     );
 
     const activityId = Number(info.lastInsertRowid);

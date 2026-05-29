@@ -48,14 +48,27 @@ import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { MYCO_TOOL_LIKE_PATTERNS } from '@myco/db/queries/team-outbox.js';
 
-export interface MycoToolCallAggregateRow {
-  tool_name: string;
-  op: string;
-  count: number;
-}
+// ---------------------------------------------------------------------------
+// Myco tool-name structure (single source of truth)
+//
+// The prefix/family tokens that recognize and canonicalize Myco tool names.
+// Centralized so the SQL aggregate CASE and the JS resolver can never drift on
+// a literal, and so a convention change is a one-line edit instead of a
+// find-and-replace across string-matching call sites.
+// ---------------------------------------------------------------------------
+/** MCP-routed names arrive prefixed, e.g. `mcp__myco__myco_search`. */
+const MCP_TOOL_PREFIX = 'mcp__myco__';
+/** Legacy artifact: a pre-fix daemon double-applied the family prefix. */
+const LEGACY_DOUBLED_PREFIX = 'myco_myco_';
+const MYCO_TOOL_FAMILY = 'myco_';
+const COLLECTIVE_TOOL_FAMILY = 'collective_';
+/** A canonical Myco tool name starts with one of these. */
+const MYCO_TOOL_FAMILIES = [MYCO_TOOL_FAMILY, COLLECTIVE_TOOL_FAMILY] as const;
+/** The op dimension's JSON key + json_extract path on a tool_input payload. */
+const TOOL_OP_KEY = 'op';
+const TOOL_OP_JSON_PATH = `$.${TOOL_OP_KEY}`;
 
-export interface BatchMycoToolCallRow {
-  prompt_batch_id: number;
+export interface MycoToolCallAggregateRow {
   tool_name: string;
   op: string;
   count: number;
@@ -83,13 +96,14 @@ const MYCO_TOOL_WHERE_ALLOWLIST = MYCO_TOOL_LIKE_PATTERNS
   .map((p) => `a.tool_name LIKE '${p}' ESCAPE '\\'`)
   .join('\n      OR ');
 
-/** Tool-name canonicalization CASE (see module doc), shared by the
- *  session-level and per-batch aggregates so they never drift. */
+/** Tool-name canonicalization CASE (see module doc), built from the shared
+ *  prefix constants so it stays in lockstep with `canonicalizeMycoToolName`.
+ *  SQLite substr() is 1-indexed, so each offset is stripped-length + 1. */
 const CANONICAL_TOOL_NAME_CASE = `
     CASE
-      WHEN a.tool_name LIKE 'mcp__myco__myco_myco_%' THEN substr(a.tool_name, 17)
-      WHEN a.tool_name LIKE 'mcp__myco__%'           THEN substr(a.tool_name, 12)
-      WHEN a.tool_name LIKE 'myco_myco_%'            THEN substr(a.tool_name, 6)
+      WHEN a.tool_name LIKE '${MCP_TOOL_PREFIX}${LEGACY_DOUBLED_PREFIX}%' THEN substr(a.tool_name, ${MCP_TOOL_PREFIX.length + MYCO_TOOL_FAMILY.length + 1})
+      WHEN a.tool_name LIKE '${MCP_TOOL_PREFIX}%'                          THEN substr(a.tool_name, ${MCP_TOOL_PREFIX.length + 1})
+      WHEN a.tool_name LIKE '${LEGACY_DOUBLED_PREFIX}%'                    THEN substr(a.tool_name, ${MYCO_TOOL_FAMILY.length + 1})
       ELSE a.tool_name
     END`;
 
@@ -97,7 +111,7 @@ const AGGREGATE_SQL = `
 WITH normalized AS (
   SELECT
     ${CANONICAL_TOOL_NAME_CASE} AS canonical_tool_name,
-    COALESCE(json_extract(a.tool_input, '$.op'), '') AS canonical_op
+    COALESCE(json_extract(a.tool_input, '${TOOL_OP_JSON_PATH}'), '') AS canonical_op
   FROM activities a
   WHERE a.session_id = ?
     AND (
@@ -114,32 +128,65 @@ GROUP BY canonical_tool_name, canonical_op
 `;
 
 /**
- * Per-BATCH variant of AGGREGATE_SQL: the same canonicalization, but grouped by
- * `prompt_batch_id` so each Myco tool call is attributed to the prompt batch it
- * occurred in. Activities with a NULL batch are excluded (nothing to anchor to).
+ * JS twin of {@link CANONICAL_TOOL_NAME_CASE}: collapse an MCP-prefixed or
+ * legacy-doubled Myco tool name to its canonical `myco_*` / `collective_*`
+ * form. Returns null when `name` is not a Myco tool name at all (e.g. `Bash`),
+ * which is how the capture-time resolver distinguishes a direct Myco tool call
+ * from a shell tool that merely *wraps* a CLI Myco call.
  */
-const BATCH_AGGREGATE_SQL = `
-WITH normalized AS (
-  SELECT
-    a.prompt_batch_id AS prompt_batch_id,
-    ${CANONICAL_TOOL_NAME_CASE} AS canonical_tool_name,
-    COALESCE(json_extract(a.tool_input, '$.op'), '') AS canonical_op
-  FROM activities a
-  WHERE a.session_id = ?
-    AND a.prompt_batch_id IS NOT NULL
-    AND (
-      ${MYCO_TOOL_WHERE_ALLOWLIST}
-    )
-    AND (a.tool_input IS NULL OR json_valid(a.tool_input))
-)
-SELECT
-  prompt_batch_id,
-  canonical_tool_name AS tool_name,
-  canonical_op        AS op,
-  COUNT(*)            AS count
-FROM normalized
-GROUP BY prompt_batch_id, canonical_tool_name, canonical_op
-`;
+function canonicalizeMycoToolName(name: string): string | null {
+  let n = name;
+  if (n.startsWith(MCP_TOOL_PREFIX + LEGACY_DOUBLED_PREFIX)) n = n.slice(MCP_TOOL_PREFIX.length + MYCO_TOOL_FAMILY.length);
+  else if (n.startsWith(MCP_TOOL_PREFIX)) n = n.slice(MCP_TOOL_PREFIX.length);
+  else if (n.startsWith(LEGACY_DOUBLED_PREFIX)) n = n.slice(MYCO_TOOL_FAMILY.length);
+  return MYCO_TOOL_FAMILIES.some((family) => n.startsWith(family)) ? n : null;
+}
+
+/**
+ * Resolve the canonical Myco tool identity (tool + op) a raw activity
+ * represents, regardless of entry point — the single source of truth materialized
+ * onto `activities.myco_tool` / `myco_op` at the capture write boundary.
+ *
+ *   - MCP / HTTP / agent-internal → the activity's own (canonicalized) tool name.
+ *   - CLI (`… tool call <tool> --input '{"op":…}'`) → the FIRST Myco call parsed
+ *     from the shell command (see {@link parseCliMycoToolCalls}). A single shell
+ *     command can chain several Myco calls (~3% of CLI rows); the activity row
+ *     carries the primary one for display, while the per-session count aggregate
+ *     ({@link aggregateSessionMycoToolCalls}) still parses the full command so
+ *     the "Map calls" metric stays exact.
+ *
+ * Returns null for non-Myco activities (plain Bash, Read, …) and for malformed
+ * `tool_input`.
+ */
+export function resolveMycoToolIdentity(
+  toolName: string | null | undefined,
+  toolInput: string | null | undefined,
+): { tool: string; op: string } | null {
+  if (!toolName) return null;
+
+  // 1) Direct Myco tool name (MCP-routed or bare).
+  const canonical = canonicalizeMycoToolName(toolName);
+  if (canonical) {
+    let op = '';
+    if (toolInput) {
+      try {
+        op = String((JSON.parse(toolInput) as Record<string, unknown>)?.[TOOL_OP_KEY] ?? '');
+      } catch { /* op stays '' */ }
+    }
+    return { tool: canonical, op };
+  }
+
+  // 2) Shell tool wrapping a CLI Myco call — recover identity from the command.
+  if (toolInput) {
+    let command: unknown;
+    try { command = (JSON.parse(toolInput) as { command?: unknown })?.command; } catch { return null; }
+    if (typeof command === 'string') {
+      const calls = parseCliMycoToolCalls(command);
+      if (calls.length > 0) return { tool: calls[0]!.tool_name, op: calls[0]!.op };
+    }
+  }
+  return null;
+}
 
 /**
  * Recognizes Myco tool calls routed through the CLI rather than MCP.
@@ -160,9 +207,16 @@ GROUP BY prompt_batch_id, canonical_tool_name, canonical_op
  * and constrain `<name>` to the `myco_` / `collective_` families so prose or
  * unrelated commands containing "tool call" can't false-match.
  */
-const CLI_TOOL_CALL_RE =
-  /(?:myco-cli\.cjs|myco-run(?:\.cjs)?|cli\.js|\bmyco(?:-dev)?)\s+tool\s+call\s+(myco_[a-z_]+|collective_[a-z_]+)/g;
-const CLI_OP_RE = /"op"\s*:\s*"([^"]+)"/;
+/** Capture group matching a canonical Myco tool name, built from the families. */
+const MYCO_TOOL_NAME_GROUP = MYCO_TOOL_FAMILIES.map((family) => `${family}[a-z_]+`).join('|');
+const CLI_TOOL_CALL_RE = new RegExp(
+  String.raw`(?:myco-cli\.cjs|myco-run(?:\.cjs)?|cli\.js|\bmyco(?:-dev)?)\s+tool\s+call\s+(${MYCO_TOOL_NAME_GROUP})`,
+  'g',
+);
+/** Inline `--input '{"op":"…"}'` op extractor (keyed on the shared op key). */
+const CLI_OP_RE = new RegExp(String.raw`"${TOOL_OP_KEY}"\s*:\s*"([^"]+)"`);
+/** Shell separators that bound a single command segment (newline, `;`, `|`, `&`). */
+const SHELL_SEPARATOR_RE = /[\n;|&]/;
 
 /** Parse zero or more CLI-routed Myco tool calls out of one shell command. */
 export function parseCliMycoToolCalls(command: string): Array<{ tool_name: string; op: string }> {
@@ -183,7 +237,7 @@ export function parseCliMycoToolCalls(command: string): Array<{ tool_name: strin
     // segment otherwise runs to the end of the whole command. Cut at the first
     // shell separator (newline, `;`, `|`, `&`) after the tool name; this call's
     // inline `--input '{"op":…}'` carries op before any such separator.
-    const sepMatch = /[\n;|&]/.exec(command.slice(segStart, segEnd));
+    const sepMatch = SHELL_SEPARATOR_RE.exec(command.slice(segStart, segEnd));
     if (sepMatch) segEnd = segStart + sepMatch.index;
     const opMatch = CLI_OP_RE.exec(command.slice(segStart, segEnd));
     out.push({ tool_name, op: opMatch ? opMatch[1]! : '' });
@@ -240,73 +294,6 @@ export function aggregateSessionMycoToolCalls(
     if (typeof command !== 'string') continue;
     for (const call of parseCliMycoToolCalls(command)) {
       bump(call.tool_name, call.op, 1);
-    }
-  }
-
-  return [...counts.values()];
-}
-
-/**
- * Per-BATCH Myco tool-call attribution — the per-prompt-batch counterpart of
- * `aggregateSessionMycoToolCalls`. Surfaces, for each prompt batch, the Myco
- * tools called during it, regardless of entry point:
- *   - MCP / HTTP / agent-internal → the activity's canonicalized `tool_name`.
- *   - CLI (`… tool call <tool> --input '{"op":…}'`) → recovered from the shell
- *     activity's command via `parseCliMycoToolCalls`, attributed to that
- *     activity's `prompt_batch_id`.
- *
- * This is what makes the user-visible "Bash" CLI activity surface as the actual
- * Myco tool under the human turn it ran in. Because Steps 1–3 keep tool-call
- * activities anchored to the human batch (system batches are point-in-time and
- * any stranded activity is re-homed), grouping by `prompt_batch_id` yields the
- * tool calls under the prompt the myco agent actually analyzes.
- *
- * Pure derived view over `activities`; no materialized table (per-batch counts
- * are cheap to compute on read and avoid another migration). Returns an empty
- * array when the session has no Myco tool calls.
- */
-export function getBatchMycoToolCalls(
-  sessionId: string,
-  db?: Database | null,
-): BatchMycoToolCallRow[] {
-  const handle = db ?? getDatabase();
-  const counts = new Map<string, BatchMycoToolCallRow>();
-  const bump = (prompt_batch_id: number, tool_name: string, op: string, by: number) => {
-    const key = `${prompt_batch_id} ${tool_name} ${op}`;
-    const existing = counts.get(key);
-    if (existing) existing.count += by;
-    else counts.set(key, { prompt_batch_id, tool_name, op, count: by });
-  };
-
-  const rows = handle.prepare(BATCH_AGGREGATE_SQL).all(sessionId) as Array<{
-    prompt_batch_id: number;
-    tool_name: string;
-    op: string;
-    count: number | null;
-  }>;
-  for (const row of rows) bump(row.prompt_batch_id, row.tool_name, row.op, Number(row.count ?? 0));
-
-  // CLI-routed calls keep the shell activity's batch attribution.
-  const cliRows = handle
-    .prepare(
-      `SELECT prompt_batch_id, tool_input FROM activities
-        WHERE session_id = ?
-          AND prompt_batch_id IS NOT NULL
-          AND tool_input LIKE '%tool call %'
-          AND (tool_input IS NULL OR json_valid(tool_input))`,
-    )
-    .all(sessionId) as Array<{ prompt_batch_id: number; tool_input: string | null }>;
-  for (const { prompt_batch_id, tool_input } of cliRows) {
-    if (!tool_input) continue;
-    let command: unknown;
-    try {
-      command = JSON.parse(tool_input)?.command;
-    } catch {
-      continue;
-    }
-    if (typeof command !== 'string') continue;
-    for (const call of parseCliMycoToolCalls(command)) {
-      bump(prompt_batch_id, call.tool_name, call.op, 1);
     }
   }
 

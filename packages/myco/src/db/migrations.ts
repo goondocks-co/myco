@@ -48,6 +48,7 @@ import {
   buildPlanId,
   deriveStoredPlanLogicalKey,
 } from '@myco/plans/identity.js';
+import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-usage.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry
@@ -107,6 +108,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 47, migrate: (db) => migrateV46ToV47(db) },
   { version: 48, migrate: (db) => migrateV47ToV48(db) },
   { version: 49, migrate: (db) => migrateV48ToV49(db) },
+  { version: 50, migrate: (db) => migrateV49ToV50(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3074,6 +3076,58 @@ function migrateV48ToV49(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(49, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v49 → v50: materialize canonical Myco tool identity onto activities.
+ *
+ * Adds `activities.myco_tool` / `myco_op` and backfills them from existing rows
+ * via the same `resolveMycoToolIdentity` used at the capture write boundary.
+ * This moves the CLI-vs-MCP identity resolution OUT of the UI/read layer (a
+ * per-batch chip overlay that re-parsed `Bash` commands on every render) and
+ * into the single source of truth on the row itself. Only candidate rows are
+ * scanned: a direct Myco tool name, or a shell command embedding `tool call`.
+ */
+function migrateV49ToV50(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const hasActivities = db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name='activities'`,
+    ).get() as { 1: number } | undefined;
+    if (hasActivities) {
+      // ADD COLUMN is not idempotent in SQLite — guard on the live column set
+      // so a partially-applied or hand-patched schema doesn't abort here.
+      const cols = new Set(
+        (db.prepare(`PRAGMA table_info(activities)`).all() as Array<{ name: string }>).map((c) => c.name),
+      );
+      if (!cols.has('myco_tool')) db.prepare(`ALTER TABLE activities ADD COLUMN myco_tool TEXT`).run();
+      if (!cols.has('myco_op')) db.prepare(`ALTER TABLE activities ADD COLUMN myco_op TEXT`).run();
+
+      // Backfill only rows that could carry a Myco identity: a direct Myco tool
+      // name (MCP-prefixed or bare) or a shell command wrapping a CLI call.
+      const candidates = db.prepare(
+        `SELECT id, tool_name, tool_input FROM activities
+          WHERE tool_name LIKE 'myco_%'
+             OR tool_name LIKE 'mcp__myco__%'
+             OR tool_name LIKE 'collective_%'
+             OR tool_input LIKE '%tool call %'`,
+      ).all() as Array<{ id: number; tool_name: string; tool_input: string | null }>;
+      const update = db.prepare(`UPDATE activities SET myco_tool = ?, myco_op = ? WHERE id = ?`);
+      for (const row of candidates) {
+        const identity = resolveMycoToolIdentity(row.tool_name, row.tool_input);
+        if (identity) update.run(identity.tool, identity.op, row.id);
+      }
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(50, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
