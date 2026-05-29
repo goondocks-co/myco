@@ -5,6 +5,7 @@ import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 
 const TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
@@ -137,5 +138,18 @@ describe('session cascade journals child deletes via triggers', () => {
     expect(sessRows.n).toBe(1);
     expect(batchRows.n).toBe(1);
     expect(sporeRows.n).toBe(1);
+  });
+});
+
+describe('structural guard: every synced table has a delete trigger', () => {
+  it('covers all observed tables except entity_mentions (no id, not synced)', () => {
+    const db = newDb();
+    const triggers = new Set(
+      (db.prepare(`SELECT name FROM sqlite_master WHERE type='trigger'`).all() as Array<{ name: string }>)
+        .map((r) => r.name),
+    );
+    const expected = TEAM_SYNC_OBSERVED_TABLES.filter((t) => t !== 'entity_mentions');
+    const missing = expected.filter((t) => !triggers.has(`${t}_team_ad`));
+    expect(missing).toEqual([]);
   });
 });
