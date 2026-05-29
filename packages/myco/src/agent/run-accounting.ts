@@ -206,8 +206,12 @@ export function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution
   }
   aggregate.breakdown.totalCostUsd = aggregate.costUsd;
 
-  const allActual = phaseResults.every((phase) => phase.costData?.source === 'actual');
-  const hasUnavailable = phaseResults.some((phase) => phase.costData?.source === 'unavailable');
+  // Provenance reflects only the phases that incurred cost. Skipped phases
+  // (gated digest tiers, preCondition short-circuits) carry no costData;
+  // counting them here would force any run containing a skip to "estimated"
+  // with a null actual_cost_usd.
+  const allActual = costedPhases.every((phase) => phase.costData.source === 'actual');
+  const hasUnavailable = costedPhases.some((phase) => phase.costData.source === 'unavailable');
   return {
     source: allActual ? 'actual' : 'estimated',
     costUsd: aggregate.costUsd,

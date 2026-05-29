@@ -65,6 +65,7 @@ interface ProviderInput {
 /** Phase override input. Null fields mean delete. */
 interface PhaseInput {
   provider?: ProviderInput | null;
+  reasoningLevel?: PhaseOverride['reasoningLevel'] | null;
   model?: string | null;
   maxTurns?: number | null;
 }
@@ -197,6 +198,10 @@ export function withTaskConfig<T extends WithTaskConfigShape>(
           if ('provider' in phaseValue) {
             if (phaseValue.provider === null) delete pe.provider;
             else if (phaseValue.provider !== undefined) pe.provider = { ...phaseValue.provider };
+          }
+          if ('reasoningLevel' in phaseValue) {
+            if (phaseValue.reasoningLevel === null) delete pe.reasoningLevel;
+            else if (phaseValue.reasoningLevel !== undefined) pe.reasoningLevel = phaseValue.reasoningLevel;
           }
           if ('model' in phaseValue) {
             if (phaseValue.model === null) delete pe.model;
