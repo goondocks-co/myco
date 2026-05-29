@@ -635,60 +635,6 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * `POST /verify` — drift confirmation for the local sync reconciler.
- *
- * Body: `{ machine_id, table, ids: string[] }`
- * Returns: `{ present: string[], missing: string[] }`
- *
- * The daemon stamps `synced_at` on a source row when the worker's
- * `/enqueue` returns 200 — but "accepted by /enqueue" only means the
- * record was queued, not that the queue consumer succeeded in writing
- * it to D1. A record can be silently dead-lettered (column mismatch,
- * constraint violation, queue consumer crash) while the daemon thinks
- * it landed. Over time `synced_at` IS NOT NULL accumulates rows that
- * never actually exist in D1, and `backfillUnsynced` (which only scans
- * `synced_at IS NULL`) never sees them again — that's how negative
- * remote deltas (-9 on skill_candidates in the dogfood Grove) arise.
- *
- * This endpoint lets the daemon ask D1 the authoritative question
- * ("for these ids on my machine_id, which actually exist?") so it can
- * reset `synced_at` to NULL on the missing rows and re-enqueue them via
- * the normal backfill path.
- *
- * Capped at 500 ids per call to stay under D1's bound-parameter limit
- * (100 per prepared statement); the daemon chunks larger inputs. Table
- * names are validated against `SYNCED_TABLES_SET` so the endpoint can't
- * be used to enumerate non-sync tables on the D1.
- */
-async function handleVerify(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { machine_id?: unknown; table?: unknown; ids?: unknown };
-  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
-  const table = typeof body.table === 'string' ? body.table.trim() : '';
-  const ids = Array.isArray(body.ids)
-    ? body.ids.filter((id): id is string | number => typeof id === 'string' || typeof id === 'number').map((id) => String(id))
-    : [];
-
-  if (!machineId) return errorResponse('machine_id is required', 400);
-  if (!SYNCED_TABLES_SET.has(table)) return errorResponse(`Unknown table: ${table}`, 400);
-  if (ids.length === 0) return jsonResponse({ present: [], missing: [] });
-  if (ids.length > 500) return errorResponse('Maximum 500 ids per call', 400);
-
-  const D1_BIND_LIMIT_PAIRS = 50;
-  const present = new Set<string>();
-  for (let offset = 0; offset < ids.length; offset += D1_BIND_LIMIT_PAIRS) {
-    const slice = ids.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
-    const placeholders = slice.map(() => '?').join(', ');
-    const result = await env.MYCO_TEAM_DB.prepare(
-      `SELECT id FROM ${table} WHERE machine_id = ? AND id IN (${placeholders})`,
-    ).bind(machineId, ...slice).all<{ id: string | number }>();
-    for (const row of result.results ?? []) present.add(String(row.id));
-  }
-
-  const missing = ids.filter((id) => !present.has(id));
-  return jsonResponse({ present: Array.from(present), missing });
-}
-
-/**
  * Conditionally bump nodes.last_seen for the given machine. Worker-side
  * memo skips the D1 UPDATE when the last write for this machine landed
  * inside the heartbeat window — at PowerManager's 5min cadence this turns
@@ -1485,6 +1431,42 @@ async function handleSyncSummary(env: Env): Promise<Response> {
   });
 }
 
+/**
+ * `POST /rebuild` — destructive one-way repair. Truncates this Grove's D1
+ * tables and clears their Vectorize entries so the daemon can re-push the
+ * full local Grove (`backfillAll`) and land an exact mirror. The local Grove
+ * is the source of truth; this never reconciles, it replaces.
+ */
+async function handleRebuild(env: Env): Promise<Response> {
+  // Clear Vectorize for embeddable tables first (best-effort, non-fatal):
+  // collect current D1 ids and delete their vectors by deterministic id.
+  for (const table of Object.keys(EMBEDDABLE_TABLES)) {
+    try {
+      const rows = await env.MYCO_TEAM_DB.prepare(
+        `SELECT id, machine_id FROM ${table}`,
+      ).all<{ id: string; machine_id: string }>();
+      const ids: string[] = [];
+      for (const r of rows.results ?? []) {
+        ids.push(await vectorId(table, String(r.id), String(r.machine_id)));
+        ids.push(legacyVectorId(table, String(r.id), String(r.machine_id)));
+      }
+      for (let i = 0; i < ids.length; i += 1000) {
+        await env.MYCO_TEAM_VECTORS.deleteByIds(ids.slice(i, i + 1000));
+      }
+    } catch (err) {
+      console.error('team-sync.rebuild.vector-clear-failed', {
+        table, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Truncate every D1 table in one batch.
+  const statements = SYNCED_TABLES.map((t) => env.MYCO_TEAM_DB.prepare(`DELETE FROM ${t}`));
+  await env.MYCO_TEAM_DB.batch(statements);
+
+  return jsonResponse({ ok: true, truncated_tables: SYNCED_TABLES.length });
+}
+
 async function handlePutConfig(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as Record<string, string>;
 
@@ -1741,8 +1723,8 @@ export default {
       if (method === 'POST' && path === '/enqueue') {
         return await handleEnqueue(request, env);
       }
-      if (method === 'POST' && path === '/verify') {
-        return await handleVerify(request, env);
+      if (method === 'POST' && path === '/rebuild') {
+        return await handleRebuild(env);
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
