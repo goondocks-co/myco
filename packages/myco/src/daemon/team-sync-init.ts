@@ -413,6 +413,13 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * Mirrors flushAllGroves's forEachGrove fan-out exactly (same groveSyncContext,
    * withDatabase, daemonStateDir, jobName pattern) but only writes the flag so
    * delete triggers on non-boot Groves are armed before the first flush tick.
+   *
+   * Runs on the boot critical path (awaited before server.start binds the port),
+   * so the per-Grove flag writes fan out concurrently (`parallel: true`). Each
+   * Grove is an independent SQLite DB and the write is a single idempotent flag
+   * set, so there is no cross-Grove lock contention. forEachGrove isolates a
+   * single Grove's failure (logged, not thrown) so one bad Grove neither aborts
+   * the others nor blocks startup.
    */
   async function reconcileAllGroveFlags(cache: GroveRuntimeCache): Promise<void> {
     await forEachGrove(
@@ -425,7 +432,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           setTeamSyncEnabled(enabled);
         });
       },
-      { daemonStateDir, jobName: 'team-sync-flag-reconcile' },
+      { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
     );
   }
 

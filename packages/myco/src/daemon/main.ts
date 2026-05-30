@@ -1980,6 +1980,25 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
   server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
 
+  // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
+  // port is bound. reconcileClient() above only arms the boot Grove's flag;
+  // non-boot Groves' flags stay at their persisted default until their first
+  // flush tick — a window where deletes on those Groves are not journaled to
+  // team_outbox (the AFTER DELETE triggers gate on this flag, and deletes have
+  // no backfill safety net, so an un-journaled delete is permanently
+  // un-mirrored). Awaiting this before server.start() guarantees every Grove's
+  // delete triggers are armed before any HTTP traffic can issue a delete. The
+  // flag writes fan out concurrently (parallel) and a single Grove's failure is
+  // isolated + logged inside forEachGrove, so this neither blocks startup long
+  // nor aborts on one bad Grove. No push, no client creation.
+  try {
+    await teamSync.reconcileAllGroveFlags(runtimeCache);
+  } catch (err) {
+    logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Boot-time Grove flag reconcile failed', {
+      error: errorMessage(err),
+    });
+  }
+
   // --- Start server ---
   //
   // The canonical port is the single source of truth: derivePort(serviceDir)
@@ -2106,18 +2125,6 @@ export async function main(): Promise<void> {
     scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
-
-  // Reconcile team_sync_state.enabled for every registered Grove at boot.
-  // reconcileClient() above only arms the boot Grove's flag; non-boot Groves'
-  // flags stay at their persisted default until their first flush tick — a window
-  // where deletes on those Groves are not journaled (deletes have no backfill
-  // safety net). Fan the flag-only write across all Groves now so delete triggers
-  // are armed before any HTTP traffic arrives. No push, no client creation.
-  teamSync.reconcileAllGroveFlags(runtimeCache).catch((err) => {
-    logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Boot-time Grove flag reconcile failed', {
-      error: errorMessage(err),
-    });
-  });
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner

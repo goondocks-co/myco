@@ -33,13 +33,36 @@ describe('machine-id', () => {
   });
 
   describe('resolveGitHubUser()', () => {
-    it('returns a non-empty string', () => {
-      const user = resolveGitHubUser();
-      expect(user.length).toBeGreaterThan(0);
+    // Drives the runner seam rather than invoking the real `gh` binary, which
+    // is slow/absent/unauthenticated under CI and full-suite contention and
+    // previously made this assertion flake. Both branches of the contract are
+    // covered deterministically with no network or subprocess.
+
+    it('returns the trimmed login when gh resolves a username', () => {
+      const user = resolveGitHubUser(() => '  octocat\n');
+      expect(user).toBe('octocat');
     });
 
-    // The fallback path is implicitly tested via getMachineId with a cached file.
-    // Mocking execFileSync requires module-level interception that is fragile here.
+    it('falls back to "local" when gh returns an empty login', () => {
+      const user = resolveGitHubUser(() => '   \n');
+      expect(user).toBe('local');
+    });
+
+    it('falls back to "local" when gh is unavailable (throws)', () => {
+      const user = resolveGitHubUser(() => {
+        throw new Error('gh: command not found');
+      });
+      expect(user).toBe('local');
+    });
+
+    it('always returns a non-empty string', () => {
+      expect(resolveGitHubUser(() => 'someuser').length).toBeGreaterThan(0);
+      expect(
+        resolveGitHubUser(() => {
+          throw new Error('boom');
+        }).length,
+      ).toBeGreaterThan(0);
+    });
   });
 
   describe('getMachineId()', () => {
