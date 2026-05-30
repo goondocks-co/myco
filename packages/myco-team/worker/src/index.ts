@@ -115,6 +115,16 @@ function resolveProtocolBounds(env: Env): { serverVersion: number; minClientVers
 const QUEUE_SEND_BATCH_SIZE = 100;
 const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
 
+/**
+ * Max times a dead-lettered message is replayed main→DLQ→main before it
+ * is parked terminally in `team_dlq` for the operator. Without this cap a
+ * deterministically-failing ("poison") record loops forever — burning
+ * budget and inflating `backlog` (every replay bumps `enqueued` while
+ * `processed` only rises on success). Operator `Retry` resets the cycle
+ * by DELETEing the row (and thus its `replay_count`).
+ */
+const MAX_DLQ_REPLAYS = 3;
+
 type SyncedTable = (typeof SYNCED_TABLES)[number];
 
 interface SyncRecord {
@@ -821,6 +831,44 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 }
 
 
+/** Vectorize rate-limit signal (40041 / "Too Many Requests"). */
+function isVectorizeRateLimit(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('40041') || /too many requests/i.test(msg);
+}
+
+const VECTOR_UPSERT_MAX_ATTEMPTS = 5;
+const VECTOR_UPSERT_BACKOFF_MS = [500, 1000, 2000, 4000];
+
+/**
+ * Single source of truth for the Vectorize upsert retry contract: up to
+ * 5 attempts, exponential backoff on rate-limit (40041), throws the last
+ * error on any non-rate-limit failure or once retries are exhausted. Used
+ * for both the batch attempt and each per-row attempt in
+ * `upsertVectorsResilient` so the codes/backoff live in one place.
+ */
+async function upsertWithRateLimitBackoff(
+  index: VectorizeIndex,
+  vectors: VectorizeVector[],
+): Promise<void> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < VECTOR_UPSERT_MAX_ATTEMPTS; attempt++) {
+    try {
+      await index.upsert(vectors);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (isVectorizeRateLimit(err) && attempt < VECTOR_UPSERT_MAX_ATTEMPTS - 1) {
+        await new Promise<void>((r) => setTimeout(r, VECTOR_UPSERT_BACKOFF_MS[attempt] ?? 4000));
+        continue;
+      }
+      // Non-rate-limit error or retries exhausted.
+      break;
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * Attempt to upsert an array of vectors as a single batch, falling back to
  * per-row upserts on non-rate-limit errors so one poison vector cannot sink
@@ -833,52 +881,24 @@ async function upsertVectorsResilient(
   env: Env,
   vectors: VectorizeVector[],
 ): Promise<{ ok: number; failed: number }> {
-  const isRateLimit = (err: unknown): boolean => {
-    const msg = err instanceof Error ? err.message : String(err);
-    return msg.includes('40041') || /too many requests/i.test(msg);
-  };
-
-  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
   // Attempt batched upsert with backoff on rate-limit.
-  const MAX_ATTEMPTS = 5;
-  const BACKOFF_MS = [500, 1000, 2000, 4000];
   let batchErr: unknown = null;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    try {
-      await env.MYCO_TEAM_VECTORS.upsert(vectors);
-      return { ok: vectors.length, failed: 0 };
-    } catch (err) {
-      batchErr = err;
-      if (isRateLimit(err) && attempt < MAX_ATTEMPTS - 1) {
-        await sleep(BACKOFF_MS[attempt] ?? 4000);
-        continue;
-      }
-      // Non-rate-limit error or retries exhausted — fall through to per-row.
-      break;
-    }
+  try {
+    await upsertWithRateLimitBackoff(env.MYCO_TEAM_VECTORS, vectors);
+    return { ok: vectors.length, failed: 0 };
+  } catch (err) {
+    // Non-rate-limit error or retries exhausted — fall through to per-row.
+    batchErr = err;
   }
 
   // Per-row fallback: isolate the failure to the offending vector(s).
   let ok = 0;
   let failed = 0;
   for (const v of vectors) {
-    let rowErr: unknown = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      try {
-        await env.MYCO_TEAM_VECTORS.upsert([v]);
-        rowErr = null;
-        break;
-      } catch (err) {
-        rowErr = err;
-        if (isRateLimit(err) && attempt < MAX_ATTEMPTS - 1) {
-          await sleep(BACKOFF_MS[attempt] ?? 4000);
-          continue;
-        }
-        break;
-      }
-    }
-    if (rowErr !== null) {
+    try {
+      await upsertWithRateLimitBackoff(env.MYCO_TEAM_VECTORS, [v]);
+      ok++;
+    } catch (rowErr) {
       failed++;
       const meta = v.metadata as TeamVectorMetadata | undefined;
       console.error('team-sync.vector-upsert-failed', {
@@ -886,15 +906,16 @@ async function upsertVectorsResilient(
         id: meta?.id,
         error: rowErr instanceof Error ? rowErr.message : String(rowErr),
       });
-    } else {
-      ok++;
     }
   }
-  // Log batch failure context for tail inspection.
-  console.error('team-sync.batch-upsert-fell-back-to-per-row', {
-    count: vectors.length,
-    error: batchErr instanceof Error ? batchErr.message : String(batchErr),
-  });
+  // Log batch failure context for tail inspection — only when the per-row
+  // fallback actually produced failures, not when every row recovered.
+  if (failed > 0) {
+    console.error('team-sync.batch-upsert-fell-back-to-per-row', {
+      count: vectors.length,
+      error: batchErr instanceof Error ? batchErr.message : String(batchErr),
+    });
+  }
   return { ok, failed };
 }
 
@@ -1051,9 +1072,11 @@ async function coalescedUpsertBatch(
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.write_failed ${table}/${message.body.id}: ${reason}`);
+        // Transient: message.retry() redelivers and re-counts as `applied`
+        // on success. Counting `failed` here would permanently inflate the
+        // stat and make `last_error` sticky on a healthy, fully-drained
+        // queue, so we only log — never touch counts on a retried path.
         message.retry();
-        counts.failed++;
-        counts.lastError = reason;
       }
     }
   }
@@ -1091,9 +1114,9 @@ async function coalescedDeleteBatch(
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.delete_failed ${table}/${message.body.id}: ${reason}`);
+        // Transient retry — redelivered and re-counted as `applied` on
+        // success. Don't touch counts (see coalescedUpsertBatch).
         message.retry();
-        counts.failed++;
-        counts.lastError = reason;
       }
     }
   }
@@ -1148,10 +1171,10 @@ async function coalescedEmbedBatch(
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error(`team-sync.queue.embed_select_failed table=${table}: ${reason}`);
+    // Transient: the whole group is retried and re-counted as `applied`
+    // on success, so don't touch counts (see coalescedUpsertBatch).
     for (const message of messages) {
       message.retry();
-      counts.failed++;
-      counts.lastError = reason;
     }
     return;
   }
@@ -1231,16 +1254,47 @@ function routeRecordForEmbedding(
 async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (batch.messages.length === 0) return;
 
-  // Best-effort: persist each dead-lettered message to team_dlq for operator visibility.
-  // Uses INSERT OR REPLACE so repeated DLQ deliveries of the same record update rather than duplicate.
-  // This runs BEFORE the replay attempt so visibility is preserved even if replay throws.
-  for (const m of batch.messages) {
+  // The lease_id is the stable per-record key `${table}:${id}:${machine_id}`.
+  // It's what `team_dlq` keys on (INSERT OR REPLACE), what the operator
+  // surfaces in `handleDlqList`, and what `handleDlqRetry`/`handleDlqDiscard`
+  // address rows by. Compute it once per message and reuse it for the
+  // replay-count lookup, the upsert, and the cap check.
+  const leaseIds = batch.messages.map((m) => `${m.body.table}:${m.body.id}:${m.body.machine_id}`);
+
+  // Look up the current replay_count per lease_id in a single batched SELECT
+  // so we can increment it monotonically across DLQ deliveries. A message
+  // that keeps poisoning the queue climbs replay_count each time it lands here.
+  const existingReplayCounts = new Map<string, number>();
+  try {
+    const placeholders = leaseIds.map(() => '?').join(', ');
+    const rows = await env.MYCO_TEAM_DB.prepare(
+      `SELECT lease_id, replay_count FROM team_dlq WHERE lease_id IN (${placeholders})`,
+    ).bind(...leaseIds).all<{ lease_id: string; replay_count: number | null }>();
+    for (const row of rows.results ?? []) {
+      existingReplayCounts.set(row.lease_id, Number(row.replay_count ?? 0));
+    }
+  } catch {
+    // SELECT failed — treat every message as never-before-seen (replay_count 0).
+    // Worst case a poison record gets a few extra replays before the cap bites.
+  }
+
+  // Best-effort: persist each dead-lettered message to team_dlq for operator
+  // visibility, carrying the incremented replay_count. INSERT OR REPLACE so
+  // repeated DLQ deliveries of the same record update rather than duplicate.
+  // This runs BEFORE the replay decision so visibility (and the cap counter)
+  // is preserved even if the replay send throws.
+  const replayable: SyncRecord[] = [];
+  const cappedMessages: Array<Message<SyncRecord>> = [];
+  const replayMessages: Array<Message<SyncRecord>> = [];
+  for (let i = 0; i < batch.messages.length; i++) {
+    const m = batch.messages[i];
+    const leaseId = leaseIds[i];
+    const nextCount = (existingReplayCounts.get(leaseId) ?? 0) + 1;
     try {
-      const leaseId = `${m.body.table}:${m.body.id}:${m.body.machine_id}`;
       await env.MYCO_TEAM_DB.prepare(
         `INSERT OR REPLACE INTO team_dlq
-           (lease_id, table_name, row_id, machine_id, operation, payload, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (lease_id, table_name, row_id, machine_id, operation, payload, reason, created_at, replay_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         leaseId,
         m.body.table,
@@ -1248,13 +1302,33 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
         m.body.machine_id,
         m.body.operation,
         JSON.stringify(m.body),
-        'dead-lettered after max retries',
+        nextCount > MAX_DLQ_REPLAYS
+          ? `replay capped after ${MAX_DLQ_REPLAYS} attempts`
+          : 'dead-lettered after max retries',
         epochSeconds(),
+        nextCount,
       ).run();
     } catch {
       // DLQ write failed — ignore, replay path takes priority.
     }
+
+    if (nextCount > MAX_DLQ_REPLAYS) {
+      // Poison record: stop the main→DLQ→main loop. Leave it terminal in
+      // team_dlq for the operator (Retry resets the cycle via DELETE) and
+      // ack so CF doesn't redeliver the DLQ message.
+      console.error('team-sync.dlq.replay-capped', { lease_id: leaseId, replay_count: nextCount });
+      cappedMessages.push(m);
+    } else {
+      replayable.push(m.body);
+      replayMessages.push(m);
+    }
   }
+
+  if (cappedMessages.length > 0) {
+    for (const message of cappedMessages) message.ack();
+  }
+
+  if (replayable.length === 0) return;
 
   // Single sendBatch instead of N individual sends — Cloudflare Queues
   // atomically enqueues the whole array, dropping N HTTP-shaped calls
@@ -1262,8 +1336,8 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
   // still happens individually so an enqueue failure isn't load-bearing
   // for the unaffected messages.
   try {
-    await sendQueueRecords(env, batch.messages.map((m) => m.body));
-    for (const message of batch.messages) {
+    await sendQueueRecords(env, replayable);
+    for (const message of replayMessages) {
       console.error(
         `team-sync.dlq replay -> main ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
       );
@@ -1271,10 +1345,10 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`team-sync.dlq replay_failed (batch of ${batch.messages.length}): ${reason}`);
+    console.error(`team-sync.dlq replay_failed (batch of ${replayMessages.length}): ${reason}`);
     // Don't ack — let CF redeliver. If the SYNC_QUEUE binding is
     // genuinely broken, the messages stay in DLQ instead of being lost.
-    for (const message of batch.messages) message.retry();
+    for (const message of replayMessages) message.retry();
   }
 }
 
@@ -1700,6 +1774,24 @@ async function handleRebuild(request: Request, env: Env): Promise<Response> {
     env.MYCO_TEAM_DB.prepare(`DELETE FROM ${t} WHERE machine_id = ?`).bind(machineId),
   );
   await env.MYCO_TEAM_DB.batch(statements);
+
+  // Rebuild re-baselines everything, so reset the queue-health counters too
+  // — otherwise `backlog = enqueued - processed` stays skewed by pre-rebuild
+  // history and requires a manual D1 reset. Best-effort: never fail the
+  // rebuild on a stats write. Leave last_run_at/last_embed_at — they're clocks.
+  try {
+    await env.MYCO_TEAM_DB.prepare(
+      `UPDATE team_sync_stats
+          SET enqueued = 0, processed = 0, failed = 0,
+              embed_ok = 0, embed_failed = 0,
+              last_error = NULL, last_embed_error = NULL
+        WHERE id = 1`,
+    ).run();
+  } catch (err) {
+    console.error('team-sync.rebuild.stats-reset-failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   console.error('team-sync.rebuild.completed', { machine_id: machineId, truncated_tables: SYNCED_TABLES.length });
   return jsonResponse({ ok: true, machine_id: machineId, truncated_tables: SYNCED_TABLES.length });

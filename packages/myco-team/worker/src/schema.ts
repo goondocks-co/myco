@@ -318,14 +318,15 @@ const TEAM_SYNC_STATS_TABLE = `
 
 const TEAM_DLQ_TABLE = `
   CREATE TABLE IF NOT EXISTS team_dlq (
-    lease_id    TEXT PRIMARY KEY,
-    table_name  TEXT NOT NULL,
-    row_id      TEXT NOT NULL,
-    machine_id  TEXT NOT NULL,
-    operation   TEXT NOT NULL,
-    payload     TEXT NOT NULL,
-    reason      TEXT,
-    created_at  INTEGER NOT NULL
+    lease_id     TEXT PRIMARY KEY,
+    table_name   TEXT NOT NULL,
+    row_id       TEXT NOT NULL,
+    machine_id   TEXT NOT NULL,
+    operation    TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    reason       TEXT,
+    created_at   INTEGER NOT NULL,
+    replay_count INTEGER NOT NULL DEFAULT 0
   )`;
 
 const BASE_SECONDARY_INDEXES = [
@@ -461,6 +462,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     'ALTER TABLE team_sync_stats ADD COLUMN embed_failed INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE team_sync_stats ADD COLUMN last_embed_error TEXT',
     'ALTER TABLE team_sync_stats ADD COLUMN last_embed_at INTEGER',
+    'ALTER TABLE team_dlq ADD COLUMN replay_count INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of migrations) {
     try {
@@ -498,6 +500,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     ['digest_extracts', ['project_id']],
     ['skill_records', ['project_id']],
     ['team_sync_stats', ['embed_ok', 'embed_failed', 'last_embed_error', 'last_embed_at']],
+    ['team_dlq', ['replay_count']],
   ]);
 
   for (const sql of [...POST_MIGRATION_INDEXES, ...PROJECT_SCOPE_INDEXES]) {
