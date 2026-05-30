@@ -937,13 +937,10 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     // Non-fatal. The daemon can also fetch the token later through /connect.
   }
 
-  // 11. Save config and team key locally
-  updateTeamConnectionConfig(vaultDir, scope.requestContext, {
-    enabled: true,
-    worker_url: endpointUrl,
-  });
-  writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_API_KEY_SECRET, apiKey);
-  if (mcpToken) writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_MCP_TOKEN_SECRET, mcpToken);
+  // 11. Record the team's local deploy config (for upgrade/status). Install
+  // REGISTERS the team in the machine-level registry but does NOT connect this
+  // machine or repoint any existing grove connection — connecting a machine and
+  // selecting which projects sync is a separate step (the team-selection UX).
   writeLocalConfig(scope, {
     worker_name: name,
     worker_url: endpointUrl,
