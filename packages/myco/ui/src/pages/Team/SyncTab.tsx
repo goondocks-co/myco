@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { RefreshCw, ArrowUpCircle } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useTeamQueueStats,
@@ -11,7 +11,7 @@ import {
   type TeamDriftRow,
 } from '../../hooks/use-team';
 import { useDaemon } from '../../hooks/use-daemon';
-import { postJson, ApiError } from '../../lib/api';
+import { postJson } from '../../lib/api';
 import { type ReactNode } from 'react';
 import { Panel } from '../../components/ui/panel';
 import { Button } from '../../components/ui/button';
@@ -202,8 +202,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const [dlqMessage, setDlqMessage] = useState<string | null>(null);
   const [draining, setDraining] = useState(false);
   const [drainMessage, setDrainMessage] = useState<string | null>(null);
-  const [upgrading, setUpgrading] = useState(false);
-  const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildMessage, setRebuildMessage] = useState<string | null>(null);
 
@@ -300,30 +298,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
     }
   }, [dlq, queryClient]);
 
-  const handleUpgradeWorker = useCallback(async () => {
-    setUpgrading(true);
-    setUpgradeMessage(null);
-    try {
-      const res = await postJson<{ success: boolean; worker_url?: string; version?: string; error?: string }>('/team/upgrade-worker');
-      if (res.success) {
-        setUpgradeMessage(`Worker updated to v${res.version}`);
-        queryClient.invalidateQueries({ queryKey: ['team-status'] });
-      } else {
-        setUpgradeMessage(res.error ?? 'Upgrade failed');
-      }
-    } catch (err) {
-      if (err instanceof ApiError && typeof err.body === 'object' && err.body !== null && 'error' in err.body
-          && (err.body as { error: unknown }).error === 'myco_team_not_installed') {
-        const message = 'message' in err.body ? String((err.body as { message: unknown }).message) : null;
-        setUpgradeMessage(message ?? 'Install @goondocks/myco-team to enable Worker upgrades, or use myco-team-dev after make dev-link in a dev checkout.');
-      } else {
-        setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
-      }
-    } finally {
-      setUpgrading(false);
-    }
-  }, [queryClient]);
-
   const handleRebuild = useCallback(async () => {
     setRebuilding(true);
     setRebuildMessage(null);
@@ -348,15 +322,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const dlqMessages = dlq?.messages ?? [];
   const remoteTotal = syncSummary?.remote_machine_total ?? null;
   const localTotal = syncSummary?.local.total_records ?? null;
-  const workerVersionKnown = Boolean(status.deployed_worker_version && status.local_team_package_version);
-  const localTeamPackageSourceLabel =
-    status.local_team_package_source === 'dev-linked'
-      ? 'Dev linked'
-      : status.local_team_package_source === 'installed'
-        ? 'Installed'
-        : status.local_team_package_source === 'path'
-          ? 'On PATH'
-          : 'Available';
 
   return (
     <div className="flex flex-col gap-4">
@@ -367,61 +332,15 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           onManualRefresh={handleRefreshAll}
         />
       </div>
-      <SyncPanel
-        title="Worker"
-        actions={
-          <Badge variant={status.worker_update_available ? 'outline' : 'default'}>
-            {status.worker_update_available ? 'update available' : workerVersionKnown ? 'current' : 'deployed'}
-          </Badge>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <StatCard
-            label="Deployed"
-            value={status.deployed_worker_version ? `v${status.deployed_worker_version}` : 'Unknown'}
-            accent={status.worker_update_available ? 'ochre' : 'outline'}
-          />
-          <StatCard
-            label={localTeamPackageSourceLabel}
-            value={status.local_team_package_version ? `v${status.local_team_package_version}` : 'Not found'}
-            accent="outline"
-          />
-          <StatCard
-            label="Protocol"
-            value={`v${status.sync_protocol_version}`}
-            accent="outline"
-          />
-        </div>
-        {status.worker_update_available && (
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <ArrowUpCircle className="h-5 w-5 text-ochre shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-on-surface">Worker update available</p>
-                <p className="text-xs text-on-surface-variant">
-                  Deployed: v{status.deployed_worker_version ?? '?'} · Available: v{status.local_team_package_version ?? '?'}
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleUpgradeWorker}
-              disabled={upgrading}
-            >
-              {upgrading ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                  Deploying...
-                </>
-              ) : (
-                'Update worker'
-              )}
-            </Button>
-          </div>
-        )}
-        {upgradeMessage && (
-          <p className="text-xs text-on-surface-variant m-0 mt-3">{upgradeMessage}</p>
+      <SyncPanel title="Worker">
+        {!status.deployed_worker_version ? (
+          <p className="text-sm text-on-surface-variant m-0">Worker version unavailable.</p>
+        ) : status.worker_update_available ? (
+          <p className="text-sm text-ochre m-0">
+            Update available — deployed v{status.deployed_worker_version}, v{status.local_team_package_version} ready. Contact admin to update.
+          </p>
+        ) : (
+          <p className="text-sm text-on-surface-variant m-0">Up to date · v{status.deployed_worker_version}</p>
         )}
       </SyncPanel>
 
