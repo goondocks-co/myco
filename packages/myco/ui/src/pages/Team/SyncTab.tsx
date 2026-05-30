@@ -5,7 +5,6 @@ import {
   useTeamQueueStats,
   useTeamSyncSummary,
   useTeamDlq,
-  isTokenMissing,
   type TeamStatusResponse,
   type DlqMessage,
   type TeamSyncSummaryResponse,
@@ -238,20 +237,22 @@ function DriftTable({ rows }: { rows: TeamDriftRow[] }) {
 }
 
 function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (action: 'retry' | 'discard', leaseId: string) => void; busy: boolean }) {
-  const body = message.body as { table?: string; id?: string; machine_id?: string };
   return (
     <div className="flex items-center justify-between gap-3 py-2 border-b border-outline-variant/10 last:border-b-0">
       <div className="min-w-0 flex-1">
         <p className="text-sm text-on-surface font-mono truncate">
-          {body.table ?? '?'} / {body.id ?? '?'}
+          {message.table_name} / {message.row_id}
         </p>
         <p className="text-xs text-on-surface-variant truncate">
-          machine={body.machine_id ?? '?'} attempts={message.attempts} {message.last_failure ? `· ${message.last_failure}` : ''}
+          machine={message.machine_id} op={message.operation}{message.reason ? ` · ${message.reason}` : ''}
+        </p>
+        <p className="text-xs text-on-surface-variant/60">
+          {new Date(message.created_at * 1000).toLocaleString()}
         </p>
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('retry', message.msg_id)}>Retry</Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('discard', message.msg_id)}>Discard</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('retry', message.lease_id)}>Retry</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('discard', message.lease_id)}>Discard</Button>
       </div>
     </div>
   );
@@ -263,7 +264,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
   const { data: syncSummary, isLoading: summaryLoading } = useTeamSyncSummary(enabled);
   const { data: daemonStats } = useDaemon();
-  const dlqEnabled = enabled && Boolean(queueStats) && !isTokenMissing(queueStats);
+  const dlqEnabled = enabled;
   const { data: dlq, isLoading: dlqLoading } = useTeamDlq(dlqEnabled);
   const [busy, setBusy] = useState(false);
   const [dlqMessage, setDlqMessage] = useState<string | null>(null);
@@ -274,10 +275,10 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildMessage, setRebuildMessage] = useState<string | null>(null);
 
-  const queueUnavailable = !enabled || isTokenMissing(queueStats) || (!queueLoading && !queueStats);
+  const queueUnavailable = !enabled || (!queueLoading && !queueStats);
   const failedSyncsLoading = queueLoading || (dlqEnabled && dlqLoading);
-  const failedSyncsUnavailable = !enabled || isTokenMissing(queueStats) || isTokenMissing(dlq) || (!failedSyncsLoading && dlqEnabled && !dlq);
-  const unavailableMessage = enabled ? 'Not available from this node.' : 'Team connection is unhealthy.';
+  const failedSyncsUnavailable = !enabled || (!failedSyncsLoading && dlqEnabled && !dlq);
+  const unavailableMessage = 'Team connection is unhealthy.';
 
   const handleDrain = useCallback(async () => {
     setDraining(true);
@@ -343,11 +344,11 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   }, [queryClient]);
 
   const handleReplayAll = useCallback(async () => {
-    if (!dlq || isTokenMissing(dlq) || dlq.messages.length === 0) return;
+    if (!dlq || dlq.messages.length === 0) return;
     setBusy(true);
     setDlqMessage(null);
     try {
-      const res = await postJson<{ retried?: number }>('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.msg_id) });
+      const res = await postJson<{ retried?: number }>('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.lease_id) });
       setDlqMessage(`Retried ${res.retried ?? 0} of ${dlq.messages.length} messages.`);
       await Promise.all([
         queryClient.refetchQueries({ queryKey: ['team-dlq'] }),
@@ -416,9 +417,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
     }
   }, [queryClient]);
 
-  const main = !isTokenMissing(queueStats) ? queueStats?.main : undefined;
-  const dlqStats = !isTokenMissing(queueStats) ? queueStats?.dlq : undefined;
-  const dlqMessages = !isTokenMissing(dlq) ? dlq?.messages ?? [] : [];
+  const dlqMessages = dlq?.messages ?? [];
   const lastHandoff = syncSummary?.last_handoff ?? null;
   const remoteTotal = syncSummary?.remote?.total_records ?? null;
   const localTotal = syncSummary?.local.total_records ?? null;
@@ -624,33 +623,37 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : queueUnavailable ? (
           <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         ) : (
-          /* Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s
-             (no in-flight/consumer count), so there's no "Processing" tile.
-             Subtitles surface the oldest-message age on Pending and Failed. */
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <QueueTile
-              label="Pending"
-              value={main?.depth ?? 0}
-              tone={(main?.depth ?? 0) > 0 ? 'ochre' : 'outline'}
-              sub={(() => {
-                const age = formatAge(main?.oldest_msg_age_s ?? null);
-                return age === '—' ? undefined : `Oldest ${age}`;
-              })()}
-            />
-            <QueueTile
-              label="Failed"
-              value={dlqStats?.depth ?? dlqMessages.length}
-              tone={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
-              sub={(() => {
-                const age = formatAge(dlqStats?.oldest_msg_age_s ?? null);
-                return age === '—' ? undefined : `Oldest ${age}`;
-              })()}
-            />
-            <QueueTile
-              label="DLQ"
-              value={dlqMessages.length}
-              tone={dlqMessages.length > 0 ? 'terracotta' : 'outline'}
-            />
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <QueueTile
+                label="Enqueued"
+                value={queueStats?.enqueued ?? 0}
+                tone={(queueStats?.enqueued ?? 0) > 0 ? 'sage' : 'outline'}
+              />
+              <QueueTile
+                label="Processed"
+                value={queueStats?.processed ?? 0}
+                tone="outline"
+              />
+              <QueueTile
+                label="Failed"
+                value={queueStats?.failed ?? 0}
+                tone={(queueStats?.failed ?? 0) > 0 ? 'terracotta' : 'outline'}
+              />
+              <QueueTile
+                label="Backlog"
+                value={queueStats?.backlog ?? 0}
+                tone={(queueStats?.backlog ?? 0) > 0 ? 'ochre' : 'outline'}
+              />
+            </div>
+            {queueStats?.last_run_at != null && (
+              <p className="text-xs text-on-surface-variant m-0">
+                Last run {new Date(queueStats.last_run_at * 1000).toLocaleString()}
+              </p>
+            )}
+            {queueStats?.last_error && (
+              <p className="text-xs text-terracotta break-words m-0">{queueStats.last_error}</p>
+            )}
           </div>
         )}
       </SyncPanel>
@@ -690,7 +693,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : (
           <div className="divide-y divide-outline-variant/10">
             {dlqMessages.map((message) => (
-              <DlqRow key={message.msg_id} message={message} onAction={handleDlqAction} busy={busy} />
+              <DlqRow key={message.lease_id} message={message} onAction={handleDlqAction} busy={busy} />
             ))}
           </div>
         )}

@@ -66,28 +66,27 @@ export function useTeamStatus() {
 // Sync / DLQ surfaces (queue-aware operator UI)
 // ---------------------------------------------------------------------------
 
-export interface QueueStats {
-  /** null when Cloudflare's queue API verifies the queue but does not expose a live backlog depth. */
-  depth: number | null;
-  oldest_msg_age_s: number | null;
-}
-
 export interface QueueStatsResponse {
-  main: QueueStats;
-  dlq: QueueStats;
+  enqueued: number;
+  processed: number;
+  failed: number;
+  backlog: number;
+  last_run_at: number | null;
+  last_error: string | null;
 }
 
 export interface DlqMessage {
-  msg_id: string;
-  body: Record<string, unknown>;
-  attempts: number;
-  last_failure?: string;
-  enqueued_at?: number;
+  lease_id: string;
+  table_name: string;
+  row_id: string;
+  machine_id: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
 }
 
 export interface DlqListResponse {
   messages: DlqMessage[];
-  next_cursor: string | null;
 }
 
 export interface TeamRemoteSyncSummary {
@@ -138,22 +137,11 @@ export interface TeamSyncSummaryResponse {
   total_delta: number;
 }
 
-/** Worker discriminator when remote operator credentials are not configured. */
-export type CfApiTokenMissing = { error: 'cf_api_token_not_configured' };
-
-export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
-  return (
-    typeof value === 'object'
-    && value !== null
-    && (value as { error?: string }).error === 'cf_api_token_not_configured'
-  );
-}
-
 export function useTeamQueueStats(enabled: boolean) {
   // keepPreviousData prevents the UI from flashing the empty state on refetch.
-  return usePowerQuery<QueueStatsResponse | CfApiTokenMissing>({
+  return usePowerQuery<QueueStatsResponse>({
     queryKey: ['team-queue-stats'],
-    queryFn: ({ signal }) => fetchJson<QueueStatsResponse | CfApiTokenMissing>('/team/queue-stats', { signal }),
+    queryFn: ({ signal }) => fetchJson<QueueStatsResponse>('/team/queue-stats', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     enabled,
@@ -173,15 +161,9 @@ export function useTeamSyncSummary(enabled: boolean) {
 }
 
 export function useTeamDlq(enabled: boolean) {
-  // No auto-refetch: every fetch leases the messages with a new
-  // lease_id (5-min visibility window). Auto-refetching invalidates
-  // the lease_id the user sees in the row, so Retry/Discard hit the
-  // CF API with a stale lease and silently no-op. Refreshes are
-  // triggered explicitly after retry/discard actions via
-  // queryClient.invalidateQueries.
-  return usePowerQuery<DlqListResponse | CfApiTokenMissing>({
+  return usePowerQuery<DlqListResponse>({
     queryKey: ['team-dlq'],
-    queryFn: ({ signal }) => fetchJson<DlqListResponse | CfApiTokenMissing>('/team/dlq', { signal }),
+    queryFn: ({ signal }) => fetchJson<DlqListResponse>('/team/dlq', { signal }),
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
