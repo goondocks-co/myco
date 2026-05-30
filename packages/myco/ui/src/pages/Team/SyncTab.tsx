@@ -405,7 +405,10 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
       } else {
         setRebuildMessage(`Rebuilt: handed off ${formatNumber(res.handedOff)} records in ${res.batches} batch${res.batches === 1 ? '' : 'es'}.`);
       }
+      queryClient.invalidateQueries({ queryKey: ['team-status'] });
       queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
     } catch (err) {
       setRebuildMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
