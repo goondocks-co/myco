@@ -340,20 +340,17 @@ export interface TeamHandlerDeps {
  * one-line "field X was removed for security; use Y instead"
  * disclosure rather than silently ignoring the now-empty value.
  *
- * The api_key/team_key removal was intentional (commits ad2e549e
- * and 9572a683 — "Redact reusable Team keys from status responses")
- * and is not reverted by C6; this map only documents the change.
+ * `api_key` (the legacy project-level alias) stays removed. `team_key`
+ * is surfaced again for the Grove team-credentials card: teammates need
+ * to copy the reusable key to join, so it ships to the localhost daemon
+ * UI exactly like `mcp_token` — full value over the local socket, redacted
+ * and reveal-on-demand in the client.
  */
 const DEPRECATED_STATUS_FIELDS: Record<string, { since: string; reason: string; replacement: string }> = {
   api_key: {
     since: 'protocol-v2',
-    reason: 'Reusable team keys removed from status responses for security.',
+    reason: 'Legacy project-level team key removed from status responses for security.',
     replacement: 'has_api_key',
-  },
-  team_key: {
-    since: 'protocol-v2',
-    reason: 'Reusable team keys removed from status responses for security.',
-    replacement: 'has_team_key',
   },
 };
 
@@ -540,7 +537,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         enabled: config.enabled,
         worker_url: config.worker_url ?? null,
         has_team_key: hasTeamKey,
-        team_key: null,
+        team_key: teamKey,
         has_api_key: hasTeamKey,
         api_key: null,
         healthy,

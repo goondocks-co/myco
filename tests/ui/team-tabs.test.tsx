@@ -129,11 +129,11 @@ function wrapWithRoutes(initial: string) {
 describe('TeamPage tabs', () => {
   it('renders Status tab by default', async () => {
     render(wrap('/g/foo/team'));
-    await waitFor(() => expect(screen.getByText(/Grove Credentials/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Team Credentials/i)).toBeInTheDocument());
   });
   it('renders Sync tab when ?tab=sync', async () => {
     render(wrap('/g/foo/team?tab=sync'));
-    await waitFor(() => expect(screen.getByText(/Worker/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
   });
   it('renders Members roster when ?tab=members', async () => {
     render(wrap('/g/foo/team?tab=members'));
@@ -151,7 +151,7 @@ describe('TeamPage tabs', () => {
   it('redirects /team/maintenance → /team?tab=sync', async () => {
     render(wrapWithRoutes('/g/foo/team/maintenance'));
     // After the redirect resolves, the Sync tab body is mounted —
-    // assert on its "Worker" section header.
-    await waitFor(() => expect(screen.getByText(/Worker/i)).toBeInTheDocument());
+    // assert on its "Remote store" section header.
+    await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
   });
 });
