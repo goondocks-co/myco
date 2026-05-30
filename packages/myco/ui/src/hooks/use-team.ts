@@ -73,6 +73,10 @@ export interface QueueStatsResponse {
   backlog: number;
   last_run_at: number | null;
   last_error: string | null;
+  embed_ok?: number;
+  embed_failed?: number;
+  last_embed_error?: string | null;
+  last_embed_at?: number | null;
 }
 
 export interface DlqMessage {

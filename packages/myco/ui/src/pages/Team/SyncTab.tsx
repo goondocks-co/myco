@@ -608,6 +608,18 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
                 tone={(queueStats?.backlog ?? 0) > 0 ? 'ochre' : 'outline'}
               />
             </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <QueueTile
+                label="Embeds OK"
+                value={queueStats?.embed_ok ?? 0}
+                tone="outline"
+              />
+              <QueueTile
+                label="Embeds failed"
+                value={queueStats?.embed_failed ?? 0}
+                tone={(queueStats?.embed_failed ?? 0) > 0 ? 'terracotta' : 'outline'}
+              />
+            </div>
             {queueStats?.last_run_at != null && (
               <p className="text-xs text-on-surface-variant m-0">
                 Last run {new Date(queueStats.last_run_at * 1000).toLocaleString()}
@@ -615,6 +627,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             )}
             {queueStats?.last_error && (
               <p className="text-xs text-terracotta break-words m-0">{queueStats.last_error}</p>
+            )}
+            {(queueStats?.embed_failed ?? 0) > 0 && queueStats?.last_embed_error && (
+              <p className="text-xs text-terracotta break-words m-0">{queueStats.last_embed_error}</p>
             )}
           </div>
         )}
