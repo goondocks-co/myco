@@ -304,12 +304,16 @@ const TEAM_CONFIG_TABLE = `
 
 const TEAM_SYNC_STATS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_sync_stats (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    enqueued    INTEGER NOT NULL DEFAULT 0,
-    processed   INTEGER NOT NULL DEFAULT 0,
-    failed      INTEGER NOT NULL DEFAULT 0,
-    last_run_at INTEGER,
-    last_error  TEXT
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    enqueued         INTEGER NOT NULL DEFAULT 0,
+    processed        INTEGER NOT NULL DEFAULT 0,
+    failed           INTEGER NOT NULL DEFAULT 0,
+    last_run_at      INTEGER,
+    last_error       TEXT,
+    embed_ok         INTEGER NOT NULL DEFAULT 0,
+    embed_failed     INTEGER NOT NULL DEFAULT 0,
+    last_embed_error TEXT,
+    last_embed_at    INTEGER
   )`;
 
 const TEAM_DLQ_TABLE = `
@@ -453,6 +457,10 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     'ALTER TABLE skill_candidates ADD COLUMN project_id TEXT',
     'ALTER TABLE skill_records ADD COLUMN project_id TEXT',
     'ALTER TABLE skill_usage ADD COLUMN project_id TEXT',
+    'ALTER TABLE team_sync_stats ADD COLUMN embed_ok INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE team_sync_stats ADD COLUMN embed_failed INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE team_sync_stats ADD COLUMN last_embed_error TEXT',
+    'ALTER TABLE team_sync_stats ADD COLUMN last_embed_at INTEGER',
   ];
   for (const sql of migrations) {
     try {
@@ -489,6 +497,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     ['resolution_events', ['project_id']],
     ['digest_extracts', ['project_id']],
     ['skill_records', ['project_id']],
+    ['team_sync_stats', ['embed_ok', 'embed_failed', 'last_embed_error', 'last_embed_at']],
   ]);
 
   for (const sql of [...POST_MIGRATION_INDEXES, ...PROJECT_SCOPE_INDEXES]) {

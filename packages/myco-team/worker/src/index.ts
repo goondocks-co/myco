@@ -780,8 +780,14 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     }
     if (failed > 0) console.error(`team-sync.vector-delete-summary ${failed}/${results.length} failed`);
   }
+  let embedSucceeded = 0;
+  let embedFailed = 0;
+  let embedLastError: string | null = null;
   if (embedJobs.length > 0) {
-    await runBatchEmbed(env, embedJobs);
+    const embedResult = await runBatchEmbed(env, embedJobs);
+    embedSucceeded = embedResult.succeeded;
+    embedFailed = embedResult.failed;
+    embedLastError = embedResult.lastError;
   }
 
   // Best-effort stats update — a write failure must never fail the consume path.
@@ -793,45 +799,167 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   } catch {
     // Stats write failed — ignore, sync path takes priority.
   }
+
+  // Best-effort embed stats — persisted independently so a D1 write failure
+  // cannot affect the D1 sync stats or the consume path.
+  try {
+    const embedErr = embedFailed > 0 ? embedLastError : null;
+    await env.MYCO_TEAM_DB.prepare(
+      'UPDATE team_sync_stats SET embed_ok = embed_ok + ?, embed_failed = embed_failed + ?, last_embed_at = ?, last_embed_error = CASE WHEN ? IS NOT NULL THEN ? ELSE last_embed_error END WHERE id = 1',
+    ).bind(embedSucceeded, embedFailed, epochSeconds(), embedErr, embedErr).run();
+  } catch {
+    // Embed stats write failed — ignore, sync path takes priority.
+  }
 }
 
 
 /**
- * Embed each job sequentially via the existing single-text
- * `embedAndUpsert` path. We tried batching multiple texts per ai.run
- * to amortize the per-call overhead, but bge-m3's 60K-token total
- * context window combined with the wide tokenization-density variance
- * across this dataset (0.84–4 chars/token observed) made batch sizing
- * unreliable: every estimated budget either dropped vectors or killed
- * throughput, and the model surfaces at least two distinct overflow
- * error codes (3030, 5021) requiring increasingly broad detection.
- *
- * Per-row sequential is slow (~1s/row, so ~30 min for a full reindex
- * of ~2K rows), but always correct: each call has one text well under
- * the context window, so token overflow is structurally impossible.
- * Per-row failures log and continue rather than dropping the whole
- * group. Source rows stay in D1 and are recoverable via another
- * /vectors/reindex call if anything fails.
+ * Attempt to upsert an array of vectors as a single batch, falling back to
+ * per-row upserts on non-rate-limit errors so one poison vector cannot sink
+ * its batch-mates. Rate-limit (40041 / "Too Many Requests") is retried with
+ * exponential backoff up to 5 attempts before the same per-row fallback path
+ * activates. Mirrors the "optimistic batch + per-record fallback" pattern of
+ * coalescedUpsertBatch.
  */
-async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
-  let succeeded = 0;
+async function upsertVectorsResilient(
+  env: Env,
+  vectors: VectorizeVector[],
+): Promise<{ ok: number; failed: number }> {
+  const isRateLimit = (err: unknown): boolean => {
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.includes('40041') || /too many requests/i.test(msg);
+  };
+
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  // Attempt batched upsert with backoff on rate-limit.
+  const MAX_ATTEMPTS = 5;
+  const BACKOFF_MS = [500, 1000, 2000, 4000];
+  let batchErr: unknown = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      await env.MYCO_TEAM_VECTORS.upsert(vectors);
+      return { ok: vectors.length, failed: 0 };
+    } catch (err) {
+      batchErr = err;
+      if (isRateLimit(err) && attempt < MAX_ATTEMPTS - 1) {
+        await sleep(BACKOFF_MS[attempt] ?? 4000);
+        continue;
+      }
+      // Non-rate-limit error or retries exhausted — fall through to per-row.
+      break;
+    }
+  }
+
+  // Per-row fallback: isolate the failure to the offending vector(s).
+  let ok = 0;
   let failed = 0;
+  for (const v of vectors) {
+    let rowErr: unknown = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        await env.MYCO_TEAM_VECTORS.upsert([v]);
+        rowErr = null;
+        break;
+      } catch (err) {
+        rowErr = err;
+        if (isRateLimit(err) && attempt < MAX_ATTEMPTS - 1) {
+          await sleep(BACKOFF_MS[attempt] ?? 4000);
+          continue;
+        }
+        break;
+      }
+    }
+    if (rowErr !== null) {
+      failed++;
+      const meta = v.metadata as TeamVectorMetadata | undefined;
+      console.error('team-sync.vector-upsert-failed', {
+        table: meta?.table,
+        id: meta?.id,
+        error: rowErr instanceof Error ? rowErr.message : String(rowErr),
+      });
+    } else {
+      ok++;
+    }
+  }
+  // Log batch failure context for tail inspection.
+  console.error('team-sync.batch-upsert-fell-back-to-per-row', {
+    count: vectors.length,
+    error: batchErr instanceof Error ? batchErr.message : String(batchErr),
+  });
+  return { ok, failed };
+}
+
+/**
+ * Embed each job sequentially via per-row embedText (one ai.run per row).
+ * We tried batching multiple texts per ai.run to amortize the per-call
+ * overhead, but bge-m3's 60K-token total context window combined with the
+ * wide tokenization-density variance across this dataset (0.84–4 chars/token
+ * observed) made batch sizing unreliable: every estimated budget either
+ * dropped vectors or killed throughput, and the model surfaces at least two
+ * distinct overflow error codes (3030, 5021) requiring increasingly broad
+ * detection. Per-row embedding is always correct: each call has one text well
+ * under the context window, so token overflow is structurally impossible.
+ *
+ * Vectorize upsert is batched ONCE per consumer batch via upsertVectorsResilient,
+ * which handles the 40041 rate-limit with exponential backoff. Previously each
+ * row called MYCO_TEAM_VECTORS.upsert([singleVector]), producing ~1241 concurrent
+ * upsert calls on a full reindex and triggering the write-rate-limit (40041).
+ */
+async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<{ succeeded: number; failed: number; lastError: string | null }> {
+  const vectors: VectorizeVector[] = [];
+  const legacyDeletes: string[] = [];
+  let embedFailed = 0;
+  let lastError: string | null = null;
+
   for (const job of jobs) {
     try {
-      await embedAndUpsert(env, job.table, job.id, job.machine_id, job.text, job.metadata);
-      succeeded++;
+      const values = await embedText(env.AI, job.text);
+      const vid = await vectorId(job.table, job.id, job.machine_id);
+      const legacyId = legacyVectorId(job.table, job.id, job.machine_id);
+      if (legacyId !== vid) legacyDeletes.push(legacyId);
+      vectors.push({
+        id: vid,
+        values,
+        metadata: { table: job.table, id: job.id, machine_id: job.machine_id, ...job.metadata } as Record<string, VectorizeVectorMetadata>,
+      });
     } catch (err) {
-      failed++;
+      embedFailed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      lastError = msg;
       console.error('team-sync.embed-failed', {
         table: job.table,
         id: job.id,
-        error: err instanceof Error ? err.message : String(err),
+        error: msg,
       });
     }
   }
-  if (failed > 0) {
-    console.error(`team-sync.embed-summary ${failed}/${jobs.length} embeddings failed (${succeeded} succeeded)`);
+
+  if (legacyDeletes.length > 0) {
+    try {
+      await env.MYCO_TEAM_VECTORS.deleteByIds(legacyDeletes);
+    } catch {
+      // Legacy vectors may not exist — best-effort.
+    }
   }
+
+  let upsertOk = 0;
+  let upsertFailed = 0;
+  if (vectors.length > 0) {
+    const result = await upsertVectorsResilient(env, vectors);
+    upsertOk = result.ok;
+    upsertFailed = result.failed;
+    if (upsertFailed > 0 && lastError === null) {
+      lastError = `${upsertFailed} vector upsert(s) failed`;
+    }
+  }
+
+  const succeeded = upsertOk;
+  const failed = embedFailed + upsertFailed;
+  if (failed > 0) {
+    console.error(`team-sync.embed-summary ${failed}/${jobs.length} failed (${succeeded} succeeded)`);
+  }
+  return { succeeded, failed, lastError };
 }
 
 /**
@@ -1654,8 +1782,8 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
  */
 async function handleQueueStats(env: Env): Promise<Response> {
   const row = await env.MYCO_TEAM_DB.prepare(
-    `SELECT enqueued, processed, failed, last_run_at, last_error FROM team_sync_stats WHERE id = 1`,
-  ).first<{ enqueued: number; processed: number; failed: number; last_run_at: number | null; last_error: string | null }>();
+    `SELECT enqueued, processed, failed, last_run_at, last_error, embed_ok, embed_failed, last_embed_error, last_embed_at FROM team_sync_stats WHERE id = 1`,
+  ).first<{ enqueued: number; processed: number; failed: number; last_run_at: number | null; last_error: string | null; embed_ok: number; embed_failed: number; last_embed_error: string | null; last_embed_at: number | null }>();
   const enqueued = row?.enqueued ?? 0;
   const processed = row?.processed ?? 0;
   return jsonResponse({
@@ -1665,6 +1793,10 @@ async function handleQueueStats(env: Env): Promise<Response> {
     backlog: Math.max(0, enqueued - processed),
     last_run_at: row?.last_run_at ?? null,
     last_error: row?.last_error ?? null,
+    embed_ok: row?.embed_ok ?? 0,
+    embed_failed: row?.embed_failed ?? 0,
+    last_embed_error: row?.last_embed_error ?? null,
+    last_embed_at: row?.last_embed_at ?? null,
   });
 }
 
