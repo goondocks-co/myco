@@ -558,17 +558,29 @@ function backfillRows(
   // INSERT happens via the shared `insertOutboxRowsForUpsert` helper so the
   // sanitization contract stays in one place.
   for (const table of tables) {
-    const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
-    const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';
-    const rows = db.prepare(
-      `SELECT * FROM ${table}
-       WHERE ${sourcePredicate}
-       AND NOT EXISTS (
-         SELECT 1 FROM team_outbox
-         WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
-         ${outboxPredicate}
-       )`,
-    ).all(table) as Record<string, unknown>[];
+    // 'all' mode is the rebuild path (backfillAllForRebuild → /api/team/rebuild).
+    // rebuildFromLocal calls client.rebuild() — which truncates THIS machine's
+    // cloud rows — *before* re-enqueuing. So every local row must produce a
+    // post-truncate outbox entry, unconditionally. We deliberately omit the
+    // NOT EXISTS skip here: skipping a row that happens to have a pending
+    // (sent_at IS NULL) outbox entry — e.g. because a routine flush is mid-drain
+    // when the rebuild fires — would delete it from cloud yet never re-enqueue
+    // it, losing the row from D1 until an unrelated future edit. A duplicate
+    // pending entry is safe: the worker upsert is keyed by the composite PK
+    // (id, machine_id) and is idempotent, so the row simply pushes twice.
+    //
+    // 'unsynced' mode (routine startup sweep) must still dedup against ALL
+    // existing outbox entries so it never re-queues a row already handed off.
+    const rows = mode === 'all'
+      ? db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]
+      : db.prepare(
+          `SELECT * FROM ${table}
+           WHERE synced_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM team_outbox
+             WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
+           )`,
+        ).all(table) as Record<string, unknown>[];
 
     if (rows.length === 0) continue;
     insertOutboxRowsForUpsert(db, table, rows, machineId, now);
