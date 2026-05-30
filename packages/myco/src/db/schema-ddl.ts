@@ -906,7 +906,7 @@ export const FTS_TABLES = [
  * above. `entity_mentions` is intentionally absent — no single `id` column,
  * never reaches D1.
  */
-const TEAM_DELETE_TRIGGER_TABLES = [
+export const TEAM_DELETE_TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
   'resolution_events', 'plans', 'artifacts', 'digest_extracts',
   'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',

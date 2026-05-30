@@ -14,6 +14,7 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
+import { SYNCED_TABLES, type SyncedTable } from './synced-tables';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,24 +65,11 @@ const EMBEDDABLE_TABLES: Record<string, string> = {
   skill_records: 'description',
 };
 
-/** All tables the sync endpoint accepts records for. */
-const SYNCED_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
-  'skill_candidates',
-  'skill_records',
-  'skill_usage',
-  'knowledge_release_state',
-] as const;
-
+/**
+ * All tables the sync endpoint accepts records for. Authoritative list lives
+ * in `./synced-tables` (a dependency-free module) so the daemon-package parity
+ * test can import the real value without pulling in the Workers runtime graph.
+ */
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
 
 const GROVE_PROJECT_ID_PATTERN = /^proj_[0-9a-f]{32}$/;
@@ -124,8 +112,6 @@ const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
  * by DELETEing the row (and thus its `replay_count`).
  */
 const MAX_DLQ_REPLAYS = 3;
-
-type SyncedTable = (typeof SYNCED_TABLES)[number];
 
 interface SyncRecord {
   table: SyncedTable;

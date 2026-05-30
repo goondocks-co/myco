@@ -6,12 +6,12 @@ import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
+import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
 
-const TRIGGER_TABLES = [
-  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
-  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
-  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
-] as const;
+// Import the real list rather than a hand-copy: the copy was itself a drift
+// risk (a new trigger table added to schema-ddl.ts would not be exercised
+// here). Cross-list parity is enforced in synced-table-parity.test.ts.
+const TRIGGER_TABLES = TEAM_DELETE_TRIGGER_TABLES;
 
 function newDb(): Database {
   const db = new Database(':memory:');
