@@ -950,8 +950,9 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     config_version: TEAM_CONFIG_VERSION,
   });
 
+  // Register the team with NO projects. Which projects sync is an explicit
+  // selection step (the Team-page UI), never auto-seeded at install.
   const { teamRegistry } = await import('@myco/team/registry.js');
-  const installingProjectId = (scope.requestContext as { projectId?: string }).projectId ?? null;
   teamRegistry.save({
     team_id: teamId,
     name: teamName,
@@ -959,9 +960,7 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     domain,
     mcp_endpoint: `${endpointUrl.replace(/\/+$/, '')}/mcp`,
     created_at: new Date().toISOString(),
-    projects: installingProjectId
-      ? [{ grove_id: scope.requestContext.groveId, project_id: installingProjectId }]
-      : [],
+    projects: [],
   });
   teamRegistry.writeSecret(teamId, TEAM_API_KEY_SECRET, apiKey);
   if (mcpToken) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, mcpToken);
