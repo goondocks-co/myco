@@ -13,6 +13,9 @@ describe('custom domain', () => {
     expect(once).toContain('[[routes]]');
     expect(once).toContain('pattern = "myco-projects.goondocks.org"');
     expect(once).toContain('custom_domain = true');
+    // workers.dev must stay live alongside the custom domain so install can
+    // seed config/MCP immediately while the custom domain propagates.
+    expect(once).toContain('workers_dev = true');
     // idempotent: applying again doesn't add a second block
     const twice = withCustomDomainRoute(once, 'myco-projects', 'goondocks.org');
     expect(twice.match(/\[\[routes\]\]/g)?.length).toBe(1);
