@@ -43,6 +43,7 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
+import { createTeamSelectionHandlers } from './api/team-selection.js';
 import { listTeamMembersHandler } from './api/team-members.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
@@ -1794,6 +1795,10 @@ export async function main(): Promise<void> {
   async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
     await teamSync.reconcileClient(req.requestContext);
   }
+  const teamSelectionHandlers = createTeamSelectionHandlers();
+  server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
+  server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));
+  server.registerRoute('POST', '/api/team/project-membership', async (req) => teamSelectionHandlers.handleSetProjectMembership(req));
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
