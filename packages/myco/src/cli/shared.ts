@@ -7,8 +7,6 @@ import { LmStudioBackend } from '../intelligence/lm-studio.js';
 import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
 import { requestContextFromEnvironment } from '../tools/request-context.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
-import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
@@ -95,49 +93,4 @@ export function collapseHomePath(absPath: string): string {
     return '~' + absPath.slice(home.length);
   }
   return absPath;
-}
-
-/**
- * Run the SymbiontInstaller for each symbiont manifest and log results.
- *
- * `vaultDir` overrides where the installer reads project config from.
- * Defaults to `<projectRoot>/.myco`. The worktree-bootstrap path uses
- * this to point config reads at the main repo's shared vault while
- * writing hook files into the worktree.
- */
-export function registerSymbionts(
-  manifests: SymbiontManifest[],
-  projectRoot: string,
-  packageRoot: string,
-  verb: 'Registered' | 'Updated',
-  vaultDir?: string,
-  groveId?: string | null,
-  installScope: 'project' | 'global' = 'project',
-): number {
-  let count = 0;
-  for (const manifest of manifests) {
-    try {
-      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot, false, vaultDir, groveId, installScope);
-      const result = installer.install();
-
-      const installed = [
-        result.hooks && 'hooks',
-        result.mcp && 'MCP server',
-        result.skills && 'skills',
-        result.settings && 'settings',
-        result.instructions && 'instructions',
-        result.pluginPackage && 'plugin deps',
-      ].filter(Boolean);
-
-      if (installed.length > 0) {
-        console.log(`  \u2713 ${verb} ${manifest.displayName}: ${installed.join(', ')}`);
-        count++;
-      } else {
-        console.log(`  \u2013 ${manifest.displayName}: no registration targets configured`);
-      }
-    } catch (err) {
-      console.error(`  \u2717 Failed to register ${manifest.displayName}: ${(err as Error).message}`);
-    }
-  }
-  return count;
 }
