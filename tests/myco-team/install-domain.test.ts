@@ -3,7 +3,7 @@ import { resolveWorkerUrl, withCustomDomainRoute } from '../../packages/myco-tea
 
 describe('custom domain', () => {
   it('resolveWorkerUrl returns the custom domain URL when a zone is given, else null', () => {
-    expect(resolveWorkerUrl('myco-projects', 'goondocks.org')).toBe('https://myco-myco-projects.goondocks.org');
+    expect(resolveWorkerUrl('myco-projects', 'goondocks.org')).toBe('https://myco-projects.goondocks.org');
     expect(resolveWorkerUrl('myco-projects', undefined)).toBeNull();
     expect(resolveWorkerUrl('myco-projects', null)).toBeNull();
   });
@@ -11,7 +11,7 @@ describe('custom domain', () => {
     const base = 'name = "myco-team-myco-projects-abc123"\n';
     const once = withCustomDomainRoute(base, 'myco-projects', 'goondocks.org');
     expect(once).toContain('[[routes]]');
-    expect(once).toContain('pattern = "myco-myco-projects.goondocks.org"');
+    expect(once).toContain('pattern = "myco-projects.goondocks.org"');
     expect(once).toContain('custom_domain = true');
     // idempotent: applying again doesn't add a second block
     const twice = withCustomDomainRoute(once, 'myco-projects', 'goondocks.org');

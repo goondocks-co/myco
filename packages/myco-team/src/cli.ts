@@ -579,7 +579,7 @@ function syncDlqName(name: string): string {
  * `*.workers.dev` URL parsed from the deploy output.
  */
 export function resolveWorkerUrl(slug: string, domain?: string | null): string | null {
-  return domain ? `https://myco-${slug}.${domain}` : null;
+  return domain ? `https://${slug}.${domain}` : null;
 }
 
 /**
@@ -588,7 +588,7 @@ export function resolveWorkerUrl(slug: string, domain?: string | null): string |
  * block, so re-running install/upgrade against a staged toml is safe.
  */
 export function withCustomDomainRoute(toml: string, slug: string, domain: string): string {
-  const pattern = `myco-${slug}.${domain}`;
+  const pattern = `${slug}.${domain}`;
   if (toml.includes(`pattern = "${pattern}"`)) return toml; // idempotent
   return `${toml.replace(/\n*$/, '')}\n\n[[routes]]\npattern = "${pattern}"\ncustom_domain = true\n`;
 }
@@ -877,7 +877,12 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
   let deployUrl: string;
   try {
     const deployOutput = wrangler(['deploy'], { cwd: deployDir });
-    deployUrl = parseWorkerUrl(deployOutput);
+    // With a custom domain, wrangler advertises the custom-domain trigger
+    // instead of a *.workers.dev URL, so parseWorkerUrl finds nothing — fall
+    // back to the known custom-domain endpoint in that case.
+    deployUrl = domain
+      ? (resolveWorkerUrl(scope.resourceSlug, domain) as string)
+      : parseWorkerUrl(deployOutput);
     console.log(`Worker deployed: ${deployUrl}\n`);
   } catch (err) {
     console.error(`Failed to deploy worker: ${(err as Error).message}`);
