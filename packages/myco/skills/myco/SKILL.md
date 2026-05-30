@@ -64,22 +64,6 @@ The local Myco tool surface registers 7 core tools. When the project is connecte
 
 Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the `myco` CLI or MCP.
 
-## Myco Development Worktrees
-
-When developing Myco itself inside a git worktree, do not run `make dev-link`. That target rewrites shared `~/.local/bin/myco-*` symlinks and can redirect other active agents to the worktree binary.
-
-Use the worktree-scoped pattern instead:
-
-```bash
-make dev-link-worktree
-```
-
-This builds the worktree binary and writes the worktree's `.myco/runtime.command` directly to `packages/myco-<target>/bin/myco`. That file is local runtime state and is not inherited when a worktree is created, so run the command from each worktree that needs project-scoped CLI/tool testing.
-
-Under the global install there are no project-local launcher files — `.agents/myco-run.cjs` and `.agents/myco-cli.cjs` are retired. Both capture hooks (`~/.myco/launcher.cjs`) and CLI/tool calls (`myco`) resolve the target binary from the layered `runtime.command` pin, walking up from the working directory: the worktree's own `<worktreeRoot>/.myco/runtime.command` (written by `make dev-link-worktree`) wins, then the machine pin, then the installed binary. Because resolution is cwd-relative, running `myco …` or firing a hook from inside a worktree exercises that worktree's pinned binary once `make dev-link-worktree` has run there.
-
-Remove only the worktree pin with `make dev-unlink-worktree`. Use `make dev-unlink` only when intentionally removing the shared dev symlinks from the main checkout.
-
 ### myco_cortex — Get Cortex intelligence
 
 Retrieve Cortex-produced project intelligence: the pre-computed project digest, generated instructions, Canopy map, or a specific Canopy file summary.
