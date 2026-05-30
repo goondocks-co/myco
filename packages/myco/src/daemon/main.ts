@@ -1853,7 +1853,6 @@ export async function main(): Promise<void> {
       },
     };
   });
-  server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
   server.registerRoute('POST', '/api/team/rotate-mcp-token', async (req) => {
     await reconcileTeamRoute(req);
     return teamHandlers.handleRotateMcpToken(req);

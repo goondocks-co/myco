@@ -8,9 +8,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
@@ -45,14 +42,6 @@ import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
-
-const execFileAsync = promisify(execFile);
-
-/** Upper bound for the subprocess — wrangler deploys can take 30-60s on cold cache. */
-const UPGRADE_SUBPROCESS_TIMEOUT_MS = 5 * 60 * 1000;
-
-/** Maximum stdout+stderr the subprocess can produce before we truncate. */
-const UPGRADE_SUBPROCESS_MAX_BUFFER = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -336,50 +325,6 @@ export interface TeamHandlerDeps {
    * failed; Worker upgrades return a typed error in that case.
    */
   globalPrefix: string | null;
-}
-
-/**
- * Absolute path to the installed `@goondocks/myco-team` CLI entry, or null
- * if the package isn't present under the npm global prefix.
- */
-function resolveMycoTeamEntry(globalPrefix: string | null): string | null {
-  if (!globalPrefix) return null;
-  const entry = path.join(
-    globalPrefix, 'lib', 'node_modules',
-    '@goondocks', 'myco-team', 'dist', 'main.js',
-  );
-  return fs.existsSync(entry) ? entry : null;
-}
-
-/**
- * Resolve a node binary that can execute myco-team's `main.js`.
- *
- * `process.execPath` is not usable here: when the daemon is the Bun-
- * compiled single-file binary, execPath points at that binary, which
- * treats its first argv as a myco subcommand rather than a JS file to
- * run. We need an actual Node (or Bun) runtime.
- *
- * Priority:
- *   1. `<globalPrefix>/bin/node` — the node that installed myco-team;
- *      always present when the package is (Homebrew, nvm per-version).
- *   2. Common macOS/Linux locations — catches GUI-launched daemons
- *      under launchd's minimal PATH, which typically have /opt/homebrew
- *      or /usr/local/bin even when shell dotfiles haven't loaded.
- *   3. Bare `node` — relies on PATH, last resort.
- */
-function resolveNodeBinary(globalPrefix: string | null): string {
-  if (globalPrefix) {
-    const colocatedNode = path.join(globalPrefix, 'bin', 'node');
-    if (fs.existsSync(colocatedNode)) return colocatedNode;
-  }
-  for (const candidate of [
-    '/opt/homebrew/bin/node',
-    '/usr/local/bin/node',
-    '/usr/bin/node',
-  ]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return 'node';
 }
 
 // ---------------------------------------------------------------------------
@@ -803,139 +748,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: result };
   }
 
-  /**
-   * POST /api/team/upgrade-worker — spawn `myco-team upgrade --json` and
-   * reinitialize the team client against the post-upgrade config.
-   *
-   * Requires `@goondocks/myco-team` to be globally installed. Returns a
-   * typed `myco_team_not_installed` error when it isn't so the UI can
-   * surface an install prompt instead of a generic 500.
-   */
-  async function handleUpgradeWorker(req: RouteRequest): Promise<RouteResponse> {
-    const teamEntry = resolveMycoTeamEntry(deps.globalPrefix);
-    if (!teamEntry) {
-      return {
-        status: 400,
-        body: {
-          error: 'myco_team_not_installed',
-          message: 'The @goondocks/myco-team package is required for Worker upgrades. Install it with `npm install -g @goondocks/myco-team` and try again.',
-        },
-      };
-    }
-
-    const nodeBinary = resolveNodeBinary(deps.globalPrefix);
-    // myco-team's `upgrade` subcommand takes a project root and re-resolves
-    // the vault from there — passing vaultDir directly would double-append
-    // `.myco` in non-git-repo projects (resolveVaultDir's fallback path).
-    const projectRoot = resolveProjectRoot(vaultDir);
-    logger.info('team-sync.upgrade.start', 'Starting worker upgrade subprocess', {
-      entry: teamEntry,
-      node: nodeBinary,
-      project_root: projectRoot,
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let subprocessFailed = false;
-    try {
-      const result = await execFileAsync(
-        nodeBinary,
-        [teamEntry, 'upgrade', projectRoot, '--json'],
-        {
-          encoding: 'utf-8',
-          timeout: UPGRADE_SUBPROCESS_TIMEOUT_MS,
-          maxBuffer: UPGRADE_SUBPROCESS_MAX_BUFFER,
-          // Subprocess exits 1 on upgrade failure but still emits a valid
-          // JSON result on stdout — we parse that below instead of treating
-          // the exit code as a fatal error.
-        },
-      );
-      stdout = result.stdout;
-      stderr = result.stderr;
-    } catch (err) {
-      // execFile throws on non-zero exit, but also populates stdout/stderr.
-      const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number | string };
-      stdout = e.stdout ?? '';
-      stderr = e.stderr ?? '';
-      subprocessFailed = true;
-      // Timeout / signal / missing binary — no JSON payload to parse.
-      if (!stdout.trim()) {
-        logger.error('team-sync.upgrade.failed', 'Worker upgrade subprocess failed with no output', {
-          error: e.message,
-          code: e.code,
-          stderr: stderr.slice(-2048),
-        });
-        return {
-          status: 500,
-          body: { error: 'upgrade_subprocess_failed', message: e.message, stderr },
-        };
-      }
-    }
-
-    type UpgradeResult = { success: boolean; worker_url?: string; version?: string; error?: string };
-    let result: UpgradeResult;
-    try {
-      result = JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as UpgradeResult;
-    } catch (err) {
-      logger.error('team-sync.upgrade.failed', 'Could not parse upgrade subprocess output', {
-        error: (err as Error).message,
-        stdout: stdout.slice(-2048),
-        stderr: stderr.slice(-2048),
-      });
-      return {
-        status: 500,
-        body: { error: 'upgrade_output_invalid', message: 'myco-team upgrade did not return a valid JSON result', stdout, stderr },
-      };
-    }
-
-    if (!result.success) {
-      logger.error('team-sync.upgrade.failed', 'Worker upgrade failed', {
-        error: result.error,
-        stderr: stderr.slice(-2048),
-      });
-      return { status: 500, body: { ...result, stderr } };
-    }
-
-    if (subprocessFailed) {
-      // Defensive: subprocess exited non-zero but claimed success. Treat as failure.
-      logger.error('team-sync.upgrade.failed', 'Subprocess exited non-zero despite success=true', { stderr: stderr.slice(-2048) });
-      return { status: 500, body: { error: 'upgrade_inconsistent_result', stderr } };
-    }
-
-    logger.info('team-sync.upgrade.complete', 'Worker upgrade complete', {
-      worker_url: result.worker_url,
-      version: result.version,
-    });
-
-    // Re-read merged config (the subprocess updated team.worker_url in
-    // the Grove-tier config) and reinitialize the client from the fresh
-    // merged config rather than the subprocess's result shape. Passing
-    // `groveId` ensures the Grove-tier `team` block is included.
-    const freshConfig = loadMergedConfig(vaultDir, {
-      groveId: req.requestContext?.groveId ?? null,
-    });
-    const workerUrl = result.worker_url ?? freshConfig.team.worker_url;
-    if (workerUrl) {
-      updateTeamConnectionConfig(vaultDir, req.requestContext, {
-        enabled: true,
-        worker_url: workerUrl,
-      });
-    }
-    const teamConfig = loadTeamConnectionConfig(vaultDir, req.requestContext);
-    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
-    const apiKey = secrets[TEAM_API_KEY_SECRET];
-    if (teamConfig.enabled && teamConfig.worker_url && apiKey && deps.getTeamClient(req.requestContext)) {
-      deps.setTeamClient(new TeamSyncClient({
-        workerUrl: teamConfig.worker_url,
-        apiKey,
-        machineId,
-        syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-      }), req.requestContext);
-    }
-
-    return { body: result };
-  }
-
   /** POST /api/team/rotate-mcp-token — rotate the MCP bearer token. */
   async function handleRotateMcpToken(req: RouteRequest): Promise<RouteResponse> {
     const client = deps.getTeamClient(req.requestContext);
@@ -960,7 +772,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   }
 
   return {
-    handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken,
+    handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
     handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard,
   };
 }
