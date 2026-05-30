@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { updateGroveConfig } from '@myco/config/loader.js';
 import {
   createArchiveProjectHandler,
   createCreateGroveHandler,
@@ -332,6 +332,10 @@ describe('Grove CRUD API', () => {
         projectName: 'Sibling',
         projectRoot: siblingRoot,
       });
+      // Enable team sync via Grove config — deleteProjectPermanently reconciles
+      // team_sync_state from this config on its own DB handle, so the AFTER
+      // DELETE triggers journal regardless of daemon tick timing.
+      updateGroveConfig(grove.id, (c) => ({ ...c, team: { ...c.team, enabled: true } }));
       const dbPath = ensureGroveDb(grove.id);
       const db = openDatabase(dbPath);
       try {
@@ -343,9 +347,6 @@ describe('Grove CRUD API', () => {
           `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
            VALUES ('sess-sibling', 'codex', ?, ?, 1, 1, 'machine_test')`,
         ).run(siblingRoot, siblingProjectId);
-        // Enable this Grove's per-Grove flag so the sessions_team_ad trigger
-        // journals the deletes during deleteProjectPermanently.
-        setTeamSyncEnabled(true, db);
       } finally {
         db.close();
       }
@@ -383,6 +384,46 @@ describe('Grove CRUD API', () => {
         expect(outbox).toEqual([
           { table_name: 'sessions', row_id: 'sess-delete', operation: 'delete' },
         ]);
+      } finally {
+        verifyDb.close();
+      }
+    });
+
+    it('does not journal delete tombstones when Grove config has team.enabled = false', async () => {
+      const grove = createGrove('Silent');
+      const projectId = createProjectId();
+      const projectRoot = path.join(testDir, 'silent-temp');
+      registerProjectInGrove(grove.id, {
+        projectId,
+        projectName: 'Silent',
+        projectRoot,
+      });
+      // Leave team.enabled as default (false) — deleteProjectPermanently must
+      // reconcile team_sync_state to disabled, so triggers produce no outbox rows.
+      const dbPath = ensureGroveDb(grove.id);
+      const db = openDatabase(dbPath);
+      try {
+        db.prepare(
+          `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
+           VALUES ('sess-silent', 'codex', ?, ?, 1, 1, 'machine_test')`,
+        ).run(projectRoot, projectId);
+      } finally {
+        db.close();
+      }
+      initTeamContext('machine_test');
+
+      await call(createDeleteProjectHandler(serviceDir), {
+        params: { id: grove.id, projectId },
+        body: { confirmation_name: 'Silent' },
+      });
+
+      const verifyDb = openDatabase(dbPath);
+      try {
+        expect((verifyDb.prepare('SELECT COUNT(*) AS n FROM sessions WHERE project_id = ?').get(projectId) as { n: number }).n).toBe(0);
+        const outbox = verifyDb.prepare(
+          `SELECT table_name, row_id, operation FROM team_outbox`,
+        ).all() as Array<{ table_name: string; row_id: string; operation: string }>;
+        expect(outbox).toEqual([]);
       } finally {
         verifyDb.close();
       }

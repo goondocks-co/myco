@@ -6,6 +6,7 @@ import { openDatabase } from '@myco/db/client.js';
 import { createBackup, pruneBackups } from '@myco/daemon/backup.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { ensureGroveDatabase } from './database.js';
 import {
   resolveGroveDir,
@@ -79,6 +80,12 @@ export function deleteProjectPermanently(
     );
     pruneBackups(backupDir, groveConfig.backup.retention);
     const tableCounts = countProjectRows(db, project.project_id);
+    // Reconcile the per-Grove team_sync_state flag from this Grove's config
+    // before deleting rows. Without this, a freshly-opened DB handle (e.g.
+    // before the first daemon flush tick) has no flag row, so the AFTER DELETE
+    // triggers would silently skip journaling. Reconciling here guarantees the
+    // trigger gate reflects the Grove's intent regardless of tick timing.
+    setTeamSyncEnabled(groveConfig.team.enabled, db);
     // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
     // fires that table's `_team_ad` trigger, which journals the delete to
     // team_outbox when this Grove's team_sync_state.enabled = 1. No manual
