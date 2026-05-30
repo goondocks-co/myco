@@ -44,13 +44,13 @@ import {
   FTS_TABLES,
   SECONDARY_INDEXES,
   TEAM_DELETE_TRIGGERS,
+  TEAM_SYNC_OBSERVED_TABLES,
 } from './schema-ddl.js';
 import {
   buildPlanId,
   deriveStoredPlanLogicalKey,
 } from '@myco/plans/identity.js';
 import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-identity.js';
-import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry

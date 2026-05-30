@@ -11,6 +11,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { TEAM_SYNC_OBSERVED_TABLES, type TeamSyncObservedTable } from '@myco/db/schema-ddl.js';
 import { getTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -440,24 +441,12 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
  */
 export const REBUILD_TABLES = [...TEAM_SYNC_BACKFILL_TABLES, 'skill_usage'] as const;
 
-export const TEAM_SYNC_OBSERVED_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
-  'skill_candidates',
-  'skill_records',
-  'skill_usage',
-  'knowledge_release_state',
-] as const;
-
-export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
+// Canonical synced/observed set now lives in the dependency-free schema-ddl
+// module (so the migration chain can import it without pulling db/client →
+// bun:sqlite into the worker-CLI bundle). Imported above for internal use and
+// re-exported here for existing consumers that import it from this module.
+export { TEAM_SYNC_OBSERVED_TABLES };
+export type { TeamSyncObservedTable };
 
 const BACKFILL_TABLE_SET = new Set<string>(TEAM_SYNC_BACKFILL_TABLES);
 

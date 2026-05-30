@@ -898,6 +898,33 @@ export const FTS_TABLES = [
 // -- Team-sync delete triggers ----------------------------------------------
 
 /**
+ * Canonical set of tables that sync to the team cloud and are observed for
+ * drift. Single source of truth — must match the worker's SYNCED_TABLES
+ * (guarded by tests/db/synced-table-parity.test.ts). Defined here in the
+ * dependency-free DDL module so both the query layer (team-outbox) and the
+ * migration chain can import it WITHOUT dragging in db/client (bun:sqlite),
+ * which would break the worker-CLI esbuild bundle.
+ */
+export const TEAM_SYNC_OBSERVED_TABLES = [
+  'sessions',
+  'prompt_batches',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'plans',
+  'artifacts',
+  'digest_extracts',
+  'skill_candidates',
+  'skill_records',
+  'skill_usage',
+  'knowledge_release_state',
+] as const;
+
+export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
+
+/**
  * Team-sync delete triggers — one per synced table.
  *
  * Auto-journal every local delete into `team_outbox` so the one-way push
