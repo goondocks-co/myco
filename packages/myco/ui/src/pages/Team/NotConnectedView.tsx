@@ -134,11 +134,11 @@ export function NotConnectedView({ scopeName }: { scopeName: string }) {
       <Panel
         tone="ochre"
         eyebrow="Getting started"
-        title="Connect this Grove to a team worker"
+        title={`Team sync for ${scopeName}`}
       >
         <p className="text-sm text-on-surface-variant m-0 mb-3">
-          Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
-          One team member provisions the worker, then shares the connection details.
+          All projects in this Grove sync to your team's cloud. One team member provisions the worker,
+          then shares the connection details with the rest of the team.
         </p>
         <ol className="m-0 p-0 list-none flex flex-col gap-3">
           <Step n={1} state="active" title="Install prerequisites">

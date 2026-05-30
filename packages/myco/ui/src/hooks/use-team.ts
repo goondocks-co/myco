@@ -116,6 +116,13 @@ export interface TeamHandoffSummary {
   source: 'handoff_log' | 'flush_logs';
 }
 
+export interface TeamDriftRow {
+  table: string;
+  local: number;
+  cloud: number;
+  delta: number;
+}
+
 export interface TeamSyncSummaryResponse {
   generated_at: number;
   local: {
@@ -127,6 +134,8 @@ export interface TeamSyncSummaryResponse {
   remote: TeamRemoteSyncSummary | null;
   remote_error: string | null;
   last_handoff: TeamHandoffSummary | null;
+  drift: TeamDriftRow[];
+  total_delta: number;
 }
 
 /** Worker discriminator when remote operator credentials are not configured. */

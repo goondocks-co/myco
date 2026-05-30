@@ -9,6 +9,7 @@ import {
   type TeamStatusResponse,
   type DlqMessage,
   type TeamSyncSummaryResponse,
+  type TeamDriftRow,
 } from '../../hooks/use-team';
 import { useDaemon } from '../../hooks/use-daemon';
 import { postJson, ApiError } from '../../lib/api';
@@ -202,6 +203,40 @@ function SyncStoreTable({ summary }: { summary: TeamSyncSummaryResponse }) {
   );
 }
 
+function DriftTable({ rows }: { rows: TeamDriftRow[] }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-outline-variant/10">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-container/40 text-xs uppercase text-outline">
+          <tr>
+            <th className="px-3 py-2 text-left font-mono">Table</th>
+            <th className="px-3 py-2 text-right font-mono">Local</th>
+            <th className="px-3 py-2 text-right font-mono">Cloud</th>
+            <th className="px-3 py-2 text-right font-mono">Δ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.table}
+              className={row.delta !== 0
+                ? 'border-t border-outline-variant/10 bg-terracotta/[0.04]'
+                : 'border-t border-outline-variant/10'}
+            >
+              <td className="px-3 py-2 text-on-surface">{formatTableName(row.table)}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(row.local)}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(row.cloud)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${row.delta !== 0 ? 'text-terracotta' : 'text-on-surface-variant'}`}>
+                {row.delta === 0 ? '0' : row.delta > 0 ? `+${row.delta.toLocaleString()}` : row.delta.toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (action: 'retry' | 'discard', leaseId: string) => void; busy: boolean }) {
   const body = message.body as { table?: string; id?: string; machine_id?: string };
   return (
@@ -236,6 +271,8 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const [drainMessage, setDrainMessage] = useState<string | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildMessage, setRebuildMessage] = useState<string | null>(null);
 
   const queueUnavailable = !enabled || isTokenMissing(queueStats) || (!queueLoading && !queueStats);
   const failedSyncsLoading = queueLoading || (dlqEnabled && dlqLoading);
@@ -355,6 +392,24 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
       }
     } finally {
       setUpgrading(false);
+    }
+  }, [queryClient]);
+
+  const handleRebuild = useCallback(async () => {
+    setRebuilding(true);
+    setRebuildMessage(null);
+    try {
+      const res = await postJson<{ ok: boolean; handedOff: number; rejected: number; batches: number; error?: string }>('/team/rebuild');
+      if (res.error) {
+        setRebuildMessage(`Rebuild failed: ${res.error}`);
+      } else {
+        setRebuildMessage(`Rebuilt: handed off ${formatNumber(res.handedOff)} records in ${res.batches} batch${res.batches === 1 ? '' : 'es'}.`);
+      }
+      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
+    } catch (err) {
+      setRebuildMessage(`Rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRebuilding(false);
     }
   }, [queryClient]);
 
@@ -519,6 +574,41 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               <VectorsTile remote={syncSummary.remote} localEmbedded={daemonStats?.embedding.embedded_count ?? null} />
             </div>
             <SyncStoreTable summary={syncSummary} />
+            {syncSummary.drift && syncSummary.drift.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-on-surface-variant m-0">Local vs cloud (this machine)</p>
+                <DriftTable rows={syncSummary.drift} />
+              </div>
+            ) : syncSummary.total_delta === 0 ? (
+              <p className="text-xs text-sage m-0">In sync</p>
+            ) : null}
+            {(syncSummary.total_delta ?? 0) > 0 && (
+              <div className="flex flex-col gap-2 border-t border-outline-variant/10 pt-3">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-xs text-on-surface-variant m-0">
+                    Replaces this machine's cloud data with your local Grove. One-way; no reconciliation.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleRebuild}
+                    disabled={rebuilding}
+                  >
+                    {rebuilding ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                        Rebuilding...
+                      </>
+                    ) : (
+                      'Rebuild from local'
+                    )}
+                  </Button>
+                </div>
+                {rebuildMessage && (
+                  <p className="text-xs text-on-surface-variant m-0">{rebuildMessage}</p>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
