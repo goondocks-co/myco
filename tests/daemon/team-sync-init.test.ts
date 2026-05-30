@@ -15,6 +15,7 @@ const {
   pruneOldMock,
   backfillUnsyncedMock,
   backfillAllMock,
+  backfillAllForRebuildMock,
   discardRowsMock,
   enqueueOutboxMock,
   upsertSelfMemberMock,
@@ -28,6 +29,7 @@ const {
   pruneOldMock: vi.fn(),
   backfillUnsyncedMock: vi.fn(),
   backfillAllMock: vi.fn(),
+  backfillAllForRebuildMock: vi.fn(),
   discardRowsMock: vi.fn(),
   enqueueOutboxMock: vi.fn(),
   upsertSelfMemberMock: vi.fn(),
@@ -41,6 +43,7 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   pruneOld: pruneOldMock,
   backfillUnsynced: backfillUnsyncedMock,
   backfillAll: backfillAllMock,
+  backfillAllForRebuild: backfillAllForRebuildMock,
   discardRows: discardRowsMock,
   countPending: vi.fn(() => 0),
   enqueueOutbox: enqueueOutboxMock,
@@ -397,7 +400,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
     fs.mkdirSync(vaultDir, { recursive: true });
     listPendingMock.mockReturnValue([]);
-    backfillAllMock.mockReturnValue(2);
+    backfillAllForRebuildMock.mockReturnValue(2);
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=secret-token\n', 'utf-8');
   });
 
@@ -416,7 +419,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
     const result = await teamSync.rebuildFromLocal();
 
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
-    expect(backfillAllMock).toHaveBeenCalledWith('machine-1');
+    expect(backfillAllForRebuildMock).toHaveBeenCalledWith('machine-1');
     expect(result.error).toBeUndefined();
     expect(result).toMatchObject({ handedOff: expect.any(Number), rejected: expect.any(Number), batches: expect.any(Number) });
   });
@@ -431,9 +434,9 @@ describe('initTeamSync.rebuildFromLocal', () => {
 
     expect(rebuildSpy).toHaveBeenCalledTimes(1);
     // The load-bearing invariant: a failed truncate must NOT proceed to
-    // re-enqueue the Grove. Without the abort, backfillAll would run and
-    // push rows against a half-truncated cloud mirror.
-    expect(backfillAllMock).not.toHaveBeenCalled();
+    // re-enqueue the Grove. Without the abort, backfillAllForRebuild would run
+    // and push rows against a half-truncated cloud mirror.
+    expect(backfillAllForRebuildMock).not.toHaveBeenCalled();
     expect(result.error).toBe('worker truncate failed');
   });
 
@@ -446,7 +449,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
     const result = await teamSync.rebuildFromLocal();
 
     expect(rebuildSpy).not.toHaveBeenCalled();
-    expect(backfillAllMock).not.toHaveBeenCalled();
+    expect(backfillAllForRebuildMock).not.toHaveBeenCalled();
     expect(result).toEqual({ handedOff: 0, rejected: 0, batches: 0 });
   });
 });

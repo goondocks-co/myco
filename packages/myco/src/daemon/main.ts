@@ -2115,6 +2115,18 @@ export async function main(): Promise<void> {
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
+  // Reconcile team_sync_state.enabled for every registered Grove at boot.
+  // reconcileClient() above only arms the boot Grove's flag; non-boot Groves'
+  // flags stay at their persisted default until their first flush tick — a window
+  // where deletes on those Groves are not journaled (deletes have no backfill
+  // safety net). Fan the flag-only write across all Groves now so delete triggers
+  // are armed before any HTTP traffic arrives. No push, no client creation.
+  teamSync.reconcileAllGroveFlags(runtimeCache).catch((err) => {
+    logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Boot-time Grove flag reconcile failed', {
+      error: errorMessage(err),
+    });
+  });
+
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner
   // and triggers a fire-and-forget delta refresh; the runner debounces.

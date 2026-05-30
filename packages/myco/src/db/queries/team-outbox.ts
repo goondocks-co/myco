@@ -422,7 +422,23 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'knowledge_release_state',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
-// skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
+// skill_usage excluded — no `synced_at` column (syncs via syncRow on insert); included
+// in REBUILD_TABLES so rebuild produces an exact cloud mirror
+
+/**
+ * Tables eligible for a full rebuild re-push. A superset of TEAM_SYNC_BACKFILL_TABLES
+ * that includes skill_usage: the worker's /rebuild truncates skill_usage (it is in
+ * SYNCED_TABLES on the worker), so after a rebuild D1's skill_usage stays empty unless
+ * we re-push it here. skill_usage has id + machine_id but no synced_at column, which
+ * means it cannot be included in TEAM_SYNC_BACKFILL_TABLES (backfillUnsynced's
+ * `synced_at IS NULL` predicate would error). The 'all' mode used by
+ * backfillAllForRebuild uses `1 = 1` as its source predicate and only guards via the
+ * outbox NOT-EXISTS check (team_outbox.sent_at IS NULL), so it is safe for tables
+ * without synced_at.
+ *
+ * Do NOT add skill_usage to TEAM_SYNC_BACKFILL_TABLES — it would break backfillUnsynced.
+ */
+export const REBUILD_TABLES = [...TEAM_SYNC_BACKFILL_TABLES, 'skill_usage'] as const;
 
 export const TEAM_SYNC_OBSERVED_TABLES = [
   'sessions',
@@ -515,7 +531,23 @@ export function backfillAll(machineId: string): number {
   return backfillRows(machineId, 'all');
 }
 
-function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
+/**
+ * Re-enqueue every row across the full REBUILD_TABLES set (a superset of
+ * TEAM_SYNC_BACKFILL_TABLES that includes skill_usage). Called by
+ * rebuildFromLocal after the worker's /rebuild truncates the cloud mirror.
+ *
+ * Must use 'all' mode — skill_usage has no synced_at column, so 'unsynced'
+ * mode's `synced_at IS NULL` predicate would error on it.
+ */
+export function backfillAllForRebuild(machineId: string): number {
+  return backfillRows(machineId, 'all', REBUILD_TABLES);
+}
+
+function backfillRows(
+  machineId: string,
+  mode: 'unsynced' | 'all',
+  tables: readonly string[] = TEAM_SYNC_BACKFILL_TABLES,
+): number {
   const db = getDatabase();
   let total = 0;
   const now = epochSeconds();
@@ -523,7 +555,7 @@ function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
   // Process one table at a time in separate transactions to avoid long locks.
   // INSERT happens via the shared `insertOutboxRowsForUpsert` helper so the
   // sanitization contract stays in one place.
-  for (const table of TEAM_SYNC_BACKFILL_TABLES) {
+  for (const table of tables) {
     const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
     const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';
     const rows = db.prepare(

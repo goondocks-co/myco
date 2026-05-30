@@ -46,6 +46,7 @@ import {
   pruneOld,
   backfillUnsynced,
   backfillAll,
+  backfillAllForRebuild,
   discardRows,
   countPending,
   countPendingByTable,
@@ -100,6 +101,14 @@ export interface TeamSyncResult {
    * Errors are isolated per Grove. Returns the aggregate per-Grove summary.
    */
   flushAllGroves: (cache: GroveRuntimeCache) => Promise<TeamFlushAggregate>;
+  /**
+   * Reconcile team_sync_state.enabled for every registered Grove at boot.
+   * At boot only the boot Grove's flag is set (via reconcileClient()). Non-boot
+   * Groves' flags stay at their persisted default until their first flush tick —
+   * a window where deletes on those Groves are not journaled. This fans out the
+   * flag write (no push, no client) so all Groves start the session in lockstep.
+   */
+  reconcileAllGroveFlags: (cache: GroveRuntimeCache) => Promise<void>;
   registerFlushJob: (powerManager: PowerManager, cache: GroveRuntimeCache) => void;
 }
 
@@ -236,8 +245,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
     if (!client) return empty;
     try {
-      await client.rebuild();                    // truncate this machine's cloud rows (D1 + Vectorize)
-      const enqueued = backfillAll(machineId);    // re-enqueue every local row for this machine
+      await client.rebuild();                             // truncate this machine's cloud rows (D1 + Vectorize)
+      const enqueued = backfillAllForRebuild(machineId);  // re-enqueue every local row including skill_usage
       logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', { enqueued });
       return await flushPending(requestContext);  // push them
     } catch (err) {
@@ -399,6 +408,27 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     return aggregate;
   }
 
+  /**
+   * Reconcile team_sync_state.enabled for every registered Grove without pushing.
+   * Mirrors flushAllGroves's forEachGrove fan-out exactly (same groveSyncContext,
+   * withDatabase, daemonStateDir, jobName pattern) but only writes the flag so
+   * delete triggers on non-boot Groves are armed before the first flush tick.
+   */
+  async function reconcileAllGroveFlags(cache: GroveRuntimeCache): Promise<void> {
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, databasePath, db, groveHome }) => {
+        await withDatabase(db, async () => {
+          const ctx = groveSyncContext(grove.id, databasePath, groveHome);
+          const enabled = loadTeamConnectionConfig(groveHome, ctx).enabled;
+          setTeamSyncEnabled(enabled);
+        });
+      },
+      { daemonStateDir, jobName: 'team-sync-flag-reconcile' },
+    );
+  }
+
   return {
     getTeamClient: (requestContext = defaultRequestContext) => teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null,
     setTeamClient: (client, requestContext = defaultRequestContext) => {
@@ -415,6 +445,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     flushPending,
     rebuildFromLocal,
     flushAllGroves,
+    reconcileAllGroveFlags,
     registerFlushJob: (powerManager, cache) => {
       // Registered unconditionally; team.enabled is checked at run time so
       // Settings toggles take effect without a daemon restart. The job
