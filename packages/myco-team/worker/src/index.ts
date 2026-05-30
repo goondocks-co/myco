@@ -789,7 +789,7 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     const lastError = batchCounts.failed > 0 ? batchCounts.lastError || 'sync failed' : null;
     await env.MYCO_TEAM_DB.prepare(
       'UPDATE team_sync_stats SET processed = processed + ?, failed = failed + ?, last_run_at = ?, last_error = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END WHERE id = 1',
-    ).bind(batchCounts.applied, batchCounts.failed, Date.now(), lastError, lastError).run();
+    ).bind(batchCounts.applied, batchCounts.failed, epochSeconds(), lastError, lastError).run();
   } catch {
     // Stats write failed — ignore, sync path takes priority.
   }
@@ -1113,7 +1113,7 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
         m.body.operation,
         JSON.stringify(m.body),
         'dead-lettered after max retries',
-        Date.now(),
+        epochSeconds(),
       ).run();
     } catch {
       // DLQ write failed — ignore, replay path takes priority.
