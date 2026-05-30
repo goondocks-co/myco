@@ -573,30 +573,55 @@ function syncDlqName(name: string): string {
 }
 
 /**
+ * Compute the endpoint URL a worker is reachable at. When a custom Workers
+ * zone is supplied, the worker is bound to `https://myco-<slug>.<domain>` via
+ * a `custom_domain` route. Otherwise returns null and callers fall back to the
+ * `*.workers.dev` URL parsed from the deploy output.
+ */
+export function resolveWorkerUrl(slug: string, domain?: string | null): string | null {
+  return domain ? `https://myco-${slug}.${domain}` : null;
+}
+
+/**
+ * Append a `[[routes]]` block binding the worker to a custom Workers domain.
+ * Idempotent — re-applying with the same slug/domain does not add a duplicate
+ * block, so re-running install/upgrade against a staged toml is safe.
+ */
+export function withCustomDomainRoute(toml: string, slug: string, domain: string): string {
+  const pattern = `myco-${slug}.${domain}`;
+  if (toml.includes(`pattern = "${pattern}"`)) return toml; // idempotent
+  return `${toml.replace(/\n*$/, '')}\n\n[[routes]]\npattern = "${pattern}"\ncustom_domain = true\n`;
+}
+
+/**
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
  */
-function prepareDeployDir(scope: GroveTeamCliScope, d1Id: string, kvId: string): string {
+function prepareDeployDir(scope: GroveTeamCliScope, d1Id: string, kvId: string, domain?: string | null): string {
   const srcDir = locateWorkerSource();
   const deployDir = resolveDeployDir(scope);
   const name = resourceName(scope);
+  const transforms: Array<(toml: string) => string> = [
+    (toml) => toml.replace(TOML_NAME_REGEX, `name = "${name}"`),
+    (toml) => toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id),
+    (toml) => toml.replace(TOML_DB_NAME_REGEX, `database_name = "${name}"`),
+    (toml) => toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${name}-vectors"`),
+    (toml) => toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId),
+    (toml) => toml.replace(TOML_SYNC_QUEUE_PLACEHOLDER_REGEX, syncQueueName(name)),
+    (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(name)),
+    (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
+    (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
+  ];
+  if (domain) {
+    transforms.push((toml) => withCustomDomainRoute(toml, scope.resourceSlug, domain));
+  }
   return stageDeploymentDir({
     sourceDir: srcDir,
     deployDir,
     reset: true,
     textPatches: [{
       filePath: 'wrangler.toml',
-      transforms: [
-        (toml) => toml.replace(TOML_NAME_REGEX, `name = "${name}"`),
-        (toml) => toml.replace(TOML_D1_PLACEHOLDER_REGEX, d1Id),
-        (toml) => toml.replace(TOML_DB_NAME_REGEX, `database_name = "${name}"`),
-        (toml) => toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${name}-vectors"`),
-        (toml) => toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId),
-        (toml) => toml.replace(TOML_SYNC_QUEUE_PLACEHOLDER_REGEX, syncQueueName(name)),
-        (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(name)),
-        (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
-        (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
-      ],
+      transforms,
     }],
     installDepsTimeoutMs: WRANGLER_COMMAND_TIMEOUT_MS * 3,
   });
@@ -717,8 +742,9 @@ async function rotateMcpTokenForWorker(workerUrl: string, apiKey: string): Promi
 // Commands
 // ---------------------------------------------------------------------------
 
-export async function teamInit(vaultDir: string, options: { name?: string } = {}): Promise<void> {
+export async function teamInit(vaultDir: string, options: { name?: string; domain?: string } = {}): Promise<void> {
   let teamName = options.name?.trim();
+  const domain = options.domain?.trim() || null;
   if (!teamName) {
     if (process.stdin.isTTY) {
       const readline = await import('node:readline');
@@ -830,7 +856,7 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
 
   // 8. Prepare deployment directory
   console.log('Preparing worker deployment...');
-  const deployDir = prepareDeployDir(scope, d1Id, kvId);
+  const deployDir = prepareDeployDir(scope, d1Id, kvId, domain);
 
   // 7. Set team key secret via wrangler
   console.log('Setting Team key secret...');
@@ -848,15 +874,22 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
 
   // 8. Deploy worker
   console.log('Deploying worker...');
-  let workerUrl: string;
+  let deployUrl: string;
   try {
     const deployOutput = wrangler(['deploy'], { cwd: deployDir });
-    workerUrl = parseWorkerUrl(deployOutput);
-    console.log(`Worker deployed: ${workerUrl}\n`);
+    deployUrl = parseWorkerUrl(deployOutput);
+    console.log(`Worker deployed: ${deployUrl}\n`);
   } catch (err) {
     console.error(`Failed to deploy worker: ${(err as Error).message}`);
     process.exit(1);
   }
+
+  // The custom domain may take time to propagate, so all immediate
+  // post-deploy calls (config PUT, MCP token rotation) target the
+  // workers.dev URL, which is live the moment `wrangler deploy` returns.
+  // Everything PERSISTED or displayed uses the custom-domain endpoint
+  // when one was requested.
+  const endpointUrl = resolveWorkerUrl(scope.resourceSlug, domain) ?? deployUrl;
 
   // 9. Configure the DLQ for HTTP pull so the daemon UI can inspect,
   // retry, or discard failed deliveries without a separate Worker consumer
@@ -873,7 +906,7 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
   try {
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
     const creatorMachineId = getMachineId();
-    await fetch(`${workerUrl}/config`, {
+    await fetch(`${deployUrl}/config`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -891,7 +924,7 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
 
   let mcpToken: string | null = null;
   try {
-    mcpToken = await rotateMcpTokenForWorker(workerUrl, apiKey);
+    mcpToken = await rotateMcpTokenForWorker(deployUrl, apiKey);
   } catch {
     // Non-fatal. The daemon can also fetch the token later through /connect.
   }
@@ -899,13 +932,13 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
   // 11. Save config and team key locally
   updateTeamConnectionConfig(vaultDir, scope.requestContext, {
     enabled: true,
-    worker_url: workerUrl,
+    worker_url: endpointUrl,
   });
   writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_API_KEY_SECRET, apiKey);
   if (mcpToken) writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_MCP_TOKEN_SECRET, mcpToken);
   writeLocalConfig(scope, {
     worker_name: name,
-    worker_url: workerUrl,
+    worker_url: endpointUrl,
     package_version: getTeamPackageVersion(),
     created_at: new Date().toISOString(),
     last_upgraded: new Date().toISOString(),
@@ -917,9 +950,9 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
   teamRegistry.save({
     team_id: teamId,
     name: teamName,
-    worker_url: workerUrl,
-    domain: null,
-    mcp_endpoint: `${workerUrl.replace(/\/+$/, '')}/mcp`,
+    worker_url: endpointUrl,
+    domain,
+    mcp_endpoint: `${endpointUrl.replace(/\/+$/, '')}/mcp`,
     created_at: new Date().toISOString(),
     projects: installingProjectId
       ? [{ grove_id: scope.requestContext.groveId, project_id: installingProjectId }]
@@ -931,10 +964,13 @@ export async function teamInit(vaultDir: string, options: { name?: string } = {}
   console.log('Team sync configured!\n');
   console.log(`  Team:    ${teamName}`);
   console.log(`  Team id: ${teamId}`);
-  console.log(`  URL:     ${workerUrl}`);
+  console.log(`  URL:     ${endpointUrl}`);
   console.log(`  Team key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}`);
   if (mcpToken) {
     console.log(`  MCP:     ${mcpToken.slice(0, 8)}...${mcpToken.slice(-4)}`);
+  }
+  if (domain) {
+    console.log(`\nNote: the custom domain ${endpointUrl} may take a moment to propagate.`);
   }
   console.log('\nShare the URL and Team key with teammates so they can connect.');
 }

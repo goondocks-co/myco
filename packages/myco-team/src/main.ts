@@ -9,7 +9,7 @@ function showHelp(): void {
   console.log(`Usage: myco-team <command>
 
 Commands:
-  install [project_dir] [--name "<team name>"]
+  install [project_dir] [--name "<team name>"] [--domain <zone>]
   upgrade [project_dir] [--reindex-vectors] [--observability] [--json]
   status [project_dir]
   rotate-tokens [api|mcp|all] [project_dir]
@@ -33,8 +33,10 @@ const UPGRADE_FLAGS = new Set(['--reindex-vectors', '--observability', '--json']
 function parseInstallArgs(commandArgs: string[]): {
   vaultDir: string;
   name?: string;
+  domain?: string;
 } {
   let name: string | undefined;
+  let domain: string | undefined;
   const positional: string[] = [];
   for (let i = 0; i < commandArgs.length; i += 1) {
     const arg = commandArgs[i];
@@ -43,11 +45,17 @@ function parseInstallArgs(commandArgs: string[]): {
       i += 1;
       continue;
     }
+    if (arg === '--domain') {
+      domain = commandArgs[i + 1];
+      i += 1;
+      continue;
+    }
     positional.push(arg);
   }
   return {
     vaultDir: resolveVaultDir(positional[0] ?? process.cwd()),
     name,
+    domain,
   };
 }
 
@@ -94,8 +102,8 @@ async function runUpgradeJson(
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   install: async (commandArgs) => {
-    const { vaultDir, name } = parseInstallArgs(commandArgs);
-    return teamInit(vaultDir, { name });
+    const { vaultDir, name, domain } = parseInstallArgs(commandArgs);
+    return teamInit(vaultDir, { name, domain });
   },
   upgrade: async (commandArgs) => {
     const parsed = parseUpgradeArgs(commandArgs);
