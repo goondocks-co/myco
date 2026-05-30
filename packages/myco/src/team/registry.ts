@@ -99,6 +99,15 @@ function writeSecret(teamId: string, key: string, value: string, mycoHome = reso
   writeSecretFile(resolveTeamDir(teamId, mycoHome), key, value);
 }
 
+export function withProjectAdded(record: TeamRecord, ref: TeamProjectRef): TeamRecord {
+  if (record.projects.some(p => p.project_id === ref.project_id)) return record;
+  return { ...record, projects: [...record.projects, ref] };
+}
+
+export function withProjectRemoved(record: TeamRecord, projectId: string): TeamRecord {
+  return { ...record, projects: record.projects.filter(p => p.project_id !== projectId) };
+}
+
 export const teamRegistry = {
   list,
   get,
