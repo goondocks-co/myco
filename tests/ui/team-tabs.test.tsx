@@ -53,6 +53,9 @@ mock.module('../../packages/myco/ui/src/hooks/use-team', () => ({
   useTeamQueueStats: () => ({ data: undefined, isLoading: false }),
   useTeamSyncSummary: () => ({ data: undefined, isLoading: false }),
   useTeamDlq: () => ({ data: undefined, isLoading: false }),
+  useTeamRegistry: () => ({ data: { teams: [] }, isLoading: false }),
+  useTeamProjects: () => ({ data: { projects: [] }, isLoading: false }),
+  useSetProjectMembership: () => ({ mutateAsync: async () => ({}), isPending: false }),
   isTokenMissing: () => false,
 }));
 
@@ -127,8 +130,12 @@ function wrapWithRoutes(initial: string) {
 }
 
 describe('TeamPage tabs', () => {
-  it('renders Status tab by default', async () => {
+  it('renders the Teams selection tab by default', async () => {
     render(wrap('/g/foo/team'));
+    await waitFor(() => expect(screen.getByText(/No teams yet/i)).toBeInTheDocument());
+  });
+  it('renders Status tab when ?tab=status', async () => {
+    render(wrap('/g/foo/team?tab=status'));
     await waitFor(() => expect(screen.getByText(/Team Credentials/i)).toBeInTheDocument());
   });
   it('renders Sync tab when ?tab=sync', async () => {

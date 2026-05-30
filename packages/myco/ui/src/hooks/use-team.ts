@@ -1,6 +1,6 @@
-import { keepPreviousData } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
-import { fetchJson } from '../lib/api';
+import { fetchJson, postJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 
 export interface TeamStatusResponse {
@@ -177,5 +177,76 @@ export function useTeamDlq(enabled: boolean) {
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Team registry + project-membership selection
+// ---------------------------------------------------------------------------
+
+export interface TeamRegistryRecord {
+  team_id: string;
+  name: string;
+  worker_url: string;
+  domain: string | null;
+  mcp_endpoint: string | null;
+  created_at: string;
+  projects: { grove_id: string; project_id: string }[];
+}
+
+export interface TeamProjectRow {
+  grove_id: string;
+  grove_name: string;
+  project_id: string;
+  project_name: string;
+  team_id: string | null;
+}
+
+export interface TeamRegistryResponse {
+  teams: TeamRegistryRecord[];
+}
+
+export interface TeamProjectsResponse {
+  projects: TeamProjectRow[];
+}
+
+export interface SetProjectMembershipBody {
+  team_id: string;
+  grove_id: string;
+  project_id: string;
+  action: 'add' | 'remove';
+}
+
+export interface SetProjectMembershipResponse {
+  team: TeamRegistryRecord;
+}
+
+export function useTeamRegistry() {
+  return usePowerQuery<TeamRegistryResponse>({
+    queryKey: ['team-registry'],
+    queryFn: ({ signal }) => fetchJson<TeamRegistryResponse>('/team/registry', { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
+    pollCategory: 'standard',
+  });
+}
+
+export function useTeamProjects() {
+  return usePowerQuery<TeamProjectsResponse>({
+    queryKey: ['team-projects'],
+    queryFn: ({ signal }) => fetchJson<TeamProjectsResponse>('/team/projects', { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
+    pollCategory: 'standard',
+  });
+}
+
+export function useSetProjectMembership() {
+  const qc = useQueryClient();
+  return useMutation<SetProjectMembershipResponse, Error, SetProjectMembershipBody>({
+    mutationFn: (body) =>
+      postJson<SetProjectMembershipResponse>('/team/project-membership', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+    },
   });
 }
