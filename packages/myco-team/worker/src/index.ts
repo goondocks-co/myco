@@ -14,15 +14,6 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
-import {
-  clearCfApiCredentials,
-  discardDlqMessages,
-  fetchQueueStats,
-  pullDlqMessages,
-  readCfApiCredentials,
-  retryDlqMessages,
-  writeCfApiCredentials,
-} from './cf-api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1658,86 +1649,71 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
 
 /**
  * Operator surface for queue diagnostics + DLQ management. All endpoints
- * require the project's CF API token (queues:read,write) stashed in KV.
- * Daemon flows the token through `POST /tokens/cf-api`; the UI surfaces
- * the queue/DLQ state as unavailable when missing.
+ * read from the D1 tables populated by the queue consumer (team_sync_stats,
+ * team_dlq). No CF API token required — the worker is the API surface.
  */
 async function handleQueueStats(env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
-  try {
-    const stats = await fetchQueueStats(creds, env.SYNC_QUEUE_NAME, env.SYNC_DLQ_NAME);
-    return jsonResponse(stats);
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
+  const row = await env.MYCO_TEAM_DB.prepare(
+    `SELECT enqueued, processed, failed, last_run_at, last_error FROM team_sync_stats WHERE id = 1`,
+  ).first<{ enqueued: number; processed: number; failed: number; last_run_at: number | null; last_error: string | null }>();
+  const enqueued = row?.enqueued ?? 0;
+  const processed = row?.processed ?? 0;
+  return jsonResponse({
+    enqueued,
+    processed,
+    failed: row?.failed ?? 0,
+    backlog: Math.max(0, enqueued - processed),
+    last_run_at: row?.last_run_at ?? null,
+    last_error: row?.last_error ?? null,
+  });
 }
 
 async function handleDlqList(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
-  const url = new URL(request.url);
-  const limit = Number(url.searchParams.get('limit') ?? '50');
-  try {
-    const result = await pullDlqMessages(creds, env.SYNC_DLQ_NAME, limit);
-    return jsonResponse(result);
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
+  const limit = Number(new URL(request.url).searchParams.get('limit') ?? '50');
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50;
+  const rows = await env.MYCO_TEAM_DB.prepare(
+    `SELECT lease_id, table_name, row_id, machine_id, operation, reason, created_at FROM team_dlq ORDER BY created_at DESC LIMIT ?`,
+  ).bind(safeLimit).all<{ lease_id: string; table_name: string; row_id: string; machine_id: string; operation: string; reason: string; created_at: number }>();
+  return jsonResponse({ messages: rows.results ?? [] });
 }
 
 async function handleDlqRetry(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
   const body = await request.json() as { lease_ids?: string[] };
-  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  const leaseIds = Array.isArray(body.lease_ids)
+    ? body.lease_ids.filter((id): id is string => typeof id === 'string')
+    : [];
   if (leaseIds.length === 0) {
     return errorResponse('lease_ids array is required', 400);
   }
-  try {
-    await retryDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
-    return jsonResponse({ retried: leaseIds.length });
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  const placeholders = leaseIds.map(() => '?').join(', ');
+  const rows = await env.MYCO_TEAM_DB.prepare(
+    `SELECT lease_id, payload FROM team_dlq WHERE lease_id IN (${placeholders})`,
+  ).bind(...leaseIds).all<{ lease_id: string; payload: string }>();
+  const found = rows.results ?? [];
+  if (found.length > 0) {
+    await env.SYNC_QUEUE.sendBatch(found.map((r) => ({ body: JSON.parse(r.payload) as SyncRecord })));
+    const retriedIds = found.map((r) => r.lease_id);
+    const delPlaceholders = retriedIds.map(() => '?').join(', ');
+    await env.MYCO_TEAM_DB.prepare(
+      `DELETE FROM team_dlq WHERE lease_id IN (${delPlaceholders})`,
+    ).bind(...retriedIds).run();
   }
+  return jsonResponse({ retried: found.length });
 }
 
 async function handleDlqDiscard(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
   const body = await request.json() as { lease_ids?: string[] };
-  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  const leaseIds = Array.isArray(body.lease_ids)
+    ? body.lease_ids.filter((id): id is string => typeof id === 'string')
+    : [];
   if (leaseIds.length === 0) {
     return errorResponse('lease_ids array is required', 400);
   }
-  try {
-    await discardDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
-    return jsonResponse({ discarded: leaseIds.length });
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
-}
-
-async function handleSetCfApiToken(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { token?: string; account_id?: string };
-  if (!body.token || !body.account_id) {
-    return errorResponse('token and account_id are required', 400);
-  }
-  await writeCfApiCredentials(env.MYCO_SECRETS, body.token, body.account_id);
-  return jsonResponse({ configured: true });
-}
-
-async function handleClearCfApiToken(env: Env): Promise<Response> {
-  await clearCfApiCredentials(env.MYCO_SECRETS);
-  return jsonResponse({ cleared: true });
+  const placeholders = leaseIds.map(() => '?').join(', ');
+  await env.MYCO_TEAM_DB.prepare(
+    `DELETE FROM team_dlq WHERE lease_id IN (${placeholders})`,
+  ).bind(...leaseIds).run();
+  return jsonResponse({ discarded: leaseIds.length });
 }
 
 async function handleCollectiveQuery(request: Request, env: Env): Promise<Response> {
@@ -1886,13 +1862,6 @@ export default {
       if (method === 'POST' && path === '/dlq/discard') {
         return await handleDlqDiscard(request, env);
       }
-      if (method === 'POST' && path === '/tokens/cf-api') {
-        return await handleSetCfApiToken(request, env);
-      }
-      if (method === 'DELETE' && path === '/tokens/cf-api') {
-        return await handleClearCfApiToken(env);
-      }
-
       return errorResponse('Not found', 404);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
