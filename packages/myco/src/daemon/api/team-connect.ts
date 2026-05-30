@@ -488,15 +488,33 @@ export interface TableDrift {
 }
 
 /**
+ * Tables that appear in TEAM_SYNC_OBSERVED_TABLES and the worker's SYNCED_TABLES
+ * but are NEVER actually pushed to D1, so their D1 copy is always empty.
+ * Including them in drift would produce a permanent false-positive delta that a
+ * Rebuild can never resolve (Rebuild can't re-push them either).
+ *
+ * entity_mentions: has no single `id` column → no _team_ad trigger → excluded
+ * from all backfill paths. Post semantic-graph retirement the table is empty, but
+ * the exclusion is structural so it stays correct if rows ever reappear.
+ */
+const DRIFT_EXCLUDED_TABLES: ReadonlySet<string> = new Set(['entity_mentions']);
+
+/**
  * Compare per-table local row counts against per-table cloud row counts
  * (both scoped to THIS machine). Returns one entry per table, sorted by
  * table name. `delta` is `cloud - local`; negative means cloud is behind.
+ *
+ * Tables listed in `exclude` (default: `DRIFT_EXCLUDED_TABLES`) are omitted
+ * from the union before comparison so they never contribute a false-positive
+ * delta.
  */
 export function computeDrift(
   local: Record<string, number>,
   cloud: Record<string, number>,
+  exclude: ReadonlySet<string> = DRIFT_EXCLUDED_TABLES,
 ): TableDrift[] {
   const tables = new Set([...Object.keys(local), ...Object.keys(cloud)]);
+  for (const t of exclude) tables.delete(t);
   return [...tables].sort().map((table) => {
     const l = local[table] ?? 0;
     const c = cloud[table] ?? 0;

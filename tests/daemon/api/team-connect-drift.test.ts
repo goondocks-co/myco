@@ -15,4 +15,16 @@ describe('computeDrift', () => {
   it('returns empty array for empty inputs', () => {
     expect(computeDrift({}, {})).toEqual([]);
   });
+  it('excludes tables in the provided exclude set from drift', () => {
+    // entity_mentions has local rows but is never synced to D1, so its cloud
+    // copy is always 0. Without exclusion this produces a permanent delta that
+    // a Rebuild can never resolve. With exclusion it is absent from the result.
+    const drift = computeDrift(
+      { entity_mentions: 5, spores: 2 },
+      { spores: 2 },
+      new Set(['entity_mentions']),
+    );
+    expect(drift.find((d) => d.table === 'spores')).toEqual({ table: 'spores', local: 2, cloud: 2, delta: 0 });
+    expect(drift.find((d) => d.table === 'entity_mentions')).toBeUndefined();
+  });
 });
