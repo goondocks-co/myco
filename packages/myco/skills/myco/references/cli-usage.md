@@ -1,10 +1,10 @@
 # Myco CLI Reference
 
-In an initialized project, prefer the project-resolved launcher:
+In an initialized project, prefer the `myco` CLI:
 
-    node .agents/myco-cli.cjs <command> [flags]
+    myco <command> [flags]
 
-It honors project and worktree runtime pins. Use a plugin-root `dist/src/cli.js` path only when `.agents/myco-cli.cjs` is unavailable and you are deliberately operating inside an installed plugin bundle.
+It honors project and worktree runtime pins — the binary walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH (e.g. GUI- or launchd-spawned agents), use the absolute global launcher `node ~/.myco/launcher.cjs <command> [flags]`, which resolves the same pins.
 
 ---
 
@@ -27,7 +27,7 @@ Initializes a new Myco vault. Skipped automatically if the vault is already init
 **Example:**
 
 ```sh
-node .agents/myco-cli.cjs init \
+myco init \
   --embedding-provider ollama \
   --embedding-model bge-m3
 ```
@@ -51,10 +51,10 @@ Note: changing the embedding model requires running `rebuild` afterward to re-em
 
 ```sh
 # Show current settings
-node .agents/myco-cli.cjs setup-llm --show
+myco setup-llm --show
 
 # Change embedding model
-node .agents/myco-cli.cjs setup-llm \
+myco setup-llm \
   --embedding-provider ollama \
   --embedding-model bge-m3
 ```
@@ -75,16 +75,16 @@ Direct access to vault config via dot-path notation. Values are parsed as JSON f
 
 ```sh
 # Read a value
-node .agents/myco-cli.cjs config get cortex.instructions.inject_on_session_start
+myco config get cortex.instructions.inject_on_session_start
 
 # Write a value
-node .agents/myco-cli.cjs config set cortex.instructions.inject_on_session_start true
+myco config set cortex.instructions.inject_on_session_start true
 
 # Write a non-string value (parsed as JSON)
-node .agents/myco-cli.cjs config set cortex.spores.max_per_prompt 3
+myco config set cortex.spores.max_per_prompt 3
 ```
 
-Restart the daemon after changes that affect runtime behavior: `node .agents/myco-cli.cjs restart`
+Restart the daemon after changes that affect runtime behavior: `myco restart`
 
 ---
 
@@ -115,7 +115,7 @@ Sends a test embed to the configured embedding provider. Exits 0 if it passes, 1
 No flags.
 
 ```sh
-node .agents/myco-cli.cjs verify
+myco verify
 ```
 
 ---
@@ -127,7 +127,7 @@ Shows session/spore/plan counts, spore type breakdown, vector count, and daemon 
 No flags.
 
 ```sh
-node .agents/myco-cli.cjs stats
+myco stats
 ```
 
 Typical output:
@@ -160,13 +160,13 @@ Components: `processor`, `embeddings`, `hooks`, `lifecycle`, `daemon`, `lineage`
 
 ```sh
 # Show last 20 lines
-node .agents/myco-cli.cjs logs -n 20
+myco logs -n 20
 
 # Follow errors from the processor
-node .agents/myco-cli.cjs logs -f -l error -c processor
+myco logs -f -l error -c processor
 
 # Show logs from a specific window
-node .agents/myco-cli.cjs logs \
+myco logs \
   --since 2025-01-01T10:00:00Z \
   --until 2025-01-01T11:00:00Z
 ```
@@ -180,7 +180,7 @@ node .agents/myco-cli.cjs logs \
 Runs semantic search (primary) with FTS fallback across sessions, spores, and plans.
 
 ```sh
-node .agents/myco-cli.cjs search "why did we choose sqlite over postgres"
+myco search "why did we choose sqlite over postgres"
 ```
 
 ---
@@ -190,7 +190,7 @@ node .agents/myco-cli.cjs search "why did we choose sqlite over postgres"
 Shows all results with similarity scores and no threshold filtering. Useful for tuning embedding thresholds.
 
 ```sh
-node .agents/myco-cli.cjs vectors "session lifecycle hooks"
+myco vectors "session lifecycle hooks"
 ```
 
 ---
@@ -204,10 +204,10 @@ node .agents/myco-cli.cjs vectors "session lifecycle hooks"
 
 ```sh
 # Show latest session
-node .agents/myco-cli.cjs session
+myco session
 
 # Show a specific session by partial ID
-node .agents/myco-cli.cjs session ac5220
+myco session ac5220
 ```
 
 ---
@@ -221,7 +221,7 @@ Sends SIGTERM to the running daemon, waits for it to exit, and spawns a fresh in
 No flags.
 
 ```sh
-node .agents/myco-cli.cjs restart
+myco restart
 ```
 
 Run this after any daemon code changes to pick up new behavior.
@@ -235,7 +235,7 @@ Re-indexes all records. Superseded and archived spores are skipped.
 No flags.
 
 ```sh
-node .agents/myco-cli.cjs rebuild
+myco rebuild
 ```
 
 Run this after changing the embedding model (via `setup-llm`) to regenerate all embeddings with the new model.
@@ -257,13 +257,13 @@ When `--tier` or `--full` is used, the cycle reads all records (ignoring the las
 
 ```sh
 # Run an incremental cycle (same as what the metabolism timer does)
-node .agents/myco-cli.cjs digest
+myco digest
 
 # Reprocess tier 3000 from scratch
-node .agents/myco-cli.cjs digest --tier 3000
+myco digest --tier 3000
 
 # Full rebuild of all tiers
-node .agents/myco-cli.cjs digest --full
+myco digest --full
 ```
 
 ---
@@ -282,10 +282,10 @@ Runs the intelligence agent to process unprocessed session data, extract observa
 
 ```sh
 # Run the default intelligence task
-node .agents/myco-cli.cjs agent
+myco agent
 
 # Preview what would be changed
-node .agents/myco-cli.cjs agent --dry-run
+myco agent --dry-run
 ```
 
 Note: `--dry-run` still runs LLM calls (to evaluate) — it just skips the writes. Use it to review before running on a vault for the first time.
@@ -305,13 +305,13 @@ Re-reads session transcripts, re-extracts observations with the current LLM, and
 
 ```sh
 # Reprocess all sessions
-node .agents/myco-cli.cjs reprocess
+myco reprocess
 
 # Reprocess one session
-node .agents/myco-cli.cjs reprocess --session ac5220
+myco reprocess --session ac5220
 
 # Re-index without re-extracting
-node .agents/myco-cli.cjs reprocess --index-only
+myco reprocess --index-only
 ```
 
 ---
@@ -321,7 +321,7 @@ node .agents/myco-cli.cjs reprocess --index-only
 ### `version` — Show plugin version
 
 ```sh
-node .agents/myco-cli.cjs version
+myco version
 ```
 
 Also available as `--version` or `-v`.

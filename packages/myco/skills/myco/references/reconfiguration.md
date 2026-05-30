@@ -15,24 +15,24 @@ Follow this order:
 
 ```bash
 # 1. Detect local providers when choosing a local embedding backend
-node .agents/myco-cli.cjs detect-providers
+myco detect-providers
 
 # 2. Show current Grove-tier embedding settings
-node .agents/myco-cli.cjs setup-llm --show
+myco setup-llm --show
 
 # 3. Apply only the requested embedding changes
-node .agents/myco-cli.cjs setup-llm \
+myco setup-llm \
   --embedding-provider <provider> \
   --embedding-model <model>
 
 # 4. Restart daemon so runtime reads the new config
-node .agents/myco-cli.cjs restart
+myco restart
 
 # 5. Rebuild vectors if the embedding model changed
-node .agents/myco-cli.cjs rebuild
+myco rebuild
 
 # 6. Verify embedding connectivity
-node .agents/myco-cli.cjs verify
+myco verify
 ```
 
 If only the embedding URL changed and the provider/model stayed the same, restart and verify are enough. If the embedding model changed, tell the user: "Changing the embedding model requires a full vector index rebuild. This may take a few minutes."
@@ -40,9 +40,9 @@ If only the embedding URL changed and the provider/model stayed the same, restar
 ## Viewing Current Settings
 
 ```bash
-node .agents/myco-cli.cjs setup-llm --show
-node .agents/myco-cli.cjs config get cortex.instructions.inject_on_session_start
-node .agents/myco-cli.cjs config get cortex.digest.inject_on_session_start
+myco setup-llm --show
+myco config get cortex.instructions.inject_on_session_start
+myco config get cortex.digest.inject_on_session_start
 ```
 
 Prefer `setup-llm --show` for embedding settings instead of raw config reads; it resolves the Grove tier correctly.
@@ -52,29 +52,29 @@ Prefer `setup-llm --show` for embedding settings instead of raw config reads; it
 ### "Change my embedding model"
 
 ```bash
-node .agents/myco-cli.cjs setup-llm --embedding-model bge-m3
-node .agents/myco-cli.cjs restart
-node .agents/myco-cli.cjs rebuild
-node .agents/myco-cli.cjs verify
+myco setup-llm --embedding-model bge-m3
+myco restart
+myco rebuild
+myco verify
 ```
 
 ### "Switch embedding provider"
 
 ```bash
-node .agents/myco-cli.cjs detect-providers
-node .agents/myco-cli.cjs setup-llm \
+myco detect-providers
+myco setup-llm \
   --embedding-provider ollama \
   --embedding-model bge-m3
-node .agents/myco-cli.cjs restart
-node .agents/myco-cli.cjs rebuild
-node .agents/myco-cli.cjs verify
+myco restart
+myco rebuild
+myco verify
 ```
 
 ### "Enable or disable Cortex instruction injection"
 
 ```bash
-node .agents/myco-cli.cjs config set cortex.instructions.inject_on_session_start true
-node .agents/myco-cli.cjs restart
+myco config set cortex.instructions.inject_on_session_start true
+myco restart
 ```
 
 Use the Settings UI when possible for scoped config edits; it shows whether a value is machine, Grove, project, or local.
