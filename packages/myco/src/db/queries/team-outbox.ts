@@ -381,11 +381,23 @@ function insertOutboxRowsForUpsert(
   if (rows.length === 0) return;
   db.transaction((batchRows: ReadonlyArray<Record<string, unknown>>) => {
     const stmt = db.prepare(
-      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-       VALUES (?, ?, 'upsert', ?, ?, ?)`,
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+       VALUES (?, ?, 'upsert', ?, ?, ?, ?)`,
     );
     for (const row of batchRows) {
-      stmt.run(tableName, String(row.id), JSON.stringify(sanitizeSyncPayload(tableName, row)), machineId, now);
+      // Carry project_id from the source row exactly as `syncRow` does, so
+      // re-enqueued (backfilled/rebuilt) rows route to the right team's
+      // worker. Machine-scoped rows (e.g. team_members) have no project_id
+      // and resolve to null — correct for fan-out routing.
+      const projectId = (row as { project_id?: string }).project_id ?? null;
+      stmt.run(
+        tableName,
+        String(row.id),
+        JSON.stringify(sanitizeSyncPayload(tableName, row)),
+        machineId,
+        projectId,
+        now,
+      );
     }
   })(rows);
 }

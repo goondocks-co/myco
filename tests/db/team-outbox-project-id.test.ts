@@ -13,9 +13,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
-import { syncRow, listPending } from '@myco/db/queries/team-outbox.js';
+import { syncRow, listPending, backfillAll } from '@myco/db/queries/team-outbox.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
+import { getDatabase } from '@myco/db/client.js';
 
 describe('team_outbox.project_id — syncRow plumbing', () => {
   beforeAll(() => { setupTestDb(); });
@@ -43,6 +44,29 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].row_id).toBe('tm');
     expect(pending[0].project_id).toBeNull();
+  });
+
+  it('backfill carries project_id from the source row into the outbox', () => {
+    // Re-enqueued (backfilled) rows must route too, so the backfill insert
+    // path populates project_id exactly like syncRow. Without this, a
+    // backfilled row would have a null project_id and fan out to every team
+    // instead of routing to its owning team.
+    const db = getDatabase();
+    setTeamSyncEnabled(true, db);
+    db.prepare(
+      `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+       VALUES ('sp_bf','proj_bf','user','decision','active','c',1,'local')`,
+    ).run();
+
+    const enqueued = backfillAll('local');
+    expect(enqueued).toBeGreaterThanOrEqual(1);
+
+    const row = listPending().find((r) => r.row_id === 'sp_bf');
+    expect(row).toBeDefined();
+    expect(row!.project_id).toBe('proj_bf');
   });
 });
 

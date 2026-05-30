@@ -60,6 +60,8 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { createGrove, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import { enqueueOutbox, listPending } from '@myco/db/queries/team-outbox.js';
+import { teamRegistry } from '@myco/team/registry.js';
+import { createTeamId, createProjectId } from '@myco/grove/ids.js';
 
 describe('team-sync flush fan-out across Groves', () => {
   let tmpDir: string;
@@ -79,6 +81,7 @@ describe('team-sync flush fan-out across Groves', () => {
     process.env.MYCO_HOME = mycoHome;
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueBatchByGrove.clear();
+    projectByGrove.clear();
     connectMock.mockReset();
     connectMock.mockResolvedValue({});
   });
@@ -88,6 +91,12 @@ describe('team-sync flush fan-out across Groves', () => {
     else process.env.MYCO_HOME = previousMycoHome;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // Each Grove maps to one team whose single project's rows we seed. flush
+  // routing is registry-driven, so the Grove must participate via the registry
+  // (not just grove.yaml). The team worker_url embeds the grove id so the mock
+  // above can still route enqueueBatch back per Grove via the `grove-<id>` tag.
+  const projectByGrove = new Map<string, string>();
 
   function createGroveWithTeamConfig(name: string): GroveRecord {
     const grove = createGrove(name, mycoHome);
@@ -108,19 +117,39 @@ describe('team-sync flush fan-out across Groves', () => {
       `MYCO_TEAM_API_KEY=secret-for-${grove.id}\n`,
       'utf-8',
     );
+
+    const projectId = createProjectId();
+    projectByGrove.set(grove.id, projectId);
+    const teamId = createTeamId();
+    teamRegistry.save(
+      {
+        team_id: teamId,
+        name: `${name} Team`,
+        // worker_url embeds the grove id so the per-Grove mock routing holds.
+        worker_url: `https://grove-${grove.id}.example.workers.dev`,
+        domain: null,
+        mcp_endpoint: null,
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: grove.id, project_id: projectId }],
+      },
+      mycoHome,
+    );
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-for-${grove.id}`, mycoHome);
     return grove;
   }
 
   function seedOutbox(grove: GroveRecord, cache: GroveRuntimeCache, rowIds: string[]): void {
     const dbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
     const db = cache.getDatabase(dbPath);
+    const projectId = projectByGrove.get(grove.id) ?? null;
     withDatabase(db, () => {
       for (const rowId of rowIds) {
         enqueueOutbox({
           table_name: 'spores',
           row_id: rowId,
-          payload: JSON.stringify({ id: rowId, content: 'x' }),
+          payload: JSON.stringify({ id: rowId, content: 'x', project_id: projectId }),
           machine_id: 'machine-1',
+          project_id: projectId,
           created_at: Math.floor(Date.now() / 1000),
         });
       }
@@ -216,10 +245,17 @@ describe('team-sync flush fan-out across Groves', () => {
       daemonStateDir: path.join(mycoHome, 'service'),
     });
 
-    // Only reconcile Grove Two. Grove One has no live client so its
-    // flushPending early-returns (handedOff=0) without touching the
-    // outbox; Grove Two should still drain on the same fan-out tick.
-    await reconcile(teamSync, groveTwo, cache);
+    // Make Grove One's team unbuildable by clearing its registry secret.
+    // getOrBuildTeamClient returns null for that team, so Grove One's rows
+    // stay pending (never dropped); Grove Two still drains on the same tick.
+    const teamOne = teamRegistry
+      .list(mycoHome)
+      .find((t) => t.projects.some((p) => p.grove_id === groveOne.id))!;
+    fs.writeFileSync(
+      path.join(mycoHome, 'teams', teamOne.team_id, 'secrets.env'),
+      '',
+      'utf-8',
+    );
 
     seedOutbox(groveOne, cache, ['s1']);
     seedOutbox(groveTwo, cache, ['s2']);

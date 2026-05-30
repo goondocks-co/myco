@@ -212,7 +212,41 @@ describe('initTeamSync.reconcileClient', () => {
     expect(backfillUnsyncedMock).toHaveBeenCalledTimes(1);
   });
 
-  it('flushes pending outbox rows after reconciling a configured client', async () => {
+  it('routes pending outbox rows to the owning team after reconcile', async () => {
+    // Flush routing is now registry-driven: reconcileClient's auto-flush
+    // routes each pending row to the worker of the team that owns its
+    // project. Register a team for this Grove's project, tag the pending row
+    // with that project_id, and assert it reached the team's client.
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
+    const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove('flush-route-test', mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save(
+      {
+        team_id: teamId,
+        name: 'Routing Team',
+        worker_url: 'https://team.example.workers.dev',
+        domain: null,
+        mcp_endpoint: null,
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: grove.id, project_id: projectId }],
+      },
+      mycoHome,
+    );
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+
+    const groveDir = resolveGroveDir(grove.id);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'grove.yaml'), [
+      'team:',
+      '  enabled: true',
+      '  worker_url: https://team.example.workers.dev',
+    ].join('\n'), 'utf-8');
+    fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=routing-secret\n', 'utf-8');
+
     const pending = [
       {
         id: 1,
@@ -221,6 +255,7 @@ describe('initTeamSync.reconcileClient', () => {
         operation: 'upsert',
         payload: { id: 'session-1' },
         machine_id: 'machine-1',
+        project_id: projectId,
         created_at: 100,
         sent_at: null,
       },
@@ -239,7 +274,8 @@ describe('initTeamSync.reconcileClient', () => {
       serverVersion: '1.2.3',
     });
 
-    await teamSync.reconcileClient();
+    const groveContext = requestContext(grove.id, projectId);
+    await teamSync.reconcileClient(groveContext);
 
     expect(enqueueBatchMock).toHaveBeenCalledWith(pending);
     expect(markSentMock).toHaveBeenCalledWith([1], expect.any(Number));

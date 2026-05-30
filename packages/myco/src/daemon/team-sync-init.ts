@@ -65,6 +65,8 @@ import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove } from './scope-iteration.js';
 import { withDatabase, getDatabase } from '@myco/db/client.js';
+import { teamRegistry } from '@myco/team/registry.js';
+import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,6 +138,43 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   const teamClients = new Map<string, TeamSyncClient>();
   const clientSignatures = new Map<string, string>();
 
+  // Per-team client cache (registry-driven routing). flushPending routes each
+  // outbox row to its owning team's worker, so clients are keyed by team_id —
+  // independent of the per-Grove `teamClients` map above (which rebuildFromLocal
+  // and get/setTeamClient still use for the operator rebuild path). Rebuilt when
+  // the team's worker_url or API key changes, mirroring `clientSignatures`.
+  const teamRouteClients = new Map<string, TeamSyncClient>();
+  const teamRouteSignatures = new Map<string, string>();
+
+  /**
+   * Lazily build (and cache) the TeamSyncClient for a given team_id from the
+   * team registry. Returns null when the team is unknown, has no worker_url,
+   * or has no API key — callers must treat null as "skip this team this tick"
+   * (leave its rows pending for retry), never as "drop the rows".
+   */
+  function getOrBuildTeamClient(teamId: string): TeamSyncClient | null {
+    const team = teamRegistry.get(teamId);
+    if (!team?.worker_url) return null;
+    const key = teamRegistry.readSecrets(teamId)[TEAM_API_KEY_SECRET];
+    if (!key) return null;
+
+    const signature = `${team.worker_url}|${key.slice(0, 8)}`;
+    const existing = teamRouteClients.get(teamId);
+    if (existing && teamRouteSignatures.get(teamId) === signature) {
+      return existing;
+    }
+
+    const client = new TeamSyncClient({
+      workerUrl: team.worker_url,
+      apiKey: key,
+      machineId,
+      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+    });
+    teamRouteClients.set(teamId, client);
+    teamRouteSignatures.set(teamId, signature);
+    return client;
+  }
+
   function reconcileSelfMember(): void {
     try {
       const nowSec = epochSeconds();
@@ -177,63 +216,194 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
   }
 
+  /**
+   * Drain this Grove's outbox, routing each row to the worker of the team
+   * that owns its project.
+   *
+   * The team registry — not the Grove config — is now the participation gate:
+   * a Grove syncs iff at least one of its projects is a member of some team.
+   * Each pending row carries `project_id` (set by `syncRow` / backfill):
+   *
+   *   - `project_id` is set but belongs to no team  → DROP (markSent so it
+   *     clears; a future `add` + backfill re-syncs it). Must NOT sync.
+   *   - `project_id` is set and belongs to a team   → route to that team.
+   *   - `project_id` is null (machine-scoped, e.g.    → fan out to EVERY team
+   *     team_members)                                  this Grove participates in.
+   *
+   * A fanned-out row is only `markSent` once ALL its target teams accept it;
+   * if any target's client is unbuilt/failed this tick the row stays pending
+   * for the next tick. Per-team batches whose client can't be built are left
+   * pending too (team unreachable/unconfigured) — never dropped.
+   */
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
-    const enabled = loadTeamConnectionConfig(vaultDir, requestContext).enabled;
-    // Keep the write-path gate (delete triggers + syncRow) in lockstep with
-    // this Grove's config, every tick, for whichever Grove getDatabase() points at.
-    setTeamSyncEnabled(enabled);
-    if (!enabled) return result;
-    const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
-    if (!client) return result;
+
+    const groveId = requestContext?.groveId ?? null;
+    const teams = teamRegistry.list();
+    const participates = teams.some((t) => t.projects.some((p) => p.grove_id === groveId));
+    // The registry is now the write-path gate: keep delete triggers + syncRow
+    // in lockstep with whether this Grove feeds any team, every tick.
+    setTeamSyncEnabled(participates);
+    if (!participates) return result;
+
+    const map = teamRegistry.membershipByProject();
+    const participatingTeamIds = [
+      ...new Set(
+        teams
+          .filter((t) => t.projects.some((p) => p.grove_id === groveId))
+          .map((t) => t.team_id),
+      ),
+    ];
 
     while (true) {
       const pending = listPending();
       if (pending.length === 0) break;
 
-      try {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
-        const enqueueResult = await client.enqueueBatch(pending);
-        const now = epochSeconds();
+      const now = epochSeconds();
 
-        const rejectedIds = new Set(enqueueResult.rejected.map((e) => e.id));
-        const rejectedOutboxIds: number[] = [];
-        const handedOff: typeof pending = [];
-        for (const row of pending) {
-          if (rejectedIds.has(String(row.row_id))) {
-            rejectedOutboxIds.push(row.id);
-          } else {
-            handedOff.push(row);
+      // Partition: rows whose project belongs to no team are dropped (cleared
+      // so they don't pin the buffer forever); the rest are bucketed per team.
+      const dropIds: number[] = [];
+      const batches = new Map<string, OutboxRow[]>();
+      // For fan-out (null project_id) rows, track how many teams must accept
+      // before we markSent — keyed by outbox id.
+      const fanOutTargetsRemaining = new Map<number, number>();
+
+      const pushToTeam = (teamId: string, row: OutboxRow): void => {
+        const list = batches.get(teamId);
+        if (list) list.push(row);
+        else batches.set(teamId, [row]);
+      };
+
+      for (const row of pending) {
+        if (row.project_id != null && !map.has(row.project_id)) {
+          dropIds.push(row.id);
+          continue;
+        }
+        if (row.project_id != null) {
+          pushToTeam(map.get(row.project_id)!, row);
+        } else {
+          // Machine-scoped row: fan out a copy into every participating team.
+          fanOutTargetsRemaining.set(row.id, participatingTeamIds.length);
+          for (const teamId of participatingTeamIds) {
+            pushToTeam(teamId, row);
           }
         }
+      }
 
-        if (rejectedOutboxIds.length > 0) {
-          logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
-            rejected: enqueueResult.rejected.slice(0, 5),
+      if (dropIds.length > 0) {
+        // markSent (not discard): a future `add` + backfill re-syncs these if
+        // the project later joins a team. Leaving them pending would pin the
+        // buffer forever.
+        markSent(dropIds, now);
+      }
+
+      // Track fan-out rows whose target teams all accepted this tick so we can
+      // markSent them once (not once per team).
+      const fanOutAccepted = new Set<number>();
+
+      // Count of outbox rows that left the pending set this tick (dropped,
+      // discarded, or handed off). A tick that clears zero rows means every
+      // remaining row's target team is unbuildable/failed — break to avoid a
+      // hot spin loop and retry next tick. A tick that clears ≥1 row strictly
+      // shrinks the pending set, so the loop terminates.
+      let clearedThisTick = dropIds.length;
+      let tickError: string | undefined;
+
+      for (const [teamId, rows] of batches) {
+        const client = getOrBuildTeamClient(teamId);
+        if (!client) {
+          // Team unreachable/unconfigured: leave its rows pending for retry.
+          // Fan-out rows targeting this team stay pending too — a partial
+          // fan-out must never be marked sent.
+          continue;
+        }
+
+        try {
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { team_id: teamId, count: rows.length });
+          const enqueueResult = await client.enqueueBatch(rows);
+
+          const rejectedIds = new Set(enqueueResult.rejected.map((e) => e.id));
+          const rejectedOutboxIds: number[] = [];
+          const handedOff: OutboxRow[] = [];
+          for (const row of rows) {
+            if (rejectedIds.has(String(row.row_id))) {
+              rejectedOutboxIds.push(row.id);
+            } else {
+              handedOff.push(row);
+            }
+          }
+
+          if (rejectedOutboxIds.length > 0) {
+            logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
+              team_id: teamId,
+              rejected: enqueueResult.rejected.slice(0, 5),
+            });
+            discardRows(rejectedOutboxIds);
+            result.rejected += rejectedOutboxIds.length;
+            clearedThisTick += rejectedOutboxIds.length;
+          }
+
+          // Split accepted rows into single-team (markSent now) vs fan-out
+          // (markSent only once every target team has accepted).
+          const directHandedOff: OutboxRow[] = [];
+          for (const row of handedOff) {
+            if (fanOutTargetsRemaining.has(row.id)) {
+              const remaining = (fanOutTargetsRemaining.get(row.id) ?? 0) - 1;
+              fanOutTargetsRemaining.set(row.id, remaining);
+              if (remaining <= 0) fanOutAccepted.add(row.id);
+            } else {
+              directHandedOff.push(row);
+            }
+          }
+
+          if (directHandedOff.length > 0) {
+            const handedOffIds = directHandedOff.map((r) => r.id);
+            markSent(handedOffIds, now);
+            markSourceRowsSynced(directHandedOff, now);
+            result.handedOff += directHandedOff.length;
+            clearedThisTick += directHandedOff.length;
+          }
+
+          result.batches += 1;
+          logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
+            team_id: teamId,
+            accepted: enqueueResult.accepted,
+            rejected: enqueueResult.rejected.length,
+            total: rows.length,
           });
-          discardRows(rejectedOutboxIds);
+        } catch (err) {
+          tickError = (err as Error).message;
+          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { team_id: teamId, error: tickError });
+          // A failed team leaves its rows pending. Fan-out rows that also
+          // targeted this team must not be marked sent, so they are excluded
+          // from fanOutAccepted by construction (their remaining count never
+          // reached zero).
         }
+      }
 
-        if (handedOff.length > 0) {
-          const handedOffIds = handedOff.map((r) => r.id);
-          markSent(handedOffIds, now);
-          markSourceRowsSynced(handedOff, now);
-        }
+      // markSent fan-out rows that every target team accepted, exactly once.
+      const fanOutIds = [...fanOutAccepted];
+      if (fanOutIds.length > 0) {
+        const fanOutRows = pending.filter((r) => fanOutAccepted.has(r.id));
+        markSent(fanOutIds, now);
+        markSourceRowsSynced(fanOutRows, now);
+        result.handedOff += fanOutIds.length;
+        clearedThisTick += fanOutIds.length;
+      }
 
-        pruneOld();
-        result.batches += 1;
-        result.handedOff += handedOff.length;
-        result.rejected += rejectedOutboxIds.length;
-        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
-          accepted: enqueueResult.accepted,
-          rejected: enqueueResult.rejected.length,
-          total: pending.length,
-        });
-      } catch (err) {
-        result.error = (err as Error).message;
-        logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: result.error });
+      pruneOld();
+
+      if (tickError) {
+        result.error = tickError;
         break;
       }
+
+      // Nothing left the pending set this tick: every remaining row's target
+      // team is unbuildable (or a fan-out row reached only some of its teams).
+      // listPending() would return the same set forever — break and retry on
+      // the next scheduled flush tick.
+      if (clearedThisTick === 0) break;
     }
 
     return result;
