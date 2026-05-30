@@ -111,6 +111,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 49, migrate: (db) => migrateV48ToV49(db) },
   { version: 50, migrate: (db) => migrateV49ToV50(db) },
   { version: 51, migrate: (db) => migrateV50ToV51(db) },
+  { version: 52, migrate: (db, machineId) => migrateV51ToV52(db, machineId) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3160,6 +3161,70 @@ function migrateV50ToV51(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(51, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Migrate v51 -> v52: comprehensively convert machine_id='local' -> real machineId
+ * across ALL tables that have a machine_id column.
+ *
+ * migrateV6ToV7 was a one-shot backfill but used a hardcoded table list that
+ * missed knowledge_release_state, knowledge_git_provenance, and skill_usage.
+ * This migration enumerates tables dynamically so no table is missed now or in
+ * the future. For tables that also have synced_at, we reset it to NULL so the
+ * rows are re-enqueued for team sync under the real machine id.
+ *
+ * Local schema: PK is `id` alone (no composite key), so a plain UPDATE is
+ * collision-safe. Do NOT touch cloud D1 here (that is FU6-F3).
+ *
+ * Idempotent: a second run finds zero machine_id='local' rows and is a no-op.
+ */
+function migrateV51ToV52(db: Database, machineId: string): void {
+  if (machineId === 'local' || machineId === DEFAULT_MACHINE_ID) {
+    // Nothing to fix; still stamp the version so the registry doesn't re-run.
+    db.prepare('BEGIN').run();
+    try {
+      db.prepare(
+        `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+      ).run(52, epochSeconds());
+      db.prepare('COMMIT').run();
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      throw err;
+    }
+    return;
+  }
+
+  db.prepare('BEGIN').run();
+  try {
+    // Enumerate every non-system table dynamically so future tables are covered
+    // and we never repeat the hardcoded-list gap from migrateV6ToV7.
+    const tables = (
+      db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
+      ).all() as Array<{ name: string }>
+    ).map((r) => r.name);
+
+    for (const table of tables) {
+      const cols = new Set(
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+          (c) => c.name,
+        ),
+      );
+      if (!cols.has('machine_id')) continue;
+      const setSynced = cols.has('synced_at') ? ', synced_at = NULL' : '';
+      db.prepare(
+        `UPDATE ${table} SET machine_id = ?${setSynced} WHERE machine_id = 'local'`,
+      ).run(machineId);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(52, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

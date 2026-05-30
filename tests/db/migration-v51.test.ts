@@ -3,8 +3,8 @@ import { Database } from 'bun:sqlite';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 
 describe('migration v50 -> v51', () => {
-  it('current SCHEMA_VERSION is 51', () => {
-    expect(SCHEMA_VERSION).toBe(51);
+  it('current SCHEMA_VERSION is at least 51', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(51);
   });
 
   it('upgrading a v50 DB installs team_sync_state and the delete triggers', () => {
@@ -28,6 +28,6 @@ describe('migration v50 -> v51', () => {
     ).get();
     expect(trg).toBeTruthy();
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };
-    expect(ver.v).toBe(51);
+    expect(ver.v).toBeGreaterThanOrEqual(51);
   });
 });
