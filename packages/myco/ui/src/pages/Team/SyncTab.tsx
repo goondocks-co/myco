@@ -332,23 +332,20 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           onManualRefresh={handleRefreshAll}
         />
       </div>
-      <SyncPanel title="Worker">
-        {!status.deployed_worker_version ? (
-          <p className="text-sm text-on-surface-variant m-0">Worker version unavailable.</p>
-        ) : status.worker_update_available ? (
-          <p className="text-sm text-ochre m-0">
-            Update available — deployed v{status.deployed_worker_version}, v{status.local_team_package_version} ready. Contact admin to update.
-          </p>
-        ) : (
-          <p className="text-sm text-on-surface-variant m-0">Up to date · v{status.deployed_worker_version}</p>
-        )}
-      </SyncPanel>
-
       <SyncPanel
         title="Remote store"
         actions={
           syncSummary?.remote ? (
-            <Badge variant="default">v{syncSummary.remote.package_version}</Badge>
+            status.worker_update_available ? (
+              <Badge
+                variant="outline"
+                title={`Update available — deployed v${status.deployed_worker_version}, v${status.local_team_package_version} ready. Contact admin to update.`}
+              >
+                v{syncSummary.remote.package_version}
+              </Badge>
+            ) : (
+              <Badge variant="default">v{syncSummary.remote.package_version}</Badge>
+            )
           ) : null
         }
       >
