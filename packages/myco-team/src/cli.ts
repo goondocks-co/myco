@@ -20,7 +20,7 @@ import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
-import { assertGroveProjectId, slugifyGroveName } from '@myco/grove/ids.js';
+import { assertGroveProjectId, createTeamId, slugifyGroveName } from '@myco/grove/ids.js';
 import {
   loadTeamConnectionConfig,
   readTeamConnectionSecrets,
@@ -177,8 +177,8 @@ function resourceHash(scope: TeamCliScope): string {
   return hash.slice(0, PROJECT_HASH_LENGTH);
 }
 
-/** Build the unique resource name for this Grove. */
-function resourceName(scope: GroveTeamCliScope): string {
+/** Build the unique resource name for this team (slug + hash of the team id). */
+export function resourceName(scope: GroveTeamCliScope): string {
   const hash = resourceHash(scope);
   const maxSlugLength =
     RESOURCE_NAME_MAX_LENGTH
@@ -291,16 +291,25 @@ function requireGroveInstallScope(scope: TeamCliScope): asserts scope is GroveTe
   process.exit(2);
 }
 
-function resolveTeamCliScope(vaultDir: string): TeamCliScope {
+function resolveTeamCliScope(
+  vaultDir: string,
+  teamIdentity?: { teamId: string; teamName: string },
+): TeamCliScope {
   const requestContext = resolveTeamRequestContext(vaultDir);
   const store = resolveTeamConnectionStore(vaultDir, requestContext);
   const grove = store.groveId ? loadGroveRecord(store.groveId) : null;
+  // When a team identity is supplied (install), the deployed asset name
+  // derives from the team's own name + a hash of the team id — not the
+  // installing Grove. Other callers (upgrade/status/destroy) keep the
+  // historical grove-based derivation so they resolve the same assets.
   return {
     vaultDir,
     requestContext,
     stateDir: store.configDir,
-    resourceSeed: store.groveId ?? vaultDir,
-    resourceSlug: grove ? slugifyGroveName(grove.name) : null,
+    resourceSeed: teamIdentity ? teamIdentity.teamId : store.groveId ?? vaultDir,
+    resourceSlug: teamIdentity
+      ? slugifyGroveName(teamIdentity.teamName)
+      : grove ? slugifyGroveName(grove.name) : null,
     label: store.groveId
       ? `Grove ${grove?.name ?? requestContext.groveId}`
       : `project vault ${vaultDir}`,
@@ -708,8 +717,25 @@ async function rotateMcpTokenForWorker(workerUrl: string, apiKey: string): Promi
 // Commands
 // ---------------------------------------------------------------------------
 
-export async function teamInit(vaultDir: string): Promise<void> {
-  const scope = resolveTeamCliScope(vaultDir);
+export async function teamInit(vaultDir: string, options: { name?: string } = {}): Promise<void> {
+  let teamName = options.name?.trim();
+  if (!teamName) {
+    if (process.stdin.isTTY) {
+      const readline = await import('node:readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      teamName = (await new Promise<string>((resolve) => {
+        rl.question('Team name: ', (answer) => resolve(answer));
+      })).trim();
+      rl.close();
+    }
+    if (!teamName) {
+      console.error('myco-team install requires a team name: pass --name "<team name>"');
+      process.exit(2);
+    }
+  }
+
+  const teamId = createTeamId();
+  const scope = resolveTeamCliScope(vaultDir, { teamId, teamName });
   requireGroveInstallScope(scope);
 
   console.log('Provisioning team sync infrastructure...\n');
@@ -851,7 +877,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        team_name: name,
+        team_name: teamName,
         embedding_model: '@cf/baai/bge-m3',
         embedding_dimensions: '1024',
         created_at: String(Math.floor(Date.now() / 1000)),
@@ -886,7 +912,25 @@ export async function teamInit(vaultDir: string): Promise<void> {
     config_version: TEAM_CONFIG_VERSION,
   });
 
+  const { teamRegistry } = await import('@myco/team/registry.js');
+  const installingProjectId = (scope.requestContext as { projectId?: string }).projectId ?? null;
+  teamRegistry.save({
+    team_id: teamId,
+    name: teamName,
+    worker_url: workerUrl,
+    domain: null,
+    mcp_endpoint: `${workerUrl.replace(/\/+$/, '')}/mcp`,
+    created_at: new Date().toISOString(),
+    projects: installingProjectId
+      ? [{ grove_id: scope.requestContext.groveId, project_id: installingProjectId }]
+      : [],
+  });
+  teamRegistry.writeSecret(teamId, TEAM_API_KEY_SECRET, apiKey);
+  if (mcpToken) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, mcpToken);
+
   console.log('Team sync configured!\n');
+  console.log(`  Team:    ${teamName}`);
+  console.log(`  Team id: ${teamId}`);
   console.log(`  URL:     ${workerUrl}`);
   console.log(`  Team key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}`);
   if (mcpToken) {
