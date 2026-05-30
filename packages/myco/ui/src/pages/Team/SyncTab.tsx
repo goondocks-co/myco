@@ -165,43 +165,6 @@ function VectorsTile({
   );
 }
 
-function SyncStoreTable({ summary }: { summary: TeamSyncSummaryResponse }) {
-  const remoteTables = summary.remote?.tables ?? {};
-  const tableNames = Array.from(new Set([
-    ...Object.keys(summary.local.tables),
-    ...Object.keys(remoteTables),
-  ])).sort();
-
-  return (
-    <div className="overflow-hidden rounded-md border border-outline-variant/10">
-      <table className="w-full text-sm">
-        <thead className="bg-surface-container/40 text-xs uppercase text-outline">
-          <tr>
-            <th className="px-3 py-2 text-left font-mono">Table</th>
-            <th className="px-3 py-2 text-right font-mono">Local</th>
-            <th className="px-3 py-2 text-right font-mono">Remote</th>
-            <th className="px-3 py-2 text-right font-mono">Delta</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tableNames.map((table) => {
-            const local = summary.local.tables[table] ?? 0;
-            const remote = remoteTables[table];
-            return (
-              <tr key={table} className="border-t border-outline-variant/10">
-                <td className="px-3 py-2 text-on-surface">{formatTableName(table)}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(local)}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(remote)}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-on-surface-variant">{tableDelta(local, remote)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function DriftTable({ rows }: { rows: TeamDriftRow[] }) {
   return (
     <div className="overflow-hidden rounded-md border border-outline-variant/10">
@@ -419,7 +382,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
 
   const dlqMessages = dlq?.messages ?? [];
   const lastHandoff = syncSummary?.last_handoff ?? null;
-  const remoteTotal = syncSummary?.remote?.total_records ?? null;
+  const remoteTotal = syncSummary?.remote_machine_total ?? null;
   const localTotal = syncSummary?.local.total_records ?? null;
   const workerVersionKnown = Boolean(status.deployed_worker_version && status.local_team_package_version);
   const localTeamPackageSourceLabel =
@@ -566,8 +529,8 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : syncSummary ? (
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <StatCard label="Local records" value={formatNumber(localTotal)} accent="outline" />
-              <StatCard label="Remote records" value={formatNumber(remoteTotal)} accent="outline" />
+              <StatCard label="Local records" value={formatNumber(localTotal)} sublabel="this machine" accent="outline" />
+              <StatCard label="Remote records" value={formatNumber(remoteTotal)} sublabel="this machine" accent="outline" />
               <StatCard
                 label="Delta"
                 value={remoteTotal === null || localTotal === null ? '—' : tableDelta(localTotal, remoteTotal)}
@@ -575,7 +538,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               />
               <VectorsTile remote={syncSummary.remote} localEmbedded={daemonStats?.embedding.embedded_count ?? null} />
             </div>
-            <SyncStoreTable summary={syncSummary} />
             {syncSummary.drift && syncSummary.drift.length > 0 ? (
               <div className="flex flex-col gap-2">
                 <p className="text-xs text-on-surface-variant m-0">Local vs cloud (this machine)</p>

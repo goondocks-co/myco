@@ -743,6 +743,16 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       : [];
     const total_delta = drift.reduce((s, d) => s + Math.abs(d.delta), 0);
 
+    // This-machine cloud total, derived from the machine-scoped counts. The raw
+    // `remote.total_records` is ALL-machine, so comparing it against the
+    // this-machine `localTotal` in the summary card produced a phantom delta
+    // whenever the cloud held rows under other (or legacy 'local') machine_ids.
+    // Null when the worker is too old to scope (cloudTables == null) so the UI
+    // renders '—' instead of a misleading number — mirrors the drift guard.
+    const remote_machine_total = cloudTables != null
+      ? Object.values(cloudTables).reduce((sum, count) => sum + count, 0)
+      : null;
+
     return {
       body: {
         generated_at: Math.floor(Date.now() / 1000),
@@ -753,6 +763,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
           schema_version: SCHEMA_VERSION,
         },
         remote,
+        remote_machine_total,
         remote_error: remoteError,
         last_handoff: latestHandoffSummary(),
         drift,

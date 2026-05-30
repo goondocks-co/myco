@@ -131,6 +131,11 @@ export interface TeamSyncSummaryResponse {
     schema_version: number;
   };
   remote: TeamRemoteSyncSummary | null;
+  /** This-machine cloud row total (sum of the worker's machine-scoped counts).
+   * Null when the worker is too old to scope. Prefer this over the all-machine
+   * `remote.total_records` for the summary Delta so cloud orphans under other
+   * machine_ids don't read as drift. */
+  remote_machine_total: number | null;
   remote_error: string | null;
   last_handoff: TeamHandoffSummary | null;
   drift: TeamDriftRow[];
