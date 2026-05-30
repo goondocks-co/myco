@@ -932,7 +932,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
 
-    const localTables = countTeamSyncRows();
+    const localTables = countTeamSyncRows(machineId);
     const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
     let pendingCount = 0;
     try {

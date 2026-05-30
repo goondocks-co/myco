@@ -15,6 +15,7 @@ import {
   backfillAll,
   backfillUnsynced,
   sanitizeSyncPayload,
+  countTeamSyncRows,
 } from '@myco/db/queries/team-outbox.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
@@ -344,6 +345,76 @@ describe('team outbox query helpers', () => {
       expect(first).toBe(1);
       expect(second).toBe(0);
       expect(listPending()).toHaveLength(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countTeamSyncRows — machine_id scoping
+  // ---------------------------------------------------------------------------
+
+  describe('countTeamSyncRows', () => {
+    function insertSpore(db: ReturnType<typeof getDatabase>, id: string, machineId: string) {
+      // Agents table is the only FK dependency for spores in these tests.
+      // Insert agent idempotently so multiple calls within one test don't error.
+      db.prepare(
+        `INSERT OR IGNORE INTO agents (id, name, created_at) VALUES ('test-agent', 'test-agent', 1)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+         VALUES (?, 'proj', 'test-agent', 'decision', 'active', 'c', 1, ?)`,
+      ).run(id, machineId);
+    }
+
+    it('without machineId counts rows across ALL machine_ids', () => {
+      const db = getDatabase();
+      insertSpore(db, 'spore-local-1', 'local');
+      insertSpore(db, 'spore-local-2', 'local');
+      insertSpore(db, 'spore-real-1', 'sirkirby_test');
+
+      const allCounts = countTeamSyncRows();
+      expect(allCounts.spores).toBe(3);
+    });
+
+    it('with machineId counts ONLY rows for that machine_id', () => {
+      const db = getDatabase();
+      insertSpore(db, 'spore-local-1', 'local');
+      insertSpore(db, 'spore-local-2', 'local');
+      insertSpore(db, 'spore-real-1', 'sirkirby_test');
+
+      const scopedCounts = countTeamSyncRows('sirkirby_test');
+      expect(scopedCounts.spores).toBe(1);
+    });
+
+    it('machine-scoped and unscoped counts match when only one machine_id exists', () => {
+      const db = getDatabase();
+      insertSpore(db, 'spore-only-1', 'solo_machine');
+      insertSpore(db, 'spore-only-2', 'solo_machine');
+
+      expect(countTeamSyncRows('solo_machine').spores).toBe(2);
+      expect(countTeamSyncRows().spores).toBe(2);
+    });
+
+    it('drift is zero when local is machine-scoped to match cloud (regression: legacy machine_ids)', () => {
+      const db = getDatabase();
+      // Legacy rows under machine_id='local' (pre-real-id era)
+      for (let i = 0; i < 3; i++) {
+        insertSpore(db, `spore-legacy-${i}`, 'local');
+      }
+      // Rows under the real machine_id
+      for (let i = 0; i < 5; i++) {
+        insertSpore(db, `spore-real-${i}`, 'real_machine_abc');
+      }
+
+      // Cloud only mirrors the real machine_id rows (5)
+      const cloudSporeCount = 5;
+      const localScoped = countTeamSyncRows('real_machine_abc').spores;
+      const localAll = countTeamSyncRows().spores;
+
+      // Machine-scoped local matches cloud → no drift
+      expect(localScoped).toBe(cloudSporeCount);
+      // Unscoped local would produce false drift
+      expect(localAll).toBe(8);
+      expect(localAll - cloudSporeCount).toBe(3); // false drift magnitude = legacy rows
     });
   });
 });

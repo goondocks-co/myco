@@ -461,11 +461,13 @@ export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
 
 const BACKFILL_TABLE_SET = new Set<string>(TEAM_SYNC_BACKFILL_TABLES);
 
-export function countTeamSyncRows(): Record<TeamSyncObservedTable, number> {
+export function countTeamSyncRows(machineId?: string): Record<TeamSyncObservedTable, number> {
   const db = getDatabase();
   const counts = {} as Record<TeamSyncObservedTable, number>;
   for (const table of TEAM_SYNC_OBSERVED_TABLES) {
-    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+    const row = machineId
+      ? db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ?`).get(machineId) as { count: number }
+      : db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
     counts[table] = row.count;
   }
   return counts;
