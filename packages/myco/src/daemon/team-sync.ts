@@ -167,7 +167,7 @@ export interface TeamRemoteSyncSummaryResponse {
   generated_at: number;
   total_records: number;
   tables: Record<string, number>;
-  /** Per-table cloud row counts scoped to the requested machine_id. Null/absent when no machine_id was passed. */
+  /** Per-table cloud row counts scoped to the requested machine_id. Absent or null when no machine_id was passed (or when talking to a pre-machine_tables worker). */
   machine_tables?: Record<string, number> | null;
   /** The machine_id used to scope machine_tables, echoed from the request. */
   machine_id?: string;

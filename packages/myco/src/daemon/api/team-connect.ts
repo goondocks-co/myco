@@ -932,10 +932,14 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       logger.warn('team-sync.summary.remote-failed', 'Remote sync summary unavailable', { error: remoteError });
     }
 
-    const drift = computeDrift(
-      localTables as Record<string, number>,
-      remote?.machine_tables ?? {},
-    );
+    // Only compute drift when the worker actually returned machine-scoped
+    // counts. A 200 without `machine_tables` (daemon newer than worker during
+    // a rolling upgrade) or a remote failure must NOT be treated as cloud-0 —
+    // that would inflate total_delta and misfire the destructive Rebuild.
+    const cloudTables = remote?.machine_tables ?? null;
+    const drift = cloudTables != null
+      ? computeDrift(localTables as Record<string, number>, cloudTables)
+      : [];
     const total_delta = drift.reduce((s, d) => s + Math.abs(d.delta), 0);
 
     return {

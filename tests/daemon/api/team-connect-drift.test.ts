@@ -12,4 +12,7 @@ describe('computeDrift', () => {
     expect(drift.find((d) => d.table === 'spores')).toEqual({ table: 'spores', local: 5, cloud: 0, delta: -5 });
     expect(drift.find((d) => d.table === 'sessions')).toEqual({ table: 'sessions', local: 0, cloud: 3, delta: 3 });
   });
+  it('returns empty array for empty inputs', () => {
+    expect(computeDrift({}, {})).toEqual([]);
+  });
 });
