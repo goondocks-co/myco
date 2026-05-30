@@ -15,14 +15,11 @@ import { postJson, ApiError } from '../../lib/api';
 import { type ReactNode } from 'react';
 import { Panel } from '../../components/ui/panel';
 import { Button } from '../../components/ui/button';
-import { Badge, type BadgeProps } from '../../components/ui/badge';
+import { Badge } from '../../components/ui/badge';
 import { StatCard } from '../../components/ui/stat-card';
 import { QueueTile } from '../../components/team/QueueTile';
 import { RefreshIndicator } from '../../components/ui/refresh-indicator';
 import { POLL_INTERVALS } from '../../lib/constants';
-
-const SECONDS_PER_MIN = 60;
-const SECONDS_PER_HOUR = 3600;
 
 function SyncPanel({
   title,
@@ -40,33 +37,8 @@ function SyncPanel({
   );
 }
 
-const REINDEX_BADGE: Record<'error' | 'running' | 'ready', BadgeProps['variant']> = {
-  error: 'destructive',
-  running: 'outline',
-  ready: 'default',
-};
-
-function reindexBadgeVariant(status: string | null | undefined): BadgeProps['variant'] {
-  if (status === 'error') return REINDEX_BADGE.error;
-  if (status === 'running') return REINDEX_BADGE.running;
-  return REINDEX_BADGE.ready;
-}
-
-function formatAge(seconds: number | null): string {
-  if (seconds === null) return '—';
-  if (seconds < SECONDS_PER_MIN) return `${seconds}s`;
-  if (seconds < SECONDS_PER_HOUR) return `${Math.floor(seconds / SECONDS_PER_MIN)}m`;
-  return `${Math.floor(seconds / SECONDS_PER_HOUR)}h`;
-}
-
 function formatNumber(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—';
-}
-
-function formatDuration(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
-  if (ms < 1000) return '<1s';
-  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
 function formatTime(value: string | null | undefined): string {
@@ -74,13 +46,6 @@ function formatTime(value: string | null | undefined): string {
   const time = new Date(value);
   if (Number.isNaN(time.getTime())) return 'Never';
   return time.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' });
-}
-
-function formatDateLabel(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  const time = new Date(value);
-  if (Number.isNaN(time.getTime())) return undefined;
-  return time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function formatTableName(table: string): string {
@@ -335,16 +300,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
     }
   }, [dlq, queryClient]);
 
-  const handleRefreshDlq = useCallback(async () => {
-    setBusy(true);
-    setDlqMessage(null);
-    try {
-      await queryClient.refetchQueries({ queryKey: ['team-dlq'] });
-    } finally {
-      setBusy(false);
-    }
-  }, [queryClient]);
-
   const handleUpgradeWorker = useCallback(async () => {
     setUpgrading(true);
     setUpgradeMessage(null);
@@ -391,7 +346,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   }, [queryClient]);
 
   const dlqMessages = dlq?.messages ?? [];
-  const lastHandoff = syncSummary?.last_handoff ?? null;
   const remoteTotal = syncSummary?.remote_machine_total ?? null;
   const localTotal = syncSummary?.local.total_records ?? null;
   const workerVersionKnown = Boolean(status.deployed_worker_version && status.local_team_package_version);
@@ -403,12 +357,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         : status.local_team_package_source === 'path'
           ? 'On PATH'
           : 'Available';
-  const hasVectorIndexStatus = Boolean(
-    status.vector_reindex_status
-    || status.vector_reindex_last_table
-    || status.vector_reindex_last_run_at
-    || status.vector_reindex_last_error,
-  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -478,60 +426,6 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
       </SyncPanel>
 
       <SyncPanel
-        title="Backfill"
-        actions={
-          <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
-            {draining ? 'Backfilling...' : 'Backfill existing records'}
-          </Button>
-        }
-      >
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Left to sync"
-            value={formatNumber(syncSummary?.local.pending_sync_count ?? status.pending_sync_count)}
-            accent={(syncSummary?.local.pending_sync_count ?? status.pending_sync_count) > 0 ? 'sage' : 'outline'}
-            href="/logs?component=team-sync"
-          />
-        </div>
-        {drainMessage && <p className="text-sm text-sage m-0 mt-3">{drainMessage}</p>}
-      </SyncPanel>
-
-      <SyncPanel title="Last handoff">
-        {summaryLoading && !syncSummary ? (
-          <p className="text-xs text-on-surface-variant m-0">Loading...</p>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <StatCard
-                label="Last handoff"
-                value={formatTime(lastHandoff?.completed_at)}
-                sublabel={formatDateLabel(lastHandoff?.completed_at)}
-                accent={lastHandoff?.error ? 'terracotta' : 'outline'}
-              />
-              <StatCard
-                label="Accepted"
-                value={formatNumber(lastHandoff?.accepted)}
-                accent="outline"
-              />
-              <StatCard
-                label="Batches"
-                value={formatNumber(lastHandoff?.batches)}
-                accent="outline"
-              />
-              <StatCard
-                label="Duration"
-                value={formatDuration(lastHandoff?.duration_ms)}
-                accent="outline"
-              />
-            </div>
-            {lastHandoff?.error && (
-              <p className="text-sm text-terracotta break-words m-0 mt-3">{lastHandoff.error}</p>
-            )}
-          </>
-        )}
-      </SyncPanel>
-
-      <SyncPanel
         title="Remote store"
         actions={
           syncSummary?.remote ? (
@@ -563,6 +457,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             ) : syncSummary.total_delta === 0 ? (
               <p className="text-xs text-sage m-0">In sync</p>
             ) : null}
+            <p className="text-xs text-on-surface-variant m-0">
+              Last synced {formatTime(syncSummary.last_handoff?.completed_at)}
+            </p>
             {(syncSummary.total_delta ?? 0) > 0 && (
               <div className="flex flex-col gap-2 border-t border-outline-variant/10 pt-3">
                 <div className="flex items-center justify-between gap-4">
@@ -644,24 +541,16 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
       <SyncPanel
         title="Failed syncs"
         actions={
-          <div className="flex items-center gap-2">
+          dlqMessages.length > 0 ? (
             <Button
               size="sm"
               variant="outline"
               disabled={busy || failedSyncsUnavailable}
-              onClick={handleRefreshDlq}
-            >
-              Refresh
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy || failedSyncsUnavailable || dlqMessages.length === 0}
               onClick={handleReplayAll}
             >
-              {dlqMessages.length > 0 ? `Retry all (${dlqMessages.length})` : 'Retry all'}
+              {`Retry all (${dlqMessages.length})`}
             </Button>
-          </div>
+          ) : null
         }
       >
         {dlqMessage && (
@@ -674,51 +563,29 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : dlqMessages.length === 0 ? (
           <p className="text-sm text-on-surface-variant m-0">No failed syncs.</p>
         ) : (
-          <div className="divide-y divide-outline-variant/10">
-            {dlqMessages.map((message) => (
-              <DlqRow key={message.lease_id} message={message} onAction={handleDlqAction} busy={busy} />
-            ))}
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-on-surface-variant m-0">
+              These records couldn't reach the cloud after repeated tries. Retry to attempt again, or discard to drop them.
+            </p>
+            <div className="divide-y divide-outline-variant/10">
+              {dlqMessages.map((message) => (
+                <DlqRow key={message.lease_id} message={message} onAction={handleDlqAction} busy={busy} />
+              ))}
+            </div>
           </div>
         )}
       </SyncPanel>
 
-      {hasVectorIndexStatus && (
-        <SyncPanel
-          title="Remote Vector Index"
-          actions={
-            <Badge variant={reindexBadgeVariant(status.vector_reindex_status)}>
-              {status.vector_reindex_status ?? 'ready'}
-            </Badge>
-          }
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Last table</span>
-              <p className="text-sm text-on-surface">{status.vector_reindex_last_table ?? 'None'}</p>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Last run</span>
-              <p className="text-sm text-on-surface">
-                {status.vector_reindex_last_run_at ? new Date(status.vector_reindex_last_run_at * 1000).toLocaleString() : 'Never'}
-              </p>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Processed</span>
-              <p className="text-sm text-on-surface">{status.vector_reindex_last_processed ?? 0}</p>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Updated / deleted</span>
-              <p className="text-sm text-on-surface">{status.vector_reindex_last_reindexed ?? 0} / {status.vector_reindex_last_deleted ?? 0}</p>
-            </div>
-          </div>
-          {status.vector_reindex_last_error && (
-            <div className="space-y-1 border-t border-[var(--ghost-border)] pt-3 mt-3">
-              <span className="text-xs text-on-surface-variant">Last error</span>
-              <p className="text-xs text-terracotta break-words m-0">{status.vector_reindex_last_error}</p>
-            </div>
-          )}
-        </SyncPanel>
-      )}
+      <SyncPanel
+        title="Backfill"
+        actions={
+          <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
+            {draining ? 'Backfilling...' : 'Backfill existing records'}
+          </Button>
+        }
+      >
+        {drainMessage && <p className="text-sm text-sage m-0">{drainMessage}</p>}
+      </SyncPanel>
     </div>
   );
 }
