@@ -203,6 +203,13 @@ interface EmbedJob {
   metadata: Partial<TeamVectorMetadata>;
 }
 
+/** Mutable counters threaded through coalesced batch helpers for best-effort D1 stats. */
+interface SyncBatchCounts {
+  applied: number;
+  failed: number;
+  lastError: string;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -631,6 +638,17 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
 
   await touchNodeLastSeen(env, body.machine_id);
 
+  // Best-effort stats increment — a write failure must never fail the enqueue path.
+  if (acceptedRecords.length > 0) {
+    try {
+      await env.MYCO_TEAM_DB.prepare(
+        'UPDATE team_sync_stats SET enqueued = enqueued + ? WHERE id = 1',
+      ).bind(acceptedRecords.length).run();
+    } catch {
+      // Stats write failed — ignore, sync path takes priority.
+    }
+  }
+
   return jsonResponse({ accepted: acceptedRecords.length, rejected });
 }
 
@@ -729,6 +747,8 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 
   const deleteVectorTasks: Array<() => Promise<void>> = [];
   const embedJobs: EmbedJob[] = [];
+  // Mutable counters threaded through coalesced helpers for best-effort stats.
+  const batchCounts = { applied: 0, failed: 0, lastError: '' };
   const groups = new Map<string, Array<Message<SyncRecord>>>();
   for (const message of batch.messages) {
     const key = `${message.body.table}\t${message.body.operation}`;
@@ -740,11 +760,11 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   for (const [key, messages] of groups) {
     const [table, operation] = key.split('\t');
     if (operation === 'delete') {
-      await coalescedDeleteBatch(env, table, messages);
+      await coalescedDeleteBatch(env, table, messages, batchCounts);
     } else if (operation === 'embed') {
-      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs);
+      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs, batchCounts);
     } else {
-      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs);
+      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs, batchCounts);
     }
   }
 
@@ -771,6 +791,16 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   }
   if (embedJobs.length > 0) {
     await runBatchEmbed(env, embedJobs);
+  }
+
+  // Best-effort stats update — a write failure must never fail the consume path.
+  try {
+    const lastError = batchCounts.failed > 0 ? batchCounts.lastError || 'sync failed' : null;
+    await env.MYCO_TEAM_DB.prepare(
+      'UPDATE team_sync_stats SET processed = processed + ?, failed = failed + ?, last_run_at = ?, last_error = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END WHERE id = 1',
+    ).bind(batchCounts.applied, batchCounts.failed, Date.now(), lastError, lastError).run();
+  } catch {
+    // Stats write failed — ignore, sync path takes priority.
   }
 }
 
@@ -824,6 +854,7 @@ async function coalescedUpsertBatch(
   messages: Array<Message<SyncRecord>>,
   deleteVectorTasks: Array<() => Promise<void>>,
   embedJobs: EmbedJob[],
+  counts: SyncBatchCounts,
 ): Promise<void> {
   // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
   // tuples we're about to write. Records without content_hash skip the
@@ -859,6 +890,7 @@ async function coalescedUpsertBatch(
     const hash = message.body.content_hash;
     if (hash && existingHashes.get(`${message.body.id}\t${message.body.machine_id}`) === hash) {
       message.ack();
+      counts.applied++;
       continue;
     }
     survivors.push(message);
@@ -878,6 +910,7 @@ async function coalescedUpsertBatch(
     for (const message of survivors) {
       routeRecordForEmbedding(env, message.body, deleteVectorTasks, embedJobs);
       message.ack();
+      counts.applied++;
     }
   } catch (err) {
     console.error(`team-sync.queue.batch_upsert_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
@@ -887,10 +920,13 @@ async function coalescedUpsertBatch(
         if (result.embedTask) deleteVectorTasks.push(result.embedTask);
         if (result.embedJob) embedJobs.push(result.embedJob);
         message.ack();
+        counts.applied++;
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.write_failed ${table}/${message.body.id}: ${reason}`);
         message.retry();
+        counts.failed++;
+        counts.lastError = reason;
       }
     }
   }
@@ -901,6 +937,7 @@ async function coalescedDeleteBatch(
   env: Env,
   table: string,
   messages: Array<Message<SyncRecord>>,
+  counts: SyncBatchCounts,
 ): Promise<void> {
   const deleteSql = `DELETE FROM ${table} WHERE id = ? AND machine_id = ?`;
   const statements = messages.map((message) =>
@@ -915,6 +952,7 @@ async function coalescedDeleteBatch(
         void deleteVector(env, message.body.table, message.body.id, message.body.machine_id);
       }
       message.ack();
+      counts.applied++;
     }
   } catch (err) {
     console.error(`team-sync.queue.batch_delete_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
@@ -922,10 +960,13 @@ async function coalescedDeleteBatch(
       try {
         await handleDelete(env, message.body);
         message.ack();
+        counts.applied++;
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.delete_failed ${table}/${message.body.id}: ${reason}`);
         message.retry();
+        counts.failed++;
+        counts.lastError = reason;
       }
     }
   }
@@ -946,9 +987,13 @@ async function coalescedEmbedBatch(
   messages: Array<Message<SyncRecord>>,
   deleteVectorTasks: Array<() => Promise<void>>,
   embedJobs: EmbedJob[],
+  counts: SyncBatchCounts,
 ): Promise<void> {
   if (!(table in EMBEDDABLE_TABLES)) {
-    for (const message of messages) message.ack();
+    for (const message of messages) {
+      message.ack();
+      counts.applied++;
+    }
     return;
   }
 
@@ -974,8 +1019,13 @@ async function coalescedEmbedBatch(
       }
     }
   } catch (err) {
-    console.error(`team-sync.queue.embed_select_failed table=${table}: ${err instanceof Error ? err.message : err}`);
-    for (const message of messages) message.retry();
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`team-sync.queue.embed_select_failed table=${table}: ${reason}`);
+    for (const message of messages) {
+      message.retry();
+      counts.failed++;
+      counts.lastError = reason;
+    }
     return;
   }
 
@@ -985,6 +1035,7 @@ async function coalescedEmbedBatch(
       // Row was deleted between enqueue and consume — drop the embed
       // request to avoid an upsert against missing source data.
       message.ack();
+      counts.applied++;
       continue;
     }
     routeRecordForEmbedding(env, {
@@ -995,6 +1046,7 @@ async function coalescedEmbedBatch(
       data: row,
     }, deleteVectorTasks, embedJobs);
     message.ack();
+    counts.applied++;
   }
 }
 
@@ -1051,6 +1103,32 @@ function routeRecordForEmbedding(
  */
 async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (batch.messages.length === 0) return;
+
+  // Best-effort: persist each dead-lettered message to team_dlq for operator visibility.
+  // Uses INSERT OR REPLACE so repeated DLQ deliveries of the same record update rather than duplicate.
+  // This runs BEFORE the replay attempt so visibility is preserved even if replay throws.
+  for (const m of batch.messages) {
+    try {
+      const leaseId = `${m.body.table}:${m.body.id}:${m.body.machine_id}`;
+      await env.MYCO_TEAM_DB.prepare(
+        `INSERT OR REPLACE INTO team_dlq
+           (lease_id, table_name, row_id, machine_id, operation, payload, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        leaseId,
+        m.body.table,
+        m.body.id,
+        m.body.machine_id,
+        m.body.operation,
+        JSON.stringify(m.body),
+        'dead-lettered after max retries',
+        Date.now(),
+      ).run();
+    } catch {
+      // DLQ write failed — ignore, replay path takes priority.
+    }
+  }
+
   // Single sendBatch instead of N individual sends — Cloudflare Queues
   // atomically enqueues the whole array, dropping N HTTP-shaped calls
   // to 1 per consumer batch (up to 100 msgs). The per-message ack/retry

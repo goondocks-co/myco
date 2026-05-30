@@ -302,6 +302,28 @@ const TEAM_CONFIG_TABLE = `
     value  TEXT NOT NULL
   )`;
 
+const TEAM_SYNC_STATS_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_sync_stats (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    enqueued    INTEGER NOT NULL DEFAULT 0,
+    processed   INTEGER NOT NULL DEFAULT 0,
+    failed      INTEGER NOT NULL DEFAULT 0,
+    last_run_at INTEGER,
+    last_error  TEXT
+  )`;
+
+const TEAM_DLQ_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_dlq (
+    lease_id    TEXT PRIMARY KEY,
+    table_name  TEXT NOT NULL,
+    row_id      TEXT NOT NULL,
+    machine_id  TEXT NOT NULL,
+    operation   TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    reason      TEXT,
+    created_at  INTEGER NOT NULL
+  )`;
+
 const BASE_SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions (status)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_content_hash ON sessions (content_hash)',
@@ -365,6 +387,8 @@ const ALL_DDLS = [
   KNOWLEDGE_RELEASE_STATE_TABLE,
   NODES_TABLE,
   TEAM_CONFIG_TABLE,
+  TEAM_SYNC_STATS_TABLE,
+  TEAM_DLQ_TABLE,
 ];
 
 export interface InitD1Options {
@@ -397,6 +421,9 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
   const statements = [...ALL_DDLS, ...BASE_SECONDARY_INDEXES];
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
+
+  // Seed the single team_sync_stats row. INSERT OR IGNORE makes this idempotent.
+  await db.prepare('INSERT OR IGNORE INTO team_sync_stats (id) VALUES (1)').run();
 
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
