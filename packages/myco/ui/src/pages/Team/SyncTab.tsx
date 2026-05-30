@@ -85,11 +85,13 @@ function formatTableName(table: string): string {
   return table.replace(/_/g, ' ');
 }
 
+function formatDelta(delta: number): string {
+  return delta === 0 ? '0' : delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString();
+}
+
 function tableDelta(local: number, remote: number | undefined): string {
   if (remote === undefined) return '—';
-  const delta = remote - local;
-  if (delta === 0) return '0';
-  return delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString();
+  return formatDelta(remote - local);
 }
 
 function VectorsTile({
@@ -189,7 +191,7 @@ function DriftTable({ rows }: { rows: TeamDriftRow[] }) {
               <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(row.local)}</td>
               <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(row.cloud)}</td>
               <td className={`px-3 py-2 text-right tabular-nums ${row.delta !== 0 ? 'text-terracotta' : 'text-on-surface-variant'}`}>
-                {row.delta === 0 ? '0' : row.delta > 0 ? `+${row.delta.toLocaleString()}` : row.delta.toLocaleString()}
+                {formatDelta(row.delta)}
               </td>
             </tr>
           ))}
