@@ -584,7 +584,10 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           </Button>
         }
       >
-        {drainMessage && <p className="text-sm text-sage m-0">{drainMessage}</p>}
+        <p className="text-sm text-on-surface-variant m-0">
+          Re-sends every local record to the cloud — for recovery after a cloud-side reset or lost data. Not part of routine sync.
+        </p>
+        {drainMessage && <p className="text-sm text-sage m-0 mt-3">{drainMessage}</p>}
       </SyncPanel>
     </div>
   );
