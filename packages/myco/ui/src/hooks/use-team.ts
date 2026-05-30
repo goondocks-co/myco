@@ -151,7 +151,7 @@ export function useTeamQueueStats(enabled: boolean) {
   return usePowerQuery<QueueStatsResponse>({
     queryKey: ['team-queue-stats'],
     queryFn: ({ signal }) => fetchJson<QueueStatsResponse>('/team/queue-stats', { signal }),
-    refetchInterval: POLL_INTERVALS.UPDATE,
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
@@ -162,7 +162,7 @@ export function useTeamSyncSummary(enabled: boolean) {
   return usePowerQuery<TeamSyncSummaryResponse>({
     queryKey: ['team-sync-summary'],
     queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>('/team/sync-summary', { signal }),
-    refetchInterval: POLL_INTERVALS.UPDATE,
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
@@ -173,6 +173,7 @@ export function useTeamDlq(enabled: boolean) {
   return usePowerQuery<DlqListResponse>({
     queryKey: ['team-dlq'],
     queryFn: ({ signal }) => fetchJson<DlqListResponse>('/team/dlq', { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,

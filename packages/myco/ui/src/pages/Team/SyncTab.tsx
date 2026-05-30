@@ -18,6 +18,8 @@ import { Button } from '../../components/ui/button';
 import { Badge, type BadgeProps } from '../../components/ui/badge';
 import { StatCard } from '../../components/ui/stat-card';
 import { QueueTile } from '../../components/team/QueueTile';
+import { RefreshIndicator } from '../../components/ui/refresh-indicator';
+import { POLL_INTERVALS } from '../../lib/constants';
 
 const SECONDS_PER_MIN = 60;
 const SECONDS_PER_HOUR = 3600;
@@ -226,11 +228,11 @@ function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (a
 export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
   const enabled = status.enabled && status.healthy;
-  const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
-  const { data: syncSummary, isLoading: summaryLoading } = useTeamSyncSummary(enabled);
+  const { data: queueStats, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useTeamQueueStats(enabled);
+  const { data: syncSummary, isLoading: summaryLoading, isFetching: summaryFetching, refetch: refetchSummary } = useTeamSyncSummary(enabled);
   const { data: daemonStats } = useDaemon();
   const dlqEnabled = enabled;
-  const { data: dlq, isLoading: dlqLoading } = useTeamDlq(dlqEnabled);
+  const { data: dlq, isLoading: dlqLoading, isFetching: dlqFetching, refetch: refetchDlq } = useTeamDlq(dlqEnabled);
   const [busy, setBusy] = useState(false);
   const [dlqMessage, setDlqMessage] = useState<string | null>(null);
   const [draining, setDraining] = useState(false);
@@ -244,6 +246,12 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const failedSyncsLoading = queueLoading || (dlqEnabled && dlqLoading);
   const failedSyncsUnavailable = !enabled || (!failedSyncsLoading && dlqEnabled && !dlq);
   const unavailableMessage = 'Team connection is unhealthy.';
+  const syncFetching = queueFetching || summaryFetching || dlqFetching;
+  const handleRefreshAll = useCallback(() => {
+    void refetchQueue();
+    void refetchSummary();
+    void refetchDlq();
+  }, [refetchQueue, refetchSummary, refetchDlq]);
 
   const handleDrain = useCallback(async () => {
     setDraining(true);
@@ -404,6 +412,13 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-end">
+        <RefreshIndicator
+          intervalMs={enabled ? POLL_INTERVALS.TEAM : undefined}
+          isFetching={syncFetching}
+          onManualRefresh={handleRefreshAll}
+        />
+      </div>
       <SyncPanel
         title="Worker"
         actions={
