@@ -2,7 +2,7 @@
  * Tests for TeamSyncClient and team context module.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
@@ -12,6 +12,18 @@ import {
   getTeamSyncProtocolVersion,
   resetTeamContext,
 } from '@myco/daemon/team-context.js';
+
+// ---------------------------------------------------------------------------
+// Mock getMachineId so team-context tests are environment-independent.
+// The persisted ~/.myco/machine_id value varies per machine; pin it to a
+// fixed sentinel so assertions don't depend on the real filesystem.
+// ---------------------------------------------------------------------------
+
+const PERSISTED_MACHINE_ID = 'test_machine_abc';
+
+mock.module('@myco/daemon/machine-id.js', () => ({
+  getMachineId: () => PERSISTED_MACHINE_ID,
+}));
 
 // ---------------------------------------------------------------------------
 // Mock fetch helper
@@ -389,8 +401,16 @@ describe('team context', () => {
     resetTeamContext();
   });
 
-  it('defaults machine id to local', () => {
-    expect(getTeamMachineId()).toBe('local');
+  it('falls back to the persisted machine id when no explicit context is set', () => {
+    // After reset (no initTeamContext), getTeamMachineId() must resolve the
+    // real persisted id — not the 'local' sentinel — so non-daemon writers
+    // (MCP server, agent subprocesses) stamp rows with the correct machine id.
+    expect(getTeamMachineId()).toBe(PERSISTED_MACHINE_ID);
+  });
+
+  it('returns the explicitly initialised id after initTeamContext', () => {
+    initTeamContext('explicit_id');
+    expect(getTeamMachineId()).toBe('explicit_id');
   });
 
   it('returns sync protocol version', () => {
@@ -401,10 +421,11 @@ describe('team context', () => {
     expect(getTeamSyncProtocolVersion()).toBe(2);
   });
 
-  it('resets to defaults', () => {
+  it('resets to persisted id (not local)', () => {
     initTeamContext('chris_abc123');
     resetTeamContext();
 
-    expect(getTeamMachineId()).toBe('local');
+    // After reset, must resolve the persisted id — not 'local'.
+    expect(getTeamMachineId()).toBe(PERSISTED_MACHINE_ID);
   });
 });

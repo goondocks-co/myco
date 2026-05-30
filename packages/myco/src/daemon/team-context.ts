@@ -5,6 +5,7 @@
  * Grove's setting.
  */
 import { SYNC_PROTOCOL_VERSION, DEFAULT_MACHINE_ID } from '@myco/constants.js';
+import { getMachineId } from './machine-id.js';
 
 let teamMachineId = DEFAULT_MACHINE_ID;
 
@@ -13,7 +14,11 @@ export function initTeamContext(machineId: string): void {
 }
 
 export function getTeamMachineId(): string {
-  return teamMachineId;
+  // Resolve the persisted, machine-global id so every process/context (daemon,
+  // MCP server, agent subprocess) gets the real id — not the 'local' default —
+  // even when initTeamContext() was never called in this process. An explicit
+  // initTeamContext(<id>) still overrides (e.g. tests or daemon startup).
+  return teamMachineId !== DEFAULT_MACHINE_ID ? teamMachineId : getMachineId();
 }
 
 export function getTeamSyncProtocolVersion(): number {

@@ -26,6 +26,9 @@ const LEGACY_MACHINE_ID_FILE = 'machine_id';
 /** Fallback GitHub username when `gh` CLI is unavailable. */
 const FALLBACK_GITHUB_USER = 'local';
 
+/** Module-level cache — set on first getMachineId() call, never cleared. */
+let cachedMachineId: string | undefined;
+
 /**
  * Compute a deterministic machine hash from hostname + homedir.
  *
@@ -65,12 +68,20 @@ export function resolveGitHubUser(): string {
  * @returns the machine ID string
  */
 export function getMachineId(): string {
+  // Return the in-memory cached value — avoids a filesystem read per row-insert
+  // (getTeamMachineId() delegates here on every synced write when no explicit
+  // context has been initialised, so this path can be hot).
+  if (cachedMachineId !== undefined) return cachedMachineId;
+
   const cachePath = resolveMachineIdPath();
 
   // Read from global cache if present.
   try {
-    const cached = fs.readFileSync(cachePath, 'utf-8').trim();
-    if (cached.length > 0) return cached;
+    const persisted = fs.readFileSync(cachePath, 'utf-8').trim();
+    if (persisted.length > 0) {
+      cachedMachineId = persisted;
+      return cachedMachineId;
+    }
   } catch {
     // Global cache missing — fall through to generate.
   }
@@ -79,11 +90,12 @@ export function getMachineId(): string {
   const machineHash = computeMachineHash();
   const machineId = `${githubUser}_${machineHash}`;
 
-  // Cache for future calls.
+  // Persist for future process startups.
   fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, machineId, 'utf-8');
 
-  return machineId;
+  cachedMachineId = machineId;
+  return cachedMachineId;
 }
 
 /**
