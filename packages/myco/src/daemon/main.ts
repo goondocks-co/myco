@@ -1878,14 +1878,6 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleDlqDiscard(req);
   });
-  server.registerRoute('POST', '/api/team/cf-api-token', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleSetCfApiToken(req);
-  });
-  server.registerRoute('DELETE', '/api/team/cf-api-token', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleClearCfApiToken(req);
-  });
   // POST /api/team/rebuild — destructive one-way repair: truncate this
   // machine's cloud mirror (D1 + Vectorize), then re-push the full local
   // Grove. The local Grove is the source of truth; we re-push rather than

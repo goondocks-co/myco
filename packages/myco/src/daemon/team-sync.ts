@@ -153,14 +153,13 @@ export interface EnqueueBatchResponse {
   rejected: RecordRejection[];
 }
 
-export interface QueueStats {
-  depth: number | null;
-  oldest_msg_age_s: number | null;
-}
-
 export interface QueueStatsResponse {
-  main: QueueStats;
-  dlq: QueueStats;
+  enqueued: number;
+  processed: number;
+  failed: number;
+  backlog: number;
+  last_run_at: number | null;
+  last_error: string | null;
 }
 
 export interface TeamRemoteSyncSummaryResponse {
@@ -182,28 +181,26 @@ export interface TeamRemoteSyncSummaryResponse {
 }
 
 /**
- * Single DLQ message returned by the worker's `/api/team/dlq` and
- * the daemon's local CF DLQ proxy. `body` typically holds a
- * `DlqSyncRecordPayload`, but stays loose so non-record DLQ entries
- * (e.g. malformed-JSON poison messages) still parse.
+ * Single DLQ message returned by the worker's D1-backed `/dlq` endpoint.
  *
  * `DlqEntry` is exported as an alias so consumers that prefer the
  * shorter name don't have to deconflict with the @myco-team/worker
  * type name. Both alias to the same shape.
  */
 export interface DlqMessage {
-  msg_id: string;
-  body: Record<string, unknown> | DlqSyncRecordPayload;
-  attempts: number;
-  last_failure?: string;
-  enqueued_at?: number;
+  lease_id: string;
+  table_name: string;
+  row_id: string;
+  machine_id: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
 }
 
 export type DlqEntry = DlqMessage;
 
 export interface DlqListResponse {
   messages: DlqMessage[];
-  next_cursor: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,15 +387,10 @@ export class TeamSyncClient {
   }
 
   /**
-   * Fetch queue + DLQ depth/age stats. Returns the
-   * `cf_api_token_not_configured` discriminator when the worker has no CF
-   * API token yet — the UI uses that to surface an unavailable state.
-   * Pass-through 412 keeps the body accessible instead of throwing.
+   * Fetch queue processing stats from the worker's D1-backed endpoint.
    */
-  async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', '/queue-stats', undefined, {
-      passthroughStatuses: [412],
-    }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  async getQueueStats(): Promise<QueueStatsResponse> {
+    return await this.request('GET', '/queue-stats') as QueueStatsResponse;
   }
 
   async getSyncSummary(machineId?: string): Promise<TeamRemoteSyncSummaryResponse> {
@@ -421,11 +413,9 @@ export class TeamSyncClient {
     };
   }
 
-  /** List a page of DLQ messages. */
-  async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', `/dlq?limit=${limit}`, undefined, {
-      passthroughStatuses: [412],
-    }) as DlqListResponse | { error: 'cf_api_token_not_configured' };
+  /** List a page of DLQ messages from the worker's D1-backed endpoint. */
+  async listDlq(limit = 50): Promise<DlqListResponse> {
+    return await this.request('GET', `/dlq?limit=${limit}`) as DlqListResponse;
   }
 
   /** Re-publish DLQ messages back onto the main queue. */
@@ -445,16 +435,6 @@ export class TeamSyncClient {
   /** Permanently discard DLQ messages. */
   async discardDlq(leaseIds: string[]): Promise<{ discarded: number }> {
     return await this.request('POST', '/dlq/discard', { lease_ids: leaseIds }) as { discarded: number };
-  }
-
-  /** Stash a CF API token (queues:read,write scope) on the worker. */
-  async setCfApiToken(token: string, accountId: string): Promise<{ configured: true }> {
-    return await this.request('POST', '/tokens/cf-api', { token, account_id: accountId }) as { configured: true };
-  }
-
-  /** Clear the worker's stashed CF API token. */
-  async clearCfApiToken(): Promise<{ cleared: true }> {
-    return await this.request('DELETE', '/tokens/cf-api') as { cleared: true };
   }
 
   /**
@@ -529,9 +509,8 @@ export class TeamSyncClient {
         signal: controller.signal,
       });
 
-      // passthroughStatuses are surfaces where the worker's body is the
-      // discriminated response shape (e.g. 412 cf_api_token_not_configured)
-      // and the caller wants to inspect it rather than catch a throw.
+      // passthroughStatuses allow the caller to inspect the body of specific
+      // non-2xx responses rather than having them throw.
       if (!res.ok && !options.passthroughStatuses?.includes(res.status)) {
         const text = await res.text().catch(() => '');
         throw new Error(`Team sync request ${method} ${path} failed: ${res.status} ${text}`);

@@ -32,7 +32,7 @@ import {
   LOCAL_ONLY_RATIONALES,
 } from '@myco/db/queries/team-outbox.js';
 import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
-import { buildCommandEnv, readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
+import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
 import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse } from '../team-sync.js';
@@ -54,14 +54,6 @@ const UPGRADE_SUBPROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 /** Maximum stdout+stderr the subprocess can produce before we truncate. */
 const UPGRADE_SUBPROCESS_MAX_BUFFER = 4 * 1024 * 1024;
 
-/**
- * Cloudflare API fetches must time out so the daemon doesn't wedge a
- * request handler when the network or the CF edge stalls. 30s matches
- * the convention used for `wrangler whoami --json` above and is well
- * below the daemon's per-request budget.
- */
-const CLOUDFLARE_API_TIMEOUT_MS = 30_000;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -75,26 +67,6 @@ interface TeamLocalConfig {
   package_version?: string;
   worker_name?: string;
   worker_url?: string;
-}
-
-interface WranglerWhoamiAccount {
-  id?: string;
-  name?: string;
-}
-
-interface WranglerWhoami {
-  loggedIn?: boolean;
-  accounts?: WranglerWhoamiAccount[];
-}
-
-interface CloudflareQueueCredentials {
-  token: string;
-  accountId: string;
-}
-
-interface TeamQueueNames {
-  sync: string;
-  dlq: string;
 }
 
 interface TeamConnectionContext {
@@ -142,181 +114,6 @@ interface LocalTeamPackageVersion {
 function readCachedTeamPackageVersion(vaultDir: string): string | null {
   const config = readJsonConfig<TeamLocalConfig>(resolveVaultConfigPath(vaultDir, TEAM_CONFIG_DIR, TEAM_CONFIG_FILE));
   return config?.package_version?.trim() || null;
-}
-
-function readTeamLocalState(vaultDir: string, requestContext?: MycoRequestContext): TeamLocalConfig | null {
-  const store = resolveTeamConnectionStore(vaultDir, requestContext);
-  const configPath = path.join(store.configDir, TEAM_CONFIG_DIR, TEAM_CONFIG_FILE);
-  return readJsonConfig<TeamLocalConfig>(configPath);
-}
-
-function resolveTeamQueueNames(vaultDir: string, requestContext?: MycoRequestContext): TeamQueueNames | null {
-  const workerName = readTeamLocalState(vaultDir, requestContext)?.worker_name?.trim();
-  if (!workerName) return null;
-  return {
-    sync: `${workerName}-sync`,
-    dlq: `${workerName}-sync-dlq`,
-  };
-}
-
-function readTomlString(text: string, key: string): string | null {
-  const match = text.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'm'));
-  return match?.[1] ?? null;
-}
-
-function wranglerAuthConfigCandidates(): string[] {
-  const home = os.homedir();
-  const candidates = [
-    process.env.XDG_CONFIG_HOME
-      ? path.join(process.env.XDG_CONFIG_HOME, '.wrangler', 'config', 'default.toml')
-      : null,
-    process.platform === 'darwin'
-      ? path.join(home, 'Library', 'Preferences', '.wrangler', 'config', 'default.toml')
-      : null,
-    path.join(home, '.config', '.wrangler', 'config', 'default.toml'),
-    path.join(home, '.wrangler', 'config', 'default.toml'),
-  ];
-  return candidates.filter((candidate): candidate is string => Boolean(candidate));
-}
-
-async function resolveWranglerCloudflareCredentials(): Promise<CloudflareQueueCredentials | null> {
-  let whoami: WranglerWhoami | null = null;
-  try {
-    const result = await execFileAsync('wrangler', ['whoami', '--json'], {
-      encoding: 'utf-8',
-      env: buildCommandEnv(),
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    whoami = JSON.parse(result.stdout) as WranglerWhoami;
-  } catch {
-    return null;
-  }
-
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim()
-    || whoami?.accounts?.find((account) => account.id)?.id?.trim()
-    || null;
-  if (!accountId) return null;
-
-  for (const candidate of wranglerAuthConfigCandidates()) {
-    if (!fs.existsSync(candidate)) continue;
-    const token = readTomlString(fs.readFileSync(candidate, 'utf-8'), 'oauth_token');
-    if (token) return { token, accountId };
-  }
-
-  return null;
-}
-
-async function resolveQueueId(creds: CloudflareQueueCredentials, queueName: string): Promise<string> {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues?name=${encodeURIComponent(queueName)}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${creds.token}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Cloudflare queue lookup failed: ${res.status} ${await res.text()}`);
-  }
-  const body = await res.json() as { result?: Array<{ queue_id?: string }> };
-  const id = body.result?.[0]?.queue_id;
-  if (!id) throw new Error(`Cloudflare queue not found: ${queueName}`);
-  return id;
-}
-
-async function fetchQueueStatsForQueue(creds: CloudflareQueueCredentials, queueName: string): Promise<{ depth: null; oldest_msg_age_s: null }> {
-  await resolveQueueId(creds, queueName);
-  return { depth: null, oldest_msg_age_s: null };
-}
-
-async function fetchLocalQueueStats(creds: CloudflareQueueCredentials, queues: TeamQueueNames): Promise<QueueStatsResponse> {
-  const [main, dlq] = await Promise.all([
-    fetchQueueStatsForQueue(creds, queues.sync),
-    fetchQueueStatsForQueue(creds, queues.dlq),
-  ]);
-  return { main, dlq };
-}
-
-async function listLocalDlq(creds: CloudflareQueueCredentials, queueName: string, limit: number): Promise<DlqListResponse> {
-  const queueId = await resolveQueueId(creds, queueName);
-  const batchSize = Math.min(Math.max(limit, 1), 100);
-  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues/${queueId}/messages/pull`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${creds.token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ batch_size: batchSize, visibility_timeout_ms: 5 * 60 * 1000 }),
-    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Cloudflare DLQ pull failed: ${res.status} ${await res.text()}`);
-  }
-  const body = await res.json() as {
-    result?: { messages?: Array<{ lease_id?: string; body?: unknown; attempts?: number; metadata?: Record<string, unknown> }> };
-  };
-  return {
-    messages: (body.result?.messages ?? []).map((message) => ({
-      msg_id: String(message.lease_id ?? ''),
-      body: parseDlqBody(message.body),
-      attempts: typeof message.attempts === 'number' ? message.attempts : 0,
-      last_failure: typeof message.metadata?.last_failure === 'string' ? message.metadata.last_failure : undefined,
-      enqueued_at: typeof message.metadata?.enqueued_at === 'number' ? message.metadata.enqueued_at : undefined,
-    })),
-    next_cursor: null,
-  };
-}
-
-/**
- * CF Queues' pull-consumer returns message body as a JSON string when
- * the producer sent JSON. Parse so the UI can render
- * `<table>/<id>` / `machine=<…>` instead of `?/?` `machine=?`.
- */
-function parseDlqBody(raw: unknown): Record<string, unknown> {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return raw as Record<string, unknown>;
-  }
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Fall through.
-    }
-  }
-  return {};
-}
-
-async function ackLocalDlq(creds: CloudflareQueueCredentials, queueName: string, leaseIds: string[], action: 'retry' | 'discard'): Promise<void> {
-  const queueId = await resolveQueueId(creds, queueName);
-  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues/${queueId}/messages/ack`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${creds.token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      acks: action === 'discard' ? leaseIds.map((id) => ({ lease_id: id })) : [],
-      retries: action === 'retry' ? leaseIds.map((id) => ({ lease_id: id, delay_seconds: 0 })) : [],
-    }),
-    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`Cloudflare DLQ ${action} failed: ${res.status} ${await res.text()}`);
-  }
-}
-
-function isCloudflareTokenMissing(value: unknown): value is { error: 'cf_api_token_not_configured' } {
-  return (
-    typeof value === 'object'
-    && value !== null
-    && (value as { error?: unknown }).error === 'cf_api_token_not_configured'
-  );
 }
 
 function numberFromLogData(data: Record<string, unknown>, key: string): number | null {
@@ -905,25 +702,11 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { ok: true, client };
   }
 
-  /** GET /api/team/queue-stats — proxies CF queue depth + DLQ depth from the worker. */
+  /** GET /api/team/queue-stats — proxies D1-backed queue processing stats from the worker. */
   async function handleQueueStats(req: RouteRequest): Promise<RouteResponse> {
     const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const stats = await guard.client.getQueueStats();
-    if (isCloudflareTokenMissing(stats)) {
-      try {
-        const [creds, queues] = await Promise.all([
-          resolveWranglerCloudflareCredentials(),
-          Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
-        ]);
-        if (creds && queues) {
-          return { body: await fetchLocalQueueStats(creds, queues) };
-        }
-      } catch (err) {
-        const detail = errorMessage(err);
-        logger.warn('team-sync.queue.local-stats-failed', 'Local Wrangler queue stats unavailable', { error: detail });
-      }
-    }
     return { body: stats };
   }
 
@@ -978,26 +761,12 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     };
   }
 
-  /** GET /api/team/dlq — list a page of DLQ messages from the worker. */
+  /** GET /api/team/dlq — list a page of DLQ messages from the worker's D1-backed endpoint. */
   async function handleDlqList(req: RouteRequest): Promise<RouteResponse> {
     const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const limit = Number(req.query.limit ?? '50') || 50;
     const result = await guard.client.listDlq(limit);
-    if (isCloudflareTokenMissing(result)) {
-      try {
-        const [creds, queues] = await Promise.all([
-          resolveWranglerCloudflareCredentials(),
-          Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
-        ]);
-        if (creds && queues) {
-          return { body: await listLocalDlq(creds, queues.dlq, limit) };
-        }
-      } catch (err) {
-        const detail = errorMessage(err);
-        logger.warn('team-sync.queue.local-dlq-list-failed', 'Local Wrangler DLQ list unavailable', { error: detail });
-      }
-    }
     return { body: result };
   }
 
@@ -1008,18 +777,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
     if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
-    try {
-      const result = await guard.client.retryDlq(leaseIds);
-      return { body: result };
-    } catch (err) {
-      const [creds, queues] = await Promise.all([
-        resolveWranglerCloudflareCredentials(),
-        Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
-      ]);
-      if (!creds || !queues) throw err;
-      await ackLocalDlq(creds, queues.dlq, leaseIds, 'retry');
-      return { body: { retried: leaseIds.length } };
-    }
+    const result = await guard.client.retryDlq(leaseIds);
+    return { body: result };
   }
 
   /** POST /api/team/dlq/discard — permanently drop DLQ messages. */
@@ -1029,37 +788,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
     if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
-    try {
-      const result = await guard.client.discardDlq(leaseIds);
-      return { body: result };
-    } catch (err) {
-      const [creds, queues] = await Promise.all([
-        resolveWranglerCloudflareCredentials(),
-        Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
-      ]);
-      if (!creds || !queues) throw err;
-      await ackLocalDlq(creds, queues.dlq, leaseIds, 'discard');
-      return { body: { discarded: leaseIds.length } };
-    }
-  }
-
-  /** POST /api/team/cf-api-token — stash a CF API token + account id on the worker. */
-  async function handleSetCfApiToken(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
-    if (!guard.ok) return guard.response;
-    const body = (req.body ?? {}) as { token?: string; account_id?: string };
-    if (!body.token || !body.account_id) {
-      return { status: 400, body: { error: 'token and account_id are required' } };
-    }
-    const result = await guard.client.setCfApiToken(body.token, body.account_id);
-    return { body: result };
-  }
-
-  /** DELETE /api/team/cf-api-token — clear the worker's CF API token. */
-  async function handleClearCfApiToken(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
-    if (!guard.ok) return guard.response;
-    const result = await guard.client.clearCfApiToken();
+    const result = await guard.client.discardDlq(leaseIds);
     return { body: result };
   }
 
@@ -1221,7 +950,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   return {
     handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken,
-    handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard, handleSetCfApiToken, handleClearCfApiToken,
+    handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard,
   };
 }
 

@@ -15,8 +15,7 @@ import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // `packages/myco/src/daemon/api/team-connect.ts` that the existing
 // tests/daemon/api/team-connect-status.test.ts left untested:
 //   handleConnect (4 branches), handleDisconnect, handleBackfill,
-//   handleDlqList/Retry/Discard, handleSetCfApiToken,
-//   handleClearCfApiToken, handleRotateMcpToken.
+//   handleDlqList/Retry/Discard, handleRotateMcpToken.
 
 const noopLogger = {
   debug: () => undefined,
@@ -35,11 +34,9 @@ function makeStubClient(overrides: Record<string, unknown> = {}): unknown {
       schema_version: 1,
     }),
     enqueueVectorReindex: async () => ({ enqueued: 0, by_table: {} }),
-    listDlq: async () => ({ messages: [], next_cursor: null }),
+    listDlq: async () => ({ messages: [] }),
     retryDlq: async (ids: string[]) => ({ retried: ids.length }),
     discardDlq: async (ids: string[]) => ({ discarded: ids.length }),
-    setCfApiToken: async () => ({ configured: true }),
-    clearCfApiToken: async () => ({ cleared: true }),
     rotateMcpToken: async () => 'rotated-mcp-token',
     getMcpToken: () => null,
     getMcpEndpoint: () => null,
@@ -382,9 +379,16 @@ describe('team-connect handlers — direct coverage', () => {
 
     it('forwards listDlq results from the client', async () => {
       const stub = makeStubClient({
-        listDlq: async (limit: number) => ({
-          messages: [{ msg_id: 'm1', body: { table: 'sessions' }, attempts: 1 }],
-          next_cursor: String(limit),
+        listDlq: async () => ({
+          messages: [{
+            lease_id: 'lease-1',
+            table_name: 'sessions',
+            row_id: 'row-abc',
+            machine_id: 'machine-test',
+            operation: 'upsert',
+            reason: null,
+            created_at: 1700000000,
+          }],
         }),
       });
       const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
@@ -398,9 +402,9 @@ describe('team-connect handlers — direct coverage', () => {
       });
 
       const response = await handlers.handleDlqList(makeRequest({ query: { limit: '7' } }));
-      const body = response.body as { messages: Array<{ msg_id: string }>; next_cursor: string };
-      expect(body.messages[0].msg_id).toBe('m1');
-      expect(body.next_cursor).toBe('7');
+      const body = response.body as { messages: Array<{ lease_id: string; table_name: string }> };
+      expect(body.messages[0].lease_id).toBe('lease-1');
+      expect(body.messages[0].table_name).toBe('sessions');
     });
 
     it('returns 400 on retry/discard when lease_ids is missing or empty', async () => {
@@ -440,98 +444,6 @@ describe('team-connect handlers — direct coverage', () => {
 
       const discard = await handlers.handleDlqDiscard(makeRequest({ body: { lease_ids: ['x'] } }));
       expect((discard.body as { discarded: number }).discarded).toBe(1);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // CF API token handlers
-  // -------------------------------------------------------------------------
-
-  describe('handleSetCfApiToken / handleClearCfApiToken', () => {
-    it('returns 503 when no client is registered', async () => {
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => null,
-        setTeamClient: () => undefined,
-      });
-
-      const set = await handlers.handleSetCfApiToken(
-        makeRequest({ body: { token: 't', account_id: 'a' } }),
-      );
-      expect(set.status).toBe(503);
-
-      const clear = await handlers.handleClearCfApiToken(makeRequest());
-      expect(clear.status).toBe(503);
-    });
-
-    it('returns 400 when token or account_id is missing on set', async () => {
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => makeStubClient() as never,
-        setTeamClient: () => undefined,
-      });
-
-      const noToken = await handlers.handleSetCfApiToken(makeRequest({ body: { account_id: 'a' } }));
-      expect(noToken.status).toBe(400);
-
-      const noAccount = await handlers.handleSetCfApiToken(makeRequest({ body: { token: 't' } }));
-      expect(noAccount.status).toBe(400);
-    });
-
-    it('forwards setCfApiToken arguments to the client', async () => {
-      let captured: { token?: string; accountId?: string } = {};
-      const stub = makeStubClient({
-        setCfApiToken: async (token: string, accountId: string) => {
-          captured = { token, accountId };
-          return { configured: true };
-        },
-      });
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => stub as never,
-        setTeamClient: () => undefined,
-      });
-
-      const response = await handlers.handleSetCfApiToken(
-        makeRequest({ body: { token: 'tok', account_id: 'acct' } }),
-      );
-      expect((response.body as { configured: boolean }).configured).toBe(true);
-      expect(captured).toEqual({ token: 'tok', accountId: 'acct' });
-    });
-
-    it('forwards clearCfApiToken to the client', async () => {
-      let cleared = 0;
-      const stub = makeStubClient({
-        clearCfApiToken: async () => {
-          cleared += 1;
-          return { cleared: true };
-        },
-      });
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => stub as never,
-        setTeamClient: () => undefined,
-      });
-
-      const response = await handlers.handleClearCfApiToken(makeRequest());
-      expect(cleared).toBe(1);
-      expect((response.body as { cleared: boolean }).cleared).toBe(true);
     });
   });
 
