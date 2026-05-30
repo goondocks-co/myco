@@ -590,22 +590,26 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               <QueueTile
                 label="Enqueued"
                 value={queueStats?.enqueued ?? 0}
-                tone={(queueStats?.enqueued ?? 0) > 0 ? 'sage' : 'outline'}
+                tone="outline"
+                sub="cumulative"
               />
               <QueueTile
                 label="Processed"
                 value={queueStats?.processed ?? 0}
                 tone="outline"
+                sub="cumulative"
               />
               <QueueTile
                 label="Failed"
                 value={queueStats?.failed ?? 0}
                 tone={(queueStats?.failed ?? 0) > 0 ? 'terracotta' : 'outline'}
+                sub="cumulative"
               />
               <QueueTile
                 label="Backlog"
                 value={queueStats?.backlog ?? 0}
                 tone={(queueStats?.backlog ?? 0) > 0 ? 'ochre' : 'outline'}
+                sub="in flight"
               />
             </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

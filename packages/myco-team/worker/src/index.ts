@@ -135,13 +135,13 @@ function estimateQueueMessageBytes(record: SyncRecord): number {
   return new TextEncoder().encode(JSON.stringify({ body: record })).byteLength;
 }
 
-async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[]): Promise<void> {
+async function sendQueueRecords(env: Env, records: SyncRecord[]): Promise<void> {
   let chunk: SyncRecord[] = [];
   let chunkBytes = 0;
 
   const flush = async () => {
     if (chunk.length === 0) return;
-    await queue.sendBatch(chunk.map((record) => ({ body: record })));
+    await env.SYNC_QUEUE.sendBatch(chunk.map((record) => ({ body: record })));
     chunk = [];
     chunkBytes = 0;
   };
@@ -156,6 +156,24 @@ async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[])
   }
 
   await flush();
+
+  // `enqueued` counts every message put on the main queue, across ALL
+  // producers (the /enqueue endpoint, vector reindex, DLQ replay/retry).
+  // Counting here — the single send choke point — instead of only at
+  // /enqueue keeps `enqueued` and `processed` measuring the same population,
+  // so backlog = enqueued - processed is a real in-flight proxy. Counting
+  // only /enqueue let reindex jobs (which enqueue directly) inflate
+  // `processed` without `enqueued`, pinning backlog at 0.
+  // Best-effort: a stats write failure must never fail the send path.
+  if (records.length > 0) {
+    try {
+      await env.MYCO_TEAM_DB.prepare(
+        'UPDATE team_sync_stats SET enqueued = enqueued + ? WHERE id = 1',
+      ).bind(records.length).run();
+    } catch {
+      // Stats write failed — ignore, the queue send already succeeded.
+    }
+  }
 }
 
 interface ConnectPayload {
@@ -624,21 +642,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   }
 
   if (acceptedRecords.length > 0) {
-    await sendQueueRecords(env.SYNC_QUEUE, acceptedRecords);
+    // sendQueueRecords bumps the `enqueued` stat itself (single choke point).
+    await sendQueueRecords(env, acceptedRecords);
   }
 
   await touchNodeLastSeen(env, body.machine_id);
-
-  // Best-effort stats increment — a write failure must never fail the enqueue path.
-  if (acceptedRecords.length > 0) {
-    try {
-      await env.MYCO_TEAM_DB.prepare(
-        'UPDATE team_sync_stats SET enqueued = enqueued + ? WHERE id = 1',
-      ).bind(acceptedRecords.length).run();
-    } catch {
-      // Stats write failed — ignore, sync path takes priority.
-    }
-  }
 
   return jsonResponse({ accepted: acceptedRecords.length, rejected });
 }
@@ -1254,7 +1262,7 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
   // still happens individually so an enqueue failure isn't load-bearing
   // for the unaffected messages.
   try {
-    await env.SYNC_QUEUE.sendBatch(batch.messages.map((m) => ({ body: m.body })));
+    await sendQueueRecords(env, batch.messages.map((m) => m.body));
     for (const message of batch.messages) {
       console.error(
         `team-sync.dlq replay -> main ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
@@ -1401,7 +1409,7 @@ async function handleVectorReindex(request: Request, env: Env): Promise<Response
     for (const table of tables) {
       const records = await listReindexEnqueueRecords(env, table);
       if (records.length > 0) {
-        await sendQueueRecords(env.SYNC_QUEUE, records);
+        await sendQueueRecords(env, records);
       }
       byTable[table] = records.length;
       totalEnqueued += records.length;
@@ -1823,7 +1831,7 @@ async function handleDlqRetry(request: Request, env: Env): Promise<Response> {
   ).bind(...leaseIds).all<{ lease_id: string; payload: string }>();
   const found = rows.results ?? [];
   if (found.length > 0) {
-    await env.SYNC_QUEUE.sendBatch(found.map((r) => ({ body: JSON.parse(r.payload) as SyncRecord })));
+    await sendQueueRecords(env, found.map((r) => JSON.parse(r.payload) as SyncRecord));
     const retriedIds = found.map((r) => r.lease_id);
     const delPlaceholders = retriedIds.map(() => '?').join(', ');
     await env.MYCO_TEAM_DB.prepare(
