@@ -153,3 +153,25 @@ describe('structural guard: every synced table has a delete trigger', () => {
     expect(missing).toEqual([]);
   });
 });
+
+describe('write gate is per-Grove (no singleton bleed)', () => {
+  it('enabled in Grove A, disabled in Grove B → deletes journal only in A', () => {
+    const a = newDb();
+    const b = newDb();
+    setTeamSyncEnabled(true, a);
+    setTeamSyncEnabled(false, b);
+
+    for (const [db, id] of [[a, 'spA'], [b, 'spB']] as const) {
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+         VALUES (?, 'proj_x', 'user', 'decision', 'active', 'c', 1, 'local')`,
+      ).run(id);
+      db.prepare(`DELETE FROM spores WHERE id = ?`).run(id);
+    }
+
+    const aDeletes = a.prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE operation='delete'`).get() as { n: number };
+    const bDeletes = b.prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE operation='delete'`).get() as { n: number };
+    expect(aDeletes.n).toBe(1);
+    expect(bDeletes.n).toBe(0);
+  });
+});
