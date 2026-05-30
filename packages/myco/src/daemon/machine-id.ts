@@ -30,6 +30,16 @@ const FALLBACK_GITHUB_USER = 'local';
 let cachedMachineId: string | undefined;
 
 /**
+ * Reset the in-memory machine ID cache.
+ *
+ * Test-only — call in beforeEach to restore per-test filesystem isolation
+ * when MYCO_HOME is redirected to a temp directory between tests.
+ */
+export function resetMachineIdCache(): void {
+  cachedMachineId = undefined;
+}
+
+/**
  * Compute a deterministic machine hash from hostname + homedir.
  *
  * Returns the first MACHINE_HASH_LENGTH hex chars of the SHA-256 digest.

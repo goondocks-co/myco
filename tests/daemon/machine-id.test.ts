@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeMachineHash, resolveGitHubUser, getMachineId, propagateLegacyMachineId } from '@myco/daemon/machine-id.js';
+import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache, propagateLegacyMachineId } from '@myco/daemon/machine-id.js';
 
 /** Create an isolated MYCO_HOME so the test doesn't depend on or mutate `~/.myco`. */
 function makeTmpHome(): string {
@@ -50,6 +50,9 @@ describe('machine-id', () => {
       tmpHome = makeTmpHome();
       priorEnv = process.env.MYCO_HOME;
       process.env.MYCO_HOME = tmpHome;
+      // Reset the module-level cache so each test gets a fresh read under the
+      // test-specific MYCO_HOME rather than the value cached by a prior test.
+      resetMachineIdCache();
     });
 
     afterEach(() => {

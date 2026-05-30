@@ -14,6 +14,15 @@ import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 mock.module('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
+
+// ---------------------------------------------------------------------------
+// Pin getMachineId to a fixed sentinel so assertions on machine_id fields are
+// deterministic across machines and CI (real ~/.myco/machine_id varies).
+// ---------------------------------------------------------------------------
+const TEST_MACHINE_ID = 'testuser_aabbccdd';
+mock.module('@myco/daemon/machine-id.js', () => ({
+  getMachineId: () => TEST_MACHINE_ID,
+}));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { upsertSession, type SessionInsert } from '@myco/db/queries/sessions.js';
 import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
@@ -565,7 +574,7 @@ describe('vault tools', () => {
       }, undefined);
       const data = parseResult(result) as Array<{ id: string; project_id: string }>;
 
-      expect(data).toEqual([{ id: 'spore-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', agent_id: TEST_AGENT_ID, observation_type: 'gotcha', status: 'active', content: 'Project A', context: null, importance: 5, file_path: null, tags: null, properties: null, session_id: null, prompt_batch_id: null, embedded: 0, created_at: expect.any(Number), updated_at: null, content_hash: null, machine_id: 'local', synced_at: null }]);
+      expect(data).toEqual([{ id: 'spore-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', agent_id: TEST_AGENT_ID, observation_type: 'gotcha', status: 'active', content: 'Project A', context: null, importance: 5, file_path: null, tags: null, properties: null, session_id: null, prompt_batch_id: null, embedded: 0, created_at: expect.any(Number), updated_at: null, content_hash: null, machine_id: TEST_MACHINE_ID, synced_at: null }]);
     });
   });
 
