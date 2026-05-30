@@ -138,6 +138,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   const teamClients = new Map<string, TeamSyncClient>();
   const clientSignatures = new Map<string, string>();
 
+  /**
+   * The team registry — not the legacy grove-config `enabled` flag — is the
+   * push-side participation gate: a Grove syncs iff ≥1 of its projects is a
+   * member of some team. Used by the write-path gate (setTeamSyncEnabled), the
+   * stale-outbox purge, and the deep-sleep predicate so they all agree with the
+   * registry-driven drain (flushPending). The grove-config flag is now only the
+   * read/rebuild client's concern.
+   */
+  function groveParticipates(groveId: string | null): boolean {
+    if (!groveId) return false;
+    return teamRegistry.list().some((t) => t.projects.some((p) => p.grove_id === groveId));
+  }
+
   // Per-team client cache (registry-driven routing). flushPending routes each
   // outbox row to its owning team's worker, so clients are keyed by team_id —
   // independent of the per-Grove `teamClients` map above (which rebuildFromLocal
@@ -428,7 +441,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
     const key = teamConnectionKey(vaultDir, requestContext);
     const teamConfig = loadTeamConnectionConfig(vaultDir, requestContext);
-    setTeamSyncEnabled(teamConfig.enabled);
+    // Registry participation gates the write-path, NOT the grove-config flag —
+    // the per-team drain is the push authority. (teamConfig still drives the
+    // legacy read/rebuild client below.)
+    const participates = groveParticipates(requestContext?.groveId ?? null);
+    setTeamSyncEnabled(participates);
     const workerUrl = teamConfig.worker_url?.trim() || null;
     const apiKey = readTeamConnectionSecrets(vaultDir, requestContext)[TEAM_API_KEY_SECRET]?.trim() || null;
     const nextSignature = teamConfig.enabled && workerUrl && apiKey
@@ -459,9 +476,13 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         // so we don't COUNT(*) the same predicate twice.
         const byTable = countPendingByTable();
         const total = Object.values(byTable).reduce((sum, n) => sum + n, 0);
-        if (total > 0) {
+        // Only purge when the Grove genuinely doesn't participate in any team.
+        // If it participates (registry) but the legacy read client couldn't be
+        // built (grove config cleared), the rows still route via flushPending —
+        // purging them here would silently drop a participating Grove's sync.
+        if (total > 0 && !participates) {
           const purged = purgePendingOutbox();
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for disabled-sync Grove', {
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for non-participating Grove', {
             grove_key: key,
             purged,
             by_table: byTable,
@@ -597,9 +618,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       logger,
       async ({ grove, databasePath, db, groveHome }) => {
         await withDatabase(db, async () => {
-          const ctx = groveSyncContext(grove.id, databasePath, groveHome);
-          const enabled = loadTeamConnectionConfig(groveHome, ctx).enabled;
-          setTeamSyncEnabled(enabled);
+          setTeamSyncEnabled(groveParticipates(grove.id));
         });
       },
       { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
@@ -638,7 +657,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           // gate previously. With multi-Grove fan-out we'd need to scope
           // countPending() per Grove; keep the cheap boot-context probe
           // and rely on the regular tick to drain non-boot Groves.
-          return loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0;
+          return groveParticipates(defaultRequestContext?.groveId ?? null) && countPending() > 0;
         },
         fn: async () => {
           if (running) return;

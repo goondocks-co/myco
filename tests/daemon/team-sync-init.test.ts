@@ -155,9 +155,11 @@ describe('initTeamSync.reconcileClient', () => {
       row_id: 'machine-1',
       machine_id: 'machine-1',
     }));
-    // reconcileClient must keep this Grove's write-path gate in lockstep with
-    // its config — enabled config => team_sync_state.enabled = true.
-    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(true);
+    // The write-path gate is now registry-participation-driven, decoupled from
+    // the grove-config flag that builds the read/rebuild client. This legacy
+    // non-Grove setup has no team-registry membership, so the gate is false
+    // even though the read client builds (connect/getTeamClient above).
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
     expect(teamSync.getTeamClient()).not.toBeNull();
   });
 
