@@ -603,37 +603,22 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         ) : (
           <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {/* Operational signals only: the queue draining to zero, and any
+                failures. Lifetime enqueued/processed counters are intentionally
+                not shown — the proof of work is the Remote-store sync state
+                (drift → in sync), and Cloudflare observability covers throughput. */}
+            <div className="grid grid-cols-3 gap-3">
               <QueueTile
-                label="Enqueued"
-                value={queueStats?.enqueued ?? 0}
-                tone="outline"
-                sub="cumulative"
-              />
-              <QueueTile
-                label="Processed"
-                value={queueStats?.processed ?? 0}
-                tone="outline"
-                sub="cumulative"
+                label="In flight"
+                value={queueStats?.backlog ?? 0}
+                tone={(queueStats?.backlog ?? 0) > 0 ? 'ochre' : 'outline'}
+                pulse={(queueStats?.backlog ?? 0) > 0}
+                sub={(queueStats?.backlog ?? 0) > 0 ? 'draining' : undefined}
               />
               <QueueTile
                 label="Failed"
                 value={queueStats?.failed ?? 0}
                 tone={(queueStats?.failed ?? 0) > 0 ? 'terracotta' : 'outline'}
-                sub="cumulative"
-              />
-              <QueueTile
-                label="Backlog"
-                value={queueStats?.backlog ?? 0}
-                tone={(queueStats?.backlog ?? 0) > 0 ? 'ochre' : 'outline'}
-                sub="in flight"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <QueueTile
-                label="Embeds OK"
-                value={queueStats?.embed_ok ?? 0}
-                tone="outline"
               />
               <QueueTile
                 label="Embeds failed"
