@@ -30,6 +30,7 @@ export const GROVE_ID_PREFIXES = {
   notification: 'notif',
   log_entry: 'log',
   canopy_map: 'cmap',
+  team: 'team',
 } as const;
 
 export type GroveIdKind = keyof typeof GROVE_ID_PREFIXES;
@@ -58,6 +59,17 @@ export function createMigrationId(): string {
 
 export function createMigrationMappingId(): string {
   return createGroveEraId('migration_mapping');
+}
+
+export function createTeamId(): string {
+  return createGroveEraId('team');
+}
+
+export function assertTeamId(value: unknown): string {
+  if (typeof value !== 'string' || !isGroveEraId(value, 'team')) {
+    throw new Error(`Invalid team id: expected team_<32 hex chars>, got ${JSON.stringify(value)}`);
+  }
+  return value;
 }
 
 export function isGroveEraId(value: string, kind?: GroveIdKind): boolean {
