@@ -30,8 +30,8 @@ function makeV51Db(machineId: string = 'local'): Database {
 }
 
 describe('migration v51 -> v52', () => {
-  it('SCHEMA_VERSION is 52', () => {
-    expect(SCHEMA_VERSION).toBe(52);
+  it('SCHEMA_VERSION is at least 52', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(52);
   });
 
   it('converts machine_id="local" rows in synced tables, but skips local-only tables', () => {
@@ -119,9 +119,9 @@ describe('migration v51 -> v52', () => {
     // (c) synced_at reset to NULL on tables that have the column
     expect(krsRow.synced_at).toBeNull();
 
-    // (d) schema_version MAX is 52
+    // (d) schema_version MAX advanced to the current version (chain runs v52+).
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };
-    expect(ver.v).toBe(52);
+    expect(ver.v).toBe(SCHEMA_VERSION);
   });
 
   it('is idempotent: running createSchema twice produces no error and zero "local" rows', () => {
@@ -146,7 +146,7 @@ describe('migration v51 -> v52', () => {
     expect(localCount.n).toBe(0);
 
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };
-    expect(ver.v).toBe(52);
+    expect(ver.v).toBe(SCHEMA_VERSION);
   });
 
   it('converts synced-table rows but leaves team_outbox (column AND payload) untouched', () => {
@@ -234,7 +234,7 @@ describe('migration v51 -> v52', () => {
     const row = db.prepare(`SELECT machine_id FROM spores WHERE id = 'sp-warn'`).get() as { machine_id: string };
     expect(row.machine_id).toBe('local');
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };
-    expect(ver.v).toBe(52);
+    expect(ver.v).toBe(SCHEMA_VERSION);
   });
 
   it('is a no-op for all tables when machineId is "local" (guards against breaking identity)', () => {
@@ -256,9 +256,9 @@ describe('migration v51 -> v52', () => {
     ).get() as { machine_id: string };
     expect(row.machine_id).toBe('local');
 
-    // Version still advances to 52
+    // Version still advances to the current version (chain runs v52+).
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };
-    expect(ver.v).toBe(52);
+    expect(ver.v).toBe(SCHEMA_VERSION);
   });
 });
 

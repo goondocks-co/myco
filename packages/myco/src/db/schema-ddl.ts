@@ -448,6 +448,7 @@ export const TEAM_OUTBOX_TABLE = `
     operation   TEXT NOT NULL DEFAULT 'upsert',
     payload     TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
+    project_id  TEXT,
     created_at  INTEGER NOT NULL,
     sent_at     INTEGER,
     retry_count    INTEGER NOT NULL DEFAULT 0,
@@ -940,15 +941,19 @@ export const TEAM_DELETE_TRIGGER_TABLES = [
 ] as const;
 
 export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLES.map(
+  // Every table in TEAM_DELETE_TRIGGER_TABLES carries a `project_id` column
+  // (verified against the CREATE TABLE DDL above), so `OLD.project_id` is
+  // captured uniformly for per-row team routing. The json_object payload stays
+  // id + machine_id — only the new `project_id` column matters for routing.
   (table) => `
   CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
   AFTER DELETE ON ${table}
   WHEN (SELECT enabled FROM team_sync_state) = 1
   BEGIN
-    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
     VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
             json_object('id', OLD.id, 'machine_id', OLD.machine_id),
-            OLD.machine_id, CAST(strftime('%s','now') AS INTEGER));
+            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
   END`,
 );
 

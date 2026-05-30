@@ -44,6 +44,7 @@ import {
   FTS_TABLES,
   SECONDARY_INDEXES,
   TEAM_DELETE_TRIGGERS,
+  TEAM_DELETE_TRIGGER_TABLES,
   TEAM_SYNC_OBSERVED_TABLES,
 } from './schema-ddl.js';
 import {
@@ -113,6 +114,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 50, migrate: (db) => migrateV49ToV50(db) },
   { version: 51, migrate: (db) => migrateV50ToV51(db) },
   { version: 52, migrate: (db, machineId) => migrateV51ToV52(db, machineId) },
+  { version: 53, migrate: (db) => migrateV52ToV53(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3261,6 +3263,52 @@ function migrateV51ToV52(db: Database, machineId: string): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(52, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v52 → v53: per-row project attribution on the team-sync outbox.
+ *
+ * Adds a nullable `project_id` column to `team_outbox` so each queued row
+ * can later be routed to the right team's worker. Existing rows get NULL,
+ * which is correct — they were queued before per-project routing existed.
+ *
+ * The AFTER DELETE triggers must be recreated to capture `OLD.project_id`:
+ * ALTER TABLE only touches the table, never trigger bodies. Every table in
+ * TEAM_DELETE_TRIGGER_TABLES carries a `project_id` column, so the updated
+ * TEAM_DELETE_TRIGGERS use `OLD.project_id` uniformly. We DROP each trigger
+ * (CREATE TRIGGER IF NOT EXISTS is a no-op when the old definition is still
+ * present) and re-CREATE it from the current DDL, iterating both lists by
+ * index so the trigger name and its DDL stay aligned.
+ */
+function migrateV52ToV53(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // ADD COLUMN is not idempotent in SQLite — guard on the live column set so
+    // a partially-applied or hand-patched schema doesn't abort here.
+    const cols = new Set(
+      (db.prepare(`PRAGMA table_info(team_outbox)`).all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+    if (!cols.has('project_id')) {
+      db.prepare(`ALTER TABLE team_outbox ADD COLUMN project_id TEXT`).run();
+    }
+
+    // Recreate the delete triggers so existing DBs capture project_id. ALTER
+    // does not update trigger bodies, so DROP + CREATE is required.
+    TEAM_DELETE_TRIGGER_TABLES.forEach((table, i) => {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+      db.exec(TEAM_DELETE_TRIGGERS[i]);
+    });
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(53, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

@@ -119,6 +119,7 @@ export interface OutboxInsert {
   operation?: string;
   payload: string;
   machine_id: string;
+  project_id?: string | null;
   created_at: number;
 }
 
@@ -136,6 +137,7 @@ export interface OutboxRow {
   operation: string;
   payload: Record<string, unknown>;
   machine_id: string;
+  project_id: string | null;
   created_at: number;
   sent_at: number | null;
 }
@@ -151,6 +153,7 @@ const OUTBOX_COLUMNS = [
   'operation',
   'payload',
   'machine_id',
+  'project_id',
   'created_at',
   'sent_at',
 ] as const;
@@ -180,6 +183,7 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
     operation: row.operation as string,
     payload,
     machine_id: row.machine_id as string,
+    project_id: (row.project_id as string) ?? null,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,
   };
@@ -211,11 +215,16 @@ export function syncRow(
   row: object & { id: string | number; created_at?: number },
 ): void {
   if (!getTeamSyncEnabled()) return;
+  // Project-scoped rows carry `project_id`; machine-scoped rows (e.g.
+  // team_members) don't, so this resolves to null — which is correct for
+  // later per-team routing.
+  const projectId = (row as { project_id?: string }).project_id ?? null;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
     payload: JSON.stringify(sanitizeSyncPayload(tableName, row)),
     machine_id: getTeamMachineId(),
+    project_id: projectId,
     created_at: row.created_at ?? epochSeconds(),
   });
 }
@@ -242,14 +251,15 @@ export function enqueueOutbox(data: OutboxInsert): OutboxRow {
 
   const info = db.prepare(
     `INSERT INTO team_outbox (
-       table_name, row_id, operation, payload, machine_id, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
+       table_name, row_id, operation, payload, machine_id, project_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.table_name,
     data.row_id,
     data.operation ?? 'upsert',
     data.payload,
     data.machine_id,
+    data.project_id ?? null,
     data.created_at,
   );
 
