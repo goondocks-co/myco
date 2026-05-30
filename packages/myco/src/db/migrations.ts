@@ -50,6 +50,7 @@ import {
   deriveStoredPlanLogicalKey,
 } from '@myco/plans/identity.js';
 import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-identity.js';
+import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry
@@ -3169,23 +3170,63 @@ function migrateV50ToV51(db: Database): void {
 }
 
 /**
- * Migrate v51 -> v52: comprehensively convert machine_id='local' -> real machineId
- * across ALL tables that have a machine_id column.
+ * Migrate v51 -> v52: convert machine_id='local' -> real machineId across the
+ * SYNCED table set only — the tables that actually get pushed to the team Worker.
  *
- * migrateV6ToV7 was a one-shot backfill but used a hardcoded table list that
- * missed knowledge_release_state, knowledge_git_provenance, and skill_usage.
- * This migration enumerates tables dynamically so no table is missed now or in
- * the future. For tables that also have synced_at, we reset it to NULL so the
- * rows are re-enqueued for team sync under the real machine id.
+ * migrateV6ToV7 was a one-shot backfill with a hardcoded table list that missed
+ * knowledge_release_state, knowledge_git_provenance, and skill_usage. v52 instead
+ * intersects the live schema with TEAM_SYNC_OBSERVED_TABLES (the canonical synced
+ * list, kept in parity with the worker's SYNCED_TABLES), so:
+ *   - every synced table — including entity_mentions (composite key, bare UPDATE)
+ *     and skill_usage (no synced_at column) — is converted, and
+ *   - infra/local-only tables are never touched. In particular team_outbox carries
+ *     a machine_id COLUMN but its routing identity lives inside the payload JSON;
+ *     rewriting only the column would desync an in-flight 'local'-queued row (the
+ *     worker's upsert lets the payload's machine_id win). Excluding team_outbox
+ *     here keeps the column and payload consistent. Other infra tables
+ *     (team_sync_state, team_members) are likewise left alone.
  *
- * Local schema: PK is `id` alone (no composite key), so a plain UPDATE is
- * collision-safe. Do NOT touch cloud D1 here (that is FU6-F3).
+ * For tables that also have synced_at, we reset it to NULL so the converted rows
+ * are re-enqueued for team sync under the real machine id.
+ *
+ * Local schema: PK is `id` alone (or a composite key for entity_mentions), so a
+ * plain UPDATE is collision-safe. Do NOT touch cloud D1 here (that is FU6-F3).
  *
  * Idempotent: a second run finds zero machine_id='local' rows and is a no-op.
  */
 function migrateV51ToV52(db: Database, machineId: string): void {
   if (machineId === 'local' || machineId === DEFAULT_MACHINE_ID) {
-    // Nothing to fix; still stamp the version so the registry doesn't re-run.
+    // Nothing to convert with a 'local' identity. Still stamp the version so the
+    // registry doesn't re-run, BUT first surface a warning if synced tables hold
+    // real data that should have been converted — that means a Grove-DB-open call
+    // site failed to pass the resolved machine id, and the conversion is being
+    // permanently skipped for this vault. Visible warning > silent dead migration.
+    let staleLocalRows = 0;
+    for (const table of TEAM_SYNC_OBSERVED_TABLES) {
+      try {
+        const cols = new Set(
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (c) => c.name,
+          ),
+        );
+        if (!cols.has('machine_id')) continue;
+        const row = db
+          .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE machine_id = 'local'`)
+          .get() as { n: number };
+        staleLocalRows += row.n;
+      } catch {
+        // Missing table (partial schema in tests) — skip; not our concern here.
+      }
+    }
+    if (staleLocalRows > 0) {
+      console.warn(
+        `[migrations] v52 skipped machine_id conversion: createSchema was called with ` +
+          `machineId='${machineId}', but ${staleLocalRows} synced-table row(s) still carry ` +
+          `machine_id='local'. A Grove-DB-open call site is not passing the resolved machine ` +
+          `id (getMachineId()); these rows will not sync correctly until that is fixed.`,
+      );
+    }
+
     db.prepare('BEGIN').run();
     try {
       db.prepare(
@@ -3201,15 +3242,10 @@ function migrateV51ToV52(db: Database, machineId: string): void {
 
   db.prepare('BEGIN').run();
   try {
-    // Enumerate every non-system table dynamically so future tables are covered
-    // and we never repeat the hardcoded-list gap from migrateV6ToV7.
-    const tables = (
-      db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
-      ).all() as Array<{ name: string }>
-    ).map((r) => r.name);
-
-    for (const table of tables) {
+    // Scope to the canonical synced table set, intersected with the live schema.
+    // This skips synced tables that lack a machine_id column gracefully and never
+    // touches team_outbox / infra tables (see header comment for the desync rationale).
+    for (const table of TEAM_SYNC_OBSERVED_TABLES) {
       const cols = new Set(
         (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
           (c) => c.name,
