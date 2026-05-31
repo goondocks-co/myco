@@ -14,7 +14,7 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
-import { SYNCED_TABLES, requiresGroveProjectId, type SyncedTable } from './synced-tables';
+import { SYNCED_TABLES, requiresGroveProjectId, stampSyncedAtAtIngestion, type SyncedTable } from './synced-tables';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -447,7 +447,16 @@ function buildInsertParts(
   id: string,
   machineId: string,
 ): { sql: string; values: unknown[] } {
-  const row: Record<string, unknown> = { id, machine_id: machineId, ...data, synced_at: epochSeconds() };
+  const row: Record<string, unknown> = { id, machine_id: machineId, ...data };
+
+  // Machine-scoped rows (team_members) carry a NULL synced_at over the wire —
+  // the daemon stamps it locally only after a successful push, so the
+  // serialized payload predates that write. Stamp the worker's receive time so
+  // the roster's "last received" provenance is server-authoritative. Project-
+  // scoped rows keep their wire synced_at untouched.
+  if (stampSyncedAtAtIngestion(table)) {
+    row.synced_at = epochSeconds();
+  }
 
   // Remove fields that don't belong in D1 (local-only fields)
   delete row.embedded;

@@ -88,3 +88,20 @@ export const MACHINE_SCOPED_TABLES = SYNCED_TABLES.filter(
 export function requiresGroveProjectId(table: string): boolean {
   return SYNCED_TABLE_SCOPE[table as SyncedTable] !== 'machine';
 }
+
+/**
+ * Whether the worker should stamp a row's `synced_at` with its own receive
+ * time at ingestion (rather than honoring whatever value came over the wire).
+ *
+ * True for machine-scoped tables (team_members). Their `synced_at` is set
+ * locally on the daemon only AFTER a successful push, so the value serialized
+ * into the outbox payload is always NULL — leaving the roster's "last
+ * received" provenance blank. Stamping at ingestion makes `synced_at`
+ * server-authoritative ("when the worker last received this row").
+ *
+ * False for project-scoped rows, which keep their existing wire semantics so
+ * drift/other consumers that read `synced_at` are unaffected.
+ */
+export function stampSyncedAtAtIngestion(table: string): boolean {
+  return SYNCED_TABLE_SCOPE[table as SyncedTable] === 'machine';
+}

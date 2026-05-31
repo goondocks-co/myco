@@ -46,6 +46,7 @@ import {
   SYNCED_TABLE_SCOPE,
   MACHINE_SCOPED_TABLES,
   requiresGroveProjectId,
+  stampSyncedAtAtIngestion,
 } from '../../packages/myco-team/worker/src/synced-tables.ts';
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,23 @@ describe('machine-scoped tables: project_id gate exemption', () => {
   it('MACHINE_SCOPED_TABLES ⊆ worker SYNCED_TABLES (every machine-scoped table is actually synced)', () => {
     const machineScoped = new Set<string>(MACHINE_SCOPED_TABLES as readonly string[]);
     expect(minus(machineScoped, worker)).toEqual([]);
+  });
+});
+
+describe('machine-scoped tables: synced_at stamped at ingestion', () => {
+  it('stamps team_members synced_at at ingestion (machine-scoped, NULL over the wire)', () => {
+    expect(stampSyncedAtAtIngestion('team_members')).toBe(true);
+  });
+
+  it('does not stamp project-scoped rows (keep their wire synced_at)', () => {
+    expect(stampSyncedAtAtIngestion('sessions')).toBe(false);
+    expect(stampSyncedAtAtIngestion('spores')).toBe(false);
+  });
+
+  it('stamps exactly the machine-scoped tables (derived from SYNCED_TABLE_SCOPE)', () => {
+    for (const table of WORKER_SYNCED_TABLES) {
+      expect(stampSyncedAtAtIngestion(table)).toBe(SYNCED_TABLE_SCOPE[table] === 'machine');
+    }
   });
 });
 
