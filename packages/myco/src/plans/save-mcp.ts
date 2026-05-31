@@ -8,7 +8,7 @@ import { getLatestOpenBatch } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { getPlan } from '@myco/db/queries/plans.js';
 import {
-  buildPathPlanLogicalKey,
+  buildFilePlanLogicalKey,
   buildSessionPlanLogicalKey,
   normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
@@ -89,11 +89,11 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     };
   }
 
-  if (hasSourcePath === hasPlanKey) {
+  if (!hasSourcePath && !hasPlanKey) {
     return {
       ok: false,
       code: 'invalid-arguments',
-      message: 'Provide exactly one of source_path or plan_key',
+      message: 'Provide source_path, plan_key, or both when creating a new plan',
     };
   }
 
@@ -107,9 +107,9 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   const normalizedSourcePath = input.source_path
     ? normalizePlanSourcePath(input.source_path, input.projectRoot)
     : null;
-  const logicalKey = normalizedSourcePath
-    ? buildPathPlanLogicalKey(normalizedSourcePath)
-    : buildSessionPlanLogicalKey(sessionId, input.plan_key!);
+  const logicalKey = input.plan_key
+    ? buildSessionPlanLogicalKey(sessionId, input.plan_key)
+    : buildFilePlanLogicalKey(sessionId, normalizedSourcePath!);
 
   const plan = persistPlan({
     sessionId,

@@ -175,14 +175,14 @@ describe('myco_plans op: save (in-process)', () => {
       source_path: 'docs/shared-plan.md',
     }, mockClient(), contextB) as PlanSaveSuccess;
 
-    expect(first.logical_key).toBe('path:docs/shared-plan.md');
-    expect(second.logical_key).toBe('path:docs/shared-plan.md');
+    expect(first.logical_key).toBe('session:sess-a:file:docs/shared-plan.md');
+    expect(second.logical_key).toBe('session:sess-b:file:docs/shared-plan.md');
     expect(first.id).not.toBe(second.id);
 
     const rows = getDatabase().prepare(
       `SELECT id, project_id, title
          FROM plans
-        WHERE logical_key = 'path:docs/shared-plan.md'
+        WHERE source_path = 'docs/shared-plan.md'
         ORDER BY project_id`,
     ).all() as Array<{ id: string; project_id: string; title: string }>;
     expect(rows).toEqual([
@@ -210,24 +210,45 @@ describe('myco_plans op: save (in-process)', () => {
       source_path: `${worktreeRoot}/docs/plans/sprint.md`,
     }, mockClient(), context) as PlanSaveSuccess;
 
-    expect(result.logical_key).toBe('path:docs/plans/sprint.md');
+    expect(result.logical_key).toBe('session:sess-worktree:file:docs/plans/sprint.md');
     expect(result.source_path).toBe('docs/plans/sprint.md');
   });
 
-  it('rejects op:save when both source_path and plan_key are passed', async () => {
+  it('accepts source_path and plan_key together; plan_key is identity, source_path is metadata', async () => {
+    seedSession('sess-combo', 'proj_dddddddddddddddddddddddddddddddd');
+    const context = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/workspace/project-d',
+      projectId: 'proj_dddddddddddddddddddddddddddddddd',
+      groveId: 'grove-d',
+      machineId: 'machine-d',
+      source: 'explicit',
+    });
+
+    const result = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-combo',
+      content: '# Plan',
+      source_path: '/workspace/project-d/docs/plan.md',
+      plan_key: 'primary',
+    }, mockClient(), context) as PlanSaveSuccess;
+
+    expect(result.ok).toBe(true);
+    expect(result.logical_key).toBe('session:sess-combo:key:primary');
+    expect(result.source_path).toBe('docs/plan.md');
+  });
+
+  it('rejects op:save with neither source_path nor plan_key', async () => {
     seedSession('sess-1');
 
     const result = await handleMycoPlans({
       op: 'save',
       session_id: 'sess-1',
       content: '# Plan',
-      source_path: 'docs/plan.md',
-      plan_key: 'primary',
     }, mockClient(), vaultDir);
 
     expect(result).toEqual({
       ok: false,
-      error: 'Provide exactly one of source_path or plan_key',
+      error: 'Provide source_path, plan_key, or both when creating a new plan',
     });
   });
 
