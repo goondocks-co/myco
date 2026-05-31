@@ -456,10 +456,23 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     if (!teamId) return { status: 400, body: { error: 'missing_team_id' } };
     const team = teamRegistry.get(teamId);
     if (!team) return { body: { forgotten: false } };
+    // Best-effort: drop this machine's roster row on the worker so it stops
+    // lingering as a ghost member for teammates. An unreachable worker must
+    // never block leaving — the local forget proceeds regardless.
+    let memberRemoved = false;
+    const client = deps.getTeamClientForId?.(teamId) ?? null;
+    if (client) {
+      try {
+        await client.removeMember(machineId);
+        memberRemoved = true;
+      } catch (err) {
+        logger.warn('team-sync.forget.member-remove-failed', 'Could not remove this machine from the team roster (will linger until the worker is reachable)', { team_id: teamId, error: errorMessage(err) });
+      }
+    }
     const purged = dropPendingForProjects(team.projects.map((p) => p.project_id));
     teamRegistry.remove(teamId);
     logger.info('team-sync.registry.forgotten', 'Forgot team from registry', { team_id: teamId, purged });
-    return { body: { forgotten: true, purged } };
+    return { body: { forgotten: true, purged, member_removed: memberRemoved } };
   }
 
   /**

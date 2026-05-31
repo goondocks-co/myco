@@ -447,6 +447,24 @@ describe('TeamSyncClient', () => {
     });
   });
 
+  describe('removeMember', () => {
+    it('DELETEs /members/<machineId> with the id percent-encoded', async () => {
+      const mockFetch = vi.fn(async () => new Response(JSON.stringify({ removed: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      const result = await client.removeMember('machine/with space');
+
+      expect(result.removed).toBe(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://myco-team.example.workers.dev/members/machine%2Fwith%20space',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+  });
+
   describe('request timeout', () => {
     it('attaches an AbortSignal to every request() call', async () => {
       const mockFetch = vi.fn(async () => new Response(JSON.stringify({ config: {}, sync_protocol_version: 1 }), {

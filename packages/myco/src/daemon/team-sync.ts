@@ -493,6 +493,11 @@ export class TeamSyncClient {
     return await this.request('GET', '/members') as TeamMembersListResponse;
   }
 
+  /** Remove a single machine's roster row (used when a machine leaves the team). */
+  async removeMember(machineId: string): Promise<{ removed: number }> {
+    return await this.request('DELETE', `/members/${encodeURIComponent(machineId)}`) as { removed: number };
+  }
+
   async getSyncSummary(machineId?: string): Promise<TeamRemoteSyncSummaryResponse> {
     const path = machineId
       ? `/sync-summary?machine_id=${encodeURIComponent(machineId)}`

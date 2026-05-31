@@ -1737,6 +1737,25 @@ async function handleListMembers(env: Env): Promise<Response> {
 }
 
 /**
+ * `DELETE /members/:machine_id` — drop a single machine's roster row. Called
+ * when a teammate leaves the team so the departing machine stops lingering as
+ * a ghost member in everyone else's view.
+ */
+async function handleRemoveMember(machineId: string, env: Env): Promise<Response> {
+  if (!machineId) return errorResponse('machine_id is required', 400);
+  try {
+    const res = await env.MYCO_TEAM_DB
+      .prepare('DELETE FROM team_members WHERE machine_id = ?')
+      .bind(machineId)
+      .run();
+    return jsonResponse({ removed: res.meta?.changes ?? 0 });
+  } catch {
+    // team_members may not exist on a worker deployed before the schema migration.
+    return jsonResponse({ removed: 0 });
+  }
+}
+
+/**
  * `POST /rebuild` — destructive one-way repair. Truncates the requesting
  * machine's rows from this Grove's D1 tables and clears their Vectorize
  * entries so the daemon can re-push the full local Grove (`backfillAll`)
@@ -2091,6 +2110,15 @@ export default {
       }
       if (method === 'GET' && path === '/members') {
         return await handleListMembers(env);
+      }
+      // A departing machine removes its own roster row so it stops appearing
+      // as a ghost member in every teammate's view (mirrors /records/ parse).
+      if (method === 'DELETE' && path.startsWith('/members/')) {
+        const segments = path.split('/').filter(Boolean); // ['members', ':machine_id']
+        if (segments.length === 2) {
+          return await handleRemoveMember(decodeURIComponent(segments[1]), env);
+        }
+        return errorResponse('Not found', 404);
       }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);

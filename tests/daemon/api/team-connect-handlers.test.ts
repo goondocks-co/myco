@@ -658,6 +658,65 @@ describe('team-connect handlers — direct coverage', () => {
       expect(teamRegistry.get(teamId)).toBeNull();
     });
 
+    it('removes this machine from the remote roster before unregistering', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Forget Me', worker_url: 'https://f.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(),
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+
+      let removeArg: string | undefined;
+      let registryStillPresentWhenCalled: boolean | undefined;
+      const client = makeStubClient({
+        removeMember: async (machineId: string) => {
+          removeArg = machineId;
+          registryStillPresentWhenCalled = teamRegistry.get(teamId) !== null;
+          return { removed: 1 };
+        },
+      });
+
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger,
+        getTeamClient: () => null,
+        getTeamClientForId: (id) => (id === teamId ? (client as never) : null),
+      });
+
+      const res = await handlers.handleForget(makeRequest({ body: { team_id: teamId } }));
+      expect(removeArg).toBe('machine-test');
+      // Removal happens before teamRegistry.remove so the roster row is dropped
+      // while we still know the team exists.
+      expect(registryStillPresentWhenCalled).toBe(true);
+      expect((res.body as { forgotten: boolean; member_removed?: boolean }).forgotten).toBe(true);
+      expect((res.body as { member_removed?: boolean }).member_removed).toBe(true);
+      expect(teamRegistry.get(teamId)).toBeNull();
+    });
+
+    it('still forgets locally when remote roster removal throws (best-effort)', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Forget Me', worker_url: 'https://f.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(),
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+      const client = makeStubClient({
+        removeMember: async () => { throw new Error('worker unreachable'); },
+      });
+
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger,
+        getTeamClient: () => null,
+        getTeamClientForId: (id) => (id === teamId ? (client as never) : null),
+      });
+
+      const res = await handlers.handleForget(makeRequest({ body: { team_id: teamId } }));
+      expect((res.body as { forgotten: boolean; member_removed?: boolean }).forgotten).toBe(true);
+      expect((res.body as { member_removed?: boolean }).member_removed).toBe(false);
+      expect(teamRegistry.get(teamId)).toBeNull();
+    });
+
     it('is a no-op for an unknown team', async () => {
       const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
       const handlers = createTeamHandlers({
