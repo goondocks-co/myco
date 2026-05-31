@@ -1,10 +1,11 @@
-import { useState, useMemo } from 'react';
-import { Trash2 } from 'lucide-react';
+import { useState, useMemo, useCallback } from 'react';
+import { Trash2, Copy, Check } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { MarkdownContent } from '../ui/markdown-content';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useDeletePlan, useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
+import { truncatePlanId } from './plan-id';
 
 /* ---------- Constants ---------- */
 
@@ -43,6 +44,33 @@ function PlanStatusBadge({ status }: { status: string }) {
     PLAN_STATUS_STYLES[status] ?? PLAN_STATUS_DEFAULT_STYLE,
   );
   return <span className={classes}>{status}</span>;
+}
+
+/**
+ * Copyable plan ID. Shows a truncated id; copies the full id (the shareable
+ * handle a symbiont passes to `myco_plans` op:"get" to pick the plan up in a
+ * new session). Stops click propagation so copying never toggles the card.
+ */
+function CopyablePlanId({ planId }: { planId: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(() => {
+    if (!navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(planId);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [planId]);
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onCopy(); }}
+      title={`Copy plan ID: ${planId}`}
+      className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground hover:text-primary transition-colors"
+    >
+      <span>{truncatePlanId(planId)}</span>
+      {copied ? <Check className="h-3 w-3 text-primary" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
 }
 
 interface PlanCardProps {
@@ -102,7 +130,8 @@ function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete 
             </p>
           )}
 
-          <div className="flex gap-3 font-sans text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 font-sans text-xs text-muted-foreground">
+            <CopyablePlanId planId={plan.id} />
             <span>Created {formatEpochAgo(plan.created_at)}</span>
             {plan.updated_at && plan.updated_at !== plan.created_at && (
               <span title={formatEpochAbsolute(plan.updated_at)}>
