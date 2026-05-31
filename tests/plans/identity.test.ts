@@ -16,6 +16,7 @@ import {
   buildSessionTagPlanLogicalKey,
   buildPathPlanLogicalKey,
   buildFilePlanLogicalKey,
+  resolvePlanLogicalKey,
   humanizePlanToken,
   normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
@@ -63,6 +64,22 @@ describe('plan logical-key namespaces', () => {
   it('distinct sessions produce distinct file keys for the same path', () => {
     expect(buildFilePlanLogicalKey('sess-a', 'docs/p.md'))
       .not.toBe(buildFilePlanLogicalKey('sess-b', 'docs/p.md'));
+  });
+});
+
+describe('resolvePlanLogicalKey', () => {
+  it('uses the session key namespace when a plan_key is given (plan_key wins over source_path)', () => {
+    expect(resolvePlanLogicalKey('s1', { planKey: 'primary', normalizedSourcePath: 'docs/p.md' }))
+      .toBe(buildSessionPlanLogicalKey('s1', 'primary'));
+  });
+
+  it('falls back to the file key when only a normalized source path is given', () => {
+    expect(resolvePlanLogicalKey('s1', { normalizedSourcePath: 'docs/p.md' }))
+      .toBe(buildFilePlanLogicalKey('s1', 'docs/p.md'));
+  });
+
+  it('throws when neither a plan_key nor a source path is provided', () => {
+    expect(() => resolvePlanLogicalKey('s1', {})).toThrow();
   });
 });
 

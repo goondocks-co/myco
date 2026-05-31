@@ -70,6 +70,21 @@ export function buildFilePlanLogicalKey(sessionId: string, normalizedPath: strin
   return `${PLAN_SESSION_KEY_PREFIX}${sessionId}${PLAN_FILE_KEY_SEGMENT}${normalizedPath}`;
 }
 
+/**
+ * Single authoritative definition of save-path plan identity precedence: a
+ * caller-supplied `planKey` is the identity (session `:key:` namespace);
+ * otherwise the plan is identified by its file (session `:file:` namespace).
+ * `planKey` wins when both are present — `source_path` is then pure metadata.
+ */
+export function resolvePlanLogicalKey(
+  sessionId: string,
+  opts: { planKey?: string | null; normalizedSourcePath?: string | null },
+): string {
+  if (opts.planKey) return buildSessionPlanLogicalKey(sessionId, opts.planKey);
+  if (opts.normalizedSourcePath) return buildFilePlanLogicalKey(sessionId, opts.normalizedSourcePath);
+  throw new Error('resolvePlanLogicalKey requires a planKey or a normalizedSourcePath');
+}
+
 export function buildLegacyPlanLogicalKey(
   id: string,
   sessionId?: string | null,

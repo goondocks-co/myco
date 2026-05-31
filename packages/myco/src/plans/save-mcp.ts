@@ -8,8 +8,7 @@ import { getLatestOpenBatch } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { getPlan } from '@myco/db/queries/plans.js';
 import {
-  buildFilePlanLogicalKey,
-  buildSessionPlanLogicalKey,
+  resolvePlanLogicalKey,
   normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
 import { persistPlan } from '../daemon/plan-capture.js';
@@ -111,9 +110,10 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   const normalizedSourcePath = input.source_path
     ? normalizePlanSourcePath(input.source_path, input.projectRoot)
     : null;
-  const logicalKey = input.plan_key
-    ? buildSessionPlanLogicalKey(sessionId, input.plan_key)
-    : buildFilePlanLogicalKey(sessionId, normalizedSourcePath!);
+  const logicalKey = resolvePlanLogicalKey(sessionId, {
+    planKey: input.plan_key,
+    normalizedSourcePath,
+  });
 
   const plan = persistPlan({
     sessionId,
