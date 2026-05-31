@@ -383,6 +383,60 @@ describe('team-connect handlers — direct coverage', () => {
       expect(b.healthy).toBe(true);
     });
 
+    it('handleBackfill uses the team_id param client, not the project-context one', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Backfill B', worker_url: 'https://b.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(), projects: [],
+      });
+      let projectEnqueue = 0;
+      let teamBEnqueue = 0;
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger,
+        getTeamClient: () => makeStubClient({
+          enqueueVectorReindex: async () => { projectEnqueue += 1; return { enqueued: 1, by_table: {} }; },
+        }) as never,
+        getTeamClientForId: (id) => (id === teamId
+          ? (makeStubClient({
+              enqueueVectorReindex: async () => { teamBEnqueue += 1; return { enqueued: 42, by_table: {} }; },
+            }) as never)
+          : null),
+      } as never);
+
+      const res = await handlers.handleBackfill(makeRequest({ body: { mode: 'unsynced' }, query: { team_id: teamId } }));
+      expect((res.body as { vector_enqueued: number | null }).vector_enqueued).toBe(42);
+      expect(teamBEnqueue).toBe(1);
+      expect(projectEnqueue).toBe(0);
+    });
+
+    it('handleRotateMcpToken rotates against the team_id param client and writes B\'s secret', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Rotate B', worker_url: 'https://rb.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(), projects: [],
+      });
+      let projectRotate = 0;
+      let teamBRotate = 0;
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger,
+        getTeamClient: () => makeStubClient({
+          rotateMcpToken: async () => { projectRotate += 1; return 'project-token'; },
+        }) as never,
+        getTeamClientForId: (id) => (id === teamId
+          ? (makeStubClient({ rotateMcpToken: async () => { teamBRotate += 1; return 'team-b-token'; } }) as never)
+          : null),
+      } as never);
+
+      const res = await handlers.handleRotateMcpToken(makeRequest({ query: { team_id: teamId } }));
+      expect((res.body as { token: string }).token).toBe('team-b-token');
+      expect(teamBRotate).toBe(1);
+      expect(projectRotate).toBe(0);
+      // The rotated token is written to the SELECTED team's registry secret.
+      expect(teamRegistry.readSecrets(teamId).MYCO_TEAM_MCP_TOKEN).toBe('team-b-token');
+    });
+
     it('handleQueueStats uses the team_id param client', async () => {
       const teamId = createTeamId();
       teamRegistry.save({
@@ -495,6 +549,55 @@ describe('team-connect handlers — direct coverage', () => {
       expect(teamRegistry.get(JOIN_TEAM_ID)?.projects).toEqual([
         { grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! },
       ]);
+    });
+
+    it('returns 409 worker_url_mismatch when an existing record points at a different worker', async () => {
+      teamRegistry.save({
+        team_id: JOIN_TEAM_ID,
+        name: 'Joined Team',
+        worker_url: 'https://original.example.workers.dev',
+        domain: null,
+        mcp_endpoint: 'https://original.example.workers.dev/mcp',
+        created_at: '2026-05-01',
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+      })) as never);
+
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://different.example.workers.dev', team_key: 'tk-secret' },
+      }));
+      expect(res.status).toBe(409);
+      expect((res.body as { error: string }).error).toBe('worker_url_mismatch');
+      // The existing record must not have been repointed.
+      expect(teamRegistry.get(JOIN_TEAM_ID)?.worker_url).toBe('https://original.example.workers.dev');
+    });
+
+    it('idempotent same-url re-join still succeeds (no 409)', async () => {
+      teamRegistry.save({
+        team_id: JOIN_TEAM_ID,
+        name: 'Joined Team',
+        worker_url: 'https://joined.example.workers.dev',
+        domain: null,
+        mcp_endpoint: 'https://joined.example.workers.dev/mcp',
+        created_at: '2026-05-01',
+        projects: [],
+      });
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+      })) as never);
+
+      // Trailing slash normalizes to the same url — must be treated as idempotent.
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://joined.example.workers.dev/', team_key: 'tk-secret' },
+      }));
+      expect(res.status).toBeUndefined();
+      expect(teamRegistry.get(JOIN_TEAM_ID)?.worker_url).toBe('https://joined.example.workers.dev');
     });
 
     it('returns 400 when worker_url or team_key is missing', async () => {

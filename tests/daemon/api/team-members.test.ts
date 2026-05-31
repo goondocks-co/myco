@@ -81,6 +81,78 @@ describe('createListTeamMembersHandler', () => {
     expect(body.members[1].role).toBeNull();
   });
 
+  it('merges the local self-row into the remote roster (local not in remote)', async () => {
+    const teamId = createTeamId();
+    // Local self-row whose machine_id is absent from the worker roster.
+    getDatabase()
+      .prepare(
+        `INSERT INTO team_members (id, "user", role, joined, tags, machine_id, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('machine-self', 'Self', 'member', '2026-03-03T00:00:00Z', 'me', 'machine-self', 5000);
+
+    const handler = createListTeamMembersHandler({
+      getTeamClientForId: (id) =>
+        id === teamId ? { listMembers: async () => ({ members: WIRE_ROWS }) } : null,
+    });
+
+    const res = await handler(makeRequest({ query: { team_id: teamId } }));
+    const body = res.body as ListTeamMembersResponse;
+
+    const byMachine = new Map(body.members.map((m) => [m.machine_id, m]));
+    expect(byMachine.has('machine-a')).toBe(true);
+    expect(byMachine.has('machine-b')).toBe(true);
+    expect(byMachine.has('machine-self')).toBe(true);
+    expect(byMachine.get('machine-self')!.user).toBe('Self');
+  });
+
+  it('shows the local self-row even against an old/empty worker roster', async () => {
+    const teamId = createTeamId();
+    getDatabase()
+      .prepare(
+        `INSERT INTO team_members (id, "user", role, joined, tags, machine_id, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('machine-self', 'Self', 'member', null, null, 'machine-self', 5000);
+
+    const handler = createListTeamMembersHandler({
+      // Old worker (pre-team_members migration) returns 200 {members:[]} — no throw.
+      getTeamClientForId: (id) =>
+        id === teamId ? { listMembers: async () => ({ members: [] }) } : null,
+    });
+
+    const res = await handler(makeRequest({ query: { team_id: teamId } }));
+    const body = res.body as ListTeamMembersResponse;
+
+    expect(body.members).toHaveLength(1);
+    expect(body.members[0].machine_id).toBe('machine-self');
+    expect(body.members[0].user).toBe('Self');
+  });
+
+  it('local self-row wins on machine_id collision with the remote roster', async () => {
+    const teamId = createTeamId();
+    // Same machine_id as WIRE_ROWS[0] (machine-a) but with local provenance.
+    getDatabase()
+      .prepare(
+        `INSERT INTO team_members (id, "user", role, joined, tags, machine_id, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('machine-a', 'Ada (local)', 'owner', '2026-01-01T00:00:00Z', 'core', 'machine-a', 9999);
+
+    const handler = createListTeamMembersHandler({
+      getTeamClientForId: (id) =>
+        id === teamId ? { listMembers: async () => ({ members: WIRE_ROWS }) } : null,
+    });
+
+    const res = await handler(makeRequest({ query: { team_id: teamId } }));
+    const body = res.body as ListTeamMembersResponse;
+
+    const byMachine = new Map(body.members.map((m) => [m.machine_id, m]));
+    expect(body.members).toHaveLength(2);
+    expect(byMachine.get('machine-a')!.user).toBe('Ada (local)');
+    expect(byMachine.get('machine-a')!.synced_at).toBe(9999);
+  });
+
   it('falls back to the local roster when no team_id is supplied', async () => {
     getDatabase()
       .prepare(

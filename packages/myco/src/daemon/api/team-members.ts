@@ -32,27 +32,16 @@ function splitTags(tags: string | null): string[] {
   return tags ? tags.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
 
-function rowToDto(row: TeamMemberRow): TeamMemberDto {
+/** Map the common member shape (local row or remote wire) to the UI DTO. */
+function toMemberDto(m: TeamMemberRow | TeamMemberWire): TeamMemberDto {
   return {
-    id: row.id,
-    user: row.user,
-    role: row.role,
-    joined: row.joined,
-    tags: splitTags(row.tags),
-    machine_id: row.machine_id,
-    synced_at: row.synced_at,
-  };
-}
-
-function wireToDto(w: TeamMemberWire): TeamMemberDto {
-  return {
-    id: w.id,
-    user: w.user,
-    role: w.role,
-    joined: w.joined,
-    tags: splitTags(w.tags),
-    machine_id: w.machine_id,
-    synced_at: w.synced_at,
+    id: m.id,
+    user: m.user,
+    role: m.role,
+    joined: m.joined,
+    tags: splitTags(m.tags),
+    machine_id: m.machine_id,
+    synced_at: m.synced_at,
   };
 }
 
@@ -63,28 +52,42 @@ function wireToDto(w: TeamMemberWire): TeamMemberDto {
  */
 export const listTeamMembersHandler: RouteHandler = async () => {
   const rows = listTeamMembers();
-  const body: ListTeamMembersResponse = { members: rows.map(rowToDto) };
+  const body: ListTeamMembersResponse = { members: rows.map(toMemberDto) };
   return { body };
 };
+
+/**
+ * Merge local member rows over a remote roster, deduped by machine_id. The
+ * local rows win on collision because they carry this machine's accurate
+ * `synced_at` / identity. This guarantees the user always sees themselves —
+ * even against an old worker (pre-`team_members` migration) that returns an
+ * empty `{members:[]}` without throwing.
+ */
+function mergeRosters(remote: TeamMemberDto[], local: TeamMemberDto[]): TeamMemberDto[] {
+  const byMachine = new Map<string, TeamMemberDto>();
+  for (const m of remote) byMachine.set(m.machine_id, m);
+  for (const m of local) byMachine.set(m.machine_id, m);
+  return [...byMachine.values()];
+}
 
 export function createListTeamMembersHandler(deps: {
   getTeamClientForId: (teamId: string) => { listMembers: () => Promise<{ members: TeamMemberWire[] }> } | null;
 }): RouteHandler {
   return async (req) => {
     const teamId = typeof req.query?.team_id === 'string' && req.query.team_id ? req.query.team_id : null;
+    const localDtos = listTeamMembers().map(toMemberDto);
     if (teamId) {
       const client = deps.getTeamClientForId(teamId);
       if (client) {
         try {
           const { members } = await client.listMembers();
-          const body: ListTeamMembersResponse = { members: members.map(wireToDto) };
-          return { body };
+          const merged = mergeRosters(members.map(toMemberDto), localDtos);
+          return { body: { members: merged } satisfies ListTeamMembersResponse };
         } catch {
           // Worker unreachable — fall through to the local self-only roster.
         }
       }
     }
-    const rows = listTeamMembers();
-    return { body: { members: rows.map(rowToDto) } satisfies ListTeamMembersResponse };
+    return { body: { members: localDtos } satisfies ListTeamMembersResponse };
   };
 }

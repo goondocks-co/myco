@@ -348,6 +348,70 @@ describe('createTeamHandlers.handleStatus', () => {
     expect(healthSpy).not.toHaveBeenCalled();
   });
 
+  it('falls back to a team the Grove participates in when the request project maps to no team (no team_id)', async () => {
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const { teamRegistry } = await import('../../../packages/myco/src/team/registry.js');
+    const { createTeamId } = await import('../../../packages/myco/src/grove/ids.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove('Multi-Project Grove', mycoHome);
+    const teamId = createTeamId();
+    // The team is participated-in by the grove via a DIFFERENT project than the
+    // one on the request — mirrors a multi-project grove / brief initial load.
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Grove Team',
+      worker_url: 'https://grove-team.example.workers.dev',
+      domain: null,
+      mcp_endpoint: 'https://grove-team.example.workers.dev/mcp',
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: grove.id, project_id: 'proj_cccccccccccccccccccccccccccccccc' }],
+    });
+
+    const healthSpy = vi.fn(async () => ({
+      status: 'ok', node_count: 1, sync_protocol_version: 1, package_version: '1.2.3', schema_version: 1,
+    }));
+    const handlers = createTeamHandlers({
+      vaultDir,
+      machineId: 'machine-test',
+      globalPrefix: null,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
+      // Project-context client must NOT be used; the grove fallback resolves via id.
+      getTeamClient: () => null,
+      getTeamClientForId: (id: string) => (id === teamId ? ({
+        health: healthSpy,
+        getVersionCompat: () => 'ok',
+        getWorkerProtocolVersion: () => 1,
+        getWorkerMinClientVersion: () => 1,
+        getMcpToken: () => null,
+        getMcpEndpoint: () => null,
+        getCollectiveStatus: async () => ({ connected: false, collective_url: null, project_id: null, last_settings_sync: null, last_heartbeat: null, capabilities: [], settings: {} }),
+        getConfig: async () => ({ config: {}, sync_protocol_version: 1 }),
+      }) : null),
+    } as never);
+
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        // A project that is NOT a member of any team.
+        projectId: 'proj_dddddddddddddddddddddddddddddddd',
+        groveId: grove.id,
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    const body = response.body as { enabled: boolean; team_id: string | null; worker_url: string | null; healthy: boolean };
+
+    expect(body.team_id).toBe(teamId);
+    expect(body.worker_url).toBe('https://grove-team.example.workers.dev');
+    expect(body.enabled).toBe(true);
+    expect(body.healthy).toBe(true);
+    expect(healthSpy).toHaveBeenCalled();
+  });
+
   it('falls back to the dev-linked myco-team-dev binary when the global package is absent', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
     const binDir = makeFakeDevLinkedTeamBinary(tempDir, '9.8.7');

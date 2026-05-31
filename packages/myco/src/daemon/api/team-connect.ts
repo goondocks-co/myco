@@ -381,7 +381,21 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const projectTeamId = req.requestContext?.projectId
       ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
       : null;
-    return { teamId: projectTeamId, client: deps.getTeamClient(req.requestContext) };
+    if (projectTeamId) {
+      return { teamId: projectTeamId, client: deps.getTeamClient(req.requestContext) };
+    }
+    // The request's project maps to no team — but the grove may still
+    // participate in a team via a different project. Fall back to the first
+    // team the grove participates in so a multi-project grove (or the brief
+    // initial load) isn't misreported as "not connected".
+    const groveId = req.requestContext?.groveId;
+    const groveTeamId = groveId
+      ? teamRegistry.list().find((t) => t.projects.some((p) => p.grove_id === groveId))?.team_id ?? null
+      : null;
+    if (groveTeamId) {
+      return { teamId: groveTeamId, client: deps.getTeamClientForId?.(groveTeamId) ?? null };
+    }
+    return { teamId: null, client: deps.getTeamClient(req.requestContext) };
   }
 
   /**
@@ -471,21 +485,54 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     let healthy = false;
     let healthError: string | undefined;
     let workerHasMcpToken = false;
+    type CollectiveStatus = Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>>;
+    type TeamConfig = Awaited<ReturnType<TeamSyncClient['getConfig']>>;
+    let collectiveStatus: CollectiveStatus | null = null;
+    let teamConfig: TeamConfig | null = null;
 
+    // The three worker probes are independent, so run them concurrently. Each
+    // resolves to its own value (failures captured locally so one rejection
+    // doesn't reject the others), and all settle before getVersionCompat() is
+    // read below — preserving the invariant that health() populates the
+    // client's advertised version bounds first.
     if (client && participates) {
-      try {
-        const health = await client.health();
-        healthy = true;
-        deployedWorkerVersion = health.package_version?.trim() || null;
-        // The worker's `/health` returns `mcp_token_hash` only when the
-        // Cloud MCP token is provisioned in the worker's KV. Treat
-        // worker-up + token-provisioned as the MCP health signal — same
-        // process hosts both, so this avoids a separate authenticated
-        // probe round-trip.
-        workerHasMcpToken = Boolean(health.mcp_token_hash);
-      } catch (err) {
-        healthError = (err as Error).message;
-      }
+      const [, collective, cfg] = await Promise.all([
+        (async () => {
+          try {
+            const health = await client.health();
+            healthy = true;
+            deployedWorkerVersion = health.package_version?.trim() || null;
+            // The worker's `/health` returns `mcp_token_hash` only when the
+            // Cloud MCP token is provisioned in the worker's KV. Treat
+            // worker-up + token-provisioned as the MCP health signal — same
+            // process hosts both, so this avoids a separate authenticated
+            // probe round-trip.
+            workerHasMcpToken = Boolean(health.mcp_token_hash);
+          } catch (err) {
+            healthError = (err as Error).message;
+          }
+        })(),
+        (async (): Promise<CollectiveStatus | null> => {
+          try {
+            return await client.getCollectiveStatus();
+          } catch (err) {
+            const detail = errorMessage(err);
+            logger.warn('team-sync.collective.status-failed', 'Collective status unavailable', { error: detail });
+            return null;
+          }
+        })(),
+        (async (): Promise<TeamConfig | null> => {
+          try {
+            return await client.getConfig();
+          } catch (err) {
+            const detail = errorMessage(err);
+            logger.warn('team-sync.config.status-failed', 'Team config unavailable', { error: detail });
+            return null;
+          }
+        })(),
+      ]);
+      collectiveStatus = collective;
+      teamConfig = cfg;
     }
 
     // Sync-protocol compatibility. health() above populates the client's
@@ -506,26 +553,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       // when the team-outbox queries are actually broken.
       const detail = errorMessage(err);
       logger.warn('team-sync.outbox.count-failed', 'team-outbox count unavailable', { error: detail });
-    }
-
-    let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
-    let teamConfig: Awaited<ReturnType<TeamSyncClient['getConfig']>> | null = null;
-    if (client && participates) {
-      try {
-        collectiveStatus = await client.getCollectiveStatus();
-      } catch (err) {
-        const detail = errorMessage(err);
-        logger.warn('team-sync.collective.status-failed', 'Collective status unavailable', { error: detail });
-        collectiveStatus = null;
-      }
-
-      try {
-        teamConfig = await client.getConfig();
-      } catch (err) {
-        const detail = errorMessage(err);
-        logger.warn('team-sync.config.status-failed', 'Team config unavailable', { error: detail });
-        teamConfig = null;
-      }
     }
 
     const remoteConfig = (teamConfig?.config ?? {}) as Record<string, unknown>;
@@ -640,7 +667,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let vectorEnqueued: number | null = null;
     let vectorError: string | null = null;
-    const client = deps.getTeamClient(req.requestContext);
+    const { client } = resolveReadClient(req);
     if (client) {
       try {
         const result = await client.enqueueVectorReindex();
@@ -654,10 +681,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: { enqueued: count, mode, vector_enqueued: vectorEnqueued, vector_error: vectorError } };
   }
 
-  function clientOrError(req: RouteRequest): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
-    const { client } = resolveReadClient(req);
+  function clientOrError(req: RouteRequest): { ok: true; teamId: string | null; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
+    const { teamId, client } = resolveReadClient(req);
     if (!client) return { ok: false, response: { status: 503, body: { error: 'team_not_configured' } } };
-    return { ok: true, client };
+    return { ok: true, teamId, client };
   }
 
   /** GET /api/team/queue-stats — proxies D1-backed queue processing stats from the worker. */
@@ -678,8 +705,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // the same pending number for the selected team.
     const localTables = countTeamSyncRows(machineId);
     const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
-    const { teamId } = resolveReadClient(req);
-    const resolvedTeam = teamId ? teamRegistry.get(teamId) : null;
+    const resolvedTeam = guard.teamId ? teamRegistry.get(guard.teamId) : null;
     let pendingCount = 0;
     try {
       pendingCount = resolvedTeam
@@ -770,7 +796,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/rotate-mcp-token — rotate the MCP bearer token. */
   async function handleRotateMcpToken(req: RouteRequest): Promise<RouteResponse> {
-    const client = deps.getTeamClient(req.requestContext);
+    const { teamId, client } = resolveReadClient(req);
     if (!client) {
       return {
         status: 400,
@@ -779,9 +805,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
     try {
       const token = await client.rotateMcpToken();
-      const teamId = req.requestContext?.projectId
-        ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
-        : null;
       if (teamId) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, token);
       logger.info('team-sync.mcp-token.rotated', 'MCP access token rotated');
       return { body: { token } };
@@ -832,6 +855,18 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
     const teamName = typeof cfg.team_name === 'string' ? cfg.team_name : '';
     const existing = teamRegistry.get(teamId);
+
+    // Guard against silently repointing an existing team at a different
+    // worker. Same id + same (normalized) url is an idempotent re-join.
+    if (existing && existing.worker_url && existing.worker_url !== workerUrl) {
+      return {
+        status: 409,
+        body: {
+          error: 'worker_url_mismatch',
+          message: `Team ${teamId} is already registered with worker_url ${existing.worker_url}; refusing to repoint it to ${workerUrl}.`,
+        },
+      };
+    }
 
     teamRegistry.save({
       team_id: teamId,
