@@ -17,7 +17,7 @@ import type { PlanRow } from '@myco/db/queries/plans.js';
 import { PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import type { Logger } from './logger.js';
 import {
-  buildPathPlanLogicalKey,
+  buildFilePlanLogicalKey,
   buildScopedPlanId,
   buildSessionTagPlanLogicalKey,
   humanizePlanToken,
@@ -316,7 +316,7 @@ export function capturePlan(input: CapturePlanInput): PlanRow {
     sessionId: input.sessionId,
     projectId: input.projectId,
     content: input.content,
-    logicalKey: buildPathPlanLogicalKey(normalizedSourcePath),
+    logicalKey: buildFilePlanLogicalKey(input.sessionId, normalizedSourcePath),
     sourcePath: normalizedSourcePath,
     promptBatchId: input.promptBatchId,
     logger: input.logger,
