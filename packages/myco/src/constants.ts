@@ -172,6 +172,10 @@ export const EDGE_TYPE_EXTRACTED_FROM = 'EXTRACTED_FROM';
 export const EDGE_TYPE_DERIVED_FROM = 'DERIVED_FROM';
 /** Session contains this prompt batch. */
 export const EDGE_TYPE_HAS_BATCH = 'HAS_BATCH';
+/** A non-creating session deliberately retrieved this plan (op:get by id). */
+export const EDGE_TYPE_PLAN_REFERENCED = 'PLAN_REFERENCED';
+/** A non-creating session deliberately updated this plan (op:save by id). */
+export const EDGE_TYPE_PLAN_ADVANCED = 'PLAN_ADVANCED';
 // --- Query defaults ---
 /** Default row limit for query module list operations. */
 export const QUERY_DEFAULT_LIST_LIMIT = 100;
