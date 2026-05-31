@@ -126,6 +126,37 @@ export interface TeamFlushAggregate {
 }
 
 // ---------------------------------------------------------------------------
+// Config-seed planner
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide which `/config` PUT bodies are needed to bring the worker's config
+ * up to the worker-authoritative contract. Each entry is a separate PUT so a
+ * missing `team_id` never clobbers an already-set `team_name`.
+ */
+export function planConfigSeed(
+  existing: Record<string, unknown> | null | undefined,
+  desired: { teamId: string; teamName: string; createdBy: string; createdAt: string },
+): Record<string, string>[] {
+  const has = (k: string) => {
+    const v = existing?.[k];
+    return typeof v === 'string' && v.trim().length > 0;
+  };
+  const puts: Record<string, string>[] = [];
+  if (!has('team_id')) puts.push({ team_id: desired.teamId });
+  if (!has('team_name')) {
+    puts.push({
+      team_name: desired.teamName,
+      embedding_model: '@cf/baai/bge-m3',
+      embedding_dimensions: '1024',
+      created_at: desired.createdAt,
+      created_by: desired.createdBy,
+    });
+  }
+  return puts;
+}
+
+// ---------------------------------------------------------------------------
 // Initialization
 // ---------------------------------------------------------------------------
 
@@ -276,21 +307,21 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       });
     }
 
-    // 2. /config — seed team_name + embedding config when the worker has none.
+    // 2. /config — seed team_id + team_name/embedding when the worker lacks them.
     let configOk = false;
     try {
       const cfg = await client.getConfig().catch(() => null);
-      const teamName = cfg?.config?.team_name;
-      const hasName = typeof teamName === 'string' && teamName.trim().length > 0;
-      if (!hasName) {
-        await client.putConfig({
-          team_name: teamRegistry.get(teamId)?.name ?? '',
-          embedding_model: '@cf/baai/bge-m3',
-          embedding_dimensions: '1024',
-          created_at: String(epochSeconds()),
-          created_by: machineId,
-        });
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Seeded team /config on worker', { team_id: teamId });
+      const puts = planConfigSeed(cfg?.config, {
+        teamId,
+        teamName: teamRegistry.get(teamId)?.name ?? '',
+        createdBy: machineId,
+        createdAt: String(epochSeconds()),
+      });
+      for (const body of puts) {
+        await client.putConfig(body);
+      }
+      if (puts.length > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Seeded team /config on worker', { team_id: teamId, keys: puts.flatMap((p) => Object.keys(p)) });
       }
       configOk = true;
     } catch (err) {
