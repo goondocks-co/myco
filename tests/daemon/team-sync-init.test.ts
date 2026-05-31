@@ -8,6 +8,7 @@ import { resolveGroveDir } from '@myco/grove/paths.js';
 
 const {
   connectMock,
+  rebuildMock,
   enqueueBatchMock,
   listPendingMock,
   markSentMock,
@@ -22,6 +23,7 @@ const {
   setTeamSyncEnabledMock,
 } = vi.hoisted(() => ({
   connectMock: vi.fn(),
+  rebuildMock: vi.fn(),
   enqueueBatchMock: vi.fn(),
   listPendingMock: vi.fn(() => []),
   markSentMock: vi.fn(),
@@ -76,7 +78,10 @@ mock.module('@myco/db/client.js', () => ({
 mock.module('@myco/daemon/team-sync.js', () => ({
   TeamSyncClient: class {
     connect = connectMock;
+    rebuild = rebuildMock;
     enqueueBatch = enqueueBatchMock;
+    health = vi.fn();
+    getVersionCompat = vi.fn(() => 'unknown');
     getCollectiveStatus = vi.fn();
     getMcpToken = vi.fn(() => null);
     getMcpEndpoint = vi.fn(() => null);
@@ -103,6 +108,7 @@ describe('initTeamSync.reconcileClient', () => {
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
     fs.mkdirSync(vaultDir, { recursive: true });
     connectMock.mockResolvedValue({});
+    rebuildMock.mockResolvedValue(undefined);
     enqueueBatchMock.mockResolvedValue({ accepted: 0, rejected: [] });
     listPendingMock.mockReturnValue([]);
     backfillUnsyncedMock.mockReturnValue(3);
@@ -129,7 +135,31 @@ describe('initTeamSync.reconcileClient', () => {
     else process.env.MYCO_HOME = previousMycoHome;
   });
 
-  it('initializes and registers a client when team sync is enabled', async () => {
+  async function registerRegistryTeam(name = 'Registry Team') {
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
+    const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove(name, mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save(
+      {
+        team_id: teamId,
+        name,
+        worker_url: 'https://team.example.workers.dev',
+        domain: null,
+        mcp_endpoint: null,
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: grove.id, project_id: projectId }],
+      },
+      mycoHome,
+    );
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    return { grove, projectId, teamId };
+  }
+
+  it('ignores legacy team config when the Grove has no registry membership', async () => {
     const teamSync = initTeamSync({
       liveConfig: {
         current: {
@@ -144,26 +174,15 @@ describe('initTeamSync.reconcileClient', () => {
 
     await teamSync.reconcileClient();
 
-    expect(connectMock).toHaveBeenCalledWith({
-      machine_id: 'machine-1',
-      version: '1.2.3',
-    });
-    expect(backfillUnsyncedMock).toHaveBeenCalledWith('machine-1');
-    expect(upsertSelfMemberMock).toHaveBeenCalledWith('machine-1', expect.any(String));
-    expect(enqueueOutboxMock).toHaveBeenCalledWith(expect.objectContaining({
-      table_name: 'team_members',
-      row_id: 'machine-1',
-      machine_id: 'machine-1',
-    }));
-    // The write-path gate is now registry-participation-driven, decoupled from
-    // the grove-config flag that builds the read/rebuild client. This legacy
-    // non-Grove setup has no team-registry membership, so the gate is false
-    // even though the read client builds (connect/getTeamClient above).
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(backfillUnsyncedMock).not.toHaveBeenCalled();
+    expect(upsertSelfMemberMock).not.toHaveBeenCalled();
+    expect(enqueueOutboxMock).not.toHaveBeenCalled();
     expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
-    expect(teamSync.getTeamClient()).not.toBeNull();
+    expect(teamSync.getTeamClient()).toBeNull();
   });
 
-  it('skips outbox enqueue when self member row already exists', async () => {
+  it('reconciles the self member locally without enqueueing legacy team_members rows', async () => {
     upsertSelfMemberMock.mockReturnValueOnce({
       inserted: false,
       row: {
@@ -176,6 +195,7 @@ describe('initTeamSync.reconcileClient', () => {
         synced_at: 1779000000,
       },
     });
+    const { grove, projectId } = await registerRegistryTeam();
     const teamSync = initTeamSync({
       liveConfig: {
         current: {
@@ -188,13 +208,14 @@ describe('initTeamSync.reconcileClient', () => {
       serverVersion: '1.2.3',
     });
 
-    await teamSync.reconcileClient();
+    await teamSync.reconcileClient(requestContext(grove.id, projectId));
 
     expect(upsertSelfMemberMock).toHaveBeenCalledWith('machine-1', expect.any(String));
     expect(enqueueOutboxMock).not.toHaveBeenCalled();
   });
 
-  it('does nothing when the same client inputs are reconciled twice', async () => {
+  it('registry membership, not legacy config signatures, drives repeated reconciliation', async () => {
+    const { grove, projectId } = await registerRegistryTeam();
     const teamSync = initTeamSync({
       liveConfig: {
         current: {
@@ -207,11 +228,11 @@ describe('initTeamSync.reconcileClient', () => {
       serverVersion: '1.2.3',
     });
 
-    await teamSync.reconcileClient();
-    await teamSync.reconcileClient();
+    await teamSync.reconcileClient(requestContext(grove.id, projectId));
+    await teamSync.reconcileClient(requestContext(grove.id, projectId));
 
-    expect(connectMock).toHaveBeenCalledTimes(1);
-    expect(backfillUnsyncedMock).toHaveBeenCalledTimes(1);
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(backfillUnsyncedMock).toHaveBeenCalledTimes(2);
   });
 
   it('routes pending outbox rows to the owning team after reconcile', async () => {
@@ -285,32 +306,37 @@ describe('initTeamSync.reconcileClient', () => {
     expect(pruneOldMock).toHaveBeenCalled();
   });
 
-  it('clears the live client when team sync becomes disabled', async () => {
-    const liveConfig = {
-      current: {
-        team: { enabled: true, worker_url: 'https://team.example.workers.dev' },
+  it('matches worker rejections by table and row id', async () => {
+    const { grove, projectId } = await registerRegistryTeam();
+    const pending = [
+      {
+        id: 1,
+        table_name: 'spores',
+        row_id: 'shared-row-id',
+        operation: 'upsert',
+        payload: { id: 'shared-row-id', content: 'bad spore' },
+        machine_id: 'machine-1',
+        project_id: projectId,
+        created_at: 100,
+        sent_at: null,
       },
-    };
-    const teamSync = initTeamSync({
-      liveConfig: liveConfig as never,
-      machineId: 'machine-1',
-      logger: logger as never,
-      vaultDir,
-      serverVersion: '1.2.3',
+      {
+        id: 2,
+        table_name: 'sessions',
+        row_id: 'shared-row-id',
+        operation: 'upsert',
+        payload: { id: 'shared-row-id', title: 'accepted session' },
+        machine_id: 'machine-1',
+        project_id: projectId,
+        created_at: 101,
+        sent_at: null,
+      },
+    ];
+    listPendingMock.mockReturnValueOnce(pending).mockReturnValue([]);
+    enqueueBatchMock.mockResolvedValueOnce({
+      accepted: 1,
+      rejected: [{ id: 'shared-row-id', table: 'spores', error: 'invalid spore' }],
     });
-
-    await teamSync.reconcileClient();
-    expect(teamSync.getTeamClient()).not.toBeNull();
-
-    writeTeamConfig(false);
-    await teamSync.reconcileClient();
-
-    expect(teamSync.getTeamClient()).toBeNull();
-    // The gate follows config down too — disabled config => flag set false.
-    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
-  });
-
-  it('keeps live clients separated by Grove context', () => {
     const teamSync = initTeamSync({
       liveConfig: {
         current: {
@@ -322,17 +348,58 @@ describe('initTeamSync.reconcileClient', () => {
       vaultDir,
       serverVersion: '1.2.3',
     });
-    const groveOne = requestContext('grove_one', 'proj_one');
-    const groveTwo = requestContext('grove_two', 'proj_two');
 
-    const client = { marker: 'one' } as never;
-    teamSync.setTeamClient(client, groveOne);
+    await teamSync.flushPending(requestContext(grove.id, projectId));
 
-    expect(teamSync.getTeamClient(groveOne)).toBe(client);
-    expect(teamSync.getTeamClient(groveTwo)).toBeNull();
+    expect(discardRowsMock).toHaveBeenCalledWith([1]);
+    expect(markSentMock).toHaveBeenCalledWith([2], expect.any(Number));
+    expect(markSourceRowsSyncedMock).toHaveBeenCalledWith([pending[1]], expect.any(Number));
   });
 
-  it('reconciles a Grove client from config and secrets written outside the daemon', async () => {
+  it('registry membership exposes a read client even when legacy config is disabled', async () => {
+    const { grove, projectId } = await registerRegistryTeam();
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: {
+          team: { enabled: false, worker_url: undefined },
+        },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+
+    await teamSync.reconcileClient(requestContext(grove.id, projectId));
+
+    expect(teamSync.getTeamClient(requestContext(grove.id, projectId))).not.toBeNull();
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps registry clients separated by project context', async () => {
+    const first = await registerRegistryTeam('One');
+    const second = await registerRegistryTeam('Two');
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: {
+          team: { enabled: true, worker_url: 'https://team.example.workers.dev' },
+        },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+
+    const clientOne = teamSync.getTeamClient(requestContext(first.grove.id, first.projectId));
+    const clientTwo = teamSync.getTeamClient(requestContext(second.grove.id, second.projectId));
+
+    expect(clientOne).not.toBeNull();
+    expect(clientTwo).not.toBeNull();
+    expect(clientOne).not.toBe(clientTwo);
+  });
+
+  it('does not reconcile a client from legacy Grove config without registry membership', async () => {
     const teamSync = initTeamSync({
       liveConfig: {
         current: {
@@ -363,11 +430,8 @@ describe('initTeamSync.reconcileClient', () => {
 
     await teamSync.reconcileClient(groveContext);
 
-    expect(teamSync.getTeamClient(groveContext)).not.toBeNull();
-    expect(connectMock).toHaveBeenCalledWith({
-      machine_id: 'machine-1',
-      version: '1.2.3',
-    });
+    expect(teamSync.getTeamClient(groveContext)).toBeNull();
+    expect(connectMock).not.toHaveBeenCalled();
   });
 
   function writeTeamConfig(enabled: boolean): void {
@@ -430,6 +494,19 @@ describe('initTeamSync.rebuildFromLocal', () => {
     });
   }
 
+  function requestContext(groveId: string, projectId: string) {
+    return {
+      projectRoot: tmpDir,
+      projectVaultDir: vaultDir,
+      projectId,
+      groveId,
+      machineId: 'machine-1',
+      sessionId: null,
+      databasePath: path.join(tmpDir, groveId, 'myco.db'),
+      source: 'headers',
+    } as const;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebuild-from-local-'));
@@ -437,6 +514,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
     fs.mkdirSync(vaultDir, { recursive: true });
+    rebuildMock.mockResolvedValue(undefined);
     listPendingMock.mockReturnValue([]);
     backfillAllForRebuildMock.mockReturnValue(2);
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=secret-token\n', 'utf-8');
@@ -448,46 +526,64 @@ describe('initTeamSync.rebuildFromLocal', () => {
     else process.env.MYCO_HOME = previousMycoHome;
   });
 
-  it('happy path: truncates cloud, backfills, and flushes — returns a clean TeamFlushResult', async () => {
+  async function registerRegistryTeam() {
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
+    const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove('rebuild-test', mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save(
+      {
+        team_id: teamId,
+        name: 'Rebuild Team',
+        worker_url: 'https://team.example.workers.dev',
+        domain: null,
+        mcp_endpoint: null,
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: grove.id, project_id: projectId }],
+      },
+      mycoHome,
+    );
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    return requestContext(grove.id, projectId);
+  }
+
+  it('happy path: truncates the registry Team, backfills, and flushes', async () => {
     writeTeamConfig(true);
+    const ctx = await registerRegistryTeam();
     const teamSync = makeTeamSync();
-    const rebuildSpy = vi.fn().mockResolvedValue(undefined);
-    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
 
-    const result = await teamSync.rebuildFromLocal();
+    const result = await teamSync.rebuildFromLocal(ctx);
 
-    expect(rebuildSpy).toHaveBeenCalledTimes(1);
+    expect(rebuildMock).toHaveBeenCalledTimes(1);
     expect(backfillAllForRebuildMock).toHaveBeenCalledWith('machine-1');
     expect(result.error).toBeUndefined();
     expect(result).toMatchObject({ handedOff: expect.any(Number), rejected: expect.any(Number), batches: expect.any(Number) });
   });
 
-  it('rebuild throws: aborts before backfill/flush and returns an error result', async () => {
+  it('rebuild throws: still backfills so any partial truncate is restored and reports the error', async () => {
     writeTeamConfig(true);
+    const ctx = await registerRegistryTeam();
     const teamSync = makeTeamSync();
-    const rebuildSpy = vi.fn().mockRejectedValue(new Error('worker truncate failed'));
-    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
+    rebuildMock.mockRejectedValueOnce(new Error('worker truncate failed'));
 
-    const result = await teamSync.rebuildFromLocal();
+    const result = await teamSync.rebuildFromLocal(ctx);
 
-    expect(rebuildSpy).toHaveBeenCalledTimes(1);
-    // The load-bearing invariant: a failed truncate must NOT proceed to
-    // re-enqueue the Grove. Without the abort, backfillAllForRebuild would run
-    // and push rows against a half-truncated cloud mirror.
-    expect(backfillAllForRebuildMock).not.toHaveBeenCalled();
-    expect(result.error).toBe('worker truncate failed');
+    expect(rebuildMock).toHaveBeenCalledTimes(1);
+    expect(backfillAllForRebuildMock).toHaveBeenCalledWith('machine-1');
+    expect(result.error).toContain('worker truncate failed');
   });
 
-  it('disabled config: early-returns the empty result without touching the client', async () => {
+  it('no registry membership: returns a typed error without touching the worker', async () => {
     writeTeamConfig(false);
     const teamSync = makeTeamSync();
-    const rebuildSpy = vi.fn().mockResolvedValue(undefined);
-    teamSync.setTeamClient({ rebuild: rebuildSpy, enqueueBatch: enqueueBatchMock } as never);
 
     const result = await teamSync.rebuildFromLocal();
 
-    expect(rebuildSpy).not.toHaveBeenCalled();
+    expect(rebuildMock).not.toHaveBeenCalled();
     expect(backfillAllForRebuildMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ handedOff: 0, rejected: 0, batches: 0 });
+    expect(result).toEqual({ handedOff: 0, rejected: 0, batches: 0, error: 'team_not_configured' });
   });
 });

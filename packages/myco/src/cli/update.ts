@@ -176,6 +176,34 @@ async function runMachineWideUpdate(allManifests: SymbiontManifest[], currentVer
     console.log(`  !! Migration pass failed: ${(err as Error).message}`);
   }
 
+  // --- Registered-project managed files ---
+  //
+  // Global install still owns some local repository files: rules guidance and
+  // repo-level ignore entries today, future project-managed surfaces later.
+  // Reconcile them by registered Grove ownership, not by the caller's cwd, so
+  // `myco-dev update` only touches service-dev Groves while the published
+  // daemon updates service Groves.
+  try {
+    const { reconcileRegisteredManagedProjectFiles } = await import('../symbionts/reconcile.js');
+    const outcomes = reconcileRegisteredManagedProjectFiles({ manifests: allManifests });
+    const agentsUpdated = outcomes.filter((o) => o.result?.agentsMd).length;
+    const gitignoreUpdated = outcomes.filter((o) => o.result?.gitignore).length;
+    const errored = outcomes.filter((o) => o.error);
+    if (agentsUpdated > 0 || gitignoreUpdated > 0) {
+      const parts = [
+        agentsUpdated > 0 && `AGENTS.md for ${agentsUpdated} project${agentsUpdated === 1 ? '' : 's'}`,
+        gitignoreUpdated > 0 && `.gitignore for ${gitignoreUpdated} project${gitignoreUpdated === 1 ? '' : 's'}`,
+      ].filter(Boolean);
+      console.log(`  ✓ Updated managed project files: ${parts.join(', ')}`);
+      updatedCount += agentsUpdated + gitignoreUpdated;
+    }
+    if (errored.length > 0) {
+      console.log(`  !! Managed project-file reconciliation failed for ${errored.length} project${errored.length === 1 ? '' : 's'}`);
+    }
+  } catch (err) {
+    console.log(`  !! Managed project-file reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // --- Write version stamp ---
   try {
     fs.mkdirSync(path.dirname(stampPath), { recursive: true });

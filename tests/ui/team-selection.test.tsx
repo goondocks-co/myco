@@ -57,6 +57,7 @@ describe('TeamSelection', () => {
     await screen.findByText('https://acme.workers.dev');
     expect(screen.getAllByText('Acme Core').length).toBeGreaterThan(0);
     expect(screen.getByText('https://acme.workers.dev')).toBeDefined();
+    expect(screen.getByText('myco-team update --team-id team_abc --observability')).toBeDefined();
   });
 
   it('renders one row per project', async () => {

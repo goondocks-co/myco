@@ -166,7 +166,7 @@ describe('team-sync flush fan-out across Groves', () => {
     return {
       projectRoot: tmpDir,
       projectVaultDir: bootVaultDir,
-      projectId: 'placeholder',
+      projectId: projectByGrove.get(grove.id) ?? 'placeholder',
       groveId: grove.id,
       machineId: 'machine-1',
       sessionId: null,

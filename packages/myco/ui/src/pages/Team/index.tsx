@@ -37,7 +37,9 @@ function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
   const heading = clientTooOld
     ? 'Sync paused — this machine is out of date'
     : 'Sync paused — the team worker is out of date';
-  const command = clientTooOld ? 'myco update' : 'myco-team upgrade';
+  const command = clientTooOld
+    ? 'myco update'
+    : `myco-team update --team-id ${status.team_id ?? '<team_id>'}`;
   const detail = clientTooOld
     ? `This daemon speaks sync protocol v${status.daemon_protocol_version}, but the team worker requires at least v${status.worker_min_client_version ?? '?'}.`
     : `This daemon speaks sync protocol v${status.daemon_protocol_version}, but the team worker only supports up to v${status.worker_protocol_version ?? '?'}.`;

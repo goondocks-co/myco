@@ -224,6 +224,18 @@ export interface InstallResult {
   pluginManifest: boolean;
 }
 
+export interface ManagedProjectFilesResult {
+  /**
+   * Root rules file with Myco's managed guidance block. This is project-local
+   * even under global install because agents read it from the repository.
+   */
+  agentsMd: boolean;
+  /**
+   * Repository .gitignore entries for Myco-managed local artifacts.
+   */
+  gitignore: boolean;
+}
+
 export type InstallScope = 'project' | 'global';
 
 /**
@@ -623,22 +635,23 @@ export class SymbiontInstaller {
     return result;
   }
 
-  private reconcileAgentsMd(): void {
+  private reconcileAgentsMd(): boolean {
     ensureAgentsMd(this.projectRoot);
     const agentsPath = path.join(this.projectRoot, 'AGENTS.md');
     let content = '';
     try {
       content = fs.readFileSync(agentsPath, 'utf-8');
     } catch {
-      return;
+      return false;
     }
 
     const stripped = this.stripManagedAgentsBlock(content);
     const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
-    const spacer = stripped.trimEnd().length > 0 ? '\n\n' : '';
+    const spacer = stripped.trimEnd().length > 0 ? '\n' : '';
     const result = `${stripped}${separator}${spacer}${AGENTS_MANAGED_BLOCK}`;
-    if (result === content) return;
+    if (result === content) return false;
     fs.writeFileSync(agentsPath, result, 'utf-8');
+    return true;
   }
 
   private stripManagedAgentsBlock(content: string): string {
@@ -1174,8 +1187,31 @@ export class SymbiontInstaller {
    * content the function returns without writing. Safe to call on
    * every detect tick.
    */
-  reconcileProjectGitignore(): void {
-    this.updateGitignore();
+  reconcileProjectGitignore(): boolean {
+    return this.updateGitignore();
+  }
+
+  /**
+   * Reconcile project-local files Myco owns under the global-install model.
+   * This is the project-content counterpart to global symbiont install:
+   * `myco update` must refresh managed repository files, but it must not
+   * recreate project-local launchers or write agent config under the repo.
+   *
+   * Add future project-managed files here so update/bootstrap code has a
+   * single durable surface to call instead of growing one-off reconciler hooks.
+   */
+  reconcileManagedProjectFiles(): ManagedProjectFilesResult {
+    return {
+      agentsMd: this.reconcileAgentsMd(),
+      gitignore: this.updateGitignore(),
+    };
+  }
+
+  /**
+   * Narrow compatibility wrapper for callers that only care about AGENTS.md.
+   */
+  reconcileAgentsManagedGuidance(): boolean {
+    return this.reconcileAgentsMd();
   }
 
   /**
@@ -1183,9 +1219,9 @@ export class SymbiontInstaller {
    * Computes the desired entry set, strips any existing Myco block
    * (and legacy entries), then writes the current block if changed.
    */
-  private updateGitignore(): void {
+  private updateGitignore(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.skillsTarget) return;
+    if (!reg?.skillsTarget) return false;
 
     const skillNames = this.listSkillDirs();
 
@@ -1211,13 +1247,14 @@ export class SymbiontInstaller {
       : '';
 
     // Check if anything changed
-    if (stripped === content && desiredBlock === '') return;
+    if (stripped === content && desiredBlock === '') return false;
     const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
     const spacer = stripped.length > 0 && desiredBlock.length > 0 ? '\n' : '';
     const result = stripped + separator + spacer + desiredBlock;
-    if (result === content) return;
+    if (result === content) return false;
 
     fs.writeFileSync(gitignorePath, result, 'utf-8');
+    return true;
   }
 
   /**

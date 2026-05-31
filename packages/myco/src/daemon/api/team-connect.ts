@@ -10,17 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import {
-  loadTeamConnectionConfig,
-  readTeamConnectionSecrets,
-  resolveTeamConnectionStore,
-  updateTeamConnectionConfig,
-  writeTeamConnectionSecret,
-} from '@myco/grove/team-connection.js';
+import { resolveGroveDir } from '@myco/grove/paths.js';
 import {
   countPending,
-  countPendingByTable,
-  purgePendingOutbox,
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
@@ -33,13 +25,13 @@ import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
 import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse, type VersionCompat } from '../team-sync.js';
-import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET, TEAM_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadGroveRecord } from '@myco/grove/registry.js';
-import { teamRegistry } from '@myco/team/registry.js';
+import { teamRegistry, withProjectRemoved } from '@myco/team/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
@@ -318,7 +310,6 @@ export interface TeamHandlerDeps {
   machineId: string;
   logger: DaemonLogger;
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   /**
    * npm global prefix — used to locate the installed `@goondocks/myco-team`
    * package for the Worker upgrade subprocess and for reporting the local
@@ -360,96 +351,48 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /**
    * POST /api/team/connect
-   * Body: { url: string, api_key: string }
    *
-   * Creates a TeamSyncClient, tests the connection, saves config + secrets.
+   * Retired legacy endpoint. Team setup is registry-owned by `myco-team
+   * install` plus the Team selection API; keeping this as a writer would
+   * reintroduce split-brain state between grove config and the registry.
    */
-  async function handleConnect(req: RouteRequest): Promise<RouteResponse> {
-    const { url, api_key } = req.body as { url?: string; api_key?: string };
-
-    if (!url || !api_key) {
-      return {
-        status: 400,
-        body: { error: 'missing_fields', message: 'Both url and api_key are required' },
-      };
-    }
-
-    // Validate URL format
-    try {
-      new URL(url);
-    } catch {
-      return {
-        status: 400,
-        body: { error: 'invalid_url', message: 'Invalid worker URL' },
-      };
-    }
-
-    // Create client and test connection
-    const client = new TeamSyncClient({
-      workerUrl: url,
-      apiKey: api_key,
-      machineId,
-      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-    });
-
-    try {
-      await client.health();
-    } catch (err) {
-      return {
-        status: 502,
-        body: {
-          error: 'connection_failed',
-          message: `Could not connect to team worker: ${(err as Error).message}`,
-        },
-      };
-    }
-
-    // Save config and secret to the selected Grove when request context is
-    // Grove-era; legacy callers keep the historical project-local storage.
-    updateTeamConnectionConfig(vaultDir, req.requestContext, {
-      enabled: true,
-      worker_url: url,
-    });
-    writeTeamConnectionSecret(vaultDir, req.requestContext, TEAM_API_KEY_SECRET, api_key);
-    deps.setTeamClient(client, req.requestContext);
-
-    const team = loadTeamConnectionConfig(vaultDir, req.requestContext);
-    return { body: { connected: true, team } };
+  async function handleConnect(_req: RouteRequest): Promise<RouteResponse> {
+    return {
+      status: 410,
+      body: {
+        error: 'legacy_team_connect_removed',
+        message: 'Team sync is configured through myco-team install and the Team selection tab.',
+      },
+    };
   }
 
   /**
    * POST /api/team/disconnect
    *
-   * Disables team sync, clears the live client reference, and purges any
-   * pending outbox rows. Without the purge, every prior enqueue sits
-   * forever as `pending_sync_count` on the status endpoint — surfacing in
-   * the Team page UI as "N failures in the queue" against a sync that
-   * will never run. The source records (sessions, spores, etc.) are
-   * untouched; if team sync is later re-enabled, `handleBackfill`
-   * re-enqueues them from current state.
+   * Removes the current project from its registry Team. This replaces the
+   * legacy config toggle; outbox cleanup is handled by the registry-aware
+   * reconcile/flush path so we don't purge other projects' pending rows.
    */
   async function handleDisconnect(req: RouteRequest): Promise<RouteResponse> {
-    updateTeamConnectionConfig(vaultDir, req.requestContext, { enabled: false });
-    deps.setTeamClient(null, req.requestContext);
-
-    let purged = 0;
-    let purgedByTable: Record<string, number> = {};
-    try {
-      purgedByTable = countPendingByTable();
-      purged = purgePendingOutbox();
-    } catch (err) {
-      logger.warn('team-sync.outbox.purge-failed', 'Failed to purge pending outbox on disconnect', {
-        error: errorMessage(err),
-      });
-    }
-    if (purged > 0) {
-      logger.info('team-sync.outbox.purged', 'Purged pending outbox rows after team-sync disconnect', {
-        purged,
-        by_table: purgedByTable,
-      });
+    const projectId = req.requestContext?.projectId;
+    if (!projectId) {
+      return { status: 400, body: { error: 'missing_project_context' } };
     }
 
-    return { body: { connected: false, purged_pending: purged } };
+    const teamId = teamRegistry.membershipByProject().get(projectId);
+    if (!teamId) {
+      return { body: { connected: false, removed_project: false } };
+    }
+
+    const team = teamRegistry.get(teamId);
+    if (!team) return { body: { connected: false, removed_project: false } };
+
+    teamRegistry.save(withProjectRemoved(team, projectId));
+    logger.info('team-sync.registry.disconnected', 'Removed project from Team registry membership', {
+      team_id: teamId,
+      project_id: projectId,
+    });
+    return { body: { connected: false, removed_project: true, team_id: teamId } };
   }
 
   /**
@@ -458,14 +401,9 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * Returns connection status, health check result, pending sync count, and machine_id.
    */
   async function handleStatus(req: RouteRequest): Promise<RouteResponse> {
-    const config = loadTeamConnectionConfig(vaultDir, req.requestContext);
     const client = deps.getTeamClient(req.requestContext);
-    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
-    const store = resolveTeamConnectionStore(vaultDir, req.requestContext);
-    const teamKey = secrets[TEAM_API_KEY_SECRET]?.trim() || null;
-    const hasTeamKey = Boolean(teamKey);
     const localTeamPackage = resolveLocalTeamPackageVersion(deps.globalPrefix);
-    const cachedTeamPackageVersion = readCachedTeamPackageVersion(store.configDir);
+    const cachedTeamPackageVersion = readCachedTeamPackageVersion(resolveTeamStateDir(vaultDir, req.requestContext));
     let deployedWorkerVersion: string | null = null;
 
     // Registry participation — not the legacy grove-config flag — is the
@@ -482,6 +420,9 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
       : null;
     const resolvedTeam = resolvedTeamId ? teamRegistry.get(resolvedTeamId) : null;
+    const registrySecrets = resolvedTeamId ? teamRegistry.readSecrets(resolvedTeamId) : {};
+    const teamKey = registrySecrets[TEAM_API_KEY_SECRET]?.trim() || null;
+    const hasTeamKey = Boolean(teamKey);
 
     let healthy = false;
     let healthError: string | undefined;
@@ -559,7 +500,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       body: {
         ...resolveTeamConnectionContext(req.requestContext, vaultDir),
         enabled: participates,
-        worker_url: resolvedTeam?.worker_url ?? config.worker_url ?? null,
+        team_id: resolvedTeamId,
+        worker_url: resolvedTeam?.worker_url ?? null,
         has_team_key: hasTeamKey,
         team_key: teamKey,
         has_api_key: hasTeamKey,
@@ -784,6 +726,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
     try {
       const token = await client.rotateMcpToken();
+      const teamId = req.requestContext?.projectId
+        ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
+        : null;
+      if (teamId) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, token);
       logger.info('team-sync.mcp-token.rotated', 'MCP access token rotated');
       return { body: { token } };
     } catch (err) {
@@ -800,6 +746,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
     handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard,
   };
+}
+
+function resolveTeamStateDir(fallbackVaultDir: string, requestContext?: MycoRequestContext): string {
+  return requestContext?.groveId ? resolveGroveDir(requestContext.groveId) : fallbackVaultDir;
 }
 
 function resolveTeamConnectionContext(

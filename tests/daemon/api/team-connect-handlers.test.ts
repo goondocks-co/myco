@@ -5,16 +5,16 @@ import path from 'node:path';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
-import { TEAM_API_KEY_SECRET } from '@myco/constants.js';
-import { readTeamConnectionSecrets } from '@myco/grove/team-connection.js';
 import type { RouteRequest, RouteResponse } from '@myco/daemon/router.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { createTeamId } from '@myco/grove/ids.js';
+import { teamRegistry } from '@myco/team/registry.js';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // Direct branch coverage for handlers in
 // `packages/myco/src/daemon/api/team-connect.ts` that the existing
 // tests/daemon/api/team-connect-status.test.ts left untested:
-//   handleConnect (4 branches), handleDisconnect, handleBackfill,
+//   handleConnect (retired legacy route), handleDisconnect, handleBackfill,
 //   handleDlqList/Retry/Discard, handleRotateMcpToken.
 
 const noopLogger = {
@@ -91,9 +91,8 @@ describe('team-connect handlers — direct coverage', () => {
     ].join('\n'), 'utf-8');
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), '', 'utf-8');
 
-    // Stage a Grove home so updateTeamConnectionConfig writes through
-    // the Grove-aware path (the only path that actually persists team
-    // settings — the legacy project YAML strips `team:` on save).
+    // Stage a Grove home so registry-backed handlers resolve the same
+    // Grove context users hit at runtime.
     mycoHome = path.join(tempDir, 'home');
     fs.mkdirSync(mycoHome, { recursive: true });
     originalMycoHome = process.env.MYCO_HOME;
@@ -129,11 +128,11 @@ describe('team-connect handlers — direct coverage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // handleConnect — 4 branches
+  // handleConnect — retired legacy route
   // -------------------------------------------------------------------------
 
   describe('handleConnect', () => {
-    it('returns 400 missing_fields when url or api_key are absent', async () => {
+    it('returns 410 because legacy connect is no longer a Team writer', async () => {
       const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
       const handlers = createTeamHandlers({
         vaultDir,
@@ -141,105 +140,11 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => null,
-        setTeamClient: () => undefined,
       });
 
       const noUrl = await handlers.handleConnect(makeRequest({ body: { api_key: 'k' } }));
-      expect(noUrl.status).toBe(400);
-      expect((noUrl.body as { error: string }).error).toBe('missing_fields');
-
-      const noKey = await handlers.handleConnect(makeRequest({ body: { url: 'https://x' } }));
-      expect(noKey.status).toBe(400);
-      expect((noKey.body as { error: string }).error).toBe('missing_fields');
-
-      const empty = await handlers.handleConnect(makeRequest({ body: {} }));
-      expect(empty.status).toBe(400);
-    });
-
-    it('returns 400 invalid_url when url cannot be parsed', async () => {
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => null,
-        setTeamClient: () => undefined,
-      });
-
-      const response = await handlers.handleConnect(
-        makeRequest({ body: { url: 'not-a-url', api_key: 'k' } }),
-      );
-      expect(response.status).toBe(400);
-      expect((response.body as { error: string }).error).toBe('invalid_url');
-    });
-
-    it('returns 502 connection_failed when health() throws', async () => {
-      // The handler instantiates a real TeamSyncClient internally and
-      // calls .health() — pointing at an invalid worker URL surfaces a
-      // network error which the handler maps to 502 connection_failed.
-      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-      const handlers = createTeamHandlers({
-        vaultDir,
-        machineId: 'machine-test',
-        globalPrefix: null,
-        logger: noopLogger,
-        getTeamClient: () => null,
-        setTeamClient: () => undefined,
-      });
-
-      const response = await handlers.handleConnect(
-        // 127.0.0.1:1 is reliably closed; fetch fails fast.
-        makeRequest({ body: { url: 'http://127.0.0.1:1', api_key: 'k' } }),
-      );
-      expect(response.status).toBe(502);
-      expect((response.body as { error: string }).error).toBe('connection_failed');
-    });
-
-    it('persists config + secret and registers the client on successful health', async () => {
-      // Stub fetch globally so TeamSyncClient.health() resolves successfully.
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async () => new Response(
-        JSON.stringify({ status: 'ok', sync_protocol_version: 1 }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )) as typeof fetch;
-
-      try {
-        let registeredClient: unknown = null;
-        const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-        const handlers = createTeamHandlers({
-          vaultDir,
-          machineId: 'machine-test',
-          globalPrefix: null,
-          logger: noopLogger,
-          getTeamClient: () => null,
-          setTeamClient: (c) => { registeredClient = c; },
-        });
-
-        const response = await handlers.handleConnect(
-          makeRequest({
-            body: {
-              url: 'https://team.example.workers.dev',
-              api_key: 'super-secret-key',
-            },
-            requestContext: groveCtx,
-          }),
-        );
-
-        expect(response.status).toBeUndefined();
-        expect((response.body as { connected: boolean }).connected).toBe(true);
-        // Client got installed.
-        expect(registeredClient).not.toBeNull();
-        // Config persisted to the Grove-tier yaml.
-        const yamlText = fs.readFileSync(groveConfigPath, 'utf-8');
-        expect(yamlText).toContain('enabled: true');
-        expect(yamlText).toContain('https://team.example.workers.dev');
-        // Secret persisted under the Grove dir.
-        const secrets = readTeamConnectionSecrets(vaultDir, groveCtx);
-        expect(secrets[TEAM_API_KEY_SECRET]).toBe('super-secret-key');
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
+      expect(noUrl.status).toBe(410);
+      expect((noUrl.body as { error: string }).error).toBe('legacy_team_connect_removed');
     });
   });
 
@@ -248,33 +153,33 @@ describe('team-connect handlers — direct coverage', () => {
   // -------------------------------------------------------------------------
 
   describe('handleDisconnect', () => {
-    it('flips enabled to false and clears the registered client', async () => {
-      // Seed an enabled grove.yaml so the disconnect has something to flip.
-      fs.writeFileSync(groveConfigPath, [
-        'team:',
-        '  enabled: true',
-        '  worker_url: https://team.example.workers.dev',
-      ].join('\n') + '\n', 'utf-8');
+    it('removes the current project from its registry Team', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId,
+        name: 'Handlers Team',
+        worker_url: 'https://team.example.workers.dev',
+        domain: null,
+        mcp_endpoint: null,
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
 
-      let registeredClient: unknown = makeStubClient();
       const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
       const handlers = createTeamHandlers({
         vaultDir,
         machineId: 'machine-test',
         globalPrefix: null,
         logger: noopLogger,
-        getTeamClient: () => registeredClient as never,
-        setTeamClient: (c) => { registeredClient = c; },
+        getTeamClient: () => makeStubClient() as never,
       });
 
       const response = await handlers.handleDisconnect(
         makeRequest({ requestContext: groveCtx }),
       );
-      expect((response.body as { connected: boolean }).connected).toBe(false);
-      expect(registeredClient).toBeNull();
-      // grove.yaml flipped to enabled: false.
-      const yamlText = fs.readFileSync(groveConfigPath, 'utf-8');
-      expect(yamlText).toContain('enabled: false');
+      expect((response.body as { connected: boolean; removed_project: boolean }).connected).toBe(false);
+      expect((response.body as { removed_project: boolean }).removed_project).toBe(true);
+      expect(teamRegistry.get(teamId)?.projects).toEqual([]);
     });
   });
 
@@ -291,7 +196,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => null,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleBackfill(makeRequest({ body: {} }));
@@ -314,7 +218,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => null,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleBackfill(makeRequest({ body: { mode: 'all' } }));
@@ -335,7 +238,6 @@ describe('team-connect handlers — direct coverage', () => {
             throw new Error('cf vector down');
           },
         }) as never,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleBackfill(makeRequest({ body: { mode: 'unsynced' } }));
@@ -363,7 +265,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => null,
-        setTeamClient: () => undefined,
       });
 
       const list = await handlers.handleDlqList(makeRequest({ query: { limit: '10' } }));
@@ -398,7 +299,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => stub as never,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleDlqList(makeRequest({ query: { limit: '7' } }));
@@ -415,7 +315,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => makeStubClient() as never,
-        setTeamClient: () => undefined,
       });
 
       const retryEmpty = await handlers.handleDlqRetry(makeRequest({ body: { lease_ids: [] } }));
@@ -436,7 +335,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => makeStubClient() as never,
-        setTeamClient: () => undefined,
       });
 
       const retry = await handlers.handleDlqRetry(makeRequest({ body: { lease_ids: ['a', 'b', 'c'] } }));
@@ -460,7 +358,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => null,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleRotateMcpToken(makeRequest());
@@ -476,7 +373,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => makeStubClient() as never,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleRotateMcpToken(makeRequest());
@@ -495,7 +391,6 @@ describe('team-connect handlers — direct coverage', () => {
         globalPrefix: null,
         logger: noopLogger,
         getTeamClient: () => stub as never,
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleRotateMcpToken(makeRequest());

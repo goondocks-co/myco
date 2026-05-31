@@ -3,8 +3,10 @@ import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { teamRegistry } from '@myco/team/registry';
 
 const execHandlers: Array<() => string | Error> = [];
+const TEAM_ID = `team_${'a'.repeat(32)}`;
 
 import * as childProcessActual__ns from 'node:child_process';
 const childProcessActual = { ...childProcessActual__ns };
@@ -24,6 +26,7 @@ describe('teamRotateTokens', () => {
   let vaultDir: string;
   let fetchCalls: number;
   let originalExistsSync: typeof fs.existsSync;
+  let originalMycoHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-rotate-'));
@@ -31,6 +34,8 @@ describe('teamRotateTokens', () => {
     fetchCalls = 0;
     execHandlers.length = 0;
     originalExistsSync = fs.existsSync.bind(fs);
+    originalMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tempDir, 'home');
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(
@@ -56,16 +61,25 @@ describe('teamRotateTokens', () => {
     ].join('\n'), 'utf-8');
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=old-api-key\n', 'utf-8');
 
-    const configPath = path.join(vaultDir, 'team', 'config.json');
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({
+    teamRegistry.saveDeployment({
+      team_id: TEAM_ID,
       worker_name: 'myco-team-test',
       worker_url: 'https://myco-team-test.example.workers.dev',
       package_version: '0.1.0',
       created_at: '2026-04-13T00:00:00.000Z',
       last_upgraded: '2026-04-13T00:00:00.000Z',
       config_version: 1,
-    }, null, 2), 'utf-8');
+    });
+    teamRegistry.save({
+      team_id: TEAM_ID,
+      name: 'Rotate Team',
+      worker_url: 'https://myco-team-test.example.workers.dev',
+      domain: null,
+      mcp_endpoint: 'https://myco-team-test.example.workers.dev/mcp',
+      created_at: new Date().toISOString(),
+      projects: [],
+    });
+    teamRegistry.writeSecret(TEAM_ID, 'MYCO_TEAM_API_KEY', 'old-api-key');
 
     vi.spyOn(fs, 'existsSync').mockImplementation((target) => {
       if (String(target) === path.join(vaultDir, 'myco.yaml')) return true;
@@ -92,6 +106,8 @@ describe('teamRotateTokens', () => {
     vi.clearAllMocks();
     vi.resetModules();
     execHandlers.length = 0;
+    if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = originalMycoHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -99,20 +115,18 @@ describe('teamRotateTokens', () => {
     execHandlers.push(() => '');
 
     const { teamRotateTokens } = await import('../../packages/myco-team/src/cli.js');
-    await teamRotateTokens(vaultDir, 'all');
+    await teamRotateTokens(vaultDir, 'all', { teamId: TEAM_ID });
 
     const expectedPackageVersion = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
     ) as { version: string };
-    const localConfig = JSON.parse(fs.readFileSync(path.join(vaultDir, 'team', 'config.json'), 'utf-8')) as {
-      package_version: string;
-    };
-    const secrets = fs.readFileSync(path.join(vaultDir, 'secrets.env'), 'utf-8');
+    const deployment = teamRegistry.readDeployment(TEAM_ID, path.join(tempDir, 'home'));
+    const secrets = teamRegistry.readSecrets(TEAM_ID, path.join(tempDir, 'home'));
 
-    expect(localConfig.package_version).toBe(expectedPackageVersion.version);
-    expect(secrets).toContain('MYCO_TEAM_API_KEY=');
-    expect(secrets).not.toContain('MYCO_TEAM_API_KEY=old-api-key');
-    expect(secrets).toContain('MYCO_TEAM_MCP_TOKEN=new-mcp-token');
+    expect(deployment?.package_version).toBe(expectedPackageVersion.version);
+    expect(secrets.MYCO_TEAM_API_KEY).toBeDefined();
+    expect(secrets.MYCO_TEAM_API_KEY).not.toBe('old-api-key');
+    expect(secrets.MYCO_TEAM_MCP_TOKEN).toBe('new-mcp-token');
     expect(fetchCalls).toBe(3);
   });
 });

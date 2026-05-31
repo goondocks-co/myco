@@ -133,12 +133,11 @@ describe('createTeamHandlers.handleStatus', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
     }, mycoHome);
-    // has_team_key / team_key remain legacy per-connection secrets fields
-    // (this change did not migrate them). Under a Grove-scoped context the
-    // secret is read from the Grove's store, so seed it there.
+    // has_team_key / team_key now come from the selected Team's registry
+    // secrets, not the retired per-Grove connection store.
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key', mycoHome);
     const groveDir = resolveGroveDir(grove.id, mycoHome);
     fs.mkdirSync(groveDir, { recursive: true });
-    fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=test-api-key\n', 'utf-8');
     // cached_team_package_version reads the team/config.json under the resolved
     // store's configDir, which is the Grove dir under a Grove context.
     const groveTeamConfig = path.join(groveDir, 'team', 'config.json');
@@ -183,7 +182,6 @@ describe('createTeamHandlers.handleStatus', () => {
         getMcpToken: () => null,
         getMcpEndpoint: () => null,
       }) as never,
-      setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleStatus({
@@ -253,7 +251,7 @@ describe('createTeamHandlers.handleStatus', () => {
     }, mycoHome);
     const groveDir = resolveGroveDir(grove.id, mycoHome);
     fs.mkdirSync(groveDir, { recursive: true });
-    fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=test-api-key\n', 'utf-8');
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key', mycoHome);
 
     // Client whose health() probe populated incompatible bounds: worker speaks
     // protocol 3 and floors clients at 2; this daemon is older → client_too_old.
@@ -280,7 +278,6 @@ describe('createTeamHandlers.handleStatus', () => {
         getMcpToken: () => null,
         getMcpEndpoint: () => null,
       }) as never,
-      setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleStatus({
@@ -330,7 +327,6 @@ describe('createTeamHandlers.handleStatus', () => {
         getMcpToken: () => 'should-not-surface',
         getMcpEndpoint: () => 'https://x/mcp',
       }) as never,
-      setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleStatus({
@@ -368,7 +364,6 @@ describe('createTeamHandlers.handleStatus', () => {
         error: () => undefined,
       },
       getTeamClient: () => null,
-      setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleStatus({} as never);
@@ -385,10 +380,8 @@ describe('createTeamHandlers.handleStatus', () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
     const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
 
-    // G6: resolveTeamConnectionStore now requires the Grove to be
-    // registered before it will materialize a per-Grove store path.
     // Register a real Grove under a scoped MYCO_HOME so the assertion
-    // passes and the test exercises the same code path users hit.
+    // exercises the same Grove status path users hit.
     const mycoHome = path.join(tempDir, 'home');
     const previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
@@ -409,7 +402,6 @@ describe('createTeamHandlers.handleStatus', () => {
           expect(requestContext?.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
           return null;
         },
-        setTeamClient: () => undefined,
       });
 
       const response = await handlers.handleStatus({
@@ -483,7 +475,6 @@ describe('createTeamHandlers.handleStatus', () => {
           sync_protocol_version: 1,
         }),
       }) as never,
-      setTeamClient: () => undefined,
     });
 
     const response = await handlers.handleSyncSummary({} as never);

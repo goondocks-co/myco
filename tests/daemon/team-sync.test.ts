@@ -53,8 +53,9 @@ function makeOutboxRow(overrides: Partial<OutboxRow> = {}): OutboxRow {
     table_name: 'spores',
     row_id: 'spore-abc123',
     operation: 'upsert',
-    payload: JSON.stringify({ id: 'spore-abc123', content: 'test' }),
+    payload: { id: 'spore-abc123', content: 'test' },
     machine_id: 'test_abc123',
+    project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     created_at: Math.floor(Date.now() / 1000),
     sent_at: null,
     ...overrides,
@@ -274,6 +275,34 @@ describe('TeamSyncClient', () => {
       expect(body.machine_id).toBe('test_abc123');
       expect(body.sync_protocol_version).toBe(1);
       expect(body.records).toHaveLength(1);
+    });
+
+    it('injects outbox project_id into delete payloads before enqueue', async () => {
+      let capturedBody: unknown;
+      const mockFetch = vi.fn(async (_url: string, init: RequestInit) => {
+        capturedBody = JSON.parse(init.body as string);
+        return new Response(JSON.stringify({ accepted: 1, rejected: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as unknown as typeof globalThis.fetch;
+
+      const projectId = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      await client.enqueueBatch([
+        makeOutboxRow({
+          operation: 'delete',
+          payload: { id: 'spore-abc123', machine_id: 'test_abc123' },
+          project_id: projectId,
+        }),
+      ]);
+
+      const body = capturedBody as { records: Array<{ data: Record<string, unknown> }> };
+      expect(body.records[0].data).toMatchObject({
+        id: 'spore-abc123',
+        machine_id: 'test_abc123',
+        project_id: projectId,
+      });
     });
 
     it('throws on enqueue error', async () => {

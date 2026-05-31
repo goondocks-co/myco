@@ -330,14 +330,17 @@ export class TeamSyncClient {
     const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
-      records: records.map((r) => ({
-        table: r.table_name,
-        id: String(r.row_id),
-        machine_id: r.machine_id,
-        operation: r.operation,
-        data: r.payload,
-        content_hash: r.payload.content_hash ?? null,
-      })),
+      records: records.map((r) => {
+        const data = wirePayloadForOutboxRow(r);
+        return {
+          table: r.table_name,
+          id: String(r.row_id),
+          machine_id: r.machine_id,
+          operation: r.operation,
+          data,
+          content_hash: data.content_hash ?? null,
+        };
+      }),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
     const body = res as Partial<EnqueueBatchResponse>;
     return {
@@ -624,4 +627,24 @@ export class TeamSyncClient {
       clearTimeout(timer);
     }
   }
+}
+
+function wirePayloadForOutboxRow(row: OutboxRow): Record<string, unknown> {
+  const payload = normalizeOutboxPayload(row.payload);
+  if (row.project_id) payload.project_id = row.project_id;
+  return payload;
+}
+
+function normalizeOutboxPayload(payload: OutboxRow['payload'] | string): Record<string, unknown> {
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? { ...(parsed as Record<string, unknown>) }
+        : { value: parsed };
+    } catch {
+      return { __raw: payload };
+    }
+  }
+  return { ...payload };
 }

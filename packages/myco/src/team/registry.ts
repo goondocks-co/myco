@@ -27,6 +27,20 @@ export interface TeamRecord {
   projects: TeamProjectRef[];
 }
 
+export interface TeamDeploymentRecord {
+  team_id: string;
+  worker_name: string;
+  worker_url: string;
+  package_version: string;
+  created_at: string;
+  last_upgraded: string;
+  config_version: number;
+}
+
+function resolveTeamDeploymentPath(teamId: string, mycoHome = resolveMycoHome()): string {
+  return path.join(resolveTeamDir(teamId, mycoHome), 'deployment.json');
+}
+
 function list(mycoHome = resolveMycoHome()): TeamRecord[] {
   const teamsDir = resolveTeamsDir(mycoHome);
   if (!fs.existsSync(teamsDir)) return [];
@@ -99,6 +113,30 @@ function writeSecret(teamId: string, key: string, value: string, mycoHome = reso
   writeSecretFile(resolveTeamDir(teamId, mycoHome), key, value);
 }
 
+function readDeployment(teamId: string, mycoHome = resolveMycoHome()): TeamDeploymentRecord | null {
+  const deploymentPath = resolveTeamDeploymentPath(teamId, mycoHome);
+  try {
+    const raw = fs.readFileSync(deploymentPath, 'utf-8');
+    return JSON.parse(raw) as TeamDeploymentRecord;
+  } catch {
+    return null;
+  }
+}
+
+function saveDeployment(record: TeamDeploymentRecord, mycoHome = resolveMycoHome()): void {
+  const teamDir = resolveTeamDir(record.team_id, mycoHome);
+  fs.mkdirSync(teamDir, { recursive: true });
+
+  const deploymentPath = resolveTeamDeploymentPath(record.team_id, mycoHome);
+  const tmpPath = deploymentPath + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, deploymentPath);
+}
+
+function removeDeployment(teamId: string, mycoHome = resolveMycoHome()): void {
+  fs.rmSync(resolveTeamDeploymentPath(teamId, mycoHome), { force: true });
+}
+
 export function withProjectAdded(record: TeamRecord, ref: TeamProjectRef): TeamRecord {
   if (record.projects.some(p => p.project_id === ref.project_id)) return record;
   return { ...record, projects: [...record.projects, ref] };
@@ -117,4 +155,7 @@ export const teamRegistry = {
   projectsForTeam,
   readSecrets,
   writeSecret,
+  readDeployment,
+  saveDeployment,
+  removeDeployment,
 };

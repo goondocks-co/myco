@@ -201,19 +201,9 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MYCO_FETCH_TIMEOUT_MS);
   try {
-    const headers = init?.headers ? new Headers(init.headers as HeadersInit) : new Headers();
-    const headerKeys = Array.from(headers.keys());
-    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} headers=[${headerKeys.join(',')}] hasAuth=${headers.has("x-myco-auth")} authLen=${headers.get("x-myco-auth")?.length ?? 0}\n`); } catch {}
     const res = await fetch(url, { ...init, signal: controller.signal });
-    let bodyPreview = "";
-    try {
-      const cloned = res.clone();
-      bodyPreview = (await cloned.text()).slice(0, 200);
-    } catch {}
-    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} status=${res.status} ok=${res.ok} body=${bodyPreview}\n`); } catch {}
     return res.ok ? res : null;
-  } catch (err: any) {
-    try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] fetch ${url} threw ${err?.message}\n`); } catch {}
+  } catch {
     return null;
   } finally {
     clearTimeout(timer);
@@ -496,14 +486,12 @@ async function mycoRegisterSession(
   directory: string,
   sessionId: string,
 ): Promise<void> {
-  try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] mycoRegisterSession enter directory=${directory} sessionId=${sessionId}\n`); } catch {}
-  const result = await postJson(directory, "/sessions/register", {
+  await postJson(directory, "/sessions/register", {
     session_id: sessionId,
     agent: "pi",
     branch: detectGitBranch(directory),
     started_at: new Date().toISOString(),
   });
-  try { require("node:fs").appendFileSync("/tmp/myco-pi-debug.log", `[${new Date().toISOString()}] mycoRegisterSession result ok=${result?.ok} data=${JSON.stringify(result?.data ?? null).slice(0,160)}\n`); } catch {}
 }
 
 async function mycoUnregisterSession(directory: string, sessionId: string): Promise<void> {
@@ -835,7 +823,6 @@ export default function (pi: ExtensionAPI) {
   // ── Session lifecycle ──────────────────────────────────────────────────
 
   pi.on("session_start", async (event, ctx) => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_start') fired\n`)}catch{};
     currentCwd = ctx.cwd;
 
     // Check if daemon is available — silent no-op if not
@@ -881,7 +868,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_shutdown') fired\n`)}catch{};
     if (!currentSessionId) return;
 
     await mycoPostStop(currentCwd, currentSessionId, lastAssistantMessage || undefined);
@@ -931,7 +917,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event) => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('input') fired\n`)}catch{};
     if (!currentSessionId) return;
     // Skip when no turn is running — the initial prompt will be captured
     // via before_agent_start, which also carries the post-expansion text.
@@ -958,7 +943,6 @@ export default function (pi: ExtensionAPI) {
   // ── Tool use capture ───────────────────────────────────────────────────
 
   pi.on("tool_result", async (event) => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('tool_result') fired\n`)}catch{};
     if (!currentSessionId) return;
 
     const toolName = event.toolName ?? "unknown";
@@ -979,7 +963,6 @@ export default function (pi: ExtensionAPI) {
   // ── Track last assistant message ───────────────────────────────────────
 
   pi.on("message_end", async (event) => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('message_end') fired\n`)}catch{};
     if (!currentSessionId) return;
     if (event.message?.role === "assistant") {
       const text = extractTextFromContent(event.message.content);
@@ -996,7 +979,6 @@ export default function (pi: ExtensionAPI) {
   // handles the final cleanup on exit.
 
   pi.on("agent_end", async () => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('agent_end') fired\n`)}catch{};
     if (!currentSessionId) return;
     // Clear the in-flight marker so subsequent `input` events are treated
     // as a fresh initial prompt, not continued steering. This replaces the
@@ -1009,7 +991,6 @@ export default function (pi: ExtensionAPI) {
   // ── Compaction hook — notify daemon of context compaction ──────────────
 
   pi.on("session_before_compact", async () => {
-    try{require("node:fs").appendFileSync("/tmp/myco-pi-debug.log",`[${new Date().toISOString()}] pi.on('session_before_compact') fired\n`)}catch{};
     if (!currentSessionId) return;
     await mycoPostCompact(currentCwd, currentSessionId);
     return undefined;

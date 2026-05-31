@@ -36,22 +36,16 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
 import { TeamSyncClient, type VersionCompat } from './team-sync.js';
 import {
-  loadTeamConnectionConfig,
-  readTeamConnectionSecrets,
-} from '@myco/grove/team-connection.js';
-import {
   listPending,
   markSent,
   markSourceRowsSynced,
   pruneOld,
   backfillUnsynced,
-  backfillAll,
   backfillAllForRebuild,
   discardRows,
   countPending,
   countPendingByTable,
   purgePendingOutbox,
-  enqueueOutbox,
 } from '@myco/db/queries/team-outbox.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
@@ -89,7 +83,6 @@ export interface TeamSyncDeps {
 
 export interface TeamSyncResult {
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
@@ -135,9 +128,7 @@ export interface TeamFlushAggregate {
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
-  const { machineId, logger, vaultDir, serverVersion, daemonStateDir, requestContext: defaultRequestContext } = deps;
-  const teamClients = new Map<string, TeamSyncClient>();
-  const clientSignatures = new Map<string, string>();
+  const { machineId, logger, daemonStateDir, requestContext: defaultRequestContext } = deps;
 
   /**
    * The team registry — not the legacy grove-config `enabled` flag — is the
@@ -148,15 +139,34 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * read/rebuild client's concern.
    */
   function groveParticipates(groveId: string | null): boolean {
-    if (!groveId) return false;
-    return teamRegistry.list().some((t) => t.projects.some((p) => p.grove_id === groveId));
+    return participatingTeamIds(groveId).length > 0;
+  }
+
+  function participatingTeamIds(groveId: string | null): string[] {
+    if (!groveId) return [];
+    return [
+      ...new Set(
+        teamRegistry
+          .list()
+          .filter((t) => t.projects.some((p) => p.grove_id === groveId))
+          .map((t) => t.team_id),
+      ),
+    ];
+  }
+
+  function teamIdsForRebuild(requestContext?: MycoRequestContext): string[] {
+    const projectId = requestContext?.projectId;
+    if (projectId) {
+      const teamId = teamRegistry.membershipByProject().get(projectId);
+      if (teamId) return [teamId];
+    }
+    return participatingTeamIds(requestContext?.groveId ?? null);
   }
 
   // Per-team client cache (registry-driven routing). flushPending routes each
   // outbox row to its owning team's worker, so clients are keyed by team_id —
-  // independent of the per-Grove `teamClients` map above (which rebuildFromLocal
-  // and get/setTeamClient still use for the operator rebuild path). Rebuilt when
-  // the team's worker_url or API key changes, mirroring `clientSignatures`.
+  // the registry is the only runtime source of Team connectivity. Rebuilt when
+  // the team's worker_url or API key changes.
   const teamRouteClients = new Map<string, TeamSyncClient>();
   const teamRouteSignatures = new Map<string, string>();
   // Teams whose worker is fully provisioned this daemon lifetime (MCP token in
@@ -305,21 +315,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       // would be permanently invisible to peers. Transaction rollback
       // restores the pre-insert state so the next call retries cleanly.
       let inserted = false;
-      let row: ReturnType<typeof upsertSelfMember>['row'] | null = null;
       getDatabase().transaction(() => {
         const result = upsertSelfMember(machineId, joinedIso);
         inserted = result.inserted;
-        row = result.row;
-        if (inserted && row) {
-          enqueueOutbox({
-            table_name: 'team_members',
-            row_id: row.id,
-            operation: 'upsert',
-            payload: JSON.stringify(row),
-            machine_id: machineId,
-            created_at: nowSec,
-          });
-        }
       })();
       if (inserted) {
         logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
@@ -357,20 +355,14 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
     const groveId = requestContext?.groveId ?? null;
     const teams = teamRegistry.list();
-    const participates = teams.some((t) => t.projects.some((p) => p.grove_id === groveId));
+    const participates = groveParticipates(groveId);
     // The registry is now the write-path gate: keep delete triggers + syncRow
     // in lockstep with whether this Grove feeds any team, every tick.
     setTeamSyncEnabled(participates);
     if (!participates) return result;
 
     const map = teamRegistry.membershipByProject();
-    const participatingTeamIds = [
-      ...new Set(
-        teams
-          .filter((t) => t.projects.some((p) => p.grove_id === groveId))
-          .map((t) => t.team_id),
-      ),
-    ];
+    const targetTeamIds = participatingTeamIds(groveId);
 
     // Teams whose batch handed off cleanly this flush. After the drain loop we
     // provision each exactly once (rotate + persist the MCP token, seed
@@ -407,8 +399,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           pushToTeam(map.get(row.project_id)!, row);
         } else {
           // Machine-scoped row: fan out a copy into every participating team.
-          fanOutTargetsRemaining.set(row.id, participatingTeamIds.length);
-          for (const teamId of participatingTeamIds) {
+          fanOutTargetsRemaining.set(row.id, targetTeamIds.length);
+          for (const teamId of targetTeamIds) {
             pushToTeam(teamId, row);
           }
         }
@@ -469,11 +461,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { team_id: teamId, count: rows.length });
           const enqueueResult = await client.enqueueBatch(rows);
 
-          const rejectedIds = new Set(enqueueResult.rejected.map((e) => e.id));
+          const rejectedKeys = new Set(enqueueResult.rejected.map((e) => rejectionKey(e.table, e.id)));
           const rejectedOutboxIds: number[] = [];
           const handedOff: OutboxRow[] = [];
           for (const row of rows) {
-            if (rejectedIds.has(String(row.row_id))) {
+            if (rejectedKeys.has(rejectionKey(row.table_name, row.row_id))) {
               rejectedOutboxIds.push(row.id);
             } else {
               handedOff.push(row);
@@ -566,109 +558,78 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   async function rebuildFromLocal(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const empty: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
-    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return empty;
-    const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
-    if (!client) return empty;
+    const teamIds = teamIdsForRebuild(requestContext);
+    if (teamIds.length === 0) return { ...empty, error: 'team_not_configured' };
+
+    const clients: Array<{ teamId: string; client: TeamSyncClient }> = [];
+    for (const teamId of teamIds) {
+      const client = getOrBuildTeamClient(teamId);
+      if (!client) return { ...empty, error: `team_client_unavailable:${teamId}` };
+      clients.push({ teamId, client });
+    }
+
+    const rebuildErrors: string[] = [];
+    for (const { teamId, client } of clients) {
+      try {
+        await client.rebuild(); // truncate this machine's cloud rows (D1 + Vectorize)
+      } catch (err) {
+        const message = `${teamId}: ${(err as Error).message}`;
+        rebuildErrors.push(message);
+        logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Rebuild from local truncate failed', {
+          team_id: teamId,
+          error: (err as Error).message,
+        });
+      }
+    }
+
     try {
-      await client.rebuild();                             // truncate this machine's cloud rows (D1 + Vectorize)
       const enqueued = backfillAllForRebuild(machineId);  // re-enqueue every local row including skill_usage
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', { enqueued });
-      return await flushPending(requestContext);  // push them
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', {
+        enqueued,
+        team_ids: teamIds,
+      });
+      const result = await flushPending(requestContext);  // push them
+      if (rebuildErrors.length > 0 && !result.error) result.error = rebuildErrors.join('; ');
+      return result;
     } catch (err) {
       logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Rebuild from local failed', { error: (err as Error).message });
-      return { ...empty, error: (err as Error).message };
+      const prefix = rebuildErrors.length > 0 ? `${rebuildErrors.join('; ')}; ` : '';
+      return { ...empty, error: `${prefix}${(err as Error).message}` };
     }
   }
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
-    const key = teamConnectionKey(vaultDir, requestContext);
-    const teamConfig = loadTeamConnectionConfig(vaultDir, requestContext);
-    // Registry participation gates the write-path, NOT the grove-config flag —
-    // the per-team drain is the push authority. (teamConfig still drives the
-    // legacy read/rebuild client below.)
     const participates = groveParticipates(requestContext?.groveId ?? null);
     setTeamSyncEnabled(participates);
-    const workerUrl = teamConfig.worker_url?.trim() || null;
-    const apiKey = readTeamConnectionSecrets(vaultDir, requestContext)[TEAM_API_KEY_SECRET]?.trim() || null;
-    const nextSignature = teamConfig.enabled && workerUrl && apiKey
-      ? `${workerUrl}\n${apiKey}`
-      : null;
 
-    if (!nextSignature) {
-      const teamClient = teamClients.get(key);
-      if (teamClient) {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client cleared', {
-          enabled: teamConfig.enabled,
-          has_worker_url: Boolean(workerUrl),
-          has_api_key: Boolean(apiKey),
-        });
-      }
-      teamClients.delete(key);
-      clientSignatures.delete(key);
-
-      // Legacy-state cleanup: if team sync is disabled but the outbox still
+    if (!participates) {
+      // If this Grove does not participate in any registry Team but the outbox still
       // carries pending rows (from a previous sync-enabled period that was
       // later turned off), drop them. Without this sweep, `countPending()`
       // keeps reporting stale rows that will never drain — which the Team
-      // page UI then surfaces as "N pending failures" against a sync that
-      // isn't running. Source records are untouched; re-enabling team sync
+      // page UI then surfaces as "N pending failures" against a Grove that
+      // is not in a Team. Source records are untouched; selecting a Team
       // re-enqueues from current state via `handleBackfill`.
       try {
         // One scan, not two: derive the total from the per-table breakdown
         // so we don't COUNT(*) the same predicate twice.
         const byTable = countPendingByTable();
         const total = Object.values(byTable).reduce((sum, n) => sum + n, 0);
-        // Only purge when the Grove genuinely doesn't participate in any team.
-        // If it participates (registry) but the legacy read client couldn't be
-        // built (grove config cleared), the rows still route via flushPending —
-        // purging them here would silently drop a participating Grove's sync.
-        if (total > 0 && !participates) {
+        if (total > 0) {
           const purged = purgePendingOutbox();
           logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for non-participating Grove', {
-            grove_key: key,
+            grove_id: requestContext?.groveId ?? null,
             purged,
             by_table: byTable,
           });
         }
       } catch (err) {
         logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Stale outbox sweep failed', {
-          grove_key: key,
+          grove_id: requestContext?.groveId ?? null,
           error: (err as Error).message,
         });
       }
       return;
-    }
-
-    const teamClient = teamClients.get(key);
-    const clientSignature = clientSignatures.get(key) ?? null;
-    if (teamClient && clientSignature === nextSignature) {
-      await flushPending(requestContext);
-      return;
-    }
-
-    const activeWorkerUrl = workerUrl!;
-    const activeApiKey = apiKey!;
-    const nextClient = new TeamSyncClient({
-      workerUrl: activeWorkerUrl,
-      apiKey: activeApiKey,
-      machineId,
-      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-    });
-    teamClients.set(key, nextClient);
-    clientSignatures.set(key, nextSignature);
-
-    logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: activeWorkerUrl });
-
-    try {
-      await nextClient.connect({
-        machine_id: machineId,
-        version: serverVersion,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
-    } catch (err) {
-      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', {
-        error: (err as Error).message,
-      });
     }
 
     reconcileSelfMember();
@@ -685,13 +646,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   /**
-   * Synthesize a Grove-scoped request context for the team-sync flush
-   * fan-out. Team-sync only consumes `groveId` off the context (see
-   * `loadTeamConnectionConfig`, `readTeamConnectionSecrets`,
-   * `teamConnectionKey`); the other branded fields are filled with safe
-   * stubs so the type is satisfied without minting a fake `GroveProjectId`
-   * via `assertGroveProjectId`. This stub MUST NOT leak outside the
-   * team-sync flush path.
+   * Synthesize a Grove-scoped request context for the team-sync flush fan-out.
+   * Team-sync only consumes `groveId` for Grove-level participation; the other
+   * branded fields are filled with safe stubs so the type is satisfied without
+   * minting a fake `GroveProjectId`. This stub MUST NOT leak outside the
+   * Grove-level sync path.
    */
   function groveSyncContext(groveId: string, databasePath: string, projectVaultDir: string): MycoRequestContext {
     return {
@@ -778,12 +737,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   /**
-   * Resolve the team client for a read request. Registry-aware: when the
-   * request carries a projectId that belongs to a team (one-team-per-project),
-   * return that team's per-team client (built from the registry, MCP token and
-   * all). Falls back to the legacy per-Grove client for contexts with no
-   * project / no team membership — preserving pre-registry behavior for
-   * pre-Grove status pings and operator rebuild paths.
+   * Resolve the team client for a read request. Registry-only: when the request
+   * carries a projectId that belongs to a team (one-team-per-project), return
+   * that team's per-team client. Contexts with no project / no team membership
+   * are not connected.
    */
   function resolveReadClient(requestContext?: MycoRequestContext): TeamSyncClient | null {
     const projectId = requestContext?.projectId;
@@ -794,32 +751,21 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         if (client) return client;
       }
     }
-    return teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
+    return null;
   }
 
   return {
     getTeamClient: (requestContext = defaultRequestContext) => resolveReadClient(requestContext),
-    setTeamClient: (client, requestContext = defaultRequestContext) => {
-      const key = teamConnectionKey(vaultDir, requestContext);
-      if (!client) {
-        teamClients.delete(key);
-        clientSignatures.delete(key);
-        return;
-      }
-      teamClients.set(key, client);
-      clientSignatures.delete(key);
-    },
     reconcileClient,
     flushPending,
     rebuildFromLocal,
     flushAllGroves,
     reconcileAllGroveFlags,
     registerFlushJob: (powerManager, cache) => {
-      // Registered unconditionally; team.enabled is checked at run time so
-      // Settings toggles take effect without a daemon restart. The job
-      // fans out across every registered Grove so non-boot Groves' outboxes
-      // drain on the same cadence as the boot Grove (release-blocker fix
-      // for the global daemon — see plan 4ab20d9762619a6e #A1).
+      // Registered unconditionally; registry participation is checked at run
+      // time so Team selection changes take effect without a daemon restart.
+      // The job fans out across every registered Grove so non-boot Groves'
+      // outboxes drain on the same cadence as the boot Grove.
       let running = false;
       powerManager.register({
         name: 'team-sync-flush',
@@ -845,6 +791,6 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   };
 }
 
-function teamConnectionKey(vaultDir: string, requestContext?: MycoRequestContext): string {
-  return requestContext?.groveId ? `grove:${requestContext.groveId}` : `legacy-project:${vaultDir}`;
+function rejectionKey(table: string, rowId: string | number): string {
+  return `${table}\u0000${String(rowId)}`;
 }

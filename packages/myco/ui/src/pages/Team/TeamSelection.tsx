@@ -11,14 +11,19 @@ import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Eyebrow } from '../../components/ui/eyebrow';
 import { Badge } from '../../components/ui/badge';
+import { CopyableField } from '../../components/team/CopyableField';
 
 function TeamRow({ team }: { team: TeamRegistryRecord }) {
   const count = team.projects.length;
+  const updateCommand = `myco-team update --team-id ${team.team_id} --observability`;
   return (
     <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--ghost-border)] px-4 py-3">
       <div className="flex flex-col gap-1 min-w-0">
         <span className="text-sm font-medium text-on-surface">{team.name}</span>
         <code className="text-xs font-mono text-on-surface-variant break-all">{team.worker_url}</code>
+        <div className="mt-2">
+          <CopyableField label="Update command" value={updateCommand} />
+        </div>
       </div>
       <Badge variant="outline">
         {count} project{count === 1 ? '' : 's'}

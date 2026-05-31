@@ -40,7 +40,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
       <Panel
         tone="sage"
         eyebrow={<IconEyebrow Icon={Key}>Team Credentials</IconEyebrow>}
-        title="Add a team member's machine"
+        title="Worker credentials"
         actions={
           <Button variant="ghost" size="sm" disabled title="Coming soon">
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
@@ -49,9 +49,9 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         }
       >
         <p className="text-xs text-on-surface-variant m-0 mb-3">
-          Share the Worker URL and Team key with a teammate. They use them to connect their machine to the{' '}
-          <span className="text-on-surface font-medium">{status.grove?.name ?? 'this'}</span> Grove and start syncing.
-          Keep the Team key private — anyone who has it can write to this Grove.
+          These credentials belong to the registered Team worker for{' '}
+          <span className="text-on-surface font-medium">{status.grove?.name ?? 'this Grove'}</span>.
+          Keep the Team key private because it authorizes writes to the worker.
         </p>
         <div className="flex flex-col gap-3">
           {status.worker_url && <CopyableField label="Worker URL" value={status.worker_url} />}

@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { saveProjectManifest } from '@myco/config/project-manifest';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
-import { resolveGroveDir, resolveProjectVaultDir } from '@myco/grove/paths';
+import { resolveProjectVaultDir, resolveTeamDir } from '@myco/grove/paths';
+import { teamRegistry } from '@myco/team/registry';
 
 const execCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
 const execHandlers: Array<(args: string[], cwd?: string) => string | Error> = [];
@@ -205,7 +206,10 @@ describe('teamInit', () => {
     expect(args).toContainEqual(['queues', 'create', `${resourceName}-sync-dlq`]);
     expect(args).toContainEqual(['secret', 'put', 'MYCO_TEAM_API_KEY', '--name', resourceName]);
 
-    const deployDir = path.join(resolveGroveDir(grove.id, homeDir), 'team', 'worker');
+    const teams = teamRegistry.list(homeDir);
+    expect(teams).toHaveLength(1);
+    const teamId = teams[0].team_id;
+    const deployDir = path.join(resolveTeamDir(teamId, homeDir), 'worker');
     const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
     expect(patchedToml).toContain(`name = "${resourceName}"`);
     expect(patchedToml).toContain(`database_name = "${resourceName}"`);
@@ -216,11 +220,12 @@ describe('teamInit', () => {
     expect(patchedToml).toContain(`dead_letter_queue = "${resourceName}-sync-dlq"`);
     expect(patchedToml).toContain(`queue = "${resourceName}-sync-dlq"`);
 
-    const localConfig = JSON.parse(
-      fs.readFileSync(path.join(resolveGroveDir(grove.id, homeDir), 'team', 'config.json'), 'utf-8'),
-    ) as { worker_name: string; worker_url: string };
-    expect(localConfig.worker_name).toBe(resourceName);
-    expect(localConfig.worker_url).toBe(`https://${resourceName}.test.workers.dev`);
+    const deployment = JSON.parse(
+      fs.readFileSync(path.join(resolveTeamDir(teamId, homeDir), 'deployment.json'), 'utf-8'),
+    ) as { team_id: string; worker_name: string; worker_url: string };
+    expect(deployment.team_id).toMatch(/^team_[0-9a-f]{32}$/);
+    expect(deployment.worker_name).toBe(resourceName);
+    expect(deployment.worker_url).toBe(`https://${resourceName}.test.workers.dev`);
   });
 
   it('rejects fresh installs before provisioning when the project is not Grove-bound', async () => {
@@ -243,16 +248,13 @@ describe('teamInit', () => {
     // A team name is supplied so the install clears the up-front name gate
     // and reaches the Grove-bound check this test actually exercises.
     // Pre-Grove vaults exit with code 2 (configuration error) and a
-    // friendly migration prompt rather than the historical generic
-    // exit(1). The prompt tells operators to either auto-register by
-    // opening the project in a supported agent, or pass `--legacy` to
-    // bypass the gate.
+    // friendly Grove prompt rather than the historical generic exit(1).
     await expect(teamInit(vaultDir, { name: 'Some Team' })).rejects.toThrow('process.exit(2)');
 
     const stderr = errors.join('\n');
     expect(stderr).toContain('myco-team install requires a Grove-bound project');
     expect(stderr).toContain('auto-registers');
-    expect(stderr).toContain('--legacy');
+    expect(stderr).not.toContain('--legacy');
     expect(execCalls).toHaveLength(0);
   });
 

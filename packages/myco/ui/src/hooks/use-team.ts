@@ -17,6 +17,7 @@ export interface TeamStatusResponse {
     root: string;
   };
   enabled: boolean;
+  team_id: string | null;
   worker_url: string | null;
   has_team_key: boolean;
   team_key: string | null;
