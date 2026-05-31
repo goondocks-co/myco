@@ -35,6 +35,7 @@ export const SYNCED_TABLES = [
   'skill_records',
   'skill_usage',
   'knowledge_release_state',
+  'team_members',
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];

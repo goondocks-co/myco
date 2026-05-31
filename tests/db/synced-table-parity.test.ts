@@ -69,6 +69,19 @@ const NO_SINGLE_ID_TABLES = new Set<string>(['entity_mentions']);
  */
 const NO_SYNCED_AT_TABLES = new Set<string>(['skill_usage']);
 
+/**
+ * Tables that are synced + backfilled + rebuilt but have NO delete trigger.
+ * `team_members` has a single `id` (so it backfills/rebuilds fine) but no
+ * `project_id` column → the standard `${table}_team_ad` trigger can't journal
+ * it (the trigger captures `OLD.project_id`). It is machine-scoped and
+ * self-only; its self-row isn't deleted in the normal flow, so deletes are
+ * intentionally not propagated.
+ *
+ * Consequence: present in worker SYNCED + OBSERVED + REBUILD + BACKFILL,
+ * ABSENT from DELETE_TRIGGER only.
+ */
+const NO_DELETE_TRIGGER_TABLES = new Set<string>(['team_members']);
+
 // ---------------------------------------------------------------------------
 // Set helpers
 // ---------------------------------------------------------------------------
@@ -155,16 +168,19 @@ describe('synced-table parity: documented exclusions are the ONLY differences', 
     });
   });
 
-  it('worker SYNCED − DELETE_TRIGGER is exactly the no-single-id tables (e.g. entity_mentions)', () => {
+  it('worker SYNCED − DELETE_TRIGGER is exactly the no-single-id + no-project_id tables (e.g. entity_mentions, team_members)', () => {
     // Every synced table must have a delete trigger UNLESS it has no single
-    // `id`. A synced table missing here = deletes silently stop mirroring.
+    // `id` (entity_mentions) or no `project_id` for the trigger to journal
+    // (team_members). A synced table missing here for any OTHER reason =
+    // deletes silently stop mirroring.
+    const expectedNoTrigger = new Set<string>([...NO_SINGLE_ID_TABLES, ...NO_DELETE_TRIGGER_TABLES]);
     const syncedWithoutTrigger = minus(worker, triggers);
-    const unexpected = syncedWithoutTrigger.filter((t) => !NO_SINGLE_ID_TABLES.has(t));
+    const unexpected = syncedWithoutTrigger.filter((t) => !expectedNoTrigger.has(t));
     expect({
       syncedButNoDeleteTrigger: syncedWithoutTrigger,
       unexpectedMissingTrigger: unexpected,
     }).toEqual({
-      syncedButNoDeleteTrigger: [...NO_SINGLE_ID_TABLES].sort(),
+      syncedButNoDeleteTrigger: [...expectedNoTrigger].sort(),
       unexpectedMissingTrigger: [],
     });
   });

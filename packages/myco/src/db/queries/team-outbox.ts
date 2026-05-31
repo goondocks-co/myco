@@ -475,6 +475,7 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'skill_candidates',
   'skill_records',
   'knowledge_release_state',
+  'team_members',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert); included

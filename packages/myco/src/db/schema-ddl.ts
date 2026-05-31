@@ -921,6 +921,7 @@ export const TEAM_SYNC_OBSERVED_TABLES = [
   'skill_records',
   'skill_usage',
   'knowledge_release_state',
+  'team_members',
 ] as const;
 
 export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];

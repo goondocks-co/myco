@@ -286,6 +286,18 @@ const KNOWLEDGE_RELEASE_STATE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
+const TEAM_MEMBERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_members (
+    id          TEXT NOT NULL,
+    machine_id  TEXT NOT NULL,
+    "user"      TEXT NOT NULL,
+    role        TEXT,
+    joined      TEXT,
+    tags        TEXT,
+    synced_at   INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
 const NODES_TABLE = `
   CREATE TABLE IF NOT EXISTS nodes (
     machine_id              TEXT PRIMARY KEY,
@@ -390,6 +402,7 @@ const ALL_DDLS = [
   SKILL_RECORDS_TABLE,
   SKILL_USAGE_TABLE,
   KNOWLEDGE_RELEASE_STATE_TABLE,
+  TEAM_MEMBERS_TABLE,
   NODES_TABLE,
   TEAM_CONFIG_TABLE,
   TEAM_SYNC_STATS_TABLE,

@@ -142,13 +142,19 @@ describe('session cascade journals child deletes via triggers', () => {
 });
 
 describe('structural guard: every synced table has a delete trigger', () => {
-  it('covers all observed tables except entity_mentions (no id, not synced)', () => {
+  // entity_mentions has no single `id` column; team_members has no
+  // `project_id` column for the ${table}_team_ad trigger to journal. Both are
+  // intentionally trigger-less. Cross-list parity for these exclusions is
+  // enforced in synced-table-parity.test.ts (NO_SINGLE_ID_TABLES /
+  // NO_DELETE_TRIGGER_TABLES).
+  const NO_TRIGGER = new Set<string>(['entity_mentions', 'team_members']);
+  it('covers all observed tables except the trigger-less exclusions', () => {
     const db = newDb();
     const triggers = new Set(
       (db.prepare(`SELECT name FROM sqlite_master WHERE type='trigger'`).all() as Array<{ name: string }>)
         .map((r) => r.name),
     );
-    const expected = TEAM_SYNC_OBSERVED_TABLES.filter((t) => t !== 'entity_mentions');
+    const expected = TEAM_SYNC_OBSERVED_TABLES.filter((t) => !NO_TRIGGER.has(t));
     const missing = expected.filter((t) => !triggers.has(`${t}_team_ad`));
     expect(missing).toEqual([]);
   });
