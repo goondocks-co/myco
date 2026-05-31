@@ -71,9 +71,9 @@ export function NotConnectedView({ scopeName }: { scopeName: string }) {
               Creates the worker and registers the team on this machine.
             </p>
           </Step>
-          <Step n={3} state="idle" title="Select a team">
+          <Step n={3} state="idle" title="Add or join the team">
             <p className="text-xs text-on-surface-variant m-0">
-              Open the Teams tab and assign the project to one of the registered teams.
+              On the Teams tab, provision a new team with <code className="font-mono">myco-team install</code> — or, if a teammate shared a Worker URL and Team key, use "Join a team". Then assign this project to it.
             </p>
           </Step>
         </ol>
