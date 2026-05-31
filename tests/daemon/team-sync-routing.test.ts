@@ -7,11 +7,15 @@
  *
  *   - project_id belongs to a team   → that team's worker
  *   - project_id belongs to no team  → DROP (markSent, never sent)
- *   - project_id == null (machine-    → fan out to EVERY team this Grove
- *     scoped, e.g. team_members)        participates in
+ *   - project_id == null (machine-    → fan out to EVERY team this machine has
+ *     scoped, e.g. team_members)        joined (every registered team),
+ *                                       regardless of project assignment
  *
- * The registry — not the Grove config — is the participation gate: a Grove
- * syncs iff at least one of its projects is a member of some team.
+ * The registry — not the Grove config — is the participation gate. For the
+ * live write path (delete triggers / syncRow) a Grove's flag tracks project
+ * membership, but the DRAIN of machine-scoped rows is gated on the machine
+ * having joined ANY team: a teammate who joins but assigns no project must
+ * still push their self row to the joined team so they appear in the roster.
  *
  * See plan: Phase 2.2 daemon per-project sync gating + drain routing.
  */
@@ -158,6 +162,23 @@ describe('team-sync DRAIN routing from the registry', () => {
     return record;
   }
 
+  /** Register a joined team that has NO project assigned in any Grove. */
+  function registerTeamWithNoProject(name: string): TeamRecord {
+    const teamId = createTeamId();
+    const record: TeamRecord = {
+      team_id: teamId,
+      name,
+      worker_url: `https://team-${teamId}.example.workers.dev`,
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [],
+    };
+    teamRegistry.save(record, mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-${teamId}`, mycoHome);
+    return record;
+  }
+
   function groveDbPath(grove: GroveRecord): string {
     return path.join(mycoHome, 'groves', grove.id, 'myco.db');
   }
@@ -266,13 +287,15 @@ describe('team-sync DRAIN routing from the registry', () => {
     cache.closeAll();
   });
 
-  it('sets enabled false and sends nothing when the Grove has no member projects', async () => {
+  it('sets enabled false, sends nothing, and drops a non-member project row when the Grove has no member projects', async () => {
     const grove = createGrove('Lonely', mycoHome);
     ensureGroveDatabase(grove.id, mycoHome);
     const cache = new GroveRuntimeCache();
 
-    // A team exists, but its project lives in a DIFFERENT grove — this Grove
-    // participates in nothing.
+    // A team exists (this machine has joined it), but its project lives in a
+    // DIFFERENT grove — no project of THIS Grove participates. The drain no
+    // longer early-returns (a team is registered), so a project-scoped row
+    // whose project belongs to no team is DROPPED (markSent), not pinned.
     const otherGrove = createGrove('Elsewhere', mycoHome);
     registerTeam('Team Elsewhere', otherGrove, createProjectId());
 
@@ -290,13 +313,14 @@ describe('team-sync DRAIN routing from the registry', () => {
       teamSync.flushPending(buildGroveCtx(grove)),
     );
 
+    // No project of this Grove participates → live write-path flag is false.
     expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
     expect(result.handedOff).toBe(0);
     expect(result.batches).toBe(0);
-    // Nothing was sent to any worker.
+    // Nothing was sent to any worker (the row's project belongs to no team).
     expect(enqueueByTeam.size).toBe(0);
-    // Non-participating Grove leaves its outbox untouched (not dropped).
-    expect(pendingCount(grove, cache)).toBe(1);
+    // The non-member project row was dropped (markSent), not left to pin the buffer.
+    expect(pendingCount(grove, cache)).toBe(0);
 
     cache.closeAll();
   });
@@ -393,6 +417,111 @@ describe('team-sync DRAIN routing from the registry', () => {
     const okRows = enqueueByTeam.get(teamOk.team_id) ?? [];
     expect(okRows.some((r) => r.row_id === 'spore-1')).toBe(true);
     expect(okRows.some((r) => r.row_id === 'spore-2')).toBe(true);
+
+    cache.closeAll();
+  });
+
+  it('drains a machine-scoped row to a registered team that has NO assigned project', async () => {
+    // Regression: a teammate who joins a team but hasn't assigned a project
+    // never reached the team worker, so they never appeared in the roster.
+    const grove = createGrove('Joined', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const cache = new GroveRuntimeCache();
+
+    // Joined a team, but no project of this Grove is a member of it.
+    const team = registerTeamWithNoProject('Team Joined');
+
+    seed(grove, cache, () => {
+      enqueueOutbox({
+        table_name: 'team_members', row_id: 'machine-1',
+        payload: JSON.stringify({ id: 'machine-1', machine_id: 'machine-1' }),
+        machine_id: 'machine-1', project_id: null, created_at: 500,
+      });
+    });
+    expect(pendingCount(grove, cache)).toBe(1);
+
+    const teamSync = makeTeamSync();
+    const result = await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+
+    // No project participates → the live write-path flag is false …
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
+    // … but the drain did NOT early-return: the self row reached the team.
+    const rows = enqueueByTeam.get(team.team_id) ?? [];
+    expect(rows.some((r) => r.table_name === 'team_members' && r.row_id === 'machine-1')).toBe(true);
+
+    // The machine-scoped row drained (all targets accepted) and cleared.
+    expect(result.handedOff).toBe(1);
+    expect(pendingCount(grove, cache)).toBe(0);
+    expect(result.error).toBeUndefined();
+
+    cache.closeAll();
+  });
+
+  it('fans a machine-scoped row to ALL registered teams, project-assigned or not', async () => {
+    const grove = createGrove('Mixed', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const cache = new GroveRuntimeCache();
+
+    // One team has a project in this Grove; the other is joined but bare.
+    const projA = createProjectId();
+    const teamWithProject = registerTeam('Team Project', grove, projA);
+    const teamBare = registerTeamWithNoProject('Team Bare');
+
+    seed(grove, cache, () => {
+      enqueueOutbox({
+        table_name: 'team_members', row_id: 'machine-1',
+        payload: JSON.stringify({ id: 'machine-1', machine_id: 'machine-1' }),
+        machine_id: 'machine-1', project_id: null, created_at: 600,
+      });
+    });
+
+    const teamSync = makeTeamSync();
+    const result = await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+
+    // A project participates → enabled = true.
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(true);
+    // The self row fanned out to BOTH the project-assigned and the bare team.
+    expect((enqueueByTeam.get(teamWithProject.team_id) ?? []).some((r) => r.table_name === 'team_members')).toBe(true);
+    expect((enqueueByTeam.get(teamBare.team_id) ?? []).some((r) => r.table_name === 'team_members')).toBe(true);
+    // markSent only once ALL targets accepted → exactly one handed-off row.
+    expect(result.handedOff).toBe(1);
+    expect(pendingCount(grove, cache)).toBe(0);
+
+    cache.closeAll();
+  });
+
+  it('drops a machine-scoped row when this machine has joined NO team', async () => {
+    const grove = createGrove('Solo', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const cache = new GroveRuntimeCache();
+
+    // No team registered anywhere.
+    seed(grove, cache, () => {
+      enqueueOutbox({
+        table_name: 'team_members', row_id: 'machine-1',
+        payload: JSON.stringify({ id: 'machine-1', machine_id: 'machine-1' }),
+        machine_id: 'machine-1', project_id: null, created_at: 700,
+      });
+    });
+    expect(pendingCount(grove, cache)).toBe(1);
+
+    const teamSync = makeTeamSync();
+    const result = await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
+    // No team → nothing was enqueued to any worker, and the early return on an
+    // empty registry leaves the row in place (it's only dropped once a team is
+    // registered but the row routes nowhere — covered separately below).
+    expect(enqueueByTeam.size).toBe(0);
+    expect(result.handedOff).toBe(0);
+    // teamRegistry.list() is empty → early return, row left pending for retry.
+    expect(pendingCount(grove, cache)).toBe(1);
 
     cache.closeAll();
   });

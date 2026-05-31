@@ -376,12 +376,22 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    *     clears; a future `add` + backfill re-syncs it). Must NOT sync.
    *   - `project_id` is set and belongs to a team   → route to that team.
    *   - `project_id` is null (machine-scoped, e.g.    → fan out to EVERY team
-   *     team_members)                                  this Grove participates in.
+   *     team_members)                                  this machine has joined
+   *                                                    (every registered team),
+   *                                                    regardless of project
+   *                                                    assignment; DROP if no
+   *                                                    team is registered at all.
    *
    * A fanned-out row is only `markSent` once ALL its target teams accept it;
    * if any target's client is unbuilt/failed this tick the row stays pending
    * for the next tick. Per-team batches whose client can't be built are left
    * pending too (team unreachable/unconfigured) — never dropped.
+   *
+   * The drain only short-circuits when this machine has joined NO team at all
+   * (`teamRegistry.list()` empty → nothing to sync anywhere). A machine that
+   * has joined a team but assigned no project to this Grove still drains its
+   * machine-scoped self row to that team's worker, so a just-joined teammate
+   * appears in the Members roster before assigning any project.
    */
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
@@ -390,12 +400,20 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     const teams = teamRegistry.list();
     const participates = groveParticipates(groveId);
     // The registry is now the write-path gate: keep delete triggers + syncRow
-    // in lockstep with whether this Grove feeds any team, every tick.
+    // in lockstep with whether this Grove feeds any team via project membership,
+    // every tick. (Machine-scoped self rows reach the outbox through
+    // backfillUnsynced, which bypasses this flag, so a joined-no-project Grove
+    // still queues its self row.)
     setTeamSyncEnabled(participates);
-    if (!participates) return result;
+    // Short-circuit only when this machine has joined no team at all — there is
+    // nowhere to route any row. With ≥1 registered team we must still drain
+    // machine-scoped rows even if no project participates.
+    if (teams.length === 0) return result;
 
     const map = teamRegistry.membershipByProject();
-    const targetTeamIds = participatingTeamIds(groveId);
+    // Machine-scoped (null project_id) rows fan out to every team this machine
+    // has joined, not just the teams with a project assigned to this Grove.
+    const machineScopedTargetTeamIds = teams.map((t) => t.team_id);
 
     // Teams whose batch handed off cleanly this flush. After the drain loop we
     // provision each exactly once (rotate + persist the MCP token, seed
@@ -424,16 +442,24 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       };
 
       for (const row of pending) {
-        if (row.project_id != null && !map.has(row.project_id)) {
-          dropIds.push(row.id);
-          continue;
-        }
         if (row.project_id != null) {
+          // Project-scoped row: route to the team that owns the project, or
+          // DROP if the project belongs to no registered team.
+          if (!map.has(row.project_id)) {
+            dropIds.push(row.id);
+            continue;
+          }
           pushToTeam(map.get(row.project_id)!, row);
+        } else if (machineScopedTargetTeamIds.length === 0) {
+          // Machine-scoped row with no team to route to. teams.length === 0 is
+          // already handled by the early return above, so this is defensive —
+          // DROP (markSent) so it doesn't pin the buffer forever.
+          dropIds.push(row.id);
         } else {
-          // Machine-scoped row: fan out a copy into every participating team.
-          fanOutTargetsRemaining.set(row.id, targetTeamIds.length);
-          for (const teamId of targetTeamIds) {
+          // Machine-scoped row: fan out a copy into every team this machine has
+          // joined (every registered team), regardless of project assignment.
+          fanOutTargetsRemaining.set(row.id, machineScopedTargetTeamIds.length);
+          for (const teamId of machineScopedTargetTeamIds) {
             pushToTeam(teamId, row);
           }
         }
@@ -635,8 +661,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     const participates = groveParticipates(requestContext?.groveId ?? null);
     setTeamSyncEnabled(participates);
 
-    if (!participates) {
-      // If this Grove does not participate in any registry Team but the outbox still
+    // The participation gate (delete triggers / live syncRow) tracks project
+    // membership, but the self-member re-push and drain are gated on the
+    // machine having joined ANY team: a joined-no-project Grove must still
+    // enqueue and drain its machine-scoped self row so the teammate appears in
+    // the roster before assigning a project. Only when this machine has joined
+    // no team at all do we treat the Grove as fully non-participating.
+    const joinedAnyTeam = teamRegistry.list().length > 0;
+
+    if (!joinedAnyTeam) {
+      // If this machine is in no registry Team but the outbox still
       // carries pending rows (from a previous sync-enabled period that was
       // later turned off), drop them. Without this sweep, `countPending()`
       // keeps reporting stale rows that will never drain — which the Team
