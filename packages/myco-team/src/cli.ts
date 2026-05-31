@@ -592,6 +592,27 @@ export function resolveWorkerUrl(slug: string, domain?: string | null): string |
 }
 
 /**
+ * Build the `/config` seed body written at install. `team_id` is included so
+ * the Worker is authoritative for the id — `/connect` echoes it, and joining
+ * teammates store the same id (idempotent re-join, consistent identity).
+ */
+export function buildTeamConfigSeed(input: {
+  teamId: string;
+  teamName: string;
+  createdBy: string;
+  createdAt: string;
+}): Record<string, string> {
+  return {
+    team_id: input.teamId,
+    team_name: input.teamName,
+    embedding_model: '@cf/baai/bge-m3',
+    embedding_dimensions: '1024',
+    created_at: input.createdAt,
+    created_by: input.createdBy,
+  };
+}
+
+/**
  * Append a `[[routes]]` block binding the worker to a custom Workers domain.
  * Idempotent — re-applying with the same slug/domain does not add a duplicate
  * block, so re-running install/upgrade against a staged toml is safe.
@@ -932,13 +953,12 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     await fetch(`${deployUrl}/config`, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        team_name: teamName,
-        embedding_model: '@cf/baai/bge-m3',
-        embedding_dimensions: '1024',
-        created_at: String(Math.floor(Date.now() / 1000)),
-        created_by: creatorMachineId,
-      }),
+      body: JSON.stringify(buildTeamConfigSeed({
+        teamId,
+        teamName,
+        createdBy: creatorMachineId,
+        createdAt: String(Math.floor(Date.now() / 1000)),
+      })),
     });
     console.log('Team config saved\n');
   } catch {
