@@ -27,6 +27,9 @@ import { initTeamContext } from '@myco/daemon/team-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { makeTestRequestContext } from '../../helpers/request-context.js';
+import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
@@ -184,6 +187,70 @@ describe('myco_plans op: list / get (in-process)', () => {
     seedPlan({ id: 'auth', logical_key: 'session:s:key:auth', status: 'active', content: '' });
     const r = await handleMycoPlans({ op: 'list' }, mockClient(), VAULT_DIR_FOR_TESTS) as unknown[];
     expect(r).toHaveLength(1);
+  });
+
+  // --- Cross-session lineage (Phase 2) ---
+
+  it('records a PLAN_REFERENCED edge when a different session does op:get', async () => {
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: 1700000000 });
+    seedSession('creator-session');
+    const created = await handleMycoPlans(
+      { op: 'save', session_id: 'creator-session', content: '# P', plan_key: 'p' },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'creator-session' }),
+    ) as { ok: true; id: string };
+    expect(created.ok).toBe(true);
+    seedSession('reader-session');
+
+    await handleMycoPlans(
+      { op: 'get', id: created.id },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'reader-session' }),
+    );
+
+    const edges = listGraphEdges({ sourceId: created.id, scope: ALL_PROJECTS_SCOPE });
+    expect(edges.some((e) => e.target_id === 'reader-session' && e.type === 'PLAN_REFERENCED')).toBe(true);
+  });
+
+  it('does NOT record an edge when the creating session does op:get', async () => {
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: 1700000000 });
+    seedSession('solo-session');
+    const created = await handleMycoPlans(
+      { op: 'save', session_id: 'solo-session', content: '# P2', plan_key: 'p2' },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'solo-session' }),
+    ) as { ok: true; id: string };
+
+    await handleMycoPlans(
+      { op: 'get', id: created.id },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'solo-session' }),
+    );
+
+    expect(listGraphEdges({ sourceId: created.id, scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+  });
+
+  it('op:save update from another session emits PLAN_ADVANCED and keeps the creator immutable', async () => {
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: 1700000000 });
+    seedSession('creatorB');
+    const created = await handleMycoPlans(
+      { op: 'save', session_id: 'creatorB', content: '# Q', plan_key: 'q' },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'creatorB' }),
+    ) as { ok: true; id: string };
+    seedSession('editorB');
+
+    const res = await handleMycoPlans(
+      { op: 'save', id: created.id, session_id: 'editorB', status: 'completed' },
+      mockClient(),
+      makeTestRequestContext({ sessionId: 'editorB' }),
+    ) as { ok: boolean };
+    expect(res.ok).toBe(true);
+
+    const row = getPlan(created.id, ALL_PROJECTS_SCOPE);
+    expect(row?.session_id).toBe('creatorB'); // creator preserved despite session_id=editorB in the update
+    const edges = listGraphEdges({ sourceId: created.id, scope: ALL_PROJECTS_SCOPE });
+    expect(edges.some((e) => e.target_id === 'editorB' && e.type === 'PLAN_ADVANCED')).toBe(true);
   });
 });
 

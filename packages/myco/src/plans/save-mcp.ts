@@ -64,7 +64,11 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     const openBatch = input.session_id ? getLatestOpenBatch(input.session_id) : null;
     const plan = persistPlan({
       id: existingPlan.id,
-      sessionId: input.session_id || existingPlan.session_id,
+      // The creating session is set once, then immutable. A real creator is
+      // never re-homed onto a later caller — that cross-session update is
+      // recorded as lineage (PLAN_ADVANCED) instead. A legacy plan with no
+      // creator adopts the first updating session.
+      sessionId: existingPlan.session_id ?? input.session_id,
       projectId,
       // Omitting content on update preserves the existing body — the common
       // case for status-only transitions (active → in_progress → completed).
