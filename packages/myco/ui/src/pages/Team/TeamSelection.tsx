@@ -4,6 +4,7 @@ import {
   useTeamRegistry,
   useTeamProjects,
   useSetProjectMembership,
+  useJoinTeam,
   type TeamRegistryRecord,
   type TeamProjectRow,
 } from '../../hooks/use-team';
@@ -11,6 +12,7 @@ import { Panel } from '../../components/ui/panel';
 import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Eyebrow } from '../../components/ui/eyebrow';
 import { Badge } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
 import { CopyableField } from '../../components/team/CopyableField';
 
 function TeamRow({ team }: { team: TeamRegistryRecord }) {
@@ -72,11 +74,26 @@ export function TeamSelection() {
   const { data: registry, isLoading: registryLoading } = useTeamRegistry();
   const { data: projectsData, isLoading: projectsLoading } = useTeamProjects();
   const membership = useSetProjectMembership();
+  const join = useJoinTeam();
   const [error, setError] = useState<string | null>(null);
+  const [joinUrl, setJoinUrl] = useState('');
+  const [joinKey, setJoinKey] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
 
   const teams = registry?.teams ?? [];
   const projects = projectsData?.projects ?? [];
   const pending = membership.isPending;
+
+  const handleJoin = async () => {
+    setJoinError(null);
+    try {
+      await join.mutateAsync({ worker_url: joinUrl.trim(), team_key: joinKey.trim() });
+      setJoinUrl('');
+      setJoinKey('');
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const handleChange = async (project: TeamProjectRow, newTeamId: string) => {
     const oldTeamId = project.team_id ?? '';
@@ -113,11 +130,40 @@ export function TeamSelection() {
         eyebrow={<IconEyebrow Icon={Network}>Teams</IconEyebrow>}
         title="Registered teams"
       >
+        <div className="flex flex-col gap-2 mb-4">
+          <p className="text-xs text-on-surface-variant m-0">
+            Join a team a teammate shared with you. Paste the Worker URL and Team key — no extra install required.
+          </p>
+          <label className="myco-eyebrow-sm text-on-surface-variant" htmlFor="join-worker-url">Worker URL</label>
+          <input
+            id="join-worker-url"
+            aria-label="Worker URL"
+            className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
+            value={joinUrl}
+            onChange={(e) => setJoinUrl(e.target.value)}
+            placeholder="https://team.example.workers.dev"
+          />
+          <label className="myco-eyebrow-sm text-on-surface-variant" htmlFor="join-team-key">Team key</label>
+          <input
+            id="join-team-key"
+            aria-label="Team key"
+            type="password"
+            className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
+            value={joinKey}
+            onChange={(e) => setJoinKey(e.target.value)}
+          />
+          <div className="flex justify-end">
+            <Button size="sm" disabled={join.isPending || !joinUrl.trim() || !joinKey.trim()} onClick={handleJoin}>
+              {join.isPending ? 'Joining…' : 'Join team'}
+            </Button>
+          </div>
+          {joinError && <p className="text-sm text-terracotta m-0" data-testid="team-join-error">{joinError}</p>}
+        </div>
         {registryLoading && teams.length === 0 ? (
           <p className="text-sm text-on-surface-variant m-0">Loading teams…</p>
         ) : teams.length === 0 ? (
           <p className="text-sm text-on-surface-variant m-0">
-            No teams yet. An operator provisions one with <code className="font-mono">myco-team install</code>.
+            No teams yet. An operator provisions one with <code className="font-mono">myco-team install</code>, or join one a teammate shared with you using the form above.
           </p>
         ) : (
           <div className="flex flex-col gap-2">

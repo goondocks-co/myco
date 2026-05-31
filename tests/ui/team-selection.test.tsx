@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PowerProvider } from '../../packages/myco/ui/src/providers/power';
 import { TeamSelection } from '../../packages/myco/ui/src/pages/Team/TeamSelection';
@@ -65,6 +65,30 @@ describe('TeamSelection', () => {
     await screen.findByText('Synced Project');
     expect(screen.getByText('Synced Project')).toBeDefined();
     expect(screen.getByText('Unsynced Project')).toBeDefined();
+  });
+
+  it('joins a team from the worker URL + key form', async () => {
+    const joinCalls: Array<Record<string, unknown>> = [];
+    // @ts-expect-error — test scaffold
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/team/join')) {
+        joinCalls.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ team: TEAM }), { status: 200 });
+      }
+      if (typeof url === 'string' && url.includes('/team/registry')) return new Response(JSON.stringify(REGISTRY), { status: 200 });
+      if (typeof url === 'string' && url.includes('/team/projects')) return new Response(JSON.stringify(PROJECTS), { status: 200 });
+      return new Response('{}', { status: 200 });
+    });
+
+    renderSelection();
+    const urlInput = await screen.findByLabelText('Worker URL');
+    const keyInput = screen.getByLabelText('Team key');
+    fireEvent.change(urlInput, { target: { value: 'https://new.workers.dev' } });
+    fireEvent.change(keyInput, { target: { value: 'tk-123' } });
+    fireEvent.click(screen.getByRole('button', { name: /join team/i }));
+
+    await waitFor(() => expect(joinCalls.length).toBe(1));
+    expect(joinCalls[0]).toEqual({ worker_url: 'https://new.workers.dev', team_key: 'tk-123' });
   });
 
   it('preselects the team for a synced project and "Not synced" for an unassigned one', async () => {
