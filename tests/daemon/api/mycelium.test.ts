@@ -31,12 +31,14 @@ describe('mycelium API handlers', () => {
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: NOW });
   });
 
-  it('includes plan nodes in the full graph', async () => {
+  it('includes plan nodes in the full graph regardless of status (so worked plans render)', async () => {
     upsertSession({ id: 's1', agent: 'claude-code', started_at: NOW, created_at: NOW });
+    // in_progress / completed plans are exactly the cross-session-lineage case
+    // (a plan you advance or pick up), so they MUST appear as nodes.
     upsertPlan({
       id: 'plan-1',
       logical_key: 'session:s1:file:docs/p.md',
-      status: 'active',
+      status: 'in_progress',
       title: 'P',
       content: '# P',
       session_id: 's1',

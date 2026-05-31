@@ -1,6 +1,7 @@
 import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities } from '@myco/db/queries/entities.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { listPlans } from '@myco/db/queries/plans.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -381,12 +382,15 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
      FROM sessions WHERE 1=1${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
   ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
 
-  // Fetch active plans. Plans are session-born artifacts; their plan↔session
-  // touch edges only render once both endpoints exist as nodes.
-  const planRows = db.prepare(
-    `SELECT id, title, content, status, created_at
-     FROM plans WHERE status = 'active'${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
-  ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+  // Fetch plans across ALL statuses via the shared query helper. A plan you
+  // advance or pick up is in_progress/completed — exactly the cross-session
+  // lineage case — so an active-only filter would hide the very plans whose
+  // touch edges we want to render. Plans are session-born artifacts; their
+  // plan↔session edges only render once both endpoints exist as nodes.
+  const planRows = listPlans({
+    scope: projectScopeFromRequestContext(req.requestContext),
+    limit: FULL_GRAPH_NODE_LIMIT,
+  });
 
   // Collect all node IDs for edge filtering
   const allIds = new Set<string>();
@@ -431,12 +435,12 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
       content: (n.summary as string) ?? undefined,
     })),
     ...planRows.map((n) => ({
-      id: n.id as string,
-      name: (n.title as string) ?? `Plan ${(n.id as string).slice(-6)}`,
+      id: n.id,
+      name: n.title ?? `Plan ${n.id.slice(-6)}`,
       type: 'plan' as const,
-      status: (n.status as string) ?? undefined,
-      created_at: n.created_at as number | undefined,
-      content: (n.content as string) ?? undefined,
+      status: n.status,
+      created_at: n.created_at,
+      content: n.content ?? undefined,
     })),
   ];
 
