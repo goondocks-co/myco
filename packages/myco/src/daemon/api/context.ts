@@ -28,6 +28,7 @@ import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '
 import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { recordInjectionAndShouldSuppress } from '../injection-records.js';
+import { detectsPlanIntent, PLAN_INTENT_NUDGE } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -413,9 +414,29 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const config = liveConfig.current;
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
+
+    // Plan-intent nudge — evaluated independently of the spore gates below so it
+    // still fires when spore injection is disabled. Deduped once per session via
+    // the injection-record UNIQUE gate (best-effort; with no open batch it falls
+    // through like spores). `respond()` folds it into every return.
+    let nudgeText = '';
+    if (config.cortex.plans.inject_intent_nudge_on_prompt_submit && detectsPlanIntent(prompt) && session_id) {
+      const { suppress } = await recordInjectionAndShouldSuppress({
+        sessionId: session_id,
+        projectId: typeof projectId === 'string' ? projectId : null,
+        injectionType: 'plan-nudge',
+        trigger: { metadata: {} },
+        fetchContent: async () => ({ text: PLAN_INTENT_NUDGE, metadata: {} }),
+      });
+      if (!suppress) nudgeText = PLAN_INTENT_NUDGE;
+    }
+    const respond = (sporeText: string): RouteResponse => ({
+      body: { text: [sporeText, nudgeText].filter(Boolean).join('\n\n') },
+    });
+
     if (!config.cortex.spores.inject_on_prompt_submit) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt search disabled by config', { session_id });
-      return { body: { text: '' } };
+      return respond('');
     }
 
     if (prompt.length < PROMPT_CONTEXT_MIN_LENGTH) {
@@ -424,19 +445,19 @@ export function createPromptContextHandler(deps: ContextDeps) {
         length: prompt.length,
         min: PROMPT_CONTEXT_MIN_LENGTH,
       });
-      return { body: { text: '' } };
+      return respond('');
     }
 
     const maxSpores = config.cortex.spores.max_per_prompt;
     if (maxSpores === 0) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt spore injection disabled (max_spores=0)', { session_id });
-      return { body: { text: '' } };
+      return respond('');
     }
 
     const queryVector = await embeddingManager.embedQuery(prompt);
     if (!queryVector) {
       logger.debug(LOG_KINDS.CONTEXT_EMBED, 'Embedding provider unavailable for prompt search', { session_id });
-      return { body: { text: '' } };
+      return respond('');
     }
 
     // Search spores namespace — over-fetch to compensate for post-filtering
@@ -456,7 +477,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       top_similarity: vectorResults[0]?.similarity,
     });
 
-    if (vectorResults.length === 0) return { body: { text: '' } };
+    if (vectorResults.length === 0) return respond('');
 
     const eligible = vectorResults.filter(
       (r) => !EXCLUDED_SPORE_STATUSES.has(r.metadata.status as string),
@@ -464,14 +485,14 @@ export function createPromptContextHandler(deps: ContextDeps) {
 
     if (eligible.length === 0) {
       logger.debug(LOG_KINDS.CONTEXT_FILTER, 'All spore results excluded by status filter', { session_id });
-      return { body: { text: '' } };
+      return respond('');
     }
 
     const topResults = eligible.slice(0, maxSpores);
     const hydrated = hydrateSearchResults(topResults, { scope });
     const spores = hydrated.filter((r) => r.type === 'spore');
 
-    if (spores.length === 0) return { body: { text: '' } };
+    if (spores.length === 0) return respond('');
 
     const text = formatSporeContext(spores);
 
@@ -506,10 +527,10 @@ export function createPromptContextHandler(deps: ContextDeps) {
         },
         fetchContent: async () => ({ text, metadata: { spore_count: spores.length } }),
       });
-      if (suppress) return { body: { text: '' } };
+      if (suppress) return respond('');
     }
 
-    return { body: { text } };
+    return respond(text);
   };
 }
 
