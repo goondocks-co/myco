@@ -381,9 +381,16 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
      FROM sessions WHERE 1=1${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
   ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
 
+  // Fetch active plans. Plans are session-born artifacts; their plan↔session
+  // touch edges only render once both endpoints exist as nodes.
+  const planRows = db.prepare(
+    `SELECT id, title, content, status, created_at
+     FROM plans WHERE status = 'active'${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
+  ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+
   // Collect all node IDs for edge filtering
   const allIds = new Set<string>();
-  for (const r of [...sporeRows, ...sessionRows]) {
+  for (const r of [...sporeRows, ...sessionRows, ...planRows]) {
     allIds.add(r.id as string);
   }
 
@@ -422,6 +429,14 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
       status: (n.status as string) ?? undefined,
       created_at: n.created_at as number | undefined,
       content: (n.summary as string) ?? undefined,
+    })),
+    ...planRows.map((n) => ({
+      id: n.id as string,
+      name: (n.title as string) ?? `Plan ${(n.id as string).slice(-6)}`,
+      type: 'plan' as const,
+      status: (n.status as string) ?? undefined,
+      created_at: n.created_at as number | undefined,
+      content: (n.content as string) ?? undefined,
     })),
   ];
 

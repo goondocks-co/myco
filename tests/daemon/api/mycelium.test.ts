@@ -2,9 +2,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { registerAgent } from '@myco/db/queries/agents';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges';
 import { upsertSession } from '@myco/db/queries/sessions';
+import { upsertPlan } from '@myco/db/queries/plans';
 import { insertSpore } from '@myco/db/queries/spores';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
-import { handleGetGraph, handleGetGraphSeeds } from '@myco/daemon/api/mycelium';
+import { handleGetGraph, handleGetGraphSeeds, handleGetFullGraph } from '@myco/daemon/api/mycelium';
 import type { RouteRequest } from '@myco/daemon/router';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 
@@ -28,6 +29,24 @@ describe('mycelium API handlers', () => {
   beforeEach(() => {
     cleanTestDb();
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'myco-agent', created_at: NOW });
+  });
+
+  it('includes plan nodes in the full graph', async () => {
+    upsertSession({ id: 's1', agent: 'claude-code', started_at: NOW, created_at: NOW });
+    upsertPlan({
+      id: 'plan-1',
+      logical_key: 'session:s1:file:docs/p.md',
+      status: 'active',
+      title: 'P',
+      content: '# P',
+      session_id: 's1',
+      created_at: NOW,
+      machine_id: 'local',
+    });
+
+    const res = await handleGetFullGraph(makeReq('/graph/full'));
+    const nodes = (res.body as { nodes: Array<{ id: string; type: string }> }).nodes;
+    expect(nodes.some((n) => n.id === 'plan-1' && n.type === 'plan')).toBe(true);
   });
 
   it('returns lightweight graph seeds with a recommended node', async () => {
