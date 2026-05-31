@@ -48,15 +48,15 @@ After install, open the deployed worker URL in your browser. The admin UI gives 
 
 ## Connect a project
 
-Each project needs team sync first.
+Each project must belong to a team first.
 
-From the project itself (after installing `@goondocks/myco-team`):
+Provision the team's Worker (after installing `@goondocks/myco-team`):
 
 ```bash
-myco-team install
+myco-team install --name "<team name>"
 ```
 
-Then add that team worker to the Collective:
+Then add that team Worker to the Collective:
 
 ```bash
 myco-collective add-project <name> <worker_url> <api_key>
@@ -90,12 +90,12 @@ npm install -g @goondocks/myco-team
 
 That adds:
 
-- `myco-team install` — create Team Sync for a Grove
-- `myco-team upgrade` — redeploy the worker
-- `myco-team status` — show worker info and credentials
-- `myco-team rotate-tokens` — rotate API key and/or MCP token
-- `myco-team reindex-vectors` — rebuild the Vectorize index
-- `myco-team destroy` — tear down all Cloudflare resources
+- `myco-team install --name "<team name>"` — provision a team (deploys its Worker)
+- `myco-team update --team-id <id>` — redeploy the team's Worker
+- `myco-team status --team-id <id>` — show Worker info and credentials
+- `myco-team rotate-tokens --team-id <id>` — rotate the Team key and/or MCP token
+- `myco-team reindex-vectors --team-id <id>` — rebuild the team's search index
+- `myco-team destroy --team-id <id>` — tear down the team's Cloudflare resources
 
 ### Collective operators
 
@@ -112,11 +112,11 @@ npm update -g @goondocks/myco-collective
 myco-collective upgrade
 ```
 
-If you also use the standalone team CLI, you can still update it directly:
+If you also use the standalone team CLI, you can still update it directly, then redeploy each team's Worker:
 
 ```bash
 npm update -g @goondocks/myco-team
-myco-team upgrade
+myco-team update --team-id <id>
 ```
 
 Project-local Myco installs still update through `@goondocks/myco`. Once the standalone Team or Collective CLI is installed on a machine, the main Myco Operations page also detects and applies those package updates for you.

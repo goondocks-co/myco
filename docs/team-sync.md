@@ -1,83 +1,91 @@
 # Team Sync
 
-Share captured knowledge across machines and team members through a Cloudflare-backed sync layer. Each teammate keeps their local Grove database, and Team Sync mirrors connected teammates' Grove data into a queryable team store. Every teammate's agents benefit from the collective intelligence — the same digest, the same spores, the same graph — without you having to think about it.
+Share captured knowledge across your team through a Cloudflare-backed sync layer. Each teammate keeps their local Grove, and Team Sync mirrors your team's knowledge into a shared, queryable store — so everyone's agents draw on the same spores, sessions, plans, and graph without anyone having to think about it.
 
-Team Sync also deploys a secure [Cloud MCP Server](cloud-mcp.md) that exposes synced Grove knowledge to cloud agents (Anthropic Managed Agents, N8N, etc.). See [Cloud MCP docs](cloud-mcp.md) for that side of the feature.
+Team Sync also exposes a secure [Cloud MCP Server](cloud-mcp.md) so cloud agents (Anthropic Managed Agents, n8n, and the like) can read your team's knowledge. See [Cloud MCP](cloud-mcp.md) for that side.
 
 ## What you get
 
-- Every new spore, session, plan, and graph edge syncs automatically in the background
-- Search queries fan out to both local and team data — results merge by relevance, tagged with source
-- Team context is additive — if the Worker is slow or unreachable, local results return alone
-- One-time backfill pushes each teammate's existing Grove knowledge to the team store on first connect
-- Runs on the Cloudflare free tier for small teams
+- New spores, sessions, plans, and graph edges sync automatically in the background.
+- Search fans out across local **and** team knowledge and merges by relevance, tagged with its source.
+- Team results are additive — if the team store is slow or unreachable, your local results still return.
+- Assigning a project to a team backfills its existing knowledge once; everything after syncs as you work.
+- A team roster shows who's connected.
+- Runs on the Cloudflare free tier for small teams.
 
-Local Grove databases remain the source of truth — the cloud store is a queryable mirror of connected teammates' Grove data. Nothing is pulled back down. Each record carries a machine identity for attribution.
+Your local Grove stays the source of truth — the team store is a queryable mirror, and nothing is pulled back down to overwrite local data. Every record is attributed to the machine that created it.
 
-## Quick start
+## Set up a team
 
-### 1. Install Wrangler
+There are two roles: **one person provisions** the team's cloud infrastructure, and **everyone else joins** with the details that person shares. Only the person provisioning needs Wrangler and the operator CLI — teammates join straight from the dashboard with nothing extra to install.
 
-Install Wrangler and the team operator CLI. Only the person provisioning the team needs `@goondocks/myco-team` — teammates who are just connecting don't.
+### 1. Provision the team (one person, once)
+
+Install Wrangler and the operator CLI, sign in to Cloudflare, then create the team with a name:
 
 ```bash
 npm install -g wrangler @goondocks/myco-team
 wrangler login
+myco-team install --name "Acme Core"
 ```
 
-### 2. Create the team
+This deploys the team's sync Worker and registers the team on your machine. To serve it from your own domain, add `--domain <your-zone>`. When it finishes, it prints the team's **Worker URL** and **Team key** — share both with your teammates through a private channel. The Team key authorizes writes to the team, so keep it secret.
 
-One team member runs this once. It provisions the Cloudflare infrastructure and deploys the sync Worker.
+### 2. Teammates join (everyone, from the dashboard)
 
-```bash
-myco-team install
-```
+Each teammate opens the **Team** page in their Myco dashboard (`http://localhost:20915/team`, or run `myco open`), goes to the **Teams** tab, and under **Join a team** pastes the Worker URL and Team key. That registers the team on their machine — no Wrangler, no operator CLI, nothing else to install.
 
-The command outputs a **Worker URL** and **Team key**. Share these with teammates through your preferred out-of-band channel.
+### 3. Choose which projects sync
 
-The full `myco-team` CLI surface: `install`, `upgrade`, `status`, `rotate-tokens`, `reindex-vectors`, `destroy`.
+On the **Teams** tab, assign each project to a team. A project syncs to exactly one team; leave it unassigned to keep it local. As soon as you assign a project, its existing knowledge backfills to the team store and new knowledge syncs as you work.
 
-### 3. Connect teammates
-
-Each teammate opens the **Team** page in their Myco dashboard (`http://localhost:20915/team`, or `myco open` if your install reports a different local URL), pastes the Worker URL and Team key, and clicks **Connect**. Their machine registers with the team and begins syncing immediately.
-
-On first connect, existing local knowledge is backfilled to the team store in batches. New knowledge syncs automatically going forward.
-
-Sync is durable: records are queued, retried, and surfaced on the Team page if an operator needs to retry or discard a stuck item.
+Syncing is durable: changes are queued and retried, and anything stuck shows up on the **Sync** tab, where you can retry or discard it.
 
 ## What syncs
 
-| Synced | Not synced |
-|--------|------------|
-| Spores (observations, wisdom) | Activities (tool call detail) |
-| Sessions (metadata, title, summary) | Agent execution traces |
-| Prompt batches (prompts, AI summaries) | Log entries |
-| Entities and graph edges | Attachments (images) |
-| Plans and artifacts | Buffer files |
+| Synced | Stays local |
+|--------|-------------|
+| Spores (observations, wisdom) | Tool-call activity and traces |
+| Sessions (metadata, title, summary) | Log entries |
+| Prompt batches (prompts, AI summaries) | Attachments (images) |
+| Entities and graph edges | Local working buffers |
+| Plans and artifacts | |
 | Resolution events | |
 | Digest extracts | |
-| Skill records and candidates | |
+| Skills and skill candidates | |
+| Team roster (who's connected) | |
 
-Teammates see what was asked and answered, not every file read or bash command. That keeps the team store useful and keeps sync cost bounded.
+Teammates see what was asked and answered — not every file read or shell command. That keeps the team store useful and the cost bounded.
+
+## The Team page
+
+A **team selector** in the top-right scopes what you're viewing to one of your teams. The page has four tabs:
+
+- **Teams** — machine-wide. Join or add a team, see every team registered on this machine, and assign each project to a team. Teams you provisioned also show their one-line update command; teams you only joined show a **Leave team** action.
+- **Status** — the selected team's connection health, the Worker URL and Team key to hand to a new teammate, this machine's identity in the team, and the team's [Cloud MCP](cloud-mcp.md) endpoint and token (with a config snippet for cloud agents and a rotate action).
+- **Sync** — the selected team's sync health: how much is left to send, failed items with **Retry** and **Discard**, and one-click backfill.
+- **Members** — the selected team's roster: every machine connected to the team, with yours marked.
+
+### Leaving a team
+
+To stop syncing to a team, open the **Teams** tab and choose **Leave team**. That removes the team from this machine and clears its pending queue — it does not touch the team's cloud Worker or your local Grove, and other members are unaffected. (To tear the cloud infrastructure down entirely, the operator runs `myco-team destroy --team-id <id>`.)
 
 ## Machine identity
 
-Every synced record is tagged with a **machine identity** — a deterministic `{github_username}_{machine_hash}` (e.g. `chris_a7b3c2`). This lets search results attribute knowledge to its source, and lets you filter "my data" vs "team data" when you want to.
-
-The identity is generated once per machine and cached at `.myco/machine_id`. Nothing to configure.
+Every synced record is tagged with a **machine identity** — a deterministic `{github_username}_{machine_hash}` (e.g. `chris_a7b3c2`). This attributes knowledge to its source and lets you tell "my data" from "team data". It's generated once per machine and cached at `.myco/machine_id`. Nothing to configure.
 
 ## Search fan-out
 
-When team sync is connected, search queries hit both local and cloud databases in parallel, then merge by relevance score. Each result is tagged so you can tell where it came from:
+When a project syncs to a team, search hits your local store and the team store in parallel, then merges by relevance. Each result is tagged so you can see where it came from:
 
 - `source: "local"` — from this machine
 - `source: "team:chris_a7b3c2"` — from the team store, attributed
 
-If the cloud Worker is unreachable within a short timeout, local results return alone. Team search is always additive, never blocking.
+If the team store is unreachable within a short timeout, local results return on their own. Team search is always additive, never blocking.
 
 ## Cloud embedding alternative
 
-If you don't want to run Ollama locally for embeddings, point at Cloudflare Workers AI instead — it uses the same model as the Worker, so embeddings are directly comparable:
+If you'd rather not run Ollama locally for embeddings, point at Cloudflare Workers AI — it uses the same model as the Worker, so embeddings are directly comparable:
 
 ```yaml
 # myco.yaml
@@ -91,55 +99,26 @@ Store your Cloudflare API token in `secrets.env`.
 
 ## Backup & restore
 
-Independent of Team Sync, Myco creates Grove-scoped backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution so you can pull a teammate's backup file without losing who said what.
+Independent of Team Sync, Myco creates Grove-scoped backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution, so you can pull a teammate's backup without losing who said what.
 
-Backups include all knowledge tables but exclude logs, tool call activities, and vector embeddings (rebuilt automatically after restore).
+Backups include all knowledge but exclude logs, tool-call activity, and vector embeddings (rebuilt automatically after restore).
 
-## Worker management
+## Managing the Worker (operators)
 
-### Upgrade
-
-Any team member with Wrangler and `@goondocks/myco-team` installed can update the Worker to match their installed Myco version:
+The person who provisioned a team manages its Worker. Each team you provisioned shows its update command on the **Teams** tab — copy and run it to redeploy the Worker at your installed Myco version:
 
 ```bash
-myco-team upgrade
+myco-team update --team-id <team-id>
 ```
 
-Or click **Update Worker** on the Team page when an update is available. Teammates who already have Team Sync connected can update from the dashboard without installing `myco-team` locally.
-
-The Operations page detects and applies package updates to `@goondocks/myco-team` when that CLI is installed on the same machine. Manual npm updates still work:
+The other operator commands take the same `--team-id`: `status`, `rotate-tokens`, `reindex-vectors`, and `destroy`. To update the operator CLI itself:
 
 ```bash
 npm update -g @goondocks/myco-team
-myco-team upgrade
 ```
 
-### Architecture
-
-The Worker keeps the cloud side lightweight. Local Grove databases remain the source of truth; the Worker stores a synced mirror for team search and Cloud MCP. Sync is queued and retryable, so transient Cloudflare or network failures do not block local work.
-
-Three surfaces are exposed:
-
-- **Team sync** — connect teammates, receive synced Grove knowledge, and answer team search queries.
-- **Operator actions** — show sync status, retry stuck items, discard items you no longer want, and rotate credentials from the Team page.
-- **Cloud MCP** — the read-only [Cloud MCP Server](cloud-mcp.md) that cloud agents connect to.
+The Worker keeps the cloud side lightweight: your local Grove stays the source of truth, the Worker holds a synced mirror for team search and Cloud MCP, and syncing is queued and retryable, so a transient network or Cloudflare hiccup never blocks local work.
 
 ### Cost
 
-A small team (2-5 developers) stays comfortably within the Cloudflare free tier. The $5/month paid tier provides significant headroom if your team outgrows free.
-
-## Dashboard
-
-### Team page
-
-- **Not connected** — setup instructions and connect form (Worker URL + Team key)
-- **Connected** — two tabs:
-  - **Status** — connection health, team credentials (with show/hide for the Team key), machine identity, MCP endpoint + token + rotate
-  - **Sync** — records left to sync, remote delivery depth when queue inspection is configured, failed syncs with **Retry** and **Discard** actions, worker updates, and manual sync
-- **Cloud MCP Endpoint** — on the Status tab. Shows the MCP URL, a redacted bearer token, a pre-formatted config snippet for Anthropic Managed Agents, and a "Rotate token" action. See [Cloud MCP docs](cloud-mcp.md).
-
-### Operations page
-
-- Backup directory configuration
-- Backup Now button
-- Backup history with restore preview
+A small team (2–5 developers) stays comfortably within the Cloudflare free tier. The $5/month paid tier provides significant headroom if your team outgrows it.
