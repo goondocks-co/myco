@@ -885,7 +885,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       team_id: teamId,
       name: teamName || existing?.name || teamId,
       worker_url: workerUrl,
-      domain: null,
+      domain: existing?.domain ?? null,
       mcp_endpoint: `${workerUrl}/mcp`,
       created_at: existing?.created_at ?? new Date().toISOString(),
       projects: existing?.projects ?? [],

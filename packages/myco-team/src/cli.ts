@@ -592,6 +592,23 @@ export function resolveWorkerUrl(slug: string, domain?: string | null): string |
 }
 
 /**
+ * The worker_url to persist after an upgrade. A custom-domain worker still
+ * exposes a working *.workers.dev URL, so the deploy output always parses to
+ * one — adopting it would silently repoint the team off its custom domain.
+ * Keep the custom domain when one is configured; otherwise use the parsed
+ * *.workers.dev URL (falling back to the prior url if parsing yields nothing).
+ */
+export function resolveUpgradedWorkerUrl(input: {
+  domain: string | null;
+  slug: string;
+  parsedUrl: string | null;
+  previousUrl: string;
+}): string {
+  if (input.domain) return resolveWorkerUrl(input.slug, input.domain) ?? input.previousUrl;
+  return input.parsedUrl ?? input.previousUrl;
+}
+
+/**
  * Build the `/config` seed body written at install. `team_id` is included so
  * the Worker is authoritative for the id — `/connect` echoes it, and joining
  * teammates store the same id (idempotent re-join, consistent identity).
@@ -1133,12 +1150,14 @@ export function upgradeWorker(
   // Redeploy
   try {
     const deployOutput = wrangler(['deploy'], { cwd: deployDir });
-    let workerUrl = deployment.worker_url;
-    try {
-      workerUrl = parseWorkerUrl(deployOutput);
-    } catch (err) {
-      if (!team.domain) throw err;
-    }
+    let parsedUrl: string | null = null;
+    try { parsedUrl = parseWorkerUrl(deployOutput); } catch { parsedUrl = null; }
+    const workerUrl = resolveUpgradedWorkerUrl({
+      domain: team.domain,
+      slug: slugifyGroveName(team.name),
+      parsedUrl,
+      previousUrl: deployment.worker_url,
+    });
     const version = getTeamPackageVersion();
 
     try {

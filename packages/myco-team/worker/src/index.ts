@@ -1740,6 +1740,14 @@ async function handleListMembers(env: Env): Promise<Response> {
  * `DELETE /members/:machine_id` — drop a single machine's roster row. Called
  * when a teammate leaves the team so the departing machine stops lingering as
  * a ghost member in everyone else's view.
+ *
+ * Trust model: the worker authenticates every request with a SHARED team key
+ * and carries no per-machine identity, so it cannot enforce "delete only your
+ * own row" — any holder of the key can remove any machine_id. This is the same
+ * trust level as `/enqueue` (which already accepts an arbitrary machine_id) and
+ * `/rebuild`. The blast radius is bounded because removal is self-healing: an
+ * active member re-pushes its self-row on the next reconcile, so an erroneous
+ * delete corrects itself rather than permanently dropping a live machine.
  */
 async function handleRemoveMember(machineId: string, env: Env): Promise<Response> {
   if (!machineId) return errorResponse('machine_id is required', 400);

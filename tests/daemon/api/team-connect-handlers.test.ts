@@ -551,6 +551,29 @@ describe('team-connect handlers — direct coverage', () => {
       ]);
     });
 
+    it('preserves an existing custom domain on re-join (does not null it)', async () => {
+      teamRegistry.save({
+        team_id: JOIN_TEAM_ID,
+        name: 'Joined Team',
+        worker_url: 'https://joined.example.workers.dev',
+        domain: 'example.co',
+        mcp_endpoint: 'https://joined.example.workers.dev/mcp',
+        created_at: '2026-05-01',
+        projects: [],
+      });
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+      })) as never);
+
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://joined.example.workers.dev', team_key: 'tk-secret' },
+      }));
+      expect(res.status).toBeUndefined();
+      expect(teamRegistry.get(JOIN_TEAM_ID)?.domain).toBe('example.co');
+    });
+
     it('returns 409 worker_url_mismatch when an existing record points at a different worker', async () => {
       teamRegistry.save({
         team_id: JOIN_TEAM_ID,

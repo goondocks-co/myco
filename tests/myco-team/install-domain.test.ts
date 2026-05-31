@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveWorkerUrl, withCustomDomainRoute } from '../../packages/myco-team/src/cli.js';
+import { resolveUpgradedWorkerUrl, resolveWorkerUrl, withCustomDomainRoute } from '../../packages/myco-team/src/cli.js';
 
 describe('custom domain', () => {
   it('resolveWorkerUrl returns the custom domain URL when a zone is given, else null', () => {
@@ -19,5 +19,32 @@ describe('custom domain', () => {
     // idempotent: applying again doesn't add a second block
     const twice = withCustomDomainRoute(once, 'myco-projects', 'goondocks.org');
     expect(twice.match(/\[\[routes\]\]/g)?.length).toBe(1);
+  });
+  it('resolveUpgradedWorkerUrl keeps the custom domain even when the deploy output parses a workers.dev URL', () => {
+    // A custom-domain worker still exposes a working *.workers.dev URL, so
+    // parsedUrl is non-null on every upgrade — adopting it would repoint the
+    // team off its custom domain. The custom domain must win.
+    expect(resolveUpgradedWorkerUrl({
+      domain: 'example.co',
+      slug: 'myco-projects',
+      parsedUrl: 'https://myco-team-myco-projects-abc123.workers.dev',
+      previousUrl: 'https://myco-projects.example.co',
+    })).toBe('https://myco-projects.example.co');
+  });
+  it('resolveUpgradedWorkerUrl uses the parsed workers.dev URL when no custom domain', () => {
+    expect(resolveUpgradedWorkerUrl({
+      domain: null,
+      slug: 'myco-projects',
+      parsedUrl: 'https://myco-team-myco-projects-abc123.workers.dev',
+      previousUrl: 'https://stale.workers.dev',
+    })).toBe('https://myco-team-myco-projects-abc123.workers.dev');
+  });
+  it('resolveUpgradedWorkerUrl falls back to the previous URL when no domain and nothing parsed', () => {
+    expect(resolveUpgradedWorkerUrl({
+      domain: null,
+      slug: 'myco-projects',
+      parsedUrl: null,
+      previousUrl: 'https://stale.workers.dev',
+    })).toBe('https://stale.workers.dev');
   });
 });
