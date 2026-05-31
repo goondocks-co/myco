@@ -8,6 +8,7 @@ const PLAN_PATH_KEY_PREFIX = 'path:';
 const PLAN_SESSION_KEY_PREFIX = 'session:';
 const PLAN_TAG_KEY_SEGMENT = ':tag:';
 const PLAN_PLAN_KEY_SEGMENT = ':key:';
+const PLAN_FILE_KEY_SEGMENT = ':file:';
 const PLAN_LEGACY_KEY_PREFIX = 'legacy:';
 const PLAN_SESSION_LEGACY_KEY_SEGMENT = ':legacy:';
 const WINDOWS_SEPARATOR = '\\';
@@ -56,6 +57,10 @@ export function buildSessionTagPlanLogicalKey(sessionId: string, tag: string): s
 
 export function buildSessionPlanLogicalKey(sessionId: string, planKey: string): string {
   return `${PLAN_SESSION_KEY_PREFIX}${sessionId}${PLAN_PLAN_KEY_SEGMENT}${planKey}`;
+}
+
+export function buildFilePlanLogicalKey(sessionId: string, normalizedPath: string): string {
+  return `${PLAN_SESSION_KEY_PREFIX}${sessionId}${PLAN_FILE_KEY_SEGMENT}${normalizedPath}`;
 }
 
 export function buildLegacyPlanLogicalKey(
