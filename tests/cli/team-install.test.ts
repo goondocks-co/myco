@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { saveProjectManifest } from '@myco/config/project-manifest';
-import { createGrove, registerProjectInGrove, type GroveRecord } from '@myco/grove/registry';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import { resolveGroveDir, resolveProjectVaultDir } from '@myco/grove/paths';
 
 const execCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
@@ -72,11 +71,6 @@ function createFakeWorkerSource(sourceDir: string): void {
   fs.writeFileSync(path.join(sourceDir, 'src', 'index.ts'), '// worker\n', 'utf-8');
 }
 
-function expectedGroveResourceName(grove: GroveRecord): string {
-  const hash = crypto.createHash('sha256').update(grove.id).digest('hex').slice(0, 8);
-  return `myco-team-${grove.slug}-${hash}`;
-}
-
 describe('teamInit', () => {
   let tmpDir: string;
   let homeDir: string;
@@ -139,7 +133,7 @@ describe('teamInit', () => {
     console.error = previousConsoleError;
   });
 
-  it('incorporates the Grove slug into newly provisioned Cloudflare resources', async () => {
+  it('derives consistent team-name resource names across newly provisioned Cloudflare assets', async () => {
     const grove = createGrove('Myco Dogfood', homeDir);
     saveProjectManifest(vaultDir, {
       project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'myco' },
@@ -152,25 +146,59 @@ describe('teamInit', () => {
       bindingId: 'gbind_test',
     }, homeDir);
 
-    const resourceName = expectedGroveResourceName(grove);
+    // The resource name is now derived from the TEAM name + a hash of the
+    // (non-deterministic) team id, so we can't predict it up front. The
+    // wrangler handlers return canned outputs by POSITION in teamInit's call
+    // sequence; the actual resource name is recovered from `execCalls` after
+    // the run and used to drive every consistency assertion below.
+    //
+    // Call order (no custom domain):
+    //   1. wrangler --version
+    //   2. wrangler whoami
+    //   3. wrangler d1 create <name>            -> D1 id JSON
+    //   4. wrangler vectorize create <name>-vectors ...
+    //   5. wrangler kv namespace create <name>-secrets   -> KV id JSON
+    //   6. wrangler queues create <name>-sync
+    //   7. wrangler queues create <name>-sync-dlq
+    //   8. npm install (deploy-dir deps; fake worker has a package.json)
+    //   9. wrangler secret put MYCO_TEAM_API_KEY --name <name>
+    //  10. wrangler deploy                       -> workers.dev URL
+    //  11. wrangler queues consumer worker remove <dlq> <name>
+    //  12. wrangler queues consumer http add <dlq>
+    const deployHandler = (args: string[]): string => {
+      // teamInit captures the worker_url from `wrangler deploy` output, which
+      // must echo the *actual* resource name so worker_name === worker_url host.
+      const created = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
+      const name = created?.args[2] ?? 'myco-team-unknown';
+      return `https://${name}.test.workers.dev\n`;
+    };
     execHandlers.push(
-      () => 'wrangler 4.8.1\n',
-      () => 'logged in\n',
-      () => '{ "database_id": "11111111-1111-1111-1111-111111111111" }\n',
-      () => '',
-      () => '{ "kv_namespaces": [ { "id": "abcdef1234567890" } ] }\n',
-      () => '',
-      () => '',
-      () => '',
-      () => '',
-      () => `https://${resourceName}.test.workers.dev\n`,
+      () => 'wrangler 4.8.1\n',                                          // 1 --version
+      () => 'logged in\n',                                              // 2 whoami
+      () => '{ "database_id": "11111111-1111-1111-1111-111111111111" }\n', // 3 d1 create
+      () => '',                                                         // 4 vectorize create
+      () => '{ "kv_namespaces": [ { "id": "abcdef1234567890" } ] }\n',  // 5 kv namespace create
+      () => '',                                                         // 6 queues create sync
+      () => '',                                                         // 7 queues create sync-dlq
+      () => '',                                                         // 8 npm install
+      () => '',                                                         // 9 secret put
+      deployHandler,                                                    // 10 deploy
+      () => '',                                                         // 11 dlq consumer remove
+      () => '',                                                         // 12 dlq consumer http add
     );
 
     const { teamInit } = await import('../../packages/myco-team/src/cli.js');
-    await teamInit(vaultDir);
+    await teamInit(vaultDir, { name: 'Acme OSS' });
 
+    // Recover the actual resource name from the recorded `d1 create` call.
+    const d1Create = execCalls.find((call) => call.args[0] === 'd1' && call.args[1] === 'create');
+    expect(d1Create).toBeDefined();
+    const resourceName = d1Create!.args[2];
+    // Team-name-derived: slug of "Acme OSS" + a hex hash of the team id.
+    expect(resourceName).toMatch(/^myco-team-acme-oss-[0-9a-f]+$/);
+
+    // Every other provisioned asset must reuse that exact base + documented suffix.
     const args = execCalls.map((call) => call.args);
-    expect(args).toContainEqual(['d1', 'create', resourceName]);
     expect(args).toContainEqual(['vectorize', 'create', `${resourceName}-vectors`, '--dimensions', '1024', '--metric', 'cosine']);
     expect(args).toContainEqual(['kv', 'namespace', 'create', `${resourceName}-secrets`]);
     expect(args).toContainEqual(['queues', 'create', `${resourceName}-sync`]);
@@ -212,12 +240,14 @@ describe('teamInit', () => {
     });
 
     const { teamInit } = await import('../../packages/myco-team/src/cli.js');
-    // Pre-Grove vaults now exit with code 2 (configuration error) and a
+    // A team name is supplied so the install clears the up-front name gate
+    // and reaches the Grove-bound check this test actually exercises.
+    // Pre-Grove vaults exit with code 2 (configuration error) and a
     // friendly migration prompt rather than the historical generic
     // exit(1). The prompt tells operators to either auto-register by
     // opening the project in a supported agent, or pass `--legacy` to
     // bypass the gate.
-    await expect(teamInit(vaultDir)).rejects.toThrow('process.exit(2)');
+    await expect(teamInit(vaultDir, { name: 'Some Team' })).rejects.toThrow('process.exit(2)');
 
     const stderr = errors.join('\n');
     expect(stderr).toContain('myco-team install requires a Grove-bound project');
