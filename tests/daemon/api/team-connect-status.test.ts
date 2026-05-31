@@ -104,6 +104,9 @@ describe('createTeamHandlers.handleStatus', () => {
 
   it('compares deployed worker version against installed myco-team version', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const { teamRegistry } = await import('../../../packages/myco/src/team/registry.js');
+    const { createTeamId, createProjectId } = await import('../../../packages/myco/src/grove/ids.js');
     const teamPackageJson = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
     ) as { version: string };
@@ -112,6 +115,40 @@ describe('createTeamHandlers.handleStatus', () => {
     // `<prefix>/lib/node_modules/@goondocks/myco-team/package.json` via
     // `getInstalledVersion` rather than importing myco-team's code.
     const globalPrefix = makeFakeGlobalPrefix(tempDir, teamPackageJson.version);
+
+    // Phase 2.3: `enabled` + the worker-version probe now gate on REGISTRY
+    // participation, not the grove-config flag. Register a team for this
+    // request's project so participation is true and `health()` runs.
+    const mycoHome = process.env.MYCO_HOME!;
+    const { resolveGroveDir } = await import('../../../packages/myco/src/grove/paths.js');
+    const grove = createGrove('Version Test Grove', mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Version Team',
+      worker_url: 'https://myco-team-test.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: grove.id, project_id: projectId }],
+    }, mycoHome);
+    // has_team_key / team_key remain legacy per-connection secrets fields
+    // (this change did not migrate them). Under a Grove-scoped context the
+    // secret is read from the Grove's store, so seed it there.
+    const groveDir = resolveGroveDir(grove.id, mycoHome);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=test-api-key\n', 'utf-8');
+    // cached_team_package_version reads the team/config.json under the resolved
+    // store's configDir, which is the Grove dir under a Grove context.
+    const groveTeamConfig = path.join(groveDir, 'team', 'config.json');
+    fs.mkdirSync(path.dirname(groveTeamConfig), { recursive: true });
+    fs.writeFileSync(groveTeamConfig, JSON.stringify({
+      worker_name: 'myco-team-test',
+      worker_url: 'https://myco-team-test.example.workers.dev',
+      package_version: '0.1.0',
+    }, null, 2), 'utf-8');
+
     const handlers = createTeamHandlers({
       vaultDir,
       machineId: 'machine-test',
@@ -139,14 +176,28 @@ describe('createTeamHandlers.handleStatus', () => {
           capabilities: [],
           settings: {},
         }),
+        getConfig: async () => ({ config: {}, sync_protocol_version: 1 }),
         getMcpToken: () => null,
         getMcpEndpoint: () => null,
       }) as never,
       setTeamClient: () => undefined,
     });
 
-    const response = await handlers.handleStatus({} as never);
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        projectId,
+        groveId: grove.id,
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
     const body = response.body as {
+      enabled: boolean;
+      worker_url: string | null;
       local_team_package_version: string | null;
       local_team_package_source: string | null;
       cached_team_package_version: string | null;
@@ -160,6 +211,10 @@ describe('createTeamHandlers.handleStatus', () => {
     };
 
     expect(body.package_version).toBe(readPackageVersion('packages', 'myco', 'package.json'));
+    // enabled now reflects registry participation; worker_url is sourced from
+    // the resolved team's registry record.
+    expect(body.enabled).toBe(true);
+    expect(body.worker_url).toBe('https://myco-team-test.example.workers.dev');
     expect(body.has_team_key).toBe(true);
     // team_key is surfaced again (like mcp_token) so the Team Credentials
     // card can reveal it for sharing; redaction happens client-side.
@@ -171,6 +226,47 @@ describe('createTeamHandlers.handleStatus', () => {
     expect(body.cached_team_package_version).toBe('0.1.0');
     expect(body.deployed_worker_version).toBe('0.1.0');
     expect(body.worker_update_available).toBe(body.local_team_package_version !== body.deployed_worker_version);
+  });
+
+  it('reports enabled=false when the Grove participates in no team (registry gate)', async () => {
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    // A Grove with no team membership in the registry — even though the
+    // grove-config still carries `team.enabled: true`, participation is the
+    // source of truth, so `enabled` is false and no worker probe runs.
+    const grove = createGrove('Orphan Grove', mycoHome);
+    const healthSpy = vi.fn();
+    const handlers = createTeamHandlers({
+      vaultDir,
+      machineId: 'machine-test',
+      globalPrefix: null,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
+      getTeamClient: () => ({
+        health: healthSpy,
+        getMcpToken: () => 'should-not-surface',
+        getMcpEndpoint: () => 'https://x/mcp',
+      }) as never,
+      setTeamClient: () => undefined,
+    });
+
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        groveId: grove.id,
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    const body = response.body as { enabled: boolean; worker_url: string | null };
+
+    expect(body.enabled).toBe(false);
+    // No participation → no worker probe.
+    expect(healthSpy).not.toHaveBeenCalled();
   });
 
   it('falls back to the dev-linked myco-team-dev binary when the global package is absent', async () => {

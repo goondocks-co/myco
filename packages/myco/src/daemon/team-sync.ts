@@ -26,6 +26,14 @@ export interface TeamSyncClientOptions {
   apiKey: string;
   machineId: string;
   syncProtocolVersion: number;
+  /**
+   * Pre-seed the MCP bearer token. Lets a client be built already knowing
+   * its Cloud MCP token (e.g. read from the team registry secrets) so
+   * `getMcpToken()`/`getMcpEndpoint()` work without first calling
+   * `connect()`/`rotateMcpToken()`. The token is rotated only when the
+   * registry has none (see `ensureTeamProvisioned` in team-sync-init.ts).
+   */
+  mcpToken?: string;
   /** Inject custom fetch for testing. */
   fetch?: typeof globalThis.fetch;
 }
@@ -226,6 +234,10 @@ export class TeamSyncClient {
     this.machineId = options.machineId;
     this.syncProtocolVersion = options.syncProtocolVersion;
     this.fetchFn = options.fetch ?? globalThis.fetch;
+    if (options.mcpToken) {
+      this.mcpToken = options.mcpToken;
+      this.mcpTokenHash = TeamSyncClient.hashToken(options.mcpToken);
+    }
   }
 
   // Must match getMcpTokenHash() in src/worker/src/mcp/auth.ts
@@ -373,6 +385,17 @@ export class TeamSyncClient {
   async getConfig(): Promise<TeamConfigResponse> {
     const res = await this.request('GET', '/config');
     return res as TeamConfigResponse;
+  }
+
+  /**
+   * Seed/overwrite team configuration on the worker. Mirrors the install-path
+   * PUT in `packages/myco-team/src/cli.ts`: the worker stores each key/value
+   * pair in its `team_config` table (INSERT OR REPLACE), so this is the one
+   * setter the daemon uses to provision `team_name` + embedding config on the
+   * first successful reach (see `ensureTeamProvisioned`).
+   */
+  async putConfig(config: Record<string, string>): Promise<{ updated: number }> {
+    return await this.request('PUT', '/config', config) as { updated: number };
   }
 
   async getCollectiveStatus(): Promise<TeamCollectiveStatusResponse> {

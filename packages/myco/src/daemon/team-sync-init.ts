@@ -58,6 +58,7 @@ import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
+  TEAM_MCP_TOKEN_SECRET,
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -158,6 +159,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   // the team's worker_url or API key changes, mirroring `clientSignatures`.
   const teamRouteClients = new Map<string, TeamSyncClient>();
   const teamRouteSignatures = new Map<string, string>();
+  // Teams whose worker is fully provisioned this daemon lifetime (MCP token in
+  // the registry + /config seeded). ensureTeamProvisioned short-circuits on a
+  // hit so a large backfill doesn't re-GET /config on every flush tick. Only
+  // set when BOTH halves succeed, so a transiently-unreachable worker retries.
+  const provisionedTeams = new Set<string>();
 
   /**
    * Lazily build (and cache) the TeamSyncClient for a given team_id from the
@@ -168,10 +174,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   function getOrBuildTeamClient(teamId: string): TeamSyncClient | null {
     const team = teamRegistry.get(teamId);
     if (!team?.worker_url) return null;
-    const key = teamRegistry.readSecrets(teamId)[TEAM_API_KEY_SECRET];
+    const secrets = teamRegistry.readSecrets(teamId);
+    const key = secrets[TEAM_API_KEY_SECRET];
     if (!key) return null;
+    const mcpToken = secrets[TEAM_MCP_TOKEN_SECRET] || undefined;
 
-    const signature = `${team.worker_url}|${key.slice(0, 8)}`;
+    // Include the MCP token in the signature so the cached client rebuilds
+    // when ensureTeamProvisioned writes a freshly-rotated token to the
+    // registry — without this the read path keeps a client with a stale
+    // (null) token until the next worker_url/key change.
+    const signature = `${team.worker_url}|${key.slice(0, 8)}|${mcpToken ? mcpToken.slice(0, 8) : ''}`;
     const existing = teamRouteClients.get(teamId);
     if (existing && teamRouteSignatures.get(teamId) === signature) {
       return existing;
@@ -182,10 +194,72 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       apiKey: key,
       machineId,
       syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+      mcpToken,
     });
     teamRouteClients.set(teamId, client);
     teamRouteSignatures.set(teamId, signature);
     return client;
+  }
+
+  /**
+   * Idempotently provision a team's worker on first successful reach:
+   *   - Rotate + persist the Cloud MCP token into the registry if absent.
+   *   - Seed `/config` (team_name + embedding model/dimensions) if unset.
+   *
+   * Runs at most once per team per daemon lifetime: a `provisionedTeams` guard
+   * short-circuits subsequent calls so a large backfill doesn't re-GET /config
+   * on every flush tick. Both halves are non-fatal — a briefly unreachable
+   * worker leaves the team un-guarded so the next flush retries. Mirrors the
+   * install-path PUT in myco-team/src/cli.ts.
+   */
+  async function ensureTeamProvisioned(teamId: string): Promise<void> {
+    if (provisionedTeams.has(teamId)) return;
+    const client = getOrBuildTeamClient(teamId);
+    if (!client) return;
+
+    // 1. MCP token — rotate + persist into the registry when missing.
+    let tokenOk = false;
+    try {
+      const existingToken = teamRegistry.readSecrets(teamId)[TEAM_MCP_TOKEN_SECRET];
+      if (!existingToken) {
+        const token = await client.rotateMcpToken();
+        teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, token);
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Provisioned team MCP token in registry', { team_id: teamId });
+      }
+      tokenOk = true;
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team MCP token provisioning failed (will retry next tick)', {
+        team_id: teamId,
+        error: (err as Error).message,
+      });
+    }
+
+    // 2. /config — seed team_name + embedding config when the worker has none.
+    let configOk = false;
+    try {
+      const cfg = await client.getConfig().catch(() => null);
+      const teamName = cfg?.config?.team_name;
+      const hasName = typeof teamName === 'string' && teamName.trim().length > 0;
+      if (!hasName) {
+        await client.putConfig({
+          team_name: teamRegistry.get(teamId)?.name ?? '',
+          embedding_model: '@cf/baai/bge-m3',
+          embedding_dimensions: '1024',
+          created_at: String(epochSeconds()),
+          created_by: machineId,
+        });
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Seeded team /config on worker', { team_id: teamId });
+      }
+      configOk = true;
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team /config seed failed (will retry next tick)', {
+        team_id: teamId,
+        error: (err as Error).message,
+      });
+    }
+
+    // Guard only when fully provisioned; a partial failure retries next flush.
+    if (tokenOk && configOk) provisionedTeams.add(teamId);
   }
 
   function reconcileSelfMember(): void {
@@ -267,6 +341,12 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           .map((t) => t.team_id),
       ),
     ];
+
+    // Teams whose batch handed off cleanly this flush. After the drain loop we
+    // provision each exactly once (rotate + persist the MCP token, seed
+    // /config) — the worker is provably reachable, and the checks inside
+    // ensureTeamProvisioned make it cheap/no-op once already provisioned.
+    const handedOffTeams = new Set<string>();
 
     while (true) {
       const pending = listPending();
@@ -379,6 +459,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           }
 
           result.batches += 1;
+          handedOffTeams.add(teamId);
           logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
             team_id: teamId,
             accepted: enqueueResult.accepted,
@@ -417,6 +498,14 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       // listPending() would return the same set forever — break and retry on
       // the next scheduled flush tick.
       if (clearedThisTick === 0) break;
+    }
+
+    // Provision every team we reached this flush: rotate + persist the MCP
+    // token into the registry (so the read path / Team page can serve it) and
+    // seed /config. Idempotent + cheap once provisioned, so it's safe to run
+    // on every flush that handed off a batch.
+    for (const teamId of handedOffTeams) {
+      await ensureTeamProvisioned(teamId);
     }
 
     return result;
@@ -596,6 +685,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       },
       { daemonStateDir, jobName: 'team-sync-flush' },
     );
+
+    // Teams are machine-level, so provision each participating team once per
+    // daemon lifetime here — outside the per-Grove fan-out and independent of
+    // pending data. This reaches already-synced teams (empty outbox, no batch
+    // hands off) that the flush-end provisioning would otherwise never touch.
+    // Guard-protected, so it's a cheap no-op on every tick after the first.
+    for (const team of teamRegistry.list()) {
+      if (team.projects.length > 0) await ensureTeamProvisioned(team.team_id);
+    }
+
     return aggregate;
   }
 
@@ -625,8 +724,28 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     );
   }
 
+  /**
+   * Resolve the team client for a read request. Registry-aware: when the
+   * request carries a projectId that belongs to a team (one-team-per-project),
+   * return that team's per-team client (built from the registry, MCP token and
+   * all). Falls back to the legacy per-Grove client for contexts with no
+   * project / no team membership — preserving pre-registry behavior for
+   * pre-Grove status pings and operator rebuild paths.
+   */
+  function resolveReadClient(requestContext?: MycoRequestContext): TeamSyncClient | null {
+    const projectId = requestContext?.projectId;
+    if (projectId) {
+      const teamId = teamRegistry.membershipByProject().get(projectId);
+      if (teamId) {
+        const client = getOrBuildTeamClient(teamId);
+        if (client) return client;
+      }
+    }
+    return teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
+  }
+
   return {
-    getTeamClient: (requestContext = defaultRequestContext) => teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null,
+    getTeamClient: (requestContext = defaultRequestContext) => resolveReadClient(requestContext),
     setTeamClient: (client, requestContext = defaultRequestContext) => {
       const key = teamConnectionKey(vaultDir, requestContext);
       if (!client) {

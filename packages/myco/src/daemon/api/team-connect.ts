@@ -39,6 +39,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadGroveRecord } from '@myco/grove/registry.js';
+import { teamRegistry } from '@myco/team/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
@@ -467,11 +468,26 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const cachedTeamPackageVersion = readCachedTeamPackageVersion(store.configDir);
     let deployedWorkerVersion: string | null = null;
 
+    // Registry participation — not the legacy grove-config flag — is the
+    // source of truth for whether this Grove syncs (one team per project,
+    // per-team drain). `enabled` reflects participation; the resolved team's
+    // worker_url / MCP token come from the registry-aware client + record.
+    const groveId = req.requestContext?.groveId ?? null;
+    const participates = groveId != null && teamRegistry
+      .list()
+      .some((t) => t.projects.some((p) => p.grove_id === groveId));
+    // The team that owns this request's project, when resolvable — its
+    // registry record supplies the worker_url surfaced below.
+    const resolvedTeamId = req.requestContext?.projectId
+      ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
+      : null;
+    const resolvedTeam = resolvedTeamId ? teamRegistry.get(resolvedTeamId) : null;
+
     let healthy = false;
     let healthError: string | undefined;
     let workerHasMcpToken = false;
 
-    if (client && config.enabled) {
+    if (client && participates) {
       try {
         const health = await client.health();
         healthy = true;
@@ -499,7 +515,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
     let teamConfig: Awaited<ReturnType<TeamSyncClient['getConfig']>> | null = null;
-    if (client && config.enabled) {
+    if (client && participates) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
       } catch (err) {
@@ -534,8 +550,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return {
       body: {
         ...resolveTeamConnectionContext(req.requestContext, vaultDir),
-        enabled: config.enabled,
-        worker_url: config.worker_url ?? null,
+        enabled: participates,
+        worker_url: resolvedTeam?.worker_url ?? config.worker_url ?? null,
         has_team_key: hasTeamKey,
         team_key: teamKey,
         has_api_key: hasTeamKey,
@@ -550,7 +566,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         cached_team_package_version: cachedTeamPackageVersion,
         deployed_worker_version: deployedWorkerVersion,
         worker_update_available:
-          config.enabled &&
+          participates &&
           Boolean(localTeamPackage?.version) &&
           Boolean(deployedWorkerVersion) &&
           deployedWorkerVersion !== localTeamPackage?.version,
