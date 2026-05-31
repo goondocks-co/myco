@@ -1,14 +1,14 @@
 /**
  * Shared subprocess helper for LifecycleLock tests.
  *
- * Invoked as: `bun run tests/helpers/lifecycle-lock-orphan-helper.ts <lockPath> [dbPath]`
+ * Invoked as: `bun tests/helpers/lifecycle-lock-orphan-helper.ts <lockPath> [dbPath]`
  *
  * - Acquires the LifecycleLock at lockPath. Exits 2 if the lock is held.
  * - If dbPath is provided: opens that SQLite database, holds an open
  *   write transaction. Used by tests that need an orphan holding both
  *   the flock and the SQLite write lock (the production failure shape).
- * - Emits READY to stdout once everything is held. Idles forever; the
- *   OS releases both locks on SIGTERM/SIGKILL.
+ * - Emits READY plus the holder PID to stdout once everything is held.
+ *   Idles forever; the OS releases both locks on SIGTERM/SIGKILL.
  */
 
 import { Database } from 'bun:sqlite';
@@ -38,7 +38,7 @@ if (dbPath) {
   db.exec('INSERT INTO _orphan_witness (n) VALUES (1)');
 }
 
-process.stdout.write('READY\n');
+process.stdout.write(`READY ${process.pid}\n`);
 
 const cleanup = (): void => {
   if (db) {
