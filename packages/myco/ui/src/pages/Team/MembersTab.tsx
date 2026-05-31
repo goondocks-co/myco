@@ -39,13 +39,9 @@ function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
   );
 }
 
-// `teamId` is accepted so the page can pass the selected team, but member
-// data is not yet team-scoped: useTeamMembers reads the local team_members
-// table and takes no team argument. Threading is deferred until a
-// team-scoped member API exists.
-export function MembersTab({ teamId: _teamId }: { teamId?: string } = {}) {
-  const { data, isLoading: membersLoading } = useTeamMembers();
-  const { data: status, isLoading: statusLoading } = useTeamStatus();
+export function MembersTab({ teamId }: { teamId?: string } = {}) {
+  const { data, isLoading: membersLoading } = useTeamMembers(teamId);
+  const { data: status, isLoading: statusLoading } = useTeamStatus(teamId);
   const selfMachineId = status?.machine_id ?? null;
   // Hold rendering until BOTH the members list AND the self machine_id
   // have resolved. Painting members before status would flicker rows

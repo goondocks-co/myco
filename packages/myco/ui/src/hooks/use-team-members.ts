@@ -16,10 +16,11 @@ export interface TeamMembersResponse {
   members: TeamMember[];
 }
 
-export function useTeamMembers() {
+export function useTeamMembers(teamId?: string) {
+  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
   return usePowerQuery<TeamMembersResponse>({
-    queryKey: ['team-members'],
-    queryFn: ({ signal }) => fetchJson<TeamMembersResponse>('/team/members', { signal }),
+    queryKey: ['team-members', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<TeamMembersResponse>(`/team/members${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.STATS,
     pollCategory: 'standard',
   });
