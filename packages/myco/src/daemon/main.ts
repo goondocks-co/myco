@@ -1789,6 +1789,7 @@ export async function main(): Promise<void> {
     machineId,
     logger,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
+    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
     globalPrefix,
   });
   async function reconcileTeamRoute(req: RouteRequest): Promise<void> {

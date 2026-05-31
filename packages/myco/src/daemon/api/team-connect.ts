@@ -13,6 +13,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import {
   countPending,
+  countPendingForProjects,
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
@@ -366,6 +367,22 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }));
 
   /**
+   * Resolve the client for a read request. When the UI passes `team_id`
+   * (the team selector), scope to that team directly; otherwise fall back
+   * to the project-context client for back-compat.
+   */
+  function resolveReadClient(req: RouteRequest): { teamId: string | null; client: TeamSyncClient | null } {
+    const explicit = typeof req.query?.team_id === 'string' && req.query.team_id ? req.query.team_id : null;
+    if (explicit) {
+      return { teamId: explicit, client: deps.getTeamClientForId?.(explicit) ?? null };
+    }
+    const projectTeamId = req.requestContext?.projectId
+      ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
+      : null;
+    return { teamId: projectTeamId, client: deps.getTeamClient(req.requestContext) };
+  }
+
+  /**
    * POST /api/team/connect
    *
    * Retired legacy endpoint. Team setup is registry-owned by `myco-team
@@ -417,25 +434,16 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * Returns connection status, health check result, pending sync count, and machine_id.
    */
   async function handleStatus(req: RouteRequest): Promise<RouteResponse> {
-    const client = deps.getTeamClient(req.requestContext);
+    const { teamId: scopedTeamId, client } = resolveReadClient(req);
     const localTeamPackage = resolveLocalTeamPackageVersion(deps.globalPrefix);
     const cachedTeamPackageVersion = readCachedTeamPackageVersion(resolveTeamStateDir(vaultDir, req.requestContext));
     let deployedWorkerVersion: string | null = null;
 
-    // Registry participation — not the legacy grove-config flag — is the
-    // source of truth for whether this Grove syncs (one team per project,
-    // per-team drain). `enabled` reflects participation; the resolved team's
-    // worker_url / MCP token come from the registry-aware client + record.
-    const groveId = req.requestContext?.groveId ?? null;
-    const participates = groveId != null && teamRegistry
-      .list()
-      .some((t) => t.projects.some((p) => p.grove_id === groveId));
-    // The team that owns this request's project, when resolvable — its
-    // registry record supplies the worker_url surfaced below.
-    const resolvedTeamId = req.requestContext?.projectId
-      ? teamRegistry.membershipByProject().get(req.requestContext.projectId) ?? null
-      : null;
+    const resolvedTeamId = scopedTeamId;
     const resolvedTeam = resolvedTeamId ? teamRegistry.get(resolvedTeamId) : null;
+    // `enabled` is now "this selected team is registered + reachable", not
+    // "the current project's grove participates".
+    const participates = Boolean(resolvedTeam?.worker_url);
     const registrySecrets = resolvedTeamId ? teamRegistry.readSecrets(resolvedTeamId) : {};
     const teamKey = registrySecrets[TEAM_API_KEY_SECRET]?.trim() || null;
     const hasTeamKey = Boolean(teamKey);
@@ -470,10 +478,12 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let pendingCount = 0;
     try {
-      pendingCount = countPending();
+      pendingCount = resolvedTeam
+        ? countPendingForProjects(resolvedTeam.projects.map((p) => p.project_id))
+        : countPending();
     } catch (err) {
-      // DB may not have the table yet — log so we don't silently report
-      // "0 pending" when the team-outbox queries are actually broken.
+      // Log rather than swallow: a thrown count must not be reported as "0 pending"
+      // when the team-outbox queries are actually broken.
       const detail = errorMessage(err);
       logger.warn('team-sync.outbox.count-failed', 'team-outbox count unavailable', { error: detail });
     }
@@ -624,15 +634,15 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: { enqueued: count, mode, vector_enqueued: vectorEnqueued, vector_error: vectorError } };
   }
 
-  function clientOrError(requestContext?: MycoRequestContext): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
-    const client = deps.getTeamClient(requestContext);
+  function clientOrError(req: RouteRequest): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
+    const { client } = resolveReadClient(req);
     if (!client) return { ok: false, response: { status: 503, body: { error: 'team_not_configured' } } };
     return { ok: true, client };
   }
 
   /** GET /api/team/queue-stats — proxies D1-backed queue processing stats from the worker. */
   async function handleQueueStats(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
+    const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
     const stats = await guard.client.getQueueStats();
     return { body: stats };
@@ -640,14 +650,21 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** GET /api/team/sync-summary — local/remote sync status for the Sync tab. */
   async function handleSyncSummary(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
+    const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
 
+    // Tables / total / drift stay machine-scoped (the machine-mirror-vs-cloud
+    // axis); only pending_sync_count is team-scoped so Status and Sync report
+    // the same pending number for the selected team.
     const localTables = countTeamSyncRows(machineId);
     const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
+    const { teamId } = resolveReadClient(req);
+    const resolvedTeam = teamId ? teamRegistry.get(teamId) : null;
     let pendingCount = 0;
     try {
-      pendingCount = countPending();
+      pendingCount = resolvedTeam
+        ? countPendingForProjects(resolvedTeam.projects.map((p) => p.project_id))
+        : countPending();
     } catch {
       pendingCount = 0;
     }
@@ -702,7 +719,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** GET /api/team/dlq — list a page of DLQ messages from the worker's D1-backed endpoint. */
   async function handleDlqList(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
+    const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
     const limit = Number(req.query.limit ?? '50') || 50;
     const result = await guard.client.listDlq(limit);
@@ -711,7 +728,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/dlq/retry — re-publish DLQ messages back to the main queue. */
   async function handleDlqRetry(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
+    const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
@@ -722,7 +739,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/dlq/discard — permanently drop DLQ messages. */
   async function handleDlqDiscard(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError(req.requestContext);
+    const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];

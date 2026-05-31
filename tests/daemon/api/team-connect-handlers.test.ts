@@ -40,6 +40,10 @@ function makeStubClient(overrides: Record<string, unknown> = {}): unknown {
     rotateMcpToken: async () => 'rotated-mcp-token',
     getMcpToken: () => null,
     getMcpEndpoint: () => null,
+    getVersionCompat: () => 'ok',
+    getWorkerProtocolVersion: () => 1,
+    getWorkerMinClientVersion: () => 1,
+    getConfig: async () => ({ config: {}, sync_protocol_version: 1 }),
     getCollectiveStatus: async () => ({
       connected: false,
       collective_url: null,
@@ -342,6 +346,59 @@ describe('team-connect handlers — direct coverage', () => {
 
       const discard = await handlers.handleDlqDiscard(makeRequest({ body: { lease_ids: ['x'] } }));
       expect((discard.body as { discarded: number }).discarded).toBe(1);
+    });
+  });
+
+  describe('team-scoped reads (explicit team_id)', () => {
+    it('handleStatus resolves the team from the team_id query param', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId,
+        name: 'Scoped Team',
+        worker_url: 'https://scoped.example.workers.dev',
+        domain: null,
+        mcp_endpoint: 'https://scoped.example.workers.dev/mcp',
+        created_at: new Date().toISOString(),
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir,
+        machineId: 'machine-test',
+        globalPrefix: null,
+        logger: noopLogger,
+        getTeamClient: () => null, // project path must NOT be used when team_id is explicit
+        getTeamClientForId: (id) => (id === teamId ? (makeStubClient() as never) : null),
+      } as never);
+
+      const res = await handlers.handleStatus(makeRequest({
+        requestContext: groveCtx,
+        query: { team_id: teamId },
+      }));
+      const b = res.body as { enabled: boolean; healthy: boolean; team_id: string | null; worker_url: string | null };
+      expect(b.team_id).toBe(teamId);
+      expect(b.worker_url).toBe('https://scoped.example.workers.dev');
+      expect(b.enabled).toBe(true);
+      expect(b.healthy).toBe(true);
+    });
+
+    it('handleQueueStats uses the team_id param client', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Q', worker_url: 'https://q.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(), projects: [],
+      });
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger,
+        getTeamClient: () => null,
+        getTeamClientForId: (id) => (id === teamId
+          ? (makeStubClient({ getQueueStats: async () => ({ enqueued: 5, processed: 5, failed: 0, backlog: 0, last_run_at: null, last_error: null }) }) as never)
+          : null),
+      } as never);
+      const res = await handlers.handleQueueStats(makeRequest({ query: { team_id: teamId } }));
+      expect((res.body as { enqueued: number }).enqueued).toBe(5);
     });
   });
 
