@@ -3325,11 +3325,17 @@ function migrateV53ToV54(db: Database): void {
     // intakes used `session:<sid>:key|tag:<token>`. Re-key the sweep rows onto the
     // shared session-scoped structure `session:<sid>:file:<path>`. `source_path`
     // already holds the path as metadata; only the identity string changes. The
-    // row `id` is intentionally left untouched so existing references stay valid.
-    // Session-less rows fall back to a sentinel segment.
+    // row `id` is left untouched and stays stable (upsertPlan no longer re-homes
+    // a found row's id), so existing references remain valid. Session-less rows
+    // get the existing `legacy:<id>` orphan key (unique per row) rather than a
+    // shared sentinel that would alias distinct orphans.
     db.prepare(
       `UPDATE plans
-          SET logical_key = 'session:' || COALESCE(session_id, '__no_session__') || ':file:' || substr(logical_key, 6)
+          SET logical_key = CASE
+            WHEN session_id IS NULL
+              THEN 'legacy:' || id
+            ELSE 'session:' || session_id || ':file:' || substr(logical_key, length('path:') + 1)
+          END
         WHERE logical_key LIKE 'path:%'`,
     ).run();
 

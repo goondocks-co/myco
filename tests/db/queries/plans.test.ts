@@ -62,6 +62,23 @@ describe('plan query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('upsertPlan', () => {
+    it('preserves an existing row id on update even when the incoming id differs', () => {
+      // Post-migration shape: a re-keyed logical_key but the ORIGINAL
+      // (path-derived) id retained. A later re-sweep recomputes the id from the
+      // new key; upsertPlan must NOT re-home the found row's id onto it, or every
+      // reference keyed on the original id (lineage edges, team-sync D1 row)
+      // silently orphans.
+      const logicalKey = 'session:s1:file:docs/x.md';
+      upsertPlan({ id: 'legacy-path-id', logical_key: logicalKey, content: '# v1', created_at: 1000, machine_id: 'local' });
+      const recomputedId = buildPlanId(logicalKey);
+      expect(recomputedId).not.toBe('legacy-path-id');
+
+      const updated = upsertPlan({ id: recomputedId, logical_key: logicalKey, content: '# v2', created_at: 2000, machine_id: 'local' });
+      expect(updated.id).toBe('legacy-path-id');
+      expect(updated.content).toBe('# v2');
+      expect(getPlan('legacy-path-id', ALL_PROJECTS_SCOPE)?.content).toBe('# v2');
+    });
+
     it('inserts a new plan and retrieves it', async () => {
       const data = makePlan({ title: 'Migration plan' });
       const row = upsertPlan(data);
@@ -104,10 +121,11 @@ describe('plan query helpers', () => {
       const row = upsertPlan(second);
 
       expect(row.logical_key).toBe(logicalKey);
-      expect(row.id).toBe('plan-b');
+      // id is stable — keyed by logical_key, not re-homed to the incoming id.
+      expect(row.id).toBe('plan-a');
       expect(listPlans({ scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
-      expect(getPlan('plan-b', ALL_PROJECTS_SCOPE)?.title).toBe('Updated');
-      expect(getPlan('plan-a', ALL_PROJECTS_SCOPE)).toBeNull();
+      expect(getPlan('plan-a', ALL_PROJECTS_SCOPE)?.title).toBe('Updated');
+      expect(getPlan('plan-b', ALL_PROJECTS_SCOPE)).toBeNull();
     });
 
     it('allows the same logical_key in different project scopes', async () => {
@@ -132,11 +150,12 @@ describe('plan query helpers', () => {
         title: 'Project A updated',
       }));
 
-      expect(updated.id).toBe('plan-project-a-updated');
+      // proj_a row keeps its original id; only content/title update.
+      expect(updated.id).toBe('plan-project-a');
       expect(updated.project_id).toBe('proj_a');
       expect(listPlans({ scope: ALL_PROJECTS_SCOPE })).toHaveLength(2);
-      expect(getPlan('plan-project-a', ALL_PROJECTS_SCOPE)).toBeNull();
-      expect(getPlan('plan-project-a-updated', ALL_PROJECTS_SCOPE)?.title).toBe('Project A updated');
+      expect(getPlan('plan-project-a', ALL_PROJECTS_SCOPE)?.title).toBe('Project A updated');
+      expect(getPlan('plan-project-a-updated', ALL_PROJECTS_SCOPE)).toBeNull();
       expect(getPlan('plan-project-b', ALL_PROJECTS_SCOPE)?.title).toBe('Project B');
       expect(getPlan('plan-project-b', ALL_PROJECTS_SCOPE)?.project_id).toBe('proj_b');
     });

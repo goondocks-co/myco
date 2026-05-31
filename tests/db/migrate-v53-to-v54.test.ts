@@ -46,7 +46,7 @@ describe('migrate v53 -> v54: plan identity unification', () => {
     expect(row.source_path).toBe('docs/plans/x.md');
   });
 
-  it('uses a sentinel session segment for a session-less path: plan', () => {
+  it('keys a session-less path: plan under the legacy namespace (its own stable id)', () => {
     const db = getDatabase();
     db.prepare(
       `INSERT INTO plans (id, logical_key, status, content, source_path, session_id, content_hash, processed, created_at)
@@ -57,7 +57,7 @@ describe('migrate v53 -> v54: plan identity unification', () => {
     createSchema(db);
 
     const row = db.prepare(`SELECT logical_key FROM plans WHERE id = 'plan-y'`).get() as { logical_key: string };
-    expect(row.logical_key).toBe('session:__no_session__:file:docs/plans/y.md');
+    expect(row.logical_key).toBe('legacy:plan-y');
   });
 
   it('leaves already-session-scoped keys untouched', () => {
