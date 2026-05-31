@@ -47,6 +47,13 @@ export function normalizePlanSourcePath(sourcePath: string, projectRoot?: string
   return normalizePathSeparators(path.normalize(sourcePath));
 }
 
+/**
+ * Legacy `path:` namespace. NOT used by any live intake — capture and the MCP
+ * save path now key file-backed plans with {@link buildFilePlanLogicalKey}
+ * (session-scoped). Retained only for the historical v19→v20 backfill (via
+ * {@link deriveStoredPlanLogicalKey}, whose `path:` output the v53→v54 migration
+ * re-keys) and for anti-collision tests.
+ */
 export function buildPathPlanLogicalKey(sourcePath: string, projectRoot?: string): string {
   return `${PLAN_PATH_KEY_PREFIX}${normalizePlanSourcePath(sourcePath, projectRoot)}`;
 }
