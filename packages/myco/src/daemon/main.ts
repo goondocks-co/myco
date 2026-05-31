@@ -1809,6 +1809,13 @@ export async function main(): Promise<void> {
     }
     return result;
   });
+  server.registerRoute('POST', '/api/team/join', async (req) => {
+    const result = await teamHandlers.handleJoin(req);
+    if (!result.status || result.status < 400) {
+      await teamSync.reconcileClient(req.requestContext);
+    }
+    return result;
+  });
   server.registerRoute('POST', '/api/team/disconnect', async (req) => {
     const result = await teamHandlers.handleDisconnect(req);
     if (!result.status || result.status < 400) {
