@@ -41,7 +41,11 @@ import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
 // module, NOT `index.ts`: index.ts transitively imports `agents/mcp` →
 // `cloudflare:email`, which only resolves inside the Workers runtime and
 // crashes a plain bun import.
-import { SYNCED_TABLES as WORKER_SYNCED_TABLES } from '../../packages/myco-team/worker/src/synced-tables.ts';
+import {
+  SYNCED_TABLES as WORKER_SYNCED_TABLES,
+  MACHINE_SCOPED_TABLES,
+  requiresGroveProjectId,
+} from '../../packages/myco-team/worker/src/synced-tables.ts';
 
 // ---------------------------------------------------------------------------
 // Documented exclusions — each is a deliberate, reviewable difference.
@@ -137,6 +141,22 @@ describe('synced-table parity: daemon subset relationships', () => {
 
   it('TEAM_DELETE_TRIGGER_TABLES ⊆ worker SYNCED_TABLES (no trigger for a non-synced table)', () => {
     expect(minus(triggers, worker)).toEqual([]);
+  });
+});
+
+describe('machine-scoped tables: project_id gate exemption', () => {
+  it('exempts team_members (machine-scoped, no project_id) from the grove project_id gate', () => {
+    expect(requiresGroveProjectId('team_members')).toBe(false);
+  });
+
+  it('still requires a grove project_id for project-scoped tables', () => {
+    expect(requiresGroveProjectId('sessions')).toBe(true);
+    expect(requiresGroveProjectId('spores')).toBe(true);
+  });
+
+  it('MACHINE_SCOPED_TABLES ⊆ worker SYNCED_TABLES (every machine-scoped table is actually synced)', () => {
+    const machineScoped = new Set<string>(MACHINE_SCOPED_TABLES as readonly string[]);
+    expect(minus(machineScoped, worker)).toEqual([]);
   });
 });
 

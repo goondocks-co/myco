@@ -14,7 +14,7 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
-import { SYNCED_TABLES, type SyncedTable } from './synced-tables';
+import { SYNCED_TABLES, requiresGroveProjectId, type SyncedTable } from './synced-tables';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -626,7 +626,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       continue;
     }
     const projectId = (record.data as Record<string, unknown> | undefined)?.project_id;
-    if (!isGroveProjectId(projectId)) {
+    if (requiresGroveProjectId(record.table) && !isGroveProjectId(projectId)) {
       rejected.push({
         id: record.id,
         table: record.table,

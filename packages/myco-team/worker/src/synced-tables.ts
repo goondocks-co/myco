@@ -39,3 +39,24 @@ export const SYNCED_TABLES = [
 ] as const;
 
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
+
+/**
+ * Synced tables that are MACHINE-scoped (one row set per machine, not per
+ * project) and therefore carry no `project_id`. The worker's enqueue gate
+ * exempts these from the grove-project_id validation. Currently just
+ * team_members (the team roster).
+ */
+export const MACHINE_SCOPED_TABLES = [
+  'team_members',
+] as const;
+
+const MACHINE_SCOPED_SET = new Set<string>(MACHINE_SCOPED_TABLES);
+
+/**
+ * Whether a synced table's records must carry a valid grove project_id.
+ * False for machine-scoped tables (team_members), which legitimately have
+ * a null project_id.
+ */
+export function requiresGroveProjectId(table: string): boolean {
+  return !MACHINE_SCOPED_SET.has(table);
+}
