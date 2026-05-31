@@ -16,11 +16,11 @@
 
 import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
-import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES } from './schema-ddl.js';
+import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES, TEAM_DELETE_TRIGGERS } from './schema-ddl.js';
 import { MIGRATIONS } from './migrations.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 53;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -121,10 +121,11 @@ export function createSchema(db: Database, machineId: string = DEFAULT_MACHINE_I
     return;
   }
 
-  // Fresh install: create all tables, FTS, indexes
+  // Fresh install: create all tables, FTS, indexes, and team-sync triggers
   for (const ddl of TABLE_DDLS) { db.exec(ddl); }
   for (const ddl of FTS_TABLES) { db.exec(ddl); }
   for (const idx of SECONDARY_INDEXES) { db.exec(idx); }
+  for (const trg of TEAM_DELETE_TRIGGERS) { db.exec(trg); }
 
   db.prepare(
     `INSERT INTO schema_version (version, applied_at)
@@ -182,6 +183,7 @@ function reapplyCurrentSchemaDdl(db: Database): void {
   for (const ddl of TABLE_DDLS) { db.exec(ddl); }
   for (const ddl of FTS_TABLES) { db.exec(ddl); }
   for (const idx of SECONDARY_INDEXES) { db.exec(idx); }
+  for (const trg of TEAM_DELETE_TRIGGERS) { db.exec(trg); }
 
   let rebuiltAny = false;
   for (const group of FTS_TRIGGER_GROUPS) {

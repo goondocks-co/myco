@@ -1,9 +1,5 @@
-import { createHookDaemonClient } from './client.js';
-import { classifyBufferFallback } from './send-event.js';
+import { captureCriticalEvent } from './send-event.js';
 import { readHookInput } from './input.js';
-import { EventBuffer } from '../capture/buffer.js';
-import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
-import { resolveProjectRoot } from '../vault/resolve.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { TOOL_OUTPUT_PREVIEW_CHARS } from '../constants.js';
@@ -30,43 +26,37 @@ export async function main() {
       return;
     }
 
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
+    const outputPreview = typeof input.toolOutput === 'string'
+      ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS)
+      : undefined;
 
-    // Capture writes use service-aware recovery on transport failure, then
-    // still buffer locally so reconcile can replay on the next successful start.
-    const result = await client.capturePost('/events', {
-      type: 'tool_use',
-      tool_name: input.toolName,
-      tool_input: input.toolInput,
-      output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
-      session_id: sessionId,
-      agent: input.agent,
-      transcript_path: input.transcriptPath,
-    });
-
-    if (!result.ok) {
-      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
-      if (!location) {
-        process.stderr.write(
-          `[myco] post-tool-use dropped (project-not-registered) session=${sessionId}\n`,
-        );
-        return;
-      }
-      const buffer = new EventBuffer(location.bufferDir, sessionId);
-      buffer.append({
+    // bufferOnIgnored: false — tool_use replay (reconciliation.ts) inserts the
+    // activity directly without re-evaluating capture rules, so buffering a
+    // daemon-dropped (`ignored`) tool would resurrect it on the next start.
+    // A transport failure (`!ok`) still buffers so reconcile can replay it.
+    await captureCriticalEvent({
+      vaultDir: VAULT_DIR,
+      sessionId,
+      hookName: 'post-tool-use',
+      endpoint: '/events',
+      postBody: {
         type: 'tool_use',
         tool_name: input.toolName,
         tool_input: input.toolInput,
-        output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
+        output_preview: outputPreview,
+        session_id: sessionId,
+        agent: input.agent,
         transcript_path: input.transcriptPath,
-      });
-      // Mirror the observability contract from send-event.ts and
-      // user-prompt-submit.ts — every buffer-fallback path leaves a stderr
-      // trace classifying the reason.
-      process.stderr.write(
-        `[myco] post-tool-use buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
-      );
-    }
+      },
+      bufferEvent: {
+        type: 'tool_use',
+        tool_name: input.toolName,
+        tool_input: input.toolInput,
+        output_preview: outputPreview,
+        transcript_path: input.transcriptPath,
+      },
+      bufferOnIgnored: false,
+    });
   } catch (error) {
     process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);
   } finally {

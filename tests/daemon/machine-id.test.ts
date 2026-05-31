@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeMachineHash, resolveGitHubUser, getMachineId, propagateLegacyMachineId } from '@myco/daemon/machine-id.js';
+import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache, propagateLegacyMachineId } from '@myco/daemon/machine-id.js';
 
 /** Create an isolated MYCO_HOME so the test doesn't depend on or mutate `~/.myco`. */
 function makeTmpHome(): string {
@@ -33,13 +33,36 @@ describe('machine-id', () => {
   });
 
   describe('resolveGitHubUser()', () => {
-    it('returns a non-empty string', () => {
-      const user = resolveGitHubUser();
-      expect(user.length).toBeGreaterThan(0);
+    // Drives the runner seam rather than invoking the real `gh` binary, which
+    // is slow/absent/unauthenticated under CI and full-suite contention and
+    // previously made this assertion flake. Both branches of the contract are
+    // covered deterministically with no network or subprocess.
+
+    it('returns the trimmed login when gh resolves a username', () => {
+      const user = resolveGitHubUser(() => '  octocat\n');
+      expect(user).toBe('octocat');
     });
 
-    // The fallback path is implicitly tested via getMachineId with a cached file.
-    // Mocking execFileSync requires module-level interception that is fragile here.
+    it('falls back to "local" when gh returns an empty login', () => {
+      const user = resolveGitHubUser(() => '   \n');
+      expect(user).toBe('local');
+    });
+
+    it('falls back to "local" when gh is unavailable (throws)', () => {
+      const user = resolveGitHubUser(() => {
+        throw new Error('gh: command not found');
+      });
+      expect(user).toBe('local');
+    });
+
+    it('always returns a non-empty string', () => {
+      expect(resolveGitHubUser(() => 'someuser').length).toBeGreaterThan(0);
+      expect(
+        resolveGitHubUser(() => {
+          throw new Error('boom');
+        }).length,
+      ).toBeGreaterThan(0);
+    });
   });
 
   describe('getMachineId()', () => {
@@ -50,6 +73,9 @@ describe('machine-id', () => {
       tmpHome = makeTmpHome();
       priorEnv = process.env.MYCO_HOME;
       process.env.MYCO_HOME = tmpHome;
+      // Reset the module-level cache so each test gets a fresh read under the
+      // test-specific MYCO_HOME rather than the value cached by a prior test.
+      resetMachineIdCache();
     });
 
     afterEach(() => {

@@ -201,6 +201,25 @@ export function resolveGroveDir(groveId: string, mycoHome = resolveMycoHome()): 
   return path.join(resolveGrovesDir(mycoHome), assertGroveIdSafe(groveId));
 }
 
+export const TEAMS_DIRNAME = 'teams';
+
+export function resolveTeamsDir(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, TEAMS_DIRNAME);
+}
+
+export function resolveTeamDir(teamId: string, mycoHome = resolveMycoHome()): string {
+  assertGroveEraId(teamId, 'team');
+  return path.join(resolveTeamsDir(mycoHome), teamId);
+}
+
+export function resolveTeamConfigPath(teamId: string, mycoHome = resolveMycoHome()): string {
+  return path.join(resolveTeamDir(teamId, mycoHome), 'team.json');
+}
+
+export function resolveTeamSecretsPath(teamId: string, mycoHome = resolveMycoHome()): string {
+  return path.join(resolveTeamDir(teamId, mycoHome), 'secrets.env');
+}
+
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {
   return path.join(resolveGroveDir(groveId, mycoHome), GROVE_METADATA_FILENAME);
 }

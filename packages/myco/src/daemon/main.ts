@@ -43,7 +43,8 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
-import { listTeamMembersHandler } from './api/team-members.js';
+import { createTeamSelectionHandlers } from './api/team-selection.js';
+import { createListTeamMembersHandler } from './api/team-members.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
@@ -853,7 +854,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Team context ---
-  initTeamContext(config.team.enabled, machineId);
+  initTeamContext(machineId);
 
   // Wire logger to SQLite persistence. Every log row is scoped to the
   // daemon's resolved Grove project id — there is no NULL fallback.
@@ -1788,12 +1789,19 @@ export async function main(): Promise<void> {
     machineId,
     logger,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
-    setTeamClient: teamSync.setTeamClient,
+    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
     globalPrefix,
   });
   async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
     await teamSync.reconcileClient(req.requestContext);
   }
+  const listTeamMembersHandler = createListTeamMembersHandler({
+    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
+  });
+  const teamSelectionHandlers = createTeamSelectionHandlers();
+  server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
+  server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));
+  server.registerRoute('POST', '/api/team/project-membership', async (req) => teamSelectionHandlers.handleSetProjectMembership(req));
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
@@ -1801,6 +1809,20 @@ export async function main(): Promise<void> {
         vaultDir: bootstrapVaultDir,
         groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
       });
+      await teamSync.reconcileClient(req.requestContext);
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/team/join', async (req) => {
+    const result = await teamHandlers.handleJoin(req);
+    if (!result.status || result.status < 400) {
+      await teamSync.reconcileClient(req.requestContext);
+    }
+    return result;
+  });
+  server.registerRoute('POST', '/api/team/forget', async (req) => {
+    const result = await teamHandlers.handleForget(req);
+    if (!result.status || result.status < 400) {
       await teamSync.reconcileClient(req.requestContext);
     }
     return result;
@@ -1853,7 +1875,6 @@ export async function main(): Promise<void> {
       },
     };
   });
-  server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
   server.registerRoute('POST', '/api/team/rotate-mcp-token', async (req) => {
     await reconcileTeamRoute(req);
     return teamHandlers.handleRotateMcpToken(req);
@@ -1878,21 +1899,14 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleDlqDiscard(req);
   });
-  server.registerRoute('POST', '/api/team/cf-api-token', async (req) => {
+  // POST /api/team/rebuild — destructive one-way repair: truncate this
+  // machine's cloud mirror (D1 + Vectorize), then re-push the full local
+  // Grove. The local Grove is the source of truth; we re-push rather than
+  // reconcile. Retired the old drift-reconciler endpoint in favour of this.
+  server.registerRoute('POST', '/api/team/rebuild', async (req) => {
     await reconcileTeamRoute(req);
-    return teamHandlers.handleSetCfApiToken(req);
-  });
-  server.registerRoute('DELETE', '/api/team/cf-api-token', async (req) => {
-    await reconcileTeamRoute(req);
-    return teamHandlers.handleClearCfApiToken(req);
-  });
-  // POST /api/team/reconcile-drift — query the worker for rows the
-  // daemon thinks were synced but D1 doesn't actually have, reset
-  // synced_at on the missing ones, and re-enqueue them. Heals the
-  // "marked-synced before D1-confirmed" drift class.
-  server.registerRoute('POST', '/api/team/reconcile-drift', async (req) => {
-    await reconcileTeamRoute(req);
-    return { body: await teamSync.reconcileD1Drift(req.requestContext) };
+    const result = await teamSync.rebuildFromLocal(req.requestContext);
+    return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
 
   const collectiveHandlers = createCollectiveHandlers({
@@ -1986,6 +2000,25 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
   server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
+
+  // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
+  // port is bound. reconcileClient() above only arms the boot Grove's flag;
+  // non-boot Groves' flags stay at their persisted default until their first
+  // flush tick — a window where deletes on those Groves are not journaled to
+  // team_outbox (the AFTER DELETE triggers gate on this flag, and deletes have
+  // no backfill safety net, so an un-journaled delete is permanently
+  // un-mirrored). Awaiting this before server.start() guarantees every Grove's
+  // delete triggers are armed before any HTTP traffic can issue a delete. The
+  // flag writes fan out concurrently (parallel) and a single Grove's failure is
+  // isolated + logged inside forEachGrove, so this neither blocks startup long
+  // nor aborts on one bad Grove. No push, no client creation.
+  try {
+    await teamSync.reconcileAllGroveFlags(runtimeCache);
+  } catch (err) {
+    logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Boot-time Grove flag reconcile failed', {
+      error: errorMessage(err),
+    });
+  }
 
   // --- Start server ---
   //

@@ -22,6 +22,7 @@ describe.skipIf(!supported)('LifecycleLock', () => {
   let tmpDir: string;
   let lockPath: string;
   let orphan: ChildProcess | null = null;
+  let orphanHolderPid: number | null = null;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-lock-unit-'));
@@ -29,12 +30,59 @@ describe.skipIf(!supported)('LifecycleLock', () => {
   });
 
   afterEach(() => {
-    if (orphan && orphan.pid) {
-      try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
-    }
+    killOrphan();
     orphan = null;
+    orphanHolderPid = null;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  function killOrphan(): void {
+    if (orphanHolderPid && orphanHolderPid !== orphan?.pid) {
+      try { process.kill(orphanHolderPid, 'SIGKILL'); } catch { /* already dead */ }
+    }
+    if (orphan?.pid) {
+      try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
+    }
+  }
+
+  function waitForOrphanExit(): Promise<void> {
+    if (!orphan || orphan.exitCode !== null || orphan.signalCode !== null) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      orphan!.once('exit', () => resolve());
+    });
+  }
+
+  async function spawnLockHolder(): Promise<number> {
+    orphan = spawn(process.execPath, [ORPHAN_HELPER, lockPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: process.cwd(),
+    });
+    const childPid = orphan.pid!;
+    expect(childPid).toBeGreaterThan(0);
+
+    let stdout = '';
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('orphan never ready')), 5000);
+      orphan!.stdout!.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf-8');
+        const match = stdout.match(/READY\s+(\d+)/);
+        if (match) {
+          orphanHolderPid = Number(match[1]);
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      orphan!.on('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`orphan exited prematurely with code ${code}`));
+      });
+    });
+
+    expect(orphanHolderPid).toBeGreaterThan(0);
+    return orphanHolderPid!;
+  }
 
   it('acquires on a fresh lock path and writes holder metadata', () => {
     const result = LifecycleLock.acquire(lockPath, { command: 'test-command --flag' });
@@ -65,64 +113,29 @@ describe.skipIf(!supported)('LifecycleLock', () => {
   });
 
   it('a held lock refuses subsequent acquires and reports holder metadata', async () => {
-    orphan = spawn(process.execPath, ['run', ORPHAN_HELPER, lockPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: process.cwd(),
-    });
-    const orphanPid = orphan.pid!;
-    expect(orphanPid).toBeGreaterThan(0);
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('orphan never ready')), 5000);
-      orphan!.stdout!.on('data', (chunk: Buffer) => {
-        if (chunk.toString('utf-8').includes('READY')) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-      orphan!.on('exit', (code) => {
-        clearTimeout(timer);
-        reject(new Error(`orphan exited prematurely with code ${code}`));
-      });
-    });
+    const holderPid = await spawnLockHolder();
 
     const result = LifecycleLock.acquire(lockPath);
     expect(result.acquired).toBe(false);
     if (result.acquired) throw new Error('unreachable');
 
-    expect(result.holderPid).toBe(orphanPid);
+    expect(result.holderPid).toBe(holderPid);
     expect(result.holder).not.toBeNull();
-    expect(result.holder!.pid).toBe(orphanPid);
+    expect(result.holder!.pid).toBe(holderPid);
     expect(typeof result.holder!.startedAt).toBe('number');
   }, 10_000);
 
   it('an OS-level kill releases the lock so the next acquire succeeds', async () => {
-    orphan = spawn(process.execPath, ['run', ORPHAN_HELPER, lockPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: process.cwd(),
-    });
-    const orphanPid = orphan.pid!;
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('orphan never ready')), 5000);
-      orphan!.stdout!.on('data', (chunk: Buffer) => {
-        if (chunk.toString('utf-8').includes('READY')) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-    });
+    await spawnLockHolder();
 
     // Confirm the lock is held while orphan is alive.
     const denied = LifecycleLock.acquire(lockPath);
     expect(denied.acquired).toBe(false);
 
     // Kill the orphan; OS releases the flock.
-    process.kill(orphanPid, 'SIGKILL');
-    await new Promise<void>((resolve) => {
-      if (!orphan) return resolve();
-      orphan.on('exit', () => resolve());
-    });
+    const orphanExited = waitForOrphanExit();
+    killOrphan();
+    await orphanExited;
 
     const acquired = LifecycleLock.acquire(lockPath);
     expect(acquired.acquired).toBe(true);

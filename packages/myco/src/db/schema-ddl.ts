@@ -448,10 +448,17 @@ export const TEAM_OUTBOX_TABLE = `
     operation   TEXT NOT NULL DEFAULT 'upsert',
     payload     TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
+    project_id  TEXT,
     created_at  INTEGER NOT NULL,
     sent_at     INTEGER,
     retry_count    INTEGER NOT NULL DEFAULT 0,
     last_attempt_at INTEGER
+  )`;
+
+export const TEAM_SYNC_STATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_sync_state (
+    rowid_guard INTEGER PRIMARY KEY CHECK (rowid_guard = 1),
+    enabled     INTEGER NOT NULL DEFAULT 0
   )`;
 
 // -- Logging Layer ----------------------------------------------------------
@@ -889,6 +896,68 @@ export const FTS_TABLES = [
    END`,
 ];
 
+// -- Team-sync delete triggers ----------------------------------------------
+
+/**
+ * Canonical set of tables that sync to the team cloud and are observed for
+ * drift. Single source of truth — must match the worker's SYNCED_TABLES
+ * (guarded by tests/db/synced-table-parity.test.ts). Defined here in the
+ * dependency-free DDL module so both the query layer (team-outbox) and the
+ * migration chain can import it WITHOUT dragging in db/client (bun:sqlite),
+ * which would break the worker-CLI esbuild bundle.
+ */
+export const TEAM_SYNC_OBSERVED_TABLES = [
+  'sessions',
+  'prompt_batches',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'plans',
+  'artifacts',
+  'digest_extracts',
+  'skill_candidates',
+  'skill_records',
+  'skill_usage',
+  'knowledge_release_state',
+  'team_members',
+] as const;
+
+export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
+
+/**
+ * Team-sync delete triggers — one per synced table.
+ *
+ * Auto-journal every local delete into `team_outbox` so the one-way push
+ * to D1 mirrors deletions. Gated on the Grove's own `team_sync_state.enabled`
+ * (NULL/absent row => disabled). Widens the FTS auto-sync-trigger pattern
+ * above. `entity_mentions` is intentionally absent — no single `id` column,
+ * never reaches D1.
+ */
+export const TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLES.map(
+  // Every table in TEAM_DELETE_TRIGGER_TABLES carries a `project_id` column
+  // (verified against the CREATE TABLE DDL above), so `OLD.project_id` is
+  // captured uniformly for per-row team routing. The json_object payload stays
+  // id + machine_id — only the new `project_id` column matters for routing.
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN (SELECT enabled FROM team_sync_state) = 1
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
 // -- Indexes ----------------------------------------------------------------
 
 export const SECONDARY_INDEXES = [
@@ -1092,6 +1161,7 @@ export const TABLE_DDLS = [
   SESSION_MYCO_TOOL_CALLS_TABLE,
   // Sync layer
   TEAM_OUTBOX_TABLE,
+  TEAM_SYNC_STATE_TABLE,
   // Logging layer
   LOG_ENTRIES_TABLE,
   // Notifications layer

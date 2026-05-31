@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import { resolveGroveDbPath, resolveMycoHome } from '@myco/grove/paths.js';
 
 export interface EnsureGroveDatabaseResult {
@@ -18,7 +19,9 @@ export function ensureGroveDatabase(
 
   const db = openDatabase(dbPath);
   try {
-    createSchema(db);
+    // Resolve the real machine id so the v52 machine_id='local'→real
+    // conversion runs; the 'local' default would skip it permanently.
+    createSchema(db, getMachineId());
     const row = db.prepare(
       'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1',
     ).get() as { version: number };

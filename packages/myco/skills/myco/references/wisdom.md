@@ -8,8 +8,8 @@ Myco automatically checks for supersession every time a new spore is written. Af
 
 For vault-wide cleanup (e.g., after a large refactor), use the CLI:
 ```sh
-node .agents/myco-cli.cjs agent --dry-run  # preview
-node .agents/myco-cli.cjs agent             # execute
+myco agent --dry-run  # preview
+myco agent             # execute
 ```
 
 ## Supersede

@@ -6,6 +6,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
 import { handleDeleteSkillRecord, createSkillRecordDeleteHandler, isSafeSkillNameForFs } from '@myco/daemon/api/skills.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
@@ -33,7 +34,7 @@ describe('skill record API deletion', () => {
   });
   afterEach(() => { resetTeamContext(); });
 
-  it('includes project_id in team-sync delete tombstones', async () => {
+  it('journals a delete tombstone via the skill_records_team_ad trigger when enabled', async () => {
     insertSkillRecord({
       id: 'skill-scoped',
       project_id: PROJECT_ID,
@@ -45,7 +46,10 @@ describe('skill record API deletion', () => {
       created_at: 10,
       updated_at: 10,
     });
-    initTeamContext(true, 'machine-a');
+    initTeamContext('machine-a');
+    // The delete tombstone is now journaled by the skill_records_team_ad
+    // trigger, which gates on this Grove's per-Grove team_sync_state flag.
+    setTeamSyncEnabled(true);
 
     const response = await handleDeleteSkillRecord({
       params: { id: 'skill-scoped' },
@@ -56,11 +60,36 @@ describe('skill record API deletion', () => {
     const row = getDatabase().prepare(
       "SELECT payload FROM team_outbox WHERE table_name = 'skill_records' AND row_id = ? AND operation = 'delete'",
     ).get('skill-scoped') as { payload: string };
-    expect(JSON.parse(row.payload)).toMatchObject({
-      id: 'skill-scoped',
+    // The trigger payload carries id + machine_id (no project_id/name — D1
+    // only needs the row id to apply the delete).
+    expect(JSON.parse(row.payload)).toMatchObject({ id: 'skill-scoped' });
+  });
+
+  it('does not journal a delete tombstone when the Grove flag is disabled', async () => {
+    insertSkillRecord({
+      id: 'skill-disabled',
       project_id: PROJECT_ID,
-      name: 'scoped-skill',
+      agent_id: 'agent-test',
+      name: 'disabled-skill',
+      display_name: 'Disabled Skill',
+      description: 'Project-scoped skill',
+      path: '.agents/skills/disabled-skill/SKILL.md',
+      created_at: 10,
+      updated_at: 10,
     });
+    initTeamContext('machine-a');
+    setTeamSyncEnabled(false);
+
+    const response = await handleDeleteSkillRecord({
+      params: { id: 'skill-disabled' },
+      requestContext: REQUEST_CONTEXT,
+    } as never);
+
+    expect(response.status ?? 200).toBe(200);
+    const n = getDatabase().prepare(
+      "SELECT COUNT(*) AS n FROM team_outbox WHERE table_name = 'skill_records' AND row_id = ?",
+    ).get('skill-disabled') as { n: number };
+    expect(n.n).toBe(0);
   });
 });
 

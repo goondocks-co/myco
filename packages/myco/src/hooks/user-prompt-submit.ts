@@ -1,11 +1,8 @@
-import { createHookDaemonClient, isIgnoredEventResponse } from './client.js';
-import { classifyBufferFallback } from './send-event.js';
+import { createHookDaemonClient } from './client.js';
+import { captureCriticalEvent } from './send-event.js';
 import { readHookInput } from './input.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { EventBuffer } from '../capture/buffer.js';
-import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
-import { resolveProjectRoot } from '../vault/resolve.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 
@@ -30,7 +27,7 @@ export async function main() {
 
     const client = createHookDaemonClient(VAULT_DIR, { sessionId });
     // Await health so context injection on the first prompt after a reboot
-    // actually gets a response; falls back to the buffer path on timeout.
+    // actually gets a response; capture falls back to the buffer path on timeout.
     await client.ensureRunning();
 
     if (decision.action === 'drop') {
@@ -52,34 +49,25 @@ export async function main() {
     const originField = decision.origin ? { origin: decision.origin } : undefined;
 
     // Kind classification happens on the daemon; Stop-time reconciler repairs it.
-    const eventResult = await client.capturePost('/events', {
-      type: 'user_prompt',
-      prompt,
-      ...originField,
-      session_id: sessionId,
-      agent: input.agent,
-      transcript_path: input.transcriptPath,
+    // bufferOnIgnored defaults true: user_prompt replay re-applies the capture
+    // rule (classifyNextPromptDecision), so a buffered ignored prompt is re-
+    // filtered on replay rather than blindly re-inserted. Reuse the warmed client.
+    await captureCriticalEvent({
+      vaultDir: VAULT_DIR,
+      sessionId,
+      hookName: 'user-prompt-submit',
+      endpoint: '/events',
+      postBody: {
+        type: 'user_prompt',
+        prompt,
+        ...originField,
+        session_id: sessionId,
+        agent: input.agent,
+        transcript_path: input.transcriptPath,
+      },
+      bufferEvent: { type: 'user_prompt', prompt, ...originField, transcript_path: input.transcriptPath },
+      client,
     });
-
-    // Buffer on transport failure OR server-side `ignored` so the event is
-    // recoverable by reconcileBufferBatches on the next daemon start. Log
-    // to stderr with the reason — every buffer-fallback path needs a trace
-    // so "session not captured" investigations can rule out the hook layer
-    // without comparing buffer-file mtimes against transcript mtimes.
-    if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
-      const location = resolveProjectBufferDirFromRoot(resolveProjectRoot(VAULT_DIR));
-      if (location) {
-        const buffer = new EventBuffer(location.bufferDir, sessionId);
-        buffer.append({ type: 'user_prompt', prompt, ...originField, transcript_path: input.transcriptPath });
-        process.stderr.write(
-          `[myco] user-prompt-submit buffered (${classifyBufferFallback(eventResult)}) session=${sessionId}\n`,
-        );
-      } else {
-        process.stderr.write(
-          `[myco] user-prompt-submit dropped (project-not-registered) session=${sessionId}\n`,
-        );
-      }
-    }
 
     const contextResult = await client.post('/context/prompt', {
       prompt,

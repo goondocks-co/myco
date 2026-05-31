@@ -14,15 +14,7 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
-import {
-  clearCfApiCredentials,
-  discardDlqMessages,
-  fetchQueueStats,
-  pullDlqMessages,
-  readCfApiCredentials,
-  retryDlqMessages,
-  writeCfApiCredentials,
-} from './cf-api';
+import { SYNCED_TABLES, requiresGroveProjectId, stampSyncedAtAtIngestion, type SyncedTable } from './synced-tables';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,24 +65,11 @@ const EMBEDDABLE_TABLES: Record<string, string> = {
   skill_records: 'description',
 };
 
-/** All tables the sync endpoint accepts records for. */
-const SYNCED_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
-  'skill_candidates',
-  'skill_records',
-  'skill_usage',
-  'knowledge_release_state',
-] as const;
-
+/**
+ * All tables the sync endpoint accepts records for. Authoritative list lives
+ * in `./synced-tables` (a dependency-free module) so the daemon-package parity
+ * test can import the real value without pulling in the Workers runtime graph.
+ */
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
 
 const GROVE_PROJECT_ID_PATTERN = /^proj_[0-9a-f]{32}$/;
@@ -124,7 +103,15 @@ function resolveProtocolBounds(env: Env): { serverVersion: number; minClientVers
 const QUEUE_SEND_BATCH_SIZE = 100;
 const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
 
-type SyncedTable = (typeof SYNCED_TABLES)[number];
+/**
+ * Max times a dead-lettered message is replayed main→DLQ→main before it
+ * is parked terminally in `team_dlq` for the operator. Without this cap a
+ * deterministically-failing ("poison") record loops forever — burning
+ * budget and inflating `backlog` (every replay bumps `enqueued` while
+ * `processed` only rises on success). Operator `Retry` resets the cycle
+ * by DELETEing the row (and thus its `replay_count`).
+ */
+const MAX_DLQ_REPLAYS = 3;
 
 interface SyncRecord {
   table: SyncedTable;
@@ -144,13 +131,13 @@ function estimateQueueMessageBytes(record: SyncRecord): number {
   return new TextEncoder().encode(JSON.stringify({ body: record })).byteLength;
 }
 
-async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[]): Promise<void> {
+async function sendQueueRecords(env: Env, records: SyncRecord[]): Promise<void> {
   let chunk: SyncRecord[] = [];
   let chunkBytes = 0;
 
   const flush = async () => {
     if (chunk.length === 0) return;
-    await queue.sendBatch(chunk.map((record) => ({ body: record })));
+    await env.SYNC_QUEUE.sendBatch(chunk.map((record) => ({ body: record })));
     chunk = [];
     chunkBytes = 0;
   };
@@ -165,6 +152,24 @@ async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[])
   }
 
   await flush();
+
+  // `enqueued` counts every message put on the main queue, across ALL
+  // producers (the /enqueue endpoint, vector reindex, DLQ replay/retry).
+  // Counting here — the single send choke point — instead of only at
+  // /enqueue keeps `enqueued` and `processed` measuring the same population,
+  // so backlog = enqueued - processed is a real in-flight proxy. Counting
+  // only /enqueue let reindex jobs (which enqueue directly) inflate
+  // `processed` without `enqueued`, pinning backlog at 0.
+  // Best-effort: a stats write failure must never fail the send path.
+  if (records.length > 0) {
+    try {
+      await env.MYCO_TEAM_DB.prepare(
+        'UPDATE team_sync_stats SET enqueued = enqueued + ? WHERE id = 1',
+      ).bind(records.length).run();
+    } catch {
+      // Stats write failed — ignore, the queue send already succeeded.
+    }
+  }
 }
 
 interface ConnectPayload {
@@ -201,6 +206,13 @@ interface EmbedJob {
   machine_id: string;
   text: string;
   metadata: Partial<TeamVectorMetadata>;
+}
+
+/** Mutable counters threaded through coalesced batch helpers for best-effort D1 stats. */
+interface SyncBatchCounts {
+  applied: number;
+  failed: number;
+  lastError: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +447,16 @@ function buildInsertParts(
   id: string,
   machineId: string,
 ): { sql: string; values: unknown[] } {
-  const row: Record<string, unknown> = { id, machine_id: machineId, ...data, synced_at: epochSeconds() };
+  const row: Record<string, unknown> = { id, machine_id: machineId, ...data };
+
+  // Machine-scoped rows (team_members) carry a NULL synced_at over the wire —
+  // the daemon stamps it locally only after a successful push, so the
+  // serialized payload predates that write. Stamp the worker's receive time so
+  // the roster's "last received" provenance is server-authoritative. Project-
+  // scoped rows keep their wire synced_at untouched.
+  if (stampSyncedAtAtIngestion(table)) {
+    row.synced_at = epochSeconds();
+  }
 
   // Remove fields that don't belong in D1 (local-only fields)
   delete row.embedded;
@@ -614,7 +635,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       continue;
     }
     const projectId = (record.data as Record<string, unknown> | undefined)?.project_id;
-    if (!isGroveProjectId(projectId)) {
+    if (requiresGroveProjectId(record.table) && !isGroveProjectId(projectId)) {
       rejected.push({
         id: record.id,
         table: record.table,
@@ -626,66 +647,13 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   }
 
   if (acceptedRecords.length > 0) {
-    await sendQueueRecords(env.SYNC_QUEUE, acceptedRecords);
+    // sendQueueRecords bumps the `enqueued` stat itself (single choke point).
+    await sendQueueRecords(env, acceptedRecords);
   }
 
   await touchNodeLastSeen(env, body.machine_id);
 
   return jsonResponse({ accepted: acceptedRecords.length, rejected });
-}
-
-/**
- * `POST /verify` — drift confirmation for the local sync reconciler.
- *
- * Body: `{ machine_id, table, ids: string[] }`
- * Returns: `{ present: string[], missing: string[] }`
- *
- * The daemon stamps `synced_at` on a source row when the worker's
- * `/enqueue` returns 200 — but "accepted by /enqueue" only means the
- * record was queued, not that the queue consumer succeeded in writing
- * it to D1. A record can be silently dead-lettered (column mismatch,
- * constraint violation, queue consumer crash) while the daemon thinks
- * it landed. Over time `synced_at` IS NOT NULL accumulates rows that
- * never actually exist in D1, and `backfillUnsynced` (which only scans
- * `synced_at IS NULL`) never sees them again — that's how negative
- * remote deltas (-9 on skill_candidates in the dogfood Grove) arise.
- *
- * This endpoint lets the daemon ask D1 the authoritative question
- * ("for these ids on my machine_id, which actually exist?") so it can
- * reset `synced_at` to NULL on the missing rows and re-enqueue them via
- * the normal backfill path.
- *
- * Capped at 500 ids per call to stay under D1's bound-parameter limit
- * (100 per prepared statement); the daemon chunks larger inputs. Table
- * names are validated against `SYNCED_TABLES_SET` so the endpoint can't
- * be used to enumerate non-sync tables on the D1.
- */
-async function handleVerify(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { machine_id?: unknown; table?: unknown; ids?: unknown };
-  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
-  const table = typeof body.table === 'string' ? body.table.trim() : '';
-  const ids = Array.isArray(body.ids)
-    ? body.ids.filter((id): id is string | number => typeof id === 'string' || typeof id === 'number').map((id) => String(id))
-    : [];
-
-  if (!machineId) return errorResponse('machine_id is required', 400);
-  if (!SYNCED_TABLES_SET.has(table)) return errorResponse(`Unknown table: ${table}`, 400);
-  if (ids.length === 0) return jsonResponse({ present: [], missing: [] });
-  if (ids.length > 500) return errorResponse('Maximum 500 ids per call', 400);
-
-  const D1_BIND_LIMIT_PAIRS = 50;
-  const present = new Set<string>();
-  for (let offset = 0; offset < ids.length; offset += D1_BIND_LIMIT_PAIRS) {
-    const slice = ids.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
-    const placeholders = slice.map(() => '?').join(', ');
-    const result = await env.MYCO_TEAM_DB.prepare(
-      `SELECT id FROM ${table} WHERE machine_id = ? AND id IN (${placeholders})`,
-    ).bind(machineId, ...slice).all<{ id: string | number }>();
-    for (const row of result.results ?? []) present.add(String(row.id));
-  }
-
-  const missing = ids.filter((id) => !present.has(id));
-  return jsonResponse({ present: Array.from(present), missing });
 }
 
 /**
@@ -783,6 +751,8 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 
   const deleteVectorTasks: Array<() => Promise<void>> = [];
   const embedJobs: EmbedJob[] = [];
+  // Mutable counters threaded through coalesced helpers for best-effort stats.
+  const batchCounts = { applied: 0, failed: 0, lastError: '' };
   const groups = new Map<string, Array<Message<SyncRecord>>>();
   for (const message of batch.messages) {
     const key = `${message.body.table}\t${message.body.operation}`;
@@ -794,11 +764,11 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   for (const [key, messages] of groups) {
     const [table, operation] = key.split('\t');
     if (operation === 'delete') {
-      await coalescedDeleteBatch(env, table, messages);
+      await coalescedDeleteBatch(env, table, messages, batchCounts);
     } else if (operation === 'embed') {
-      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs);
+      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs, batchCounts);
     } else {
-      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs);
+      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs, batchCounts);
     }
   }
 
@@ -823,48 +793,197 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     }
     if (failed > 0) console.error(`team-sync.vector-delete-summary ${failed}/${results.length} failed`);
   }
+  let embedSucceeded = 0;
+  let embedFailed = 0;
+  let embedLastError: string | null = null;
   if (embedJobs.length > 0) {
-    await runBatchEmbed(env, embedJobs);
+    const embedResult = await runBatchEmbed(env, embedJobs);
+    embedSucceeded = embedResult.succeeded;
+    embedFailed = embedResult.failed;
+    embedLastError = embedResult.lastError;
+  }
+
+  // Best-effort stats update — a write failure must never fail the consume path.
+  try {
+    const lastError = batchCounts.failed > 0 ? batchCounts.lastError || 'sync failed' : null;
+    await env.MYCO_TEAM_DB.prepare(
+      'UPDATE team_sync_stats SET processed = processed + ?, failed = failed + ?, last_run_at = ?, last_error = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error END WHERE id = 1',
+    ).bind(batchCounts.applied, batchCounts.failed, epochSeconds(), lastError, lastError).run();
+  } catch {
+    // Stats write failed — ignore, sync path takes priority.
+  }
+
+  // Best-effort embed stats — persisted independently so a D1 write failure
+  // cannot affect the D1 sync stats or the consume path.
+  try {
+    const embedErr = embedFailed > 0 ? embedLastError : null;
+    await env.MYCO_TEAM_DB.prepare(
+      'UPDATE team_sync_stats SET embed_ok = embed_ok + ?, embed_failed = embed_failed + ?, last_embed_at = ?, last_embed_error = CASE WHEN ? IS NOT NULL THEN ? ELSE last_embed_error END WHERE id = 1',
+    ).bind(embedSucceeded, embedFailed, epochSeconds(), embedErr, embedErr).run();
+  } catch {
+    // Embed stats write failed — ignore, sync path takes priority.
   }
 }
 
 
+/** Vectorize rate-limit signal (40041 / "Too Many Requests"). */
+function isVectorizeRateLimit(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('40041') || /too many requests/i.test(msg);
+}
+
+const VECTOR_UPSERT_MAX_ATTEMPTS = 5;
+const VECTOR_UPSERT_BACKOFF_MS = [500, 1000, 2000, 4000];
+
 /**
- * Embed each job sequentially via the existing single-text
- * `embedAndUpsert` path. We tried batching multiple texts per ai.run
- * to amortize the per-call overhead, but bge-m3's 60K-token total
- * context window combined with the wide tokenization-density variance
- * across this dataset (0.84–4 chars/token observed) made batch sizing
- * unreliable: every estimated budget either dropped vectors or killed
- * throughput, and the model surfaces at least two distinct overflow
- * error codes (3030, 5021) requiring increasingly broad detection.
- *
- * Per-row sequential is slow (~1s/row, so ~30 min for a full reindex
- * of ~2K rows), but always correct: each call has one text well under
- * the context window, so token overflow is structurally impossible.
- * Per-row failures log and continue rather than dropping the whole
- * group. Source rows stay in D1 and are recoverable via another
- * /vectors/reindex call if anything fails.
+ * Single source of truth for the Vectorize upsert retry contract: up to
+ * 5 attempts, exponential backoff on rate-limit (40041), throws the last
+ * error on any non-rate-limit failure or once retries are exhausted. Used
+ * for both the batch attempt and each per-row attempt in
+ * `upsertVectorsResilient` so the codes/backoff live in one place.
  */
-async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
-  let succeeded = 0;
-  let failed = 0;
-  for (const job of jobs) {
+async function upsertWithRateLimitBackoff(
+  index: VectorizeIndex,
+  vectors: VectorizeVector[],
+): Promise<void> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < VECTOR_UPSERT_MAX_ATTEMPTS; attempt++) {
     try {
-      await embedAndUpsert(env, job.table, job.id, job.machine_id, job.text, job.metadata);
-      succeeded++;
+      await index.upsert(vectors);
+      return;
     } catch (err) {
+      lastErr = err;
+      if (isVectorizeRateLimit(err) && attempt < VECTOR_UPSERT_MAX_ATTEMPTS - 1) {
+        await new Promise<void>((r) => setTimeout(r, VECTOR_UPSERT_BACKOFF_MS[attempt] ?? 4000));
+        continue;
+      }
+      // Non-rate-limit error or retries exhausted.
+      break;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Attempt to upsert an array of vectors as a single batch, falling back to
+ * per-row upserts on non-rate-limit errors so one poison vector cannot sink
+ * its batch-mates. Rate-limit (40041 / "Too Many Requests") is retried with
+ * exponential backoff up to 5 attempts before the same per-row fallback path
+ * activates. Mirrors the "optimistic batch + per-record fallback" pattern of
+ * coalescedUpsertBatch.
+ */
+async function upsertVectorsResilient(
+  env: Env,
+  vectors: VectorizeVector[],
+): Promise<{ ok: number; failed: number }> {
+  // Attempt batched upsert with backoff on rate-limit.
+  let batchErr: unknown = null;
+  try {
+    await upsertWithRateLimitBackoff(env.MYCO_TEAM_VECTORS, vectors);
+    return { ok: vectors.length, failed: 0 };
+  } catch (err) {
+    // Non-rate-limit error or retries exhausted — fall through to per-row.
+    batchErr = err;
+  }
+
+  // Per-row fallback: isolate the failure to the offending vector(s).
+  let ok = 0;
+  let failed = 0;
+  for (const v of vectors) {
+    try {
+      await upsertWithRateLimitBackoff(env.MYCO_TEAM_VECTORS, [v]);
+      ok++;
+    } catch (rowErr) {
       failed++;
-      console.error('team-sync.embed-failed', {
-        table: job.table,
-        id: job.id,
-        error: err instanceof Error ? err.message : String(err),
+      const meta = v.metadata as TeamVectorMetadata | undefined;
+      console.error('team-sync.vector-upsert-failed', {
+        table: meta?.table,
+        id: meta?.id,
+        error: rowErr instanceof Error ? rowErr.message : String(rowErr),
       });
     }
   }
+  // Log batch failure context for tail inspection — only when the per-row
+  // fallback actually produced failures, not when every row recovered.
   if (failed > 0) {
-    console.error(`team-sync.embed-summary ${failed}/${jobs.length} embeddings failed (${succeeded} succeeded)`);
+    console.error('team-sync.batch-upsert-fell-back-to-per-row', {
+      count: vectors.length,
+      error: batchErr instanceof Error ? batchErr.message : String(batchErr),
+    });
   }
+  return { ok, failed };
+}
+
+/**
+ * Embed each job sequentially via per-row embedText (one ai.run per row).
+ * We tried batching multiple texts per ai.run to amortize the per-call
+ * overhead, but bge-m3's 60K-token total context window combined with the
+ * wide tokenization-density variance across this dataset (0.84–4 chars/token
+ * observed) made batch sizing unreliable: every estimated budget either
+ * dropped vectors or killed throughput, and the model surfaces at least two
+ * distinct overflow error codes (3030, 5021) requiring increasingly broad
+ * detection. Per-row embedding is always correct: each call has one text well
+ * under the context window, so token overflow is structurally impossible.
+ *
+ * Vectorize upsert is batched ONCE per consumer batch via upsertVectorsResilient,
+ * which handles the 40041 rate-limit with exponential backoff. Previously each
+ * row called MYCO_TEAM_VECTORS.upsert([singleVector]), producing ~1241 concurrent
+ * upsert calls on a full reindex and triggering the write-rate-limit (40041).
+ */
+async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<{ succeeded: number; failed: number; lastError: string | null }> {
+  const vectors: VectorizeVector[] = [];
+  const legacyDeletes: string[] = [];
+  let embedFailed = 0;
+  let lastError: string | null = null;
+
+  for (const job of jobs) {
+    try {
+      const values = await embedText(env.AI, job.text);
+      const vid = await vectorId(job.table, job.id, job.machine_id);
+      const legacyId = legacyVectorId(job.table, job.id, job.machine_id);
+      if (legacyId !== vid) legacyDeletes.push(legacyId);
+      vectors.push({
+        id: vid,
+        values,
+        metadata: { table: job.table, id: job.id, machine_id: job.machine_id, ...job.metadata } as Record<string, VectorizeVectorMetadata>,
+      });
+    } catch (err) {
+      embedFailed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      lastError = msg;
+      console.error('team-sync.embed-failed', {
+        table: job.table,
+        id: job.id,
+        error: msg,
+      });
+    }
+  }
+
+  if (legacyDeletes.length > 0) {
+    try {
+      await env.MYCO_TEAM_VECTORS.deleteByIds(legacyDeletes);
+    } catch {
+      // Legacy vectors may not exist — best-effort.
+    }
+  }
+
+  let upsertOk = 0;
+  let upsertFailed = 0;
+  if (vectors.length > 0) {
+    const result = await upsertVectorsResilient(env, vectors);
+    upsertOk = result.ok;
+    upsertFailed = result.failed;
+    if (upsertFailed > 0 && lastError === null) {
+      lastError = `${upsertFailed} vector upsert(s) failed`;
+    }
+  }
+
+  const succeeded = upsertOk;
+  const failed = embedFailed + upsertFailed;
+  if (failed > 0) {
+    console.error(`team-sync.embed-summary ${failed}/${jobs.length} failed (${succeeded} succeeded)`);
+  }
+  return { succeeded, failed, lastError };
 }
 
 /**
@@ -878,6 +997,7 @@ async function coalescedUpsertBatch(
   messages: Array<Message<SyncRecord>>,
   deleteVectorTasks: Array<() => Promise<void>>,
   embedJobs: EmbedJob[],
+  counts: SyncBatchCounts,
 ): Promise<void> {
   // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
   // tuples we're about to write. Records without content_hash skip the
@@ -913,6 +1033,7 @@ async function coalescedUpsertBatch(
     const hash = message.body.content_hash;
     if (hash && existingHashes.get(`${message.body.id}\t${message.body.machine_id}`) === hash) {
       message.ack();
+      counts.applied++;
       continue;
     }
     survivors.push(message);
@@ -932,6 +1053,7 @@ async function coalescedUpsertBatch(
     for (const message of survivors) {
       routeRecordForEmbedding(env, message.body, deleteVectorTasks, embedJobs);
       message.ack();
+      counts.applied++;
     }
   } catch (err) {
     console.error(`team-sync.queue.batch_upsert_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
@@ -941,9 +1063,14 @@ async function coalescedUpsertBatch(
         if (result.embedTask) deleteVectorTasks.push(result.embedTask);
         if (result.embedJob) embedJobs.push(result.embedJob);
         message.ack();
+        counts.applied++;
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.write_failed ${table}/${message.body.id}: ${reason}`);
+        // Transient: message.retry() redelivers and re-counts as `applied`
+        // on success. Counting `failed` here would permanently inflate the
+        // stat and make `last_error` sticky on a healthy, fully-drained
+        // queue, so we only log — never touch counts on a retried path.
         message.retry();
       }
     }
@@ -955,6 +1082,7 @@ async function coalescedDeleteBatch(
   env: Env,
   table: string,
   messages: Array<Message<SyncRecord>>,
+  counts: SyncBatchCounts,
 ): Promise<void> {
   const deleteSql = `DELETE FROM ${table} WHERE id = ? AND machine_id = ?`;
   const statements = messages.map((message) =>
@@ -969,6 +1097,7 @@ async function coalescedDeleteBatch(
         void deleteVector(env, message.body.table, message.body.id, message.body.machine_id);
       }
       message.ack();
+      counts.applied++;
     }
   } catch (err) {
     console.error(`team-sync.queue.batch_delete_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
@@ -976,9 +1105,12 @@ async function coalescedDeleteBatch(
       try {
         await handleDelete(env, message.body);
         message.ack();
+        counts.applied++;
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
         console.error(`team-sync.queue.delete_failed ${table}/${message.body.id}: ${reason}`);
+        // Transient retry — redelivered and re-counted as `applied` on
+        // success. Don't touch counts (see coalescedUpsertBatch).
         message.retry();
       }
     }
@@ -1000,9 +1132,13 @@ async function coalescedEmbedBatch(
   messages: Array<Message<SyncRecord>>,
   deleteVectorTasks: Array<() => Promise<void>>,
   embedJobs: EmbedJob[],
+  counts: SyncBatchCounts,
 ): Promise<void> {
   if (!(table in EMBEDDABLE_TABLES)) {
-    for (const message of messages) message.ack();
+    for (const message of messages) {
+      message.ack();
+      counts.applied++;
+    }
     return;
   }
 
@@ -1028,8 +1164,13 @@ async function coalescedEmbedBatch(
       }
     }
   } catch (err) {
-    console.error(`team-sync.queue.embed_select_failed table=${table}: ${err instanceof Error ? err.message : err}`);
-    for (const message of messages) message.retry();
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`team-sync.queue.embed_select_failed table=${table}: ${reason}`);
+    // Transient: the whole group is retried and re-counted as `applied`
+    // on success, so don't touch counts (see coalescedUpsertBatch).
+    for (const message of messages) {
+      message.retry();
+    }
     return;
   }
 
@@ -1039,6 +1180,7 @@ async function coalescedEmbedBatch(
       // Row was deleted between enqueue and consume — drop the embed
       // request to avoid an upsert against missing source data.
       message.ack();
+      counts.applied++;
       continue;
     }
     routeRecordForEmbedding(env, {
@@ -1049,6 +1191,7 @@ async function coalescedEmbedBatch(
       data: row,
     }, deleteVectorTasks, embedJobs);
     message.ack();
+    counts.applied++;
   }
 }
 
@@ -1105,14 +1248,91 @@ function routeRecordForEmbedding(
  */
 async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (batch.messages.length === 0) return;
+
+  // The lease_id is the stable per-record key `${table}:${id}:${machine_id}`.
+  // It's what `team_dlq` keys on (INSERT OR REPLACE), what the operator
+  // surfaces in `handleDlqList`, and what `handleDlqRetry`/`handleDlqDiscard`
+  // address rows by. Compute it once per message and reuse it for the
+  // replay-count lookup, the upsert, and the cap check.
+  const leaseIds = batch.messages.map((m) => `${m.body.table}:${m.body.id}:${m.body.machine_id}`);
+
+  // Look up the current replay_count per lease_id in a single batched SELECT
+  // so we can increment it monotonically across DLQ deliveries. A message
+  // that keeps poisoning the queue climbs replay_count each time it lands here.
+  const existingReplayCounts = new Map<string, number>();
+  try {
+    const placeholders = leaseIds.map(() => '?').join(', ');
+    const rows = await env.MYCO_TEAM_DB.prepare(
+      `SELECT lease_id, replay_count FROM team_dlq WHERE lease_id IN (${placeholders})`,
+    ).bind(...leaseIds).all<{ lease_id: string; replay_count: number | null }>();
+    for (const row of rows.results ?? []) {
+      existingReplayCounts.set(row.lease_id, Number(row.replay_count ?? 0));
+    }
+  } catch {
+    // SELECT failed — treat every message as never-before-seen (replay_count 0).
+    // Worst case a poison record gets a few extra replays before the cap bites.
+  }
+
+  // Best-effort: persist each dead-lettered message to team_dlq for operator
+  // visibility, carrying the incremented replay_count. INSERT OR REPLACE so
+  // repeated DLQ deliveries of the same record update rather than duplicate.
+  // This runs BEFORE the replay decision so visibility (and the cap counter)
+  // is preserved even if the replay send throws.
+  const replayable: SyncRecord[] = [];
+  const cappedMessages: Array<Message<SyncRecord>> = [];
+  const replayMessages: Array<Message<SyncRecord>> = [];
+  for (let i = 0; i < batch.messages.length; i++) {
+    const m = batch.messages[i];
+    const leaseId = leaseIds[i];
+    const nextCount = (existingReplayCounts.get(leaseId) ?? 0) + 1;
+    try {
+      await env.MYCO_TEAM_DB.prepare(
+        `INSERT OR REPLACE INTO team_dlq
+           (lease_id, table_name, row_id, machine_id, operation, payload, reason, created_at, replay_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        leaseId,
+        m.body.table,
+        m.body.id,
+        m.body.machine_id,
+        m.body.operation,
+        JSON.stringify(m.body),
+        nextCount > MAX_DLQ_REPLAYS
+          ? `replay capped after ${MAX_DLQ_REPLAYS} attempts`
+          : 'dead-lettered after max retries',
+        epochSeconds(),
+        nextCount,
+      ).run();
+    } catch {
+      // DLQ write failed — ignore, replay path takes priority.
+    }
+
+    if (nextCount > MAX_DLQ_REPLAYS) {
+      // Poison record: stop the main→DLQ→main loop. Leave it terminal in
+      // team_dlq for the operator (Retry resets the cycle via DELETE) and
+      // ack so CF doesn't redeliver the DLQ message.
+      console.error('team-sync.dlq.replay-capped', { lease_id: leaseId, replay_count: nextCount });
+      cappedMessages.push(m);
+    } else {
+      replayable.push(m.body);
+      replayMessages.push(m);
+    }
+  }
+
+  if (cappedMessages.length > 0) {
+    for (const message of cappedMessages) message.ack();
+  }
+
+  if (replayable.length === 0) return;
+
   // Single sendBatch instead of N individual sends — Cloudflare Queues
   // atomically enqueues the whole array, dropping N HTTP-shaped calls
   // to 1 per consumer batch (up to 100 msgs). The per-message ack/retry
   // still happens individually so an enqueue failure isn't load-bearing
   // for the unaffected messages.
   try {
-    await env.SYNC_QUEUE.sendBatch(batch.messages.map((m) => ({ body: m.body })));
-    for (const message of batch.messages) {
+    await sendQueueRecords(env, replayable);
+    for (const message of replayMessages) {
       console.error(
         `team-sync.dlq replay -> main ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
       );
@@ -1120,10 +1340,10 @@ async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promis
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`team-sync.dlq replay_failed (batch of ${batch.messages.length}): ${reason}`);
+    console.error(`team-sync.dlq replay_failed (batch of ${replayMessages.length}): ${reason}`);
     // Don't ack — let CF redeliver. If the SYNC_QUEUE binding is
     // genuinely broken, the messages stay in DLQ instead of being lost.
-    for (const message of batch.messages) message.retry();
+    for (const message of replayMessages) message.retry();
   }
 }
 
@@ -1258,7 +1478,7 @@ async function handleVectorReindex(request: Request, env: Env): Promise<Response
     for (const table of tables) {
       const records = await listReindexEnqueueRecords(env, table);
       if (records.length > 0) {
-        await sendQueueRecords(env.SYNC_QUEUE, records);
+        await sendQueueRecords(env, records);
       }
       byTable[table] = records.length;
       totalEnqueued += records.length;
@@ -1421,7 +1641,9 @@ async function handleGetConfig(env: Env): Promise<Response> {
   });
 }
 
-async function handleSyncSummary(env: Env): Promise<Response> {
+async function handleSyncSummary(request: Request, env: Env): Promise<Response> {
+  const machineId = new URL(request.url).searchParams.get('machine_id')?.trim() || null;
+
   const selectList = SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table}) AS ${table}`).join(', ');
   const row = await env.MYCO_TEAM_DB.prepare(`SELECT ${selectList}`).first<Record<string, unknown>>() ?? {};
   const tables: Record<string, number> = {};
@@ -1432,6 +1654,24 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     const count = Number.isFinite(value) ? value : 0;
     tables[table] = count;
     totalRecords += count;
+  }
+
+  // Per-machine table counts — only computed when machine_id is supplied so
+  // the caller can compare THIS machine's local rows against THIS machine's
+  // cloud rows without false-positive drift from other machines' data.
+  let machine_tables: Record<string, number> | null = null;
+  if (machineId) {
+    const machineSelectList = SYNCED_TABLES.map(
+      (table) => `(SELECT COUNT(*) FROM ${table} WHERE machine_id = ?) AS ${table}`,
+    ).join(', ');
+    const machineRow = await env.MYCO_TEAM_DB.prepare(`SELECT ${machineSelectList}`)
+      .bind(...SYNCED_TABLES.map(() => machineId))
+      .first<Record<string, unknown>>() ?? {};
+    machine_tables = {};
+    for (const table of SYNCED_TABLES) {
+      const value = Number(machineRow[table] ?? 0);
+      machine_tables[table] = Number.isFinite(value) ? value : 0;
+    }
   }
 
   // Vectorize index probe — `describe()` JSON has the count field as
@@ -1475,6 +1715,8 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     generated_at: epochSeconds(),
     total_records: totalRecords,
     tables,
+    machine_id: machineId ?? undefined,
+    machine_tables: machine_tables ?? undefined,
     vector_count: vectorCount,
     vector_index_healthy: vectorIndexHealthy,
     vector_index_error: vectorIndexError,
@@ -1483,6 +1725,116 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     package_version: env.MYCO_TEAM_PACKAGE_VERSION ?? DEFAULT_TEAM_PACKAGE_VERSION,
     sync_protocol_version: Number.isFinite(syncProtocolVersion) ? syncProtocolVersion : 0,
   });
+}
+
+/**
+ * `GET /members` — the team's member roster, synced from every node's
+ * local `team_members` rows. Returns the union across all machines so the
+ * daemon can render the Members tab for the selected team rather than the
+ * local self-only roster.
+ */
+async function handleListMembers(env: Env): Promise<Response> {
+  try {
+    const { results } = await env.MYCO_TEAM_DB
+      .prepare(`SELECT id, machine_id, "user", role, joined, tags, synced_at FROM team_members ORDER BY "user" ASC, machine_id ASC`)
+      .all<{ id: string; machine_id: string; user: string; role: string | null; joined: string | null; tags: string | null; synced_at: number | null }>();
+    return jsonResponse({ members: results ?? [] });
+  } catch {
+    // team_members may not exist on a worker deployed before the schema migration.
+    return jsonResponse({ members: [] });
+  }
+}
+
+/**
+ * `DELETE /members/:machine_id` — drop a single machine's roster row. Called
+ * when a teammate leaves the team so the departing machine stops lingering as
+ * a ghost member in everyone else's view.
+ *
+ * Trust model: the worker authenticates every request with a SHARED team key
+ * and carries no per-machine identity, so it cannot enforce "delete only your
+ * own row" — any holder of the key can remove any machine_id. This is the same
+ * trust level as `/enqueue` (which already accepts an arbitrary machine_id) and
+ * `/rebuild`. The blast radius is bounded because removal is self-healing: an
+ * active member re-pushes its self-row on the next reconcile, so an erroneous
+ * delete corrects itself rather than permanently dropping a live machine.
+ */
+async function handleRemoveMember(machineId: string, env: Env): Promise<Response> {
+  if (!machineId) return errorResponse('machine_id is required', 400);
+  try {
+    const res = await env.MYCO_TEAM_DB
+      .prepare('DELETE FROM team_members WHERE machine_id = ?')
+      .bind(machineId)
+      .run();
+    return jsonResponse({ removed: res.meta?.changes ?? 0 });
+  } catch {
+    // team_members may not exist on a worker deployed before the schema migration.
+    return jsonResponse({ removed: 0 });
+  }
+}
+
+/**
+ * `POST /rebuild` — destructive one-way repair. Truncates the requesting
+ * machine's rows from this Grove's D1 tables and clears their Vectorize
+ * entries so the daemon can re-push the full local Grove (`backfillAll`)
+ * and land an exact mirror. The D1 is shared across team machines (rows
+ * keyed by `(id, machine_id)`) and the daemon only re-pushes the local
+ * machine's data, so the wipe is scoped to `body.machine_id` — never the
+ * whole Grove — to avoid destroying teammates' cloud data. The local
+ * Grove is the source of truth; this never reconciles, it replaces.
+ */
+async function handleRebuild(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { machine_id?: string };
+  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
+  if (!machineId) return errorResponse('machine_id is required', 400);
+
+  // Clear Vectorize for embeddable tables first (best-effort, non-fatal):
+  // collect this machine's D1 ids and delete their vectors by deterministic id.
+  for (const table of Object.keys(EMBEDDABLE_TABLES)) {
+    try {
+      const rows = await env.MYCO_TEAM_DB.prepare(
+        `SELECT id, machine_id FROM ${table} WHERE machine_id = ?`,
+      ).bind(machineId).all<{ id: string; machine_id: string }>();
+      const ids: string[] = [];
+      for (const r of rows.results ?? []) {
+        ids.push(await vectorId(table, String(r.id), String(r.machine_id)));
+        ids.push(legacyVectorId(table, String(r.id), String(r.machine_id)));
+      }
+      for (let i = 0; i < ids.length; i += 1000) {
+        await env.MYCO_TEAM_VECTORS.deleteByIds(ids.slice(i, i + 1000));
+      }
+    } catch (err) {
+      console.error('team-sync.rebuild.vector-clear-failed', {
+        table, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Truncate this machine's rows from every D1 table in one batch.
+  const statements = SYNCED_TABLES.map((t) =>
+    env.MYCO_TEAM_DB.prepare(`DELETE FROM ${t} WHERE machine_id = ?`).bind(machineId),
+  );
+  await env.MYCO_TEAM_DB.batch(statements);
+
+  // Rebuild re-baselines everything, so reset the queue-health counters too
+  // — otherwise `backlog = enqueued - processed` stays skewed by pre-rebuild
+  // history and requires a manual D1 reset. Best-effort: never fail the
+  // rebuild on a stats write. Leave last_run_at/last_embed_at — they're clocks.
+  try {
+    await env.MYCO_TEAM_DB.prepare(
+      `UPDATE team_sync_stats
+          SET enqueued = 0, processed = 0, failed = 0,
+              embed_ok = 0, embed_failed = 0,
+              last_error = NULL, last_embed_error = NULL
+        WHERE id = 1`,
+    ).run();
+  } catch (err) {
+    console.error('team-sync.rebuild.stats-reset-failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  console.error('team-sync.rebuild.completed', { machine_id: machineId, truncated_tables: SYNCED_TABLES.length });
+  return jsonResponse({ ok: true, machine_id: machineId, truncated_tables: SYNCED_TABLES.length });
 }
 
 async function handlePutConfig(request: Request, env: Env): Promise<Response> {
@@ -1565,86 +1917,75 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
 
 /**
  * Operator surface for queue diagnostics + DLQ management. All endpoints
- * require the project's CF API token (queues:read,write) stashed in KV.
- * Daemon flows the token through `POST /tokens/cf-api`; the UI surfaces
- * the queue/DLQ state as unavailable when missing.
+ * read from the D1 tables populated by the queue consumer (team_sync_stats,
+ * team_dlq). No CF API token required — the worker is the API surface.
  */
 async function handleQueueStats(env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
-  try {
-    const stats = await fetchQueueStats(creds, env.SYNC_QUEUE_NAME, env.SYNC_DLQ_NAME);
-    return jsonResponse(stats);
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
+  const row = await env.MYCO_TEAM_DB.prepare(
+    `SELECT enqueued, processed, failed, last_run_at, last_error, embed_ok, embed_failed, last_embed_error, last_embed_at FROM team_sync_stats WHERE id = 1`,
+  ).first<{ enqueued: number; processed: number; failed: number; last_run_at: number | null; last_error: string | null; embed_ok: number; embed_failed: number; last_embed_error: string | null; last_embed_at: number | null }>();
+  const enqueued = row?.enqueued ?? 0;
+  const processed = row?.processed ?? 0;
+  return jsonResponse({
+    enqueued,
+    processed,
+    failed: row?.failed ?? 0,
+    backlog: Math.max(0, enqueued - processed),
+    last_run_at: row?.last_run_at ?? null,
+    last_error: row?.last_error ?? null,
+    embed_ok: row?.embed_ok ?? 0,
+    embed_failed: row?.embed_failed ?? 0,
+    last_embed_error: row?.last_embed_error ?? null,
+    last_embed_at: row?.last_embed_at ?? null,
+  });
 }
 
 async function handleDlqList(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
-  const url = new URL(request.url);
-  const limit = Number(url.searchParams.get('limit') ?? '50');
-  try {
-    const result = await pullDlqMessages(creds, env.SYNC_DLQ_NAME, limit);
-    return jsonResponse(result);
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
+  const limit = Number(new URL(request.url).searchParams.get('limit') ?? '50');
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50;
+  const rows = await env.MYCO_TEAM_DB.prepare(
+    `SELECT lease_id, table_name, row_id, machine_id, operation, reason, created_at FROM team_dlq ORDER BY created_at DESC LIMIT ?`,
+  ).bind(safeLimit).all<{ lease_id: string; table_name: string; row_id: string; machine_id: string; operation: string; reason: string; created_at: number }>();
+  return jsonResponse({ messages: rows.results ?? [] });
 }
 
 async function handleDlqRetry(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
   const body = await request.json() as { lease_ids?: string[] };
-  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  const leaseIds = Array.isArray(body.lease_ids)
+    ? body.lease_ids.filter((id): id is string => typeof id === 'string')
+    : [];
   if (leaseIds.length === 0) {
     return errorResponse('lease_ids array is required', 400);
   }
-  try {
-    await retryDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
-    return jsonResponse({ retried: leaseIds.length });
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  const placeholders = leaseIds.map(() => '?').join(', ');
+  const rows = await env.MYCO_TEAM_DB.prepare(
+    `SELECT lease_id, payload FROM team_dlq WHERE lease_id IN (${placeholders})`,
+  ).bind(...leaseIds).all<{ lease_id: string; payload: string }>();
+  const found = rows.results ?? [];
+  if (found.length > 0) {
+    await sendQueueRecords(env, found.map((r) => JSON.parse(r.payload) as SyncRecord));
+    const retriedIds = found.map((r) => r.lease_id);
+    const delPlaceholders = retriedIds.map(() => '?').join(', ');
+    await env.MYCO_TEAM_DB.prepare(
+      `DELETE FROM team_dlq WHERE lease_id IN (${delPlaceholders})`,
+    ).bind(...retriedIds).run();
   }
+  return jsonResponse({ retried: found.length });
 }
 
 async function handleDlqDiscard(request: Request, env: Env): Promise<Response> {
-  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
-  if (!creds) {
-    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
-  }
   const body = await request.json() as { lease_ids?: string[] };
-  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  const leaseIds = Array.isArray(body.lease_ids)
+    ? body.lease_ids.filter((id): id is string => typeof id === 'string')
+    : [];
   if (leaseIds.length === 0) {
     return errorResponse('lease_ids array is required', 400);
   }
-  try {
-    await discardDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
-    return jsonResponse({ discarded: leaseIds.length });
-  } catch (err) {
-    return errorResponse(err instanceof Error ? err.message : String(err), 502);
-  }
-}
-
-async function handleSetCfApiToken(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as { token?: string; account_id?: string };
-  if (!body.token || !body.account_id) {
-    return errorResponse('token and account_id are required', 400);
-  }
-  await writeCfApiCredentials(env.MYCO_SECRETS, body.token, body.account_id);
-  return jsonResponse({ configured: true });
-}
-
-async function handleClearCfApiToken(env: Env): Promise<Response> {
-  await clearCfApiCredentials(env.MYCO_SECRETS);
-  return jsonResponse({ cleared: true });
+  const placeholders = leaseIds.map(() => '?').join(', ');
+  await env.MYCO_TEAM_DB.prepare(
+    `DELETE FROM team_dlq WHERE lease_id IN (${placeholders})`,
+  ).bind(...leaseIds).run();
+  return jsonResponse({ discarded: leaseIds.length });
 }
 
 async function handleCollectiveQuery(request: Request, env: Env): Promise<Response> {
@@ -1741,8 +2082,8 @@ export default {
       if (method === 'POST' && path === '/enqueue') {
         return await handleEnqueue(request, env);
       }
-      if (method === 'POST' && path === '/verify') {
-        return await handleVerify(request, env);
+      if (method === 'POST' && path === '/rebuild') {
+        return await handleRebuild(request, env);
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
@@ -1782,7 +2123,19 @@ export default {
         return await handleQueueStats(env);
       }
       if (method === 'GET' && path === '/sync-summary') {
-        return await handleSyncSummary(env);
+        return await handleSyncSummary(request, env);
+      }
+      if (method === 'GET' && path === '/members') {
+        return await handleListMembers(env);
+      }
+      // A departing machine removes its own roster row so it stops appearing
+      // as a ghost member in every teammate's view (mirrors /records/ parse).
+      if (method === 'DELETE' && path.startsWith('/members/')) {
+        const segments = path.split('/').filter(Boolean); // ['members', ':machine_id']
+        if (segments.length === 2) {
+          return await handleRemoveMember(decodeURIComponent(segments[1]), env);
+        }
+        return errorResponse('Not found', 404);
       }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);
@@ -1793,13 +2146,6 @@ export default {
       if (method === 'POST' && path === '/dlq/discard') {
         return await handleDlqDiscard(request, env);
       }
-      if (method === 'POST' && path === '/tokens/cf-api') {
-        return await handleSetCfApiToken(request, env);
-      }
-      if (method === 'DELETE' && path === '/tokens/cf-api') {
-        return await handleClearCfApiToken(env);
-      }
-
       return errorResponse('Not found', 404);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

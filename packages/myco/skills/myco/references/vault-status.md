@@ -2,7 +2,7 @@
 
 This reference guides vault health assessment. Use it whenever you need to inspect the state of the Myco vault — whether debugging a problem, responding to a user's question about their vault, or running a routine check.
 
-**Primary data source:** `node .agents/myco-cli.cjs stats`
+**Primary data source:** `myco stats`
 
 Supplement with `logs` for recent daemon activity and `myco_cortex` for Cortex/digest status.
 
@@ -13,7 +13,7 @@ Supplement with `logs` for recent daemon activity and `myco_cortex` for Cortex/d
 Run the stats command to get a snapshot of vault state:
 
 ```sh
-node .agents/myco-cli.cjs stats
+myco stats
 ```
 
 The output includes:
@@ -55,7 +55,7 @@ The daemon runs as a background HTTP process. Its state is persisted in `<vault>
 You can also restart it manually:
 
 ```sh
-node .agents/myco-cli.cjs restart
+myco restart
 ```
 
 Do not treat a stopped daemon as a vault error — it is normal between sessions. The daemon starts on demand when a session begins.
@@ -75,8 +75,8 @@ Read scoped Cortex config through the UI or config surface. The session-start to
 Use `myco_cortex` to request the tier you care about:
 
 ```sh
-node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"digest","tier":1500}'
-node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"digest","tier":5000}'
+myco tool call myco_cortex --json --input '{"op":"digest","tier":1500}'
+myco tool call myco_cortex --json --input '{"op":"digest","tier":5000}'
 ```
 
 Missing or not-ready responses mean the digest has not been generated for that tier yet or Cortex is disabled for the project.
@@ -88,13 +88,13 @@ Missing or not-ready responses mean the digest has not been generated for that t
 Test connectivity to the configured embedding provider:
 
 ```sh
-node .agents/myco-cli.cjs verify
+myco verify
 ```
 
 This reports whether the embedding provider is reachable. The Myco agent LLM is managed by the agent harness. If embedding verification fails:
 
 - Check that the provider process is running (Ollama, LM Studio, etc.)
-- Review Grove-tier embedding settings with `node .agents/myco-cli.cjs setup-llm --show`
+- Review Grove-tier embedding settings with `myco setup-llm --show`
 - Re-run configuration with `setup-llm`
 
 ---
@@ -119,7 +119,7 @@ Report all issues found, or "None found." if the vault is clean.
 View recent daemon log output:
 
 ```sh
-node .agents/myco-cli.cjs logs -n 20
+myco logs -n 20
 ```
 
 This shows the last 20 lines of daemon logs — useful for spotting errors, slow processing, or repeated failures.
@@ -198,8 +198,8 @@ Lineage tracks parent-child relationships between sessions. A high count of `sem
 
 | Issue | Action |
 |-------|--------|
-| Daemon not running | Will auto-start on next session; or run `node .agents/myco-cli.cjs restart` |
+| Daemon not running | Will auto-start on next session; or run `myco restart` |
 | Stale buffers | Check if LLM provider was down during those sessions; events will process on next daemon start |
-| Missing index | Run `node .agents/myco-cli.cjs rebuild` to regenerate FTS and vector indexes |
+| Missing index | Run `myco rebuild` to regenerate FTS and vector indexes |
 | Provider unreachable | Ensure the provider is running (e.g., `ollama serve`); verify model name in `myco.yaml`; reconfigure with CLI commands |
 | Config version < 2 | Run `myco update` to migrate the vault configuration |

@@ -36,11 +36,11 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* 1. Grove credentials */}
+      {/* 1. Team credentials */}
       <Panel
         tone="sage"
-        eyebrow={<IconEyebrow Icon={Key}>Grove Credentials</IconEyebrow>}
-        title="Share these to add a machine"
+        eyebrow={<IconEyebrow Icon={Key}>Team Credentials</IconEyebrow>}
+        title="Worker credentials"
         actions={
           <Button variant="ghost" size="sm" disabled title="Coming soon">
             <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
@@ -49,7 +49,10 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         }
       >
         <p className="text-xs text-on-surface-variant m-0 mb-3">
-          Use these to add a machine to this Grove team. The Team key is sensitive — share only with people who should write to this Grove.
+          These credentials belong to the registered Team worker for{' '}
+          <span className="text-on-surface font-medium">{status.grove?.name ?? 'this Grove'}</span>.
+          Keep the Team key private because it authorizes writes to the worker.{' '}
+          Share the Worker URL and Team key out-of-band with a teammate so they can <span className="text-on-surface font-medium">Join</span> this team on their Teams tab.
         </p>
         <div className="flex flex-col gap-3">
           {status.worker_url && <CopyableField label="Worker URL" value={status.worker_url} />}
@@ -86,16 +89,14 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
             <RedactedField label="MCP Access Token" value={status.mcp_token} />
           </div>
 
-          <details className="text-xs mt-3">
-            <summary
-              onClick={(e) => {
-                e.preventDefault();
-                setShowMcpSnippet(!showMcpSnippet);
-              }}
-              className="myco-eyebrow-sm text-on-surface-variant cursor-pointer hover:text-on-surface transition-colors list-none"
+          <div className="text-xs mt-3">
+            <button
+              type="button"
+              onClick={() => setShowMcpSnippet(!showMcpSnippet)}
+              className="myco-eyebrow-sm text-on-surface-variant cursor-pointer hover:text-on-surface transition-colors"
             >
               {showMcpSnippet ? 'Hide snippet' : 'Config snippet'}
-            </summary>
+            </button>
             {showMcpSnippet && (() => {
               const snippet = JSON.stringify({
                 mcp_servers: [{
@@ -119,7 +120,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
                 </div>
               );
             })()}
-          </details>
+          </div>
         </Panel>
       )}
 
@@ -130,19 +131,19 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         title="Identity of this machine in the team"
       >
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Eyebrow size="sm">Machine ID</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.machine_id}</code>
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Eyebrow size="sm">Package version</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.package_version}</code>
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Eyebrow size="sm">Protocol version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.sync_protocol_version}</code>
           </div>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <Eyebrow size="sm">Schema version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.schema_version}</code>
           </div>
@@ -167,31 +168,31 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
           <div className="flex flex-col gap-3">
             <div className="grid gap-3 sm:grid-cols-2">
               {status.collective_url && (
-                <div className="space-y-1">
+                <div className="flex flex-col gap-1">
                   <Eyebrow size="sm">URL</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_url}</code>
                 </div>
               )}
               {status.collective_project_id && (
-                <div className="space-y-1">
+                <div className="flex flex-col gap-1">
                   <Eyebrow size="sm">Project ID</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_project_id}</code>
                 </div>
               )}
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 <Eyebrow size="sm">Last settings sync</Eyebrow>
                 <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_settings_sync ? new Date(status.collective_last_settings_sync * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 <Eyebrow size="sm">Last heartbeat</Eyebrow>
                 <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_heartbeat ? new Date(status.collective_last_heartbeat * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
             </div>
-            <div className="space-y-1">
+            <div className="flex flex-col gap-1">
               <Eyebrow size="sm">Capabilities</Eyebrow>
               <div className="flex flex-wrap gap-2">
                 {status.collective_capabilities.map((capability) => (
@@ -199,7 +200,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
                 ))}
               </div>
             </div>
-            <div className="space-y-1">
+            <div className="flex flex-col gap-1">
               <Eyebrow size="sm">Effective overrides</Eyebrow>
               <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
                 {JSON.stringify(status.collective_settings, null, 2)}

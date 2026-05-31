@@ -1,4 +1,4 @@
-import { createHookDaemonClient } from './client.js';
+import { captureCriticalEvent } from './send-event.js';
 import { readHookInput } from './input.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
@@ -31,19 +31,35 @@ export async function main() {
     symbiont = input.agent;
     if (!input.sessionId) return;
 
-    const client = createHookDaemonClient(VAULT_DIR, { sessionId: input.sessionId });
-
-    await client.ensureRunning({ checkStale: false });
-
-    // Pass transcript_path and last_assistant_message from the active agent.
-    // These are provided by the hook system and eliminate the need to
-    // scan directories or mine the transcript for the AI response.
-    await client.capturePost('/events/stop', {
-      session_id: input.sessionId,
-      agent: input.agent,
-      transcript_path: input.transcriptPath,
-      last_assistant_message: input.lastResponse,
-      phases: parsePhasesArg(),
+    // The Stop event carries the turn's assistant response (last_assistant_message)
+    // and triggers transcript mining. It's the single capture-critical event that
+    // historically had no buffer fallback, so a daemon down/restarting at Stop time
+    // silently dropped the whole turn's response. Route through the shared
+    // capture-critical path so it buffers on failure and reconcileBufferBatches
+    // replays it (reconciliation.ts `type:'stop'`, idempotent — only sets
+    // response_summary while NULL). `bufferEvent: null` when there's no response
+    // to recover, so an empty stop never writes a no-op buffer row.
+    const summary = typeof input.lastResponse === 'string' ? input.lastResponse.trim() : '';
+    await captureCriticalEvent({
+      vaultDir: VAULT_DIR,
+      sessionId: input.sessionId,
+      hookName: 'stop',
+      endpoint: '/events/stop',
+      postBody: {
+        session_id: input.sessionId,
+        agent: input.agent,
+        transcript_path: input.transcriptPath,
+        last_assistant_message: input.lastResponse,
+        phases: parsePhasesArg(),
+      },
+      bufferEvent: summary
+        ? {
+            type: 'stop',
+            last_assistant_message: input.lastResponse,
+            transcript_path: input.transcriptPath,
+            agent: input.agent,
+          }
+        : null,
     });
   } catch (error) {
     process.stderr.write(`[myco] stop error: ${(error as Error).message}\n`);

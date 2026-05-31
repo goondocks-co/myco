@@ -16,7 +16,7 @@ Myco captures project memory in a local vault and serves it back through context
 - In git worktrees, prefer not to restart the daemon. Shared vault capture continuity is more valuable than forcing daemon restarts during isolated testing.
 - If a worktree must restart for debugging, run the local CLI entry (`node packages/myco/dist/src/cli.js restart`) from that worktree; avoid global `myco-dev restart` from worktrees.
 - Use `make dev-link` only from the main checkout; it rewrites shared `~/.local/bin/myco-*` symlinks.
-- In git worktrees, use `make dev-link-worktree`; it writes a worktree-local `.myco/runtime.command` directly to that worktree's compiled binary without changing shared symlinks. Hook capture still routes through the main checkout runtime so data collection stays attached to the main vault.
+- In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks, MCP, and CLI then route to the worktree build; capture still attaches to the main project vault via `git-common-dir`. See the `dogfood-worktree` skill for caveats (shared-vault schema hazard, vendor-asset build gotcha).
 - `make dev-unlink` removes shared dev symlinks and `.myco/runtime.command`; `make dev-unlink-worktree` removes only the worktree runtime pin.
 
 ## Core Invariants
@@ -133,5 +133,5 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 - When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.
 - Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
-- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'` as the project-resolved CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.
+- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call `myco tool call myco_cortex --json --input '{"op":"canopy_map"}'` as the CLI path, or `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.
 <!-- myco:managed:end -->

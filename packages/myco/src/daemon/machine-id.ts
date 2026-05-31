@@ -27,6 +27,35 @@ const LEGACY_MACHINE_ID_FILE = 'machine_id';
 const FALLBACK_GITHUB_USER = 'local';
 
 /**
+ * Timeout for the best-effort `gh` username lookup during id generation.
+ *
+ * The username is only a cosmetic prefix on the machine id; the id's
+ * stability comes from the persisted `~/.myco/machine_id` file and the
+ * deterministic machine hash, NOT from `gh`. Generation only happens on a
+ * cold module cache AND an absent id file, and it now sits on the
+ * synchronous synced-write path (`syncRow` → `getTeamMachineId` →
+ * `getMachineId`) for processes that never ran `initTeamContext`
+ * (MCP server, agent subprocess). A long `gh` timeout there would stall
+ * the first synced write. Bound it tightly so a slow/hung/unauthenticated
+ * `gh` falls back to FALLBACK_GITHUB_USER fast instead of blocking the
+ * write path. The persisted id is unaffected once written.
+ */
+const GH_USER_TIMEOUT_MS = 1500;
+
+/** Module-level cache — set on first getMachineId() call, never cleared. */
+let cachedMachineId: string | undefined;
+
+/**
+ * Reset the in-memory machine ID cache.
+ *
+ * Test-only — call in beforeEach to restore per-test filesystem isolation
+ * when MYCO_HOME is redirected to a temp directory between tests.
+ */
+export function resetMachineIdCache(): void {
+  cachedMachineId = undefined;
+}
+
+/**
  * Compute a deterministic machine hash from hostname + homedir.
  *
  * Returns the first MACHINE_HASH_LENGTH hex chars of the SHA-256 digest.
@@ -38,18 +67,34 @@ export function computeMachineHash(): string {
 }
 
 /**
+ * Invoke `gh api user --jq .login` and return the raw stdout. Bounded by
+ * GH_USER_TIMEOUT_MS so a slow/hung `gh` can't stall the synced-write path.
+ *
+ * Seam: the optional `run` parameter lets tests drive both the present and
+ * absent/error branches deterministically without invoking the real `gh`
+ * binary (which is otherwise flaky under full-suite contention). Production
+ * call sites pass nothing and get the real `execFileSync`.
+ */
+export type GhRunner = () => string;
+
+const defaultGhRunner: GhRunner = () =>
+  execFileSync('gh', ['api', 'user', '--jq', '.login'], {
+    encoding: 'utf-8',
+    timeout: GH_USER_TIMEOUT_MS,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+/**
  * Resolve the current GitHub username via the `gh` CLI.
  *
- * Returns FALLBACK_GITHUB_USER if `gh` is not installed or not authenticated.
+ * Returns FALLBACK_GITHUB_USER if `gh` is not installed, not authenticated,
+ * times out, or returns an empty login. This value is only a cosmetic prefix
+ * on the machine id — the id's stability comes from the persisted file and the
+ * deterministic hash, so a fallback here never corrupts an existing identity.
  */
-export function resolveGitHubUser(): string {
+export function resolveGitHubUser(run: GhRunner = defaultGhRunner): string {
   try {
-    const output = execFileSync('gh', ['api', 'user', '--jq', '.login'], {
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const login = output.trim();
+    const login = run().trim();
     return login.length > 0 ? login : FALLBACK_GITHUB_USER;
   } catch {
     return FALLBACK_GITHUB_USER;
@@ -65,12 +110,20 @@ export function resolveGitHubUser(): string {
  * @returns the machine ID string
  */
 export function getMachineId(): string {
+  // Return the in-memory cached value — avoids a filesystem read per row-insert
+  // (getTeamMachineId() delegates here on every synced write when no explicit
+  // context has been initialised, so this path can be hot).
+  if (cachedMachineId !== undefined) return cachedMachineId;
+
   const cachePath = resolveMachineIdPath();
 
   // Read from global cache if present.
   try {
-    const cached = fs.readFileSync(cachePath, 'utf-8').trim();
-    if (cached.length > 0) return cached;
+    const persisted = fs.readFileSync(cachePath, 'utf-8').trim();
+    if (persisted.length > 0) {
+      cachedMachineId = persisted;
+      return cachedMachineId;
+    }
   } catch {
     // Global cache missing — fall through to generate.
   }
@@ -79,11 +132,12 @@ export function getMachineId(): string {
   const machineHash = computeMachineHash();
   const machineId = `${githubUser}_${machineHash}`;
 
-  // Cache for future calls.
+  // Persist for future process startups.
   fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, machineId, 'utf-8');
 
-  return machineId;
+  cachedMachineId = machineId;
+  return cachedMachineId;
 }
 
 /**
