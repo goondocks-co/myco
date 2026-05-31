@@ -27,7 +27,7 @@ import {
   extractTaggedPlans,
   type PlanWatchConfig,
 } from '@myco/daemon/plan-capture.js';
-import { buildPathPlanLogicalKey } from '@myco/plans/identity.js';
+import { buildPathPlanLogicalKey, buildFilePlanLogicalKey } from '@myco/plans/identity.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
@@ -289,7 +289,7 @@ describe('capturePlan', () => {
     });
 
     expect(result.id).toHaveLength(16);
-    expect(result.logical_key).toBe('path:/home/user/myproject/docs/plans/sprint.md');
+    expect(result.logical_key).toBe(`session:${sessionId}:file:/home/user/myproject/docs/plans/sprint.md`);
     expect(result.title).toBe('Sprint Plan');
     expect(result.content).toBe('# Sprint Plan\n\nThis is the plan.');
     expect(result.source_path).toBe('/home/user/myproject/docs/plans/sprint.md');
@@ -298,6 +298,20 @@ describe('capturePlan', () => {
     expect(result.content_hash).toBeTruthy();
     expect(result.status).toBe('active');
     expect(result.embedded).toBe(0);
+  });
+
+  it('keys a captured file plan under the session-scoped file namespace', () => {
+    const sessionId = 'test-capture-plan-file-key';
+    const now = epochNow();
+    upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+    const result = capturePlan({
+      sourcePath: 'docs/plans/alpha.md',
+      projectRoot: '/tmp/project',
+      content: '# Alpha',
+      sessionId,
+    });
+    expect(result.logical_key).toBe(buildFilePlanLogicalKey(sessionId, 'docs/plans/alpha.md'));
+    expect(result.source_path).toBe('docs/plans/alpha.md');
   });
 
   it('stores the plan in the database', () => {
@@ -533,7 +547,7 @@ describe('capturePlan', () => {
     persistPlan({
       sessionId,
       content: '# Sprint\n\nInitial content.',
-      logicalKey: buildPathPlanLogicalKey(sourcePath),
+      logicalKey: buildFilePlanLogicalKey(sessionId, sourcePath),
       sourcePath,
       status: 'completed',
     });

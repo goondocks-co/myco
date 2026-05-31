@@ -9,8 +9,12 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
+import { getPlan } from '@myco/db/queries/plans.js';
+import { recordPlanSessionTouch } from '@myco/db/queries/lineage.js';
+import { EDGE_TYPE_PLAN_REFERENCED, EDGE_TYPE_PLAN_ADVANCED } from '@myco/constants.js';
 import {
   filesystemRootFromRequestContext,
+  projectScopeFromRequestContext,
   requestContextHeaders,
   resolveRequestContextForVault,
   type MycoRequestContext,
@@ -108,6 +112,16 @@ export async function handleMycoPlans(
     if (!result.ok) return { ok: false, error: result.message };
 
     const row = result.plan;
+    // An update by id from a session other than the creator is a deliberate
+    // cross-session interaction — record it as lineage (best-effort, no-op when
+    // the caller is the creating session).
+    if (input.id) {
+      recordPlanSessionTouch(
+        { id: row.id, project_id: row.project_id, session_id: row.session_id },
+        context.sessionId,
+        EDGE_TYPE_PLAN_ADVANCED,
+      );
+    }
     return {
       ok: true,
       id: row.id,
@@ -148,6 +162,17 @@ export async function handleMycoPlans(
     const result = listPlansForMcp({ id: input.id, requestContext: context });
     if (!result.ok) return { ok: false, error: result.message };
     if (!result.plans.length) return { ok: false, error: 'Plan not found' };
+    // A deliberate retrieval from a session other than the creator informs that
+    // session — record it as lineage. The MCP summary lacks session_id, so read
+    // the row for the creator/project. Best-effort; never blocks the get.
+    const row = getPlan(input.id, projectScopeFromRequestContext(context));
+    if (row) {
+      recordPlanSessionTouch(
+        { id: row.id, project_id: row.project_id, session_id: row.session_id },
+        context.sessionId,
+        EDGE_TYPE_PLAN_REFERENCED,
+      );
+    }
     return result.plans[0];
   }
 

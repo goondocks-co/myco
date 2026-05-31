@@ -148,10 +148,13 @@ export function upsertPlan(data: PlanInsert): PlanRow {
   const existing = getPlanByLogicalKey(data.logical_key, scope);
 
   if (existing) {
+    // A found row is matched by logical_key; its id is a stable, opaque handle
+    // (lineage edges, team-sync D1 rows reference it) and is NOT re-homed to the
+    // incoming data.id. This keeps id stable across re-writes even when the
+    // caller recomputes an id from a key the row was re-keyed onto by migration.
     db.prepare(
       `UPDATE plans
-          SET id              = ?,
-              status          = ?,
+          SET status          = ?,
               author          = ?,
               title           = ?,
               content         = ?,
@@ -168,7 +171,6 @@ export function upsertPlan(data: PlanInsert): PlanRow {
               END
         WHERE id = ?`,
     ).run(
-      data.id,
       data.status ?? DEFAULT_STATUS,
       data.author ?? null,
       data.title ?? null,
@@ -184,7 +186,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
       existing.id,
     );
 
-    const row = getPlan(data.id, scope);
+    const row = getPlan(existing.id, scope);
     if (!row) throw new Error(`Plan upsert failed for logical key: ${data.logical_key}`);
     syncRow('plans', row);
     return row;
