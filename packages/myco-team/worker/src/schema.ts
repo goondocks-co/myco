@@ -290,7 +290,7 @@ const TEAM_MEMBERS_TABLE = `
   CREATE TABLE IF NOT EXISTS team_members (
     id          TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
-    "user"      TEXT NOT NULL,
+    "user"      TEXT NOT NULL DEFAULT '',
     role        TEXT,
     joined      TEXT,
     tags        TEXT,

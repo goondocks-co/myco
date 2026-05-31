@@ -23,6 +23,8 @@ const getConfigCalls: string[] = [];
 const putConfigCalls: Array<{ url: string; config: Record<string, string> }> = [];
 // Drives whether getConfig() reports an already-provisioned team_name.
 let getConfigReturnsName = false;
+// Drives whether getConfig() reports the worker-authoritative team_id.
+let getConfigTeamId: string | null = null;
 
 const setTeamSyncEnabledMock = vi.fn();
 
@@ -51,7 +53,10 @@ mock.module('@myco/daemon/team-sync.js', () => ({
     };
     getConfig = async () => {
       getConfigCalls.push(this.workerUrl);
-      return { config: getConfigReturnsName ? { team_name: 'Existing Team' } : {} };
+      const config: Record<string, string> = {};
+      if (getConfigReturnsName) config.team_name = 'Existing Team';
+      if (getConfigTeamId) config.team_id = getConfigTeamId;
+      return { config };
     };
     putConfig = async (config: Record<string, string>) => {
       putConfigCalls.push({ url: this.workerUrl, config });
@@ -97,6 +102,7 @@ describe('team-sync READ path + MCP token from the registry', () => {
     getConfigCalls.length = 0;
     putConfigCalls.length = 0;
     getConfigReturnsName = false;
+    getConfigTeamId = null;
     setTeamSyncEnabledMock.mockReset();
   });
 
@@ -203,13 +209,16 @@ describe('team-sync READ path + MCP token from the registry', () => {
     expect(rotateCalls).toEqual([team.worker_url]);
     expect(teamRegistry.readSecrets(team.team_id, mycoHome)[TEAM_MCP_TOKEN_SECRET])
       .toBe(`rotated-token-for-${team.worker_url}`);
-    // /config was seeded with the team name + embedding config.
-    expect(putConfigCalls).toHaveLength(1);
-    expect(putConfigCalls[0].config).toMatchObject({
-      team_name: 'Team Alpha',
-      embedding_model: '@cf/baai/bge-m3',
-      embedding_dimensions: '1024',
-    });
+    // /config was seeded with both the worker-authoritative team_id and the
+    // team name + embedding config — one PUT body per missing key group.
+    expect(putConfigCalls).toHaveLength(2);
+    const configs = putConfigCalls.map((c) => c.config);
+    expect(configs.some((c) => c.team_id === team.team_id)).toBe(true);
+    expect(configs.some((c) =>
+      c.team_name === 'Team Alpha'
+      && c.embedding_model === '@cf/baai/bge-m3'
+      && c.embedding_dimensions === '1024',
+    )).toBe(true);
 
     cache.closeAll();
   });
@@ -219,9 +228,11 @@ describe('team-sync READ path + MCP token from the registry', () => {
     ensureGroveDatabase(grove.id, mycoHome);
     const cache = new GroveRuntimeCache();
     const projectId = createProjectId();
-    // Token already present + config already provisioned → fully idempotent.
-    registerTeam('Team Alpha', grove, projectId, { mcpToken: 'already-here' });
+    // Token already present + config already provisioned (team_name AND the
+    // worker-authoritative team_id) → fully idempotent, nothing re-seeded.
+    const provisioned = registerTeam('Team Alpha', grove, projectId, { mcpToken: 'already-here' });
     getConfigReturnsName = true;
+    getConfigTeamId = provisioned.team_id;
 
     const groveDbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
     withDatabase(cache.getDatabase(groveDbPath), () => {
