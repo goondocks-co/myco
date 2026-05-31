@@ -58,10 +58,11 @@ export interface TeamStatusResponse {
   worker_min_client_version: number | null;
 }
 
-export function useTeamStatus() {
+export function useTeamStatus(teamId?: string) {
+  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
   return usePowerQuery<TeamStatusResponse>({
-    queryKey: ['team-status'],
-    queryFn: ({ signal }) => fetchJson<TeamStatusResponse>('/team/status', { signal }),
+    queryKey: ['team-status', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<TeamStatusResponse>(`/team/status${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.STATS,
     pollCategory: 'standard',
   });
@@ -151,11 +152,12 @@ export interface TeamSyncSummaryResponse {
   total_delta: number;
 }
 
-export function useTeamQueueStats(enabled: boolean) {
+export function useTeamQueueStats(enabled: boolean, teamId?: string) {
   // keepPreviousData prevents the UI from flashing the empty state on refetch.
+  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
   return usePowerQuery<QueueStatsResponse>({
-    queryKey: ['team-queue-stats'],
-    queryFn: ({ signal }) => fetchJson<QueueStatsResponse>('/team/queue-stats', { signal }),
+    queryKey: ['team-queue-stats', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<QueueStatsResponse>(`/team/queue-stats${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
@@ -163,10 +165,11 @@ export function useTeamQueueStats(enabled: boolean) {
   });
 }
 
-export function useTeamSyncSummary(enabled: boolean) {
+export function useTeamSyncSummary(enabled: boolean, teamId?: string) {
+  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
   return usePowerQuery<TeamSyncSummaryResponse>({
-    queryKey: ['team-sync-summary'],
-    queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>('/team/sync-summary', { signal }),
+    queryKey: ['team-sync-summary', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>(`/team/sync-summary${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
@@ -174,10 +177,11 @@ export function useTeamSyncSummary(enabled: boolean) {
   });
 }
 
-export function useTeamDlq(enabled: boolean) {
+export function useTeamDlq(enabled: boolean, teamId?: string) {
+  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
   return usePowerQuery<DlqListResponse>({
-    queryKey: ['team-dlq'],
-    queryFn: ({ signal }) => fetchJson<DlqListResponse>('/team/dlq', { signal }),
+    queryKey: ['team-dlq', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<DlqListResponse>(`/team/dlq${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
@@ -252,6 +256,31 @@ export function useSetProjectMembership() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['team-registry'] });
       qc.invalidateQueries({ queryKey: ['team-projects'] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Team join
+// ---------------------------------------------------------------------------
+
+export interface JoinTeamBody {
+  worker_url: string;
+  team_key: string;
+}
+
+export interface JoinTeamResponse {
+  team: TeamRegistryRecord;
+}
+
+export function useJoinTeam() {
+  const qc = useQueryClient();
+  return useMutation<JoinTeamResponse, Error, JoinTeamBody>({
+    mutationFn: (body) => postJson<JoinTeamResponse>('/team/join', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+      qc.invalidateQueries({ queryKey: ['team-status'] });
     },
   });
 }
