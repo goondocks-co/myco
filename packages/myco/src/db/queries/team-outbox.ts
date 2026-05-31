@@ -346,6 +346,23 @@ export function countPending(): number {
 }
 
 /**
+ * Count pending (unsent) outbox rows whose project routes to the given set.
+ * Used for the team-scoped Status/Sync pending number. Machine-scoped rows
+ * (null project_id, e.g. team_members) are excluded — they are not
+ * project-attributable and fan out to all participating teams.
+ */
+export function countPendingForProjects(projectIds: string[]): number {
+  if (projectIds.length === 0) return 0;
+  const db = getDatabase();
+  const placeholders = projectIds.map(() => '?').join(', ');
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM team_outbox
+      WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
+  ).get(...projectIds) as { count: number };
+  return row.count;
+}
+
+/**
  * Per-table breakdown of pending (unsent) outbox records. Used by the
  * disable-time purge so the daemon can log what's being dropped without
  * the operator having to query SQLite themselves.

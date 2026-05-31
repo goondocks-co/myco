@@ -11,6 +11,7 @@ import {
   markSent,
   pruneOld,
   countPending,
+  countPendingForProjects,
   discardRows,
   backfillAll,
   backfillAllForRebuild,
@@ -325,6 +326,22 @@ describe('team outbox query helpers', () => {
 
       enqueueOutbox(makeOutbox());
       expect(countPending()).toBe(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // countPendingForProjects
+  // ---------------------------------------------------------------------------
+
+  describe('countPendingForProjects', () => {
+    it('counts only unsent rows for the given projects', () => {
+      enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's1', project_id: 'proj_a' }));
+      enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's2', project_id: 'proj_b' }));
+      enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's3', project_id: null }));
+
+      expect(countPendingForProjects(['proj_a'])).toBe(1);
+      expect(countPendingForProjects(['proj_a', 'proj_b'])).toBe(2);
+      expect(countPendingForProjects([])).toBe(0);
     });
   });
 
