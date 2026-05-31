@@ -140,7 +140,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_PLANS,
-    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with content and exactly one of source_path or plan_key, or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to "active". op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
+    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to "active". op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -148,7 +148,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "list" before creating a new plan or spec, or when existing plans may already cover the work. Use op: "get" to read relevant plans in full. Use op: "save" when you create or materially revise a plan, and pass status: "in_progress" when you start working through it so the Sessions UI surfaces it as the active plan. Mark it status: "completed" (or "abandoned") when the work concludes. Plans default to status: "active" — that means written-but-not-yet-executing; "in_progress" means execution has begun.',
+      guidance: 'Use op: "list" before creating a new plan or spec, or when existing plans may already cover the work. Use op: "get" with a plan id to read a specific plan in full — including picking up a plan created in an earlier session by its id. Use op: "save" when you create or materially revise a plan, and pass status: "in_progress" when you start working through it so the Sessions UI surfaces it as the active plan; mark it status: "completed" (or "abandoned") when the work concludes. To update an existing plan (status or content) from any session, call op: "save" with its id. Plans default to status: "active" — that means written-but-not-yet-executing; "in_progress" means execution has begun.',
       priority: 50,
     },
     inputSchema: {

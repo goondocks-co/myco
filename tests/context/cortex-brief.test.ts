@@ -65,6 +65,16 @@ describe('buildRetrievalGuidanceLines', () => {
     expect(lines.join('\n')).not.toContain('`myco_skills`');
   });
 
+  it('teaches cross-session plan pickup by id in the myco_plans guidance', () => {
+    const text = buildRetrievalGuidanceLines({
+      teamEnabled: false,
+      collectiveConnected: false,
+      collectiveCapabilities: [],
+    }).join('\n');
+    expect(text).toContain('op: "get"');
+    expect(text).toContain('earlier session');
+  });
+
   it('filters team and collective guidance by runtime capabilities', () => {
     const lines = buildRetrievalGuidanceLines({
       teamEnabled: false,
