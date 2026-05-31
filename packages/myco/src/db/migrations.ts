@@ -115,6 +115,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 51, migrate: (db) => migrateV50ToV51(db) },
   { version: 52, migrate: (db, machineId) => migrateV51ToV52(db, machineId) },
   { version: 53, migrate: (db) => migrateV52ToV53(db) },
+  { version: 54, migrate: (db) => migrateV53ToV54(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3309,6 +3310,32 @@ function migrateV52ToV53(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(53, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+function migrateV53ToV54(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // Unify plan identity. The file-sweep intake historically keyed plans in the
+    // session-independent `path:<path>` namespace, while tool and transcript
+    // intakes used `session:<sid>:key|tag:<token>`. Re-key the sweep rows onto the
+    // shared session-scoped structure `session:<sid>:file:<path>`. `source_path`
+    // already holds the path as metadata; only the identity string changes. The
+    // row `id` is intentionally left untouched so existing references stay valid.
+    // Session-less rows fall back to a sentinel segment.
+    db.prepare(
+      `UPDATE plans
+          SET logical_key = 'session:' || COALESCE(session_id, '__no_session__') || ':file:' || substr(logical_key, 6)
+        WHERE logical_key LIKE 'path:%'`,
+    ).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(54, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
