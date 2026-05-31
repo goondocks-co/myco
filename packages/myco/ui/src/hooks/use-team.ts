@@ -51,6 +51,10 @@ export interface TeamStatusResponse {
   mcp_token: string | null;
   mcp_endpoint: string | null;
   mcp_healthy: boolean;
+  version_status: 'ok' | 'client_too_old' | 'worker_too_old' | 'unknown';
+  daemon_protocol_version: number;
+  worker_protocol_version: number | null;
+  worker_min_client_version: number | null;
 }
 
 export function useTeamStatus() {

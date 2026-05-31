@@ -43,6 +43,10 @@ const statusFixture = {
   mcp_token: null,
   mcp_endpoint: null,
   mcp_healthy: false,
+  version_status: 'ok' as const,
+  daemon_protocol_version: 2,
+  worker_protocol_version: 2,
+  worker_min_client_version: 1,
 };
 
 mock.module('../../packages/myco/ui/src/hooks/use-team', () => ({

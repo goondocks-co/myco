@@ -32,7 +32,7 @@ import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
-import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse } from '../team-sync.js';
+import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse, type VersionCompat } from '../team-sync.js';
 import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -503,6 +503,14 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       }
     }
 
+    // Sync-protocol compatibility. health() above populates the client's
+    // advertised worker bounds; getVersionCompat() reports 'unknown' until a
+    // probe succeeds (so a failed health() naturally yields 'unknown'). The UI
+    // surfaces 'client_too_old' as an actionable "run myco update" prompt.
+    const versionStatus: VersionCompat = client && participates
+      ? client.getVersionCompat()
+      : 'unknown';
+
     let pendingCount = 0;
     try {
       pendingCount = countPending();
@@ -587,6 +595,10 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
         min_compat_client_version: MIN_COMPAT_CLIENT_VERSION,
+        version_status: versionStatus,
+        daemon_protocol_version: SYNC_PROTOCOL_VERSION,
+        worker_protocol_version: client?.getWorkerProtocolVersion() ?? null,
+        worker_min_client_version: client?.getWorkerMinClientVersion() ?? null,
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
         mcp_healthy: healthy && workerHasMcpToken,

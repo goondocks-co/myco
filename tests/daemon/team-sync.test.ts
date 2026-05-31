@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import { TeamSyncClient, computeVersionCompat } from '@myco/daemon/team-sync.js';
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 import {
   initTeamContext,
@@ -62,6 +62,50 @@ function makeOutboxRow(overrides: Partial<OutboxRow> = {}): OutboxRow {
 }
 
 // ---------------------------------------------------------------------------
+// computeVersionCompat (pure helper)
+// ---------------------------------------------------------------------------
+
+describe('computeVersionCompat', () => {
+  it('returns "unknown" when the worker protocol has not been probed', () => {
+    expect(computeVersionCompat(2, undefined, undefined)).toBe('unknown');
+    // minClient present but protocol absent → still unknown (bounds not probed).
+    expect(computeVersionCompat(2, undefined, 1)).toBe('unknown');
+  });
+
+  it('returns "client_too_old" when the daemon is below the worker floor', () => {
+    expect(computeVersionCompat(1, 3, 2)).toBe('client_too_old');
+  });
+
+  it('returns "worker_too_old" when the daemon is ahead of the worker protocol', () => {
+    // No floor advertised; daemon (3) > worker protocol (2).
+    expect(computeVersionCompat(3, 2, undefined)).toBe('worker_too_old');
+    // Floor satisfied but daemon still ahead of the worker's own protocol.
+    expect(computeVersionCompat(3, 2, 1)).toBe('worker_too_old');
+  });
+
+  it('returns "ok" when the daemon is within the worker window', () => {
+    expect(computeVersionCompat(2, 2, 1)).toBe('ok');
+    expect(computeVersionCompat(2, 3, 1)).toBe('ok');
+  });
+
+  it('treats the floor as inclusive: daemon == minClient is ok', () => {
+    expect(computeVersionCompat(2, 3, 2)).toBe('ok');
+  });
+
+  it('treats the ceiling as inclusive: daemon == workerProtocol is ok', () => {
+    expect(computeVersionCompat(2, 2, undefined)).toBe('ok');
+    expect(computeVersionCompat(2, 2, 1)).toBe('ok');
+  });
+
+  it('prefers client_too_old over worker_too_old when both could apply', () => {
+    // daemon below floor takes precedence (it can never be ahead of the worker
+    // protocol while also below the floor, but the ordering is asserted to lock
+    // the contract).
+    expect(computeVersionCompat(0, 2, 1)).toBe('client_too_old');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TeamSyncClient
 // ---------------------------------------------------------------------------
 
@@ -117,6 +161,61 @@ describe('TeamSyncClient', () => {
 
       const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
       await expect(client.health()).rejects.toThrow(/Health check failed: 503/);
+    });
+
+    it('captures the worker advertised bounds and exposes version compat', async () => {
+      const mockFetch = createMockFetch({
+        '/health': {
+          status: 200,
+          // Worker speaks protocol 3, floors clients at 2. This daemon is
+          // pinned at protocol 1 (baseOptions.syncProtocolVersion) → too old.
+          body: { status: 'ok', node_count: 1, sync_protocol_version: 3, min_compat_client_version: 2 },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      // Before any probe, bounds are unknown.
+      expect(client.getWorkerProtocolVersion()).toBeUndefined();
+      expect(client.getWorkerMinClientVersion()).toBeUndefined();
+      expect(client.getVersionCompat()).toBe('unknown');
+
+      await client.health();
+
+      expect(client.getWorkerProtocolVersion()).toBe(3);
+      expect(client.getWorkerMinClientVersion()).toBe(2);
+      expect(client.getVersionCompat()).toBe('client_too_old');
+    });
+
+    it('reports "ok" when the daemon is within the worker window', async () => {
+      const mockFetch = createMockFetch({
+        '/health': {
+          status: 200,
+          body: { status: 'ok', node_count: 1, sync_protocol_version: 2, min_compat_client_version: 1 },
+        },
+      });
+      // Daemon at protocol 2, within [1, 2].
+      const client = new TeamSyncClient({ ...baseOptions, syncProtocolVersion: 2, fetch: mockFetch });
+      await client.health();
+      expect(client.getVersionCompat()).toBe('ok');
+    });
+  });
+
+  describe('connect captures version bounds', () => {
+    it('stores the worker bounds advertised on /connect', async () => {
+      const mockFetch = createMockFetch({
+        '/connect': {
+          status: 200,
+          body: { config: {}, sync_protocol_version: 3, min_compat_client_version: 2 },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      await client.connect({ machine_id: 'test_abc123' });
+
+      expect(client.getWorkerProtocolVersion()).toBe(3);
+      expect(client.getWorkerMinClientVersion()).toBe(2);
+      // baseOptions.syncProtocolVersion === 1 < floor 2 → too old.
+      expect(client.getVersionCompat()).toBe('client_too_old');
     });
   });
 

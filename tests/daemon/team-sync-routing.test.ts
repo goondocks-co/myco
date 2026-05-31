@@ -26,17 +26,58 @@ import { vi } from '../helpers/vi-shim.js';
 const enqueueByTeam = new Map<string, Array<{ table_name: string; row_id: string }>>();
 const setTeamSyncEnabledMock = vi.fn();
 
+// Per-team-tag worker bounds for the version-floor drain-gate tests. When a
+// tag has an entry here the mock client's health() resolves with those bounds
+// and getVersionCompat() derives from them (daemon protocol pinned at 2). Tags
+// with no entry behave like the legacy mock: health() is absent, so the drain
+// gate's try/catch yields 'unknown' and the row drains normally.
+const workerBoundsByTag = new Map<string, { protocol: number; minClient?: number }>();
+// Counts health() probes per tag so the TTL-cache assertion can verify a
+// second flush within the TTL window does not re-probe.
+const healthCallsByTag = new Map<string, number>();
+const DAEMON_PROTOCOL = 2;
+
+function computeCompat(protocol: number | undefined, minClient: number | undefined): string {
+  if (protocol == null) return 'unknown';
+  if (minClient != null && DAEMON_PROTOCOL < minClient) return 'client_too_old';
+  if (DAEMON_PROTOCOL > protocol) return 'worker_too_old';
+  return 'ok';
+}
+
 // Mock the per-team client. getOrBuildTeamClient constructs this with the
 // team's worker_url, shaped `https://team-<teamId>...` in the fixtures below,
 // so we can route each enqueueBatch back to its originating team.
 mock.module('@myco/daemon/team-sync.js', () => ({
   TeamSyncClient: class {
     private readonly teamTag: string;
+    private bounds?: { protocol: number; minClient?: number };
     constructor(options: { workerUrl: string }) {
       const match = options.workerUrl.match(/team-([^.]+)/);
       this.teamTag = match ? match[1] : 'unknown';
     }
     connect = vi.fn();
+    health = async () => {
+      const bounds = workerBoundsByTag.get(this.teamTag);
+      if (!bounds) {
+        // No bounds configured for this tag → behave like a worker that never
+        // advertised them. The drain gate treats this as 'unknown' (probe
+        // succeeded but protocol absent) and lets the row drain.
+        this.bounds = undefined;
+        healthCallsByTag.set(this.teamTag, (healthCallsByTag.get(this.teamTag) ?? 0) + 1);
+        return { status: 'ok', node_count: 1, sync_protocol_version: undefined as unknown as number };
+      }
+      this.bounds = bounds;
+      healthCallsByTag.set(this.teamTag, (healthCallsByTag.get(this.teamTag) ?? 0) + 1);
+      return {
+        status: 'ok',
+        node_count: 1,
+        sync_protocol_version: bounds.protocol,
+        min_compat_client_version: bounds.minClient,
+      };
+    };
+    getVersionCompat = () => computeCompat(this.bounds?.protocol, this.bounds?.minClient);
+    getWorkerProtocolVersion = () => this.bounds?.protocol;
+    getWorkerMinClientVersion = () => this.bounds?.minClient;
     enqueueBatch = async (records: Array<{ table_name: string; row_id: string }>) => {
       const list = enqueueByTeam.get(this.teamTag) ?? [];
       for (const r of records) list.push({ table_name: r.table_name, row_id: r.row_id });
@@ -46,6 +87,11 @@ mock.module('@myco/daemon/team-sync.js', () => ({
     getCollectiveStatus = vi.fn();
     getMcpToken = vi.fn(() => null);
     getMcpEndpoint = vi.fn(() => null);
+    // ensureTeamProvisioned (run after a successful handoff) calls these; the
+    // version-gated team never reaches provisioning, but an 'ok' team does.
+    getConfig = async () => ({ config: { team_name: 'seeded' } });
+    putConfig = async () => ({ updated: 0 });
+    rotateMcpToken = async () => 'rotated';
   },
 }));
 
@@ -85,6 +131,8 @@ describe('team-sync DRAIN routing from the registry', () => {
     process.env.MYCO_HOME = mycoHome;
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueByTeam.clear();
+    workerBoundsByTag.clear();
+    healthCallsByTag.clear();
     setTeamSyncEnabledMock.mockReset();
   });
 
@@ -249,6 +297,102 @@ describe('team-sync DRAIN routing from the registry', () => {
     expect(enqueueByTeam.size).toBe(0);
     // Non-participating Grove leaves its outbox untouched (not dropped).
     expect(pendingCount(grove, cache)).toBe(1);
+
+    cache.closeAll();
+  });
+
+  it('skips draining to a version-incompatible team and keeps its rows pending; drains a compatible team', async () => {
+    const grove = createGrove('Mixed', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const cache = new GroveRuntimeCache();
+
+    const projOld = createProjectId();
+    const projOk = createProjectId();
+    const teamOld = registerTeam('Team Old', grove, projOld);
+    const teamOk = registerTeam('Team OK', grove, projOk);
+
+    // teamOld's worker floors clients at protocol 3; the daemon speaks 2 →
+    // client_too_old → drain must be skipped. teamOk's worker accepts [1, 2].
+    workerBoundsByTag.set(teamOld.team_id, { protocol: 3, minClient: 3 });
+    workerBoundsByTag.set(teamOk.team_id, { protocol: 2, minClient: 1 });
+
+    seed(grove, cache, () => {
+      enqueueOutbox({
+        table_name: 'spores', row_id: 'spore-old',
+        payload: JSON.stringify({ id: 'spore-old', project_id: projOld }),
+        machine_id: 'machine-1', project_id: projOld, created_at: 300,
+      });
+      enqueueOutbox({
+        table_name: 'spores', row_id: 'spore-ok',
+        payload: JSON.stringify({ id: 'spore-ok', project_id: projOk }),
+        machine_id: 'machine-1', project_id: projOk, created_at: 301,
+      });
+    });
+    expect(pendingCount(grove, cache)).toBe(2);
+
+    const teamSync = makeTeamSync();
+    const result = await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+
+    // The incompatible team's worker was never handed a batch.
+    expect(enqueueByTeam.has(teamOld.team_id)).toBe(false);
+    // The compatible team drained normally.
+    const okRows = enqueueByTeam.get(teamOk.team_id) ?? [];
+    expect(okRows.some((r) => r.row_id === 'spore-ok')).toBe(true);
+
+    // The incompatible team's row is still pending (not markSent, not discarded);
+    // the compatible team's row drained, so exactly 1 remains.
+    expect(pendingCount(grove, cache)).toBe(1);
+    expect(
+      withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+        listPending().map((r) => r.row_id),
+      ),
+    ).toEqual(['spore-old']);
+    expect(result.handedOff).toBe(1);
+    expect(result.error).toBeUndefined();
+
+    cache.closeAll();
+  });
+
+  it('caches the version-compat probe for the TTL window: a second flush does not re-probe health()', async () => {
+    const grove = createGrove('Cached', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const cache = new GroveRuntimeCache();
+
+    const projOk = createProjectId();
+    const teamOk = registerTeam('Team OK', grove, projOk);
+    workerBoundsByTag.set(teamOk.team_id, { protocol: 2, minClient: 1 });
+
+    const enqueueRow = (rowId: string, createdAt: number) =>
+      seed(grove, cache, () => {
+        enqueueOutbox({
+          table_name: 'spores', row_id: rowId,
+          payload: JSON.stringify({ id: rowId, project_id: projOk }),
+          machine_id: 'machine-1', project_id: projOk, created_at: createdAt,
+        });
+      });
+
+    enqueueRow('spore-1', 400);
+
+    const teamSync = makeTeamSync();
+    await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+    expect(healthCallsByTag.get(teamOk.team_id)).toBe(1);
+
+    // Second flush within the same TTL window (same daemon lifetime, < 60s):
+    // the version-compat cache short-circuits, so health() is NOT re-probed.
+    enqueueRow('spore-2', 401);
+    await withDatabase(cache.getDatabase(groveDbPath(grove)), () =>
+      teamSync.flushPending(buildGroveCtx(grove)),
+    );
+    expect(healthCallsByTag.get(teamOk.team_id)).toBe(1);
+
+    // Both rows drained across the two flushes.
+    const okRows = enqueueByTeam.get(teamOk.team_id) ?? [];
+    expect(okRows.some((r) => r.row_id === 'spore-1')).toBe(true);
+    expect(okRows.some((r) => r.row_id === 'spore-2')).toBe(true);
 
     cache.closeAll();
   });

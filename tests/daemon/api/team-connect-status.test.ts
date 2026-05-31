@@ -177,6 +177,9 @@ describe('createTeamHandlers.handleStatus', () => {
           settings: {},
         }),
         getConfig: async () => ({ config: {}, sync_protocol_version: 1 }),
+        getVersionCompat: () => 'ok',
+        getWorkerProtocolVersion: () => 1,
+        getWorkerMinClientVersion: () => 1,
         getMcpToken: () => null,
         getMcpEndpoint: () => null,
       }) as never,
@@ -228,6 +231,83 @@ describe('createTeamHandlers.handleStatus', () => {
     expect(body.worker_update_available).toBe(body.local_team_package_version !== body.deployed_worker_version);
   });
 
+  it('surfaces version_status and protocol bounds when the worker advertises an incompatible floor', async () => {
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const { teamRegistry } = await import('../../../packages/myco/src/team/registry.js');
+    const { createTeamId, createProjectId } = await import('../../../packages/myco/src/grove/ids.js');
+    const { resolveGroveDir } = await import('../../../packages/myco/src/grove/paths.js');
+
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove('Version Floor Grove', mycoHome);
+    const projectId = createProjectId();
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Version Floor Team',
+      worker_url: 'https://myco-team-test.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: grove.id, project_id: projectId }],
+    }, mycoHome);
+    const groveDir = resolveGroveDir(grove.id, mycoHome);
+    fs.mkdirSync(groveDir, { recursive: true });
+    fs.writeFileSync(path.join(groveDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=test-api-key\n', 'utf-8');
+
+    // Client whose health() probe populated incompatible bounds: worker speaks
+    // protocol 3 and floors clients at 2; this daemon is older → client_too_old.
+    const handlers = createTeamHandlers({
+      vaultDir,
+      machineId: 'machine-test',
+      globalPrefix: null,
+      logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
+      getTeamClient: () => ({
+        health: async () => ({
+          status: 'ok',
+          node_count: 1,
+          sync_protocol_version: 3,
+          min_compat_client_version: 2,
+        }),
+        getCollectiveStatus: async () => ({
+          connected: false, collective_url: null, project_id: null,
+          last_settings_sync: null, last_heartbeat: null, capabilities: [], settings: {},
+        }),
+        getConfig: async () => ({ config: {}, sync_protocol_version: 3 }),
+        getVersionCompat: () => 'client_too_old',
+        getWorkerProtocolVersion: () => 3,
+        getWorkerMinClientVersion: () => 2,
+        getMcpToken: () => null,
+        getMcpEndpoint: () => null,
+      }) as never,
+      setTeamClient: () => undefined,
+    });
+
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        projectId,
+        groveId: grove.id,
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    const body = response.body as {
+      version_status: string;
+      daemon_protocol_version: number;
+      worker_protocol_version: number | null;
+      worker_min_client_version: number | null;
+    };
+
+    expect(body.version_status).toBe('client_too_old');
+    expect(body.worker_protocol_version).toBe(3);
+    expect(body.worker_min_client_version).toBe(2);
+    expect(body.daemon_protocol_version).toBeGreaterThan(0);
+  });
+
   it('reports enabled=false when the Grove participates in no team (registry gate)', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
     const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
@@ -244,6 +324,9 @@ describe('createTeamHandlers.handleStatus', () => {
       logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
       getTeamClient: () => ({
         health: healthSpy,
+        getVersionCompat: () => 'unknown',
+        getWorkerProtocolVersion: () => undefined,
+        getWorkerMinClientVersion: () => undefined,
         getMcpToken: () => 'should-not-surface',
         getMcpEndpoint: () => 'https://x/mcp',
       }) as never,

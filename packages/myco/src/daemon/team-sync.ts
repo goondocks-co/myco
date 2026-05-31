@@ -18,6 +18,47 @@ import {
 } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
+// Version compatibility
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of comparing this daemon's sync protocol against a team worker's
+ * advertised bounds.
+ *
+ *   - `ok`              — daemon protocol is within the worker's accepted window.
+ *   - `client_too_old`  — daemon protocol is below the worker's floor; the
+ *                          daemon must update before it can push.
+ *   - `worker_too_old`  — daemon protocol is ahead of the worker's protocol;
+ *                          the worker must update before it can accept us.
+ *   - `unknown`         — the worker's bounds have not been probed yet (no
+ *                          successful health()/connect() this lifetime).
+ */
+export type VersionCompat = 'ok' | 'client_too_old' | 'worker_too_old' | 'unknown';
+
+/**
+ * Pure helper: decide whether a daemon speaking `daemonProtocol` is compatible
+ * with a worker advertising `workerProtocol` and a floor of `workerMinClient`.
+ *
+ * Gates PROACTIVELY off the worker's advertised bounds so the daemon never
+ * triggers the worker's hard 409 rejection (worker/src/index.ts:517-526).
+ * `workerMinClient` is optional for back-compat with workers deployed before
+ * the floor field existed; absence means "no floor advertised".
+ *
+ * Boundary semantics: `daemon === minClient` is `ok` (floor is inclusive) and
+ * `daemon === workerProtocol` is `ok` (the worker speaks exactly our protocol).
+ */
+export function computeVersionCompat(
+  daemonProtocol: number,
+  workerProtocol: number | undefined,
+  workerMinClient: number | undefined,
+): VersionCompat {
+  if (workerProtocol == null) return 'unknown'; // bounds not yet probed
+  if (workerMinClient != null && daemonProtocol < workerMinClient) return 'client_too_old';
+  if (daemonProtocol > workerProtocol) return 'worker_too_old';
+  return 'ok';
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -227,6 +268,11 @@ export class TeamSyncClient {
   private readonly fetchFn: typeof globalThis.fetch;
   private mcpToken: string | null = null;
   private mcpTokenHash: string | null = null;
+  // The worker's advertised sync bounds, captured on the first successful
+  // connect()/health(). Undefined until probed → getVersionCompat() reports
+  // 'unknown' so callers treat it as transient (not a hard incompatibility).
+  private workerProtocolVersion?: number;
+  private workerMinClientVersion?: number;
 
   constructor(options: TeamSyncClientOptions) {
     this.workerUrl = options.workerUrl.replace(/\/+$/, '');
@@ -259,6 +305,8 @@ export class TeamSyncClient {
       sync_protocol_version: this.syncProtocolVersion,
     });
     const response = res as TeamConfigResponse;
+    this.workerProtocolVersion = response.sync_protocol_version;
+    this.workerMinClientVersion = response.min_compat_client_version;
     if (response.mcp_token) {
       this.mcpToken = response.mcp_token;
       this.mcpTokenHash = TeamSyncClient.hashToken(response.mcp_token);
@@ -358,6 +406,8 @@ export class TeamSyncClient {
       }
 
       const data = (await res.json()) as TeamHealthResponse;
+      this.workerProtocolVersion = data.sync_protocol_version;
+      this.workerMinClientVersion = data.min_compat_client_version;
 
       // If the worker reports a different token hash than we have cached,
       // reconnect to fetch the token. This handles three cases:
@@ -485,6 +535,32 @@ export class TeamSyncClient {
     } catch {
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Version bound accessors
+  // ---------------------------------------------------------------------------
+
+  /** The worker's own sync protocol version, or undefined until probed. */
+  getWorkerProtocolVersion(): number | undefined {
+    return this.workerProtocolVersion;
+  }
+
+  /** The worker's advertised floor (oldest client it accepts), or undefined. */
+  getWorkerMinClientVersion(): number | undefined {
+    return this.workerMinClientVersion;
+  }
+
+  /**
+   * Compare this daemon's protocol against the worker's last-probed bounds.
+   * Returns 'unknown' until a health()/connect() has populated the bounds.
+   */
+  getVersionCompat(): VersionCompat {
+    return computeVersionCompat(
+      this.syncProtocolVersion,
+      this.workerProtocolVersion,
+      this.workerMinClientVersion,
+    );
   }
 
   // ---------------------------------------------------------------------------

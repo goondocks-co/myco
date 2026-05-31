@@ -34,7 +34,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
-import { TeamSyncClient } from './team-sync.js';
+import { TeamSyncClient, type VersionCompat } from './team-sync.js';
 import {
   loadTeamConnectionConfig,
   readTeamConnectionSecrets,
@@ -164,6 +164,36 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   // hit so a large backfill doesn't re-GET /config on every flush tick. Only
   // set when BOTH halves succeed, so a transiently-unreachable worker retries.
   const provisionedTeams = new Set<string>();
+
+  // Per-team version-compat cache (TTL-bounded). The drain gate probes the
+  // worker's advertised bounds via health() before pushing; back-to-back flush
+  // ticks during a large backfill must not re-probe every tick, so a successful
+  // probe is cached for VERSION_CHECK_TTL_SEC. checkedAt is epoch SECONDS.
+  const teamVersionCache = new Map<string, { status: VersionCompat; checkedAt: number }>();
+  const VERSION_CHECK_TTL_SEC = 60;
+
+  /**
+   * Resolve a team's sync-protocol compatibility, caching the result for
+   * VERSION_CHECK_TTL_SEC. A `health()` failure (worker unreachable) is treated
+   * as transient → 'unknown', so the normal drain attempt still runs and the
+   * usual unreachable-team handling (leave rows pending) applies. Only an
+   * advertised hard incompatibility ('client_too_old' / 'worker_too_old')
+   * blocks the drain.
+   */
+  async function teamVersionStatus(teamId: string, client: TeamSyncClient): Promise<VersionCompat> {
+    const cached = teamVersionCache.get(teamId);
+    const now = epochSeconds();
+    if (cached && now - cached.checkedAt < VERSION_CHECK_TTL_SEC) return cached.status;
+    let status: VersionCompat;
+    try {
+      await client.health();
+      status = client.getVersionCompat();
+    } catch {
+      status = 'unknown';
+    }
+    teamVersionCache.set(teamId, { status, checkedAt: now });
+    return status;
+  }
 
   /**
    * Lazily build (and cache) the TeamSyncClient for a given team_id from the
@@ -410,6 +440,29 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           // Fan-out rows targeting this team stay pending too — a partial
           // fan-out must never be marked sent.
           continue;
+        }
+
+        // Version-floor obedience: if the worker advertises bounds that make
+        // this daemon's protocol incompatible, STOP draining to it. Doomed
+        // pushes would just trigger the worker's 409 and churn forever. Leave
+        // the rows pending (no markSent, no discard) so the team self-heals
+        // the moment the daemon or worker updates. 'ok'/'unknown' fall through
+        // to the normal enqueue ('unknown' = bounds unprobed → let the drain
+        // attempt surface the real network/auth state).
+        const compat = await teamVersionStatus(teamId, client);
+        if (compat === 'client_too_old' || compat === 'worker_too_old') {
+          logger.warn(
+            LOG_KINDS.TEAM_SYNC_ERROR,
+            'Skipping team drain — sync protocol incompatible (rows left pending for retry after update)',
+            {
+              team_id: teamId,
+              compat,
+              daemon_protocol: SYNC_PROTOCOL_VERSION,
+              worker_protocol: client.getWorkerProtocolVersion(),
+              worker_min_client: client.getWorkerMinClientVersion(),
+            },
+          );
+          continue; // leave rows pending — NO churn, NO dead-letter; self-heals on update
         }
 
         try {

@@ -1,6 +1,7 @@
 import { useSearchParams } from 'react-router-dom';
-import { Activity, RefreshCw, Users, Network } from 'lucide-react';
-import { useTeamStatus } from '../../hooks/use-team';
+import { Activity, RefreshCw, Users, Network, AlertTriangle } from 'lucide-react';
+import { useTeamStatus, type TeamStatusResponse } from '../../hooks/use-team';
+import { AccentSurface } from '../../components/ui/accent-surface';
 import { PageHeader } from '../../components/ui/page-header';
 import { PageLoading } from '../../components/ui/page-loading';
 import { PageContainer } from '../../components/ui/page-container';
@@ -21,6 +22,37 @@ const TABS = [
 ];
 
 const VALID_TABS = new Set<TabId>(['teams', 'status', 'sync', 'members']);
+
+/**
+ * Sync pauses when this daemon's sync protocol is incompatible with the team
+ * worker (the daemon skips draining rather than churning doomed pushes). Surface
+ * it page-wide with the actionable fix — the block affects every tab, not just
+ * Status. `ok`/`unknown` render nothing.
+ */
+function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
+  if (status.version_status !== 'client_too_old' && status.version_status !== 'worker_too_old') {
+    return null;
+  }
+  const clientTooOld = status.version_status === 'client_too_old';
+  const heading = clientTooOld
+    ? 'Sync paused — this machine is out of date'
+    : 'Sync paused — the team worker is out of date';
+  const command = clientTooOld ? 'myco update' : 'myco-team upgrade';
+  const detail = clientTooOld
+    ? `This daemon speaks sync protocol v${status.daemon_protocol_version}, but the team worker requires at least v${status.worker_min_client_version ?? '?'}.`
+    : `This daemon speaks sync protocol v${status.daemon_protocol_version}, but the team worker only supports up to v${status.worker_protocol_version ?? '?'}.`;
+  return (
+    <AccentSurface accent="terra" padded className="mb-4 flex items-start gap-3" role="alert">
+      <AlertTriangle className="size-5 shrink-0 text-terracotta-text" aria-hidden />
+      <div className="flex flex-col gap-1">
+        <p className="m-0 text-sm font-medium text-on-surface">{heading}</p>
+        <p className="m-0 text-sm text-on-surface-variant">
+          {detail} Pending changes are held safely; run <code className="text-terracotta-text">{command}</code> to resume syncing.
+        </p>
+      </div>
+    </AccentSurface>
+  );
+}
 
 export function TeamPage() {
   const { data: status, isLoading } = useTeamStatus();
@@ -54,8 +86,9 @@ export function TeamPage() {
     <PageContainer>
       <PageHeader
         title="Team"
-        subtitle="Grove-scoped team sync and membership"
+        subtitle="Sync your projects to shared team clouds"
       />
+      <VersionBlockBanner status={status} />
       <TileTabs
         tabs={TABS}
         activeTab={tab}
