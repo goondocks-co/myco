@@ -83,6 +83,8 @@ export interface TeamSyncDeps {
 
 export interface TeamSyncResult {
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
+  /** Resolve (and cache) a client directly by team_id, bypassing project context. */
+  getTeamClientById: (teamId: string) => TeamSyncClient | null;
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
@@ -756,6 +758,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   return {
     getTeamClient: (requestContext = defaultRequestContext) => resolveReadClient(requestContext),
+    getTeamClientById: (teamId: string) => getOrBuildTeamClient(teamId),
     reconcileClient,
     flushPending,
     rebuildFromLocal,
