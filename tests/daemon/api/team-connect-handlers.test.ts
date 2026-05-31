@@ -346,6 +346,108 @@ describe('team-connect handlers — direct coverage', () => {
   });
 
   // -------------------------------------------------------------------------
+  // handleJoin
+  // -------------------------------------------------------------------------
+
+  describe('handleJoin', () => {
+    // Valid team IDs: resolveTeamDir enforces team_<32hex> via assertGroveEraId.
+    const JOIN_TEAM_ID = createTeamId();
+
+    function joinDeps(connectImpl: () => Promise<unknown>) {
+      return {
+        vaultDir,
+        machineId: 'machine-test',
+        globalPrefix: null,
+        logger: noopLogger,
+        getTeamClient: () => null,
+        makeJoinClient: (_opts: { workerUrl: string; apiKey: string }) => ({
+          connect: connectImpl,
+        }),
+      };
+    }
+
+    it('writes a registry record + secrets from the /connect handshake', async () => {
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+        mcp_token: 'mcp-xyz',
+        mcp_endpoint: '/mcp',
+      })) as never);
+
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://joined.example.workers.dev/', team_key: 'tk-secret' },
+      }));
+
+      expect(res.status).toBeUndefined();
+      const saved = teamRegistry.get(JOIN_TEAM_ID);
+      expect(saved?.name).toBe('Joined Team');
+      expect(saved?.worker_url).toBe('https://joined.example.workers.dev'); // trailing slash stripped
+      expect(saved?.mcp_endpoint).toBe('https://joined.example.workers.dev/mcp');
+      expect(saved?.projects).toEqual([]);
+      const secrets = teamRegistry.readSecrets(JOIN_TEAM_ID);
+      expect(secrets.MYCO_TEAM_API_KEY).toBe('tk-secret');
+      expect(secrets.MYCO_TEAM_MCP_TOKEN).toBe('mcp-xyz');
+    });
+
+    it('preserves existing project membership on re-join (idempotent upsert)', async () => {
+      teamRegistry.save({
+        team_id: JOIN_TEAM_ID,
+        name: 'Joined Team',
+        worker_url: 'https://joined.example.workers.dev',
+        domain: null,
+        mcp_endpoint: 'https://joined.example.workers.dev/mcp',
+        created_at: '2026-05-01',
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+      })) as never);
+
+      await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://joined.example.workers.dev', team_key: 'tk-secret' },
+      }));
+      expect(teamRegistry.get(JOIN_TEAM_ID)?.projects).toEqual([
+        { grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! },
+      ]);
+    });
+
+    it('returns 400 when worker_url or team_key is missing', async () => {
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({ config: {} })) as never);
+      const res = await handlers.handleJoin(makeRequest({ body: { worker_url: '' } }));
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 409 when the worker config has no team_id (predates the feature)', async () => {
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_name: 'Old Team' },
+        sync_protocol_version: 2,
+      })) as never);
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://old.example.workers.dev', team_key: 'tk' },
+      }));
+      expect(res.status).toBe(409);
+      expect((res.body as { error: string }).error).toBe('worker_missing_team_id');
+    });
+
+    it('returns 502 with the worker message when the handshake fails', async () => {
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => {
+        throw new Error('401 Invalid Team key');
+      }) as never);
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://x.example.workers.dev', team_key: 'bad' },
+      }));
+      expect(res.status).toBe(502);
+      expect((res.body as { message: string }).message).toContain('Invalid Team key');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // handleRotateMcpToken
   // -------------------------------------------------------------------------
 

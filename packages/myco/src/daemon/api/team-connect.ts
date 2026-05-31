@@ -317,6 +317,14 @@ export interface TeamHandlerDeps {
    * failed; Worker upgrades return a typed error in that case.
    */
   globalPrefix: string | null;
+  /**
+   * Builds a transient client for the join handshake from raw URL + key
+   * (the team is not in the registry yet, so getTeamClient can't resolve it).
+   * Defaults to a real TeamSyncClient; injected as a stub in tests.
+   */
+  makeJoinClient?: (opts: { workerUrl: string; apiKey: string }) => Pick<TeamSyncClient, 'connect'>;
+  /** Resolve a client directly by team_id (used by the team-scoped read paths). */
+  getTeamClientForId?: (teamId: string) => TeamSyncClient | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +356,14 @@ const DEPRECATED_STATUS_FIELDS: Record<string, { since: string; reason: string; 
 
 export function createTeamHandlers(deps: TeamHandlerDeps) {
   const { vaultDir, machineId, logger } = deps;
+
+  const makeJoinClient = deps.makeJoinClient ?? ((opts: { workerUrl: string; apiKey: string }) =>
+    new TeamSyncClient({
+      workerUrl: opts.workerUrl,
+      apiKey: opts.apiKey,
+      machineId,
+      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+    }));
 
   /**
    * POST /api/team/connect
@@ -742,8 +758,62 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
   }
 
+  /**
+   * POST /api/team/join — register an existing team on this machine from a
+   * shared Worker URL + Team key. Does the /connect handshake (no infra
+   * provisioning), then writes the registry record + secrets. Idempotent:
+   * re-joining upserts by the worker-authoritative team_id and preserves
+   * existing project membership.
+   */
+  async function handleJoin(req: RouteRequest): Promise<RouteResponse> {
+    const body = (req.body ?? {}) as { worker_url?: unknown; team_key?: unknown };
+    const workerUrl = typeof body.worker_url === 'string' ? body.worker_url.trim().replace(/\/+$/, '') : '';
+    const teamKey = typeof body.team_key === 'string' ? body.team_key.trim() : '';
+    if (!workerUrl || !teamKey) {
+      return { status: 400, body: { error: 'missing_fields', message: 'worker_url and team_key are required' } };
+    }
+
+    let config: Awaited<ReturnType<TeamSyncClient['connect']>>;
+    try {
+      config = await makeJoinClient({ workerUrl, apiKey: teamKey }).connect({ machine_id: machineId });
+    } catch (err) {
+      const message = errorMessage(err);
+      logger.warn('team-sync.join.connect-failed', 'Team join handshake failed', { error: message });
+      return { status: 502, body: { error: 'join_connect_failed', message } };
+    }
+
+    const cfg = (config.config ?? {}) as Record<string, unknown>;
+    const teamId = typeof cfg.team_id === 'string' ? cfg.team_id.trim() : '';
+    if (!teamId) {
+      return {
+        status: 409,
+        body: {
+          error: 'worker_missing_team_id',
+          message: "This team's worker predates the join feature. Ask the team operator to run `myco-team update --team-id <id>` and reconnect, then try again.",
+        },
+      };
+    }
+    const teamName = typeof cfg.team_name === 'string' ? cfg.team_name : '';
+    const existing = teamRegistry.get(teamId);
+
+    teamRegistry.save({
+      team_id: teamId,
+      name: teamName || existing?.name || teamId,
+      worker_url: workerUrl,
+      domain: null,
+      mcp_endpoint: `${workerUrl}/mcp`,
+      created_at: existing?.created_at ?? new Date().toISOString(),
+      projects: existing?.projects ?? [],
+    });
+    teamRegistry.writeSecret(teamId, TEAM_API_KEY_SECRET, teamKey);
+    if (config.mcp_token) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, config.mcp_token);
+
+    logger.info('team-sync.join.registered', 'Joined team via shared credentials', { team_id: teamId });
+    return { body: { team: teamRegistry.get(teamId) } };
+  }
+
   return {
-    handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
+    handleConnect, handleJoin, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
     handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard,
   };
 }
