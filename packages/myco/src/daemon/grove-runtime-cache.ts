@@ -1,5 +1,6 @@
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { EmbeddingManager, SqliteVecVectorStore } from './embedding/index.js';
 
 export interface GroveRuntimeEntry {
@@ -230,7 +231,11 @@ export class GroveRuntimeCache {
 
 function openInitializedDatabase(databasePath: string): Database {
   const db = openDatabase(databasePath);
-  createSchema(db);
+  // Pass the resolved machine id (not the 'local' default) so the v52
+  // machine_id='local'→real conversion actually runs. This is the runtime
+  // choke point that serves every non-boot Grove; defaulting here would
+  // permanently stamp v52 with the conversion skipped.
+  createSchema(db, getMachineId());
   return db;
 }
 

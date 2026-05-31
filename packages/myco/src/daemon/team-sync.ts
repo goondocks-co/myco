@@ -18,6 +18,47 @@ import {
 } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
+// Version compatibility
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of comparing this daemon's sync protocol against a team worker's
+ * advertised bounds.
+ *
+ *   - `ok`              — daemon protocol is within the worker's accepted window.
+ *   - `client_too_old`  — daemon protocol is below the worker's floor; the
+ *                          daemon must update before it can push.
+ *   - `worker_too_old`  — daemon protocol is ahead of the worker's protocol;
+ *                          the worker must update before it can accept us.
+ *   - `unknown`         — the worker's bounds have not been probed yet (no
+ *                          successful health()/connect() this lifetime).
+ */
+export type VersionCompat = 'ok' | 'client_too_old' | 'worker_too_old' | 'unknown';
+
+/**
+ * Pure helper: decide whether a daemon speaking `daemonProtocol` is compatible
+ * with a worker advertising `workerProtocol` and a floor of `workerMinClient`.
+ *
+ * Gates PROACTIVELY off the worker's advertised bounds so the daemon never
+ * triggers the worker's hard 409 rejection (worker/src/index.ts:517-526).
+ * `workerMinClient` is optional for back-compat with workers deployed before
+ * the floor field existed; absence means "no floor advertised".
+ *
+ * Boundary semantics: `daemon === minClient` is `ok` (floor is inclusive) and
+ * `daemon === workerProtocol` is `ok` (the worker speaks exactly our protocol).
+ */
+export function computeVersionCompat(
+  daemonProtocol: number,
+  workerProtocol: number | undefined,
+  workerMinClient: number | undefined,
+): VersionCompat {
+  if (workerProtocol == null) return 'unknown'; // bounds not yet probed
+  if (workerMinClient != null && daemonProtocol < workerMinClient) return 'client_too_old';
+  if (daemonProtocol > workerProtocol) return 'worker_too_old';
+  return 'ok';
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -26,6 +67,14 @@ export interface TeamSyncClientOptions {
   apiKey: string;
   machineId: string;
   syncProtocolVersion: number;
+  /**
+   * Pre-seed the MCP bearer token. Lets a client be built already knowing
+   * its Cloud MCP token (e.g. read from the team registry secrets) so
+   * `getMcpToken()`/`getMcpEndpoint()` work without first calling
+   * `connect()`/`rotateMcpToken()`. The token is rotated only when the
+   * registry has none (see `ensureTeamProvisioned` in team-sync-init.ts).
+   */
+  mcpToken?: string;
   /** Inject custom fetch for testing. */
   fetch?: typeof globalThis.fetch;
 }
@@ -153,20 +202,27 @@ export interface EnqueueBatchResponse {
   rejected: RecordRejection[];
 }
 
-export interface QueueStats {
-  depth: number | null;
-  oldest_msg_age_s: number | null;
-}
-
 export interface QueueStatsResponse {
-  main: QueueStats;
-  dlq: QueueStats;
+  enqueued: number;
+  processed: number;
+  failed: number;
+  backlog: number;
+  last_run_at: number | null;
+  last_error: string | null;
+  embed_ok?: number;
+  embed_failed?: number;
+  last_embed_error?: string | null;
+  last_embed_at?: number | null;
 }
 
 export interface TeamRemoteSyncSummaryResponse {
   generated_at: number;
   total_records: number;
   tables: Record<string, number>;
+  /** Per-table cloud row counts scoped to the requested machine_id. Absent or null when no machine_id was passed (or when talking to a pre-machine_tables worker). */
+  machine_tables?: Record<string, number> | null;
+  /** The machine_id used to scope machine_tables, echoed from the request. */
+  machine_id?: string;
   vector_count: number | null;
   vector_index_healthy: boolean;
   vector_index_error: string | null;
@@ -178,28 +234,41 @@ export interface TeamRemoteSyncSummaryResponse {
 }
 
 /**
- * Single DLQ message returned by the worker's `/api/team/dlq` and
- * the daemon's local CF DLQ proxy. `body` typically holds a
- * `DlqSyncRecordPayload`, but stays loose so non-record DLQ entries
- * (e.g. malformed-JSON poison messages) still parse.
+ * Single DLQ message returned by the worker's D1-backed `/dlq` endpoint.
  *
  * `DlqEntry` is exported as an alias so consumers that prefer the
  * shorter name don't have to deconflict with the @myco-team/worker
  * type name. Both alias to the same shape.
  */
 export interface DlqMessage {
-  msg_id: string;
-  body: Record<string, unknown> | DlqSyncRecordPayload;
-  attempts: number;
-  last_failure?: string;
-  enqueued_at?: number;
+  lease_id: string;
+  table_name: string;
+  row_id: string;
+  machine_id: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
 }
 
 export type DlqEntry = DlqMessage;
 
 export interface DlqListResponse {
   messages: DlqMessage[];
-  next_cursor: string | null;
+}
+
+/** One team_members row as returned by the worker's `/members` endpoint. */
+export interface TeamMemberWire {
+  id: string;
+  machine_id: string;
+  user: string;
+  role: string | null;
+  joined: string | null;
+  tags: string | null;
+  synced_at: number | null;
+}
+
+export interface TeamMembersListResponse {
+  members: TeamMemberWire[];
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +283,11 @@ export class TeamSyncClient {
   private readonly fetchFn: typeof globalThis.fetch;
   private mcpToken: string | null = null;
   private mcpTokenHash: string | null = null;
+  // The worker's advertised sync bounds, captured on the first successful
+  // connect()/health(). Undefined until probed → getVersionCompat() reports
+  // 'unknown' so callers treat it as transient (not a hard incompatibility).
+  private workerProtocolVersion?: number;
+  private workerMinClientVersion?: number;
 
   constructor(options: TeamSyncClientOptions) {
     this.workerUrl = options.workerUrl.replace(/\/+$/, '');
@@ -221,6 +295,10 @@ export class TeamSyncClient {
     this.machineId = options.machineId;
     this.syncProtocolVersion = options.syncProtocolVersion;
     this.fetchFn = options.fetch ?? globalThis.fetch;
+    if (options.mcpToken) {
+      this.mcpToken = options.mcpToken;
+      this.mcpTokenHash = TeamSyncClient.hashToken(options.mcpToken);
+    }
   }
 
   // Must match getMcpTokenHash() in src/worker/src/mcp/auth.ts
@@ -242,6 +320,8 @@ export class TeamSyncClient {
       sync_protocol_version: this.syncProtocolVersion,
     });
     const response = res as TeamConfigResponse;
+    this.workerProtocolVersion = response.sync_protocol_version;
+    this.workerMinClientVersion = response.min_compat_client_version;
     if (response.mcp_token) {
       this.mcpToken = response.mcp_token;
       this.mcpTokenHash = TeamSyncClient.hashToken(response.mcp_token);
@@ -265,14 +345,17 @@ export class TeamSyncClient {
     const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
-      records: records.map((r) => ({
-        table: r.table_name,
-        id: String(r.row_id),
-        machine_id: r.machine_id,
-        operation: r.operation,
-        data: r.payload,
-        content_hash: r.payload.content_hash ?? null,
-      })),
+      records: records.map((r) => {
+        const data = wirePayloadForOutboxRow(r);
+        return {
+          table: r.table_name,
+          id: String(r.row_id),
+          machine_id: r.machine_id,
+          operation: r.operation,
+          data,
+          content_hash: data.content_hash ?? null,
+        };
+      }),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
     const body = res as Partial<EnqueueBatchResponse>;
     return {
@@ -341,6 +424,8 @@ export class TeamSyncClient {
       }
 
       const data = (await res.json()) as TeamHealthResponse;
+      this.workerProtocolVersion = data.sync_protocol_version;
+      this.workerMinClientVersion = data.min_compat_client_version;
 
       // If the worker reports a different token hash than we have cached,
       // reconnect to fetch the token. This handles three cases:
@@ -370,6 +455,17 @@ export class TeamSyncClient {
     return res as TeamConfigResponse;
   }
 
+  /**
+   * Seed/overwrite team configuration on the worker. Mirrors the install-path
+   * PUT in `packages/myco-team/src/cli.ts`: the worker stores each key/value
+   * pair in its `team_config` table (INSERT OR REPLACE), so this is the one
+   * setter the daemon uses to provision `team_name` + embedding config on the
+   * first successful reach (see `ensureTeamProvisioned`).
+   */
+  async putConfig(config: Record<string, string>): Promise<{ updated: number }> {
+    return await this.request('PUT', '/config', config) as { updated: number };
+  }
+
   async getCollectiveStatus(): Promise<TeamCollectiveStatusResponse> {
     const res = await this.request('GET', '/collective/status');
     return res as TeamCollectiveStatusResponse;
@@ -386,19 +482,27 @@ export class TeamSyncClient {
   }
 
   /**
-   * Fetch queue + DLQ depth/age stats. Returns the
-   * `cf_api_token_not_configured` discriminator when the worker has no CF
-   * API token yet — the UI uses that to surface an unavailable state.
-   * Pass-through 412 keeps the body accessible instead of throwing.
+   * Fetch queue processing stats from the worker's D1-backed endpoint.
    */
-  async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', '/queue-stats', undefined, {
-      passthroughStatuses: [412],
-    }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  async getQueueStats(): Promise<QueueStatsResponse> {
+    return await this.request('GET', '/queue-stats') as QueueStatsResponse;
   }
 
-  async getSyncSummary(): Promise<TeamRemoteSyncSummaryResponse> {
-    return await this.request('GET', '/sync-summary') as TeamRemoteSyncSummaryResponse;
+  /** Fetch the team's member roster from the worker's D1-backed endpoint. */
+  async listMembers(): Promise<TeamMembersListResponse> {
+    return await this.request('GET', '/members') as TeamMembersListResponse;
+  }
+
+  /** Remove a single machine's roster row (used when a machine leaves the team). */
+  async removeMember(machineId: string): Promise<{ removed: number }> {
+    return await this.request('DELETE', `/members/${encodeURIComponent(machineId)}`) as { removed: number };
+  }
+
+  async getSyncSummary(machineId?: string): Promise<TeamRemoteSyncSummaryResponse> {
+    const path = machineId
+      ? `/sync-summary?machine_id=${encodeURIComponent(machineId)}`
+      : '/sync-summary';
+    return await this.request('GET', path) as TeamRemoteSyncSummaryResponse;
   }
 
   /**
@@ -414,11 +518,9 @@ export class TeamSyncClient {
     };
   }
 
-  /** List a page of DLQ messages. */
-  async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', `/dlq?limit=${limit}`, undefined, {
-      passthroughStatuses: [412],
-    }) as DlqListResponse | { error: 'cf_api_token_not_configured' };
+  /** List a page of DLQ messages from the worker's D1-backed endpoint. */
+  async listDlq(limit = 50): Promise<DlqListResponse> {
+    return await this.request('GET', `/dlq?limit=${limit}`) as DlqListResponse;
   }
 
   /** Re-publish DLQ messages back onto the main queue. */
@@ -427,37 +529,17 @@ export class TeamSyncClient {
   }
 
   /**
-   * Ask the worker which of the supplied `ids` actually exist in D1 for
-   * this machine. Drives the local drift reconciler — see
-   * `reconcileD1Drift` in `team-sync-init.ts`. The daemon's `synced_at`
-   * stamp is set on /enqueue success, which only confirms the worker
-   * queued the message; if the queue consumer dead-letters that
-   * message (column mismatch, constraint violation), local thinks the
-   * row is synced but D1 doesn't have it. The worker's `/verify`
-   * endpoint is the only authoritative source of truth here.
+   * Truncate THIS machine's rows in the Grove's cloud mirror (D1 + Vectorize)
+   * so the daemon can re-push this machine's full local Grove. One-way repair;
+   * never reconciles. Worker scopes all deletes to the supplied machine_id.
    */
-  async verify(table: string, ids: string[]): Promise<{ present: string[]; missing: string[] }> {
-    if (ids.length === 0) return { present: [], missing: [] };
-    return await this.request('POST', '/verify', {
-      machine_id: this.machineId,
-      table,
-      ids,
-    }) as { present: string[]; missing: string[] };
+  async rebuild(): Promise<void> {
+    await this.request('POST', '/rebuild', { machine_id: this.machineId });
   }
 
   /** Permanently discard DLQ messages. */
   async discardDlq(leaseIds: string[]): Promise<{ discarded: number }> {
     return await this.request('POST', '/dlq/discard', { lease_ids: leaseIds }) as { discarded: number };
-  }
-
-  /** Stash a CF API token (queues:read,write scope) on the worker. */
-  async setCfApiToken(token: string, accountId: string): Promise<{ configured: true }> {
-    return await this.request('POST', '/tokens/cf-api', { token, account_id: accountId }) as { configured: true };
-  }
-
-  /** Clear the worker's stashed CF API token. */
-  async clearCfApiToken(): Promise<{ cleared: true }> {
-    return await this.request('DELETE', '/tokens/cf-api') as { cleared: true };
   }
 
   /**
@@ -481,6 +563,32 @@ export class TeamSyncClient {
     } catch {
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Version bound accessors
+  // ---------------------------------------------------------------------------
+
+  /** The worker's own sync protocol version, or undefined until probed. */
+  getWorkerProtocolVersion(): number | undefined {
+    return this.workerProtocolVersion;
+  }
+
+  /** The worker's advertised floor (oldest client it accepts), or undefined. */
+  getWorkerMinClientVersion(): number | undefined {
+    return this.workerMinClientVersion;
+  }
+
+  /**
+   * Compare this daemon's protocol against the worker's last-probed bounds.
+   * Returns 'unknown' until a health()/connect() has populated the bounds.
+   */
+  getVersionCompat(): VersionCompat {
+    return computeVersionCompat(
+      this.syncProtocolVersion,
+      this.workerProtocolVersion,
+      this.workerMinClientVersion,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -532,9 +640,8 @@ export class TeamSyncClient {
         signal: controller.signal,
       });
 
-      // passthroughStatuses are surfaces where the worker's body is the
-      // discriminated response shape (e.g. 412 cf_api_token_not_configured)
-      // and the caller wants to inspect it rather than catch a throw.
+      // passthroughStatuses allow the caller to inspect the body of specific
+      // non-2xx responses rather than having them throw.
       if (!res.ok && !options.passthroughStatuses?.includes(res.status)) {
         const text = await res.text().catch(() => '');
         throw new Error(`Team sync request ${method} ${path} failed: ${res.status} ${text}`);
@@ -545,4 +652,24 @@ export class TeamSyncClient {
       clearTimeout(timer);
     }
   }
+}
+
+function wirePayloadForOutboxRow(row: OutboxRow): Record<string, unknown> {
+  const payload = normalizeOutboxPayload(row.payload);
+  if (row.project_id) payload.project_id = row.project_id;
+  return payload;
+}
+
+function normalizeOutboxPayload(payload: OutboxRow['payload'] | string): Record<string, unknown> {
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? { ...(parsed as Record<string, unknown>) }
+        : { value: parsed };
+    } catch {
+      return { __raw: payload };
+    }
+  }
+  return { ...payload };
 }

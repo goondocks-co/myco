@@ -39,9 +39,9 @@ function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
   );
 }
 
-export function MembersTab() {
-  const { data, isLoading: membersLoading } = useTeamMembers();
-  const { data: status, isLoading: statusLoading } = useTeamStatus();
+export function MembersTab({ teamId }: { teamId?: string } = {}) {
+  const { data, isLoading: membersLoading } = useTeamMembers(teamId);
+  const { data: status, isLoading: statusLoading } = useTeamStatus(teamId);
   const selfMachineId = status?.machine_id ?? null;
   // Hold rendering until BOTH the members list AND the self machine_id
   // have resolved. Painting members before status would flicker rows

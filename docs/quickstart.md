@@ -205,14 +205,14 @@ Most users only need `@goondocks/myco`. Install the extra CLIs only when you wan
 npm install -g @goondocks/myco-team
 ```
 
-Use it for:
+Operators only — teammates join a team from the dashboard's **Team** page without this CLI. Use it for:
 
-- `myco-team install` — provision team sync
-- `myco-team upgrade` — redeploy the worker
-- `myco-team status` — show worker info and credentials
-- `myco-team rotate-tokens` — rotate API key and/or MCP token
-- `myco-team reindex-vectors` — rebuild the Vectorize index
-- `myco-team destroy` — tear down all Cloudflare resources
+- `myco-team install --name "<team name>"` — provision a team (deploys its Worker, prints a Worker URL + Team key)
+- `myco-team update --team-id <id>` — redeploy the team's Worker
+- `myco-team status --team-id <id>` — show Worker info and credentials
+- `myco-team rotate-tokens --team-id <id>` — rotate the Team key and/or MCP token
+- `myco-team reindex-vectors --team-id <id>` — rebuild the team's search index
+- `myco-team destroy --team-id <id>` — tear down the team's Cloudflare resources
 
 ### Collective CLI
 

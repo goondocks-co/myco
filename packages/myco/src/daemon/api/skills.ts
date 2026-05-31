@@ -34,8 +34,6 @@ import {
 } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
-import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
-import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
 import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
@@ -358,23 +356,9 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
   const result = deleteSkillRecordCascade(idOrName, scope);
   if (!result) return { status: 404, body: { error: `Not found: ${idOrName}` } };
 
-  // Sync deletion to team outbox (best-effort)
-  if (isTeamSyncEnabled()) {
-    try {
-      enqueueOutbox({
-        table_name: 'skill_records',
-        row_id: result.id,
-        operation: 'delete',
-        payload: JSON.stringify({ id: result.id, project_id: result.project_id, name: result.name }),
-        machine_id: getTeamMachineId(),
-        created_at: epochSeconds(),
-      });
-    } catch (err) {
-      // Best-effort sync — log for diagnosability
-      console.warn('[team-sync] Failed to enqueue skill record deletion:', err instanceof Error ? err.message : err);
-    }
-  }
-
+  // The DELETE FROM skill_records inside deleteSkillRecordCascade fires the
+  // skill_records_team_ad trigger, which journals the delete to team_outbox
+  // when this Grove's team_sync_state.enabled = 1. No manual enqueue needed.
   return { status: 200, body: { deleted: true, id: result.id, name: result.name } };
 }
 

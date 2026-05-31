@@ -54,7 +54,7 @@ describe('useTeamMembers', () => {
     const { result } = renderHook(() => useTeamMembers());
 
     expect(usePowerQueryMock).toHaveBeenCalledWith(expect.objectContaining({
-      queryKey: ['team-members'],
+      queryKey: ['team-members', null],
       refetchInterval: POLL_INTERVALS.STATS,
       pollCategory: 'standard',
     }));

@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-link-worktree dev-unlink dev-unlink-worktree ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -217,3 +217,21 @@ dev-unlink:
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"
+
+dev-link-worktree: dev-build
+	@mkdir -p $(PWD)/.myco
+	@# Pin THIS worktree to its own freshly-built binary. Do NOT touch the
+	@# shared ~/.local/bin/myco-dev symlink — the main checkout and other
+	@# agents rely on it. `.myco/runtime.command` is gitignored, so
+	@# `git worktree add` never carries the main checkout's pin; without this
+	@# the worktree falls back to prod `myco`. The global launcher + bin/myco-run
+	@# resolve the binary by walking up from cwd, so hooks, MCP, and CLI in this
+	@# worktree all dispatch to the worktree build. Routing detail + the
+	@# shared-vault schema caveat: see the `dogfood-worktree` skill.
+	@printf '%s/packages/myco-%s/bin/myco\n' "$(PWD)" "$(HOST_TARGET)" > $(PWD)/.myco/runtime.command
+	@echo "✓ $(PWD)/.myco/runtime.command pinned to packages/myco-$(HOST_TARGET)/bin/myco"
+	@echo "  (worktree-local pin; shared ~/.local/bin/myco-dev symlink unchanged)"
+
+dev-unlink-worktree:
+	@rm -f $(PWD)/.myco/runtime.command
+	@echo "✓ $(PWD)/.myco/runtime.command removed — worktree falls back to the resolution chain"

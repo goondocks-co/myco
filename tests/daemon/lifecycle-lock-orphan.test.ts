@@ -61,6 +61,7 @@ describe.skipIf(!supportsCwdIntrospection)(
     let dbPath: string;
     let lockPath: string;
     let orphan: ChildProcess | null = null;
+    let orphanHolderPid: number | null = null;
 
     beforeEach(() => {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-lock-'));
@@ -75,28 +76,49 @@ describe.skipIf(!supportsCwdIntrospection)(
     });
 
     afterEach(() => {
-      if (orphan && orphan.pid) {
-        try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
-      }
+      killOrphan();
       orphan = null;
+      orphanHolderPid = null;
       closeDatabase();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
+    function killOrphan(): void {
+      if (orphanHolderPid && orphanHolderPid !== orphan?.pid) {
+        try { process.kill(orphanHolderPid, 'SIGKILL'); } catch { /* already dead */ }
+      }
+      if (orphan?.pid) {
+        try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
+      }
+    }
+
+    function waitForOrphanExit(): Promise<void> {
+      if (!orphan || orphan.exitCode !== null || orphan.signalCode !== null) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        orphan!.once('exit', () => resolve());
+      });
+    }
+
     async function spawnOrphanHoldingLockAndSqlite(): Promise<number> {
-      orphan = spawn(process.execPath, ['run', ORPHAN_HELPER, lockPath, dbPath], {
+      orphan = spawn(process.execPath, [ORPHAN_HELPER, lockPath, dbPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: process.cwd(),
       });
       const orphanPid = orphan.pid!;
       expect(orphanPid).toBeGreaterThan(0);
+      let stdout = '';
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(
           () => reject(new Error('orphan did not become ready within 5s')),
           5000,
         );
         orphan!.stdout!.on('data', (chunk: Buffer) => {
-          if (chunk.toString('utf-8').includes('READY')) {
+          stdout += chunk.toString('utf-8');
+          const match = stdout.match(/READY\s+(\d+)/);
+          if (match) {
+            orphanHolderPid = Number(match[1]);
             clearTimeout(timer);
             resolve();
           }
@@ -109,7 +131,8 @@ describe.skipIf(!supportsCwdIntrospection)(
           reject(new Error(`orphan exited prematurely with code ${code}`));
         });
       });
-      return orphanPid;
+      expect(orphanHolderPid).toBeGreaterThan(0);
+      return orphanHolderPid!;
     }
 
     it('refuses the second daemon attempt and leaves the schema untouched', async () => {
@@ -142,13 +165,11 @@ describe.skipIf(!supportsCwdIntrospection)(
     }, 15_000);
 
     it('proceeds normally once the orphan releases the lock', async () => {
-      const orphanPid = await spawnOrphanHoldingLockAndSqlite();
+      await spawnOrphanHoldingLockAndSqlite();
       // Kill the orphan; both flock and SQLite write tx release at OS-level.
-      process.kill(orphanPid, 'SIGKILL');
-      await new Promise<void>((resolve) => {
-        if (!orphan) return resolve();
-        orphan.on('exit', () => resolve());
-      });
+      const orphanExited = waitForOrphanExit();
+      killOrphan();
+      await orphanExited;
 
       const { attemptDaemonStartup } = await import('@myco/daemon/lifecycle-lock-startup.js');
 

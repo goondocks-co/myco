@@ -1,6 +1,6 @@
-import { keepPreviousData } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
-import { fetchJson } from '../lib/api';
+import { fetchJson, postJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 
 export interface TeamStatusResponse {
@@ -17,6 +17,7 @@ export interface TeamStatusResponse {
     root: string;
   };
   enabled: boolean;
+  team_id: string | null;
   worker_url: string | null;
   has_team_key: boolean;
   team_key: string | null;
@@ -51,12 +52,21 @@ export interface TeamStatusResponse {
   mcp_token: string | null;
   mcp_endpoint: string | null;
   mcp_healthy: boolean;
+  version_status: 'ok' | 'client_too_old' | 'worker_too_old' | 'unknown';
+  daemon_protocol_version: number;
+  worker_protocol_version: number | null;
+  worker_min_client_version: number | null;
 }
 
-export function useTeamStatus() {
+export function teamSuffix(teamId?: string): string {
+  return teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+}
+
+export function useTeamStatus(teamId?: string) {
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<TeamStatusResponse>({
-    queryKey: ['team-status'],
-    queryFn: ({ signal }) => fetchJson<TeamStatusResponse>('/team/status', { signal }),
+    queryKey: ['team-status', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<TeamStatusResponse>(`/team/status${suffix}`, { signal }),
     refetchInterval: POLL_INTERVALS.STATS,
     pollCategory: 'standard',
   });
@@ -66,28 +76,31 @@ export function useTeamStatus() {
 // Sync / DLQ surfaces (queue-aware operator UI)
 // ---------------------------------------------------------------------------
 
-export interface QueueStats {
-  /** null when Cloudflare's queue API verifies the queue but does not expose a live backlog depth. */
-  depth: number | null;
-  oldest_msg_age_s: number | null;
-}
-
 export interface QueueStatsResponse {
-  main: QueueStats;
-  dlq: QueueStats;
+  enqueued: number;
+  processed: number;
+  failed: number;
+  backlog: number;
+  last_run_at: number | null;
+  last_error: string | null;
+  embed_ok?: number;
+  embed_failed?: number;
+  last_embed_error?: string | null;
+  last_embed_at?: number | null;
 }
 
 export interface DlqMessage {
-  msg_id: string;
-  body: Record<string, unknown>;
-  attempts: number;
-  last_failure?: string;
-  enqueued_at?: number;
+  lease_id: string;
+  table_name: string;
+  row_id: string;
+  machine_id: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
 }
 
 export interface DlqListResponse {
   messages: DlqMessage[];
-  next_cursor: string | null;
 }
 
 export interface TeamRemoteSyncSummary {
@@ -116,6 +129,13 @@ export interface TeamHandoffSummary {
   source: 'handoff_log' | 'flush_logs';
 }
 
+export interface TeamDriftRow {
+  table: string;
+  local: number;
+  cloud: number;
+  delta: number;
+}
+
 export interface TeamSyncSummaryResponse {
   generated_at: number;
   local: {
@@ -125,56 +145,159 @@ export interface TeamSyncSummaryResponse {
     schema_version: number;
   };
   remote: TeamRemoteSyncSummary | null;
+  /** This-machine cloud row total (sum of the worker's machine-scoped counts).
+   * Null when the worker is too old to scope. Prefer this over the all-machine
+   * `remote.total_records` for the summary Delta so cloud orphans under other
+   * machine_ids don't read as drift. */
+  remote_machine_total: number | null;
   remote_error: string | null;
   last_handoff: TeamHandoffSummary | null;
+  drift: TeamDriftRow[];
+  total_delta: number;
 }
 
-/** Worker discriminator when remote operator credentials are not configured. */
-export type CfApiTokenMissing = { error: 'cf_api_token_not_configured' };
-
-export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
-  return (
-    typeof value === 'object'
-    && value !== null
-    && (value as { error?: string }).error === 'cf_api_token_not_configured'
-  );
-}
-
-export function useTeamQueueStats(enabled: boolean) {
+export function useTeamQueueStats(enabled: boolean, teamId?: string) {
   // keepPreviousData prevents the UI from flashing the empty state on refetch.
-  return usePowerQuery<QueueStatsResponse | CfApiTokenMissing>({
-    queryKey: ['team-queue-stats'],
-    queryFn: ({ signal }) => fetchJson<QueueStatsResponse | CfApiTokenMissing>('/team/queue-stats', { signal }),
-    refetchInterval: POLL_INTERVALS.UPDATE,
+  const suffix = teamSuffix(teamId);
+  return usePowerQuery<QueueStatsResponse>({
+    queryKey: ['team-queue-stats', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<QueueStatsResponse>(`/team/queue-stats${suffix}`, { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
   });
 }
 
-export function useTeamSyncSummary(enabled: boolean) {
+export function useTeamSyncSummary(enabled: boolean, teamId?: string) {
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<TeamSyncSummaryResponse>({
-    queryKey: ['team-sync-summary'],
-    queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>('/team/sync-summary', { signal }),
-    refetchInterval: POLL_INTERVALS.UPDATE,
+    queryKey: ['team-sync-summary', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>(`/team/sync-summary${suffix}`, { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
   });
 }
 
-export function useTeamDlq(enabled: boolean) {
-  // No auto-refetch: every fetch leases the messages with a new
-  // lease_id (5-min visibility window). Auto-refetching invalidates
-  // the lease_id the user sees in the row, so Retry/Discard hit the
-  // CF API with a stale lease and silently no-op. Refreshes are
-  // triggered explicitly after retry/discard actions via
-  // queryClient.invalidateQueries.
-  return usePowerQuery<DlqListResponse | CfApiTokenMissing>({
-    queryKey: ['team-dlq'],
-    queryFn: ({ signal }) => fetchJson<DlqListResponse | CfApiTokenMissing>('/team/dlq', { signal }),
+export function useTeamDlq(enabled: boolean, teamId?: string) {
+  const suffix = teamSuffix(teamId);
+  return usePowerQuery<DlqListResponse>({
+    queryKey: ['team-dlq', teamId ?? null],
+    queryFn: ({ signal }) => fetchJson<DlqListResponse>(`/team/dlq${suffix}`, { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Team registry + project-membership selection
+// ---------------------------------------------------------------------------
+
+export interface TeamRegistryRecord {
+  team_id: string;
+  name: string;
+  worker_url: string;
+  domain: string | null;
+  mcp_endpoint: string | null;
+  created_at: string;
+  projects: { grove_id: string; project_id: string }[];
+  has_deployment?: boolean;
+}
+
+export interface TeamProjectRow {
+  grove_id: string;
+  grove_name: string;
+  project_id: string;
+  project_name: string;
+  team_id: string | null;
+}
+
+export interface TeamRegistryResponse {
+  teams: TeamRegistryRecord[];
+}
+
+export interface TeamProjectsResponse {
+  projects: TeamProjectRow[];
+}
+
+export interface SetProjectMembershipBody {
+  team_id: string;
+  grove_id: string;
+  project_id: string;
+  action: 'add' | 'remove';
+}
+
+export interface SetProjectMembershipResponse {
+  team: TeamRegistryRecord;
+}
+
+export function useTeamRegistry() {
+  return usePowerQuery<TeamRegistryResponse>({
+    queryKey: ['team-registry'],
+    queryFn: ({ signal }) => fetchJson<TeamRegistryResponse>('/team/registry', { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
+    pollCategory: 'standard',
+  });
+}
+
+export function useTeamProjects() {
+  return usePowerQuery<TeamProjectsResponse>({
+    queryKey: ['team-projects'],
+    queryFn: ({ signal }) => fetchJson<TeamProjectsResponse>('/team/projects', { signal }),
+    refetchInterval: POLL_INTERVALS.TEAM,
+    pollCategory: 'standard',
+  });
+}
+
+export function useSetProjectMembership() {
+  const qc = useQueryClient();
+  return useMutation<SetProjectMembershipResponse, Error, SetProjectMembershipBody>({
+    mutationFn: (body) =>
+      postJson<SetProjectMembershipResponse>('/team/project-membership', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Team join
+// ---------------------------------------------------------------------------
+
+export interface JoinTeamBody {
+  worker_url: string;
+  team_key: string;
+}
+
+export interface JoinTeamResponse {
+  team: TeamRegistryRecord;
+}
+
+export function useJoinTeam() {
+  const qc = useQueryClient();
+  return useMutation<JoinTeamResponse, Error, JoinTeamBody>({
+    mutationFn: (body) => postJson<JoinTeamResponse>('/team/join', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+      qc.invalidateQueries({ queryKey: ['team-status'] });
+    },
+  });
+}
+
+export function useForgetTeam() {
+  const qc = useQueryClient();
+  return useMutation<{ forgotten: boolean }, Error, { team_id: string }>({
+    mutationFn: (body) => postJson<{ forgotten: boolean }>('/team/forget', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+      qc.invalidateQueries({ queryKey: ['team-status'] });
+    },
   });
 }

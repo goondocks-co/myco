@@ -1,11 +1,23 @@
 import path from 'node:path';
 import { loadManifests, resolvePackageRoot } from './detect.js';
-import { SymbiontInstaller } from './installer.js';
+import { SymbiontInstaller, type ManagedProjectFilesResult } from './installer.js';
+import { listGroves, listRegisteredProjects, type DaemonVariant } from '../grove/registry.js';
+import { currentDaemonVariant, resolveMycoHome } from '../grove/paths.js';
+import type { SymbiontManifest } from './manifest-schema.js';
+
+export interface ManagedProjectFilesOutcome {
+  groveId: string;
+  projectId: string;
+  projectRoot: string;
+  result: ManagedProjectFilesResult | null;
+  error: string | null;
+}
 
 /**
- * Reconcile the project-scoped artefacts that a `capture` / `symbionts`
- * config change can affect under the global-install model: the project
- * `.gitignore` (bundled skill dirs + configured plan dirs + wrangler cache).
+ * Reconcile the project-scoped artifacts that a `capture` / `symbionts`
+ * config change can affect under the global-install model: managed rules
+ * guidance plus the project `.gitignore` (bundled skill dirs + configured
+ * plan dirs + wrangler cache).
  *
  * Symbiont hooks are installed GLOBALLY by bootstrap / `myco update`. They are
  * deliberately NOT re-created at project scope here. The previous version
@@ -17,24 +29,78 @@ import { SymbiontInstaller } from './installer.js';
  * regression was invisible: a clean-break un-done with no user-facing symptom,
  * leaving stray `.agents/` churn in `git status`.
  *
- * The only project-scoped write the global model needs on a capture/symbionts
- * change is the `.gitignore` reconciliation (mirrors the migration pass's
- * `reconcileProjectGitignore` call). Idempotent: re-running with the same
- * config produces the same `.gitignore`.
+ * Project-managed files are still local repository surfaces. Keep those
+ * reconciled through `reconcileManagedProjectFiles()` so future managed files
+ * join one durable pattern instead of each caller growing a separate write.
  */
 export function reconcileConfiguredSymbionts(
   projectRoot: string,
   vaultDir: string = path.join(projectRoot, '.myco'),
   groveId?: string | null,
 ): number {
-  const manifests = loadManifests();
-  if (manifests.length === 0) return 0;
-  // Gitignore reconciliation is symbiont-agnostic (it manages canonical skill
-  // dirs + plan dirs + wrangler cache), so any manifest serves — mirrors the
-  // migration pass, which also reconciles via `manifests[0]`.
+  const result = reconcileManagedProjectFiles(projectRoot, vaultDir, groveId);
+  return result ? 1 : 0;
+}
+
+export function reconcileManagedProjectFiles(
+  projectRoot: string,
+  vaultDir: string = path.join(projectRoot, '.myco'),
+  groveId?: string | null,
+  options: { manifests?: SymbiontManifest[]; packageRoot?: string } = {},
+): ManagedProjectFilesResult | null {
+  const manifests = options.manifests ?? loadManifests();
+  if (manifests.length === 0) return null;
+  const packageRoot = options.packageRoot ?? resolvePackageRoot();
+  // Managed project-file reconciliation is symbiont-agnostic (rules guidance,
+  // canonical skill dirs + plan dirs + wrangler cache), so any manifest serves.
   const installer = new SymbiontInstaller(
-    manifests[0], projectRoot, resolvePackageRoot(), false, vaultDir, groveId ?? null, 'project',
+    manifests[0], projectRoot, packageRoot, false, vaultDir, groveId ?? null, 'project',
   );
-  installer.reconcileProjectGitignore();
-  return 1;
+  return installer.reconcileManagedProjectFiles();
+}
+
+export function reconcileRegisteredManagedProjectFiles(
+  options: {
+    mycoHome?: string;
+    servedBy?: DaemonVariant;
+    manifests?: SymbiontManifest[];
+    packageRoot?: string;
+  } = {},
+): ManagedProjectFilesOutcome[] {
+  const mycoHome = options.mycoHome ?? resolveMycoHome();
+  const servedBy = options.servedBy ?? currentDaemonVariant();
+  const manifests = options.manifests ?? loadManifests();
+  const packageRoot = options.packageRoot ?? resolvePackageRoot();
+  const outcomes: ManagedProjectFilesOutcome[] = [];
+  if (manifests.length === 0) return outcomes;
+
+  for (const grove of listGroves(mycoHome, { servedBy })) {
+    for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+      try {
+        const result = reconcileManagedProjectFiles(
+          project.root,
+          path.join(project.root, '.myco'),
+          grove.id,
+          { manifests, packageRoot },
+        );
+        outcomes.push({
+          groveId: grove.id,
+          projectId: project.project_id,
+          projectRoot: project.root,
+          result,
+          error: null,
+        });
+      } catch (err) {
+        outcomes.push({
+          groveId: grove.id,
+          projectId: project.project_id,
+          projectRoot: project.root,
+          result: null,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  return outcomes;
 }

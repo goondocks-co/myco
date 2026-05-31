@@ -286,6 +286,18 @@ const KNOWLEDGE_RELEASE_STATE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
+const TEAM_MEMBERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_members (
+    id          TEXT NOT NULL,
+    machine_id  TEXT NOT NULL,
+    "user"      TEXT NOT NULL DEFAULT '',
+    role        TEXT,
+    joined      TEXT,
+    tags        TEXT,
+    synced_at   INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
 const NODES_TABLE = `
   CREATE TABLE IF NOT EXISTS nodes (
     machine_id              TEXT PRIMARY KEY,
@@ -300,6 +312,33 @@ const TEAM_CONFIG_TABLE = `
   CREATE TABLE IF NOT EXISTS team_config (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
+  )`;
+
+const TEAM_SYNC_STATS_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_sync_stats (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    enqueued         INTEGER NOT NULL DEFAULT 0,
+    processed        INTEGER NOT NULL DEFAULT 0,
+    failed           INTEGER NOT NULL DEFAULT 0,
+    last_run_at      INTEGER,
+    last_error       TEXT,
+    embed_ok         INTEGER NOT NULL DEFAULT 0,
+    embed_failed     INTEGER NOT NULL DEFAULT 0,
+    last_embed_error TEXT,
+    last_embed_at    INTEGER
+  )`;
+
+const TEAM_DLQ_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_dlq (
+    lease_id     TEXT PRIMARY KEY,
+    table_name   TEXT NOT NULL,
+    row_id       TEXT NOT NULL,
+    machine_id   TEXT NOT NULL,
+    operation    TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    reason       TEXT,
+    created_at   INTEGER NOT NULL,
+    replay_count INTEGER NOT NULL DEFAULT 0
   )`;
 
 const BASE_SECONDARY_INDEXES = [
@@ -363,8 +402,11 @@ const ALL_DDLS = [
   SKILL_RECORDS_TABLE,
   SKILL_USAGE_TABLE,
   KNOWLEDGE_RELEASE_STATE_TABLE,
+  TEAM_MEMBERS_TABLE,
   NODES_TABLE,
   TEAM_CONFIG_TABLE,
+  TEAM_SYNC_STATS_TABLE,
+  TEAM_DLQ_TABLE,
 ];
 
 export interface InitD1Options {
@@ -398,6 +440,9 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
 
+  // Seed the single team_sync_stats row. INSERT OR IGNORE makes this idempotent.
+  await db.prepare('INSERT OR IGNORE INTO team_sync_stats (id) VALUES (1)').run();
+
   // Migrations for existing tables (safe to re-run — silently ignored if column exists)
   const migrations = [
     'ALTER TABLE plans ADD COLUMN logical_key TEXT',
@@ -426,6 +471,11 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     'ALTER TABLE skill_candidates ADD COLUMN project_id TEXT',
     'ALTER TABLE skill_records ADD COLUMN project_id TEXT',
     'ALTER TABLE skill_usage ADD COLUMN project_id TEXT',
+    'ALTER TABLE team_sync_stats ADD COLUMN embed_ok INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE team_sync_stats ADD COLUMN embed_failed INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE team_sync_stats ADD COLUMN last_embed_error TEXT',
+    'ALTER TABLE team_sync_stats ADD COLUMN last_embed_at INTEGER',
+    'ALTER TABLE team_dlq ADD COLUMN replay_count INTEGER NOT NULL DEFAULT 0',
   ];
   for (const sql of migrations) {
     try {
@@ -462,6 +512,8 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     ['resolution_events', ['project_id']],
     ['digest_extracts', ['project_id']],
     ['skill_records', ['project_id']],
+    ['team_sync_stats', ['embed_ok', 'embed_failed', 'last_embed_error', 'last_embed_at']],
+    ['team_dlq', ['replay_count']],
   ]);
 
   for (const sql of [...POST_MIGRATION_INDEXES, ...PROJECT_SCOPE_INDEXES]) {

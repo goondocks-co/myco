@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
-  }
-}

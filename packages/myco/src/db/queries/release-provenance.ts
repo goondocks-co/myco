@@ -10,6 +10,7 @@ import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 
 export const RELEASE_CAPTURE_POINTS = [
   'session_start',
@@ -326,7 +327,7 @@ export function insertGitProvenance(input: GitProvenanceInsert, dbArg?: Database
        error                    = EXCLUDED.error`,
   ).run(
     input.project_id ?? null,
-    input.machine_id ?? 'local',
+    input.machine_id ?? getTeamMachineId(),
     identityKey,
     input.session_id ?? null,
     input.prompt_batch_id ?? null,
@@ -394,7 +395,7 @@ export function upsertReleaseState(input: ReleaseStateUpsert, dbArg?: Database):
        updated_at              = EXCLUDED.updated_at`,
   ).run(
     input.project_id ?? null,
-    input.machine_id ?? 'local',
+    input.machine_id ?? getTeamMachineId(),
     identityKey,
     input.namespace,
     input.record_id,

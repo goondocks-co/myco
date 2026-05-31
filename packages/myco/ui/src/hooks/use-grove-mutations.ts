@@ -52,7 +52,6 @@ export interface DeleteProjectResponse {
     project_name: string;
     snapshot_path: string;
     table_counts: Record<string, number>;
-    tombstones_enqueued: number;
   };
 }
 

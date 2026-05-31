@@ -204,6 +204,11 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/team-members-handler.test.ts',
       'tests/daemon/update-in-progress-sentinel.test.ts',
       'tests/daemon/update-installer.test.ts',
+      // machine-id.test.ts tests the real getMachineId() implementation and
+      // must NOT share a process with team-sync.test.ts, which mocks the
+      // entire @myco/daemon/machine-id.js module. Kept here where no such
+      // mock exists.
+      'tests/daemon/machine-id.test.ts',
       // tests/daemon/event-loop-lag.test.ts intentionally omitted: it uses
       // real timers plus synchronous loop blocking. In the Linux shared Bun
       // daemon-root phase, earlier timer-heavy daemon tests can leave enough
@@ -287,7 +292,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/reconcile-existing-daemon.test.ts',
       'tests/daemon/grove-runtime-cache.test.ts',
       'tests/daemon/eviction.test.ts',
-      'tests/daemon/machine-id.test.ts',
       'tests/daemon/server-security.test.ts',
       'tests/daemon/grove-ownership-boundary.test.ts',
       'tests/daemon/legacy-scope-removed.test.ts',

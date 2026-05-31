@@ -24,7 +24,7 @@ const supported = process.platform === 'linux' || process.platform === 'darwin';
 const ORPHAN_HELPER = path.resolve('tests/helpers/lifecycle-lock-orphan-helper.ts');
 
 async function spawnHolder(scriptArgs: string[], stdoutSignal: string): Promise<ChildProcess> {
-  const child = spawn(process.execPath, ['run', ORPHAN_HELPER, ...scriptArgs], {
+  const child = spawn(process.execPath, [ORPHAN_HELPER, ...scriptArgs], {
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: process.cwd(),
   });

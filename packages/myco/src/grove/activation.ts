@@ -310,7 +310,9 @@ export function activateProjectMigration(
   let validation: ActivationValidationSummary | null = null;
 
   try {
-    createSchema(targetDb);
+    // Use the resolved target machine id so the v52 conversion runs; the
+    // 'local' default would skip the machine_id='local'→real backfill.
+    createSchema(targetDb, targetMachineId);
     targetDb.transaction(() => {
       assertTargetProjectIsEmpty(targetDb, identity.projectId);
       importResult = importProjectCoreRows({

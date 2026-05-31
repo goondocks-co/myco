@@ -43,6 +43,7 @@ const DELETE_TABLES = [
   'artifacts',
   'team_members',
   'team_outbox',
+  'team_sync_state',
   'notifications',
   'sessions',
   'agents',

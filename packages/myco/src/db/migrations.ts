@@ -43,6 +43,9 @@ import {
   TABLE_DDLS,
   FTS_TABLES,
   SECONDARY_INDEXES,
+  TEAM_DELETE_TRIGGERS,
+  TEAM_DELETE_TRIGGER_TABLES,
+  TEAM_SYNC_OBSERVED_TABLES,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -109,6 +112,9 @@ export const MIGRATIONS: Migration[] = [
   { version: 48, migrate: (db) => migrateV47ToV48(db) },
   { version: 49, migrate: (db) => migrateV48ToV49(db) },
   { version: 50, migrate: (db) => migrateV49ToV50(db) },
+  { version: 51, migrate: (db) => migrateV50ToV51(db) },
+  { version: 52, migrate: (db, machineId) => migrateV51ToV52(db, machineId) },
+  { version: 53, migrate: (db) => migrateV52ToV53(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3128,6 +3134,181 @@ function migrateV49ToV50(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(50, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v50 → v51: Grove-scoped Team-sync write path.
+ *
+ * Adds the per-Grove `team_sync_state` flag and the AFTER DELETE triggers
+ * that journal deletes into `team_outbox`. Both are also in the fresh-install
+ * DDL and the reapply sweep, so this just guarantees they exist for vaults
+ * upgrading from v50. The flag stays at its default (disabled); the daemon
+ * reconciles it from each Grove's `team.enabled` config at runtime.
+ */
+function migrateV50ToV51(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS team_sync_state (
+        rowid_guard INTEGER PRIMARY KEY CHECK (rowid_guard = 1),
+        enabled     INTEGER NOT NULL DEFAULT 0
+      )`);
+    for (const trg of TEAM_DELETE_TRIGGERS) { db.exec(trg); }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(51, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Migrate v51 -> v52: convert machine_id='local' -> real machineId across the
+ * SYNCED table set only — the tables that actually get pushed to the team Worker.
+ *
+ * migrateV6ToV7 was a one-shot backfill with a hardcoded table list that missed
+ * knowledge_release_state, knowledge_git_provenance, and skill_usage. v52 instead
+ * intersects the live schema with TEAM_SYNC_OBSERVED_TABLES (the canonical synced
+ * list, kept in parity with the worker's SYNCED_TABLES), so:
+ *   - every synced table — including entity_mentions (composite key, bare UPDATE)
+ *     and skill_usage (no synced_at column) — is converted, and
+ *   - infra/local-only tables are never touched. In particular team_outbox carries
+ *     a machine_id COLUMN but its routing identity lives inside the payload JSON;
+ *     rewriting only the column would desync an in-flight 'local'-queued row (the
+ *     worker's upsert lets the payload's machine_id win). Excluding team_outbox
+ *     here keeps the column and payload consistent. Other infra tables
+ *     (team_sync_state, team_members) are likewise left alone.
+ *
+ * For tables that also have synced_at, we reset it to NULL so the converted rows
+ * are re-enqueued for team sync under the real machine id.
+ *
+ * Local schema: PK is `id` alone (or a composite key for entity_mentions), so a
+ * plain UPDATE is collision-safe. Do NOT touch cloud D1 here (that is FU6-F3).
+ *
+ * Idempotent: a second run finds zero machine_id='local' rows and is a no-op.
+ */
+function migrateV51ToV52(db: Database, machineId: string): void {
+  if (machineId === 'local' || machineId === DEFAULT_MACHINE_ID) {
+    // Nothing to convert with a 'local' identity. Still stamp the version so the
+    // registry doesn't re-run, BUT first surface a warning if synced tables hold
+    // real data that should have been converted — that means a Grove-DB-open call
+    // site failed to pass the resolved machine id, and the conversion is being
+    // permanently skipped for this vault. Visible warning > silent dead migration.
+    let staleLocalRows = 0;
+    for (const table of TEAM_SYNC_OBSERVED_TABLES) {
+      try {
+        const cols = new Set(
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (c) => c.name,
+          ),
+        );
+        if (!cols.has('machine_id')) continue;
+        const row = db
+          .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE machine_id = 'local'`)
+          .get() as { n: number };
+        staleLocalRows += row.n;
+      } catch {
+        // Missing table (partial schema in tests) — skip; not our concern here.
+      }
+    }
+    if (staleLocalRows > 0) {
+      console.warn(
+        `[migrations] v52 skipped machine_id conversion: createSchema was called with ` +
+          `machineId='${machineId}', but ${staleLocalRows} synced-table row(s) still carry ` +
+          `machine_id='local'. A Grove-DB-open call site is not passing the resolved machine ` +
+          `id (getMachineId()); these rows will not sync correctly until that is fixed.`,
+      );
+    }
+
+    db.prepare('BEGIN').run();
+    try {
+      db.prepare(
+        `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+      ).run(52, epochSeconds());
+      db.prepare('COMMIT').run();
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      throw err;
+    }
+    return;
+  }
+
+  db.prepare('BEGIN').run();
+  try {
+    // Scope to the canonical synced table set, intersected with the live schema.
+    // This skips synced tables that lack a machine_id column gracefully and never
+    // touches team_outbox / infra tables (see header comment for the desync rationale).
+    for (const table of TEAM_SYNC_OBSERVED_TABLES) {
+      const cols = new Set(
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+          (c) => c.name,
+        ),
+      );
+      if (!cols.has('machine_id')) continue;
+      const setSynced = cols.has('synced_at') ? ', synced_at = NULL' : '';
+      db.prepare(
+        `UPDATE ${table} SET machine_id = ?${setSynced} WHERE machine_id = 'local'`,
+      ).run(machineId);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(52, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v52 → v53: per-row project attribution on the team-sync outbox.
+ *
+ * Adds a nullable `project_id` column to `team_outbox` so each queued row
+ * can later be routed to the right team's worker. Existing rows get NULL,
+ * which is correct — they were queued before per-project routing existed.
+ *
+ * The AFTER DELETE triggers must be recreated to capture `OLD.project_id`:
+ * ALTER TABLE only touches the table, never trigger bodies. Every table in
+ * TEAM_DELETE_TRIGGER_TABLES carries a `project_id` column, so the updated
+ * TEAM_DELETE_TRIGGERS use `OLD.project_id` uniformly. We DROP each trigger
+ * (CREATE TRIGGER IF NOT EXISTS is a no-op when the old definition is still
+ * present) and re-CREATE it from the current DDL, iterating both lists by
+ * index so the trigger name and its DDL stay aligned.
+ */
+function migrateV52ToV53(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // ADD COLUMN is not idempotent in SQLite — guard on the live column set so
+    // a partially-applied or hand-patched schema doesn't abort here.
+    const cols = new Set(
+      (db.prepare(`PRAGMA table_info(team_outbox)`).all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+    if (!cols.has('project_id')) {
+      db.prepare(`ALTER TABLE team_outbox ADD COLUMN project_id TEXT`).run();
+    }
+
+    // Recreate the delete triggers so existing DBs capture project_id. ALTER
+    // does not update trigger bodies, so DROP + CREATE is required.
+    TEAM_DELETE_TRIGGER_TABLES.forEach((table, i) => {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+      db.exec(TEAM_DELETE_TRIGGERS[i]);
+    });
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(53, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

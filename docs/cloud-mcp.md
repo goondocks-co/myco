@@ -47,11 +47,11 @@ Six read-only tools. The Cloud MCP surface follows the local search-then-entity 
 
 ## Setting it up
 
-If you've already run `myco-team install`, the Cloud MCP server is deployed automatically the next time you click **Update Worker** in the Team page. New team deployments get it out of the box.
+New teams get the Cloud MCP server out of the box. For a team provisioned before this feature, the operator picks it up by redeploying the Worker — run `myco-team update --team-id <id>` (the command is also shown, copyable, on the Team page's **Teams** tab).
 
 ## Finding your endpoint
 
-Open the Myco dashboard → **Team** page. When team sync is connected, a **Cloud MCP Endpoint** section shows:
+Open the Myco dashboard → **Team** page and select the team. On its **Status** tab, the **Cloud MCP Endpoint** section shows:
 
 - The MCP endpoint URL
 - The MCP access token (redacted by default; click the eye to reveal, copy button on hover)

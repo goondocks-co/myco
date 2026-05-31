@@ -138,7 +138,8 @@ export async function runAgent(
   options?: RunOptions,
 ): Promise<AgentRunResult> {
   const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
-  createSchema(db);
+  // Real machine id (not the 'local' default) so the v52 conversion runs.
+  createSchema(db, getMachineId());
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
   const projectId = rowProjectIdFromRequestContext(options?.requestContext);

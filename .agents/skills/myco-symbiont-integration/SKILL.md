@@ -1,20 +1,18 @@
 ---
 name: myco:myco-symbiont-integration
 description: >-
-  Use this skill when adding or maintaining a Myco symbiont integration,
-  or debugging capture-pipeline and installer issues for a supported agent.
-  It covers architectural foundations, manifests, hook templates, transcript parsing, image and
-  attachment format differences, declarative capture rules, the cross-platform
-  hook guard, SymbiontInstaller wiring, installer fixtures, session identity,
-  phantom-session defenses, environment-variable injection, transcript
-  path parsing failures, registration.mcpCwd field for portable MCP launch,
-  SDK-specific MCP configuration requirements (Claude SDK auto-loading,
-  OpenAI strict function-calling, strictMcpConfig, settingSources control),
-  Runtime.command redirect mechanisms, substituteRuntimeCommand flag for
-  PATH collision handling, universal stop buffer fallback patterns, scratchProbe()
-  session validation, installer skill discovery, MCP tool registration verification
-  procedures, API verification discipline, ephemeral sub-invocation capture
-  filter for sub-agent phantom defense.
+  Use this skill when adding or maintaining a Myco symbiont integration, or debugging
+  capture issues. Covers architectural foundations, manifests, hook templates, transcript
+  parsing with CC 2.1.x dual-shape support, capture rules, hook guards, SymbiontInstaller
+  registration, session identity, phantom defenses, environment injection, registration.mcpCwd
+  for portable MCP, SDK-specific MCP configuration (Claude SDK auto-loading, OpenAI strict
+  function-calling, strictMcpConfig), Runtime.command redirects, substituteRuntimeCommand,
+  buffer fallback patterns, scratchProbe() validation, tool registration verification, API
+  verification, source==exec filters, global symbiont installation patterns including
+  phantom-vault unbound mode, greenfield/brownfield bootstrap, multi-variant bootstrap,
+  variant-pinned daemon isolation, universal injection architecture with
+  cortex-injection-context.ts, myco:inject_cortex, and recordInjectionAndShouldSuppress
+  dedup wrapper.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -69,7 +67,7 @@ Steering prompts occur mid-turn when users refine their request. The hierarchica
 2. **Implement turn boundary detection** by tracking when a new user prompt appears before the previous assistant response completes.
 
 3. **Symbiont-specific detection:**
-   - **Claude Code**: Mine JSONL transcripts for `role: "user"` entries between tool_use blocks
+   - **Claude Code**: Mine JSONL transcripts for `role: \"user\"` entries between tool_use blocks. CC 2.1.x uses dual-shape parsing: both array-based and object-based transcript formats must be supported.
    - **Codex**: Detect `turn_id` changes in the event stream
    - **Antigravity**: Parse JSON stdin/stdout for new turn markers (see Procedure 9.3)
    - **OpenCode**: Parse plugin field boundaries in server responses
@@ -151,6 +149,164 @@ capture:
 ```
 
 **Gotcha:** Don't confuse `parent_session_id` (delegation context) with `session_id` (identity). A subagent session has its own identity but maintains parent linkage.
+
+---
+
+## Architectural Foundations: Universal Injection Architecture
+
+Cortex injection enables subagent contexts (spores, canopy entries, prior work) to flow into delegation chains without requiring the subagent to know about Myco internals.
+
+### cortex-injection-context.ts: The Injection Module
+
+Located at `packages/myco/src/agent/harness/cortex-injection-context.ts`, this module provides utilities for propagating context through delegation chains.
+
+**Core Pattern:**
+
+```typescript
+// Parent captures injection request during agent invocation
+const injectionRequest = {
+  sporeIds: ['spore-123', 'spore-456'],
+  canopyIds: ['entry-abc'],
+  cortexPayload: compressedContext
+};
+
+// Encode and pass via environment or stdin
+process.env.MYCO_CORTEX_INJECTION = encodeInjection(injectionRequest);
+
+// Subagent decodes and registers injection
+const injectedContext = decodeInjection(process.env.MYCO_CORTEX_INJECTION);
+await recordInjectionAndShouldSuppress(injectedContext);
+```
+
+### Synthetic Activity Markers
+
+Injected knowledge appears in Myco's activity stream as synthetic activities with type `myco:inject_cortex`:
+
+```json
+{
+  "type": "myco:inject_cortex",
+  "source_session_id": "parent-session-123",
+  "injected_spore_ids": ["spore-123", "spore-456"],
+  "injected_canopy_ids": ["entry-abc"],
+  "injection_timestamp": 1234567890
+}
+```
+
+These markers allow the consolidation pipeline to trace injection provenance.
+
+### recordInjectionAndShouldSuppress Dedup Wrapper
+
+**Problem:** If a subagent invokes a grandchild, the same spore should not be injected twice, creating duplicate work.
+
+**Solution:** The `recordInjectionAndShouldSuppress` wrapper checks the session lineage:
+
+```typescript
+async function recordInjectionAndShouldSuppress(
+  injectionRequest: InjectionRequest,
+  sessionId: string
+): Promise<boolean> {
+  // Check if this spore was already injected in the parent chain
+  const parentInjections = await fetchAncestorInjections(sessionId);
+  const shouldSuppress = parentInjections.some(
+    parent => parent.sporeIds.includes(injectionRequest.sporeId)
+  );
+
+  if (!shouldSuppress) {
+    await recordSyntheticInjectionActivity(injectionRequest, sessionId);
+  }
+
+  return shouldSuppress;
+}
+```
+
+---
+
+## Architectural Foundations: Global Symbiont Installation Patterns (PR #355)
+
+Global installation manages multi-variant daemon deployment, phantom-vault isolation, and write-ordering safety.
+
+### Phantom-Vault Unbound Mode
+
+**Problem:** Symbionts may be installed in projects without Myco, or in environments where vault connectivity is unreachable.
+
+**Solution:** Phantom-vault unbound mode buffers events locally and syncs on reconnection:
+
+```yaml
+installation:
+  phantomVault:
+    enabled: true
+    bufferLocation: ~/.myco/phantom-vault-buffer
+    maxBufferSize: 1000000
+    syncOnReconnect: true
+```
+
+**Behavior:**
+- When vault is unreachable, events buffer to local disk
+- On reconnection, batched events sync to vault
+- Session identity is preserved across sync boundaries
+
+### Greenfield vs. Brownfield Bootstrap
+
+**Greenfield:** First-time installation in a new project.
+
+```typescript
+async function bootstrapGreenfield(projectPath: string) {
+  // 1. Create .agents/myco directory
+  // 2. Install .agents/myco-run.cjs hook guard
+  // 3. Register symbiont variant in phantom-vault
+  // 4. Emit first synthetic bootstrap activity
+  // 5. Start daemon with empty session registry
+}
+```
+
+**Brownfield:** Adding Myco to an existing agent setup.
+
+```typescript
+async function bootstrapBrownfield(projectPath: string, existingAgent: AgentConfig) {
+  // 1. Preserve existing agent structure
+  // 2. Merge Myco hooks non-destructively
+  // 3. Reconcile existing sessions with Myco registry
+  // 4. Import prior session history if available
+}
+```
+
+### Multi-Variant Bootstrap and Launcher Write-Ordering
+
+**Problem:** Multiple symbiont variants (e.g., Claude Code + Codex in same IDE) may race to write the launcher script.
+
+**Solution:** Use atomic write-ordering with metadata:
+
+```typescript
+interface LauncherMetadata {
+  variants: string[];  // e.g., ['claude-code', 'codex']
+  timestamp: number;
+  installerVersion: string;
+}
+
+async function writeSymbiontLauncher(variantId: string, metadata: LauncherMetadata) {
+  // 1. Read existing launcher metadata (if present)
+  // 2. Merge new variant into variants array
+  // 3. Write atomically: metadata + launcher script
+  // 4. Verify all variants are registered
+}
+```
+
+### Variant-Pinned Daemon Isolation
+
+Each symbiont variant may run with different daemon versions or configurations. Isolation prevents cross-variant interference:
+
+```yaml
+installation:
+  daemonVariants:
+    claude-code:
+      daemonPath: ~/.myco/daemon-cc-2.1.x
+      configPath: ~/.myco/daemon-cc.yaml
+      isolate: true
+    codex:
+      daemonPath: ~/.myco/daemon-codex-1.0
+      configPath: ~/.myco/daemon-codex.yaml
+      isolate: true
+```
 
 ---
 
@@ -285,35 +441,30 @@ if (!isValidSession) {
 
 ---
 
-## Procedure 6: Ephemeral Sub-Invocation Filter — 4th Phantom Defense Layer
+## Procedure 6: source==exec Filter — 4th Phantom Defense Layer
 
-**Problem:** Some agents spawn internal LLM sub-invocations (e.g. Codex's UI title generation) that fire `SessionStart`/`UserPromptSubmit` with their own `session_id`. Without filtering, each creates a phantom session.
+**Problem:** Agents spawn sub-agent processes that also have hooks installed. Without filtering, each creates phantom sessions.
 
-**Solution:** Add a `session_start` rule in the manifest that `drop`s the phantom on a structural signal. The robust signal is `transcript_path_missing`: real user-facing sessions always have a rollout/transcript file, ephemeral sub-invocations never do. Key on the protocol contract, not on prompt text that can drift. (The `CaptureRule` schema matches via `when:` — `transcript_path_missing` or a `session_meta` dot-path — and supports `drop` / `rewrite_prompt` / `classify`; there is no `source` field.)
+**Solution:** Add a rule in the manifest to filter `source==exec` calls:
 
 ```yaml
 capture:
   rules:
-    # Layer 1 — stop the phantom from ever being registered.
-    - event: session_start
-      scope: any_agent
-      when:
-        transcript_path_missing: true
-      action: drop
-      reason: ephemeral-sub-invocation
-    # Layer 2 — safety net for a phantom row that slipped past SessionStart
-    #           (e.g. the rollout file hadn't flushed when SessionStart fired).
+    - source: exec
+      event: session_start
+      action: skip
+      reason: Filter sub-agent spawns
 ```
 
-See `codex.yaml` for the live two-layer example. All four phantom defense layers must be present:
+All four phantom defense layers must be present:
 1. **Zod schema must accept null** for `transcript_path`
 2. **Filter BEFORE daemon wake** via `evaluateSessionStartRules()`
 3. **Complete drop filter** covering project path matching, symbiont identity
-4. **Ephemeral sub-invocation filter** (`transcript_path_missing` drop) for agents that spawn hooked sub-invocations
+4. **source==exec filter** for sub-agent invocations
 
 ---
 
-## Procedure 7: Installer Integration and Skill Discovery
+## Procedure 7: Installer Integration and Configuration
 
 ### 7.1 SymbiontInstaller Registration
 
@@ -328,7 +479,17 @@ symbiont: {
 }
 ```
 
-### 7.2 Installer Skill Discovery Filtering
+### 7.2 Configuration via Symbionts UI
+
+**Change (as of PR #355):** Symbiont configuration now moves to the Symbionts UI page in Myco's web interface, not through `myco init`. When adding a new symbiont:
+
+1. **Use SymbiontInstaller.install()** to register the symbiont variant
+2. **Navigate to Symbionts UI** to configure capture rules, hook settings, and installation paths
+3. **Verify installation** via the doctor command, which validates both code-level setup and UI configuration
+
+This decouples symbiont setup from terminal-based initialization.
+
+### 7.3 Installer Skill Discovery Filtering
 
 Filter skill discovery to SKILL.md files only to avoid false positives:
 
@@ -447,13 +608,19 @@ All four layers must be present:
 1. **Zod schema must accept null:** `transcript_path: z.string().nullable()`
 2. **Filter BEFORE daemon wake:** `evaluateSessionStartRules()` fires first
 3. **Complete drop filter:** project path matching, symbiont identity
-4. **Ephemeral sub-invocation filter:** `session_start` + `transcript_path_missing` drop rule blocks sub-agent phantoms
+4. **source==exec filter:** blocks sub-agent invocations
 
 ---
 
 ## Cross-Cutting Gotchas
 
 **Cortex delegation chains preserve lineage** — Parent session ID propagates through subagent invocations via MYCO_PARENT_SESSION_ID. Always set when delegating.
+
+**Cortex injection dedup prevents duplicate synthesis** — Use recordInjectionAndShouldSuppress to avoid re-injecting the same spore across delegation chains. Check ancestor injections before recording new synthesis.
+
+**cortex-injection-context.ts subagent propagation** — The injection module at packages/myco/src/agent/harness/cortex-injection-context.ts provides encode/decode utilities. Always use this module when passing context through environment variables, not custom encoding.
+
+**Universal injection architecture enables knowledge flow** — Spores and canopy entries can now flow into subagent contexts without the subagent knowing about Myco. Use myco:inject_cortex synthetic activities to trace provenance.
 
 **Antigravity JSON contract is strict** — Respect the exact JSON format. Type mismatches cause parsing failures and phantom sessions.
 
@@ -486,3 +653,9 @@ All four layers must be present:
 **Event normalization** — Don't assume all symbionts follow same event structure. Use `normalizeHookInput()` for non-standard fields.
 
 **Lineage preservation during fallback** — Maintain proper session → batch → spore edges when using buffer fallback or transcript reconciliation.
+
+**Global installation write-ordering** — Multi-variant installations must use atomic launcher writes with metadata merging. Don't overwrite variant arrays.
+
+**Phantom-vault unbound mode requires buffer cleanup** — Local event buffers must be purged after successful sync to prevent duplicate events on reconnection.
+
+**Variant-pinned daemon isolation prevents version conflicts** — Each symbiont variant can run with different daemon versions. Don't share daemon state across variants without explicit configuration.

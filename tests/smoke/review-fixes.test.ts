@@ -3,8 +3,17 @@
  *
  * Verifies the behavioral changes from the 28-finding review are correct.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+
+// ---------------------------------------------------------------------------
+// Pin getMachineId to a fixed sentinel so any test that exercises the
+// getTeamMachineId() fallback path is deterministic across machines and CI.
+// ---------------------------------------------------------------------------
+const TEST_MACHINE_ID = 'testuser_aabbccdd';
+mock.module('@myco/daemon/machine-id.js', () => ({
+  getMachineId: () => TEST_MACHINE_ID,
+}));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun, getRunningRunForTask, getLatestRunId, STATUS_RUNNING, STATUS_COMPLETED } from '@myco/db/queries/runs.js';
@@ -653,7 +662,7 @@ describe('machine_id fix: insertBatchStateless', () => {
     expect(batch.machine_id).toBe('correct-machine');
   });
 
-  it('defaults to local without machine_id', async () => {
+  it('defaults to the configured machine id when machine_id is not provided', async () => {
     const { upsertSession } = await import('@myco/db/queries/sessions.js');
     const { insertBatchStateless } = await import('@myco/db/queries/batches.js');
 
@@ -667,6 +676,8 @@ describe('machine_id fix: insertBatchStateless', () => {
       created_at: now,
     });
 
-    expect(batch.machine_id).toBe('local');
+    // getTeamMachineId() now falls back to getMachineId() (the real persisted id)
+    // rather than hard-coding 'local'. The mock above pins it to TEST_MACHINE_ID.
+    expect(batch.machine_id).toBe(TEST_MACHINE_ID);
   });
 });

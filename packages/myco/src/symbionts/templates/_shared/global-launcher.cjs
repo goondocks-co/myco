@@ -87,10 +87,11 @@ if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'ant
 }
 
 // 0. Project-local launcher override.
-// Preserves the dogfood path (`make dev-link-worktree` writes
-// `.agents/myco-run.cjs` + `.myco/runtime.command` in the dev repo) and
-// tolerates a legacy project-local stub from a pre-global install.
-// Walk up from cwd so the check is worktree-aware.
+// If a project ships its own `.agents/myco-run.cjs` / `myco-cli.cjs` (a
+// deliberately committed launcher, or a legacy stub from a pre-global
+// install), delegate to it. `make dev-link-worktree` does NOT create these —
+// it writes `.myco/runtime.command`, which the runtime-resolution chain below
+// handles. Walk up from cwd so the check is worktree-aware.
 //
 // Pre-upgrade brownfield projects also have a `.agents/myco-run.cjs`
 // stub left over from old myco. Those stubs DO NOT carry the

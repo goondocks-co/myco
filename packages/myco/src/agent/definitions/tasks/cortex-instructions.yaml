@@ -120,7 +120,7 @@ phases:
              need project layout — finding a feature, locating the right
              file before editing, or orienting in this codebase." Use
              exactly one invocation form (MCP). Do NOT also list the
-             `node .agents/myco-cli.cjs tool call ...` CLI form in this
+             `myco tool call ...` CLI form in this
              paragraph; the dual-form phrasing reads as two redundant
              steps and is the reason agents skip the tool. Frame it as a
              default first move, never as a condition the agent
@@ -164,7 +164,7 @@ phases:
          instructions verbatim in that agent's prompt, along with the
          task-specific instructions. Include this CLI fallback in the same
          sentence for hosts without MCP:
-         `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"instructions"}'`.
+         `myco tool call myco_cortex --json --input '{"op":"instructions"}'`.
          Do not assume the returned instructions have any particular
          heading or section name.
 

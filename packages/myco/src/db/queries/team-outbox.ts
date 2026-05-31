@@ -11,7 +11,9 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
+import { TEAM_SYNC_OBSERVED_TABLES, type TeamSyncObservedTable } from '@myco/db/schema-ddl.js';
+import { getTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,7 @@ export interface OutboxInsert {
   operation?: string;
   payload: string;
   machine_id: string;
+  project_id?: string | null;
   created_at: number;
 }
 
@@ -134,6 +137,7 @@ export interface OutboxRow {
   operation: string;
   payload: Record<string, unknown>;
   machine_id: string;
+  project_id: string | null;
   created_at: number;
   sent_at: number | null;
 }
@@ -149,6 +153,7 @@ const OUTBOX_COLUMNS = [
   'operation',
   'payload',
   'machine_id',
+  'project_id',
   'created_at',
   'sent_at',
 ] as const;
@@ -178,6 +183,7 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
     operation: row.operation as string,
     payload,
     machine_id: row.machine_id as string,
+    project_id: (row.project_id as string) ?? null,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,
   };
@@ -208,12 +214,17 @@ export function syncRow(
   tableName: string,
   row: object & { id: string | number; created_at?: number },
 ): void {
-  if (!isTeamSyncEnabled()) return;
+  if (!getTeamSyncEnabled()) return;
+  // Project-scoped rows carry `project_id`; machine-scoped rows (e.g.
+  // team_members) don't, so this resolves to null — which is correct for
+  // later per-team routing.
+  const projectId = (row as { project_id?: string }).project_id ?? null;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
     payload: JSON.stringify(sanitizeSyncPayload(tableName, row)),
     machine_id: getTeamMachineId(),
+    project_id: projectId,
     created_at: row.created_at ?? epochSeconds(),
   });
 }
@@ -240,14 +251,15 @@ export function enqueueOutbox(data: OutboxInsert): OutboxRow {
 
   const info = db.prepare(
     `INSERT INTO team_outbox (
-       table_name, row_id, operation, payload, machine_id, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
+       table_name, row_id, operation, payload, machine_id, project_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.table_name,
     data.row_id,
     data.operation ?? 'upsert',
     data.payload,
     data.machine_id,
+    data.project_id ?? null,
     data.created_at,
   );
 
@@ -334,6 +346,38 @@ export function countPending(): number {
 }
 
 /**
+ * Count pending (unsent) outbox rows whose project routes to the given set.
+ * Used for the team-scoped Status/Sync pending number. Machine-scoped rows
+ * (null project_id, e.g. team_members) are excluded — they are not
+ * project-attributable and fan out to all participating teams.
+ */
+export function countPendingForProjects(projectIds: string[]): number {
+  if (projectIds.length === 0) return 0;
+  const db = getDatabase();
+  const placeholders = projectIds.map(() => '?').join(', ');
+  const row = db.prepare(
+    `SELECT COUNT(*) as count FROM team_outbox
+      WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
+  ).get(...projectIds) as { count: number };
+  return row.count;
+}
+
+/**
+ * Drop pending (unsent) outbox rows for the given projects. Returns the count
+ * removed. Used when a teammate forgets a joined team so its queued rows don't
+ * linger or get lazily dropped on the next drain.
+ */
+export function dropPendingForProjects(projectIds: string[]): number {
+  if (projectIds.length === 0) return 0;
+  const db = getDatabase();
+  const placeholders = projectIds.map(() => '?').join(', ');
+  const result = db.prepare(
+    `DELETE FROM team_outbox WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
+  ).run(...projectIds);
+  return result.changes;
+}
+
+/**
  * Per-table breakdown of pending (unsent) outbox records. Used by the
  * disable-time purge so the daemon can log what's being dropped without
  * the operator having to query SQLite themselves.
@@ -352,54 +396,12 @@ export function countPendingByTable(): Record<string, number> {
 }
 
 /**
- * Enqueue a single row deletion for team sync. Same pattern as `syncRow`
- * but for the `'delete'` operation: gates on `isTeamSyncEnabled()`, emits
- * a payload the worker's `handleDelete` can consume.
- *
- * Without this, locally-deleted rows accumulate on D1 forever — the
- * source of the positive remote delta on `sessions`, `prompt_batches`,
- * `knowledge_release_state`, etc. Every direct DELETE on a synced table
- * should pair with a call here, otherwise local and remote drift apart.
- *
- * `extra` is optional payload metadata for audit/debug. The worker only
- * uses `id` and `machine_id` for the actual DELETE statement; `extra`
- * makes outbox rows self-describing for operator inspection.
- */
-export function enqueueDelete(
-  tableName: string,
-  id: string | number,
-  extra: Record<string, unknown> = {},
-): void {
-  if (!isTeamSyncEnabled()) return;
-  const machineId = getTeamMachineId();
-  enqueueOutbox({
-    table_name: tableName,
-    row_id: String(id),
-    operation: 'delete',
-    payload: JSON.stringify({ id, machine_id: machineId, ...extra }),
-    machine_id: machineId,
-    created_at: epochSeconds(),
-  });
-}
-
-/** Batch variant of `enqueueDelete` — silently no-ops on an empty list. */
-export function enqueueDeletes(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): void {
-  if (ids.length === 0) return;
-  if (!isTeamSyncEnabled()) return;
-  for (const id of ids) enqueueDelete(tableName, id);
-}
-
-/**
  * Insert pre-selected source rows into `team_outbox` as `'upsert'` records.
  *
- * Shared write contract used by both `forceEnqueueRows` (drift reconciler)
- * and `backfillRows` (startup unsynced sweep). Centralizes the
- * `INSERT INTO team_outbox` SQL, the `sanitizeSyncPayload` call, and the
- * single-table transaction wrapping so the two callers can't drift on the
- * payload shape.
+ * Shared write contract used by `backfillRows` (startup unsynced sweep and
+ * operator rebuild). Centralizes the `INSERT INTO team_outbox` SQL, the
+ * `sanitizeSyncPayload` call, and the single-table transaction wrapping so
+ * callers can't drift on the payload shape.
  */
 function insertOutboxRowsForUpsert(
   db: ReturnType<typeof getDatabase>,
@@ -411,72 +413,25 @@ function insertOutboxRowsForUpsert(
   if (rows.length === 0) return;
   db.transaction((batchRows: ReadonlyArray<Record<string, unknown>>) => {
     const stmt = db.prepare(
-      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-       VALUES (?, ?, 'upsert', ?, ?, ?)`,
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+       VALUES (?, ?, 'upsert', ?, ?, ?, ?)`,
     );
     for (const row of batchRows) {
-      stmt.run(tableName, String(row.id), JSON.stringify(sanitizeSyncPayload(tableName, row)), machineId, now);
+      // Carry project_id from the source row exactly as `syncRow` does, so
+      // re-enqueued (backfilled/rebuilt) rows route to the right team's
+      // worker. Machine-scoped rows (e.g. team_members) have no project_id
+      // and resolve to null — correct for fan-out routing.
+      const projectId = (row as { project_id?: string }).project_id ?? null;
+      stmt.run(
+        tableName,
+        String(row.id),
+        JSON.stringify(sanitizeSyncPayload(tableName, row)),
+        machineId,
+        projectId,
+        now,
+      );
     }
   })(rows);
-}
-
-/**
- * Force-enqueue specific source rows into the outbox, bypassing the
- * NOT EXISTS guard `backfillUnsynced` uses against `team_outbox`.
- *
- * The backfill path deliberately skips rows that already have an outbox
- * entry (sent or not) to avoid duplicate sends on normal restart. But the
- * drift reconciler needs the opposite behavior: rows that were marked
- * synced (and have a long-since-sent outbox entry) but never actually
- * landed in D1 need a fresh enqueue. Without this, calling backfill
- * after the reconciler's `resetSyncedAtForIds` produces zero re-enqueues
- * because the prior sent-outbox row blocks it.
- *
- * Returns the number of new outbox rows written.
- */
-export function forceEnqueueRows(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): number {
-  if (ids.length === 0) return 0;
-  if (!isTeamSyncEnabled()) return 0;
-  const db = getDatabase();
-
-  const placeholders = ids.map(() => '?').join(', ');
-  const rows = db.prepare(
-    `SELECT * FROM ${tableName} WHERE id IN (${placeholders})`,
-  ).all(...ids) as Record<string, unknown>[];
-  if (rows.length === 0) return 0;
-
-  insertOutboxRowsForUpsert(db, tableName, rows, getTeamMachineId(), epochSeconds());
-  return rows.length;
-}
-
-/**
- * Reset `synced_at` to NULL on the listed source rows so the next
- * `backfillUnsynced` pass re-enqueues them to the team outbox.
- *
- * Used by the D1-drift reconciler when the worker's `/verify` endpoint
- * reports rows the daemon marked synced but D1 doesn't actually have.
- * Returns the number of rows whose `synced_at` was cleared (capped by
- * D1's bound-parameter limit; the caller chunks larger inputs).
- *
- * The table name comes from the worker's verify response, which is
- * already gated against `SYNCED_TABLES_SET`; we don't re-validate here,
- * but the SQL is parameterized so a malformed name would just produce a
- * SQL error rather than execute arbitrary code.
- */
-export function resetSyncedAtForIds(
-  tableName: string,
-  ids: ReadonlyArray<string | number>,
-): number {
-  if (ids.length === 0) return 0;
-  const db = getDatabase();
-  const placeholders = ids.map(() => '?').join(', ');
-  const info = db.prepare(
-    `UPDATE ${tableName} SET synced_at = NULL WHERE id IN (${placeholders})`,
-  ).run(...ids);
-  return info.changes;
 }
 
 /**
@@ -520,36 +475,43 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'skill_candidates',
   'skill_records',
   'knowledge_release_state',
+  'team_members',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
-// skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
+// skill_usage excluded — no `synced_at` column (syncs via syncRow on insert); included
+// in REBUILD_TABLES so rebuild produces an exact cloud mirror
 
-export const TEAM_SYNC_OBSERVED_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
-  'skill_candidates',
-  'skill_records',
-  'skill_usage',
-  'knowledge_release_state',
-] as const;
+/**
+ * Tables eligible for a full rebuild re-push. A superset of TEAM_SYNC_BACKFILL_TABLES
+ * that includes skill_usage: the worker's /rebuild truncates skill_usage (it is in
+ * SYNCED_TABLES on the worker), so after a rebuild D1's skill_usage stays empty unless
+ * we re-push it here. skill_usage has id + machine_id but no synced_at column, which
+ * means it cannot be included in TEAM_SYNC_BACKFILL_TABLES (backfillUnsynced's
+ * `synced_at IS NULL` predicate would error). The 'all' mode used by
+ * backfillAllForRebuild uses `1 = 1` as its source predicate and only guards via the
+ * outbox NOT-EXISTS check (team_outbox.sent_at IS NULL), so it is safe for tables
+ * without synced_at.
+ *
+ * Do NOT add skill_usage to TEAM_SYNC_BACKFILL_TABLES — it would break backfillUnsynced.
+ */
+export const REBUILD_TABLES = [...TEAM_SYNC_BACKFILL_TABLES, 'skill_usage'] as const;
 
-export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
+// Canonical synced/observed set now lives in the dependency-free schema-ddl
+// module (so the migration chain can import it without pulling db/client →
+// bun:sqlite into the worker-CLI bundle). Imported above for internal use and
+// re-exported here for existing consumers that import it from this module.
+export { TEAM_SYNC_OBSERVED_TABLES };
+export type { TeamSyncObservedTable };
 
 const BACKFILL_TABLE_SET = new Set<string>(TEAM_SYNC_BACKFILL_TABLES);
 
-export function countTeamSyncRows(): Record<TeamSyncObservedTable, number> {
+export function countTeamSyncRows(machineId?: string): Record<TeamSyncObservedTable, number> {
   const db = getDatabase();
   const counts = {} as Record<TeamSyncObservedTable, number>;
   for (const table of TEAM_SYNC_OBSERVED_TABLES) {
-    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+    const row = machineId
+      ? db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ?`).get(machineId) as { count: number }
+      : db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
     counts[table] = row.count;
   }
   return counts;
@@ -615,27 +577,54 @@ export function backfillAll(machineId: string): number {
   return backfillRows(machineId, 'all');
 }
 
-function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
+/**
+ * Re-enqueue every row across the full REBUILD_TABLES set (a superset of
+ * TEAM_SYNC_BACKFILL_TABLES that includes skill_usage). Called by
+ * rebuildFromLocal after the worker's /rebuild truncates the cloud mirror.
+ *
+ * Must use 'all' mode — skill_usage has no synced_at column, so 'unsynced'
+ * mode's `synced_at IS NULL` predicate would error on it.
+ */
+export function backfillAllForRebuild(machineId: string): number {
+  return backfillRows(machineId, 'all', REBUILD_TABLES);
+}
+
+function backfillRows(
+  machineId: string,
+  mode: 'unsynced' | 'all',
+  tables: readonly string[] = TEAM_SYNC_BACKFILL_TABLES,
+): number {
   const db = getDatabase();
   let total = 0;
   const now = epochSeconds();
 
   // Process one table at a time in separate transactions to avoid long locks.
   // INSERT happens via the shared `insertOutboxRowsForUpsert` helper so the
-  // sanitization contract stays in one place — backfill and the drift
-  // reconciler's `forceEnqueueRows` cannot drift on payload shape.
-  for (const table of TEAM_SYNC_BACKFILL_TABLES) {
-    const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
-    const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';
-    const rows = db.prepare(
-      `SELECT * FROM ${table}
-       WHERE ${sourcePredicate}
-       AND NOT EXISTS (
-         SELECT 1 FROM team_outbox
-         WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
-         ${outboxPredicate}
-       )`,
-    ).all(table) as Record<string, unknown>[];
+  // sanitization contract stays in one place.
+  for (const table of tables) {
+    // 'all' mode is the rebuild path (backfillAllForRebuild → /api/team/rebuild).
+    // rebuildFromLocal calls client.rebuild() — which truncates THIS machine's
+    // cloud rows — *before* re-enqueuing. So every local row must produce a
+    // post-truncate outbox entry, unconditionally. We deliberately omit the
+    // NOT EXISTS skip here: skipping a row that happens to have a pending
+    // (sent_at IS NULL) outbox entry — e.g. because a routine flush is mid-drain
+    // when the rebuild fires — would delete it from cloud yet never re-enqueue
+    // it, losing the row from D1 until an unrelated future edit. A duplicate
+    // pending entry is safe: the worker upsert is keyed by the composite PK
+    // (id, machine_id) and is idempotent, so the row simply pushes twice.
+    //
+    // 'unsynced' mode (routine startup sweep) must still dedup against ALL
+    // existing outbox entries so it never re-queues a row already handed off.
+    const rows = mode === 'all'
+      ? db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]
+      : db.prepare(
+          `SELECT * FROM ${table}
+           WHERE synced_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM team_outbox
+             WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
+           )`,
+        ).all(table) as Record<string, unknown>[];
 
     if (rows.length === 0) continue;
     insertOutboxRowsForUpsert(db, table, rows, machineId, now);

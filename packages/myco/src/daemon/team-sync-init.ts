@@ -34,30 +34,25 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
-import { TeamSyncClient } from './team-sync.js';
-import {
-  loadTeamConnectionConfig,
-  readTeamConnectionSecrets,
-} from '@myco/grove/team-connection.js';
+import { TeamSyncClient, type VersionCompat } from './team-sync.js';
 import {
   listPending,
   markSent,
   markSourceRowsSynced,
   pruneOld,
   backfillUnsynced,
+  backfillAllForRebuild,
   discardRows,
   countPending,
   countPendingByTable,
   purgePendingOutbox,
-  resetSyncedAtForIds,
-  forceEnqueueRows,
-  enqueueOutbox,
-  TEAM_SYNC_BACKFILL_TABLES,
 } from '@myco/db/queries/team-outbox.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
+import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
+  TEAM_MCP_TOKEN_SECRET,
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -65,6 +60,8 @@ import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove } from './scope-iteration.js';
 import { withDatabase, getDatabase } from '@myco/db/client.js';
+import { teamRegistry } from '@myco/team/registry.js';
+import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,17 +83,15 @@ export interface TeamSyncDeps {
 
 export interface TeamSyncResult {
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
+  /** Resolve (and cache) a client directly by team_id, bypassing project context. */
+  getTeamClientById: (teamId: string) => TeamSyncClient | null;
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
-   * Walk every synced table, ask the worker which locally-marked-synced
-   * rows actually exist in D1, clear `synced_at` on the missing ones, and
-   * trigger a backfill so they get re-enqueued. Heals the "synced_at set
-   * locally but row never reached D1" drift class produced by DLQ'd
-   * messages.
+   * One-way repair: truncate THIS machine's cloud mirror, then re-push every
+   * local row. Replaces the retired /verify drift reconciler.
    */
-  reconcileD1Drift: (requestContext?: MycoRequestContext) => Promise<D1DriftReport>;
+  rebuildFromLocal: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   /**
    * Run flushPending across every registered Grove. Each Grove's outbox
    * lives in its own SQLite DB, so this fans out via `forEachGrove` and
@@ -104,6 +99,14 @@ export interface TeamSyncResult {
    * Errors are isolated per Grove. Returns the aggregate per-Grove summary.
    */
   flushAllGroves: (cache: GroveRuntimeCache) => Promise<TeamFlushAggregate>;
+  /**
+   * Reconcile team_sync_state.enabled for every registered Grove at boot.
+   * At boot only the boot Grove's flag is set (via reconcileClient()). Non-boot
+   * Groves' flags stay at their persisted default until their first flush tick —
+   * a window where deletes on those Groves are not journaled. This fans out the
+   * flag write (no push, no client) so all Groves start the session in lockstep.
+   */
+  reconcileAllGroveFlags: (cache: GroveRuntimeCache) => Promise<void>;
   registerFlushJob: (powerManager: PowerManager, cache: GroveRuntimeCache) => void;
 }
 
@@ -122,35 +125,35 @@ export interface TeamFlushAggregate {
   errors: number;
 }
 
-/** Per-table drift detail returned by `reconcileD1Drift`. */
-export interface D1DriftTableReport {
-  table: string;
-  /** Local rows that were checked via `/verify` (had `synced_at IS NOT NULL`). */
-  checked: number;
-  /** Of those, how many D1 reports as missing. */
-  missing: number;
-  /** Drift-path rows: `synced_at` cleared + outbox row force-enqueued. */
-  reset: number;
-  /**
-   * Pre-drift rescue path: rows with `synced_at IS NULL` AND no pending
-   * outbox entry (stranded by a prior reset whose follow-up backfill
-   * skipped them). Counted separately from `reset` so the UI can show the
-   * two healing paths distinctly.
-   */
-  stranded_enqueued: number;
-  /**
-   * Populated when one or more verify chunks failed (e.g. worker missing the
-   * `/verify` endpoint, or a transient HTTP error). Operators need to know
-   * that `missing=0` for this table reflects "verify never completed", not
-   * "everything is clean."
-   */
-  verify_error?: string;
-}
+// ---------------------------------------------------------------------------
+// Config-seed planner
+// ---------------------------------------------------------------------------
 
-export interface D1DriftReport {
-  tables: D1DriftTableReport[];
-  /** Total rows re-enqueued by the post-reset `backfillUnsynced` pass. */
-  reenqueued: number;
+/**
+ * Decide which `/config` PUT bodies are needed to bring the worker's config
+ * up to the worker-authoritative contract. Each entry is a separate PUT so a
+ * missing `team_id` never clobbers an already-set `team_name`.
+ */
+export function planConfigSeed(
+  existing: Record<string, unknown> | null | undefined,
+  desired: { teamId: string; teamName: string; createdBy: string; createdAt: string },
+): Record<string, string>[] {
+  const has = (k: string) => {
+    const v = existing?.[k];
+    return typeof v === 'string' && v.trim().length > 0;
+  };
+  const puts: Record<string, string>[] = [];
+  if (!has('team_id')) puts.push({ team_id: desired.teamId });
+  if (!has('team_name')) {
+    puts.push({
+      team_name: desired.teamName,
+      embedding_model: '@cf/baai/bge-m3',
+      embedding_dimensions: '1024',
+      created_at: desired.createdAt,
+      created_by: desired.createdBy,
+    });
+  }
+  return puts;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,9 +161,179 @@ export interface D1DriftReport {
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
-  const { machineId, logger, vaultDir, serverVersion, daemonStateDir, requestContext: defaultRequestContext } = deps;
-  const teamClients = new Map<string, TeamSyncClient>();
-  const clientSignatures = new Map<string, string>();
+  const { machineId, logger, daemonStateDir, requestContext: defaultRequestContext } = deps;
+
+  /**
+   * The team registry — not the legacy grove-config `enabled` flag — is the
+   * push-side participation gate: a Grove syncs iff ≥1 of its projects is a
+   * member of some team. Used by the write-path gate (setTeamSyncEnabled), the
+   * stale-outbox purge, and the deep-sleep predicate so they all agree with the
+   * registry-driven drain (flushPending). The grove-config flag is now only the
+   * read/rebuild client's concern.
+   */
+  function groveParticipates(groveId: string | null): boolean {
+    return participatingTeamIds(groveId).length > 0;
+  }
+
+  function participatingTeamIds(groveId: string | null): string[] {
+    if (!groveId) return [];
+    return [
+      ...new Set(
+        teamRegistry
+          .list()
+          .filter((t) => t.projects.some((p) => p.grove_id === groveId))
+          .map((t) => t.team_id),
+      ),
+    ];
+  }
+
+  function teamIdsForRebuild(requestContext?: MycoRequestContext): string[] {
+    const projectId = requestContext?.projectId;
+    if (projectId) {
+      const teamId = teamRegistry.membershipByProject().get(projectId);
+      if (teamId) return [teamId];
+    }
+    return participatingTeamIds(requestContext?.groveId ?? null);
+  }
+
+  // Per-team client cache (registry-driven routing). flushPending routes each
+  // outbox row to its owning team's worker, so clients are keyed by team_id —
+  // the registry is the only runtime source of Team connectivity. Rebuilt when
+  // the team's worker_url or API key changes.
+  const teamRouteClients = new Map<string, TeamSyncClient>();
+  const teamRouteSignatures = new Map<string, string>();
+  // Teams whose worker is fully provisioned this daemon lifetime (MCP token in
+  // the registry + /config seeded). ensureTeamProvisioned short-circuits on a
+  // hit so a large backfill doesn't re-GET /config on every flush tick. Only
+  // set when BOTH halves succeed, so a transiently-unreachable worker retries.
+  const provisionedTeams = new Set<string>();
+
+  // Per-team version-compat cache (TTL-bounded). The drain gate probes the
+  // worker's advertised bounds via health() before pushing; back-to-back flush
+  // ticks during a large backfill must not re-probe every tick, so a successful
+  // probe is cached for VERSION_CHECK_TTL_SEC. checkedAt is epoch SECONDS.
+  const teamVersionCache = new Map<string, { status: VersionCompat; checkedAt: number }>();
+  const VERSION_CHECK_TTL_SEC = 60;
+
+  /**
+   * Resolve a team's sync-protocol compatibility, caching the result for
+   * VERSION_CHECK_TTL_SEC. A `health()` failure (worker unreachable) is treated
+   * as transient → 'unknown', so the normal drain attempt still runs and the
+   * usual unreachable-team handling (leave rows pending) applies. Only an
+   * advertised hard incompatibility ('client_too_old' / 'worker_too_old')
+   * blocks the drain.
+   */
+  async function teamVersionStatus(teamId: string, client: TeamSyncClient): Promise<VersionCompat> {
+    const cached = teamVersionCache.get(teamId);
+    const now = epochSeconds();
+    if (cached && now - cached.checkedAt < VERSION_CHECK_TTL_SEC) return cached.status;
+    let status: VersionCompat;
+    try {
+      await client.health();
+      status = client.getVersionCompat();
+    } catch {
+      status = 'unknown';
+    }
+    teamVersionCache.set(teamId, { status, checkedAt: now });
+    return status;
+  }
+
+  /**
+   * Lazily build (and cache) the TeamSyncClient for a given team_id from the
+   * team registry. Returns null when the team is unknown, has no worker_url,
+   * or has no API key — callers must treat null as "skip this team this tick"
+   * (leave its rows pending for retry), never as "drop the rows".
+   */
+  function getOrBuildTeamClient(teamId: string): TeamSyncClient | null {
+    const team = teamRegistry.get(teamId);
+    if (!team?.worker_url) return null;
+    const secrets = teamRegistry.readSecrets(teamId);
+    const key = secrets[TEAM_API_KEY_SECRET];
+    if (!key) return null;
+    const mcpToken = secrets[TEAM_MCP_TOKEN_SECRET] || undefined;
+
+    // Include the MCP token in the signature so the cached client rebuilds
+    // when ensureTeamProvisioned writes a freshly-rotated token to the
+    // registry — without this the read path keeps a client with a stale
+    // (null) token until the next worker_url/key change.
+    const signature = `${team.worker_url}|${key.slice(0, 8)}|${mcpToken ? mcpToken.slice(0, 8) : ''}`;
+    const existing = teamRouteClients.get(teamId);
+    if (existing && teamRouteSignatures.get(teamId) === signature) {
+      return existing;
+    }
+
+    const client = new TeamSyncClient({
+      workerUrl: team.worker_url,
+      apiKey: key,
+      machineId,
+      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
+      mcpToken,
+    });
+    teamRouteClients.set(teamId, client);
+    teamRouteSignatures.set(teamId, signature);
+    return client;
+  }
+
+  /**
+   * Idempotently provision a team's worker on first successful reach:
+   *   - Rotate + persist the Cloud MCP token into the registry if absent.
+   *   - Seed `/config` (team_name + embedding model/dimensions) if unset.
+   *
+   * Runs at most once per team per daemon lifetime: a `provisionedTeams` guard
+   * short-circuits subsequent calls so a large backfill doesn't re-GET /config
+   * on every flush tick. Both halves are non-fatal — a briefly unreachable
+   * worker leaves the team un-guarded so the next flush retries. Mirrors the
+   * install-path PUT in myco-team/src/cli.ts.
+   */
+  async function ensureTeamProvisioned(teamId: string): Promise<void> {
+    if (provisionedTeams.has(teamId)) return;
+    const client = getOrBuildTeamClient(teamId);
+    if (!client) return;
+
+    // 1. MCP token — rotate + persist into the registry when missing.
+    let tokenOk = false;
+    try {
+      const existingToken = teamRegistry.readSecrets(teamId)[TEAM_MCP_TOKEN_SECRET];
+      if (!existingToken) {
+        const token = await client.rotateMcpToken();
+        teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, token);
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Provisioned team MCP token in registry', { team_id: teamId });
+      }
+      tokenOk = true;
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team MCP token provisioning failed (will retry next tick)', {
+        team_id: teamId,
+        error: (err as Error).message,
+      });
+    }
+
+    // 2. /config — seed team_id + team_name/embedding when the worker lacks them.
+    let configOk = false;
+    try {
+      const cfg = await client.getConfig().catch(() => null);
+      const puts = planConfigSeed(cfg?.config, {
+        teamId,
+        teamName: teamRegistry.get(teamId)?.name ?? '',
+        createdBy: machineId,
+        createdAt: String(epochSeconds()),
+      });
+      for (const body of puts) {
+        await client.putConfig(body);
+      }
+      if (puts.length > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Seeded team /config on worker', { team_id: teamId, keys: puts.flatMap((p) => Object.keys(p)) });
+      }
+      configOk = true;
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team /config seed failed (will retry next tick)', {
+        team_id: teamId,
+        error: (err as Error).message,
+      });
+    }
+
+    // Guard only when fully provisioned; a partial failure retries next flush.
+    if (tokenOk && configOk) provisionedTeams.add(teamId);
+  }
 
   function reconcileSelfMember(): void {
     try {
@@ -175,21 +348,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       // would be permanently invisible to peers. Transaction rollback
       // restores the pre-insert state so the next call retries cleanly.
       let inserted = false;
-      let row: ReturnType<typeof upsertSelfMember>['row'] | null = null;
       getDatabase().transaction(() => {
         const result = upsertSelfMember(machineId, joinedIso);
         inserted = result.inserted;
-        row = result.row;
-        if (inserted && row) {
-          enqueueOutbox({
-            table_name: 'team_members',
-            row_id: row.id,
-            operation: 'upsert',
-            payload: JSON.stringify(row),
-            machine_id: machineId,
-            created_at: nowSec,
-          });
-        }
       })();
       if (inserted) {
         logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
@@ -203,236 +364,318 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
   }
 
+  /**
+   * Drain this Grove's outbox, routing each row to the worker of the team
+   * that owns its project.
+   *
+   * The team registry — not the Grove config — is now the participation gate:
+   * a Grove syncs iff at least one of its projects is a member of some team.
+   * Each pending row carries `project_id` (set by `syncRow` / backfill):
+   *
+   *   - `project_id` is set but belongs to no team  → DROP (markSent so it
+   *     clears; a future `add` + backfill re-syncs it). Must NOT sync.
+   *   - `project_id` is set and belongs to a team   → route to that team.
+   *   - `project_id` is null (machine-scoped, e.g.    → fan out to EVERY team
+   *     team_members)                                  this machine has joined
+   *                                                    (every registered team),
+   *                                                    regardless of project
+   *                                                    assignment; DROP if no
+   *                                                    team is registered at all.
+   *
+   * A fanned-out row is only `markSent` once ALL its target teams accept it;
+   * if any target's client is unbuilt/failed this tick the row stays pending
+   * for the next tick. Per-team batches whose client can't be built are left
+   * pending too (team unreachable/unconfigured) — never dropped.
+   *
+   * The drain only short-circuits when this machine has joined NO team at all
+   * (`teamRegistry.list()` empty → nothing to sync anywhere). A machine that
+   * has joined a team but assigned no project to this Grove still drains its
+   * machine-scoped self row to that team's worker, so a just-joined teammate
+   * appears in the Members roster before assigning any project.
+   */
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
-    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return result;
-    const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
-    if (!client) return result;
+
+    const groveId = requestContext?.groveId ?? null;
+    const teams = teamRegistry.list();
+    const participates = groveParticipates(groveId);
+    // The registry is now the write-path gate: keep delete triggers + syncRow
+    // in lockstep with whether this Grove feeds any team via project membership,
+    // every tick. (Machine-scoped self rows reach the outbox through
+    // backfillUnsynced, which bypasses this flag, so a joined-no-project Grove
+    // still queues its self row.)
+    setTeamSyncEnabled(participates);
+    // Short-circuit only when this machine has joined no team at all — there is
+    // nowhere to route any row. With ≥1 registered team we must still drain
+    // machine-scoped rows even if no project participates.
+    if (teams.length === 0) return result;
+
+    const map = teamRegistry.membershipByProject();
+    // Machine-scoped (null project_id) rows fan out to every team this machine
+    // has joined, not just the teams with a project assigned to this Grove.
+    const machineScopedTargetTeamIds = teams.map((t) => t.team_id);
+
+    // Teams whose batch handed off cleanly this flush. After the drain loop we
+    // provision each exactly once (rotate + persist the MCP token, seed
+    // /config) — the worker is provably reachable, and the checks inside
+    // ensureTeamProvisioned make it cheap/no-op once already provisioned.
+    const handedOffTeams = new Set<string>();
 
     while (true) {
       const pending = listPending();
       if (pending.length === 0) break;
 
-      try {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
-        const enqueueResult = await client.enqueueBatch(pending);
-        const now = epochSeconds();
+      const now = epochSeconds();
 
-        const rejectedIds = new Set(enqueueResult.rejected.map((e) => e.id));
-        const rejectedOutboxIds: number[] = [];
-        const handedOff: typeof pending = [];
-        for (const row of pending) {
-          if (rejectedIds.has(String(row.row_id))) {
-            rejectedOutboxIds.push(row.id);
-          } else {
-            handedOff.push(row);
+      // Partition: rows whose project belongs to no team are dropped (cleared
+      // so they don't pin the buffer forever); the rest are bucketed per team.
+      const dropIds: number[] = [];
+      const batches = new Map<string, OutboxRow[]>();
+      // For fan-out (null project_id) rows, track how many teams must accept
+      // before we markSent — keyed by outbox id.
+      const fanOutTargetsRemaining = new Map<number, number>();
+
+      const pushToTeam = (teamId: string, row: OutboxRow): void => {
+        const list = batches.get(teamId);
+        if (list) list.push(row);
+        else batches.set(teamId, [row]);
+      };
+
+      for (const row of pending) {
+        if (row.project_id != null) {
+          // Project-scoped row: route to the team that owns the project, or
+          // DROP if the project belongs to no registered team.
+          if (!map.has(row.project_id)) {
+            dropIds.push(row.id);
+            continue;
+          }
+          pushToTeam(map.get(row.project_id)!, row);
+        } else if (machineScopedTargetTeamIds.length === 0) {
+          // Machine-scoped row with no team to route to. teams.length === 0 is
+          // already handled by the early return above, so this is defensive —
+          // DROP (markSent) so it doesn't pin the buffer forever.
+          dropIds.push(row.id);
+        } else {
+          // Machine-scoped row: fan out a copy into every team this machine has
+          // joined (every registered team), regardless of project assignment.
+          fanOutTargetsRemaining.set(row.id, machineScopedTargetTeamIds.length);
+          for (const teamId of machineScopedTargetTeamIds) {
+            pushToTeam(teamId, row);
           }
         }
+      }
 
-        if (rejectedOutboxIds.length > 0) {
-          logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
-            rejected: enqueueResult.rejected.slice(0, 5),
+      if (dropIds.length > 0) {
+        // markSent (not discard): a future `add` + backfill re-syncs these if
+        // the project later joins a team. Leaving them pending would pin the
+        // buffer forever.
+        markSent(dropIds, now);
+      }
+
+      // Track fan-out rows whose target teams all accepted this tick so we can
+      // markSent them once (not once per team).
+      const fanOutAccepted = new Set<number>();
+
+      // Count of outbox rows that left the pending set this tick (dropped,
+      // discarded, or handed off). A tick that clears zero rows means every
+      // remaining row's target team is unbuildable/failed — break to avoid a
+      // hot spin loop and retry next tick. A tick that clears ≥1 row strictly
+      // shrinks the pending set, so the loop terminates.
+      let clearedThisTick = dropIds.length;
+      let tickError: string | undefined;
+
+      for (const [teamId, rows] of batches) {
+        const client = getOrBuildTeamClient(teamId);
+        if (!client) {
+          // Team unreachable/unconfigured: leave its rows pending for retry.
+          // Fan-out rows targeting this team stay pending too — a partial
+          // fan-out must never be marked sent.
+          continue;
+        }
+
+        // Version-floor obedience: if the worker advertises bounds that make
+        // this daemon's protocol incompatible, STOP draining to it. Doomed
+        // pushes would just trigger the worker's 409 and churn forever. Leave
+        // the rows pending (no markSent, no discard) so the team self-heals
+        // the moment the daemon or worker updates. 'ok'/'unknown' fall through
+        // to the normal enqueue ('unknown' = bounds unprobed → let the drain
+        // attempt surface the real network/auth state).
+        const compat = await teamVersionStatus(teamId, client);
+        if (compat === 'client_too_old' || compat === 'worker_too_old') {
+          logger.warn(
+            LOG_KINDS.TEAM_SYNC_ERROR,
+            'Skipping team drain — sync protocol incompatible (rows left pending for retry after update)',
+            {
+              team_id: teamId,
+              compat,
+              daemon_protocol: SYNC_PROTOCOL_VERSION,
+              worker_protocol: client.getWorkerProtocolVersion(),
+              worker_min_client: client.getWorkerMinClientVersion(),
+            },
+          );
+          continue; // leave rows pending — NO churn, NO dead-letter; self-heals on update
+        }
+
+        try {
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { team_id: teamId, count: rows.length });
+          const enqueueResult = await client.enqueueBatch(rows);
+
+          const rejectedKeys = new Set(enqueueResult.rejected.map((e) => rejectionKey(e.table, e.id)));
+          const rejectedOutboxIds: number[] = [];
+          const handedOff: OutboxRow[] = [];
+          for (const row of rows) {
+            if (rejectedKeys.has(rejectionKey(row.table_name, row.row_id))) {
+              rejectedOutboxIds.push(row.id);
+            } else {
+              handedOff.push(row);
+            }
+          }
+
+          if (rejectedOutboxIds.length > 0) {
+            logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
+              team_id: teamId,
+              rejected: enqueueResult.rejected.slice(0, 5),
+            });
+            discardRows(rejectedOutboxIds);
+            result.rejected += rejectedOutboxIds.length;
+            clearedThisTick += rejectedOutboxIds.length;
+          }
+
+          // Split accepted rows into single-team (markSent now) vs fan-out
+          // (markSent only once every target team has accepted).
+          const directHandedOff: OutboxRow[] = [];
+          for (const row of handedOff) {
+            if (fanOutTargetsRemaining.has(row.id)) {
+              const remaining = (fanOutTargetsRemaining.get(row.id) ?? 0) - 1;
+              fanOutTargetsRemaining.set(row.id, remaining);
+              if (remaining <= 0) fanOutAccepted.add(row.id);
+            } else {
+              directHandedOff.push(row);
+            }
+          }
+
+          if (directHandedOff.length > 0) {
+            const handedOffIds = directHandedOff.map((r) => r.id);
+            markSent(handedOffIds, now);
+            markSourceRowsSynced(directHandedOff, now);
+            result.handedOff += directHandedOff.length;
+            clearedThisTick += directHandedOff.length;
+          }
+
+          result.batches += 1;
+          handedOffTeams.add(teamId);
+          logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
+            team_id: teamId,
+            accepted: enqueueResult.accepted,
+            rejected: enqueueResult.rejected.length,
+            total: rows.length,
           });
-          discardRows(rejectedOutboxIds);
+        } catch (err) {
+          tickError = (err as Error).message;
+          logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { team_id: teamId, error: tickError });
+          // A failed team leaves its rows pending. Fan-out rows that also
+          // targeted this team must not be marked sent, so they are excluded
+          // from fanOutAccepted by construction (their remaining count never
+          // reached zero).
         }
+      }
 
-        if (handedOff.length > 0) {
-          const handedOffIds = handedOff.map((r) => r.id);
-          markSent(handedOffIds, now);
-          markSourceRowsSynced(handedOff, now);
-        }
+      // markSent fan-out rows that every target team accepted, exactly once.
+      const fanOutIds = [...fanOutAccepted];
+      if (fanOutIds.length > 0) {
+        const fanOutRows = pending.filter((r) => fanOutAccepted.has(r.id));
+        markSent(fanOutIds, now);
+        markSourceRowsSynced(fanOutRows, now);
+        result.handedOff += fanOutIds.length;
+        clearedThisTick += fanOutIds.length;
+      }
 
-        pruneOld();
-        result.batches += 1;
-        result.handedOff += handedOff.length;
-        result.rejected += rejectedOutboxIds.length;
-        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
-          accepted: enqueueResult.accepted,
-          rejected: enqueueResult.rejected.length,
-          total: pending.length,
-        });
-      } catch (err) {
-        result.error = (err as Error).message;
-        logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: result.error });
+      pruneOld();
+
+      if (tickError) {
+        result.error = tickError;
         break;
       }
+
+      // Nothing left the pending set this tick: every remaining row's target
+      // team is unbuildable (or a fan-out row reached only some of its teams).
+      // listPending() would return the same set forever — break and retry on
+      // the next scheduled flush tick.
+      if (clearedThisTick === 0) break;
+    }
+
+    // Provision every team we reached this flush: rotate + persist the MCP
+    // token into the registry (so the read path / Team page can serve it) and
+    // seed /config. Idempotent + cheap once provisioned, so it's safe to run
+    // on every flush that handed off a batch.
+    for (const teamId of handedOffTeams) {
+      await ensureTeamProvisioned(teamId);
     }
 
     return result;
   }
 
-  /**
-   * Detect and heal D1 drift for the active Grove.
-   *
-   * The `synced_at` stamp on local source rows is set on /enqueue
-   * success — which only means the worker queued the message. If the
-   * queue consumer dead-letters the message (column mismatch, DLQ
-   * replay bug, constraint violation), local thinks the row is synced
-   * but D1 never received it, and `backfillUnsynced` (which only scans
-   * `synced_at IS NULL`) never gets a second chance.
-   *
-   * For each backfill-tracked table, this asks the worker which of the
-   * local row IDs actually exist in D1 (`/verify`), then clears
-   * `synced_at` on the missing ones so the next backfill+flush pass
-   * re-enqueues them. The 500-id chunk size matches the worker-side
-   * cap; tables with no marked-synced rows are skipped entirely.
-   *
-   * Returns a per-table report so the caller (HTTP endpoint, CLI, or
-   * scheduled job) can log or display what was healed.
-   */
-  async function reconcileD1Drift(requestContext = defaultRequestContext): Promise<D1DriftReport> {
-    const report: D1DriftReport = { tables: [], reenqueued: 0 };
-    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return report;
-    const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
-    if (!client) return report;
+  async function rebuildFromLocal(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
+    const empty: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
+    const teamIds = teamIdsForRebuild(requestContext);
+    if (teamIds.length === 0) return { ...empty, error: 'team_not_configured' };
 
-    const VERIFY_CHUNK = 500;
-    const db = getDatabase();
-    let totalReset = 0;
+    const clients: Array<{ teamId: string; client: TeamSyncClient }> = [];
+    for (const teamId of teamIds) {
+      const client = getOrBuildTeamClient(teamId);
+      if (!client) return { ...empty, error: `team_client_unavailable:${teamId}` };
+      clients.push({ teamId, client });
+    }
 
-    // Each table is fully independent — its verify chunks hit the worker
-    // as standalone HTTP calls, and the local SELECT/UPDATE/INSERT touch
-    // disjoint rows. Run the tables in parallel via Promise.all so 12
-    // sequential roundtrips collapse to one wall-clock roundtrip.
-    const tableReports = await Promise.all(TEAM_SYNC_BACKFILL_TABLES.map(async (table) => {
-      const tableReport: D1DriftTableReport = {
-        table, checked: 0, missing: 0, reset: 0, stranded_enqueued: 0,
-      };
-
-      // Rescue path: rows with `synced_at IS NULL` AND no pending outbox
-      // entry — stranded by a prior reset whose follow-up backfill skipped
-      // them (the NOT EXISTS guard matches any prior outbox row, including
-      // long-since-sent ones). Without this they stay un-enqueued forever.
+    const rebuildErrors: string[] = [];
+    for (const { teamId, client } of clients) {
       try {
-        const strandedRows = db.prepare(
-          `SELECT id FROM ${table}
-            WHERE machine_id = ? AND synced_at IS NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM team_outbox
-                 WHERE table_name = ?
-                   AND row_id = CAST(${table}.id AS TEXT)
-                   AND sent_at IS NULL
-              )`,
-        ).all(machineId, table) as Array<{ id: string | number }>;
-        if (strandedRows.length > 0) {
-          const enqueued = forceEnqueueRows(table, strandedRows.map((r) => r.id));
-          tableReport.stranded_enqueued = enqueued;
-          report.reenqueued += enqueued;
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Drift reconcile: force-enqueued stranded rows', {
-            table, stranded: strandedRows.length, enqueued,
-          });
-        }
+        await client.rebuild(); // truncate this machine's cloud rows (D1 + Vectorize)
       } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: stranded scan failed', {
-          table, error: (err as Error).message,
-        });
-      }
-
-      // Drift path: rows with `synced_at IS NOT NULL` — ask the worker
-      // whether D1 actually has them, reset + re-enqueue any missing.
-      let rows: Array<{ id: string | number }>;
-      try {
-        rows = db.prepare(
-          `SELECT id FROM ${table} WHERE machine_id = ? AND synced_at IS NOT NULL`,
-        ).all(machineId) as Array<{ id: string | number }>;
-      } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: select failed', {
-          table, error: (err as Error).message,
-        });
-        return tableReport;
-      }
-      tableReport.checked = rows.length;
-      if (rows.length === 0) return tableReport;
-
-      // The SELECT already returned ids with the correct type. Stringify
-      // only at the worker-call boundary (verify expects string[]); the
-      // local UPDATE/INSERT below reuses the typed array so we avoid the
-      // string→number round-trip for INTEGER-id tables.
-      const idsTyped: Array<string | number> = rows.map((r) => r.id);
-      const missingIdSet = new Set<string>();
-      let firstVerifyError: string | undefined;
-      for (let offset = 0; offset < idsTyped.length; offset += VERIFY_CHUNK) {
-        const slice = idsTyped.slice(offset, offset + VERIFY_CHUNK).map(String);
-        try {
-          const { missing } = await client.verify(table, slice);
-          for (const id of missing) missingIdSet.add(id);
-        } catch (err) {
-          const message = (err as Error).message;
-          if (!firstVerifyError) firstVerifyError = message;
-          logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: verify call failed', {
-            table, chunk_size: slice.length, error: message,
-          });
-        }
-      }
-      tableReport.missing = missingIdSet.size;
-      if (firstVerifyError) tableReport.verify_error = firstVerifyError;
-
-      if (missingIdSet.size > 0) {
-        // Filter the typed local ids by missing-set membership — that
-        // keeps the original numeric/string type for the UPDATE+INSERT
-        // and avoids a Number(id) round-trip for integer-id tables.
-        const missingTyped = idsTyped.filter((id) => missingIdSet.has(String(id)));
-        try {
-          const reset = resetSyncedAtForIds(table, missingTyped);
-          const enqueued = forceEnqueueRows(table, missingTyped);
-          tableReport.reset = reset;
-          totalReset += reset;
-          report.reenqueued += enqueued;
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Drift reconcile: reset + force-enqueued missing rows', {
-            table, checked: tableReport.checked, missing: tableReport.missing, reset, enqueued,
-          });
-        } catch (err) {
-          logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: reset/enqueue failed', {
-            table, missing_count: missingIdSet.size, error: (err as Error).message,
-          });
-        }
-      }
-      return tableReport;
-    }));
-    report.tables.push(...tableReports);
-
-    if (totalReset > 0 || report.reenqueued > 0) {
-      try {
-        // Kick a flush so the freshly force-enqueued rows leave the local
-        // outbox promptly instead of waiting for the next scheduled drain.
-        await flushPending(requestContext);
-      } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Drift reconcile: flush failed', {
+        const message = `${teamId}: ${(err as Error).message}`;
+        rebuildErrors.push(message);
+        logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Rebuild from local truncate failed', {
+          team_id: teamId,
           error: (err as Error).message,
         });
       }
     }
 
-    return report;
+    try {
+      const enqueued = backfillAllForRebuild(machineId);  // re-enqueue every local row including skill_usage
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', {
+        enqueued,
+        team_ids: teamIds,
+      });
+      const result = await flushPending(requestContext);  // push them
+      if (rebuildErrors.length > 0 && !result.error) result.error = rebuildErrors.join('; ');
+      return result;
+    } catch (err) {
+      logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Rebuild from local failed', { error: (err as Error).message });
+      const prefix = rebuildErrors.length > 0 ? `${rebuildErrors.join('; ')}; ` : '';
+      return { ...empty, error: `${prefix}${(err as Error).message}` };
+    }
   }
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
-    const key = teamConnectionKey(vaultDir, requestContext);
-    const teamConfig = loadTeamConnectionConfig(vaultDir, requestContext);
-    const workerUrl = teamConfig.worker_url?.trim() || null;
-    const apiKey = readTeamConnectionSecrets(vaultDir, requestContext)[TEAM_API_KEY_SECRET]?.trim() || null;
-    const nextSignature = teamConfig.enabled && workerUrl && apiKey
-      ? `${workerUrl}\n${apiKey}`
-      : null;
+    const participates = groveParticipates(requestContext?.groveId ?? null);
+    setTeamSyncEnabled(participates);
 
-    if (!nextSignature) {
-      const teamClient = teamClients.get(key);
-      if (teamClient) {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client cleared', {
-          enabled: teamConfig.enabled,
-          has_worker_url: Boolean(workerUrl),
-          has_api_key: Boolean(apiKey),
-        });
-      }
-      teamClients.delete(key);
-      clientSignatures.delete(key);
+    // The participation gate (delete triggers / live syncRow) tracks project
+    // membership, but the self-member re-push and drain are gated on the
+    // machine having joined ANY team: a joined-no-project Grove must still
+    // enqueue and drain its machine-scoped self row so the teammate appears in
+    // the roster before assigning a project. Only when this machine has joined
+    // no team at all do we treat the Grove as fully non-participating.
+    const joinedAnyTeam = teamRegistry.list().length > 0;
 
-      // Legacy-state cleanup: if team sync is disabled but the outbox still
+    if (!joinedAnyTeam) {
+      // If this machine is in no registry Team but the outbox still
       // carries pending rows (from a previous sync-enabled period that was
       // later turned off), drop them. Without this sweep, `countPending()`
       // keeps reporting stale rows that will never drain — which the Team
-      // page UI then surfaces as "N pending failures" against a sync that
-      // isn't running. Source records are untouched; re-enabling team sync
+      // page UI then surfaces as "N pending failures" against a Grove that
+      // is not in a Team. Source records are untouched; selecting a Team
       // re-enqueues from current state via `handleBackfill`.
       try {
         // One scan, not two: derive the total from the per-table breakdown
@@ -441,51 +684,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         const total = Object.values(byTable).reduce((sum, n) => sum + n, 0);
         if (total > 0) {
           const purged = purgePendingOutbox();
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for disabled-sync Grove', {
-            grove_key: key,
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for non-participating Grove', {
+            grove_id: requestContext?.groveId ?? null,
             purged,
             by_table: byTable,
           });
         }
       } catch (err) {
         logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Stale outbox sweep failed', {
-          grove_key: key,
+          grove_id: requestContext?.groveId ?? null,
           error: (err as Error).message,
         });
       }
       return;
-    }
-
-    const teamClient = teamClients.get(key);
-    const clientSignature = clientSignatures.get(key) ?? null;
-    if (teamClient && clientSignature === nextSignature) {
-      await flushPending(requestContext);
-      return;
-    }
-
-    const activeWorkerUrl = workerUrl!;
-    const activeApiKey = apiKey!;
-    const nextClient = new TeamSyncClient({
-      workerUrl: activeWorkerUrl,
-      apiKey: activeApiKey,
-      machineId,
-      syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-    });
-    teamClients.set(key, nextClient);
-    clientSignatures.set(key, nextSignature);
-
-    logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: activeWorkerUrl });
-
-    try {
-      await nextClient.connect({
-        machine_id: machineId,
-        version: serverVersion,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Node registered with team worker');
-    } catch (err) {
-      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Node registration failed (will retry on next flush)', {
-        error: (err as Error).message,
-      });
     }
 
     reconcileSelfMember();
@@ -502,13 +713,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   /**
-   * Synthesize a Grove-scoped request context for the team-sync flush
-   * fan-out. Team-sync only consumes `groveId` off the context (see
-   * `loadTeamConnectionConfig`, `readTeamConnectionSecrets`,
-   * `teamConnectionKey`); the other branded fields are filled with safe
-   * stubs so the type is satisfied without minting a fake `GroveProjectId`
-   * via `assertGroveProjectId`. This stub MUST NOT leak outside the
-   * team-sync flush path.
+   * Synthesize a Grove-scoped request context for the team-sync flush fan-out.
+   * Team-sync only consumes `groveId` for Grove-level participation; the other
+   * branded fields are filled with safe stubs so the type is satisfied without
+   * minting a fake `GroveProjectId`. This stub MUST NOT leak outside the
+   * Grove-level sync path.
    */
   function groveSyncContext(groveId: string, databasePath: string, projectVaultDir: string): MycoRequestContext {
     return {
@@ -555,31 +764,76 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       },
       { daemonStateDir, jobName: 'team-sync-flush' },
     );
+
+    // Teams are machine-level, so provision each participating team once per
+    // daemon lifetime here — outside the per-Grove fan-out and independent of
+    // pending data. This reaches already-synced teams (empty outbox, no batch
+    // hands off) that the flush-end provisioning would otherwise never touch.
+    // Guard-protected, so it's a cheap no-op on every tick after the first.
+    for (const team of teamRegistry.list()) {
+      if (team.projects.length > 0) await ensureTeamProvisioned(team.team_id);
+    }
+
     return aggregate;
   }
 
-  return {
-    getTeamClient: (requestContext = defaultRequestContext) => teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null,
-    setTeamClient: (client, requestContext = defaultRequestContext) => {
-      const key = teamConnectionKey(vaultDir, requestContext);
-      if (!client) {
-        teamClients.delete(key);
-        clientSignatures.delete(key);
-        return;
+  /**
+   * Reconcile team_sync_state.enabled for every registered Grove without pushing.
+   * Mirrors flushAllGroves's forEachGrove fan-out exactly (same groveSyncContext,
+   * withDatabase, daemonStateDir, jobName pattern) but only writes the flag so
+   * delete triggers on non-boot Groves are armed before the first flush tick.
+   *
+   * Runs on the boot critical path (awaited before server.start binds the port),
+   * so the per-Grove flag writes fan out concurrently (`parallel: true`). Each
+   * Grove is an independent SQLite DB and the write is a single idempotent flag
+   * set, so there is no cross-Grove lock contention. forEachGrove isolates a
+   * single Grove's failure (logged, not thrown) so one bad Grove neither aborts
+   * the others nor blocks startup.
+   */
+  async function reconcileAllGroveFlags(cache: GroveRuntimeCache): Promise<void> {
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, databasePath, db, groveHome }) => {
+        await withDatabase(db, async () => {
+          setTeamSyncEnabled(groveParticipates(grove.id));
+        });
+      },
+      { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
+    );
+  }
+
+  /**
+   * Resolve the team client for a read request. Registry-only: when the request
+   * carries a projectId that belongs to a team (one-team-per-project), return
+   * that team's per-team client. Contexts with no project / no team membership
+   * are not connected.
+   */
+  function resolveReadClient(requestContext?: MycoRequestContext): TeamSyncClient | null {
+    const projectId = requestContext?.projectId;
+    if (projectId) {
+      const teamId = teamRegistry.membershipByProject().get(projectId);
+      if (teamId) {
+        const client = getOrBuildTeamClient(teamId);
+        if (client) return client;
       }
-      teamClients.set(key, client);
-      clientSignatures.delete(key);
-    },
+    }
+    return null;
+  }
+
+  return {
+    getTeamClient: (requestContext = defaultRequestContext) => resolveReadClient(requestContext),
+    getTeamClientById: (teamId: string) => getOrBuildTeamClient(teamId),
     reconcileClient,
     flushPending,
-    reconcileD1Drift,
+    rebuildFromLocal,
     flushAllGroves,
+    reconcileAllGroveFlags,
     registerFlushJob: (powerManager, cache) => {
-      // Registered unconditionally; team.enabled is checked at run time so
-      // Settings toggles take effect without a daemon restart. The job
-      // fans out across every registered Grove so non-boot Groves' outboxes
-      // drain on the same cadence as the boot Grove (release-blocker fix
-      // for the global daemon — see plan 4ab20d9762619a6e #A1).
+      // Registered unconditionally; registry participation is checked at run
+      // time so Team selection changes take effect without a daemon restart.
+      // The job fans out across every registered Grove so non-boot Groves'
+      // outboxes drain on the same cadence as the boot Grove.
       let running = false;
       powerManager.register({
         name: 'team-sync-flush',
@@ -589,7 +843,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           // gate previously. With multi-Grove fan-out we'd need to scope
           // countPending() per Grove; keep the cheap boot-context probe
           // and rely on the regular tick to drain non-boot Groves.
-          return loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0;
+          return groveParticipates(defaultRequestContext?.groveId ?? null) && countPending() > 0;
         },
         fn: async () => {
           if (running) return;
@@ -605,6 +859,6 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   };
 }
 
-function teamConnectionKey(vaultDir: string, requestContext?: MycoRequestContext): string {
-  return requestContext?.groveId ? `grove:${requestContext.groveId}` : `legacy-project:${vaultDir}`;
+function rejectionKey(table: string, rowId: string | number): string {
+  return `${table}\u0000${String(rowId)}`;
 }

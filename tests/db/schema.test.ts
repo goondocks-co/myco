@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(50);
+      expect(SCHEMA_VERSION).toBe(53);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -156,17 +156,25 @@ describe('Database schema', () => {
         }
 
         expect(getColumnNames(db, 'team_members')).not.toContain('project_id');
-        expect(getColumnNames(db, 'team_outbox')).not.toContain('project_id');
+        // team_outbox carries project_id (schema v53) as per-row routing
+        // attribution for team sync, NOT as a Grove project-scoped capture
+        // table — so it is intentionally absent from GROVE_PROJECT_SCOPED_TABLES.
+        expect(getColumnNames(db, 'team_outbox')).toContain('project_id');
       });
 
-      it('every table with a project_id column is registered in GROVE_PROJECT_SCOPED_TABLES', () => {
+      it('every Grove capture table with a project_id column is registered in GROVE_PROJECT_SCOPED_TABLES', () => {
         createSchema(db);
         const tables = db.prepare(
           `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
         ).all() as Array<{ name: string }>;
 
+        // Infra/sync tables that carry project_id for routing — not Grove
+        // capture scoping — are deliberately excluded from the registry.
+        const PROJECT_ID_INFRA_TABLES = new Set<string>(['team_outbox']);
+
         const projectScoped = tables
           .map((t) => t.name)
+          .filter((name) => !PROJECT_ID_INFRA_TABLES.has(name))
           .filter((name) => {
             const cols = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
             return cols.some((c) => c.name === 'project_id');
@@ -1492,6 +1500,11 @@ describe('Database schema', () => {
           for (const index of projectIndexes) {
             db.prepare(`DROP INDEX IF EXISTS ${index.name}`).run();
           }
+          // The team-sync AFTER DELETE trigger (schema v53+) references
+          // OLD.project_id, so SQLite refuses to DROP the column while the
+          // trigger exists. Drop it here; the v32 migration under test doesn't
+          // touch triggers, and createSchema's reapply reinstalls it after.
+          db.prepare(`DROP TRIGGER IF EXISTS ${table}_team_ad`).run();
           db.prepare(`ALTER TABLE ${table} DROP COLUMN project_id`).run();
           expect(getColumnNames(db, table)).not.toContain('project_id');
         }

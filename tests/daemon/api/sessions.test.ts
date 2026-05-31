@@ -352,7 +352,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
     createSchema(db);
     embeddingManager = { onRemoved: vi.fn() };
     // Simulate a team-sync-enabled daemon on a known local machine id.
-    initTeamContext(false, 'local-machine-a');
+    initTeamContext('local-machine-a');
   });
 
   afterEach(() => {

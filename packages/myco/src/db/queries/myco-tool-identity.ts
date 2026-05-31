@@ -45,16 +45,22 @@ function canonicalizeMycoToolName(name: string): string | null {
 /** Capture group matching a canonical Myco tool name, built from the families. */
 const MYCO_TOOL_NAME_GROUP = MYCO_TOOL_FAMILIES.map((family) => `${family}[a-z_]+`).join('|');
 /**
- * Recognizes Myco tool calls routed through the CLI rather than MCP. The myco
- * skill instructs agents to call tools via the project launcher
- * (`node .agents/myco-cli.cjs tool call <tool> --input '{"op":"…"}'`, also
- * `myco-run`, `dist/src/cli.js`, or a bare `myco` / `myco-dev`). Those execute
- * as the agent's shell tool, so the tool identity is embedded in the command.
- * We require a launcher token immediately before `tool call <name>` and
- * constrain `<name>` to the Myco families so prose can't false-match.
+ * Launcher tokens that may immediately precede `tool call <name>` in a shell
+ * command. The current canonical CLI form is the bare `myco` / `myco-dev`
+ * binary; `myco-cli.cjs`, `myco-run[.cjs]`, and the plugin-bundle `cli.js` are
+ * legacy/project-launcher forms, still parsed so historical activity rows keep
+ * their Myco-tool attribution. Single source of truth — update on any rename.
+ */
+const CLI_LAUNCHER_TOKENS = String.raw`myco-cli\.cjs|myco-run(?:\.cjs)?|cli\.js|\bmyco(?:-dev)?`;
+
+/**
+ * Recognizes Myco tool calls routed through the CLI rather than MCP — they
+ * execute as the agent's shell tool, so the tool identity is embedded in the
+ * command. We require a launcher token immediately before `tool call <name>`
+ * and constrain `<name>` to the Myco families so prose can't false-match.
  */
 const CLI_TOOL_CALL_RE = new RegExp(
-  String.raw`(?:myco-cli\.cjs|myco-run(?:\.cjs)?|cli\.js|\bmyco(?:-dev)?)\s+tool\s+call\s+(${MYCO_TOOL_NAME_GROUP})`,
+  String.raw`(?:${CLI_LAUNCHER_TOKENS})\s+tool\s+call\s+(${MYCO_TOOL_NAME_GROUP})`,
   'g',
 );
 /** Inline `--input '{"op":"…"}'` op extractor (keyed on the shared op key). */

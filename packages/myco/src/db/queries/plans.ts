@@ -6,9 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { epochSeconds } from '@myco/constants.js';
-import { getTeamMachineId, isTeamSyncEnabled } from '@myco/daemon/team-context.js';
-import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
+import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
@@ -281,22 +279,6 @@ export function deletePlan(id: string, scope: ProjectScope): PlanRow | null {
     `DELETE FROM plans WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
   if (info.changes === 0) return null;
-
-  if (isTeamSyncEnabled()) {
-    enqueueOutbox({
-      table_name: 'plans',
-      row_id: row.id,
-      operation: 'delete',
-      payload: JSON.stringify({
-        id: row.id,
-        project_id: row.project_id,
-        logical_key: row.logical_key,
-        title: row.title,
-      }),
-      machine_id: getTeamMachineId(),
-      created_at: epochSeconds(),
-    });
-  }
 
   return row;
 }

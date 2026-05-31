@@ -36,14 +36,14 @@ Setup is automatic. Installing the global `myco` binary brings up the daemon and
 
 ## CLI Tool Reference
 
-The stable portable path is the project-resolved CLI launcher. In an initialized project, prefer `node .agents/myco-cli.cjs` because it reads `.myco/runtime.command` in project scope and therefore works with dogfood aliases, worktree-local runtimes, and renamed binaries. The sibling `.agents/myco-run.cjs` launcher is reserved for capture hooks and may intentionally route git worktrees through the main checkout runtime so session data lands in the main vault. If the CLI launcher is not present, use host MCP tools when available, then fall back to `myco-run` or `myco` only when the command is known to be on PATH for this project.
+The stable portable path is the `myco` CLI on your PATH. Prefer `myco tool call …`: the binary walks up from the working directory for a `.myco/runtime.command` pin before dispatching, so it automatically honors dogfood aliases, worktree-local runtimes, and renamed binaries. (The project-local `.agents/myco-cli.cjs` launcher that earlier versions shipped is retired — the global install no longer writes it.) When `myco` is not on PATH — e.g. GUI- or launchd-spawned agents whose environment omits `~/.local/bin` — fall back to the absolute global launcher the hooks themselves use: `node ~/.myco/launcher.cjs tool call …`, which performs the same layered pin resolution. Host MCP tools (`myco_*`) are the other fallback when the agent exposes Myco cleanly.
 
-Project-resolved CLI:
+Myco CLI:
 
 ```bash
-node .agents/myco-cli.cjs tool list --json
-node .agents/myco-cli.cjs tool call <tool-name> --json --input '<json>'
-node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
+myco tool list --json
+myco tool call <tool-name> --json --input '<json>'
+myco tool call <tool-name> --json --input @payload.json
 ```
 
 **Use `--input @file.json` whenever the payload contains backticks, code fences, multi-line strings, or markdown.** Agent shells often re-wrap commands through an outer `eval`, and backticks inside the inner single-quoted JSON get command-substituted before the CLI sees them — what you intended as literal `` `foo.ts` `` in spore content becomes the shell trying to execute `foo.ts`. The `@file` form sidesteps this entirely because the JSON never travels through shell escape resolution. Reserve the inline form for short single-line payloads with no special characters (e.g. `{"op":"get","id":"..."}`).
@@ -53,7 +53,7 @@ node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
 cat > /tmp/payload.json <<'EOF'
 { "op": "save", "type": "gotcha", "content": "Use `npm test`, not `bun test <subset>`..." }
 EOF
-node .agents/myco-cli.cjs tool call myco_spores --json --input @/tmp/payload.json
+myco tool call myco_spores --json --input @/tmp/payload.json
 ```
 
 If the CLI is genuinely unavailable or both inline and `@file` forms fail repeatedly for the same payload, the host's MCP tool call (when Myco MCP is loaded — look for `myco_*` or `mcp__*myco*` entries in the available-tools list) is the fallback. Don't reach for MCP first — the CLI is the deliberate primary path; this skill is written around it.
@@ -62,26 +62,7 @@ Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failu
 
 The local Myco tool surface registers 7 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
 
-Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the project-resolved CLI or MCP.
-
-## Myco Development Worktrees
-
-When developing Myco itself inside a git worktree, do not run `make dev-link`. That target rewrites shared `~/.local/bin/myco-*` symlinks and can redirect other active agents to the worktree binary.
-
-Use the worktree-scoped pattern instead:
-
-```bash
-make dev-link-worktree
-```
-
-This builds the worktree binary and writes the worktree's `.myco/runtime.command` directly to `packages/myco-<target>/bin/myco`. That file is local runtime state and is not inherited when a worktree is created, so run the command from each worktree that needs project-scoped CLI/tool testing.
-
-Runtime scopes stay separate:
-
-- `.agents/myco-run.cjs` is the capture launcher for hooks; in git worktrees it can resolve through the main checkout runtime so session capture stays attached to the main vault.
-- `.agents/myco-cli.cjs` is the project launcher for CLI/tool calls; in git worktrees it prefers the worktree-local `.myco/runtime.command`, then falls back to the main checkout pin.
-
-Remove only the worktree pin with `make dev-unlink-worktree`. Use `make dev-unlink` only when intentionally removing the shared dev symlinks from the main checkout.
+Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the `myco` CLI or MCP.
 
 ### myco_cortex — Get Cortex intelligence
 
@@ -94,7 +75,7 @@ Retrieve Cortex-produced project intelligence: the pre-computed project digest, 
 CLI:
 
 ```bash
-node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"digest","tier":5000}'
+myco tool call myco_cortex --json --input '{"op":"digest","tier":5000}'
 ```
 
 Tiers: `1500` (executive briefing), `5000` (default), `10000` (comprehensive). Prefer this over `myco_search` for broad project orientation; use `myco_search` when you need specific prior decisions or bug fixes.
@@ -102,13 +83,13 @@ Tiers: `1500` (executive briefing), `5000` (default), `10000` (comprehensive). P
 Canopy map:
 
 ```bash
-node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'
+myco tool call myco_cortex --json --input '{"op":"canopy_map"}'
 ```
 
 Current generated instructions:
 
 ```bash
-node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"instructions"}'
+myco tool call myco_cortex --json --input '{"op":"instructions"}'
 ```
 
 When delegating work, include the returned instructions verbatim in the delegated prompt alongside the task-specific instructions. Do not assume the returned instructions have a particular heading or section name; they are generated project guidance and may change over time.
@@ -130,7 +111,7 @@ Search across sessions, plans, spores, skills, and Canopy file summaries.
 CLI:
 
 ```bash
-node .agents/myco-cli.cjs tool call myco_search --json --input '{"query":"why did we choose JWT over session cookies","type":"spore","limit":5}'
+myco tool call myco_search --json --input '{"query":"why did we choose JWT over session cookies","type":"spore","limit":5}'
 ```
 
 **When to use**: searching for prior decisions, debugging context, understanding rationale, or finding source files by what they do. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, `"skill"` for skills, `"canopy"` for file summaries, or omit for all. Each result includes a stable `id` and, when the entity is retrievable, a `retrieve` object with the exact tool input to fetch it.
@@ -338,20 +319,20 @@ To change embedding settings or Cortex injection behavior on an existing vault, 
 
 For the full CLI reference with all flags, see `references/cli-usage.md`.
 
-Prefer the project-resolved launcher from the initialized project root:
+Prefer the `myco` CLI from the initialized project root:
 
 ```
-node .agents/myco-cli.cjs <command> [args]
+myco <command> [args]
 ```
 
-That launcher honors project and worktree runtime pins. Use a plugin-root `dist/src/cli.js` path only when you are deliberately operating inside an installed plugin bundle and `.agents/myco-cli.cjs` is unavailable.
+The binary honors project and worktree runtime pins — it walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH, use the absolute global launcher `node ~/.myco/launcher.cjs <command> [args]`, which resolves the same pins.
 
 ### Reprocessing sessions
 
 If observations were lost due to a bug, or if you want to re-extract observations with a different LLM, run the `reprocess` command:
 
 ```
-node .agents/myco-cli.cjs reprocess
+myco reprocess
 ```
 
 This re-reads all session transcripts, re-extracts observations, and re-indexes everything. Existing spores are preserved — new observations are additive.
@@ -363,9 +344,9 @@ Options:
 ### Digest management
 
 ```
-node .agents/myco-cli.cjs digest              # Run incremental digest cycle
-node .agents/myco-cli.cjs digest --tier 3000  # Reprocess a specific tier (clean slate)
-node .agents/myco-cli.cjs digest --full       # Reprocess all tiers from scratch
+myco digest              # Run incremental digest cycle
+myco digest --tier 3000  # Reprocess a specific tier (clean slate)
+myco digest --full       # Reprocess all tiers from scratch
 ```
 
 ### Vault intelligence
@@ -373,8 +354,8 @@ node .agents/myco-cli.cjs digest --full       # Reprocess all tiers from scratch
 Supersession happens automatically on every spore write. For vault-wide cleanup, see `references/cli-usage.md` for full flags:
 
 ```
-node .agents/myco-cli.cjs agent              # Run the intelligence agent
-node .agents/myco-cli.cjs agent --dry-run    # Preview without writing
+myco agent              # Run the intelligence agent
+myco agent --dry-run    # Preview without writing
 ```
 
 For patterns on when to manually supersede or consolidate, see `references/wisdom.md`.
@@ -382,10 +363,10 @@ For patterns on when to manually supersede or consolidate, see `references/wisdo
 ### Other maintenance commands
 
 ```
-node .agents/myco-cli.cjs version     # Check plugin version
-node .agents/myco-cli.cjs rebuild     # Re-index all records
-node .agents/myco-cli.cjs stats       # Check vault health
-node .agents/myco-cli.cjs verify      # Test embedding/provider connectivity
-node .agents/myco-cli.cjs setup-llm --show
-node .agents/myco-cli.cjs setup-llm --embedding-provider ollama --embedding-model bge-m3
+myco version     # Check plugin version
+myco rebuild     # Re-index all records
+myco stats       # Check vault health
+myco verify      # Test embedding/provider connectivity
+myco setup-llm --show
+myco setup-llm --embedding-provider ollama --embedding-model bge-m3
 ```

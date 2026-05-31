@@ -69,7 +69,7 @@ The main package includes the local CLI, service, agent connections, MCP server,
 
 Optional operator packages are only needed for infrastructure administration:
 
-- `@goondocks/myco-team` — provision and manage Team Sync for a Grove
+- `@goondocks/myco-team` — provision and manage a team's sync Worker (operators only; teammates join from the dashboard)
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
 
 ## How it works
@@ -136,14 +136,14 @@ Supported symbionts include Claude Code, Cursor, Codex, Copilot, Antigravity, Wi
 
 ### Team sync
 
-Share knowledge across machines and team members. Team Sync is enabled per Grove. One team member installs the `@goondocks/myco-team` package and provisions the infrastructure from any project in that Grove:
+Share knowledge across machines and teammates. One person provisions the team's cloud infrastructure once; everyone else joins from the dashboard with nothing extra to install:
 
 ```bash
-npm install -g @goondocks/myco-team
-myco-team install    # Creates Team Sync for the current Grove
+npm install -g @goondocks/myco-team wrangler && wrangler login
+myco-team install --name "Acme Core"   # deploys the team Worker; prints a Worker URL + Team key
 ```
 
-Share the output URL and Team key with teammates — they connect from the Team page in the dashboard without needing the `myco-team` package themselves. Once connected, each teammate's Grove knowledge syncs automatically: new spores, session summaries, plans, and graph edges become available to the team in the background. Search results include both local knowledge and synced team knowledge.
+Share the Worker URL and Team key with teammates. Each teammate opens the **Team** page in their dashboard, joins the team with those two values, and assigns the projects they want to sync — no `myco-team` package needed. From then on, each assigned project's knowledge syncs automatically: new spores, session summaries, plans, and graph edges become available to the team in the background, and search returns both local and team knowledge.
 
 Local Grove databases remain the source of truth. The cloud store is a queryable mirror of connected teammates' Grove data, and each record carries a machine identity for attribution.
 

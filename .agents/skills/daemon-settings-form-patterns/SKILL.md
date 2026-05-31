@@ -6,7 +6,8 @@ description: |
   compound provider+model dropdown field in daemon settings UI. Covers two
   patterns not in daemon-ui-development: (1) the 3-step config toggle
   side-effects architecture — boolean flag in myco.yaml → managed block in
-  the target file → in-process registerSymbionts() reconciliation on save;
+  the target file → in-process reconcileConfiguredSymbionts reconciliation,
+  fired by the daemon config-reactions on a capture/symbionts config write;
   (2) the ProviderModelSelector compound enum pattern for paired
   provider+model dropdowns where the provider selection resets and filters
   the model list. Also covers .gitignore scope boundaries for file-mutation
@@ -106,16 +107,14 @@ Idempotency requirement: running reconciliation twice must produce the same resu
 
 ### Step 3 — In-Process Reconciliation Trigger
 
-When the user saves the config toggle in the UI, trigger reconciliation via a direct in-process call from the API route handler. Do **not** spawn `myco update` as a subprocess.
+A config write must reconcile the target file in-process — never by spawning `myco update` as a subprocess. The daemon wires this through its config-reactions system: a write that touches `capture` or `symbionts` settings fires `reconcileConfiguredSymbionts`, which reconciles the WRITTEN project's `.gitignore` against the current config. (Under the global-install model it reconciles `.gitignore` only; it no longer re-installs project-local symbionts or launchers — hooks are global.)
 
 ```typescript
-// src/daemon/routes/config.ts (or equivalent):
-async function handleConfigSave(req: Request) {
-  const newConfig = parseConfigFromRequest(req);
-  await updateConfig(newConfig);          // writes myco.yaml
-  await registerSymbionts(newConfig);     // in-process: reconciles .gitignore, AGENTS.md, etc.
-  return json({ ok: true });
-}
+// src/daemon/main.ts — register the reaction once at startup:
+reactions.on(['capture', 'symbionts'], (_ctx, scope) => {
+  // Per-write scope so a write for project B reconciles project B.
+  reconcileConfiguredSymbionts(resolveProjectRoot(scope.vaultDir), scope.vaultDir, scope.groveId);
+});
 ```
 
 **Why in-process, not subprocess:**
@@ -268,7 +267,7 @@ const handleSave = useCallback(async () => {
 
 ## Cross-Cutting Gotchas
 
-- **In-process vs subprocess:** always call `registerSymbionts()` directly from the API handler; a subprocess delays the effect and breaks Playwright file-state assertions
+- **In-process vs subprocess:** the daemon config-reactions run `reconcileConfiguredSymbionts` in-process on a `capture`/`symbionts` write; never shell out to `myco update` — a subprocess delays the effect and breaks Playwright file-state assertions
 - **Managed block idempotency:** always strip the existing block before re-inserting; running reconciliation twice must produce identical output
 - **Filter paths at write time:** compute `getGitignoreEntries()` fresh on each save so stale or newly-invalid paths are not persisted to the block
 - **Symbiont planDirs are agent-owned:** never merge symbiont manifest `planDirs` into user custom plan dir lists; they represent different ownership models

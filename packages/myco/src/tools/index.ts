@@ -169,6 +169,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   ): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');
     const { createSchema } = await import('@myco/db/schema.js');
+    const { getMachineId } = await import('@myco/daemon/machine-id.js');
     if (options.resolveDatabase) {
       let db: Database;
       try {
@@ -181,7 +182,8 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     let db: Database;
     try {
       db = openDatabase(context.databasePath);
-      createSchema(db);
+      // Real machine id (not the 'local' default) so the v52 conversion runs.
+      createSchema(db, getMachineId());
     } catch {
       throw new ToolError('tool_call_failed', 'Vault database is not available');
     }
