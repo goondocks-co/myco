@@ -87,34 +87,40 @@ export function TeamPage() {
     return <StatusTab status={status!} />;
   }
 
+  // Team scope selector lives in the header's right slot (not above the tabs)
+  // so toggling it across tabs never shifts the tab row or content — the
+  // header height is driven by the title/subtitle. Hidden on the Teams tab,
+  // which is machine-scoped (manages all teams), not scoped to one team.
+  const teamScopeSelector = teams.length > 0 && tab !== 'teams' ? (
+    <>
+      <label htmlFor="team-scope" className="myco-eyebrow-sm text-on-surface-variant">Team</label>
+      <select
+        id="team-scope"
+        aria-label="Selected team"
+        className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
+        value={selectedTeamId ?? ''}
+        onChange={(e) =>
+          setParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.set('team', e.target.value);
+            return next;
+          }, { replace: true })
+        }
+      >
+        {teams.map((t) => (
+          <option key={t.team_id} value={t.team_id}>{t.name}</option>
+        ))}
+      </select>
+    </>
+  ) : undefined;
+
   return (
     <PageContainer>
       <PageHeader
         title="Team"
         subtitle="Sync your projects to shared team clouds"
+        actions={teamScopeSelector}
       />
-      {teams.length > 0 && tab !== 'teams' && (
-        <div className="mb-4 flex items-center gap-2">
-          <label htmlFor="team-scope" className="myco-eyebrow-sm text-on-surface-variant">Team</label>
-          <select
-            id="team-scope"
-            aria-label="Selected team"
-            className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
-            value={selectedTeamId ?? ''}
-            onChange={(e) =>
-              setParams((prev) => {
-                const next = new URLSearchParams(prev);
-                next.set('team', e.target.value);
-                return next;
-              }, { replace: true })
-            }
-          >
-            {teams.map((t) => (
-              <option key={t.team_id} value={t.team_id}>{t.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
       <VersionBlockBanner status={status} />
       <TileTabs
         tabs={TABS}
