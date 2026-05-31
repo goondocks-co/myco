@@ -7,6 +7,13 @@ import { getDatabase } from '@myco/db/client.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
+// Relative import of the dependency-free worker module (not index.ts, which
+// transitively pulls in the Workers-only `cloudflare:email`). Scope is the
+// single source of truth for which synced tables are machine-scoped.
+import {
+  SYNCED_TABLES as WORKER_SYNCED_TABLES,
+  SYNCED_TABLE_SCOPE,
+} from '../../packages/myco-team/worker/src/synced-tables.ts';
 
 // Import the real list rather than a hand-copy: the copy was itself a drift
 // risk (a new trigger table added to schema-ddl.ts would not be exercised
@@ -142,12 +149,15 @@ describe('session cascade journals child deletes via triggers', () => {
 });
 
 describe('structural guard: every synced table has a delete trigger', () => {
-  // entity_mentions has no single `id` column; team_members has no
-  // `project_id` column for the ${table}_team_ad trigger to journal. Both are
-  // intentionally trigger-less. Cross-list parity for these exclusions is
-  // enforced in synced-table-parity.test.ts (NO_SINGLE_ID_TABLES /
-  // NO_DELETE_TRIGGER_TABLES).
-  const NO_TRIGGER = new Set<string>(['entity_mentions', 'team_members']);
+  // Two DISTINCT reasons a synced table is intentionally trigger-less:
+  //   - machine-scoped (e.g. team_members): no `project_id` column for the
+  //     ${table}_team_ad trigger to journal — derived from SYNCED_TABLE_SCOPE.
+  //   - no single `id` column (entity_mentions): the trigger journals OLD.id —
+  //     a separate reason, still project-scoped.
+  // Cross-list parity for these exclusions is enforced in
+  // synced-table-parity.test.ts (NO_SINGLE_ID_TABLES / NO_DELETE_TRIGGER_TABLES).
+  const machineScoped = WORKER_SYNCED_TABLES.filter((t) => SYNCED_TABLE_SCOPE[t] === 'machine');
+  const NO_TRIGGER = new Set<string>([...machineScoped, 'entity_mentions']);
   it('covers all observed tables except the trigger-less exclusions', () => {
     const db = newDb();
     const triggers = new Set(

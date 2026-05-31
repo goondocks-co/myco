@@ -41,16 +41,44 @@ export const SYNCED_TABLES = [
 export type SyncedTable = (typeof SYNCED_TABLES)[number];
 
 /**
+ * Scope of each synced table — the single source of truth for project- vs
+ * machine-scoped handling. Project-scoped rows carry a grove project_id and
+ * route to the team that owns the project. Machine-scoped rows (one set per
+ * machine, e.g. the team_members self-row) carry no project_id and fan out to
+ * every team the machine has joined. Derive ALL scope-specific behavior from
+ * this map so a new table's scope is declared in exactly one place.
+ *
+ * The `Record<SyncedTable, ...>` type forces every SYNCED_TABLES entry to be
+ * scoped here: adding a synced table without declaring its scope is a compile
+ * error.
+ */
+export const SYNCED_TABLE_SCOPE: Record<SyncedTable, 'project' | 'machine'> = {
+  sessions: 'project',
+  prompt_batches: 'project',
+  spores: 'project',
+  entities: 'project',
+  graph_edges: 'project',
+  entity_mentions: 'project',
+  resolution_events: 'project',
+  plans: 'project',
+  artifacts: 'project',
+  digest_extracts: 'project',
+  skill_candidates: 'project',
+  skill_records: 'project',
+  skill_usage: 'project',
+  knowledge_release_state: 'project',
+  team_members: 'machine',
+};
+
+/**
  * Synced tables that are MACHINE-scoped (one row set per machine, not per
  * project) and therefore carry no `project_id`. The worker's enqueue gate
- * exempts these from the grove-project_id validation. Currently just
- * team_members (the team roster).
+ * exempts these from the grove-project_id validation. Derived from
+ * SYNCED_TABLE_SCOPE so scope is declared in exactly one place.
  */
-export const MACHINE_SCOPED_TABLES = [
-  'team_members',
-] as const;
-
-const MACHINE_SCOPED_SET = new Set<string>(MACHINE_SCOPED_TABLES);
+export const MACHINE_SCOPED_TABLES = SYNCED_TABLES.filter(
+  (t) => SYNCED_TABLE_SCOPE[t] === 'machine',
+);
 
 /**
  * Whether a synced table's records must carry a valid grove project_id.
@@ -58,5 +86,5 @@ const MACHINE_SCOPED_SET = new Set<string>(MACHINE_SCOPED_TABLES);
  * a null project_id.
  */
 export function requiresGroveProjectId(table: string): boolean {
-  return !MACHINE_SCOPED_SET.has(table);
+  return SYNCED_TABLE_SCOPE[table as SyncedTable] !== 'machine';
 }

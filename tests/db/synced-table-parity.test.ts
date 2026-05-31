@@ -43,6 +43,7 @@ import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
 // crashes a plain bun import.
 import {
   SYNCED_TABLES as WORKER_SYNCED_TABLES,
+  SYNCED_TABLE_SCOPE,
   MACHINE_SCOPED_TABLES,
   requiresGroveProjectId,
 } from '../../packages/myco-team/worker/src/synced-tables.ts';
@@ -74,17 +75,23 @@ const NO_SINGLE_ID_TABLES = new Set<string>(['entity_mentions']);
 const NO_SYNCED_AT_TABLES = new Set<string>(['skill_usage']);
 
 /**
- * Tables that are synced + backfilled + rebuilt but have NO delete trigger.
- * `team_members` has a single `id` (so it backfills/rebuilds fine) but no
- * `project_id` column → the standard `${table}_team_ad` trigger can't journal
- * it (the trigger captures `OLD.project_id`). It is machine-scoped and
- * self-only; its self-row isn't deleted in the normal flow, so deletes are
- * intentionally not propagated.
+ * Tables that are synced + backfilled + rebuilt but have NO delete trigger
+ * because they are MACHINE-scoped (e.g. team_members). A machine-scoped table
+ * has a single `id` (so it backfills/rebuilds fine) but no `project_id` column
+ * → the standard `${table}_team_ad` trigger can't journal it (the trigger
+ * captures `OLD.project_id`). The self-row isn't deleted in the normal flow,
+ * so deletes are intentionally not propagated.
+ *
+ * Derived from SYNCED_TABLE_SCOPE so scope is declared in exactly one place;
+ * this is a DISTINCT reason from NO_SINGLE_ID_TABLES (which is project-scoped
+ * but lacks a single `id`). Do not conflate the two.
  *
  * Consequence: present in worker SYNCED + OBSERVED + REBUILD + BACKFILL,
  * ABSENT from DELETE_TRIGGER only.
  */
-const NO_DELETE_TRIGGER_TABLES = new Set<string>(['team_members']);
+const NO_DELETE_TRIGGER_TABLES = new Set<string>(
+  WORKER_SYNCED_TABLES.filter((t) => SYNCED_TABLE_SCOPE[t] === 'machine'),
+);
 
 // ---------------------------------------------------------------------------
 // Set helpers
@@ -188,11 +195,11 @@ describe('synced-table parity: documented exclusions are the ONLY differences', 
     });
   });
 
-  it('worker SYNCED − DELETE_TRIGGER is exactly the no-single-id + no-project_id tables (e.g. entity_mentions, team_members)', () => {
+  it('worker SYNCED − DELETE_TRIGGER is exactly the no-single-id + machine-scoped tables (e.g. entity_mentions, team_members)', () => {
     // Every synced table must have a delete trigger UNLESS it has no single
-    // `id` (entity_mentions) or no `project_id` for the trigger to journal
-    // (team_members). A synced table missing here for any OTHER reason =
-    // deletes silently stop mirroring.
+    // `id` (entity_mentions) or is machine-scoped so has no `project_id` for
+    // the trigger to journal (team_members). A synced table missing here for
+    // any OTHER reason = deletes silently stop mirroring.
     const expectedNoTrigger = new Set<string>([...NO_SINGLE_ID_TABLES, ...NO_DELETE_TRIGGER_TABLES]);
     const syncedWithoutTrigger = minus(worker, triggers);
     const unexpected = syncedWithoutTrigger.filter((t) => !expectedNoTrigger.has(t));
@@ -203,5 +210,23 @@ describe('synced-table parity: documented exclusions are the ONLY differences', 
       syncedButNoDeleteTrigger: [...expectedNoTrigger].sort(),
       unexpectedMissingTrigger: [],
     });
+  });
+});
+
+describe('synced-table scope: derivation is wired to SYNCED_TABLE_SCOPE', () => {
+  it('SYNCED_TABLE_SCOPE covers exactly SYNCED_TABLES (no table left unscoped)', () => {
+    expect(new Set(Object.keys(SYNCED_TABLE_SCOPE))).toEqual(worker);
+  });
+
+  it('requiresGroveProjectId is false for machine-scoped, true for project-scoped', () => {
+    expect(requiresGroveProjectId('team_members')).toBe(false);
+    expect(requiresGroveProjectId('sessions')).toBe(true);
+  });
+
+  it('MACHINE_SCOPED_TABLES equals the scope map\'s machine entries', () => {
+    const machineFromScope = WORKER_SYNCED_TABLES.filter(
+      (t) => SYNCED_TABLE_SCOPE[t] === 'machine',
+    );
+    expect([...MACHINE_SCOPED_TABLES].sort()).toEqual([...machineFromScope].sort());
   });
 });
