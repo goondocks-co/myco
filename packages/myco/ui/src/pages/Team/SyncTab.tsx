@@ -190,14 +190,14 @@ function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (a
   );
 }
 
-export function SyncTab({ status }: { status: TeamStatusResponse }) {
+export function SyncTab({ status, teamId }: { status: TeamStatusResponse; teamId?: string }) {
   const queryClient = useQueryClient();
   const enabled = status.enabled && status.healthy;
-  const { data: queueStats, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useTeamQueueStats(enabled);
-  const { data: syncSummary, isLoading: summaryLoading, isFetching: summaryFetching, refetch: refetchSummary } = useTeamSyncSummary(enabled);
+  const { data: queueStats, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useTeamQueueStats(enabled, teamId);
+  const { data: syncSummary, isLoading: summaryLoading, isFetching: summaryFetching, refetch: refetchSummary } = useTeamSyncSummary(enabled, teamId);
   const { data: daemonStats } = useDaemon();
   const dlqEnabled = enabled;
-  const { data: dlq, isLoading: dlqLoading, isFetching: dlqFetching, refetch: refetchDlq } = useTeamDlq(dlqEnabled);
+  const { data: dlq, isLoading: dlqLoading, isFetching: dlqFetching, refetch: refetchDlq } = useTeamDlq(dlqEnabled, teamId);
   const [busy, setBusy] = useState(false);
   const [dlqMessage, setDlqMessage] = useState<string | null>(null);
   const [draining, setDraining] = useState(false);

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, mock } from 'bun:test';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -49,17 +49,28 @@ const statusFixture = {
   worker_min_client_version: 1,
 };
 
+let lastStatusTeamId: string | undefined;
+
 mock.module('../../packages/myco/ui/src/hooks/use-team', () => ({
-  useTeamStatus: () => ({
-    data: statusFixture,
-    isLoading: false,
-  }),
+  useTeamStatus: (teamId?: string) => {
+    lastStatusTeamId = teamId;
+    return { data: statusFixture, isLoading: false };
+  },
   useTeamQueueStats: () => ({ data: undefined, isLoading: false }),
   useTeamSyncSummary: () => ({ data: undefined, isLoading: false }),
   useTeamDlq: () => ({ data: undefined, isLoading: false }),
-  useTeamRegistry: () => ({ data: { teams: [] }, isLoading: false }),
+  useTeamRegistry: () => ({
+    data: {
+      teams: [
+        { team_id: 'team_a', name: 'Team A', worker_url: 'https://a.dev', domain: null, mcp_endpoint: null, created_at: '', projects: [] },
+        { team_id: 'team_b', name: 'Team B', worker_url: 'https://b.dev', domain: null, mcp_endpoint: null, created_at: '', projects: [] },
+      ],
+    },
+    isLoading: false,
+  }),
   useTeamProjects: () => ({ data: { projects: [] }, isLoading: false }),
   useSetProjectMembership: () => ({ mutateAsync: async () => ({}), isPending: false }),
+  useJoinTeam: () => ({ mutateAsync: async () => ({}), isPending: false }),
   isTokenMissing: () => false,
 }));
 
@@ -136,7 +147,8 @@ function wrapWithRoutes(initial: string) {
 describe('TeamPage tabs', () => {
   it('renders the Teams selection tab by default', async () => {
     render(wrap('/g/foo/team'));
-    await waitFor(() => expect(screen.getByText(/No teams yet/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Registered teams')).toBeInTheDocument());
+    expect(screen.getByText('Team A')).toBeInTheDocument();
   });
   it('renders Status tab when ?tab=status', async () => {
     render(wrap('/g/foo/team?tab=status'));
@@ -164,5 +176,13 @@ describe('TeamPage tabs', () => {
     // After the redirect resolves, the Sync tab body is mounted —
     // assert on its "Remote store" section header.
     await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
+  });
+  it('renders a team selector that scopes status to the selected team', async () => {
+    render(wrap('/g/foo/team?tab=status'));
+    const selector = await screen.findByLabelText('Selected team');
+    expect((selector as HTMLSelectElement).value).toBe('team_a');
+    expect(lastStatusTeamId).toBe('team_a');
+    fireEvent.change(selector, { target: { value: 'team_b' } });
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
   });
 });

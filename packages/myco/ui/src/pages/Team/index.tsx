@@ -1,6 +1,6 @@
 import { useSearchParams } from 'react-router-dom';
 import { Activity, RefreshCw, Users, Network, AlertTriangle } from 'lucide-react';
-import { useTeamStatus, type TeamStatusResponse } from '../../hooks/use-team';
+import { useTeamStatus, useTeamRegistry, type TeamStatusResponse } from '../../hooks/use-team';
 import { AccentSurface } from '../../components/ui/accent-surface';
 import { PageHeader } from '../../components/ui/page-header';
 import { PageLoading } from '../../components/ui/page-loading';
@@ -57,8 +57,11 @@ function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
 }
 
 export function TeamPage() {
-  const { data: status, isLoading } = useTeamStatus();
   const [params, setParams] = useSearchParams();
+  const { data: registry } = useTeamRegistry();
+  const teams = registry?.teams ?? [];
+  const selectedTeamId = params.get('team') ?? teams[0]?.team_id ?? undefined;
+  const { data: status, isLoading } = useTeamStatus(selectedTeamId);
   const raw = params.get('tab') ?? 'teams';
   const tab: TabId = VALID_TABS.has(raw as TabId) ? (raw as TabId) : 'teams';
 
@@ -79,8 +82,8 @@ export function TeamPage() {
     // membership independent of the legacy per-Grove connection.
     if (tab === 'teams') return <TeamSelection />;
     if (!isConnected) return <NotConnectedView scopeName={scopeName} />;
-    if (tab === 'sync') return <SyncTab status={status!} />;
-    if (tab === 'members') return <MembersTab />;
+    if (tab === 'sync') return <SyncTab status={status!} teamId={selectedTeamId} />;
+    if (tab === 'members') return <MembersTab teamId={selectedTeamId} />;
     return <StatusTab status={status!} />;
   }
 
@@ -90,6 +93,28 @@ export function TeamPage() {
         title="Team"
         subtitle="Sync your projects to shared team clouds"
       />
+      {teams.length > 0 && tab !== 'teams' && (
+        <div className="mb-4 flex items-center gap-2">
+          <label htmlFor="team-scope" className="myco-eyebrow-sm text-on-surface-variant">Team</label>
+          <select
+            id="team-scope"
+            aria-label="Selected team"
+            className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
+            value={selectedTeamId ?? ''}
+            onChange={(e) =>
+              setParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.set('team', e.target.value);
+                return next;
+              }, { replace: true })
+            }
+          >
+            {teams.map((t) => (
+              <option key={t.team_id} value={t.team_id}>{t.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <VersionBlockBanner status={status} />
       <TileTabs
         tabs={TABS}

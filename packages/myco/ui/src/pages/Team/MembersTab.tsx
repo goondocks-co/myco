@@ -39,7 +39,11 @@ function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
   );
 }
 
-export function MembersTab() {
+// `teamId` is accepted so the page can pass the selected team, but member
+// data is not yet team-scoped: useTeamMembers reads the local team_members
+// table and takes no team argument. Threading is deferred until a
+// team-scoped member API exists.
+export function MembersTab({ teamId: _teamId }: { teamId?: string } = {}) {
   const { data, isLoading: membersLoading } = useTeamMembers();
   const { data: status, isLoading: statusLoading } = useTeamStatus();
   const selfMachineId = status?.machine_id ?? null;
