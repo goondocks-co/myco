@@ -135,6 +135,19 @@ describe('createTeamSelectionHandlers', () => {
     expect(body.teams.map((t) => t.team_id)).toContain(team.team_id);
   });
 
+  it('annotates teams with has_deployment from the deployment record', () => {
+    const opId = createTeamId();
+    const joinedId = createTeamId();
+    teamRegistry.save({ team_id: opId, name: 'Op', worker_url: 'https://op.dev', domain: null, mcp_endpoint: null, created_at: '', projects: [] });
+    teamRegistry.saveDeployment({ team_id: opId, worker_name: 'w', worker_url: 'https://op.dev', package_version: '0', created_at: '', last_upgraded: '', config_version: 1 });
+    teamRegistry.save({ team_id: joinedId, name: 'Joined', worker_url: 'https://j.dev', domain: null, mcp_endpoint: null, created_at: '', projects: [] });
+
+    const response = handlers.handleListTeams({} as RouteRequest);
+    const teams = (response.body as { teams: Array<{ team_id: string; has_deployment: boolean }> }).teams;
+    expect(teams.find((t) => t.team_id === opId)?.has_deployment).toBe(true);
+    expect(teams.find((t) => t.team_id === joinedId)?.has_deployment).toBe(false);
+  });
+
   it('handleListProjects returns a projects array (empty home → [])', () => {
     const response: RouteResponse = handlers.handleListProjects({} as RouteRequest);
     const body = response.body as { projects: unknown[] };

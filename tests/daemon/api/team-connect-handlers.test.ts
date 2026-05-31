@@ -505,6 +505,41 @@ describe('team-connect handlers — direct coverage', () => {
   });
 
   // -------------------------------------------------------------------------
+  // handleForget
+  // -------------------------------------------------------------------------
+
+  describe('handleForget', () => {
+    it('removes the team locally and purges its pending outbox rows', async () => {
+      const teamId = createTeamId();
+      teamRegistry.save({
+        team_id: teamId, name: 'Forget Me', worker_url: 'https://f.example.workers.dev',
+        domain: null, mcp_endpoint: null, created_at: new Date().toISOString(),
+        projects: [{ grove_id: groveCtx.groveId!, project_id: groveCtx.projectId! }],
+      });
+      const { enqueueOutbox } = await import('../../../packages/myco/src/db/queries/team-outbox.js');
+      enqueueOutbox({ table_name: 'spores', row_id: 'x', operation: 'upsert', payload: '{}', machine_id: 'machine-test', project_id: groveCtx.projectId!, created_at: Math.floor(Date.now() / 1000) });
+
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger, getTeamClient: () => null,
+      });
+
+      const res = await handlers.handleForget(makeRequest({ body: { team_id: teamId } }));
+      expect((res.body as { forgotten: boolean }).forgotten).toBe(true);
+      expect(teamRegistry.get(teamId)).toBeNull();
+    });
+
+    it('is a no-op for an unknown team', async () => {
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers({
+        vaultDir, machineId: 'machine-test', globalPrefix: null, logger: noopLogger, getTeamClient: () => null,
+      });
+      const res = await handlers.handleForget(makeRequest({ body: { team_id: createTeamId() } }));
+      expect((res.body as { forgotten: boolean }).forgotten).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // handleRotateMcpToken
   // -------------------------------------------------------------------------
 

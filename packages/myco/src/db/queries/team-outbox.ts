@@ -363,6 +363,21 @@ export function countPendingForProjects(projectIds: string[]): number {
 }
 
 /**
+ * Drop pending (unsent) outbox rows for the given projects. Returns the count
+ * removed. Used when a teammate forgets a joined team so its queued rows don't
+ * linger or get lazily dropped on the next drain.
+ */
+export function dropPendingForProjects(projectIds: string[]): number {
+  if (projectIds.length === 0) return 0;
+  const db = getDatabase();
+  const placeholders = projectIds.map(() => '?').join(', ');
+  const result = db.prepare(
+    `DELETE FROM team_outbox WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
+  ).run(...projectIds);
+  return result.changes;
+}
+
+/**
  * Per-table breakdown of pending (unsent) outbox records. Used by the
  * disable-time purge so the daemon can log what's being dropped without
  * the operator having to query SQLite themselves.

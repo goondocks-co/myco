@@ -40,7 +40,11 @@ export function createTeamSelectionHandlers() {
    * team.json holds no secrets, so the records are safe to return as-is.
    */
   function handleListTeams(_req: RouteRequest): RouteResponse {
-    return { body: { teams: teamRegistry.list() } };
+    const teams = teamRegistry.list().map((team) => ({
+      ...team,
+      has_deployment: teamRegistry.readDeployment(team.team_id) != null,
+    }));
+    return { body: { teams } };
   }
 
   /**

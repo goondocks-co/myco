@@ -14,6 +14,7 @@ import { resolveGroveDir } from '@myco/grove/paths.js';
 import {
   countPending,
   countPendingForProjects,
+  dropPendingForProjects,
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
@@ -429,6 +430,24 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   }
 
   /**
+   * POST /api/team/forget — teammate-side counterpart to join. Removes a team
+   * from this machine's registry (team.json + secrets + any deployment.json)
+   * and purges its pending outbox rows. Does NOT touch Cloudflare — use
+   * `myco-team destroy --team-id` for that (operator only).
+   */
+  async function handleForget(req: RouteRequest): Promise<RouteResponse> {
+    const body = (req.body ?? {}) as { team_id?: unknown };
+    const teamId = typeof body.team_id === 'string' ? body.team_id.trim() : '';
+    if (!teamId) return { status: 400, body: { error: 'missing_team_id' } };
+    const team = teamRegistry.get(teamId);
+    if (!team) return { body: { forgotten: false } };
+    const purged = dropPendingForProjects(team.projects.map((p) => p.project_id));
+    teamRegistry.remove(teamId);
+    logger.info('team-sync.registry.forgotten', 'Forgot team from registry', { team_id: teamId, purged });
+    return { body: { forgotten: true, purged } };
+  }
+
+  /**
    * GET /api/team/status
    *
    * Returns connection status, health check result, pending sync count, and machine_id.
@@ -830,7 +849,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   }
 
   return {
-    handleConnect, handleJoin, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
+    handleConnect, handleJoin, handleForget, handleDisconnect, handleStatus, handleBackfill, handleRotateMcpToken,
     handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard,
   };
 }
