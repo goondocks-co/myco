@@ -51,7 +51,8 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         <p className="text-xs text-on-surface-variant m-0 mb-3">
           These credentials belong to the registered Team worker for{' '}
           <span className="text-on-surface font-medium">{status.grove?.name ?? 'this Grove'}</span>.
-          Keep the Team key private because it authorizes writes to the worker.
+          Keep the Team key private because it authorizes writes to the worker.{' '}
+          Share the Worker URL and Team key out-of-band with a teammate so they can <span className="text-on-surface font-medium">Join</span> this team on their Teams tab.
         </p>
         <div className="flex flex-col gap-3">
           {status.worker_url && <CopyableField label="Worker URL" value={status.worker_url} />}

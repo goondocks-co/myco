@@ -1009,6 +1009,7 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
     console.log(`\nNote: the custom domain ${endpointUrl} may take a moment to propagate.`);
   }
   console.log('\nUse the dashboard Teams tab to assign registered projects to this Team.');
+  console.log('Share the URL and Team key (shown on the Team page) with teammates so they can Join this team on their Teams tab.');
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import {
   useTeamProjects,
   useSetProjectMembership,
   useJoinTeam,
+  useForgetTeam,
   type TeamRegistryRecord,
   type TeamProjectRow,
 } from '../../hooks/use-team';
@@ -15,7 +16,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { CopyableField } from '../../components/team/CopyableField';
 
-function TeamRow({ team }: { team: TeamRegistryRecord }) {
+function TeamRow({ team, onLeave, leaving }: { team: TeamRegistryRecord; onLeave: (team: TeamRegistryRecord) => void; leaving: boolean }) {
   const count = team.projects.length;
   const updateCommand = `myco-team update --team-id ${team.team_id} --observability`;
   return (
@@ -23,13 +24,21 @@ function TeamRow({ team }: { team: TeamRegistryRecord }) {
       <div className="flex flex-col gap-1 min-w-0">
         <span className="text-sm font-medium text-on-surface">{team.name}</span>
         <code className="text-xs font-mono text-on-surface-variant break-all">{team.worker_url}</code>
-        <div className="mt-2">
-          <CopyableField label="Update command" value={updateCommand} />
-        </div>
+        {team.has_deployment && (
+          <div className="mt-2"><CopyableField label="Update command" value={updateCommand} /></div>
+        )}
       </div>
-      <Badge variant="outline">
-        {count} project{count === 1 ? '' : 's'}
-      </Badge>
+      <div className="flex flex-col items-end gap-2 shrink-0">
+        <Badge variant="outline">{count} project{count === 1 ? '' : 's'}</Badge>
+        <button
+          type="button"
+          disabled={leaving}
+          onClick={() => onLeave(team)}
+          className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors disabled:opacity-50"
+        >
+          Leave team
+        </button>
+      </div>
     </div>
   );
 }
@@ -75,6 +84,7 @@ export function TeamSelection() {
   const { data: projectsData, isLoading: projectsLoading } = useTeamProjects();
   const membership = useSetProjectMembership();
   const join = useJoinTeam();
+  const forget = useForgetTeam();
   const [error, setError] = useState<string | null>(null);
   const [joinUrl, setJoinUrl] = useState('');
   const [joinKey, setJoinKey] = useState('');
@@ -92,6 +102,16 @@ export function TeamSelection() {
       setJoinKey('');
     } catch (err) {
       setJoinError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleLeave = async (team: TeamRegistryRecord) => {
+    if (team.has_deployment && !window.confirm(`Leave "${team.name}"? This removes it from this machine only — the worker keeps running. Use "myco-team destroy" to delete the worker.`)) return;
+    setError(null);
+    try {
+      await forget.mutateAsync({ team_id: team.team_id });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -168,7 +188,7 @@ export function TeamSelection() {
         ) : (
           <div className="flex flex-col gap-2">
             {teams.map((team) => (
-              <TeamRow key={team.team_id} team={team} />
+              <TeamRow key={team.team_id} team={team} onLeave={handleLeave} leaving={forget.isPending} />
             ))}
           </div>
         )}

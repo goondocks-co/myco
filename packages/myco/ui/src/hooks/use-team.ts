@@ -201,6 +201,7 @@ export interface TeamRegistryRecord {
   mcp_endpoint: string | null;
   created_at: string;
   projects: { grove_id: string; project_id: string }[];
+  has_deployment?: boolean;
 }
 
 export interface TeamProjectRow {
@@ -277,6 +278,18 @@ export function useJoinTeam() {
   const qc = useQueryClient();
   return useMutation<JoinTeamResponse, Error, JoinTeamBody>({
     mutationFn: (body) => postJson<JoinTeamResponse>('/team/join', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['team-registry'] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+      qc.invalidateQueries({ queryKey: ['team-status'] });
+    },
+  });
+}
+
+export function useForgetTeam() {
+  const qc = useQueryClient();
+  return useMutation<{ forgotten: boolean }, Error, { team_id: string }>({
+    mutationFn: (body) => postJson<{ forgotten: boolean }>('/team/forget', body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['team-registry'] });
       qc.invalidateQueries({ queryKey: ['team-projects'] });
