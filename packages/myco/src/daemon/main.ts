@@ -44,7 +44,7 @@ import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.j
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createTeamSelectionHandlers } from './api/team-selection.js';
-import { listTeamMembersHandler } from './api/team-members.js';
+import { createListTeamMembersHandler } from './api/team-members.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
@@ -1795,6 +1795,9 @@ export async function main(): Promise<void> {
   async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
     await teamSync.reconcileClient(req.requestContext);
   }
+  const listTeamMembersHandler = createListTeamMembersHandler({
+    getTeamClientForId: (teamId) => teamSync.getTeamClientById(teamId),
+  });
   const teamSelectionHandlers = createTeamSelectionHandlers();
   server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
   server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));

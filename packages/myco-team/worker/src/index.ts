@@ -1719,6 +1719,24 @@ async function handleSyncSummary(request: Request, env: Env): Promise<Response> 
 }
 
 /**
+ * `GET /members` — the team's member roster, synced from every node's
+ * local `team_members` rows. Returns the union across all machines so the
+ * daemon can render the Members tab for the selected team rather than the
+ * local self-only roster.
+ */
+async function handleListMembers(env: Env): Promise<Response> {
+  try {
+    const { results } = await env.MYCO_TEAM_DB
+      .prepare(`SELECT id, machine_id, "user", role, joined, tags, synced_at FROM team_members ORDER BY "user" ASC, machine_id ASC`)
+      .all<{ id: string; machine_id: string; user: string; role: string | null; joined: string | null; tags: string | null; synced_at: number | null }>();
+    return jsonResponse({ members: results ?? [] });
+  } catch {
+    // team_members may not exist on a worker deployed before the schema migration.
+    return jsonResponse({ members: [] });
+  }
+}
+
+/**
  * `POST /rebuild` — destructive one-way repair. Truncates the requesting
  * machine's rows from this Grove's D1 tables and clears their Vectorize
  * entries so the daemon can re-push the full local Grove (`backfillAll`)
@@ -2070,6 +2088,9 @@ export default {
       }
       if (method === 'GET' && path === '/sync-summary') {
         return await handleSyncSummary(request, env);
+      }
+      if (method === 'GET' && path === '/members') {
+        return await handleListMembers(env);
       }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);

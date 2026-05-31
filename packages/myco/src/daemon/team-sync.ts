@@ -256,6 +256,21 @@ export interface DlqListResponse {
   messages: DlqMessage[];
 }
 
+/** One team_members row as returned by the worker's `/members` endpoint. */
+export interface TeamMemberWire {
+  id: string;
+  machine_id: string;
+  user: string;
+  role: string | null;
+  joined: string | null;
+  tags: string | null;
+  synced_at: number | null;
+}
+
+export interface TeamMembersListResponse {
+  members: TeamMemberWire[];
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -471,6 +486,11 @@ export class TeamSyncClient {
    */
   async getQueueStats(): Promise<QueueStatsResponse> {
     return await this.request('GET', '/queue-stats') as QueueStatsResponse;
+  }
+
+  /** Fetch the team's member roster from the worker's D1-backed endpoint. */
+  async listMembers(): Promise<TeamMembersListResponse> {
+    return await this.request('GET', '/members') as TeamMembersListResponse;
   }
 
   async getSyncSummary(machineId?: string): Promise<TeamRemoteSyncSummaryResponse> {

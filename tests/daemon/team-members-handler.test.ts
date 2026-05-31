@@ -9,6 +9,11 @@ describe('GET /api/team/members handler', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
+  // These cases exercise the no-team_id local-fallback path, so the resolver
+  // is never consulted.
+  const localOnly = () =>
+    createListTeamMembersHandler({ getTeamClientForId: () => null });
+
   it('returns team members shaped for the UI', async () => {
     const db = getDatabase();
     db.prepare(
@@ -20,7 +25,7 @@ describe('GET /api/team/members handler', () => {
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run('m2', 'Bob', 'member', null, null, 'machine-2');
 
-    const handler = createListTeamMembersHandler();
+    const handler = localOnly();
     const response = await handler({
       body: undefined,
       query: {},
@@ -56,7 +61,7 @@ describe('GET /api/team/members handler', () => {
       `INSERT INTO team_members (id, "user", machine_id) VALUES (?, ?, ?)`,
     ).run('a1', 'Aaron', 'machine-1');
 
-    const response = await createListTeamMembersHandler()({
+    const response = await localOnly()({
       body: undefined,
       query: {},
       params: {},
@@ -71,7 +76,7 @@ describe('GET /api/team/members handler', () => {
       `INSERT INTO team_members (id, "user", tags, machine_id) VALUES (?, ?, ?, ?)`,
     ).run('m1', 'Alice', 'core, ops , ', 'machine-1');
 
-    const response = await createListTeamMembersHandler()({
+    const response = await localOnly()({
       body: undefined,
       query: {},
       params: {},
