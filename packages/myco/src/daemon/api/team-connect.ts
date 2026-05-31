@@ -22,6 +22,7 @@ import {
   LOCAL_ONLY_SYNC_COLUMNS,
   LOCAL_ONLY_RATIONALES,
 } from '@myco/db/queries/team-outbox.js';
+import { markSelfMemberUnsynced } from '@myco/db/queries/team-members.js';
 import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
@@ -843,6 +844,16 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     });
     teamRegistry.writeSecret(teamId, TEAM_API_KEY_SECRET, teamKey);
     if (config.mcp_token) teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, config.mcp_token);
+
+    // Re-push this machine's self team_members row so the drain re-fans it to
+    // every participating team — including the one just joined. team_members.synced_at
+    // is machine-global, so a prior sync to another team would otherwise skip this team.
+    try {
+      markSelfMemberUnsynced(machineId);
+      backfillUnsynced(machineId);
+    } catch (err) {
+      logger.warn('team-sync.join.self-member-resync-failed', 'Self member re-push after join failed (roster may lag until next backfill)', { error: errorMessage(err) });
+    }
 
     logger.info('team-sync.join.registered', 'Joined team via shared credentials', { team_id: teamId });
     return { body: { team: teamRegistry.get(teamId) } };

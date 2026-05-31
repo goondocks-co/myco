@@ -51,3 +51,16 @@ export function upsertSelfMember(machineId: string, joinedIso: string): {
 
   return { inserted: info.changes === 1, row };
 }
+
+/**
+ * Reset the local machine's team_members row to unsynced so the next
+ * unsynced sweep re-enqueues it. Used on join so a machine's self-row
+ * re-fans to every team it now participates in (team_members.synced_at is
+ * machine-global, so a prior sync would otherwise skip a newly joined team).
+ * Returns the number of rows updated.
+ */
+export function markSelfMemberUnsynced(machineId: string): number {
+  return getDatabase().prepare(
+    `UPDATE team_members SET synced_at = NULL WHERE machine_id = ?`,
+  ).run(machineId).changes;
+}

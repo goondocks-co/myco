@@ -447,6 +447,32 @@ describe('team-connect handlers — direct coverage', () => {
       expect(secrets.MYCO_TEAM_MCP_TOKEN).toBe('mcp-xyz');
     });
 
+    it('re-pushes this machine\'s self team_members row so the next drain re-fans it', async () => {
+      getDatabase().prepare(
+        `INSERT INTO team_members (id, "user", machine_id, synced_at)
+         VALUES ('machine-test', 'machine-test', 'machine-test', 123)`,
+      ).run();
+
+      const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+      const handlers = createTeamHandlers(joinDeps(async () => ({
+        config: { team_id: JOIN_TEAM_ID, team_name: 'Joined Team' },
+        sync_protocol_version: 2,
+      })) as never);
+
+      const res = await handlers.handleJoin(makeRequest({
+        body: { worker_url: 'https://joined.example.workers.dev', team_key: 'tk-secret' },
+      }));
+      expect(res.status).toBeUndefined();
+
+      const row = getDatabase().prepare(
+        `SELECT synced_at FROM team_members WHERE machine_id = 'machine-test'`,
+      ).get() as { synced_at: number | null };
+      expect(row.synced_at).toBeNull();
+
+      const { countPendingByTable } = await import('../../../packages/myco/src/db/queries/team-outbox.js');
+      expect(countPendingByTable().team_members ?? 0).toBeGreaterThanOrEqual(1);
+    });
+
     it('preserves existing project membership on re-join (idempotent upsert)', async () => {
       teamRegistry.save({
         team_id: JOIN_TEAM_ID,
