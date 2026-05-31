@@ -19,6 +19,7 @@ import {
   EDGE_TYPE_DERIVED_FROM,
   EDGE_TYPE_HAS_BATCH,
   DEFAULT_AGENT_ID,
+  epochSeconds,
 } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -117,7 +118,6 @@ export interface PlanTouchTarget {
   id: string;
   project_id: string | null;
   session_id: string | null;
-  created_at: number;
 }
 
 /**
@@ -140,8 +140,13 @@ export function recordPlanSessionTouch(
   if (callingSessionId === plan.session_id) return;
 
   try {
-    const alreadyLinked = listGraphEdges({ sourceId: plan.id, scope: ALL_PROJECTS_SCOPE })
-      .some((edge) => edge.target_id === callingSessionId && edge.type === type);
+    const alreadyLinked = listGraphEdges({
+      sourceId: plan.id,
+      targetId: callingSessionId,
+      type,
+      scope: ALL_PROJECTS_SCOPE,
+      limit: 1,
+    }).length > 0;
     if (alreadyLinked) return;
 
     insertGraphEdge({
@@ -153,7 +158,7 @@ export function recordPlanSessionTouch(
       target_type: 'session',
       type,
       session_id: callingSessionId,
-      created_at: plan.created_at,
+      created_at: epochSeconds(),
     });
   } catch {
     // Best-effort lineage — never break the plan tool call.

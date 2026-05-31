@@ -117,7 +117,7 @@ export async function handleMycoPlans(
     // the caller is the creating session).
     if (input.id) {
       recordPlanSessionTouch(
-        { id: row.id, project_id: row.project_id, session_id: row.session_id, created_at: row.created_at },
+        { id: row.id, project_id: row.project_id, session_id: row.session_id },
         context.sessionId,
         EDGE_TYPE_PLAN_ADVANCED,
       );
@@ -168,7 +168,7 @@ export async function handleMycoPlans(
     const row = getPlan(input.id, projectScopeFromRequestContext(context));
     if (row) {
       recordPlanSessionTouch(
-        { id: row.id, project_id: row.project_id, session_id: row.session_id, created_at: row.created_at },
+        { id: row.id, project_id: row.project_id, session_id: row.session_id },
         context.sessionId,
         EDGE_TYPE_PLAN_REFERENCED,
       );

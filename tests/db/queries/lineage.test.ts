@@ -131,16 +131,18 @@ describe('lineage helpers', () => {
       id: 'plan-1',
       project_id: null as string | null,
       session_id: 'creator-session',
-      created_at: epochNow(),
     };
 
-    it('emits a PLAN_REFERENCED edge when a different session touches the plan', () => {
+    it('emits a PLAN_REFERENCED edge stamped at the touch time, not the plan birth time', () => {
       recordPlanSessionTouch(plan, 'reader-session', 'PLAN_REFERENCED');
       const edges = listGraphEdges({ sourceId: 'plan-1', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].source_type).toBe('plan');
       expect(edges[0].target_id).toBe('reader-session');
       expect(edges[0].type).toBe('PLAN_REFERENCED');
+      // Edge records WHEN the cross-session touch happened (now), not the plan's
+      // creation time — so it must be a current, non-zero epoch.
+      expect(edges[0].created_at).toBeGreaterThan(1_000_000_000);
     });
 
     it('does NOT emit an edge when the calling session is the creating session', () => {
