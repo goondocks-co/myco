@@ -8,6 +8,7 @@ const PLAN_PATH_KEY_PREFIX = 'path:';
 const PLAN_SESSION_KEY_PREFIX = 'session:';
 const PLAN_TAG_KEY_SEGMENT = ':tag:';
 const PLAN_PLAN_KEY_SEGMENT = ':key:';
+const PLAN_FILE_KEY_SEGMENT = ':file:';
 const PLAN_LEGACY_KEY_PREFIX = 'legacy:';
 const PLAN_SESSION_LEGACY_KEY_SEGMENT = ':legacy:';
 const WINDOWS_SEPARATOR = '\\';
@@ -46,6 +47,13 @@ export function normalizePlanSourcePath(sourcePath: string, projectRoot?: string
   return normalizePathSeparators(path.normalize(sourcePath));
 }
 
+/**
+ * Legacy `path:` namespace. NOT used by any live intake — capture and the MCP
+ * save path now key file-backed plans with {@link buildFilePlanLogicalKey}
+ * (session-scoped). Retained only for the historical v19→v20 backfill (via
+ * {@link deriveStoredPlanLogicalKey}, whose `path:` output the v53→v54 migration
+ * re-keys) and for anti-collision tests.
+ */
 export function buildPathPlanLogicalKey(sourcePath: string, projectRoot?: string): string {
   return `${PLAN_PATH_KEY_PREFIX}${normalizePlanSourcePath(sourcePath, projectRoot)}`;
 }
@@ -56,6 +64,25 @@ export function buildSessionTagPlanLogicalKey(sessionId: string, tag: string): s
 
 export function buildSessionPlanLogicalKey(sessionId: string, planKey: string): string {
   return `${PLAN_SESSION_KEY_PREFIX}${sessionId}${PLAN_PLAN_KEY_SEGMENT}${planKey}`;
+}
+
+export function buildFilePlanLogicalKey(sessionId: string, normalizedPath: string): string {
+  return `${PLAN_SESSION_KEY_PREFIX}${sessionId}${PLAN_FILE_KEY_SEGMENT}${normalizedPath}`;
+}
+
+/**
+ * Single authoritative definition of save-path plan identity precedence: a
+ * caller-supplied `planKey` is the identity (session `:key:` namespace);
+ * otherwise the plan is identified by its file (session `:file:` namespace).
+ * `planKey` wins when both are present — `source_path` is then pure metadata.
+ */
+export function resolvePlanLogicalKey(
+  sessionId: string,
+  opts: { planKey?: string | null; normalizedSourcePath?: string | null },
+): string {
+  if (opts.planKey) return buildSessionPlanLogicalKey(sessionId, opts.planKey);
+  if (opts.normalizedSourcePath) return buildFilePlanLogicalKey(sessionId, opts.normalizedSourcePath);
+  throw new Error('resolvePlanLogicalKey requires a planKey or a normalizedSourcePath');
 }
 
 export function buildLegacyPlanLogicalKey(

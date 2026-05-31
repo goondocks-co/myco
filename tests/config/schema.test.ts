@@ -101,6 +101,7 @@ describe('MycoConfigSchema v3', () => {
     expect(config.cortex.digest.inject_on_session_start).toBe(false);
     expect(config.cortex.spores.inject_on_prompt_submit).toBe(true);
     expect(config.cortex.spores.max_per_prompt).toBe(3);
+    expect(config.cortex.plans.inject_intent_nudge_on_prompt_submit).toBe(true);
   });
 
   it('accepts custom cortex feature config', () => {

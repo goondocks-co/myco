@@ -417,6 +417,45 @@ describe('createPromptContextHandler', () => {
     expect((result.body as { text: string }).text).toBe('');
   });
 
+  // --- Plan-intent nudge (Phase 4) ---
+
+  it('appends the plan-intent nudge when intent is present and the toggle is on', async () => {
+    const handler = createPromptContextHandler(makeDeps());
+    const result = await handler(makeReq({ prompt: 'please plan the migration', session_id: 'sess-nudge-1' }));
+    expect((result.body as { text: string }).text).toContain('Myco is where plans live');
+  });
+
+  it('does NOT inject the nudge when the prompt has no planning intent', async () => {
+    const handler = createPromptContextHandler(makeDeps());
+    const result = await handler(makeReq({ prompt: 'fix the bug in foo.ts', session_id: 'sess-nudge-2' }));
+    expect((result.body as { text: string }).text).not.toContain('Myco is where plans live');
+  });
+
+  it('injects the nudge even when spore injection is disabled', async () => {
+    const handler = createPromptContextHandler(makeDeps({ config: makeConfig({ prompt_search: false }) }));
+    const result = await handler(makeReq({ prompt: 'write a spec for X', session_id: 'sess-nudge-3' }));
+    expect((result.body as { text: string }).text).toContain('Myco is where plans live');
+  });
+
+  it('injects the nudge at most once per session', async () => {
+    const { insertBatch } = await import('@myco/db/queries/batches');
+    upsertSession({ id: 'sess-nudge-4', agent: 'claude-code', started_at: NOW, created_at: NOW });
+    insertBatch({
+      session_id: 'sess-nudge-4',
+      kind: 'initial',
+      prompt_number: 1,
+      user_prompt: 'plan',
+      started_at: NOW,
+      created_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
+    });
+    const handler = createPromptContextHandler(makeDeps());
+    const first = await handler(makeReq({ prompt: 'please plan the migration', session_id: 'sess-nudge-4' }));
+    const second = await handler(makeReq({ prompt: 'let us plan it again now', session_id: 'sess-nudge-4' }));
+    expect((first.body as { text: string }).text).toContain('Myco is where plans live');
+    expect((second.body as { text: string }).text).not.toContain('Myco is where plans live');
+  });
+
   it('returns empty text for short prompts', async () => {
     const handler = createPromptContextHandler(makeDeps());
     const result = await handler(makeReq({ prompt: 'hi', session_id: 's-2' }));

@@ -12,6 +12,7 @@ import {
 } from '@myco/db/queries/graph-edges.js';
 import type { GraphEdgeInsert } from '@myco/db/queries/graph-edges.js';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { EDGE_TYPE_PLAN_REFERENCED } from '@myco/constants.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -49,6 +50,20 @@ describe('graph edge query helpers', () => {
   });
 
   describe('insertGraphEdge', () => {
+    it('accepts a plan source node and the plan-referenced edge type', () => {
+      const edge = insertGraphEdge({
+        agent_id: TEST_AGENT_ID,
+        source_id: 'plan-1',
+        source_type: 'plan',
+        target_id: 'session-2',
+        target_type: 'session',
+        type: EDGE_TYPE_PLAN_REFERENCED,
+        created_at: epochNow(),
+      });
+      expect(edge.source_type).toBe('plan');
+      expect(edge.type).toBe('PLAN_REFERENCED');
+    });
+
     it('inserts an edge and returns it with generated id', () => {
       const edge = insertGraphEdge(makeEdge());
 

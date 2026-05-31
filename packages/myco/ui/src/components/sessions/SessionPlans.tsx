@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react';
-import { Trash2 } from 'lucide-react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { Trash2, Copy, Check, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { MarkdownContent } from '../ui/markdown-content';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useDeletePlan, useSessionPlans, SessionPlanRow } from '../../hooks/use-sessions';
-import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
+import { formatEpochAgo, formatEpochAbsolute, truncate, SESSION_ID_PREVIEW_LENGTH } from '../../lib/format';
 
 /* ---------- Constants ---------- */
 
@@ -43,6 +43,41 @@ function PlanStatusBadge({ status }: { status: string }) {
     PLAN_STATUS_STYLES[status] ?? PLAN_STATUS_DEFAULT_STYLE,
   );
   return <span className={classes}>{status}</span>;
+}
+
+/**
+ * Copyable plan ID. Shows a truncated id; copies the full id (the shareable
+ * handle a symbiont passes to `myco_plans` op:"get" to pick the plan up in a
+ * new session). Stops click propagation so copying never toggles the card.
+ */
+function CopyablePlanId({ planId }: { planId: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const onCopy = useCallback(() => {
+    if (!navigator.clipboard?.writeText) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    navigator.clipboard.writeText(planId).then(
+      () => { setState('copied'); timerRef.current = setTimeout(() => setState('idle'), 1500); },
+      () => { setState('failed'); timerRef.current = setTimeout(() => setState('idle'), 1500); },
+    );
+  }, [planId]);
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onCopy(); }}
+      title={state === 'failed' ? 'Copy failed — check clipboard permissions' : `Copy plan ID: ${planId}`}
+      className="inline-flex items-center gap-1 font-mono text-xs text-muted-foreground hover:text-primary transition-colors"
+      aria-live="polite"
+    >
+      <span>{truncate(planId, SESSION_ID_PREVIEW_LENGTH)}</span>
+      {state === 'copied' && <Check className="h-3 w-3 text-primary" />}
+      {state === 'failed' && <X className="h-3 w-3 text-error" />}
+      {state === 'idle' && <Copy className="h-3 w-3" />}
+    </button>
+  );
 }
 
 interface PlanCardProps {
@@ -102,7 +137,8 @@ function PlanCard({ plan, initialExpanded = false, isDeleting = false, onDelete 
             </p>
           )}
 
-          <div className="flex gap-3 font-sans text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 font-sans text-xs text-muted-foreground">
+            <CopyablePlanId planId={plan.id} />
             <span>Created {formatEpochAgo(plan.created_at)}</span>
             {plan.updated_at && plan.updated_at !== plan.created_at && (
               <span title={formatEpochAbsolute(plan.updated_at)}>

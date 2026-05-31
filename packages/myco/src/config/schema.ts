@@ -376,6 +376,11 @@ const CortexSporesSchema = z.object({
   max_per_prompt: z.number().int().min(0).max(10).default(3),
 });
 
+const CortexPlansSchema = z.object({
+  /** Inject a one-sentence tools-first plan nudge when the prompt shows planning intent. */
+  inject_intent_nudge_on_prompt_submit: z.boolean().default(true),
+});
+
 const CortexCanopySchema = z.object({
   /** When/how the Canopy index is rebuilt (data plane). */
   refresh: CanopyRefreshSchema.default(() => CanopyRefreshSchema.parse({})),
@@ -393,6 +398,7 @@ const CortexSchema = z.object({
   instructions: CortexInstructionsSchema.default(() => CortexInstructionsSchema.parse({})),
   digest: CortexDigestSchema.default(() => CortexDigestSchema.parse({})),
   spores: CortexSporesSchema.default(() => CortexSporesSchema.parse({})),
+  plans: CortexPlansSchema.default(() => CortexPlansSchema.parse({})),
   canopy: CortexCanopySchema.default(() => CortexCanopySchema.parse({})),
 });
 

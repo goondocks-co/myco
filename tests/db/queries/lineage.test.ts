@@ -5,9 +5,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
-import { createSporeLineage, createBatchLineage } from '@myco/db/queries/lineage.js';
+import { createSporeLineage, createBatchLineage, recordPlanSessionTouch } from '@myco/db/queries/lineage.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const TEST_AGENT_ID = 'test-agent';
 
@@ -118,6 +119,46 @@ describe('lineage helpers', () => {
       expect(edges[0].source_type).toBe('session');
       expect(edges[0].target_id).toBe('42');
       expect(edges[0].target_type).toBe('batch');
+    });
+  });
+
+  describe('recordPlanSessionTouch', () => {
+    // The lineage edge is system-attributed to DEFAULT_AGENT_ID (same owner
+    // createBatchLineage uses); ensure it exists to satisfy the agent FK.
+    beforeEach(() => { createAgent(DEFAULT_AGENT_ID); });
+
+    const plan = {
+      id: 'plan-1',
+      project_id: null as string | null,
+      session_id: 'creator-session',
+    };
+
+    it('emits a PLAN_REFERENCED edge stamped at the touch time, not the plan birth time', () => {
+      recordPlanSessionTouch(plan, 'reader-session', 'PLAN_REFERENCED');
+      const edges = listGraphEdges({ sourceId: 'plan-1', scope: ALL_PROJECTS_SCOPE });
+      expect(edges).toHaveLength(1);
+      expect(edges[0].source_type).toBe('plan');
+      expect(edges[0].target_id).toBe('reader-session');
+      expect(edges[0].type).toBe('PLAN_REFERENCED');
+      // Edge records WHEN the cross-session touch happened (now), not the plan's
+      // creation time — so it must be a current, non-zero epoch.
+      expect(edges[0].created_at).toBeGreaterThan(1_000_000_000);
+    });
+
+    it('does NOT emit an edge when the calling session is the creating session', () => {
+      recordPlanSessionTouch(plan, 'creator-session', 'PLAN_REFERENCED');
+      expect(listGraphEdges({ sourceId: 'plan-1', scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+    });
+
+    it('does NOT emit an edge when the calling session is null', () => {
+      recordPlanSessionTouch(plan, null, 'PLAN_REFERENCED');
+      expect(listGraphEdges({ sourceId: 'plan-1', scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+    });
+
+    it('is idempotent for the same (plan, session, type) touch', () => {
+      recordPlanSessionTouch(plan, 'reader-session', 'PLAN_REFERENCED');
+      recordPlanSessionTouch(plan, 'reader-session', 'PLAN_REFERENCED');
+      expect(listGraphEdges({ sourceId: 'plan-1', scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
     });
   });
 });

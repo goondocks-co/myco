@@ -19,7 +19,7 @@ import { epochSeconds } from '@myco/constants.js';
 
 const INJECTION_OUTPUT_STORE_LIMIT = 8000;
 
-export type InjectionType = 'cortex' | 'spores' | 'canopy' | 'subagent';
+export type InjectionType = 'cortex' | 'spores' | 'canopy' | 'subagent' | 'plan-nudge';
 
 export interface InjectionTrigger {
   /** What initiated this injection (e.g. for spores: prompt hash + preview). */

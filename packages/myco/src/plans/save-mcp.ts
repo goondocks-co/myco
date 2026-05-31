@@ -8,8 +8,7 @@ import { getLatestOpenBatch } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { getPlan } from '@myco/db/queries/plans.js';
 import {
-  buildPathPlanLogicalKey,
-  buildSessionPlanLogicalKey,
+  resolvePlanLogicalKey,
   normalizePlanSourcePath,
 } from '@myco/plans/identity.js';
 import { persistPlan } from '../daemon/plan-capture.js';
@@ -64,7 +63,11 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     const openBatch = input.session_id ? getLatestOpenBatch(input.session_id) : null;
     const plan = persistPlan({
       id: existingPlan.id,
-      sessionId: input.session_id || existingPlan.session_id,
+      // The creating session is set once, then immutable. A real creator is
+      // never re-homed onto a later caller — that cross-session update is
+      // recorded as lineage (PLAN_ADVANCED) instead. A legacy plan with no
+      // creator adopts the first updating session.
+      sessionId: existingPlan.session_id ?? input.session_id,
       projectId,
       // Omitting content on update preserves the existing body — the common
       // case for status-only transitions (active → in_progress → completed).
@@ -89,11 +92,11 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     };
   }
 
-  if (hasSourcePath === hasPlanKey) {
+  if (!hasSourcePath && !hasPlanKey) {
     return {
       ok: false,
       code: 'invalid-arguments',
-      message: 'Provide exactly one of source_path or plan_key',
+      message: 'Provide source_path, plan_key, or both when creating a new plan',
     };
   }
 
@@ -107,9 +110,10 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   const normalizedSourcePath = input.source_path
     ? normalizePlanSourcePath(input.source_path, input.projectRoot)
     : null;
-  const logicalKey = normalizedSourcePath
-    ? buildPathPlanLogicalKey(normalizedSourcePath)
-    : buildSessionPlanLogicalKey(sessionId, input.plan_key!);
+  const logicalKey = resolvePlanLogicalKey(sessionId, {
+    planKey: input.plan_key,
+    normalizedSourcePath,
+  });
 
   const plan = persistPlan({
     sessionId,

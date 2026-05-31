@@ -1,6 +1,7 @@
 import { listSpores, countSpores, getSpore } from '@myco/db/queries/spores.js';
 import { listEntities } from '@myco/db/queries/entities.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { listPlans } from '@myco/db/queries/plans.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -381,9 +382,19 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
      FROM sessions WHERE 1=1${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
   ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
 
+  // Fetch plans across ALL statuses via the shared query helper. A plan you
+  // advance or pick up is in_progress/completed — exactly the cross-session
+  // lineage case — so an active-only filter would hide the very plans whose
+  // touch edges we want to render. Plans are session-born artifacts; their
+  // plan↔session edges only render once both endpoints exist as nodes.
+  const planRows = listPlans({
+    scope: projectScopeFromRequestContext(req.requestContext),
+    limit: FULL_GRAPH_NODE_LIMIT,
+  });
+
   // Collect all node IDs for edge filtering
   const allIds = new Set<string>();
-  for (const r of [...sporeRows, ...sessionRows]) {
+  for (const r of [...sporeRows, ...sessionRows, ...planRows]) {
     allIds.add(r.id as string);
   }
 
@@ -422,6 +433,14 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
       status: (n.status as string) ?? undefined,
       created_at: n.created_at as number | undefined,
       content: (n.summary as string) ?? undefined,
+    })),
+    ...planRows.map((n) => ({
+      id: n.id,
+      name: n.title ?? `Plan ${n.id.slice(-6)}`,
+      type: 'plan' as const,
+      status: n.status,
+      created_at: n.created_at,
+      content: n.content ?? undefined,
     })),
   ];
 
