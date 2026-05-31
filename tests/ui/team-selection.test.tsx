@@ -110,7 +110,8 @@ describe('TeamSelection', () => {
     await screen.findByText(/Update command/i);
   });
 
-  it('leaves a team via the forget endpoint', async () => {
+  it('leaves a team via the forget endpoint when confirmed', async () => {
+    Object.defineProperty(window, 'confirm', { writable: true, configurable: true, value: () => true });
     const forgetCalls: Array<Record<string, unknown>> = [];
     // @ts-expect-error — test scaffold
     globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
@@ -126,6 +127,26 @@ describe('TeamSelection', () => {
     fireEvent.click(await screen.findByRole('button', { name: /leave team/i }));
     await waitFor(() => expect(forgetCalls.length).toBe(1));
     expect(forgetCalls[0]).toEqual({ team_id: 'team_abc' });
+  });
+
+  it('does not forget when leave confirm is dismissed', async () => {
+    Object.defineProperty(window, 'confirm', { writable: true, configurable: true, value: () => false });
+    const forgetCalls: Array<Record<string, unknown>> = [];
+    // @ts-expect-error — test scaffold
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/team/forget')) {
+        forgetCalls.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ forgotten: true }), { status: 200 });
+      }
+      if (typeof url === 'string' && url.includes('/team/registry')) return new Response(JSON.stringify(REGISTRY), { status: 200 });
+      if (typeof url === 'string' && url.includes('/team/projects')) return new Response(JSON.stringify(PROJECTS), { status: 200 });
+      return new Response('{}', { status: 200 });
+    });
+    renderSelection();
+    fireEvent.click(await screen.findByRole('button', { name: /leave team/i }));
+    // Give any async mutation a chance to fire before asserting.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(forgetCalls.length).toBe(0);
   });
 
   it('preselects the team for a synced project and "Not synced" for an unassigned one', async () => {

@@ -1,6 +1,7 @@
 import { usePowerQuery } from './use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { teamSuffix } from './use-team';
 
 export interface TeamMember {
   id: string;
@@ -17,7 +18,7 @@ export interface TeamMembersResponse {
 }
 
 export function useTeamMembers(teamId?: string) {
-  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<TeamMembersResponse>({
     queryKey: ['team-members', teamId ?? null],
     queryFn: ({ signal }) => fetchJson<TeamMembersResponse>(`/team/members${suffix}`, { signal }),

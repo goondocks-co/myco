@@ -58,8 +58,12 @@ export interface TeamStatusResponse {
   worker_min_client_version: number | null;
 }
 
+export function teamSuffix(teamId?: string): string {
+  return teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+}
+
 export function useTeamStatus(teamId?: string) {
-  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<TeamStatusResponse>({
     queryKey: ['team-status', teamId ?? null],
     queryFn: ({ signal }) => fetchJson<TeamStatusResponse>(`/team/status${suffix}`, { signal }),
@@ -154,7 +158,7 @@ export interface TeamSyncSummaryResponse {
 
 export function useTeamQueueStats(enabled: boolean, teamId?: string) {
   // keepPreviousData prevents the UI from flashing the empty state on refetch.
-  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<QueueStatsResponse>({
     queryKey: ['team-queue-stats', teamId ?? null],
     queryFn: ({ signal }) => fetchJson<QueueStatsResponse>(`/team/queue-stats${suffix}`, { signal }),
@@ -166,7 +170,7 @@ export function useTeamQueueStats(enabled: boolean, teamId?: string) {
 }
 
 export function useTeamSyncSummary(enabled: boolean, teamId?: string) {
-  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<TeamSyncSummaryResponse>({
     queryKey: ['team-sync-summary', teamId ?? null],
     queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>(`/team/sync-summary${suffix}`, { signal }),
@@ -178,7 +182,7 @@ export function useTeamSyncSummary(enabled: boolean, teamId?: string) {
 }
 
 export function useTeamDlq(enabled: boolean, teamId?: string) {
-  const suffix = teamId ? `?team_id=${encodeURIComponent(teamId)}` : '';
+  const suffix = teamSuffix(teamId);
   return usePowerQuery<DlqListResponse>({
     queryKey: ['team-dlq', teamId ?? null],
     queryFn: ({ signal }) => fetchJson<DlqListResponse>(`/team/dlq${suffix}`, { signal }),

@@ -85,6 +85,7 @@ export function TeamSelection() {
   const membership = useSetProjectMembership();
   const join = useJoinTeam();
   const forget = useForgetTeam();
+  const [leavingId, setLeavingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [joinUrl, setJoinUrl] = useState('');
   const [joinKey, setJoinKey] = useState('');
@@ -106,12 +107,18 @@ export function TeamSelection() {
   };
 
   const handleLeave = async (team: TeamRegistryRecord) => {
-    if (team.has_deployment && !window.confirm(`Leave "${team.name}"? This removes it from this machine only — the worker keeps running. Use "myco-team destroy" to delete the worker.`)) return;
+    const message = team.has_deployment
+      ? `Leave "${team.name}"? This removes it from this machine only — the worker keeps running. Use "myco-team destroy" to delete the worker.`
+      : `Leave "${team.name}"? This removes it from this machine and stops syncing your projects to it.`;
+    if (!window.confirm(message)) return;
     setError(null);
+    setLeavingId(team.team_id);
     try {
       await forget.mutateAsync({ team_id: team.team_id });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLeavingId(null);
     }
   };
 
@@ -188,7 +195,7 @@ export function TeamSelection() {
         ) : (
           <div className="flex flex-col gap-2">
             {teams.map((team) => (
-              <TeamRow key={team.team_id} team={team} onLeave={handleLeave} leaving={forget.isPending} />
+              <TeamRow key={team.team_id} team={team} onLeave={handleLeave} leaving={leavingId === team.team_id} />
             ))}
           </div>
         )}

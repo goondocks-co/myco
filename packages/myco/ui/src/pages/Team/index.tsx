@@ -58,14 +58,16 @@ function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
 
 export function TeamPage() {
   const [params, setParams] = useSearchParams();
-  const { data: registry } = useTeamRegistry();
+  const { data: registry, isLoading: registryLoading } = useTeamRegistry();
   const teams = registry?.teams ?? [];
   const selectedTeamId = params.get('team') ?? teams[0]?.team_id ?? undefined;
-  const { data: status, isLoading } = useTeamStatus(selectedTeamId);
+  const { data: status, isLoading: statusLoading } = useTeamStatus(
+    registryLoading ? undefined : selectedTeamId,
+  );
   const raw = params.get('tab') ?? 'teams';
   const tab: TabId = VALID_TABS.has(raw as TabId) ? (raw as TabId) : 'teams';
 
-  if (isLoading) {
+  if (registryLoading || statusLoading) {
     return (
       <PageLoading isLoading error={null} loadingText="Loading team…">
         <span />
