@@ -28,7 +28,7 @@ import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '
 import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { recordInjectionAndShouldSuppress } from '../injection-records.js';
-import { detectsPlanIntent, PLAN_INTENT_NUDGE } from './plan-intent.js';
+import { resolvePlanIntentNudge } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -415,21 +415,17 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
 
-    // Plan-intent nudge — evaluated independently of the spore gates below so it
-    // still fires when spore injection is disabled. Deduped once per session via
-    // the injection-record UNIQUE gate (best-effort; with no open batch it falls
-    // through like spores). `respond()` folds it into every return.
-    let nudgeText = '';
-    if (config.cortex.plans.inject_intent_nudge_on_prompt_submit && detectsPlanIntent(prompt) && session_id) {
-      const { suppress } = await recordInjectionAndShouldSuppress({
-        sessionId: session_id,
-        projectId: typeof projectId === 'string' ? projectId : null,
-        injectionType: 'plan-nudge',
-        trigger: { metadata: {} },
-        fetchContent: async () => ({ text: PLAN_INTENT_NUDGE, metadata: {} }),
-      });
-      if (!suppress) nudgeText = PLAN_INTENT_NUDGE;
-    }
+    // Plan-intent nudge — an independent injection contributor (plan-intent.ts)
+    // owns the toggle, intent heuristic, per-session dedup, and best-effort
+    // error handling. Resolved regardless of the spore gates below so it still
+    // fires when spore injection is disabled. `respond()` folds it into every
+    // return.
+    const nudgeText = await resolvePlanIntentNudge({
+      enabled: config.cortex.plans.inject_intent_nudge_on_prompt_submit,
+      prompt,
+      sessionId: session_id,
+      projectId: typeof projectId === 'string' ? projectId : null,
+    });
     const respond = (sporeText: string): RouteResponse => ({
       body: { text: [sporeText, nudgeText].filter(Boolean).join('\n\n') },
     });
