@@ -15,7 +15,7 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
-function makeHandler() {
+function makeHandler(opts: { liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void } = {}) {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
   const logger = new DaemonLogger(logDir, { level: 'debug' });
   const registry = new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} });
@@ -44,6 +44,7 @@ function makeHandler() {
     reconcileSession: () => {},
     planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
     triggerTitleSummary: async () => {},
+    liveReconcile: opts.liveReconcile,
   });
 
   return { handler, registry, sessionBuffers, logger, vaultDir };
@@ -172,6 +173,31 @@ describe('createEventDispatcher', () => {
     expect(plans[0].prompt_batch_id).toBe(batches[0].id);
     expect(plans[0].source_path).toBe('transcript:ultraplan');
     expect(plans[0].content).toContain('Add dry-run harness');
+
+    logger.close();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('converges the prior turn on the next-prompt boundary (liveReconcile fires on user_prompt)', async () => {
+    const calls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
+    const { handler, logger, vaultDir } = makeHandler({
+      liveReconcile: (sessionId, agent, transcriptPath) => calls.push({ sessionId, agent, transcriptPath }),
+    });
+    const sessionId = 'claude-next-prompt-boundary-001';
+    const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-next-prompt-'));
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(transcriptPath, '');
+
+    await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
+      body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', transcript_path: transcriptPath, prompt: 'next prompt' },
+      query: {}, params: {}, pathname: '/events',
+    });
+
+    // The trigger is deferred off the hot path with setTimeout(0); flush it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([{ sessionId, agent: 'claude-code', transcriptPath }]);
 
     logger.close();
     fs.rmSync(vaultDir, { recursive: true, force: true });

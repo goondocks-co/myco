@@ -508,6 +508,19 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // Boundary policy (origin filter + N-th human-batch crossing) lives
         // inside the trigger; the dispatcher just hands it the event's origin.
         triggerTitleSummary(event.session_id, { evaluateBoundary: true, promptOrigin });
+
+        // A new human prompt is a turn boundary: the PRIOR turn definitively
+        // ended, and its response is now complete in the transcript. Converge
+        // it here so a turn whose tail was text-only (a final summary with no
+        // trailing tool call — e.g. after a steering prompt) is attributed
+        // without waiting for a tool event that never comes. Tool events remain
+        // a mid-turn liveness optimization, not the correctness mechanism. Same
+        // throttled unit of work the tool path uses; deferred off the hot path.
+        if (liveReconcile && typeof event.transcript_path === 'string' && event.transcript_path) {
+          const reconcileAgent = typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME;
+          const reconcileTranscript = event.transcript_path;
+          setTimeout(() => liveReconcile(event.session_id, reconcileAgent, reconcileTranscript), 0);
+        }
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }

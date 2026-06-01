@@ -1161,7 +1161,7 @@ export async function main(): Promise<void> {
   // The deps object is mutated after registerPowerJobs so the canopy delta
   // runner becomes visible to SessionStart triggers.
   const sessionLifecycleDeps = {
-    registry, sessionBuffers, reconciler, stopProcessor,
+    registry, sessionBuffers, reconciler, stopProcessor, transcriptMiner,
     server, powerManager, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
     projectStateTracker,
   };
