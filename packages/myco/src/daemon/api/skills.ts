@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { RequestPrincipal } from '../request-principal.js';
 import type { DaemonLogger } from '../logger.js';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -367,18 +368,28 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
 // ---------------------------------------------------------------------------
 
 export interface SkillDeleteDeps {
-  vaultDir: string;
   logger: DaemonLogger;
 }
 
 /**
  * Creates a DELETE /api/skill-records/:id handler that wraps
  * `handleDeleteSkillRecord` with post-deletion file/symlink cleanup.
+ *
+ * Registered as a `tenantRoute`, so the handler always runs with an
+ * authorized `principal` — a synthesized/anchor context is rejected (400 +
+ * `tenancy.violation`) by the wrapper before this handler runs. The fs
+ * cascade resolves its project root from the REQUEST's tenancy
+ * (`principal.tenancy.projectVaultDir`), never a baked-in bootstrap anchor:
+ * a delete from project B must remove B's `.agents/skills/<name>` and must
+ * never touch the anchor project's files.
  */
 export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
-  const { vaultDir, logger } = deps;
+  const { logger } = deps;
 
-  return async function handleDeleteSkillRecordWithCleanup(req: RouteRequest): Promise<RouteResponse> {
+  return async function handleDeleteSkillRecordWithCleanup(
+    req: RouteRequest,
+    principal: RequestPrincipal,
+  ): Promise<RouteResponse> {
     const result = await handleDeleteSkillRecord(req);
     // Delete skill file and symlinks from disk if the DB delete succeeded
     if ((result.body as Record<string, unknown>)?.deleted) {
@@ -396,7 +407,13 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: unsafe name shape', { name: record.name });
           return result;
         }
-        const projectRoot = resolveProjectRoot(vaultDir);
+        // Scope the fs cascade to the REQUEST project, not the daemon's
+        // bootstrap anchor: `principal.tenancy.projectVaultDir` is the
+        // caller-authorized vault that survived the context-switch auth gate
+        // (tenantRoute rejects synthesized/anchor tenancy before we get
+        // here). Deleting a skill from project B must remove B's files and
+        // never the anchor project's.
+        const projectRoot = resolveProjectRoot(principal.tenancy.projectVaultDir);
         const skillsRoot = path.resolve(projectRoot, '.agents', 'skills');
         const skillDir = path.resolve(skillsRoot, record.name);
         const rel = path.relative(skillsRoot, skillDir);

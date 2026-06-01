@@ -9,13 +9,16 @@ import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
 import { handleDeleteSkillRecord, createSkillRecordDeleteHandler, isSafeSkillNameForFs } from '@myco/daemon/api/skills.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
-import type { GroveProjectId } from '@myco/grove/ids.js';
+import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
+import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId;
 
 const REQUEST_CONTEXT: MycoRequestContext = {
   projectRoot: '/workspace/project-a',
+  callerRoot: null,
   projectId: PROJECT_ID,
   groveId: 'grove-a',
   machineId: 'machine-a',
@@ -23,7 +26,55 @@ const REQUEST_CONTEXT: MycoRequestContext = {
   projectVaultDir: '/workspace/project-a/.myco',
   databasePath: '/tmp/grove-a/myco.db',
   source: 'headers',
+  tenancySource: 'caller',
 };
+
+/**
+ * Build a caller-sourced (authorized) request context for a tenant project.
+ * `tenancySource: 'caller'` is the only provenance `tenantRoute` accepts; it
+ * is what survives the context-switch auth gate. The fs cascade resolves the
+ * project root from THIS context (not a baked-in anchor), so each test pins a
+ * distinct `projectVaultDir`/`projectRoot` per tenant.
+ */
+function callerContext(opts: {
+  vaultDir: string;
+  projectId: string;
+  groveId: string;
+}): MycoRequestContext {
+  return resolveLegacyRequestContext(opts.vaultDir, {
+    projectId: assertGroveProjectId(opts.projectId),
+    groveId: opts.groveId,
+    machineId: 'machine-a',
+    tenancySource: 'caller',
+  });
+}
+
+/** Derive the principal a `tenantRoute` would hand the delete handler. */
+function principalFor(ctx: MycoRequestContext): RequestPrincipal {
+  return {
+    identity: { machineId: ctx.machineId, userId: null },
+    tenancy: {
+      projectVaultDir: ctx.projectVaultDir as RequestPrincipal['tenancy']['projectVaultDir'],
+      projectId: ctx.projectId,
+      groveId: ctx.groveId ?? '',
+      requestContext: {
+        projectVaultDir: ctx.projectVaultDir,
+        projectId: ctx.projectId,
+        groveId: ctx.groveId ?? '',
+      },
+    },
+  };
+}
+
+/** Minimal logger that records `warn` messages for assertions. */
+function recordingLogger(logs: string[]) {
+  return {
+    info: () => {},
+    warn: (_kind: string, msg: string) => { logs.push(msg); },
+    error: () => {},
+    debug: () => {},
+  } as never;
+}
 
 describe('skill record API deletion', () => {
   beforeAll(() => { setupTestDb(); });
@@ -155,21 +206,142 @@ describe('createSkillRecordDeleteHandler — path-traversal containment (H.2)', 
     });
 
     const logs: string[] = [];
-    const fakeLogger = {
-      info: () => {},
-      warn: (_kind: string, msg: string) => { logs.push(msg); },
-      error: () => {},
-      debug: () => {},
-    };
-    const handler = createSkillRecordDeleteHandler({ vaultDir, logger: fakeLogger as never });
-    await handler({
-      params: { id: 'skill-evil' },
-      requestContext: { ...REQUEST_CONTEXT, projectRoot, projectVaultDir: vaultDir },
-    } as never);
+    const handler = createSkillRecordDeleteHandler({ logger: recordingLogger(logs) });
+    const ctx = callerContext({ vaultDir, projectId: PROJECT_ID, groveId: 'grove-a' });
+    await handler(
+      { params: { id: 'skill-evil' }, requestContext: ctx } as never,
+      principalFor(ctx),
+    );
 
     // Sentinel survives — handler refused to walk the traversed path.
     expect(existsSync(sentinel)).toBe(true);
     // And we logged a refusal so an operator can grep for the rejection.
     expect(logs.some((m) => m.startsWith('Refused skill cleanup'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tenant-scoped fs cascade: deleting a skill record must remove the REQUEST
+// project's `.agents/skills/<name>` directory — never the daemon's bootstrap
+// anchor project. The bug: the handler baked in the anchor `vaultDir`, so a
+// delete from project B walked project A's (the anchor's) skill files.
+// ---------------------------------------------------------------------------
+
+describe('createSkillRecordDeleteHandler — fs cascade is scoped to the request project, not the anchor', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    registerAgent({ id: 'agent-test', name: 'Agent Test', created_at: 10 });
+  });
+  afterEach(() => { resetTeamContext(); });
+
+  // Distinct on-disk project roots for the anchor (A) and the request tenant (B).
+  function makeProject(prefix: string, skillName: string) {
+    const projectRoot = mkdtempSync(join(tmpdir(), prefix));
+    const vaultDir = join(projectRoot, '.myco');
+    mkdirSync(vaultDir, { recursive: true });
+    const skillDir = join(projectRoot, '.agents', 'skills', skillName);
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), '# skill', 'utf-8');
+    return { projectRoot, vaultDir, skillDir };
+  }
+
+  it('removes project B’s skill dir and leaves the anchor (A) untouched', async () => {
+    const SKILL_NAME = 'shared-skill';
+    // Anchor project A — what the handler used to (wrongly) target.
+    const anchor = makeProject('myco-anchor-A-', SKILL_NAME);
+    // Request tenant project B — the project the delete actually came from.
+    const tenantB = makeProject('myco-tenant-B-', SKILL_NAME);
+
+    insertSkillRecord({
+      id: 'skill-b',
+      project_id: PROJECT_ID,
+      agent_id: 'agent-test',
+      name: SKILL_NAME,
+      display_name: 'Shared Skill',
+      description: 'Project B skill',
+      path: `.agents/skills/${SKILL_NAME}/SKILL.md`,
+      created_at: 10,
+      updated_at: 10,
+    });
+
+    const logs: string[] = [];
+    // The factory no longer takes a baked anchor vaultDir; the fs root comes
+    // from the request principal/context.
+    const handler = createSkillRecordDeleteHandler({ logger: recordingLogger(logs) });
+    const ctx = callerContext({ vaultDir: tenantB.vaultDir, projectId: PROJECT_ID, groveId: 'grove-a' });
+
+    const response = await handler(
+      { params: { id: 'skill-b' }, requestContext: ctx, pathname: '/api/skill-records/skill-b' } as never,
+      principalFor(ctx),
+    );
+
+    expect(response.status ?? 200).toBe(200);
+    // B's skill dir is gone — the request project's files were cascaded.
+    expect(existsSync(tenantB.skillDir)).toBe(false);
+    // A's skill dir survives — the anchor project was NOT touched.
+    expect(existsSync(anchor.skillDir)).toBe(true);
+  });
+
+  it('rejects a synthesized (anchor-fallback) context with 400 + tenancy-violation and never touches disk', async () => {
+    const SKILL_NAME = 'guarded-skill';
+    const anchor = makeProject('myco-anchor-syn-', SKILL_NAME);
+    const tenantB = makeProject('myco-tenant-syn-', SKILL_NAME);
+
+    insertSkillRecord({
+      id: 'skill-syn',
+      project_id: PROJECT_ID,
+      agent_id: 'agent-test',
+      name: SKILL_NAME,
+      display_name: 'Guarded Skill',
+      description: 'Synthesized-context skill',
+      path: `.agents/skills/${SKILL_NAME}/SKILL.md`,
+      created_at: 10,
+      updated_at: 10,
+    });
+
+    const warnings: Array<{ kind: string; pathname?: unknown }> = [];
+    const logger = {
+      info: () => {},
+      warn: (kind: string, _msg: string, ctx?: { pathname?: unknown }) => {
+        warnings.push({ kind, pathname: ctx?.pathname });
+      },
+      error: () => {},
+      debug: () => {},
+    } as never;
+
+    // Synthesized = the daemon's bootstrap-anchor fallback. `tenancySource`
+    // omitted -> 'synthesized', which `tenantRoute` must reject before the
+    // delete handler (and any fs.rmSync) runs.
+    const synthesized = resolveLegacyRequestContext(tenantB.vaultDir, {
+      projectId: assertGroveProjectId(PROJECT_ID),
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      // tenancySource omitted -> 'synthesized'
+    });
+
+    const wrapped = tenantRoute(
+      { machineId: 'machine-a', logger },
+      createSkillRecordDeleteHandler({ logger }),
+    );
+
+    const response = await wrapped({
+      params: { id: 'skill-syn' },
+      requestContext: synthesized,
+      pathname: '/api/skill-records/skill-syn',
+    } as never);
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ reason: 'tenancy-violation' });
+    expect(warnings.some((w) => w.kind === 'tenancy.violation')).toBe(true);
+    // The DB row survives (delete never ran) and NO disk was touched on
+    // either the request project or the anchor.
+    const stillThere = getDatabase().prepare(
+      'SELECT COUNT(*) AS n FROM skill_records WHERE id = ?',
+    ).get('skill-syn') as { n: number };
+    expect(stillThere.n).toBe(1);
+    expect(existsSync(tenantB.skillDir)).toBe(true);
+    expect(existsSync(anchor.skillDir)).toBe(true);
   });
 });
