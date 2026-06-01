@@ -116,6 +116,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 52, migrate: (db, machineId) => migrateV51ToV52(db, machineId) },
   { version: 53, migrate: (db) => migrateV52ToV53(db) },
   { version: 54, migrate: (db) => migrateV53ToV54(db) },
+  { version: 55, migrate: (db) => migrateV54ToV55(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3342,6 +3343,50 @@ function migrateV53ToV54(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(54, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v54 → v55: make activities_fts trigger-owned.
+ *
+ * `FTS_TRIGGER_GROUPS` has expected activities sync triggers since schema
+ * reconciliation was introduced, but the DDL never created them. Current-version
+ * DB opens therefore treated the group as missing and rebuilt activities_fts on
+ * every open. Create the triggers and rebuild once so rows written while table-
+ * level sync was absent are indexed.
+ */
+function migrateV54ToV55(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS activities_fts_ai AFTER INSERT ON activities BEGIN
+         INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path)
+         VALUES (new.id, new.tool_name, new.tool_input, new.file_path);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS activities_fts_au AFTER UPDATE OF tool_name, tool_input, file_path ON activities BEGIN
+         INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path)
+         VALUES('delete', old.id, old.tool_name, old.tool_input, old.file_path);
+         INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path)
+         VALUES (new.id, new.tool_name, new.tool_input, new.file_path);
+       END`,
+    );
+    db.exec(
+      `CREATE TRIGGER IF NOT EXISTS activities_fts_ad AFTER DELETE ON activities BEGIN
+         INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path)
+         VALUES('delete', old.id, old.tool_name, old.tool_input, old.file_path);
+       END`,
+    );
+    db.prepare(`INSERT INTO activities_fts(activities_fts) VALUES('rebuild')`).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(55, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
