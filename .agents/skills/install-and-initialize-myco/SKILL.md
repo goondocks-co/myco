@@ -248,6 +248,52 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 
 **Global Detection Integration:** The active symbionts query now integrates with the manifest-driven detection system, cross-referencing the explicit `symbionts` list with detected agents to provide comprehensive symbiont status information.
 
+## CLI Surface Architecture Decisions
+
+Myco applies a **UI-first philosophy**: CLI handles installation, teardown, and one-time diagnostics; UI handles all ongoing configuration and management. Every future CLI change should pass through this gate:
+
+> **"Can this be done without the daemon running?"**
+> - Yes → CLI is appropriate (install, remove, diagnose, tool calls).
+> - No → belongs in UI (requires daemon state, per-project config, or discovery).
+
+| Task | Destination |
+|------|-------------|
+| Install global binary + register service | CLI (`myco install`) |
+| Tear down global install | CLI (`myco remove`, `packages/myco/src/cli/remove.ts`) |
+| Check vault health | CLI (`myco doctor`, `packages/myco/src/cli/doctor.ts`) |
+| Invoke MCP tools from scripts | CLI (`myco tool call`, `packages/myco/src/cli/tool.ts`) |
+| Re-detect newly installed agents | UI ("Re-detect now" button) |
+| Override symbiont config per project | UI (Symbionts page) |
+
+### `myco doctor` Scope Invariants
+
+Doctor scope is a maintained invariant. **Permitted:** global install state, daemon status, hook files, MCP registration, migration status, brownfield-cleanup state, `--fix` for one-time repairs. **Prohibited:** re-detect agents, manage per-project overrides, any operation requiring a healthy daemon. Every `--fix` path must work when the daemon is not running.
+
+### Command Removal Pattern
+
+Canonical five-step model (from `myco init` removal):
+1. Audit all callers and tests referencing the command entry point.
+2. Verify the replacement (UI button or daemon auto-path) is live.
+3. Delete the source file and remove CLI registration.
+4. Scan `packages/myco/src/cli/doctor.ts` for stale references; apply canonical replacements.
+5. Smoke-test the user journey that the old command previously served.
+
+> **Gotcha (BUG-4):** `myco init` triggered `ensureSelfInstalledAsService` (exported from `packages/myco/src/service/self-install.ts`). That function read process-wide path constants instead of `MYCO_HOME`, causing a sandbox LaunchAgent hijack. Its sole remaining caller is `packages/myco/src/daemon/main.ts`. Do not introduce new CLI callers.
+
+### Beta Channel Strategy
+
+Beta switching is **system-wide** — no per-project toggle exists. Activation: daemon API sets `localRuntimeSpec` to the beta package spec, `spawnUpdateScript` installs to `~/.myco/runtime/` and writes `~/.myco/runtime.command`. Rollback: set channel to `stable`; daemon removes `~/.myco/runtime/` and clears the pin file; service restarts against PATH-resolved stable binary. The update channel and binary pin are tracked separately in `packages/myco/src/daemon/update-checker.ts` (`resolveRuntimeCommand`). A mismatch between the channel and the binary pin causes unexpected update-checker behavior — always update both when manually intervening.
+
+### `myco tool call` — CLI MCP Tool Interface
+
+`packages/myco/src/cli/tool.ts` exposes all registered MCP tools as CLI subcommands:
+
+```
+myco tool call <tool-name> --json --input '<json-or-@file>'
+```
+
+This is the canonical way to invoke Cortex or any Myco MCP tool from a script or Bash context — e.g., `myco tool call myco_cortex --json --input '{"query": "..."}'`. Captured Bash activities are identified as Myco tool calls by `parseCliMycoToolCalls` in `packages/myco/src/db/queries/myco-tool-identity.ts`.
+
 ## Common Pitfalls
 
 **Machine-level install ≠ project-level activation.** An agent can be installed on the machine but inactive for a project. Activate agents through the daemon UI **Settings** → **Symbionts** page. The symbiont is simply not active for that project until toggled on in the UI. The daemon's global detection system can identify such agents and show them in the settings.
