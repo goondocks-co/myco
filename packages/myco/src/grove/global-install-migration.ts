@@ -23,7 +23,9 @@ import { resolveProjectVaultDir, resolveMycoHome, currentDaemonVariant } from '.
 import { listGroves, listRegisteredProjects, type DaemonVariant } from './registry.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
+import { isMycoHookGroup } from '../symbionts/install-helpers.js';
+import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
 import { propagateLegacyMachineId } from '../daemon/machine-id.js';
 import { propagateLegacySecrets } from '../config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -99,6 +101,12 @@ export interface MigrationOutcome {
   archiveDir: string | null;
   /** Manifests whose `installer.uninstall(...)` did something. */
   strippedSymbionts: string[];
+  /** Project-relative launcher stubs removed (`.agents/myco-run.cjs`, `myco-cli.cjs`). */
+  removedLaunchers: string[];
+  /** Project-relative configs of retired symbionts (e.g. Gemini) that were stripped. */
+  cleanedRetiredConfigs: string[];
+  /** Project-relative plugin deps packages removed because they were pristine. */
+  removedPluginPackages: string[];
   /** True when `propagateLegacyMachineId` actually wrote a global value. */
   machineIdPropagated: boolean;
   /** Secret keys lifted from `<vault>/secrets.env` into `~/.myco/secrets.env`. */
@@ -151,6 +159,9 @@ export function migrateProjectToGlobalInstall(
       archivedFiles: [],
       archiveDir: null,
       strippedSymbionts: [],
+      removedLaunchers: [],
+      cleanedRetiredConfigs: [],
+      removedPluginPackages: [],
       machineIdPropagated: false,
       secretsPropagated: [],
       passId,
@@ -215,6 +226,28 @@ export function migrateProjectToGlobalInstall(
       // nothing here; the audit log captures pass-level errors via the
       // caller's `recordMigrationPass` wrap.
     }
+  }
+
+  // Step 3b — remove project-shared launcher stubs. The global launcher
+  // is the only launcher in the global-install model.
+  const removedLaunchers = removeProjectLaunchers(projectRoot);
+
+  // Step 3c — strip Myco content from retired-symbiont project configs
+  // (archived first), deleting the file when nothing else remains.
+  const cleanedRetiredConfigs = cleanRetiredSymbiontConfigs(
+    projectRoot, archiveDirAbs, archivedFiles,
+  );
+
+  // Step 3d — remove pristine, now-orphaned plugin deps packages (archived
+  // in step 2). Contributor-edited packages are left in place.
+  const removedPluginPackages: string[] = [];
+  for (const manifest of manifests) {
+    const target = manifest.registration?.pluginPackageTarget;
+    if (!target) continue;
+    const installer = new SymbiontInstaller(
+      manifest, projectRoot, packageRoot, false, undefined, null, 'project',
+    );
+    if (installer.removeManagedPluginPackage()) removedPluginPackages.push(target);
   }
 
   // Step 4 — propagate the project-scope machine_id to the global cache
@@ -289,11 +322,76 @@ export function migrateProjectToGlobalInstall(
     archivedFiles,
     archiveDir,
     strippedSymbionts,
+    removedLaunchers,
+    cleanedRetiredConfigs,
+    removedPluginPackages,
     machineIdPropagated,
     secretsPropagated,
     passId,
     sentinel,
   };
+}
+
+/**
+ * Project-relative JSON configs of retired symbionts. Gemini was
+ * superseded by Antigravity; its `.gemini/settings.json` carries Myco
+ * hooks, the `myco` MCP server, and Myco `coreTools` allowances but has
+ * no manifest to drive the per-symbiont strip.
+ */
+const RETIRED_SYMBIONT_JSON_CONFIGS = ['.gemini/settings.json'] as const;
+
+/**
+ * Strip Myco content from retired-symbiont JSON configs: Myco hook
+ * groups, the `myco` MCP server entry, and `coreTools` allowances that
+ * reference Myco. Archives the original first, then writes the remainder
+ * back — or deletes the file when nothing non-Myco survives. Returns the
+ * project-relative paths that were touched.
+ */
+function cleanRetiredSymbiontConfigs(
+  projectRoot: string,
+  archiveDirAbs: string,
+  archivedFiles: string[],
+): string[] {
+  const cleaned: string[] = [];
+  for (const rel of RETIRED_SYMBIONT_JSON_CONFIGS) {
+    const abs = path.join(projectRoot, rel);
+    if (!fs.existsSync(abs)) continue;
+
+    const dest = path.join(archiveDirAbs, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(abs, dest);
+    archivedFiles.push(abs);
+
+    const data = readJsonFile(abs);
+
+    const hooks = data.hooks as Record<string, Array<Record<string, unknown>>> | undefined;
+    if (hooks && typeof hooks === 'object') {
+      const kept: Record<string, unknown[]> = {};
+      for (const [event, groups] of Object.entries(hooks)) {
+        const nonMyco = (groups as Array<Record<string, unknown>>).filter((g) => !isMycoHookGroup(g));
+        if (nonMyco.length > 0) kept[event] = nonMyco;
+      }
+      if (Object.keys(kept).length === 0) delete data.hooks;
+      else data.hooks = kept;
+    }
+
+    const servers = data.mcpServers as Record<string, unknown> | undefined;
+    if (servers && typeof servers === 'object' && MYCO_MCP_SERVER_NAME in servers) {
+      delete servers[MYCO_MCP_SERVER_NAME];
+      if (Object.keys(servers).length === 0) delete data.mcpServers;
+    }
+
+    const coreTools = data.coreTools;
+    if (Array.isArray(coreTools)) {
+      const kept = coreTools.filter((t) => typeof t !== 'string' || !t.includes('myco'));
+      if (kept.length === 0) delete data.coreTools;
+      else data.coreTools = kept;
+    }
+
+    writeOrDeleteJsonFile(abs, data);
+    cleaned.push(rel);
+  }
+  return cleaned;
 }
 
 /**

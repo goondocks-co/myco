@@ -1612,6 +1612,38 @@ export class SymbiontInstaller {
   }
 
   /**
+   * Remove the plugin deps package.json (project-scope) only when it is
+   * pristine — no top-level keys or dependencies beyond what the template
+   * writes. A contributor-edited file is preserved. Not part of
+   * `uninstall()` (which always keeps the file); the global-install
+   * migration calls this to clear the orphan after stripping the plugin.
+   * Returns true if the file was removed.
+   */
+  removeManagedPluginPackage(): boolean {
+    const reg = this.manifest.registration;
+    if (!reg?.pluginPackageTarget || !this.capabilities.pluginPackage) return false;
+    const abs = path.join(this.projectRoot, reg.pluginPackageTarget);
+    if (!fs.existsSync(abs)) return false;
+    const templateRaw = this.loadTemplateRaw('package.json');
+    if (templateRaw === null) return false;
+    let project: Record<string, unknown>;
+    let template: Record<string, unknown>;
+    try {
+      project = JSON.parse(fs.readFileSync(abs, 'utf-8'));
+      template = JSON.parse(templateRaw);
+    } catch {
+      return false;
+    }
+    if (!isPristineManagedPackage(project, template)) return false;
+    try {
+      fs.unlinkSync(abs);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Merge MCP server template into every MCP target the manifest
    * declares for the active scope. Replaces the `myco` server entry;
    * preserves other servers. Multi-target manifests (Copilot:
@@ -2303,6 +2335,31 @@ export interface RemoveProjectLaunchersOptions {
  * Project-level operation: per-symbiont uninstall must not call
  * this. Walker and `myco remove` are the canonical callers.
  */
+/**
+ * True when `project` carries no top-level keys, and no `dependencies`/
+ * `devDependencies` entries, beyond what `template` declares. Values
+ * (e.g. dependency version ranges) may differ.
+ */
+function isPristineManagedPackage(
+  project: Record<string, unknown>,
+  template: Record<string, unknown>,
+): boolean {
+  const templateKeys = new Set(Object.keys(template));
+  for (const key of Object.keys(project)) {
+    if (!templateKeys.has(key)) return false;
+  }
+  for (const depKey of ['dependencies', 'devDependencies']) {
+    const projectDeps = project[depKey];
+    if (!projectDeps || typeof projectDeps !== 'object') continue;
+    const templateDeps = (template[depKey] ?? {}) as Record<string, unknown>;
+    const allowed = new Set(Object.keys(templateDeps));
+    for (const dep of Object.keys(projectDeps as Record<string, unknown>)) {
+      if (!allowed.has(dep)) return false;
+    }
+  }
+  return true;
+}
+
 export function removeProjectLaunchers(
   projectRoot: string,
   options: RemoveProjectLaunchersOptions = {},
