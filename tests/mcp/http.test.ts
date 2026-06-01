@@ -63,7 +63,15 @@ describe('streamable HTTP MCP', () => {
       void handler(req, res);
     });
     const client = new Client({ name: 'myco-http-test', version: '1.0.0' });
-    const transport = new StreamableHTTPClientTransport(url);
+    // Real MCP clients (the stdio bridge) always send request-context
+    // headers derived from env; the shared runtime requires caller-supplied
+    // tenancy, so a headerless tool call is the leak case the runtime now
+    // rejects. Send the project-id header like a real symbiont would.
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: {
+        headers: { 'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      },
+    });
 
     await client.connect(transport);
     const listed = await client.listTools();
@@ -75,6 +83,41 @@ describe('streamable HTTP MCP', () => {
     expect(called.content[0]).toEqual({ type: 'text', text: 'HTTP MCP digest' });
 
     await client.close();
+  });
+
+  it('rejects a headerless tool call with the legacy_vault wire error (no silent anchor default)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-legacy-'));
+    tmpDirs.push(tmp);
+    const vaultDir = path.join(tmp, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project HTTP MCP' },
+    });
+    const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient() });
+    const url = await listen((req, res) => {
+      void handler(req, res);
+    });
+
+    // Raw POST without request-context headers: the transport must translate
+    // the shared runtime's caller-tenancy policy into the structured 503 +
+    // legacy_vault discriminator, NOT silently resolve the anchor vault.
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+    });
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body,
+    });
+    expect(response.status).toBe(503);
+    const payload = await response.json() as { error?: { data?: { code?: string } } };
+    expect(payload.error?.data?.code).toBe('legacy_vault');
   });
 
   it('passes HTTP request context headers into the shared tool runtime', async () => {
