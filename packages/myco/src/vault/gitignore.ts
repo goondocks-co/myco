@@ -13,10 +13,11 @@ import path from 'node:path';
  * Plan reference: 38cff0752c919ffd §7. Post-migration, the project
  * vault carries only the deliberate project-level decisions
  * (myco.yaml, project.toml, .gitignore, tasks/) plus a small set of
- * per-machine artifacts gitignored here. The DB, embeddings, buffer,
- * logs, attachments, secrets, machine_id, daemon.json, team/, and
- * installer-audit/ no longer live in the project vault — they're
- * Grove-scoped or machine-global, so they don't need entries here.
+ * per-machine artifacts gitignored here. The DB, embeddings, attachments,
+ * secrets, daemon.json, team/, and installer-audit/ are Grove-scoped or
+ * machine-global. buffer/, logs/, and machine_id are machine-global too,
+ * but stay listed because a project vault can still carry stale or
+ * transient copies.
  */
 export const VAULT_GITIGNORE = `# Per-user, per-machine config overrides
 local.yaml
@@ -24,6 +25,11 @@ local.yaml
 # Project-scope runtime pin written by \`make dev-link\`. Per-machine,
 # never committed.
 runtime.command
+
+# Per-machine ephemera; canonical copies live in ~/.myco/
+buffer/
+logs/
+machine_id
 
 # Per-project migration state — global-install sentinel and any future
 # migration markers. Sentinel is per-machine because migration is a
