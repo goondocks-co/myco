@@ -694,12 +694,35 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Resolve to an absolute path before passing to `npm publish`. If
-          # the arg looks like `foo/bar.tgz` (one slash, no leading ./ or /),
-          # npm interprets it as a GitHub shorthand specifier and tries to
-          # `git ls-remote` it — exit 128 with "Permission denied (publickey)".
-          # `realpath` guarantees an absolute path so npm always treats it as
-          # a local tarball file.
+          # Publish a tarball idempotently. npm versions are immutable, so a
+          # job that fails partway (e.g. a transient Sigstore/Rekor provenance
+          # outage after some packages already shipped) cannot be recovered by
+          # re-running: the first already-published package returns "cannot
+          # publish over the previously published versions" and aborts the loop
+          # before reaching the packages that never shipped. Skipping versions
+          # already present on the registry makes the whole job safely
+          # re-runnable — a re-run finishes whatever the previous attempt left
+          # behind instead of wedging on the first survivor.
+          #
+          # Resolve to an absolute path first. If the arg looks like
+          # `foo/bar.tgz` (one slash, no leading ./ or /), npm interprets it as
+          # a GitHub shorthand specifier and tries to `git ls-remote` it —
+          # exit 128 with "Permission denied (publickey)". `realpath`
+          # guarantees an absolute path so npm always treats it as a local
+          # tarball file.
+          publish_tarball() {
+            local tgz name version
+            tgz="$(realpath "$1")"
+            name="$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).name')"
+            version="$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).version')"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "Skipping ${name}@${version} — already published"
+              return 0
+            fi
+            echo "Publishing ${name}@${version} from ${tgz}"
+            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+          }
+
           if [ "$TAG_PREFIX" = "myco" ]; then
             # Publish each platform package first so core's
             # optionalDependencies pin resolves on the registry by the time
@@ -713,26 +736,21 @@ jobs:
                 echo "missing platform tarball: ${target}" >&2
                 exit 1
               fi
-              tgz="$(realpath "$tgz")"
-              echo "Publishing @goondocks/myco-${target} from ${tgz}"
-              npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+              publish_tarball "$tgz"
             done
             tgz="$(find publish-files -type f -regex '.*/goondocks-myco-[0-9].*\.tgz$' -print -quit)"
             if [ -z "$tgz" ]; then
               echo "missing core tarball" >&2
               exit 1
             fi
-            tgz="$(realpath "$tgz")"
-            echo "Publishing @goondocks/myco from ${tgz}"
-            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+            publish_tarball "$tgz"
           else
             tgz="$(find publish-files -maxdepth 2 -type f -name '*.tgz' -print -quit)"
             if [ -z "$tgz" ]; then
               echo "no tarball found in publish-files/" >&2
               exit 1
             fi
-            tgz="$(realpath "$tgz")"
-            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+            publish_tarball "$tgz"
           fi
 
       - name: Publish summary
