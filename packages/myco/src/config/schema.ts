@@ -151,6 +151,12 @@ const ScheduleOverrideSchema = z.object({
 const TaskProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   provider: ProviderOverrideSchema.optional(),
   harness: HarnessIdSchema.optional(),
+  /**
+   * Task default reasoning tier. Resolves through the provider's
+   * `reasoning_map` at run time, so it stays portable across model upgrades
+   * and runtime swaps. Prefer this over `model:`; `model:` pins a specific SKU.
+   */
+  reasoningLevel: ReasoningLevelSchema.optional(),
   model: z.string().optional(),
   maxTurns: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional(),

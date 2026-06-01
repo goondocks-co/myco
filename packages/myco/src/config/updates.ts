@@ -90,6 +90,7 @@ interface ScheduleInput {
 export interface TaskConfigUpdate {
   provider?: ProviderInput | null;
   harness?: string | null;
+  reasoningLevel?: TaskProviderOverride['reasoningLevel'] | null;
   model?: string | null;
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
@@ -108,6 +109,7 @@ export interface TaskConfigUpdate {
 const TASK_CONFIG_UPDATE_KEYS: ReadonlySet<keyof TaskConfigUpdate> = new Set([
   'provider',
   'harness',
+  'reasoningLevel',
   'model',
   'maxTurns',
   'timeoutSeconds',
@@ -142,6 +144,11 @@ export function withTaskConfig<T extends WithTaskConfigShape>(
   if ('harness' in update) {
     if (update.harness === null) delete entry.harness;
     else if (update.harness !== undefined) entry.harness = update.harness;
+  }
+
+  if ('reasoningLevel' in update) {
+    if (update.reasoningLevel === null) delete entry.reasoningLevel;
+    else if (update.reasoningLevel !== undefined) entry.reasoningLevel = update.reasoningLevel;
   }
 
   if ('model' in update) {

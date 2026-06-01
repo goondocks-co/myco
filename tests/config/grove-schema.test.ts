@@ -23,6 +23,17 @@ describe('GroveAgentSchema', () => {
     expect(parsed.agent.tasks?.['digest-only']?.model).toBe('claude-sonnet-4-6');
   });
 
+  test('accepts a task-level reasoningLevel override', () => {
+    const parsed = GroveConfigSchema.parse({
+      agent: {
+        tasks: {
+          'digest-only': { reasoningLevel: 'high', model: 'claude-sonnet-4-6' },
+        },
+      },
+    });
+    expect(parsed.agent.tasks?.['digest-only']?.reasoningLevel).toBe('high');
+  });
+
   test('defaults match prior project-tier defaults', () => {
     const parsed = GroveConfigSchema.parse({});
     expect(parsed.agent.summary_batch_interval).toBe(5);
