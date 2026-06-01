@@ -1,4 +1,6 @@
+import { Bot } from 'lucide-react';
 import type { BatchRow } from '../../hooks/use-sessions';
+import { MarkdownContent } from '../ui/markdown-content';
 import { ActivityList } from './ActivityList';
 import { formatTimestamp } from './batch-timeline-helpers';
 
@@ -31,6 +33,17 @@ export function SteeringChildCard({ child }: SteeringChildCardProps) {
       </p>
       {child.activity_count > 0 && (
         <ActivityList batchId={child.id} activityCount={child.activity_count} />
+      )}
+      {child.response_summary && (
+        <div className="mt-3">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Bot className="h-3 w-3 text-primary/60" />
+            <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
+              Response
+            </span>
+          </div>
+          <MarkdownContent content={child.response_summary} />
+        </div>
       )}
     </div>
   );
