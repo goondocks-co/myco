@@ -171,8 +171,10 @@ fi
 fi
 ` : ''}if [ "$update_failed" -eq 0 ]; then
   # Fan out per-project sync (gitignore, symbiont registration) across
-  # every Grove project registered with this machine.
-  "$MYCO" update --all-projects || true
+  # every registered project. Capture output to a log so a fan-out
+  # failure is diagnosable instead of silently discarded.
+  UPDATE_FANOUT_LOG="$(dirname ${quotedErrorPath})/update-fanout.log"
+  "$MYCO" update --all-projects > "$UPDATE_FANOUT_LOG" 2>&1 || echo "[update] project fan-out failed — see $UPDATE_FANOUT_LOG" >> "$UPDATE_FANOUT_LOG"
   # Clear any previous error
   rm -f ${quotedErrorPath}
 else
@@ -334,8 +336,10 @@ export function generateRestartScript(params: RestartParams): string {
 
   const updateBlock = runLocalUpdate
     ? `
-# Fan out per-project sync (hooks, symbionts, gitignore) across every Grove
-"$MYCO" update --all-projects || true`
+# Fan out per-project sync (hooks, symbionts, gitignore). Capture output so
+# a fan-out failure is diagnosable instead of silently discarded.
+UPDATE_FANOUT_LOG="$(dirname ${reasonFile})/update-fanout.log"
+"$MYCO" update --all-projects > "$UPDATE_FANOUT_LOG" 2>&1 || echo "[update] project fan-out failed — see $UPDATE_FANOUT_LOG" >> "$UPDATE_FANOUT_LOG"`
     : '';
 
   // MYCO is baked as a literal at generation time — see InstallParams

@@ -34,8 +34,8 @@ Regenerate managed Myco project files and migrate legacy config to the
 current Machine/Grove/Project config tiers.
 
 Options:
-  --project <path>           Project root to update
-  --all-projects             Update every registered project served by this binary
+  --project <path>           Update only this project (default: every registered project)
+  --all-projects             Deprecated alias; update is global by default
   --target-version <ver>     Request the daemon install @goondocks/myco@<ver>
                              via the intent + reconciliation pipeline
   --cancel-update            Clear a pending [update] intent without installing
@@ -67,23 +67,22 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  if (args.includes('--all-projects')) {
-    await runAllProjects();
+  // Explicit single-project targeting — update only this project.
+  const projectIdx = args.indexOf('--project');
+  if (projectIdx !== -1 && args[projectIdx + 1]) {
+    try {
+      await runForProject(args[projectIdx + 1]);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
     return;
   }
 
-  let projectRoot: string | undefined;
-  const projectIdx = args.indexOf('--project');
-  if (projectIdx !== -1 && args[projectIdx + 1]) {
-    projectRoot = args[projectIdx + 1];
-  }
-
-  try {
-    await runForProject(projectRoot);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
+  // Global by default: one machine binary and one daemon serve every
+  // Grove/project, so `myco update` updates them all. `--all-projects`
+  // is a deprecated, tolerated alias for this default.
+  await runAllProjects();
 }
 
 /**
