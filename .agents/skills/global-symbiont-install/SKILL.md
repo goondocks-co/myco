@@ -75,16 +75,20 @@ check is needed or wanted. The same rule applies to grove migration fallbacks �
 any "if old grove config exists" path is a trap; remove it at the point the
 walker commits.
 
-## Design Decision 2: Symbiont Page UI — Auto-Detect and Per-Project Override Only
+## Design Decision 2: Symbiont Page UI — Auto-Detect and Per-Project Disable-Filter Only
 
 The Symbiont page offers no install/uninstall controls. Instead:
 
 1. **Auto-detection** — All detected symbionts are automatically wired globally
    into user agent configs.
-2. **Per-project override** — Because the page renders within a selected Grove
-   context, UI offers per-project enable/disable toggles only.
-3. **Config backing** — Overrides write to the per-project symbiont config
-   (`.myco/myco.yaml` or equivalent).
+2. **Per-project override (disable-filter only)** — The only project-level
+   symbiont override that exists is the `symbionts:` **capture-filter**: a
+   per-project list of symbionts to disable from collection/integration. There
+   is no per-project install/uninstall toggle. The page surfaces this filter as
+   project-scoped enable/disable chips.
+3. **Config backing** — The disable-filter list writes to the per-project
+   symbiont config (`.myco/myco.yaml`). This is the only per-project scope
+   boundary remaining after global-install migration.
 
 **Why:** No install/uninstall UI prevents users from encountering the
 global-vs-project scope ambiguity. Global install is automatic; per-project
@@ -103,8 +107,8 @@ agents; the exclusion is architectural, not a gap.
 
 **Gotcha:** Don't surface global install/uninstall buttons anywhere on the
 Symbiont page. If you're designing a new control, ask: "Is this a per-project
-override, or am I re-introducing a global install toggle?" Only per-project
-overrides belong on this page.
+disable-filter override, or am I re-introducing a global install toggle?" Only
+per-project disable-filter controls belong on this page.
 
 ## Design Decision 3: Health-Check Schedule Synced to PowerManager
 
@@ -225,6 +229,25 @@ UI. Do not attempt to restore a broken `.myco` folder via CLI — use the daemon
 UI or manual intervention. This is deliberate: the daemon is the single
 coordination point for project registration and sandbox setup, eliminating
 CLI-only edge cases that diverge from the daemon-managed path.
+
+### Shared Grove Vault Schema Hazard (Git Worktrees)
+
+All git worktrees that share a repository's `git-common-dir` resolve to the
+same Grove vault database. A schema migration, database write, or upgrade step
+triggered in one worktree applies immediately to all sibling worktrees sharing
+that Grove vault. This is intentional design but creates a hazard during
+development: migrating the schema while another worktree's compiled binary
+expects the old schema will break that binary immediately. Coordinate schema
+migrations across all active worktrees before upgrading any single one.
+
+### Fresh-Worktree Dev-Binary Pin Not Inherited
+
+The per-worktree dev binary pin file is gitignored and is **not inherited** by
+new git worktrees. When you create a fresh worktree via `git worktree add`, any
+existing dev binary pin does not transfer. The new worktree falls back to the
+globally-installed `myco` binary. If the worktree requires a pinned dev build,
+re-run `make dev-link` (or manually set the pin) in the new worktree before
+running any hooks.
 
 ### Documentation Discipline — Three-Surface Rule
 

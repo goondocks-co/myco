@@ -6,14 +6,8 @@
 //   - ~/.myco/launcher.cjs       → hook entry point (agent fires hooks here)
 //   - ~/.myco/mcp-launcher.cjs   → MCP entry point (agent spawns MCP server here)
 //
-// The launcher distinguishes its mode from `path.basename(__filename)` and
-// honors a layered project-local override before doing anything else: when
-// a project ships its own `.agents/myco-run.cjs` / `.agents/myco-cli.cjs`
-// (a dogfood / dev pin, or a legacy stub from a pre-global install), this
-// launcher delegates to it. Every other invocation falls through to the
-// runtime-resolution chain.
-//
-// Runtime resolution chain (first match wins):
+// Resolves which myco binary to exec via the runtime-resolution chain
+// (first match wins):
 //   1. Project-local `<projectRoot>/.myco/runtime.command` (highest)
 //   2. Machine-global `~/.myco/runtime.command`
 //   3. `<core>/vendor/resolved.json` via package-root walk from process.execPath
@@ -30,14 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const LAUNCHER_TO_OVERRIDE = {
-  'launcher.cjs': 'myco-run.cjs',
-  'mcp-launcher.cjs': 'myco-cli.cjs',
-};
-
 const args = process.argv.slice(2);
-const launcherName = path.basename(__filename);
-const overrideName = LAUNCHER_TO_OVERRIDE[launcherName] ?? 'myco-run.cjs';
 
 // Anchor cwd to the project the spawning agent is actually working in,
 // using whatever project-dir env var that agent provides. Required because
@@ -48,8 +35,8 @@ const overrideName = LAUNCHER_TO_OVERRIDE[launcherName] ?? 'myco-run.cjs';
 // pipeline carrying the JSON payload to node breaks and every handler
 // silently bails on the missing `session_id` check. Doing the chdir
 // inside node-land sidesteps the spawn quirk and keeps every downstream
-// `process.cwd()`-based resolver (vault, project-local override walk,
-// runtime.command pin walk) pointed at the right tree.
+// `process.cwd()`-based resolver (vault, runtime.command pin walk)
+// pointed at the right tree.
 //
 // First-match wins. Agents that don't set a project-dir env var fall
 // through to whatever cwd the spawn handed us — the original behavior
@@ -86,48 +73,14 @@ if (args.includes('--symbiont') && args[args.indexOf('--symbiont') + 1] === 'ant
   } catch { /* unreadable stdin or non-JSON; fall through */ }
 }
 
-// 0. Project-local launcher override.
-// If a project ships its own `.agents/myco-run.cjs` / `myco-cli.cjs` (a
-// deliberately committed launcher, or a legacy stub from a pre-global
-// install), delegate to it. `make dev-link-worktree` does NOT create these —
-// it writes `.myco/runtime.command`, which the runtime-resolution chain below
-// handles. Walk up from cwd so the check is worktree-aware.
-//
-// Pre-upgrade brownfield projects also have a `.agents/myco-run.cjs`
-// stub left over from old myco. Those stubs DO NOT carry the
-// `MYCO_LAUNCHER_PROTOCOL=v2` sentinel that newer templates embed, so
-// they cannot be trusted to handle the current payload shape. When the
-// sentinel is missing we (a) refuse the delegation — fall through to the
-// global flow so capture still works — and (b) append the project root
-// to the launcher cleanup intent file so the next walker pass deletes
-// the orphan artifacts. Combined defense: launcher refuses bad delegates,
-// walker performs the cleanup, doctor surfaces queued items.
-// If stdin was consumed for the Antigravity workspace lookup, re-feed it via
-// `input:`. Otherwise inherit.
+// If stdin was consumed for the Antigravity workspace lookup, re-feed it
+// via `input:`. Otherwise inherit.
 function spawnOptions() {
   if (bufferedAntigravityStdin !== null) {
     return { input: bufferedAntigravityStdin, stdio: ['pipe', 'inherit', 'inherit'] };
   }
   return { stdio: 'inherit' };
 }
-
-const override = findProjectLocalOverride(process.cwd(), overrideName);
-if (override && hasLauncherProtocolSentinel(override)) {
-  try {
-    execFileSync(process.execPath, [override, ...args], spawnOptions());
-    process.exit(0);
-  } catch (err) {
-    if (err && typeof err === 'object' && err.code === 'ENOENT') process.exit(0);
-    process.exit((err && typeof err.status === 'number') ? err.status : 1);
-  }
-}
-// An unsentineled `.agents/myco-run.cjs` is a pre-upgrade brownfield
-// stub. Refuse delegation and fall through to the global resolution
-// chain — capture still works. Cleanup happens via the migration
-// walker on daemon first-start / auto-Grove-create, or explicitly
-// through `myco doctor --fix` when the audit log shows the project
-// stuck. No queue write — failures surface in the migration audit
-// log instead.
 
 const bin = resolveBinary();
 if (!bin) {
@@ -150,38 +103,6 @@ try {
     process.exit(0);
   }
   process.exit((err && typeof err.status === 'number') ? err.status : 1);
-}
-
-function findProjectLocalOverride(startDir, basename) {
-  let dir = path.resolve(startDir);
-  while (true) {
-    const candidate = path.join(dir, '.agents', basename);
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch { /* not present at this level */ }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-// Read just enough of the stub to find the protocol sentinel. New
-// templates embed `MYCO_LAUNCHER_PROTOCOL=v2` in the file header (well
-// inside the first 2 KB); pre-upgrade brownfield stubs do not. Anything
-// we can't read is treated as missing — fall back to the safe path
-// (refuse delegation) rather than risking exec of an unknown file.
-function hasLauncherProtocolSentinel(stubPath) {
-  try {
-    const fd = fs.openSync(stubPath, 'r');
-    try {
-      const buf = Buffer.alloc(2048);
-      const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
-      const head = buf.slice(0, bytes).toString('utf-8');
-      return head.includes('MYCO_LAUNCHER_PROTOCOL=v2');
-    } finally {
-      try { fs.closeSync(fd); } catch { /* already closed */ }
-    }
-  } catch { return false; }
 }
 
 function readPinFile(filePath) {

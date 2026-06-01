@@ -32,13 +32,11 @@ describe('installGlobalLaunchers', () => {
     expect(fs.existsSync(launcherPath)).toBe(true);
     expect(fs.existsSync(mcpLauncherPath)).toBe(true);
 
-    // Identical content under both filenames; the script self-distinguishes
-    // mode from path.basename(__filename), so the source-of-truth is one file.
+    // Identical content under both filenames — one source of truth.
     const launcher = fs.readFileSync(launcherPath, 'utf-8');
     const mcpLauncher = fs.readFileSync(mcpLauncherPath, 'utf-8');
     expect(launcher).toBe(mcpLauncher);
     expect(launcher).toContain('Myco global launcher');
-    expect(launcher).toContain('LAUNCHER_TO_OVERRIDE');
   });
 
   it('skips writes when content already matches (idempotent)', () => {
@@ -67,7 +65,7 @@ describe('installGlobalLaunchers', () => {
   });
 });
 
-describe('global launcher — project-local override delegation', () => {
+describe('global launcher — runtime resolution', () => {
   let mycoHome: string;
   let projectRoot: string;
 
@@ -89,55 +87,7 @@ describe('global launcher — project-local override delegation', () => {
     );
   }
 
-  it('hook launcher delegates to .agents/myco-run.cjs when present', () => {
-    const overrideDir = path.join(projectRoot, '.agents');
-    fs.mkdirSync(overrideDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(overrideDir, 'myco-run.cjs'),
-      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('override-hook:' + process.argv.slice(2).join(',') + '\\n');\n",
-      { mode: 0o755 },
-    );
-
-    const result = spawnLauncher('launcher.cjs', ['hook', 'session-start', '--symbiont', 'claude-code']);
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('override-hook:hook,session-start,--symbiont,claude-code');
-  });
-
-  it('mcp launcher delegates to .agents/myco-cli.cjs when present', () => {
-    const overrideDir = path.join(projectRoot, '.agents');
-    fs.mkdirSync(overrideDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(overrideDir, 'myco-cli.cjs'),
-      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('override-cli:' + process.argv.slice(2).join(',') + '\\n');\n",
-      { mode: 0o755 },
-    );
-
-    const result = spawnLauncher('mcp-launcher.cjs', ['tool', 'list', '--json']);
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('override-cli:tool,list,--json');
-  });
-
-  it('hook launcher delegation walks up from cwd to find the project root', () => {
-    const overrideDir = path.join(projectRoot, '.agents');
-    fs.mkdirSync(overrideDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(overrideDir, 'myco-run.cjs'),
-      "#!/usr/bin/env node\n// MYCO_LAUNCHER_PROTOCOL=v2\nprocess.stdout.write('found\\n');\n",
-      { mode: 0o755 },
-    );
-    const nested = path.join(projectRoot, 'a', 'b', 'c');
-    fs.mkdirSync(nested, { recursive: true });
-
-    const result = spawnSync(
-      process.execPath,
-      [path.join(mycoHome, 'launcher.cjs'), 'hook', 'stop'],
-      { cwd: nested, env: { ...process.env, MYCO_HOME: mycoHome }, encoding: 'utf-8' },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('found');
-  });
-
-  it('runtime resolution falls through to runtime.command pin when no override exists', () => {
+  it('resolves the binary via the project-local runtime.command pin', () => {
     // Pretend the pinned binary is a tiny script that just echoes its argv —
     // exercises the project-local runtime.command pin (step 1 of the chain).
     const fakeBin = path.join(projectRoot, 'fake-myco.cjs');
