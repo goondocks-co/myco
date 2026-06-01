@@ -27,6 +27,18 @@ After `npm install -g @goondocks/myco@latest` and the next Myco restart:
 
 Project registration continues automatically as you use supported agents from git projects.
 
+## v1.0: agent and embedding settings now live in the Grove
+
+Myco v1.0 makes agent and embedding configuration **Grove-scoped** — one setting shared by every project in a Grove, instead of a separate copy in each project's `myco.yaml`.
+
+**Breaking change.** On the first restart after upgrading to v1.0, Myco removes agent and embedding settings from every project's `myco.yaml` and resets those projects to the Grove's configuration. The fields reset are the agent provider, harness, model, per-task overrides, the scheduling toggles, and the embedding provider, model, and base URL.
+
+Most projects carried these values only because older Myco wrote them per-project, so the Grove already holds the same configuration and the reset changes nothing you can observe. If a project ran a genuinely different agent or embedding setup, reconfigure it at the **Grove** scope from the dashboard's Settings and Operations pages after the upgrade.
+
+Need a per-project value for a specific field? Use the scope pill on that field in the dashboard to opt it back to project scope. Layering is opt-in per field — nothing is project-scoped by default.
+
+The previous values are not lost: the pre-upgrade `myco.yaml` is in your git history, and Myco archives older Myco-owned files rather than deleting them.
+
 ## From v0.25.x or earlier (per-project install era)
 
 If you previously had per-project `.agents/` installs:
