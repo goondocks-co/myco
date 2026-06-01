@@ -94,6 +94,8 @@ export interface ScheduleOverride {
 export interface TaskConfigOverride {
   harness?: HarnessId;
   provider?: ProviderConfig;
+  /** Task default reasoning tier — resolves through the provider's reasoning_map. */
+  reasoningLevel?: ReasoningLevelUi;
   model?: string;
   maxTurns?: number;
   timeoutSeconds?: number;

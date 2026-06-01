@@ -92,9 +92,14 @@ function applyTaskConfigOverrides(
   taskConfig: TaskProviderOverride | undefined,
   harness: HarnessId,
 ): EffectiveConfig {
+  const reasoningLevel = taskConfig?.reasoningLevel;
   return {
     ...config,
     harness,
+    ...(reasoningLevel ? { reasoningLevel } : {}),
+    ...(reasoningLevel && config.execution
+      ? { execution: { ...config.execution, reasoningLevel } }
+      : {}),
     ...(taskConfig?.model ? { model: taskConfig.model } : {}),
     ...(taskConfig?.maxTurns ? { maxTurns: taskConfig.maxTurns } : {}),
     ...(taskConfig?.timeoutSeconds ? { timeoutSeconds: taskConfig.timeoutSeconds } : {}),

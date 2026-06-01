@@ -1,12 +1,20 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Loader2, Zap, Clock } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Zap, Clock, ChevronRight, ChevronDown } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
+import { ModelSelectField } from '../providers/ModelSelectField';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
 import { PhaseConfigRow } from './PhaseConfigRow';
 import {
   defaultBaseUrlForProvider,
@@ -18,6 +26,7 @@ import {
   type ProviderConfig,
   type PhaseOverride,
   type ScheduleOverride,
+  type ReasoningLevelUi,
 } from '../../hooks/use-providers';
 import { useModels } from '../../hooks/use-models';
 import type { PhaseDefinition } from '../../hooks/use-agent';
@@ -66,6 +75,9 @@ const POWER_STATE_LABELS: Record<PowerState, string> = {
   sleep: 'Sleep',
 };
 
+const TASK_DEFAULT_SENTINEL = '__task_default__';
+const REASONING_OPTIONS: ReasoningLevelUi[] = ['low', 'default', 'high'];
+
 function serializeComparable(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
@@ -102,6 +114,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const [scheduleOverride, setScheduleOverride] = useState<ScheduleOverride>(initialTaskSnapshot.scheduleOverride);
   const [paramsOverride, setParamsOverride] = useState<Record<string, string | number | boolean>>(initialTaskSnapshot.paramsOverride);
   const [savedTaskSnapshot, setSavedTaskSnapshot] = useState(initialTaskSnapshot);
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevelUi | undefined>(currentConfig?.reasoningLevel);
+  const [savedReasoningLevel, setSavedReasoningLevel] = useState<ReasoningLevelUi | undefined>(currentConfig?.reasoningLevel);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const providers = providersData?.providers ?? [];
   const providerDraftDefaults = {
     harness: defaults?.harness,
@@ -149,6 +164,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     || maybeInferHarnessFromProviderType(defaults?.providerType)
     || 'claude-sdk';
   const isDirty = isProviderDirty
+    || reasoningLevel !== savedReasoningLevel
     || maxTurns !== savedTaskSnapshot.maxTurns
     || timeoutSeconds !== savedTaskSnapshot.timeoutSeconds
     || serializeComparable(phaseOverrides) !== serializeComparable(savedTaskSnapshot.phaseOverrides)
@@ -165,6 +181,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     setScheduleOverride(snapshot.scheduleOverride);
     setParamsOverride(snapshot.paramsOverride);
     setSavedTaskSnapshot(snapshot);
+    setReasoningLevel(currentConfig?.reasoningLevel);
+    setSavedReasoningLevel(currentConfig?.reasoningLevel);
+    if (currentConfig?.model) setAdvancedOpen(true);
   }, [
     currentConfig,
     taskConfigData,
@@ -217,6 +236,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         config: {
           harness: effectiveHarness as 'claude-sdk' | 'openai-agents',
           provider,
+          reasoningLevel: reasoningLevel ?? null,
           maxTurns: maxTurns ? Number(maxTurns) : null,
           timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : null,
           phases: Object.keys(phaseOverrides).length > 0 ? phaseOverrides : null,
@@ -230,6 +250,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             { harness: effectiveHarness, provider },
             providerDraftDefaults,
           ));
+          setSavedReasoningLevel(reasoningLevel);
           setSavedTaskSnapshot({
             maxTurns,
             timeoutSeconds,
@@ -249,6 +270,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         config: {
           harness: null,
           provider: null,
+          reasoningLevel: null,
           model: null,
           maxTurns: null,
           timeoutSeconds: null,
@@ -261,6 +283,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         onSuccess: () => {
           const clearedSnapshot = taskConfigSnapshot(null);
           commitDraft(providerDraftFromSource(null, providerDraftDefaults));
+          setReasoningLevel(undefined);
+          setSavedReasoningLevel(undefined);
+          setAdvancedOpen(false);
           setMaxTurns(clearedSnapshot.maxTurns);
           setTimeoutSeconds(clearedSnapshot.timeoutSeconds);
           setPhaseOverrides(clearedSnapshot.phaseOverrides);
@@ -306,6 +331,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         modelPlaceholder={defaults?.model}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
+        showModelSelector={false}
         onHarnessChange={(nextHarness) => {
           handleDraftHarnessChange(nextHarness);
         }}
@@ -315,6 +341,35 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         onBaseUrlChange={handleDraftBaseUrlChange}
         onContextLengthChange={handleDraftContextLengthChange}
       />
+
+      {/* Task default reasoning profile — the model resolves through the
+          reasoning map below (or the inherited map) at run time. */}
+      <div className="space-y-1">
+        <label className="font-sans text-xs text-on-surface-variant">Default reasoning profile</label>
+        <Select
+          value={reasoningLevel ?? TASK_DEFAULT_SENTINEL}
+          onValueChange={(val) =>
+            setReasoningLevel(val === TASK_DEFAULT_SENTINEL ? undefined : (val as ReasoningLevelUi))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={TASK_DEFAULT_SENTINEL}>
+              Use inherited default ({defaults?.reasoningLevel ?? 'default'})
+            </SelectItem>
+            {REASONING_OPTIONS.map((opt) => (
+              <SelectItem key={opt} value={opt}>
+                {opt}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="font-sans text-[11px] text-on-surface-variant/70">
+          Resolves to a model through the reasoning profiles below.
+        </p>
+      </div>
 
       {providerType !== '' && (
         <ReasoningProfiles
@@ -330,6 +385,38 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
           fallbackReasoningMap={defaults?.reasoningMap}
           placeholderWhenEmpty="Use inherited model"
         />
+      )}
+
+      {/* Advanced — pin a specific model SKU (escape hatch / local providers
+          without a reasoning map). */}
+      {providerType !== '' && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => { setAdvancedOpen((v) => !v); }}
+            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface"
+          >
+            {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            Advanced: pin a specific model
+          </button>
+          {advancedOpen && (
+            <>
+              <ModelSelectField
+                providerType={providerType}
+                localBackend={draft.localBackend}
+                baseUrl={baseUrl}
+                model={model}
+                modelPlaceholder={defaults?.model}
+                providers={providers}
+                onModelChange={handleDraftModelChange}
+              />
+              <p className="font-sans text-[11px] text-on-surface-variant/70">
+                Used only when the selected reasoning profile has no mapping —
+                e.g. local providers without a reasoning map.
+              </p>
+            </>
+          )}
+        </div>
       )}
 
       {/* Task-level maxTurns + timeout */}

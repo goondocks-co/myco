@@ -11,7 +11,6 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { MYCO_HOME_ENV } from '../grove/paths.js';
-import type { MachineState } from '../migrations/agent-config-grove-promotion.js';
 
 export interface FixtureProjectInput {
   id: string;
@@ -103,15 +102,4 @@ export async function withMultiGroveFixture(
     }
     fs.rmSync(mycoHome, { recursive: true, force: true });
   }
-}
-
-/** Build a MachineState from a FixtureMachineHandle for migration tests. */
-export function handleToMachineState(handle: FixtureMachineHandle): MachineState {
-  return {
-    groves: handle.groves.map((g) => ({
-      id: g.id,
-      grovePath: g.grovePath,
-      projects: g.projects.map((p) => ({ id: p.id, vaultDir: p.vaultDir })),
-    })),
-  };
 }
