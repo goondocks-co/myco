@@ -5,7 +5,8 @@
  */
 
 import { z } from 'zod';
-import type { RouteResponse } from '../router.js';
+import type { RouteRequest, RouteResponse } from '../router.js';
+import type { RequestPrincipal } from '../request-principal.js';
 import {
   listNotifications,
   countNotifications,
@@ -19,6 +20,7 @@ import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
 import { projectScopeFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
+import type { GroveProjectId } from '../../grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -78,23 +80,44 @@ export async function handleListNotifications(
   };
 }
 
-/** POST /api/notifications — create a notification. */
+/**
+ * POST /api/notifications — create a notification.
+ *
+ * Registered as a `tenantRoute`, so this handler always runs with an
+ * authorized `principal` — a synthesized/anchor context is rejected (400 +
+ * `tenancy.violation`) by the wrapper before we get here. The route is purely
+ * tenant-scoped: every HTTP create lands a project-scoped row tagged with the
+ * REQUEST's project id. Daemon-scope rows (`project_id = NULL`) are never
+ * produced here — those come exclusively from the internal `notify(..., {
+ * scope: 'daemon' })` callers (power-jobs, version-sync), which bypass HTTP.
+ *
+ * The enabled-gate config resolves from the REQUEST's tenancy
+ * (`principal.tenancy.projectVaultDir` for the personal/local tier, its
+ * `groveId` for the Grove-tier default), NOT the daemon's bootstrap anchor.
+ * Notification settings are a per-machine/user preference (Grove default +
+ * personal/local override, never project `myco.yaml`), so the anchor project's
+ * config must have no say over whether a notification on project B is
+ * suppressed.
+ */
 export async function handleCreateNotification(
-  vaultDir: string,
-  body: unknown,
-  requestContext?: MycoRequestContext,
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
-  const parsed = CreateNotificationBody.safeParse(body);
+  const parsed = CreateNotificationBody.safeParse(req.body);
   if (!parsed.success) {
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
   const { domain, type, title, message, link, metadata } = parsed.data;
 
-  // Check config for structured HTTP responses before delegating.
-  // Passing groveId routes Grove-tier notification settings through the
-  // merge AND keeps cache slots aligned with Grove-aware callers.
-  const config = loadMergedConfig(vaultDir, { groveId: requestContext?.groveId ?? null });
+  const vaultDir = principal.tenancy.projectVaultDir;
+  const requestContext = req.requestContext;
+
+  // Resolve the enabled-gate against the REQUEST's grove + vault (Grove-tier
+  // default merged under the personal/local override), never the bootstrap
+  // anchor. Passing groveId keeps the Grove-tier notification settings in the
+  // merge and the cache slots aligned with Grove-aware callers.
+  const config = loadMergedConfig(vaultDir, { groveId: principal.tenancy.groveId });
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }
@@ -103,12 +126,13 @@ export async function handleCreateNotification(
     return { body: { ok: true, suppressed: true, reason: 'domain_disabled' } };
   }
 
-  // Delegate resolution + insertion to notify() — pass config to avoid re-reading
+  // Delegate resolution + insertion to notify() — pass config to avoid re-reading.
+  // The row is tagged with the request's project id (project scope).
   const id = notify(vaultDir, {
     domain, type, title, message, link, metadata,
     level: parsed.data.level,
     mode: parsed.data.mode,
-  }, config, requestContext ? { projectId: requestContext.projectId } : undefined);
+  }, config, { projectId: principal.tenancy.projectId as GroveProjectId });
 
   if (!id) {
     return { body: { ok: true, suppressed: true, reason: 'unknown' } };

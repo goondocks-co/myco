@@ -1998,7 +1998,12 @@ export async function main(): Promise<void> {
 
   // --- Notification API routes ---
   server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(bootstrapVaultDir, req.query, req.requestContext));
-  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(bootstrapVaultDir, req.body, req.requestContext));
+  // The create route is wrapped in tenantRoute: it is purely tenant-scoped
+  // (every HTTP create lands a project-scoped row tagged with the request's
+  // project, and the enabled-gate config resolves from the request's grove +
+  // vault, never the anchor). Daemon-scope rows come only from internal
+  // notify(..., { scope: 'daemon' }) callers, which bypass HTTP.
+  server.registerRoute('POST', '/api/notifications', tenantRoute({ machineId, logger }, handleCreateNotification));
   server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(bootstrapVaultDir, req.params.id, req.body, req.requestContext));
   server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(bootstrapVaultDir, req.body, req.requestContext));
   server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
