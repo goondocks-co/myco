@@ -14,19 +14,25 @@ import { createProjectId } from '../grove/ids.js';
  * Resolve the bootstrap vault directory for daemon startup.
  *
  * Priority:
- *  1. **When `MYCO_SERVICE_VARIANT` is set** (i.e. the daemon is under a
- *     service supervisor — launchd, systemd — with a known variant), use
- *     the variant-aware registry path **first**. The cwd at spawn time is
- *     irrelevant: we already know which Grove this daemon serves.
+ *  1. **When `MYCO_SERVICE_VARIANT` is set** (i.e. the daemon is the
+ *     global, multi-tenant daemon under a service supervisor — launchd,
+ *     systemd — with a known variant), there is NO bootstrap project at
+ *     all. The global daemon's home is `MYCO_HOME` (`~/.myco`); it serves
+ *     every tenant through the per-request `MycoRequestContext` and never
+ *     anchors to a "current project". Return `null` so the startup path
+ *     materializes the phantom `MYCO_HOME`-scoped home and runs unbound.
  *
- *     This guards against a previously-observed failure: a lazy-spawn
- *     triggered by a hook or MCP tool whose cwd is inside an unrelated
- *     project would bootstrap the daemon to that project's vault — even
- *     if that project's Grove is served by a *different* variant. The
- *     dashboard then refuses every request with "Cross-Grove access is
- *     forbidden" (API 500). Before this guard, the only thing that hid
- *     the race was the daemon's 87-second shutdown latency; once that
- *     was fixed, the wrong-cwd respawn won the port consistently.
+ *     This deliberately ignores both the cwd AND the registry. The cwd is
+ *     irrelevant (a hook lazy-spawn from inside an unrelated project must
+ *     not bind the daemon to it). The registry is irrelevant too: picking
+ *     the *first registered project* as an anchor — the old behavior — is
+ *     exactly the bug-attractor every tenant-scope leak we just fixed
+ *     leaked *to*. An arbitrary project-shaped anchor has no business
+ *     standing in for "the daemon's project" because the global daemon has
+ *     no project. Per-request handlers carry their own caller-supplied
+ *     tenancy (and tenant routes reject synthesized contexts), so the
+ *     anchor is no longer needed for routing — only the home is, and the
+ *     home resolves from the variant + `MYCO_HOME`, never from a project.
  *
  *  2. The cwd-walking `resolveVaultDir()` result, IF its parent contains
  *     a `project.toml`. Preserves the existing behavior for variant-less
@@ -34,39 +40,31 @@ import { createProjectId } from '../grove/ids.js';
  *     run by hand from a project directory).
  *
  *  3. The first registered project in a Grove matching the current
- *     service variant. Dev variant scans for a Grove with
+ *     service variant — variant-less callers only (ad-hoc `myco daemon`
+ *     from a non-project cwd that still wants the local registry's first
+ *     project). Dev variant scans for a Grove with
  *     `served_by = "service-dev"`; prod variant (or unset) uses the
  *     default Grove from the registry.
  *
- * Returns `null` when no enclosing project AND no registered project
- * matching this daemon's variant is found. The daemon's startup path
- * falls back to a phantom MYCO_HOME-scoped scratch dir so the API can
- * come up and hooks can register the first project (Decisions 3 and 14
- * of the global-symbiont-install plan).
- *
- * Variant-pinned (MYCO_SERVICE_VARIANT set) ALSO returns null in
- * greenfield. The production user path is `npm install -g` →
- * postinstall registers a service → launchd/systemd spawns the daemon
- * with the variant env set, before any project exists. Throwing here
- * would respawn-loop the supervisor before the first hook could
- * register a project. The variant safety invariant is preserved: the
- * rebind watcher calls back through here, and `firstProjectVaultFromRegistry()`
- * still filters by `served_by` so a dev daemon binds only to dev Groves
- * and a prod daemon binds only to prod Groves.
+ * Returns `null` when the global variant is set (always — home-scoped), or
+ * when no enclosing project AND no registered project is found. The
+ * daemon's startup path falls back to a phantom MYCO_HOME-scoped scratch
+ * dir so the API can come up and serve tenant requests by their own
+ * request context (Decisions 3 and 14 of the global-symbiont-install plan).
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | null {
   const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
   const sandboxMode = (process.env.MYCO_LAUNCH_AGENTS_DIR?.trim() ?? '') !== '';
   const cwdVault = resolveVaultDir(cwd);
 
-  // Variant-pinned daemons trust their variant, not their cwd. Skip the
-  // cwd-walk: a hook lazy-spawn from inside an unrelated project must
-  // not bootstrap onto that project's vault when the variant pins us
-  // to a specific Grove. firstProjectVaultFromRegistry() already
-  // honors MYCO_SERVICE_VARIANT so the rebind watcher binds to the
-  // right Grove without further plumbing.
+  // The global, multi-tenant daemon has no bootstrap project. Its home is
+  // MYCO_HOME and every request carries its own tenancy. Returning null
+  // routes startup through the phantom-home path; the daemon never anchors
+  // to an arbitrary registered project (the bug-attractor for tenant-scope
+  // leaks). This intentionally ignores the registry — the previous
+  // `firstProjectVaultFromRegistry()` anchor is gone from the global path.
   if (variant) {
-    return firstProjectVaultFromRegistry();
+    return null;
   }
 
   // Sandbox mode (MYCO_LAUNCH_AGENTS_DIR set) skips cwd-walk too.
@@ -176,6 +174,21 @@ function hasProjectManifest(vaultDir: string): boolean {
   return fs.existsSync(path.join(vaultDir, PROJECT_MANIFEST_FILENAME));
 }
 
+/**
+ * Pick the first on-disk registered project for the local registry.
+ *
+ * NOT part of the global daemon's startup path anymore: a daemon with
+ * `MYCO_SERVICE_VARIANT` set never anchors to a project (it runs phantom
+ * from `MYCO_HOME` and serves tenants by request context). The only
+ * surviving callers are:
+ *   - the variant-less ad-hoc path (`myco daemon` from a non-project cwd
+ *     that still wants the local registry's first prod project), and
+ *   - the sandbox-mode branch, whose isolated HOME has an empty registry
+ *     so this always returns null → phantom-bootstrap.
+ *
+ * The `served_by` filter is retained for the variant-less prod default —
+ * it must not silently bind a dev-served default Grove.
+ */
 function firstProjectVaultFromRegistry(): string | null {
   const mycoHome = resolveMycoHome();
   const targetServedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);

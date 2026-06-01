@@ -589,6 +589,11 @@ export async function main(): Promise<void> {
   const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
   const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
     resolveBootstrapVaultDirOrPhantom();
+  // The global, multi-tenant daemon (run under a service supervisor with
+  // MYCO_SERVICE_VARIANT set) has no bootstrap project. It always boots
+  // phantom (home-scoped to MYCO_HOME) and serves every tenant by request
+  // context — it never anchors to, nor rebinds to, a registered project.
+  const isGlobalDaemon = (process.env.MYCO_SERVICE_VARIANT?.trim() ?? '') !== '';
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   // BEFORE the first getMachineId() call mints a fresh value, scan every
@@ -673,7 +678,11 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
-  if (bootstrapIsPhantom) {
+  if (bootstrapIsPhantom && isGlobalDaemon) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Global daemon home resolved (MYCO_HOME); serving tenants by request context', {
+      home_vault: bootstrapVaultDir,
+    });
+  } else if (bootstrapIsPhantom) {
     logger.info(LOG_KINDS.DAEMON_START, 'No project bound; polling registry from unbound bootstrap', {
       unbound_vault: bootstrapVaultDir,
     });
@@ -2223,14 +2232,26 @@ export async function main(): Promise<void> {
     });
   }
 
-  // Greenfield rebind: when the daemon booted without a vault (phantom
-  // bootstrap), poll the Grove registry every 5s. The first hook-driven
-  // auto-Grove-create writes a project under the default Grove; once a
-  // registered project shows up, restart so the next boot resolves a
-  // real vault via `firstProjectVaultFromRegistry()` and brings up the
-  // full Grove-bound surface (sqlite, embeddings, scope iteration).
+  // Greenfield rebind: when a *variant-less* daemon booted without a vault
+  // (phantom bootstrap), poll the Grove registry every 5s. The first
+  // hook-driven auto-Grove-create writes a project under the default
+  // Grove; once a registered project shows up, restart so the next boot
+  // resolves a real vault via `resolveBootstrapVaultDir()` and brings up
+  // the full Grove-bound surface (sqlite, embeddings, scope iteration).
+  //
+  // The GLOBAL daemon (MYCO_SERVICE_VARIANT set) is excluded: it has no
+  // bootstrap project and never rebinds to one. Its home is MYCO_HOME and
+  // every request carries its own tenancy, so it stays phantom (home-
+  // scoped) for its whole lifetime. Running the rebind poll for the global
+  // daemon would be pointless (the resolver returns null by design) and
+  // misleading — it must not "rebind to the first registered project",
+  // that anchor is exactly the tenant-scope leak we removed.
   let phantomRebindWatcher: ReturnType<typeof setInterval> | null = null;
-  if (bootstrapIsPhantom) {
+  if (bootstrapIsPhantom && isGlobalDaemon) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Global daemon — home-scoped (MYCO_HOME), serving tenants by request context', {
+      home_vault: bootstrapVaultDir,
+    });
+  } else if (bootstrapIsPhantom) {
     const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
     logger.info(LOG_KINDS.DAEMON_START, 'Greenfield daemon — bootstrapped with phantom vault, watching registry for first project', {
       phantom_vault: bootstrapVaultDir,

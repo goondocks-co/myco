@@ -8,7 +8,11 @@
  * any real project is registered.
  * A registry-poll watcher (every 5s) detects the first hook-driven
  * project auto-registration and triggers a graceful restart — the next
- * boot resolves a real vault via `firstProjectVaultFromRegistry()`.
+ * boot resolves a real vault via `resolveBootstrapVaultDir()`. This
+ * rebind path is for the VARIANT-LESS greenfield daemon only; the global
+ * (MYCO_SERVICE_VARIANT-set) daemon never rebinds — see the
+ * "global (variant-pinned) daemon is always home-scoped" block below and
+ * the watcher guard in daemon/main.ts.
  *
  * Two failure modes are the focus here:
  *
@@ -53,6 +57,12 @@ import {
   resolveBootstrapVaultDirOrPhantom,
   resolvePhantomBootstrapVaultDir,
 } from '../../packages/myco/src/vault/bootstrap';
+import { resolveDaemonDataPaths } from '../../packages/myco/src/daemon/data-paths';
+import {
+  resolveDaemonServiceState,
+  resolveDaemonLogDir,
+} from '../../packages/myco/src/daemon/service-state';
+import { resolveServiceDir } from '../../packages/myco/src/grove/paths';
 
 let originalHome: string | undefined;
 let originalVariant: string | undefined;
@@ -291,31 +301,25 @@ describe('rebind precondition — the watcher polls resolveBootstrapVaultDir, no
 });
 
 /**
- * Variant-pinned greenfield + variant-aware rebind filter.
+ * Global (variant-pinned) daemon: always home-scoped, NEVER rebinds.
  *
  * Production user path: `npm install -g` → postinstall registers a
  * managed service → launchd/systemd spawns the daemon with
- * `MYCO_SERVICE_VARIANT` set BEFORE any project exists. The old
- * variant-pinned branch threw on greenfield, which respawn-looped
- * the supervisor before any hook could register the first project.
+ * `MYCO_SERVICE_VARIANT` set. The global, multi-tenant daemon has NO
+ * bootstrap project at all — its home is MYCO_HOME and it serves every
+ * tenant through the per-request `MycoRequestContext`. So it always boots
+ * phantom (home-scoped) and stays that way for its whole lifetime, whether
+ * the registry is empty or full.
  *
- * Task #6 (commit 2cb70c6c) reshaped variant-pinned greenfield: it
- * now returns null and the OrPhantom helper takes over, while
- * `firstProjectVaultFromRegistry()`'s `served_by` filter preserves
- * the cross-variant safety invariant — a dev daemon's rebind watcher
- * only binds to dev Groves; a prod daemon's only binds to prod
- * Groves. This block locks BOTH halves: phantom-bootstrap survival
- * AND variant-aware rebind filtering.
- *
- * The phantom-bootstrap survival half is also covered in
- * `tests/vault/bootstrap.test.ts`
- *   ("variant-pinned greenfield routes through phantom helper without throw")
- * — replicated here because the rebind-after-survival sequence is
- * the contract this file owns, and a future regression that
- * re-introduces the throw would break the rebind invariants below
- * silently if we only asserted the survival in the other file.
+ * The old behavior — anchoring to (and rebinding to) the *first registered
+ * project* matching the variant — was the bug-attractor that every
+ * tenant-scope leak we just fixed leaked *to*. This block locks the new
+ * contract: the variant path returns null regardless of registry state, so
+ * `resolveBootstrapVaultDir` is the watcher signal that NEVER fires for the
+ * global daemon (the daemon's rebind watcher is skipped entirely when
+ * MYCO_SERVICE_VARIANT is set — see daemon/main.ts).
  */
-describe('variant-pinned daemons phantom-bootstrap + bind only to matching-variant Groves', () => {
+describe('global (variant-pinned) daemon is always home-scoped and never rebinds', () => {
   test('prod variant on empty registry enters phantom mode (does not throw, does not respawn-loop)', () => {
     process.env.MYCO_SERVICE_VARIANT = 'prod';
     try {
@@ -339,31 +343,27 @@ describe('variant-pinned daemons phantom-bootstrap + bind only to matching-varia
     }
   });
 
-  test('dev variant rebinds to a dev Grove, NOT a prod Grove registered alongside it', () => {
-    // The variant safety invariant under rebind: a dev daemon's
-    // watcher must only fire on dev-served Groves. If a prod Grove
-    // gets registered first (or is already there from another
-    // variant's daemon), the dev watcher must keep waiting — never
-    // bind to it.
+  test('dev variant stays home-scoped (null) even when a matching dev Grove is registered', () => {
+    // The whole point: the global dev daemon does NOT rebind to a dev
+    // project. With a fully-registered dev Grove + project on disk, the
+    // plain resolver still returns null — the watcher signal never fires.
     const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const prodRoot = makeProjectOnDisk('cross-variant-prod');
     const devRoot = makeProjectOnDisk('cross-variant-dev');
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
-      // Phase 1: only prod Grove registered. Dev watcher must NOT fire.
+      // Phase 1: only prod Grove registered. Resolver returns null.
       writeRegistry(prodGrove);
       writeGroveToml(prodGrove, 'service');
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
-      // Phase 2: dev Grove registered alongside the prod one. Dev
-      // watcher fires and binds to the DEV vault, ignoring prod.
+      // Phase 2: dev Grove registered alongside the prod one. The global
+      // daemon STILL returns null — it never anchors to a project.
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
-      const resolved = resolveBootstrapVaultDir(tmpCwd);
-      expect(resolved).toBe(path.join(devRoot, '.myco'));
-      expect(resolved).not.toBe(path.join(prodRoot, '.myco'));
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
       fs.rmSync(prodRoot, { recursive: true, force: true });
@@ -371,48 +371,29 @@ describe('variant-pinned daemons phantom-bootstrap + bind only to matching-varia
     }
   });
 
-  test('prod variant rebinds to a prod Grove, NOT a non-default dev Grove registered alongside it', () => {
-    // Symmetric to the dev case via the served_by-filtered fallback
-    // path. The default-Grove fast-path in `firstProjectVaultFromRegistry()`
-    // now honors `served_by`: a legacy default Grove with no
-    // `grove.toml` (or no `served_by` field) still binds to prod, but
-    // an explicit `served_by = "service-dev"` default Grove is skipped.
-    // Phase 1 below asserts the post-fix skip-on-dev behavior; phase 2
-    // asserts the standard prod-default bind.
+  test('prod variant stays home-scoped (null) even when a matching prod default Grove is registered', () => {
+    // Symmetric to the dev case: the global prod daemon never anchors to a
+    // registered prod project. Whether the default Grove is dev-served
+    // (always skipped) or prod-served (the old anchor target), the global
+    // path returns null and runs phantom from MYCO_HOME.
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
     const prodRoot = makeProjectOnDisk('symm-prod');
     const devRoot = makeProjectOnDisk('symm-dev');
     process.env.MYCO_SERVICE_VARIANT = 'prod';
     try {
-      // Phase 1: only dev Grove registered, set as default. Prod
-      // watcher MUST keep waiting — even though the dev Grove is the
-      // default, served_by=service-dev disqualifies it. See the
-      // file-level note on the prod default-Grove fast-path: this
-      // assertion fails if a future regression flips the fallback
-      // to ignore served_by.
+      // Phase 1: dev Grove registered as default — null (as before).
       writeRegistry(devGrove);
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
-      // Task #9 closed the default-Grove escape hatch: when the
-      // registry's default_grove_id points to a Grove with
-      // `served_by = "service-dev"`, the prod daemon now refuses to
-      // bind it and falls through to wait for a prod-served Grove.
-      // Phase 1 here asserts the post-fix behavior — the dev default
-      // is invisible to the prod variant.
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
-      // Phase 2: prod Grove registered AS DEFAULT, alongside the
-      // non-default dev Grove. Prod watcher fires, binds to the
-      // prod default. The served_by filter is what makes the
-      // non-default dev Grove invisible here — change the registry
-      // to make the dev Grove default to exercise the gap above.
+      // Phase 2: prod Grove registered AS DEFAULT. Pre-change this was the
+      // anchor the prod daemon bound to; now it stays home-scoped (null).
       writeRegistry(prodGrove);
       writeGroveToml(prodGrove, 'service');
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
-      const resolved = resolveBootstrapVaultDir(tmpCwd);
-      expect(resolved).toBe(path.join(prodRoot, '.myco'));
-      expect(resolved).not.toBe(path.join(devRoot, '.myco'));
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
       fs.rmSync(prodRoot, { recursive: true, force: true });
@@ -420,27 +401,104 @@ describe('variant-pinned daemons phantom-bootstrap + bind only to matching-varia
     }
   });
 
-  test('variant-pinned phantom→rebind: OrPhantom flips isPhantom true→false when matching-variant Grove registers', () => {
-    // End-to-end through the helper the daemon actually uses on
-    // startup. Greenfield → phantom → rebind tick → real vault.
+  test('variant-pinned OrPhantom stays isPhantom=true even when a matching Grove registers', () => {
+    // End-to-end through the helper the daemon actually uses on startup.
+    // The global daemon's bootstrap result is phantom before AND after a
+    // matching-variant Grove registers — it never flips to a project vault.
     const devGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     const devRoot = makeProjectOnDisk('e2e-dev');
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
       const before = resolveBootstrapVaultDirOrPhantom(tmpCwd);
       expect(before.isPhantom).toBe(true);
+      expect(before.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
 
       writeRegistry(devGrove);
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
 
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-      expect(after.isPhantom).toBe(false);
-      expect(after.vaultDir).toBe(path.join(devRoot, '.myco'));
-      expect(after.vaultDir.startsWith(resolvePhantomBootstrapVaultDir(tmpHome))).toBe(false);
+      // Still phantom, still home-scoped — the global daemon is not a
+      // registry project root.
+      expect(after.isPhantom).toBe(true);
+      expect(after.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
+      expect(after.vaultDir).not.toBe(path.join(devRoot, '.myco'));
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
       fs.rmSync(devRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Global-daemon phantom bootstrap → home-scoped data/service/log paths.
+ *
+ * This is the consumer-side proof for the bootstrap change: feeding the
+ * global daemon's phantom `bootstrapVaultDir` into the same resolvers
+ * `daemon/main.ts` calls at startup yields:
+ *   - a phantom bootstrap (`isPhantom: true`) whose vault is the
+ *     home-scoped `_unbound-bootstrap` dir, NOT any registry project root;
+ *   - a boot DB under that phantom home (so the daemon's own logs/state
+ *     never land in an arbitrary tenant's DB);
+ *   - service-state + log dir under `~/.myco/service/` (keyed off
+ *     MYCO_HOME + variant, never off the project).
+ */
+describe('global daemon phantom bootstrap resolves home-scoped service/log/data paths', () => {
+  test('boot DB is under the phantom home and NOT a registry project root', () => {
+    // A fully-registered prod Grove + project exists on disk — the old
+    // anchor would have made this the boot vault. The global daemon must
+    // ignore it.
+    const prodGrove = 'grove_abababababababababababababababab';
+    const projRoot = makeProjectOnDisk('global-boot-db');
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      writeRegistry(prodGrove);
+      writeGroveToml(prodGrove, 'service');
+      writeProjectsToml(prodGrove, [{ id: 'proj_boot', root: projRoot }]);
+
+      const boot = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+      expect(boot.isPhantom).toBe(true);
+      expect(boot.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
+      // The would-be anchor project root is never the boot vault.
+      expect(boot.vaultDir).not.toBe(path.join(projRoot, '.myco'));
+
+      // The boot DB resolves under the phantom home — not the project.
+      const dataPaths = resolveDaemonDataPaths(boot.vaultDir, {
+        MYCO_HOME: tmpHome,
+        MYCO_MACHINE_ID: 'machine-test',
+      });
+      expect(dataPaths.databasePath.startsWith(boot.vaultDir)).toBe(true);
+      expect(dataPaths.databasePath.startsWith(projRoot)).toBe(false);
+      // Phantom manifest carries a project id but no Grove binding.
+      expect(dataPaths.requestContext.groveId).toBeNull();
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+      fs.rmSync(projRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('service-state and log dir resolve under ~/.myco/service/ for the phantom global daemon', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      const boot = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+      expect(boot.isPhantom).toBe(true);
+
+      const serviceDir = resolveServiceDir(tmpHome); // ~/.myco/service
+      const state = resolveDaemonServiceState(boot.vaultDir, {
+        env: { MYCO_HOME: tmpHome },
+      });
+      // Keyed off MYCO_HOME + variant — the phantom vaultDir is irrelevant.
+      expect(state.scope).toBe('global');
+      expect(state.stateDir).toBe(serviceDir);
+      expect(state.statePath.startsWith(serviceDir)).toBe(true);
+      expect(state.lockPath.startsWith(serviceDir)).toBe(true);
+
+      const logDir = resolveDaemonLogDir(boot.vaultDir, {
+        env: { MYCO_HOME: tmpHome },
+      });
+      expect(logDir).toBe(path.join(serviceDir, 'logs'));
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
 });
