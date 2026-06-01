@@ -31,7 +31,7 @@ import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
@@ -66,6 +66,15 @@ export interface CortexServicesDeps {
  */
 export interface TriggerCortexInstructionsDeps {
   vaultDir: string;
+  /**
+   * Caller-authorized tenant context. The trigger MUST act against this
+   * tenant's project/grove, not re-derive context from `vaultDir` — on the
+   * global daemon `vaultDir` for a request-scoped caller is the tenant vault,
+   * but the request's project/grove identity is the source of truth and is
+   * carried here so a future change to how vaults map to tenants can't leak
+   * a refresh into the wrong project.
+   */
+  requestContext: MycoRequestContext;
   embeddingManager: EmbeddingManager;
   liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
@@ -171,14 +180,15 @@ export async function buildCortexPrompt(
   vaultDir: string,
   deps: CortexServicesDeps,
   goal: string,
-  requestedSymbiont?: string,
+  requestedSymbiont: string | undefined,
+  requestContext: MycoRequestContext,
 ): Promise<CortexPromptBuilderStartResult> {
-  const requestContext = resolveRequestContextForVault(vaultDir);
-  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext?.groveId ?? null, requestedSymbiont);
+  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext.groveId ?? null, requestedSymbiont);
   const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
-  const scope: import('@myco/grove/ids.js').ProjectScope = requestContext?.projectId
-    ? { kind: 'project', id: requestContext.projectId }
-    : { kind: 'global' };
+  const scope: import('@myco/grove/ids.js').ProjectScope = {
+    kind: 'project',
+    id: requestContext.projectId,
+  };
   const instructions = delivery.inlineInstructions
     ? getCortexInstructions(DEFAULT_AGENT_ID, scope)
     : null;
@@ -283,7 +293,7 @@ export function getCortexPromptResult(
 export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
-  const { vaultDir, embeddingManager, liveConfig, logger, getTeamClient } = deps;
+  const { vaultDir, requestContext, embeddingManager, liveConfig, logger, getTeamClient } = deps;
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
   const config = liveConfig.current;
 
@@ -309,7 +319,6 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const requestContext = resolveRequestContextForVault(vaultDir);
     const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
     const resultPromise = dispatchFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,

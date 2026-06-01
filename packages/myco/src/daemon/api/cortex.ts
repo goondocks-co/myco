@@ -4,6 +4,7 @@ import type { TeamSyncClient } from '../team-sync.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
+import type { RequestPrincipal } from '../request-principal.js';
 import {
   buildCortexPrompt,
   getCortexPromptResult,
@@ -29,18 +30,26 @@ const PromptBuilderStatusParams = z.object({
   runId: z.string().trim().min(1),
 });
 
-export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
-  async function handleGetInstructions(req: RouteRequest): Promise<RouteResponse> {
-    const scope: import('@myco/grove/ids.js').ProjectScope = req.requestContext?.projectId
-      ? { kind: 'project', id: req.requestContext.projectId }
-      : { kind: 'global' };
+export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) {
+  async function handleGetInstructions(
+    req: RouteRequest,
+    principal: RequestPrincipal,
+  ): Promise<RouteResponse> {
+    const scope: import('@myco/grove/ids.js').ProjectScope = {
+      kind: 'project',
+      id: principal.tenancy.projectId as import('@myco/grove/ids.js').GroveProjectId,
+    };
     const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current, scope);
     return { body: snapshot };
   }
 
-  async function handleRefreshInstructions(): Promise<RouteResponse> {
+  async function handleRefreshInstructions(
+    req: RouteRequest,
+    principal: RequestPrincipal,
+  ): Promise<RouteResponse> {
     const result = await triggerCortexInstructions({
-      vaultDir,
+      vaultDir: principal.tenancy.projectVaultDir,
+      requestContext: req.requestContext!,
       embeddingManager: deps.embeddingManager,
       liveConfig: deps.liveConfig,
       logger: deps.logger,
@@ -65,10 +74,13 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
     return { body: result };
   }
 
-  async function handleBuildPrompt(req: RouteRequest): Promise<RouteResponse> {
+  async function handleBuildPrompt(
+    req: RouteRequest,
+    principal: RequestPrincipal,
+  ): Promise<RouteResponse> {
     const { goal, symbiont } = PromptBuilderBody.parse(req.body);
     const result = await buildCortexPrompt(
-      vaultDir,
+      principal.tenancy.projectVaultDir,
       {
         config: deps.liveConfig.current,
         embeddingManager: deps.embeddingManager,
@@ -78,15 +90,20 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
       },
       goal,
       symbiont,
+      req.requestContext!,
     );
     return { body: result };
   }
 
-  async function handleGetPromptResult(req: RouteRequest): Promise<RouteResponse> {
+  async function handleGetPromptResult(
+    req: RouteRequest,
+    principal: RequestPrincipal,
+  ): Promise<RouteResponse> {
     const { runId } = PromptBuilderStatusParams.parse(req.params);
-    const promptScope: import('@myco/grove/ids.js').ProjectScope = req.requestContext?.projectId
-      ? { kind: 'project', id: req.requestContext.projectId }
-      : { kind: 'global' };
+    const promptScope: import('@myco/grove/ids.js').ProjectScope = {
+      kind: 'project',
+      id: principal.tenancy.projectId as import('@myco/grove/ids.js').GroveProjectId,
+    };
     const result = getCortexPromptResult(runId, promptScope);
     if (!result) {
       return { status: 404, body: errorBody('run-not-found', 'Run not found') };
