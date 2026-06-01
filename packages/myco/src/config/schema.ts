@@ -576,6 +576,26 @@ export type GroveConfig = z.output<typeof GroveConfigSchema>;
 export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
 export type PersonalConfig = z.input<typeof PersonalConfigSchema>;
 
+/**
+ * Agent + embedding paths that are Grove-tier, not Project-tier. The loader
+ * strips them from project myco.yaml on load when the project is Grove-bound
+ * (gated by `hasGrove`), so stale project-tier values never shadow Grove
+ * config. When unbound, they're retained until a Grove exists to honor.
+ */
+export const GROVE_PROMOTED_FIELDS: ReadonlyArray<readonly string[]> = [
+  ['embedding', 'provider'],
+  ['embedding', 'model'],
+  ['embedding', 'base_url'],
+  ['agent', 'provider'],
+  ['agent', 'harness'],
+  ['agent', 'model'],
+  ['agent', 'tasks'],
+  ['agent', 'summary_batch_interval'],
+  ['agent', 'scheduled_tasks_enabled'],
+  ['agent', 'event_tasks_enabled'],
+  ['agent', 'cold_project_threshold_days'],
+];
+
 /** Field paths the loader silently strips from project myco.yaml on load. */
 export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['daemon', 'port'],
@@ -589,11 +609,7 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
   ['appearance'],
-  // The 11 agent-config paths promoted to Grove tier (embedding.provider/model/
-  // base_url, agent.provider/harness/model/tasks/summary_batch_interval/
-  // scheduled_tasks_enabled/event_tasks_enabled/cold_project_threshold_days)
-  // are intentionally NOT listed here: the loader must not strip them before
-  // runAgentConfigGrovePromotion runs, or the migration silently loses data.
+  ...GROVE_PROMOTED_FIELDS,
 ];
 
 export const MycoConfigSchema = z.preprocess(

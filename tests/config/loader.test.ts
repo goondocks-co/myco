@@ -356,40 +356,34 @@ describe('Grove-tier promotion — merge verification', () => {
     expect((localRaw.notifications as Record<string, unknown>).enabled).toBe(false);
   });
 
-  it('legacy agent.provider in myco.yaml is preserved on disk until migration', () => {
-    // Simulate a pre-promotion myco.yaml that still carries agent.provider.
-    // The loader must NOT strip it from disk — runAgentConfigGrovePromotion
-    // needs to find it when it runs. Before the fix, PROJECT_TIER_LEGACY_FIELDS
-    // included agent.provider, causing the loader to erase it on every
-    // loadMergedConfig call (silent data loss). After the fix, the raw project
-    // doc flows through the merge unchanged, so the value is visible in the
-    // merged config AND survives on disk for the migration to lift.
+  it('wipes legacy project-tier agent config when Grove-bound (merged + disk)', () => {
     const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
     fs.writeFileSync(
       mycoYamlPath,
       'version: 3\nagent:\n  provider:\n    type: openrouter\n',
     );
-    // No grove.yaml — Grove defaults apply
+    writeGroveConfig('agent:\n  provider:\n    type: anthropic\n');
 
-    let caughtError: unknown = null;
-    let config: ReturnType<typeof loadMergedConfig> | null = null;
-    try {
-      config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
-    } catch (err) {
-      caughtError = err;
-    }
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
 
-    // Must not throw
-    expect(caughtError).toBeNull();
+    // Grove is the source of truth; the stale project value is ignored.
+    expect(config.agent.provider).toEqual({ type: 'anthropic' });
+    // The loader's tier write-back removes the agent block from myco.yaml.
+    const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
+    expect(rawOnDisk.agent).toBeUndefined();
+  });
 
-    // After the fix the raw project doc still has agent.provider, so the sparse
-    // merge surfaces it in the merged config. The migration will own lifting it
-    // to grove.yaml and stripping it from myco.yaml.
-    expect(config!.agent.provider).toEqual({ type: 'openrouter' });
+  it('retains legacy project-tier agent config when the project is not Grove-bound', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    fs.writeFileSync(
+      mycoYamlPath,
+      'version: 3\nagent:\n  provider:\n    type: openrouter\n',
+    );
+    // No groveId and no project.toml grove association → hasGrove=false →
+    // grove-tier fields are kept until a Grove exists to honor them.
+    const config = loadMergedConfig(tmpDir, { mycoHome: mycoHomeDir });
 
-    // Critically: the on-disk myco.yaml must still carry agent.provider so that
-    // the migration can find and lift it. The loader must NOT have written it
-    // back with the agent block removed.
+    expect(config.agent.provider).toEqual({ type: 'openrouter' });
     const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
     expect((rawOnDisk.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
   });
