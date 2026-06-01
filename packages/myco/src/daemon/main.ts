@@ -1701,9 +1701,11 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(bootstrapVaultDir, req));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(bootstrapVaultDir, req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(bootstrapVaultDir, req));
+  // Machine-scoped, daemon-global: these read/write `~/.myco/secrets.env`
+  // (machine-level keys), not any tenant's vault, so they take no vault dir.
+  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(req));
+  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
+  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
