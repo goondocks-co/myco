@@ -1236,7 +1236,6 @@ export async function main(): Promise<void> {
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
     liveConfig,
-    vaultDir: bootstrapVaultDir,
     getDatabase,
   }));
 

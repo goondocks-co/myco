@@ -38,7 +38,6 @@ import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import {
   filesystemRootFromRequestContext,
   projectScopeFromRequestContext,
-  resolveRequestContextForVault,
   rowProjectIdFromRequestContext,
 } from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
@@ -494,14 +493,19 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // the persistence logic is shared between both paths via
         // captureBatchImages.
         const eventImages = event.images as CapturedImage[] | undefined;
-        if (Array.isArray(eventImages) && eventImages.length > 0) {
+        // Tenancy is the caller's request context — never the daemon's
+        // bootstrap-anchor vault. Without a resolved project id we have no
+        // tenant to attribute the attachment rows to; skip rather than
+        // synthesizing tenancy from the anchor (the cross-tenant leak class).
+        const imageProjectId = req.requestContext?.projectId;
+        if (Array.isArray(eventImages) && eventImages.length > 0 && imageProjectId) {
           captureBatchImages({
             sessionId: event.session_id,
             promptBatchId: batchId,
             promptNumber,
             images: eventImages,
             logger,
-            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
+            projectId: imageProjectId,
           });
         }
 
@@ -603,23 +607,30 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       }
       // Canopy: rescan the touched file after acknowledging capture.
       // Best-effort; handleCanopyToolUse swallows its own errors.
-      setTimeout(() => {
-        try {
-          handleCanopyToolUse({
-            db: getDatabase(),
-            logger,
-            machineId: requestMachineId,
-            projectRoot: requestFilesystemRoot,
-            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
-            toolName,
-            toolInput: event.tool_input,
-            defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,
-            excludePatterns: liveConfig.current.cortex.canopy.exclude.patterns,
-          });
-        } catch {
-          // The deferred scanner is observability-only; capture already succeeded.
-        }
-      }, 0);
+      // Tenancy is the caller's request context — never the daemon's
+      // bootstrap-anchor vault. Without a resolved project id we skip the
+      // rescan rather than synthesizing tenancy from the anchor (the
+      // cross-tenant leak class); capture has already succeeded regardless.
+      const canopyProjectId = req.requestContext?.projectId;
+      if (canopyProjectId) {
+        setTimeout(() => {
+          try {
+            handleCanopyToolUse({
+              db: getDatabase(),
+              logger,
+              machineId: requestMachineId,
+              projectRoot: requestFilesystemRoot,
+              projectId: canopyProjectId,
+              toolName,
+              toolInput: event.tool_input,
+              defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,
+              excludePatterns: liveConfig.current.cortex.canopy.exclude.patterns,
+            });
+          } catch {
+            // The deferred scanner is observability-only; capture already succeeded.
+          }
+        }, 0);
+      }
     }
 
     if (event.type === 'tool_failure') {

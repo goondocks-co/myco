@@ -22,7 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { filesystemRootFromRequestContext, resolveRequestContextForVault } from '../../tools/request-context.js';
+import { filesystemRootFromRequestContext } from '../../tools/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
@@ -36,7 +36,6 @@ import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 
 export interface CanopyInjectDeps {
   liveConfig: { current: MycoConfig };
-  vaultDir: string;
   getDatabase: () => Database;
 }
 
@@ -97,7 +96,16 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const { sessionId, agent, toolInput } = parsed.data;
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
 
-    const ctx = req.requestContext ?? resolveRequestContextForVault(deps.vaultDir);
+    // Tenancy comes from the caller's request context — never from the
+    // daemon's bootstrap-anchor vault. A request without a resolved context
+    // has no project to look canopy rows up against; degrade to the same
+    // safe no-injection response the rest of the handler uses rather than
+    // synthesizing tenancy from the anchor (the cross-tenant leak class).
+    const ctx = req.requestContext;
+    if (!ctx) {
+      const body: InjectResponseBody = { inject: false, reason: 'unknown_file' };
+      return { body };
+    }
     const projectRoot = filesystemRootFromRequestContext(ctx);
     const projectId = ctx.projectId;
     const config = deps.liveConfig.current.cortex.canopy;
