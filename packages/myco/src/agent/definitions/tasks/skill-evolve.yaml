@@ -348,21 +348,24 @@ phases:
       ## Verify before you write — NEVER fabricate (critical)
 
       You are EVOLVING existing skills, not authoring from imagination.
-      Every concrete claim you add or change must be verified against the
-      real codebase before it goes into a skill — agents load these as
-      authoritative procedure, so a confident-but-wrong detail is worse
-      than no detail.
+      Verify only the NEW or CHANGED concrete claims your edit introduces
+      — agents load these as authoritative procedure, so a confident-but-
+      wrong detail is worse than no detail. Do NOT re-verify claims that
+      were already in the skill and you are not touching.
 
-      - **File path claim** → `fs_read` (narrow window). If it does not
-        exist, do not write it.
-      - **Identifier claim** (function, symbol, env var, type) →
-        `code_grep` with a path/glob filter. If `code_grep` finds no
-        match, the symbol does not exist — do NOT write it. Never invent
-        a function name, env var, or API to make an example look complete.
-      - **Behavior claim** → `code_grep` for the signature/pattern.
+      For each NEW/CHANGED claim, verify with AT MOST 1 tool call:
+      - **File path claim** → one `fs_read` (narrow window). Missing → don't write it.
+      - **Identifier claim** (function, symbol, env var, type) → one
+        `code_grep` with a path/glob filter. No match → the symbol does
+        not exist; do NOT write it. Never invent a function, env var, or
+        API to make an example look complete.
+      - **Behavior claim** → one `code_grep` for the signature/pattern.
 
-      If you cannot verify a claim, omit it. An accurate, shorter skill
-      beats a padded one with invented details.
+      Hard limit: **at most 6 verification tool calls per skill.** If an
+      edit would need more than that to verify, it is too broad for evolve
+      — trim the edit to the few highest-value verified changes and note
+      the rest in the rationale. If you cannot verify a claim within the
+      budget, omit it. An accurate, shorter skill beats a padded one.
 
       ## Edit surgically — minimal diff
 
@@ -372,6 +375,18 @@ phases:
       the classification didn't call for — that is how fabrication and
       runaway output happen. If a skill needs broad new authored content,
       that is a survey/generate concern, not evolve.
+
+      ## Budget discipline (hard)
+
+      Total budget: {{max_turns}} turns across ALL selected skills. Plan
+      roughly `{{max_turns}} / skills_selected` turns per skill (about a
+      dozen): a few verification calls (≤6), one write, done. If you are
+      running past your share for a skill, STOP verifying, make the
+      safe minimal edit with what you have confirmed (omit unverified
+      claims), write it, and move on. NEVER let one skill consume the
+      budget — a clean partial pass over the others beats capping out.
+      If you approach the total budget, call `vault_report` with what you
+      completed and which skills you deferred, then finish.
 
       ## Important
 
@@ -405,11 +420,13 @@ phases:
       - fs_read
       - code_grep
       - vault_report
-    # Sized for max_skills_per_run (3) with per-claim verification.
-    # Measured on run 11a2adda: with fs_read/code_grep verifying each
-    # path/symbol/behavior claim before a write, act spends ~12 turns per
-    # skill (vs ~6 pre-verification). 24 turns capped mid-third-skill;
-    # 3 skills × ~12 needs ~40. Keep maxTurns ≈ 13 × max_skills_per_run.
+    # This is a CEILING, not a target. The per-skill budget discipline in
+    # the prompt (≤6 verification calls + one write per skill, then STOP)
+    # is what keeps act under budget — unbounded per-claim verification was
+    # the real failure (runs 11a2adda/5edcf678 capped at 24 AND 40 because
+    # one skill's verification ran away with no per-skill cap; more turns
+    # just moved the wall). With the cap, ~12 turns/skill × 3 skills fits
+    # comfortably under 40. If max_skills_per_run changes, scale this ~13×.
     maxTurns: 40
     required: true
     dependsOn:
