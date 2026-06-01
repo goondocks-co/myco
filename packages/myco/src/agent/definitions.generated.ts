@@ -357,7 +357,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "code_grep",
           "vault_report"
         ],
-        "maxTurns": 24,
+        "maxTurns": 40,
         "reasoningLevel": "default",
         "required": true,
         "dependsOn": [

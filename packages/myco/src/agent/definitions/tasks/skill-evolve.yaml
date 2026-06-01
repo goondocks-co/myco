@@ -405,10 +405,12 @@ phases:
       - fs_read
       - code_grep
       - vault_report
-    # Bumped from 18: verifying claims via fs_read/code_grep before each
-    # write costs turns. Better to spend a few cheap verification turns
-    # than cap out mid-skill and ship an unverified write.
-    maxTurns: 24
+    # Sized for max_skills_per_run (3) with per-claim verification.
+    # Measured on run 11a2adda: with fs_read/code_grep verifying each
+    # path/symbol/behavior claim before a write, act spends ~12 turns per
+    # skill (vs ~6 pre-verification). 24 turns capped mid-third-skill;
+    # 3 skills × ~12 needs ~40. Keep maxTurns ≈ 13 × max_skills_per_run.
+    maxTurns: 40
     required: true
     dependsOn:
       - assess
