@@ -867,6 +867,20 @@ export const FTS_TABLES = [
      INSERT INTO prompt_batches_fts(prompt_batches_fts, rowid, user_prompt, response_summary) VALUES('delete', old.id, old.user_prompt, old.response_summary);
    END`,
 
+  // FTS5 sync triggers for activities
+  `CREATE TRIGGER IF NOT EXISTS activities_fts_ai AFTER INSERT ON activities BEGIN
+     INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path) VALUES (new.id, new.tool_name, new.tool_input, new.file_path);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS activities_fts_au AFTER UPDATE OF tool_name, tool_input, file_path ON activities BEGIN
+     INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path) VALUES('delete', old.id, old.tool_name, old.tool_input, old.file_path);
+     INSERT INTO activities_fts(rowid, tool_name, tool_input, file_path) VALUES (new.id, new.tool_name, new.tool_input, new.file_path);
+   END`,
+
+  `CREATE TRIGGER IF NOT EXISTS activities_fts_ad AFTER DELETE ON activities BEGIN
+     INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path) VALUES('delete', old.id, old.tool_name, old.tool_input, old.file_path);
+   END`,
+
   // FTS5 sync triggers for spores
   `CREATE TRIGGER IF NOT EXISTS spores_fts_ai AFTER INSERT ON spores BEGIN
      INSERT INTO spores_fts(rowid, content) VALUES (new.rowid, new.content);

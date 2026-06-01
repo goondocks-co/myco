@@ -61,6 +61,7 @@ import { LOG_KINDS } from '../constants/log-kinds.js';
  * machinery.
  */
 export interface StateMutationLogger {
+  debug?: (event: string, message: string, meta?: Record<string, unknown>) => void;
   info: (event: string, message: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -290,6 +291,18 @@ export class DaemonStateAuthority {
   }
 
   private logMutation(fields: MutationLogFields): void {
+    if (fields.outcome === 'touched') {
+      if (this.logger.debug) {
+        this.logger.debug(
+          LOG_KINDS.DAEMON_STATE_MUTATION,
+          'daemon heartbeat - refreshed daemon.json mtime',
+          fields,
+        );
+        return;
+      }
+      this.logger.info(LOG_KINDS.DAEMON_STATE_MUTATION, 'daemon heartbeat - refreshed daemon.json mtime', fields);
+      return;
+    }
     this.logger.info(LOG_KINDS.DAEMON_STATE_MUTATION, 'daemon.json mutation', fields);
   }
 }
