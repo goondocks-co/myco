@@ -314,6 +314,8 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
       projectVaultDir: resolveProjectVaultDir(registeredRoot),
       databasePath: resolveGroveDbPath(registered.grove.id),
       source: 'explicit',
+      // Caller supplied MYCO_GROVE_ID (and optionally MYCO_PROJECT_ID).
+      tenancySource: 'caller',
     };
   }
 
@@ -336,6 +338,9 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
         projectVaultDir: resolveProjectVaultDir(registeredRoot),
         databasePath: resolveGroveDbPath(registered.grove.id),
         source: 'explicit',
+        // Resolved from the local project manifest, not caller-supplied
+        // grove/project env — tenancy is synthesized.
+        tenancySource: 'synthesized',
       };
     }
   }
@@ -359,6 +364,10 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
     projectVaultDir: vaultDir,
     databasePath: path.join(vaultDir, 'myco.db'),
     source: 'legacy-vault',
+    // Caller supplied tenancy only when MYCO_PROJECT_ID was set (envGroveId
+    // is already known absent in this branch); otherwise the project id came
+    // from the local manifest and tenancy is synthesized.
+    tenancySource: envProjectId ? 'caller' : 'synthesized',
   };
 }
 

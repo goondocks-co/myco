@@ -410,6 +410,77 @@ describe('tool request context', () => {
     });
   });
 
+  describe('tenancySource — caller vs synthesized provenance', () => {
+    it('tags HTTP context as caller when explicit project/grove headers are supplied', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+        }, vaultDir);
+
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
+    it('tags HTTP context as caller when explicit headers pass the auth gate', () => {
+      const TOKEN = 'a'.repeat(64);
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+          [REQUEST_CONTEXT_AUTH_HEADER]: TOKEN,
+        }, vaultDir, { expectedAuthToken: TOKEN });
+
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
+    it('tags HTTP context as synthesized when no project/grove headers are present', () => {
+      withRegisteredProject(({ vaultDir }) => {
+        const resolved = requestContextFromHttpHeaders({}, vaultDir);
+
+        expect(resolved.tenancySource).toBe('synthesized');
+      });
+    });
+
+    it('tags env context as caller when MYCO_PROJECT_ID / MYCO_GROVE_ID are set', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const resolved = requestContextFromEnvironment({
+          [REQUEST_CONTEXT_ENV.projectRoot]: projectRoot,
+          [REQUEST_CONTEXT_ENV.projectId]: projectId,
+          [REQUEST_CONTEXT_ENV.groveId]: groveId,
+        }, vaultDir);
+
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
+    it('tags env context as synthesized when no project/grove env is set', () => {
+      withRegisteredProject(({ vaultDir }) => {
+        const resolved = requestContextFromEnvironment({}, vaultDir);
+
+        expect(resolved.tenancySource).toBe('synthesized');
+      });
+    });
+
+    it('survives transport: a caller context re-parsed from its headers stays caller', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const explicit = resolveLegacyRequestContext(vaultDir, {
+          projectRoot,
+          projectId,
+          groveId,
+          machineId: 'machine-1',
+          sessionId: 'sess-1',
+          source: 'explicit',
+        });
+
+        const resolved = requestContextFromHttpHeaders(requestContextHeaders(explicit), vaultDir);
+
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+  });
+
   describe('context-switch auth gate (G4)', () => {
     const TOKEN = 'a'.repeat(64);
 

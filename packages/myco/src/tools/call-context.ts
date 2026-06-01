@@ -152,6 +152,9 @@ export function resolveCallContext(
     projectVaultDir: resolveProjectVaultDir(resolvedProjectRoot),
     databasePath: resolveGroveDbPath(grove.id, mycoHome),
     source: 'explicit',
+    // The agent explicitly named the target Grove/project in the tool
+    // call — this pivot is caller-supplied tenancy, not synthesized.
+    tenancySource: 'caller',
   };
 }
 

@@ -94,6 +94,25 @@ export interface RequestContextAuthOptions {
 
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
 
+/**
+ * Provenance of the request's (project, grove) tenancy — distinct from
+ * `source`, which records *which transport* produced the context.
+ *
+ * - `'caller'`: explicit project/grove identity (`x-myco-project-id` /
+ *   `x-myco-grove-id` headers, or `MYCO_PROJECT_ID` / `MYCO_GROVE_ID` env)
+ *   was supplied by the caller AND survived `enforceContextSwitchAuth`.
+ * - `'synthesized'`: no caller-supplied tenancy — the context was built
+ *   from the daemon's bootstrap-anchor (fallback) vault via
+ *   `buildVaultFallback`.
+ *
+ * The global daemon synthesizes a fallback context for *every* request
+ * before handlers run, so "is requestContext present?" can never tell
+ * authorized tenancy apart from a fallback. This marker carries that
+ * distinction through transport so a later resolver can reject
+ * synthesized tenancy and fail loud.
+ */
+export type TenancySource = 'caller' | 'synthesized';
+
 export interface MycoRequestContext {
   projectRoot: string;
   /**
@@ -114,6 +133,12 @@ export interface MycoRequestContext {
   projectVaultDir: string;
   databasePath: string;
   source: RequestContextSource;
+  /**
+   * Whether the (project, grove) tenancy was supplied by the caller
+   * (`'caller'`) or synthesized from the daemon's fallback vault
+   * (`'synthesized'`). See {@link TenancySource}.
+   */
+  tenancySource: TenancySource;
 }
 
 /** True iff the request is bound to a Grove (vs a legacy project-local vault). */
@@ -144,6 +169,7 @@ export interface LegacyRequestContextOptions {
   machineId?: string;
   sessionId?: string | null;
   source?: RequestContextSource;
+  tenancySource?: TenancySource;
 }
 
 interface ExplicitContextInput {
@@ -176,6 +202,7 @@ export function resolveLegacyRequestContext(
     projectVaultDir: vaultDir,
     databasePath: vaultDbPath(vaultDir),
     source: options.source ?? 'legacy-vault',
+    tenancySource: options.tenancySource ?? 'synthesized',
   };
 }
 
@@ -212,13 +239,28 @@ export function requestContextFromHttpHeaders(
   const hasContextHeader = Object.values(explicit).some((value) => value !== undefined && value !== null);
 
   if (hasContextHeader) {
-    if (explicit.groveId) return resolveRegisteredRequestContext(explicit, fallback, 'headers');
-    const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers');
+    // Caller-supplied tenancy is keyed on project/grove identity (the same
+    // headers the auth gate guards), not on incidental projectRoot/machine/
+    // session headers. Auth has already been enforced above.
+    const tenancySource = tenancySourceFromExplicit(explicit);
+    if (explicit.groveId) return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource);
+    const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers', tenancySource);
     if (manifestContext) return manifestContext;
-    return resolveLegacyHeaderRequestContext(explicit, fallback);
+    return resolveLegacyHeaderRequestContext(explicit, fallback, tenancySource);
   }
 
   return resolveManifestRequestContext(fallback, 'headers', manifest) ?? fallback;
+}
+
+/**
+ * Decide tenancy provenance from an explicit (header/env) context input.
+ * `'caller'` iff the caller supplied a project id or Grove id — the same
+ * identity the context-switch auth gate guards. Other explicit fields
+ * (projectRoot, machineId, sessionId) do not by themselves authorize a
+ * tenancy switch, so they leave the context synthesized.
+ */
+function tenancySourceFromExplicit(input: ExplicitContextInput): TenancySource {
+  return input.projectId || input.groveId ? 'caller' : 'synthesized';
 }
 
 /**
@@ -286,13 +328,14 @@ export function requestContextFromEnvironment(
     return resolveManifestRequestContext(fallback, 'explicit', manifest) ?? fallback;
   }
 
-  return resolveRegisteredRequestContext({
+  const explicit: ExplicitContextInput = {
     projectRoot: readEnv(env, REQUEST_CONTEXT_ENV.projectRoot),
     projectId: readEnv(env, REQUEST_CONTEXT_ENV.projectId),
     groveId: readEnv(env, REQUEST_CONTEXT_ENV.groveId),
     machineId,
     sessionId,
-  }, fallback, 'explicit');
+  };
+  return resolveRegisteredRequestContext(explicit, fallback, 'explicit', tenancySourceFromExplicit(explicit));
 }
 
 /**
@@ -412,6 +455,9 @@ function tryBuildVaultFallback(
       projectVaultDir: vaultDir,
       databasePath: vaultDbPath(vaultDir),
       source: 'legacy-vault',
+      // Built from the daemon's fallback vault, not caller-supplied
+      // tenancy. Explicit-header/env branches override this to 'caller'.
+      tenancySource: 'synthesized',
     },
     manifest,
   };
@@ -481,6 +527,9 @@ function resolveManifestRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
+    // Resolved from the daemon's anchor-vault manifest, not from
+    // caller-supplied project/grove identity — tenancy stays synthesized.
+    tenancySource: 'synthesized',
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(registered.project.project_id),
     groveId: registered.grove.id,
@@ -494,6 +543,7 @@ function resolveManifestHeaderRequestContext(
   input: ExplicitContextInput,
   fallback: MycoRequestContext,
   source: RequestContextSource,
+  tenancySource: TenancySource,
 ): MycoRequestContext | null {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   if (!inputProjectRoot && !input.projectId) return null;
@@ -520,6 +570,7 @@ function resolveManifestHeaderRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
+    tenancySource,
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(projectId),
     groveId: registered.grove.id,
@@ -533,6 +584,7 @@ function resolveRegisteredRequestContext(
   input: ExplicitContextInput,
   fallback: MycoRequestContext,
   source: RequestContextSource,
+  tenancySource: TenancySource,
 ): MycoRequestContext {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   const manifestFromInputRoot = inputProjectRoot
@@ -581,6 +633,7 @@ function resolveRegisteredRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
+    tenancySource,
     projectRoot: registeredRoot,
     projectId: assertGroveProjectId(projectId),
     groveId: grove.id,
@@ -593,18 +646,21 @@ function resolveRegisteredRequestContext(
 function resolveLegacyHeaderRequestContext(
   input: ExplicitContextInput,
   fallback: MycoRequestContext,
+  tenancySource: TenancySource,
 ): MycoRequestContext {
   return {
     ...fallback,
     machineId: input.machineId ?? fallback.machineId,
     sessionId: input.sessionId ?? fallback.sessionId,
     source: 'headers',
+    tenancySource,
   };
 }
 
 function buildRegisteredRequestContext(input: {
   fallback: MycoRequestContext;
   source: RequestContextSource;
+  tenancySource: TenancySource;
   projectRoot: string;
   projectId: GroveProjectId;
   groveId: string;
@@ -627,6 +683,7 @@ function buildRegisteredRequestContext(input: {
     projectVaultDir,
     databasePath: resolveGroveDbPath(input.groveId),
     source: input.source,
+    tenancySource: input.tenancySource,
   };
 }
 
