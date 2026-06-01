@@ -462,6 +462,106 @@ describe('buildSkillEvolveInstruction', () => {
     expect(result).toContain('growth=');
     rmSync(root, { recursive: true, force: true });
   });
+
+  // --- Re-surface of unresolved needs-work skills -------------------------
+  // A skill that assess classified STALE/MERGE/NARROW but that act never
+  // rewrote must come back for re-assessment, even though its watermark and
+  // last_assessed_at were advanced. Without this, the corrupted skill becomes
+  // the LEAST likely to be re-examined. Defaults below (future watermark +
+  // recent last_assessed_at) deliberately fail BOTH the new-spore gate and the
+  // throttle gate, so inclusion proves the re-surface feeder bypassed them.
+  function createClassifiedSkill(opts: {
+    name: string;
+    generation: number;
+    classification: string;
+    lastAssessedGeneration?: number;
+    lastAssessedAt?: number;
+    watermark?: number;
+  }): string {
+    const id = `skill-${opts.name}`;
+    const now = epochSeconds();
+    const props: Record<string, unknown> = {
+      knowledge_watermark: opts.watermark ?? now + 1000,
+      last_assessed_at: opts.lastAssessedAt ?? now - 60,
+      last_classification: opts.classification,
+    };
+    if (opts.lastAssessedGeneration !== undefined) {
+      props.last_assessed_generation = opts.lastAssessedGeneration;
+    }
+    insertSkillRecord({
+      id,
+      agent_id: TEST_AGENT_ID,
+      name: opts.name,
+      display_name: opts.name,
+      description: `Test skill ${opts.name}`,
+      source_ids: '[]',
+      generation: opts.generation,
+      path: `.agents/skills/${opts.name}/SKILL.md`,
+      created_at: now,
+      updated_at: now,
+      properties: JSON.stringify(props),
+    });
+    insertLineage({
+      id: `lineage-${opts.name}`,
+      skill_id: id,
+      generation: opts.generation,
+      action: 'created',
+      rationale: 'test',
+      content_snapshot: `---\nname: myco:${opts.name}\ndescription: Test\n---\n# ${opts.name}`,
+      created_at: now,
+    });
+    return id;
+  }
+
+  it('re-surfaces a needs-work skill that was never rewritten (generation not advanced)', async () => {
+    createClassifiedSkill({ name: 'stuck-skill', generation: 5, classification: 'STALE', lastAssessedGeneration: 5 });
+
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('stuck-skill');
+    expect(result).toContain('RE-SURFACED');
+  });
+
+  it('does NOT re-surface a needs-work skill that was rewritten since assessment', async () => {
+    // generation 6 > last_assessed_generation 5 => act wrote it => resolved.
+    createClassifiedSkill({ name: 'fixed-skill', generation: 6, classification: 'STALE', lastAssessedGeneration: 5 });
+
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toBeUndefined();
+  });
+
+  it('fail-safe: re-surfaces a needs-work skill with no recorded assessment generation', async () => {
+    // This is the real corrupted-skill case: last_classification STALE, but the
+    // older run never wrote last_assessed_generation. Missing => re-surface.
+    createClassifiedSkill({ name: 'legacy-stuck', generation: 3, classification: 'STALE' });
+
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('legacy-stuck');
+    expect(result).toContain('RE-SURFACED');
+  });
+
+  it('does NOT re-surface a CURRENT skill within the throttle interval', async () => {
+    createClassifiedSkill({ name: 'settled-skill', generation: 4, classification: 'CURRENT' });
+
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toBeUndefined();
+  });
+
+  it('prioritizes an unresolved skill ahead of new-knowledge skills within the run cap', async () => {
+    const now = epochSeconds();
+    const watermark = now - 10000;
+    // Two new-knowledge skills (past watermark + a newer spore).
+    createSkillWithWatermark('newk-alpha', watermark, now - 7200);
+    createSkillWithWatermark('newk-beta', watermark, now - 3600);
+    createSpore(now - 100);
+    // One unresolved skill (future watermark, recent assessment => only the
+    // re-surface feeder can select it).
+    createClassifiedSkill({ name: 'unresolved-skill', generation: 2, classification: 'MERGE' });
+
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
+    const selectedNames = [...result.matchAll(/^## Skill: ([^(*]+)/gm)].map(match => match[1].trim());
+    expect(selectedNames).toHaveLength(2);
+    expect(selectedNames[0]).toBe('unresolved-skill');
+  });
 });
 
 describe('selectOutlierPairs', () => {
