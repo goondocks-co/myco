@@ -108,6 +108,17 @@ describe('withTaskConfig', () => {
     expect(result.agent.tasks?.['title-summary']?.maxTurns).toBe(5);
   });
 
+  it('sets and clears task-level reasoningLevel', () => {
+    let config = withTaskConfig(baseConfig(), 'title-summary', {
+      reasoningLevel: 'high',
+    });
+    expect(config.agent.tasks?.['title-summary']?.reasoningLevel).toBe('high');
+    // null clears the tier without disturbing a sibling model pin
+    config = withTaskConfig(config, 'title-summary', { model: 'pinned-sku', reasoningLevel: null });
+    expect(config.agent.tasks?.['title-summary']?.reasoningLevel).toBeUndefined();
+    expect(config.agent.tasks?.['title-summary']?.model).toBe('pinned-sku');
+  });
+
   it('null removes a field from an existing task', () => {
     let config = withTaskConfig(baseConfig(), 'title-summary', {
       model: 'granite4:small-h',

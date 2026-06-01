@@ -5,7 +5,6 @@
  */
 export {
   withMultiGroveFixture,
-  handleToMachineState,
 } from '@myco/test-utils/grove-fixture.js';
 
 export type {

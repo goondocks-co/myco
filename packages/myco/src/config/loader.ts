@@ -7,6 +7,7 @@ import {
   GroveConfigSchema,
   ProjectConfigSchema,
   PROJECT_TIER_LEGACY_FIELDS,
+  GROVE_PROMOTED_FIELDS,
   type MycoConfig,
   type MachineConfig,
   type GroveConfig,
@@ -64,6 +65,7 @@ function stripLegacyProjectFields(
     ['agent', 'scheduled_tasks_active_window_days'],
     ['appearance'],
     ['team'],
+    ...GROVE_PROMOTED_FIELDS,
   ];
   const groveTierKeys = new Set(GROVE_TIER_FIELDS.map((seg) => seg.join('.')));
 

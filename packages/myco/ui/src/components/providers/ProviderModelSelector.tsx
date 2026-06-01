@@ -3,7 +3,7 @@
  * Used by both the Settings page (global agent provider) and the Agent
  * Tasks page (per-task provider override).
  */
-import { Cloud, Server, Cpu, Loader2 } from 'lucide-react';
+import { Cloud, Server, Cpu } from 'lucide-react';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import {
@@ -13,9 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
-import { SearchableSelect } from '../ui/searchable-select';
+import { ModelSelectField } from './ModelSelectField';
 import { defaultBaseUrlForProvider, providerSupportsHarness, type ProviderInfo } from '../../hooks/use-providers';
-import { useModels } from '../../hooks/use-models';
 
 // Display labels for the `agent.harness` field. Keys are the persisted
 // identifier values (kept stable for back-compat with user configs);
@@ -43,7 +42,6 @@ const PROVIDER_ICONS: Record<string, typeof Cloud> = {
   'openai-compatible': Server,
 };
 
-const MANUAL_MODEL_ENTRY_PROVIDERS = new Set(['ollama', 'lmstudio', 'openai-compatible']);
 const OPENAI_COMPATIBLE_BACKEND_OPTIONS = [
   { value: 'lmstudio', label: 'LM Studio' },
   { value: 'ollama', label: 'Ollama' },
@@ -60,6 +58,9 @@ export interface ProviderModelSelectorProps {
   providers: ProviderInfo[];
   isLoadingProviders: boolean;
   showHarnessSelector?: boolean;
+  /** When false, the model picker is hidden — used where the model is
+   *  derived from a reasoning profile and exposed elsewhere (Task Config). */
+  showModelSelector?: boolean;
   onHarnessChange: (harness: string) => void;
   onProviderChange: (type: string) => void;
   onLocalBackendChange?: (localBackend: 'ollama' | 'lmstudio' | '') => void;
@@ -83,6 +84,7 @@ export function ProviderModelSelector({
   providers,
   isLoadingProviders,
   showHarnessSelector = true,
+  showModelSelector = true,
   onHarnessChange,
   onProviderChange,
   onLocalBackendChange,
@@ -95,20 +97,7 @@ export function ProviderModelSelector({
   const providersForHarness = providers.filter((provider) => providerSupportsHarness(provider.type, harness as 'claude-sdk' | 'openai-agents'));
   const selectedProvider = providers.find((p) => p.type === providerType);
   const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
-  const hasSelection = providerType !== '';
   const resolvedBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType as 'ollama' | 'lmstudio' | 'openai-compatible' | undefined, localBackend, selectedProvider?.baseUrl);
-  const modelsQuery = useModels(providerType || null, resolvedBaseUrl, 'llm', localBackend || null);
-  const availableModels = modelsQuery.data?.models ?? selectedProvider?.models ?? [];
-  const allowsManualModelEntry = MANUAL_MODEL_ENTRY_PROVIDERS.has(providerType);
-  const shouldShowModelSelect = availableModels.length > 0;
-  const isLoadingModels = modelsQuery.isPending && hasSelection;
-  const needsApiKey = selectedProvider?.authConfigured === false;
-  const modelEmptyState = needsApiKey
-    ? 'Configure an API key to load models.'
-    : selectedProvider?.available === false
-      ? 'Provider unavailable.'
-      : 'No models returned.';
-  const modelPlaceholderText = modelPlaceholder ?? 'Select a model';
 
   return (
     <div className="space-y-3">
@@ -217,42 +206,18 @@ export function ProviderModelSelector({
         </div>
       )}
 
-      {/* Model selector — hidden when no provider is selected */}
-      {hasSelection && (
-        <div className="space-y-1">
-          <label className="font-sans text-xs text-on-surface-variant">Model</label>
-          {isLoadingModels ? (
-            <div className="flex items-center gap-2 rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2 text-sm text-on-surface-variant">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading models...
-            </div>
-          ) : shouldShowModelSelect ? (
-            <SearchableSelect
-              value={model}
-              onValueChange={onModelChange}
-              placeholder={modelPlaceholderText}
-              searchPlaceholder="Search models..."
-              emptyMessage="No models match that search."
-              options={availableModels.map((candidate) => ({
-                value: candidate,
-                label: candidate,
-              }))}
-              sortOptions
-              monospace
-            />
-          ) : allowsManualModelEntry ? (
-            <Input
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              placeholder={selectedProvider?.available === false ? 'Provider offline' : 'Enter model name'}
-              disabled={selectedProvider?.available === false}
-            />
-          ) : (
-            <div className="rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2">
-              <p className="font-sans text-sm text-on-surface-variant">{modelEmptyState}</p>
-            </div>
-          )}
-        </div>
+      {/* Model selector — hidden when the caller derives the model from a
+          reasoning profile instead (Task Config). */}
+      {showModelSelector && (
+        <ModelSelectField
+          providerType={providerType}
+          localBackend={localBackend}
+          baseUrl={baseUrl}
+          model={model}
+          modelPlaceholder={modelPlaceholder}
+          providers={providers}
+          onModelChange={onModelChange}
+        />
       )}
     </div>
   );
