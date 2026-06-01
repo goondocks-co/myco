@@ -155,6 +155,16 @@ phases:
          classify as STALE (or DEPRECATED if the entire subsystem
          described is gone). Minor severity may stay CURRENT unless
          combined with new-spore evidence.
+      4. **fabrication_suspects** (symbols inside the skill's ```code```
+         examples that are NOT found anywhere in the codebase) are NOT
+         cosmetic. The mechanical scan cannot see inside fences, so these
+         are the one signal for invented APIs. For each suspect, run one
+         code_grep to confirm. If a suspect symbol genuinely does not
+         exist (and is not obviously illustrative pseudo-code), classify
+         the skill STALE — the example is fabricated and must be removed
+         or corrected. Do NOT wave these away as a heuristic artifact the
+         way you might a single path miss; a confidently-wrong code
+         example is exactly the corruption this pipeline exists to catch.
 
       ## Drift classification threshold tuning
 
@@ -223,7 +233,13 @@ phases:
          properties: '{"last_assessed_at": <now>,
          "knowledge_watermark": <now>,
          "last_classification": "<classification>",
+         "last_assessed_generation": <skill's current generation>,
          "file_fingerprints": {...latest_report.current_fingerprints...}}')
+         Set `last_assessed_generation` to the generation you read from the
+         skill record. The selector uses it to tell whether act actually
+         rewrote the skill (generation only advances on a real write): a
+         skill left STALE/MERGE/NARROW whose generation has not advanced past
+         this value is re-surfaced on a later run until the write lands.
 
       6. Store classifications via vault_set_state
          (key: skill-evolve-classifications) as JSON:

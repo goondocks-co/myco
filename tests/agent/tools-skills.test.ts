@@ -2212,6 +2212,50 @@ describe('vault skill tools', () => {
       expect(record.generation).toBe(1);
     });
 
+    it('rejects a write that references a nonexistent file path (fabrication gate)', async () => {
+      // Seed a real source file so the codebase is visible (otherwise the gate
+      // skips verification on an unseeable root).
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const realThing = 1;\n');
+
+      const t = findTool(tools, 'vault_write_skill');
+      const result = parseResult(await t.handler(
+        {
+          name: 'fabricated-skill',
+          display_name: 'Fabricated Skill',
+          description: 'References a file that does not exist',
+          content: validSkillContent('fabricated-skill', '# Skill\n\nSee `packages/myco/src/does-not-exist.ts`.'),
+          rationale: 'test',
+        },
+        undefined,
+      )) as { error?: string; missing_paths?: string[] };
+
+      expect(result.error).toContain('does not exist in this repository');
+      expect(result.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+      // No file should have been written for a rejected skill.
+      expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'fabricated-skill', 'SKILL.md'))).toBe(false);
+    });
+
+    it('allows a write that references only real paths/symbols', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const realThing = 1;\n');
+
+      const t = findTool(tools, 'vault_write_skill');
+      const result = parseResult(await t.handler(
+        {
+          name: 'honest-skill',
+          display_name: 'Honest Skill',
+          description: 'References only real code',
+          content: validSkillContent('honest-skill', '# Skill\n\nSee `packages/myco/src/real.ts` and `realThing`.'),
+          rationale: 'test',
+        },
+        undefined,
+      )) as { error?: string; id?: string };
+
+      expect(result.error).toBeUndefined();
+      expect(result.id).toBeDefined();
+    });
+
     it('rejects names with path separators or dot-dot segments', async () => {
       const t = findTool(tools, 'vault_write_skill');
       const liveSkillsDir = path.join(tmpDir, '.agents', 'skills');
