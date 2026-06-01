@@ -414,6 +414,8 @@ const PURGABLE_VAULT_ARTIFACTS: Array<{ rel: string; mode: 'delete' | 'archive' 
   { rel: 'machine_id',          mode: 'delete'  }, // propagated by propagateLegacyMachineId
   { rel: 'last-update-version', mode: 'delete'  }, // daemon regenerates
   { rel: 'restart-reason.json', mode: 'delete'  }, // ephemeral
+  { rel: 'buffer',              mode: 'archive' }, // capture buffer
+  { rel: 'logs',                mode: 'archive' }, // daemon logs
   { rel: 'attachments',         mode: 'archive' }, // user content
   { rel: 'team',                mode: 'archive' }, // legacy team-sync state pre-Grove
   { rel: 'installer-audit',     mode: 'archive' }, // per-symbiont strip provenance
