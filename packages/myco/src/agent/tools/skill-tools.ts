@@ -43,6 +43,7 @@ import {
   listSkillRecords, updateSkillRecord, deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { verifySkillContentClaims } from '@myco/agent/skill-drift.js';
 import { notify } from '@myco/notifications/notify.js';
 import {
   CANDIDATE_STATUS,
@@ -2178,15 +2179,43 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Frontmatter preservation guard — when updating an existing skill,
       // reject writes that change protected fields (user-invocable, allowed-tools).
-      if (existsSync(skillPath)) {
-        const existingContent = readFileSync(skillPath, 'utf-8');
-        const violations = checkFrontmatterPreservation(existingContent, args.content);
+      const priorContent = existsSync(skillPath) ? readFileSync(skillPath, 'utf-8') : undefined;
+      if (priorContent !== undefined) {
+        const violations = checkFrontmatterPreservation(priorContent, args.content);
         if (violations.length > 0) {
           return textResult({
             error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
             violations,
           });
         }
+      }
+
+      // Fabrication gate — skills are authoritative content that agents load
+      // and follow, so a confidently-wrong code reference is worse than none.
+      // Deterministically verify the concrete code claims in the proposed
+      // content against the codebase. This is the one check a cheap model or a
+      // skipped prompt-level verification cannot bypass. Inline path/symbol
+      // claims that do not exist are rejected (asserted as real → clear
+      // fabrication); symbols that appear only inside ```code``` examples are
+      // surfaced as warnings, since illustrative pseudo-code may legitimately
+      // use invented names. On evolve, only NEWLY introduced claims are gated.
+      const claimCheck = verifySkillContentClaims(args.content, root, priorContent);
+      if (claimCheck.missingPaths.length > 0 || claimCheck.missingInlineSymbols.length > 0) {
+        return textResult({
+          error: 'Skill write rejected: the content references code that does not exist in this repository. '
+            + 'Verify every path and identifier with fs_read/code_grep and remove or correct the fabricated references before writing. '
+            + 'Never invent a function, file, env var, or API to make an example look complete.',
+          missing_paths: claimCheck.missingPaths,
+          missing_symbols: claimCheck.missingInlineSymbols,
+          ...(claimCheck.suspectFencedSymbols.length > 0 ? { unverified_example_symbols: claimCheck.suspectFencedSymbols } : {}),
+        });
+      }
+      if (claimCheck.suspectFencedSymbols.length > 0) {
+        console.warn(
+          `[vault_write_skill] '${args.name}': code-fence examples reference symbols not found in the codebase: `
+          + `${claimCheck.suspectFencedSymbols.join(', ')}. If these are real APIs, confirm they exist; `
+          + 'if illustrative, prefer names that cannot be mistaken for real references.',
+        );
       }
 
       // Create path: delegate to the shared promoteNewSkill helper.

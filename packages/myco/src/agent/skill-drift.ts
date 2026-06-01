@@ -29,6 +29,14 @@ export interface SkillDriftReport {
   loadBearingMisses: string[];
   inconclusive: string[];
   growth: string[];
+  /**
+   * Distinctive symbols inside ```code``` examples that are absent from the
+   * codebase — suspected fabrication the normal claim scan cannot see (it
+   * strips fences). These are NOT auto-classified STALE because illustrative
+   * pseudo-code can use invented names; the assess phase must verify each and
+   * treat confirmed-absent symbols as fabrication, not cosmetic drift.
+   */
+  fabricationSuspects: string[];
   currentFingerprints: Record<string, SkillFileFingerprint>;
 }
 
@@ -38,6 +46,7 @@ export interface SkillDriftResult {
   totalMissing: number;
   totalInconclusive: number;
   totalGrowth: number;
+  totalFabricationSuspects: number;
 }
 
 const CLAIM_DENYLIST = new Set([
@@ -59,6 +68,18 @@ const SEARCHABLE_EXTENSIONS = new Set([
   '.scala', '.lua', '.sh', '.sql', '.yaml', '.yml',
   '.json', '.toml', '.md',
 ]);
+
+// Extensions that count as real source when verifying a symbol exists.
+// Narrower than SEARCHABLE_EXTENSIONS: excludes docs/config (.md/.yaml/.json)
+// so a symbol that appears only in prose/markdown is not treated as defined.
+const SYMBOL_SEARCH_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.rb', '.go', '.java', '.kt', '.rs',
+  '.php', '.cs', '.cpp', '.c', '.h', '.swift', '.scala', '.lua', '.sh',
+]);
+
+// Skill markdown lives here; never count it as evidence a symbol exists.
+const SKILL_DOC_PATH_REGEX = /[\\/]\.agents[\\/]skills[\\/]/;
 
 const SKIP_DIRS = new Set([
   '.git',
@@ -136,6 +157,68 @@ export function extractClaims(content: string): ExtractedClaim[] {
     }
   }
   return claims;
+}
+
+// Tokens that look like calls/consts inside fences but are language constructs
+// or near-universal globals, not codebase references. Kept separate from the
+// inline CLAIM_DENYLIST because the fence scan sees raw source, not prose.
+const FENCED_KEYWORD_DENYLIST = new Set([
+  'function', 'return', 'await', 'typeof', 'instanceof', 'switch', 'catch',
+  'while', 'super', 'delete', 'throw', 'yield', 'async', 'const', 'require',
+  'import', 'export', 'default', 'extends', 'implements', 'interface',
+  'console', 'process', 'JSON', 'Boolean', 'Number', 'String', 'Symbol',
+]);
+
+const FENCED_CALL_REGEX = /\b([A-Za-z_][A-Za-z0-9_]{4,})\s*\(/g;
+const SCREAMING_SNAKE_REGEX = /\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/g;
+const CAMEL_HUMP_REGEX = /[a-z][A-Z]/;
+
+/**
+ * Whether a fenced function-call identifier looks like a real API reference
+ * (worth verifying) rather than a throwaway local. The trailing `(` already
+ * proves it is invoked; we additionally require a camelCase hump or an
+ * underscore so single-word locals (`run(`, `next(`) are ignored. Note this is
+ * intentionally laxer than `isDistinctiveSymbol` (which demands two capitals)
+ * because real APIs like `encodeInjection` have only one.
+ */
+function looksLikeFencedApiCall(token: string): boolean {
+  if (token.length < 6) return false;
+  if (token.includes('_')) return true;
+  return CAMEL_HUMP_REGEX.test(token);
+}
+
+/**
+ * Extract distinctive symbols that live INSIDE fenced code blocks and look like
+ * real API references — function-call identifiers (`name(`) and
+ * SCREAMING_SNAKE_CASE constants/env vars. The normal claim extractor strips
+ * fences entirely (to avoid flagging illustrative code), which is exactly the
+ * blind spot a fabricated example exploits: invented functions and env vars
+ * hide in ```code``` blocks. We deliberately ignore ordinary local variables —
+ * only the shapes fabrication tends to take are returned, keeping false
+ * positives on legitimate pseudo-code low.
+ */
+export function extractFencedSymbols(content: string): string[] {
+  const body = content.replace(FRONTMATTER_REGEX, '');
+  const blocks = [
+    ...(body.match(TRIPLE_BACKTICK_BLOCK_REGEX) ?? []),
+    ...(body.match(TRIPLE_TILDE_BLOCK_REGEX) ?? []),
+  ];
+  const out = new Set<string>();
+  for (const block of blocks) {
+    for (const match of block.matchAll(FENCED_CALL_REGEX)) {
+      const token = match[1] ?? '';
+      if (looksLikeFencedApiCall(token) && !FENCED_KEYWORD_DENYLIST.has(token) && !CLAIM_DENYLIST.has(token)) {
+        out.add(token);
+      }
+    }
+    for (const match of block.matchAll(SCREAMING_SNAKE_REGEX)) {
+      const token = match[1] ?? '';
+      if (!FENCED_KEYWORD_DENYLIST.has(token) && !CLAIM_DENYLIST.has(token)) {
+        out.add(token);
+      }
+    }
+  }
+  return [...out];
 }
 
 export function extractFileFingerprint(absPath: string): SkillFileFingerprint {
@@ -226,7 +309,13 @@ function buildSymbolPresenceMap(symbols: Set<string>, projectRoot: string): Map<
   for (const symbol of symbols) map.set(symbol, false);
   if (symbols.size === 0) return map;
 
-  const files = listCodeFiles(projectRoot);
+  // Verify symbols against real SOURCE only. Excluding docs/config — and
+  // especially the .agents/skills markdown itself — prevents a skill's own
+  // fabricated example from validating its symbol (the symbol appears in the
+  // SKILL.md, so an unfiltered content grep would report it "present").
+  const files = listCodeFiles(projectRoot).filter(
+    (file) => SYMBOL_SEARCH_EXTENSIONS.has(extname(file)) && !SKILL_DOC_PATH_REGEX.test(file),
+  );
   for (const file of files) {
     let text = '';
     try {
@@ -261,6 +350,7 @@ export function detectDrift(
 ): SkillDriftResult {
   const skillClaims = new Map<string, ExtractedClaim[]>();
   const skillContents = new Map<string, string>();
+  const skillFenced = new Map<string, string[]>();
   const allSymbols = new Set<string>();
 
   for (const skill of skills) {
@@ -280,6 +370,11 @@ export function detectDrift(
         allSymbols.add(normalized);
       }
     }
+    // Symbols hiding inside ```code``` examples — the normal claim scan strips
+    // fences, so fabricated APIs here would otherwise never be verified.
+    const fenced = extractFencedSymbols(content);
+    skillFenced.set(skill.id, fenced);
+    for (const symbol of fenced) allSymbols.add(symbol);
   }
 
   const symbolPresence = buildSymbolPresenceMap(allSymbols, projectRoot);
@@ -288,10 +383,16 @@ export function detectDrift(
   let totalMissing = 0;
   let totalInconclusive = 0;
   let totalGrowth = 0;
+  let totalFabricationSuspects = 0;
 
   for (const skill of skills) {
     const props = parseProperties(skill.properties);
     const claims = skillClaims.get(skill.id) ?? [];
+    const inlineSymbols = new Set(
+      claims.filter(c => c.kind === 'symbol').map(c => c.token.replace(/\(\)$/, '')),
+    );
+    const fabricationSuspects = (skillFenced.get(skill.id) ?? [])
+      .filter(symbol => symbolPresence.get(symbol) === false && !inlineSymbols.has(symbol));
     const loadBearingMisses: string[] = [];
     const inconclusive: string[] = [];
     const growth: string[] = [];
@@ -355,6 +456,7 @@ export function detectDrift(
     totalMissing += loadBearingMisses.length;
     totalInconclusive += inconclusive.length;
     totalGrowth += growth.length;
+    totalFabricationSuspects += fabricationSuspects.length;
 
     reports.push({
       skillId: skill.id,
@@ -363,14 +465,17 @@ export function detectDrift(
       confidence,
       notes: loadBearingMisses.length > 0
         ? `Missing load-bearing claims: ${loadBearingMisses.length}`
-        : growth.length > 0
-          ? `Detected ${growth.length} growth signal(s)`
-          : inconclusive.length > 0
-            ? `Detected ${inconclusive.length} inconclusive claim(s)`
-            : 'No drift detected',
+        : fabricationSuspects.length > 0
+          ? `Suspected fabricated example symbols: ${fabricationSuspects.length}`
+          : growth.length > 0
+            ? `Detected ${growth.length} growth signal(s)`
+            : inconclusive.length > 0
+              ? `Detected ${inconclusive.length} inconclusive claim(s)`
+              : 'No drift detected',
       loadBearingMisses,
       inconclusive,
       growth,
+      fabricationSuspects,
       currentFingerprints,
     });
   }
@@ -381,5 +486,78 @@ export function detectDrift(
     totalMissing,
     totalInconclusive,
     totalGrowth,
+    totalFabricationSuspects,
   };
+}
+
+/** Result of verifying a skill's concrete code claims against the codebase. */
+export interface SkillClaimVerification {
+  /**
+   * Inline-backtick path claims that do not exist on disk. The author asserted
+   * these as real files — clear fabrication, safe to reject.
+   */
+  missingPaths: string[];
+  /**
+   * Inline-backtick distinctive symbol claims absent from the codebase. Also
+   * asserted as real — clear fabrication, safe to reject.
+   */
+  missingInlineSymbols: string[];
+  /**
+   * Distinctive symbols that appear ONLY inside code fences and are absent.
+   * Ambiguous: could be illustrative pseudo-code, so these are surfaced as
+   * warnings rather than hard rejections.
+   */
+  suspectFencedSymbols: string[];
+}
+
+/**
+ * Deterministically verify the concrete code claims in proposed skill content
+ * against the codebase. This is the tool-level fabrication check that does not
+ * depend on a model verifying its own work: paths and inline symbols are
+ * checked literally, and fenced example code is scanned for invented APIs.
+ *
+ * When `priorContent` is provided (an evolve write), claims that already
+ * existed in the prior version are excluded — the gate only flags fabrication
+ * NEWLY introduced by this write, so a pre-existing dead reference does not
+ * block an unrelated edit (that is drift's job, not the write gate's).
+ *
+ * If the codebase cannot be seen (empty/wrong root), returns no findings:
+ * never block a write on an unverifiable environment.
+ */
+export function verifySkillContentClaims(
+  content: string,
+  projectRoot: string,
+  priorContent?: string,
+): SkillClaimVerification {
+  const empty: SkillClaimVerification = { missingPaths: [], missingInlineSymbols: [], suspectFencedSymbols: [] };
+  if (listCodeFiles(projectRoot).length === 0) return empty;
+
+  const inline = extractClaims(content);
+  const inlinePaths = [...new Set(inline.filter(c => c.kind === 'path').map(c => c.token))];
+  const inlineSymbols = [...new Set(
+    inline.filter(c => c.kind === 'symbol')
+      .map(c => c.token.replace(/\(\)$/, ''))
+      .filter(isDistinctiveSymbol),
+  )];
+  const fencedSymbols = extractFencedSymbols(content);
+
+  const allSymbols = new Set<string>([...inlineSymbols, ...fencedSymbols]);
+  const presence = buildSymbolPresenceMap(allSymbols, projectRoot);
+
+  let missingPaths = inlinePaths.filter(p => !existsSync(resolve(projectRoot, p)));
+  let missingInlineSymbols = inlineSymbols.filter(s => presence.get(s) === false);
+  const inlineSet = new Set(inlineSymbols);
+  let suspectFencedSymbols = fencedSymbols.filter(s => presence.get(s) === false && !inlineSet.has(s));
+
+  if (priorContent !== undefined) {
+    const prior = extractClaims(priorContent);
+    const priorPaths = new Set(prior.filter(c => c.kind === 'path').map(c => c.token));
+    const priorSymbols = new Set(prior.filter(c => c.kind === 'symbol').map(c => c.token.replace(/\(\)$/, '')));
+    const priorFenced = new Set(extractFencedSymbols(priorContent));
+    missingPaths = missingPaths.filter(p => !priorPaths.has(p));
+    missingInlineSymbols = missingInlineSymbols.filter(s => !priorSymbols.has(s));
+    suspectFencedSymbols = suspectFencedSymbols.filter(s => !priorFenced.has(s));
+  }
+
+  return { missingPaths, missingInlineSymbols, suspectFencedSymbols };
 }

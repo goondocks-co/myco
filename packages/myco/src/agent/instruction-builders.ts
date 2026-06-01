@@ -240,7 +240,20 @@ interface SkillAssessmentEntry {
   description: string;
   newSporeIds: string[];
   lastAssessedAt: number;
+  /**
+   * True when this skill was re-surfaced because a prior run classified it as
+   * needing work (STALE/DEPRECATED/MERGE/NARROW) but act never rewrote it.
+   * Such skills are re-assessed regardless of the interval / new-spore gates.
+   */
+  resurfaced?: boolean;
 }
+
+/**
+ * Classifications that mean "act still owes this skill a write". A skill left
+ * in one of these states without a subsequent rewrite is unfinished work, not
+ * a settled assessment.
+ */
+const NEEDS_WORK_CLASSIFICATIONS = new Set(['STALE', 'DEPRECATED', 'MERGE', 'NARROW']);
 
 /** Pre-computed overlap between two skills for the inventory phase. */
 interface SkillOverlapPair {
@@ -479,7 +492,46 @@ export async function buildSkillEvolveInstruction(
   }
 
   needsAssessment.sort((a, b) => a.lastAssessedAt - b.lastAssessedAt);
-  const selectedSkills = needsAssessment.slice(0, maxSkillsPerRun);
+
+  // Re-surface skills that assess classified as needing work but that act never
+  // rewrote. The assess phase advances last_assessed_at + knowledge_watermark
+  // when it classifies a skill, so a failed or skipped act leaves the skill
+  // marked "assessed" — neither the new-spore feeder (watermark moved past the
+  // spores) nor mechanical drift (which is blind to fabricated symbols inside
+  // code fences) re-selects it. The corrupted skill then becomes the LEAST
+  // likely to be re-examined. Resolution is proven only by the generation
+  // advancing past the value recorded at assessment time, because generation
+  // increments solely on a real vault_write_skill. This check lives in the
+  // builder (not the prompt) so it does not depend on the agent self-reporting
+  // completion. Fail-safe: a needs-work classification with no recorded
+  // assessment generation re-surfaces rather than hides.
+  const selectedIds = new Set(needsAssessment.map((entry) => entry.id));
+  const unresolved: SkillAssessmentEntry[] = [];
+  for (const skill of allSkills) {
+    if (selectedIds.has(skill.id)) continue;
+    const props = parseSkillProperties(skill.properties);
+    const classification = typeof props.last_classification === 'string' ? props.last_classification : '';
+    if (!NEEDS_WORK_CLASSIFICATIONS.has(classification)) continue;
+    const assessedGeneration = typeof props.last_assessed_generation === 'number'
+      ? props.last_assessed_generation
+      : undefined;
+    const rewrittenSinceAssessment = assessedGeneration !== undefined && skill.generation > assessedGeneration;
+    if (rewrittenSinceAssessment) continue;
+    unresolved.push({
+      id: skill.id,
+      name: skill.name,
+      generation: skill.generation,
+      description: skill.description,
+      newSporeIds: [],
+      lastAssessedAt: typeof props.last_assessed_at === 'number' ? props.last_assessed_at : 0,
+      resurfaced: true,
+    });
+  }
+
+  // Known-broken (unresolved) skills take priority over new-knowledge skills,
+  // then new-knowledge fills the remaining slots. Total stays bounded by
+  // maxSkillsPerRun so per-run scope and cost are fixed regardless of backlog.
+  const selectedSkills = [...unresolved, ...needsAssessment].slice(0, maxSkillsPerRun);
 
   // ----- Structural analysis: section counts + heading extraction -----
   // Read each skill's content from disk and extract H2 headings.
@@ -558,6 +610,7 @@ export async function buildSkillEvolveInstruction(
         totalMissing: 0,
         totalInconclusive: 0,
         totalGrowth: 0,
+        totalFabricationSuspects: 0,
       };
 
   for (const skill of oldestForVerify) {
@@ -605,7 +658,8 @@ export async function buildSkillEvolveInstruction(
     || semanticPairs.length > 0
     || drift.totalMissing > 0
     || drift.totalInconclusive > 0
-    || drift.totalGrowth > 0;
+    || drift.totalGrowth > 0
+    || drift.totalFabricationSuspects > 0;
   if (!anyWork) return undefined;
 
   const parts: string[] = [
@@ -617,7 +671,10 @@ export async function buildSkillEvolveInstruction(
   for (const skill of selectedSkills) {
     parts.push('');
     parts.push('---');
-    parts.push(`## Skill: ${skill.name} (gen ${skill.generation})`);
+    const resurfacedTag = skill.resurfaced
+      ? ' **[RE-SURFACED — a prior run classified this skill as needing work but never rewrote it. Re-assess against the current codebase and FINISH the action (write the fix), or reclassify CURRENT only if it is genuinely accurate now.]**'
+      : '';
+    parts.push(`## Skill: ${skill.name} (gen ${skill.generation})${resurfacedTag}`);
     parts.push(`id: ${skill.id}`);
     parts.push(`description: ${skill.description}`);
     parts.push(`new_spore_ids: ${JSON.stringify(skill.newSporeIds)}`);
@@ -684,11 +741,14 @@ export async function buildSkillEvolveInstruction(
   parts.push('');
   parts.push('## Pre-computed Drift Report');
   parts.push(`verified_at: ${drift.verifiedAt}`);
-  parts.push(`totals: missing=${drift.totalMissing}, inconclusive=${drift.totalInconclusive}, growth=${drift.totalGrowth}`);
+  parts.push(`totals: missing=${drift.totalMissing}, inconclusive=${drift.totalInconclusive}, growth=${drift.totalGrowth}, fabrication_suspects=${drift.totalFabricationSuspects}`);
   for (const report of drift.reports) {
     parts.push(`- **${report.name}**: severity=${report.severity}, confidence=${report.confidence}`);
     if (report.loadBearingMisses.length > 0) {
       parts.push(`  load_bearing_misses: ${JSON.stringify(report.loadBearingMisses)}`);
+    }
+    if (report.fabricationSuspects.length > 0) {
+      parts.push(`  fabrication_suspects (symbols in code-fence examples not found in the codebase — verify each; confirmed-absent = STALE fabrication, not cosmetic): ${JSON.stringify(report.fabricationSuspects)}`);
     }
     if (report.inconclusive.length > 0) {
       parts.push(`  inconclusive: ${JSON.stringify(report.inconclusive)}`);
