@@ -462,9 +462,33 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   // belong in their own tier files. The returned MycoConfig still has
   // those tiers; we just don't persist them here.
   const validated = MycoConfigSchema.parse(config);
-  const projectOnly = ProjectConfigSchema.parse(validated);
+  const projectOnly = ProjectConfigSchema.parse(validated) as Record<string, unknown>;
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
+
+  // Grove-tier `skills` is dropped by ProjectConfigSchema's strip, but that's
+  // only safe once a Grove is bound (the load-path migration relocates it to
+  // grove config then). On an UNBOUND project there's no Grove to migrate
+  // into, so dropping it here would lose a user-set value entirely — neither
+  // kept (project) nor migrated (grove). Mirror the load-path deferral
+  // (stripLegacyProjectFields skips skills when !hasGrove): keep the skills
+  // block in myco.yaml until a Grove is bound. The next Grove-bound load runs
+  // migrateLegacyProjectFields to lift + strip it.
+  //
+  // Re-attach only when skills is meaningful — either already persisted on
+  // disk OR carrying a non-default value the caller just set — so clean
+  // projects aren't polluted with a grove-tier defaults block (mirrors the
+  // sparse-doc semantics: defaults never get written to myco.yaml).
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+  if (groveId === null) {
+    const onDisk = getAtPath(readRawYamlDoc(configPath), ['skills']) !== undefined;
+    const isDefault = YAML.stringify(validated.skills)
+      === YAML.stringify(MycoConfigSchema.parse({ version: 3 }).skills);
+    if (onDisk || !isDefault) {
+      setAtPath(projectOnly, ['skills'], validated.skills);
+    }
+  }
+
   fs.mkdirSync(vaultDir, { recursive: true });
   atomicWriteFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
   invalidateMergedConfigCache(vaultDir);

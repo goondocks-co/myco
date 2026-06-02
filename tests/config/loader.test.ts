@@ -7,6 +7,7 @@ import {
   saveLocalConfig,
   updateLocalConfig,
 } from '@myco/config/loader';
+import { clearProjectManifestCache } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -483,6 +484,14 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
   function readYaml(p: string): Record<string, unknown> {
     return (YAML.parse(fs.readFileSync(p, 'utf-8')) ?? {}) as Record<string, unknown>;
   }
+  function bindGrove(dir: string, id: string): void {
+    // Minimal project.toml that loadProjectManifest can resolve a grove.id from.
+    fs.writeFileSync(
+      path.join(dir, 'project.toml'),
+      `[project]\nid = "proj_${'c'.repeat(32)}"\nname = "test"\n\n[grove]\nid = "${id}"\nslug = "test-grove"\nmode = "local"\n`,
+    );
+    clearProjectManifestCache();
+  }
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-scope-'));
@@ -490,6 +499,7 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHomeDir;
     invalidateMergedConfigCache();
+    clearProjectManifestCache();
   });
 
   afterEach(() => {
@@ -498,6 +508,7 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
     invalidateMergedConfigCache();
+    clearProjectManifestCache();
   });
 
   it('moves planted capture.* from myco.yaml to machine config and strips it', () => {
@@ -608,10 +619,11 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     expect((machineRaw2.notifications as Record<string, unknown>).enabled).toBe(true);
   });
 
-  it('saveConfig strips machine/grove tier blocks (capture/notifications/skills) from myco.yaml', () => {
+  it('saveConfig strips machine-tier blocks (capture/notifications) but DEFERS grove-tier skills when NO Grove is bound', () => {
     writeProject(tmpDir, 'version: 3\n');
     const config = loadConfig(tmpDir);
 
+    // No project.toml / Grove binding → unbound project.
     saveConfig(tmpDir, {
       ...config,
       capture: { ...config.capture, buffer_max_events: 777 },
@@ -620,10 +632,57 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     });
 
     const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    // Machine-tier: always strippable (loadMergedConfig migrates them every read).
     expect(persisted.capture).toBeUndefined();
     expect(persisted.notifications).toBeUndefined();
-    expect(persisted.skills).toBeUndefined();
+    // Grove-tier: deferred until a Grove is bound, so the user's value is NOT
+    // dropped (it'd be neither kept nor migrated → silent revert to default).
+    expect((persisted.skills as Record<string, unknown>)?.confidence_threshold).toBeCloseTo(0.9);
     // Project-tier fields still allowed.
     expect(persisted.version).toBe(3);
+  });
+
+  it('saveConfig strips grove-tier skills from myco.yaml when a Grove IS bound', () => {
+    // Bound project: the load-path migration relocates skills to grove config,
+    // so the save-path is free to strip it (no data loss — grove tier owns it).
+    bindGrove(tmpDir, groveId);
+    writeProject(tmpDir, 'version: 3\n');
+    const config = loadConfig(tmpDir);
+
+    saveConfig(tmpDir, {
+      ...config,
+      skills: { ...config.skills, confidence_threshold: 0.9 },
+    });
+
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.skills).toBeUndefined();
+    expect(persisted.version).toBe(3);
+  });
+
+  it('updateConfig (unrelated project-scope write) does NOT drop skills.* on an unbound project (Fix A repro)', () => {
+    // Repro: user has a skills threshold in an unbound project's myco.yaml.
+    // An unrelated project-tier write (release_provenance.enabled) goes through
+    // updateConfig → loadConfig → saveConfig. Before the fix, saveConfig's
+    // ProjectConfigSchema.parse unconditionally stripped skills, so the
+    // threshold silently reverted to default — neither kept (project) nor
+    // migrated (grove, since none is bound).
+    writeProject(
+      tmpDir,
+      `version: 3\nskills:\n  confidence_threshold: 0.31\nrelease_provenance:\n  enabled: true\n`,
+    );
+
+    updateConfig(tmpDir, (config) => ({
+      ...config,
+      release_provenance: { ...config.release_provenance, enabled: false },
+    }));
+
+    // skills.* must survive in myco.yaml (no Grove to migrate into).
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect((persisted.skills as Record<string, unknown>)?.confidence_threshold).toBeCloseTo(0.31);
+    expect((persisted.release_provenance as Record<string, unknown>).enabled).toBe(false);
+
+    // And it's still the effective value on read.
+    const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
+    expect(merged.skills.confidence_threshold).toBeCloseTo(0.31);
   });
 });
