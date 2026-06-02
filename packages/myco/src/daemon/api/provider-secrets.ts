@@ -9,7 +9,12 @@ const SECRET_PREVIEW_PREFIX_CHARS = 8;
 const SECRET_PREVIEW_SUFFIX_CHARS = 4;
 
 type SecretProvider = 'openai' | 'openrouter' | 'github';
-type SecretScope = 'machine' | 'project';
+// These are machine-level keys stored in `~/.myco/secrets.env`. The only scope
+// is 'machine'; the legacy 'project' scope was removed — project-level provider
+// secrets were migrated to grove/team scope (which live in their own stores and
+// are managed by other code paths), so 'project' had no live writer and its only
+// remaining effect was leaking reads/deletes to the bootstrap-anchor vault.
+type SecretScope = 'machine';
 type SecretSource = SecretScope | 'env' | 'none';
 type SecretStore = { scope: SecretScope; dir: string };
 
@@ -35,19 +40,19 @@ const SECRET_DEFINITIONS: Record<SecretProvider, SecretDefinition> = {
     envKey: OPENAI_API_KEY_ENV,
     defaultScope: 'machine',
     availableScopes: ['machine'],
-    readScopes: ['project', 'machine'],
+    readScopes: ['machine'],
   },
   openrouter: {
     envKey: OPENROUTER_API_KEY_ENV,
     defaultScope: 'machine',
     availableScopes: ['machine'],
-    readScopes: ['project', 'machine'],
+    readScopes: ['machine'],
   },
   github: {
     envKey: GITHUB_TOKEN_ENV,
     defaultScope: 'machine',
     availableScopes: ['machine'],
-    readScopes: ['project', 'machine'],
+    readScopes: ['machine'],
   },
 };
 
@@ -62,13 +67,10 @@ function maskSecret(secret: string): string {
   return `${secret.slice(0, SECRET_PREVIEW_PREFIX_CHARS)}${'*'.repeat(secret.length - SECRET_PREVIEW_PREFIX_CHARS - SECRET_PREVIEW_SUFFIX_CHARS)}${secret.slice(-SECRET_PREVIEW_SUFFIX_CHARS)}`;
 }
 
-function buildSecretInfo(
-  provider: SecretProvider,
-  fallbackVaultDir: string,
-): SecretInfo {
+function buildSecretInfo(provider: SecretProvider): SecretInfo {
   const definition = SECRET_DEFINITIONS[provider];
   const envKey = definition.envKey;
-  const stored = readEffectiveStoredSecret(provider, fallbackVaultDir);
+  const stored = readEffectiveStoredSecret(provider);
   const envValue = process.env[envKey];
   const envOverridesStored = Boolean(envValue) && (!stored || envValue !== stored.value);
   const effectiveValue = envOverridesStored ? envValue : (stored?.value ?? envValue);
@@ -87,26 +89,28 @@ function buildSecretInfo(
   };
 }
 
-function getSecretInfo(
-  fallbackVaultDir: string,
-  provider: SecretProvider,
-): SecretInfo {
-  return buildSecretInfo(provider, fallbackVaultDir);
+function getSecretInfo(provider: SecretProvider): SecretInfo {
+  return buildSecretInfo(provider);
 }
 
-export async function handleGetProviderSecrets(fallbackVaultDir: string, _req?: RouteRequest): Promise<RouteResponse> {
+// These routes are intentionally machine-scoped (daemon-global), not
+// tenant-scoped: they read and write `~/.myco/secrets.env`, which holds
+// machine-level keys shared across every project the daemon serves. They are
+// deliberately NOT wrapped in `tenantRoute` — a future CI gate should allowlist
+// them as machine-scoped rather than flag them as missing tenant scoping.
+export async function handleGetProviderSecrets(_req?: RouteRequest): Promise<RouteResponse> {
   return {
     body: {
       secrets: {
-        openai: buildSecretInfo('openai', fallbackVaultDir),
-        openrouter: buildSecretInfo('openrouter', fallbackVaultDir),
-        github: buildSecretInfo('github', fallbackVaultDir),
+        openai: buildSecretInfo('openai'),
+        openrouter: buildSecretInfo('openrouter'),
+        github: buildSecretInfo('github'),
       },
     },
   };
 }
 
-export async function handlePutProviderSecret(fallbackVaultDir: string, req: RouteRequest): Promise<RouteResponse> {
+export async function handlePutProviderSecret(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.params.provider;
   const body = req.body as { api_key?: string; secret?: string; scope?: SecretScope } | undefined;
 
@@ -119,7 +123,7 @@ export async function handlePutProviderSecret(fallbackVaultDir: string, req: Rou
   }
 
   const scope = body?.scope ?? SECRET_DEFINITIONS[provider].defaultScope;
-  const store = resolveWritableSecretStore(provider, scope, fallbackVaultDir);
+  const store = resolveWritableSecretStore(provider, scope);
   if (isRouteResponse(store)) return store;
 
   const envKey = SECRET_DEFINITIONS[provider].envKey;
@@ -130,12 +134,12 @@ export async function handlePutProviderSecret(fallbackVaultDir: string, req: Rou
   return {
     body: {
       provider,
-      secret: getSecretInfo(fallbackVaultDir, provider),
+      secret: getSecretInfo(provider),
     },
   };
 }
 
-export async function handleDeleteProviderSecret(fallbackVaultDir: string, req: RouteRequest): Promise<RouteResponse> {
+export async function handleDeleteProviderSecret(req: RouteRequest): Promise<RouteResponse> {
   const provider = req.params.provider;
   if (!provider || !isSecretProvider(provider)) {
     return { status: 400, body: { error: 'provider must be one of: openai, openrouter, github' } };
@@ -144,42 +148,39 @@ export async function handleDeleteProviderSecret(fallbackVaultDir: string, req: 
   const requestedScope = req.query.scope;
   const scope = parseSecretScope(requestedScope);
   if (requestedScope !== undefined && !scope) {
-    return { status: 400, body: { error: 'scope must be one of: machine, project' } };
+    return { status: 400, body: { error: 'scope must be one of: machine' } };
   }
   if (scope && !SECRET_DEFINITIONS[provider].availableScopes.includes(scope)) {
     return { status: 400, body: { error: `scope ${scope} is not available for ${provider}` } };
   }
 
-  const scopes = scope
-    ? [scope]
-    : [...new Set([...SECRET_DEFINITIONS[provider].availableScopes, 'project' as const])];
+  const scopes = scope ? [scope] : SECRET_DEFINITIONS[provider].availableScopes;
   const envKey = SECRET_DEFINITIONS[provider].envKey;
   for (const targetScope of scopes) {
-    const store = resolveSecretStore(targetScope, fallbackVaultDir);
+    const store = resolveSecretStore(targetScope);
     deleteSecrets(store.dir, [envKey]);
   }
-  refreshProcessSecret(provider, fallbackVaultDir);
+  refreshProcessSecret(provider);
 
   return {
     body: {
       provider,
-      secret: getSecretInfo(fallbackVaultDir, provider),
+      secret: getSecretInfo(provider),
     },
   };
 }
 
 function parseSecretScope(value: unknown): SecretScope | null {
-  return value === 'machine' || value === 'project' ? value : null;
+  return value === 'machine' ? value : null;
 }
 
 function readEffectiveStoredSecret(
   provider: SecretProvider,
-  fallbackVaultDir: string,
 ): { scope: SecretScope; value: string } | null {
   const envKey = SECRET_DEFINITIONS[provider].envKey;
   let found: { scope: SecretScope; value: string } | null = null;
   for (const scope of SECRET_DEFINITIONS[provider].readScopes) {
-    const store = resolveSecretStore(scope, fallbackVaultDir);
+    const store = resolveSecretStore(scope);
     const value = readSecrets(store.dir)[envKey];
     if (value) found = { scope, value };
   }
@@ -189,19 +190,14 @@ function readEffectiveStoredSecret(
 function resolveWritableSecretStore(
   provider: SecretProvider,
   scope: SecretScope,
-  fallbackVaultDir: string,
 ): SecretStore | RouteResponse {
   if (!SECRET_DEFINITIONS[provider].availableScopes.includes(scope)) {
     return { status: 400, body: { error: `scope ${scope} is not available for ${provider}` } };
   }
-  return resolveSecretStore(scope, fallbackVaultDir);
+  return resolveSecretStore(scope);
 }
 
-function resolveSecretStore(
-  scope: SecretScope,
-  fallbackVaultDir: string,
-): SecretStore {
-  if (scope === 'project') return { scope, dir: fallbackVaultDir };
+function resolveSecretStore(scope: SecretScope): SecretStore {
   return { scope, dir: resolveMycoHome() };
 }
 
@@ -217,12 +213,9 @@ function setProcessSecret(provider: SecretProvider, secret: string): void {
   }
 }
 
-function refreshProcessSecret(
-  provider: SecretProvider,
-  fallbackVaultDir: string,
-): void {
+function refreshProcessSecret(provider: SecretProvider): void {
   const envKey = SECRET_DEFINITIONS[provider].envKey;
-  const stored = readEffectiveStoredSecret(provider, fallbackVaultDir);
+  const stored = readEffectiveStoredSecret(provider);
   if (stored) {
     setProcessSecret(provider, stored.value);
   } else {

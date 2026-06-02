@@ -24,33 +24,34 @@ describe('config API', () => {
   });
 
   it('PUT scoped patch merges and saves config', async () => {
+    // capture.* moved to Machine tier (2026-06 scope correction), so a project
+    // scoped PUT now uses a project-tier field (release_provenance.*).
     const result = await handlePutScopedConfig(vaultDir, {
       scope: 'project',
       patch: {
-        capture: { ignore_plan_dirs_in_git: true },
+        release_provenance: { production_debug_include_unknown: false },
       },
     });
     expect(result.status).toBeUndefined(); // 200 default
     const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
-      capture?: { ignore_plan_dirs_in_git?: boolean };
+      release_provenance?: { production_debug_include_unknown?: boolean };
     };
-    expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
+    expect(saved.release_provenance?.production_debug_include_unknown).toBe(false);
   });
 
   it('PUT scoped patch preserves unrelated sections', async () => {
     // Patch a project-tier field; verify previously-saved fields stay
-    // intact. (Machine-tier fields like `daemon.log_level` are silently
-    // dropped from the project file by ProjectConfigSchema — that's
-    // covered separately in tier-dispatch tests.)
+    // intact. (Machine-tier fields like `daemon.log_level`, `capture.*`,
+    // `notifications.*` are silently dropped from the project file by
+    // ProjectConfigSchema — that's covered separately in tier-dispatch tests.)
     await handlePutScopedConfig(vaultDir, {
       scope: 'project',
-      patch: { capture: { ignore_plan_dirs_in_git: true } },
+      patch: { release_provenance: { production_debug_include_unknown: false } },
     });
     const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
-      notifications?: { enabled?: boolean };
-      capture?: { ignore_plan_dirs_in_git?: boolean };
+      release_provenance?: { production_debug_include_unknown?: boolean };
     };
-    expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
+    expect(saved.release_provenance?.production_debug_include_unknown).toBe(false);
     // Verify another project-tier section is preserved
     const merged = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8'));
     expect(merged.version).toBe(3);

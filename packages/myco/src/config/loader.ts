@@ -15,6 +15,7 @@ import {
   type TeamConfig,
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
+import { pruneToTier } from './scope.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -66,6 +67,9 @@ function stripLegacyProjectFields(
     ['appearance'],
     ['team'],
     ...GROVE_PROMOTED_FIELDS,
+    // 2026-06: skills.* is Grove-tier; only strip once a Grove is bound so
+    // the value can be migrated rather than dropped.
+    ['skills'],
   ];
   const groveTierKeys = new Set(GROVE_TIER_FIELDS.map((seg) => seg.join('.')));
 
@@ -212,6 +216,64 @@ function readRawYamlDoc(filePath: string): Record<string, unknown> {
 }
 
 /**
+ * Machine-tier field paths that are legacy residue in a project myco.yaml.
+ * Shared by `migrateLegacyProjectFields` (the load-path migration) and
+ * `relocateMachineFieldsFromProject` (the save-path guard) so both move the
+ * exact same set with identical semantics.
+ *
+ * `daemon.port` is intentionally absent — it is machine-derived and must NEVER
+ * be re-written into machine config (see migrateLegacyProjectFields).
+ */
+const MACHINE_RELOCATE_FIELDS: ReadonlyArray<readonly [readonly string[], readonly string[]]> = [
+  [['daemon', 'log_level'], ['daemon', 'log_level']],
+  [['daemon', 'log_retention_days'], ['daemon', 'log_retention_days']],
+  // 2026-06 settings-scope correction: capture.* and notifications.* → Machine
+  // tier. Symbionts are global now, so capture policy is per-machine; notification
+  // preferences are a local per-user setting that must never be git-committed.
+  [['capture'], ['capture']],
+  [['notifications'], ['notifications']],
+];
+
+/**
+ * Relocate legacy machine-tier residue (capture/notifications/daemon log fields)
+ * out of a project's parsed doc and into machine config, mirroring the exact
+ * `moveMachine` semantics from `migrateLegacyProjectFields`: move only when the
+ * source has a value AND the machine config has no explicit value for that path
+ * (so a newer machine value is never clobbered). Idempotent. Reads the RAW
+ * target YAML (no Zod defaults) so defaults don't block or trigger a move.
+ *
+ * Returns true when a write to machine config occurred.
+ */
+function relocateMachineFieldsFromProject(
+  parsed: Record<string, unknown>,
+  mycoHome: string,
+): boolean {
+  const machinePath = resolveGlobalConfigPath(mycoHome);
+  const machineRaw = readRawYamlDoc(machinePath);
+  let machineDirty = false;
+
+  for (const [sourcePath, targetPath] of MACHINE_RELOCATE_FIELDS) {
+    const value = getAtPath(parsed, sourcePath);
+    if (value === undefined) continue;
+    if (getAtPath(machineRaw, targetPath) !== undefined) continue; // explicit value already
+    setAtPath(machineRaw, targetPath, value);
+    machineDirty = true;
+  }
+
+  if (machineDirty) {
+    try {
+      const validated = MachineConfigSchema.parse(machineRaw);
+      saveMachineConfig(validated, mycoHome);
+      return true;
+    } catch {
+      // Defensive: leave the field in place rather than corrupt machine storage.
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * One-shot migration: copy mistier'd fields out of a project's myco.yaml
  * into the right Grove/Machine config files. Idempotent — running on an
  * already-migrated vault is a no-op.
@@ -225,6 +287,7 @@ function migrateLegacyProjectFields(
   parsed: Record<string, unknown>,
   groveId: string | null,
   mycoHome: string,
+  vaultDir: string,
 ): boolean {
   let moved = false;
 
@@ -249,6 +312,8 @@ function migrateLegacyProjectFields(
     tryMove(['agent', 'scheduled_tasks_active_window_days'], ['agent', 'scheduled_tasks_active_window_days']);
     tryMove(['appearance'], ['appearance']);
     tryMove(['team'], ['team']);
+    // 2026-06 settings-scope correction: skills.* → Grove tier.
+    tryMove(['skills'], ['skills']);
 
     if (groveDirty) {
       try {
@@ -280,13 +345,51 @@ function migrateLegacyProjectFields(
   // value into machine config would re-poison `~/.myco/config.yaml` and
   // silently hijack port resolution. The MachineConfigSchema preprocess
   // strips it on read; this drop ensures it never gets re-written.
-  moveMachine(['daemon', 'log_level'], ['daemon', 'log_level']);
-  moveMachine(['daemon', 'log_retention_days'], ['daemon', 'log_retention_days']);
+  //
+  // Shared field set (daemon log fields + capture + notifications) with the
+  // save-path guard (`relocateMachineFieldsFromProject`) so both relocate the
+  // exact same paths with identical semantics.
+  for (const [sourcePath, targetPath] of MACHINE_RELOCATE_FIELDS) {
+    moveMachine(sourcePath, targetPath);
+  }
   // `update.channel` from legacy schema → daemon.update_channel.
-  const updateChannel = getAtPath(parsed, ['update', 'channel']);
-  if (updateChannel !== undefined && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined) {
-    setAtPath(machineRaw, ['daemon', 'update_channel'], updateChannel);
-    machineDirty = true;
+  // Two legacy homes existed: project myco.yaml (the original per-project
+  // schema field) and project local.yaml (the per-project override the
+  // retired Operations setter wrote). Decision-46130740 makes the channel
+  // machine-scoped, so lift either source to machine ONCE (only when machine
+  // has no explicit value yet — idempotent) and strip the now-dead leaf from
+  // local.yaml on the way out. myco.yaml's `update` is stripped separately by
+  // stripLegacyProjectFields (PROJECT_TIER_LEGACY_FIELDS includes `update`).
+  const liftUpdateChannel = (source: unknown): void => {
+    if (
+      source !== undefined
+      && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined
+    ) {
+      setAtPath(machineRaw, ['daemon', 'update_channel'], source);
+      machineDirty = true;
+    }
+  };
+  liftUpdateChannel(getAtPath(parsed, ['update', 'channel']));
+
+  // Strip + lift the legacy local.yaml override. Read the raw doc so we don't
+  // resurrect Zod defaults into the sparse file.
+  const localPath = localConfigPath(vaultDir);
+  if (fs.existsSync(localPath)) {
+    const localRaw = readRawYamlDoc(localPath);
+    if (getAtPath(localRaw, ['update', 'channel']) !== undefined) {
+      liftUpdateChannel(getAtPath(localRaw, ['update', 'channel']));
+      // Remove only the migrated leaf and prune `update` if now empty — a
+      // future `update.*` field in local.yaml must survive the strip.
+      unsetAtPath(localRaw, ['update', 'channel'], { pruneEmptyParents: true });
+      try {
+        atomicWriteFileSync(localPath, YAML.stringify(localRaw), 'utf-8');
+        invalidateMergedConfigCache(vaultDir);
+        moved = true;
+      } catch {
+        // Non-fatal: the runtime already ignores local.yaml's channel, so a
+        // failed strip leaves a dead field but does not change behavior.
+      }
+    }
   }
 
   if (machineDirty) {
@@ -411,7 +514,7 @@ function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): 
   const groveId = options.groveId ?? null;
   const shouldMigrate = options.migrateTiers === true;
   const tierMoved = shouldMigrate
-    ? migrateLegacyProjectFields(parsed, groveId, mycoHome)
+    ? migrateLegacyProjectFields(parsed, groveId, mycoHome, vaultDir)
     : false;
   const tierStripped = shouldMigrate
     ? stripLegacyProjectFields(parsed, { hasGrove: groveId !== null })
@@ -452,9 +555,61 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   // belong in their own tier files. The returned MycoConfig still has
   // those tiers; we just don't persist them here.
   const validated = MycoConfigSchema.parse(config);
-  const projectOnly = ProjectConfigSchema.parse(validated);
+  const projectOnly = ProjectConfigSchema.parse(validated) as Record<string, unknown>;
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
+  const onDiskRaw = readRawYamlDoc(configPath);
+  const defaults = MycoConfigSchema.parse({ version: 3 });
+
+  // Machine-tier `capture`/`notifications` are dropped by ProjectConfigSchema's
+  // strip. The load-path migration (migrateLegacyProjectFields, gated by
+  // migrateTiers=true) relocates them to machine config — but updateConfig →
+  // loadConfig runs WITHOUT migrateTiers, so an un-migrated project's
+  // capture/notifications can reach saveConfig still living in myco.yaml. Were
+  // we to only strip them here, the values would be lost: not kept (project),
+  // not relocated (the migration never ran). Relocate them on the save path too,
+  // mirroring migrateLegacyProjectFields' moveMachine semantics (move only
+  // legacy residue; never clobber a newer machine value; idempotent) so NO
+  // capture/notifications value is ever lost on save.
+  //
+  // Only relocate a value that is MEANINGFUL — present on disk in myco.yaml
+  // (legacy residue) OR a non-default value the caller just set. Otherwise the
+  // always-defaulted `validated` block would pollute machine config with a
+  // defaults block on every clean save (mirrors the sparse-doc semantics).
+  const machineResidue: Record<string, unknown> = {};
+  for (const key of ['capture', 'notifications'] as const) {
+    const onDisk = getAtPath(onDiskRaw, [key]) !== undefined;
+    const isDefault = YAML.stringify(validated[key]) === YAML.stringify(defaults[key]);
+    if (onDisk || !isDefault) {
+      machineResidue[key] = validated[key];
+    }
+  }
+  if (Object.keys(machineResidue).length > 0) {
+    relocateMachineFieldsFromProject(machineResidue, resolveMycoHome());
+  }
+
+  // Grove-tier `skills` is dropped by ProjectConfigSchema's strip, but that's
+  // only safe once a Grove is bound (the load-path migration relocates it to
+  // grove config then). On an UNBOUND project there's no Grove to migrate
+  // into, so dropping it here would lose a user-set value entirely — neither
+  // kept (project) nor migrated (grove). Mirror the load-path deferral
+  // (stripLegacyProjectFields skips skills when !hasGrove): keep the skills
+  // block in myco.yaml until a Grove is bound. The next Grove-bound load runs
+  // migrateLegacyProjectFields to lift + strip it.
+  //
+  // Re-attach only when skills is meaningful — either already persisted on
+  // disk OR carrying a non-default value the caller just set — so clean
+  // projects aren't polluted with a grove-tier defaults block (mirrors the
+  // sparse-doc semantics: defaults never get written to myco.yaml).
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+  if (groveId === null) {
+    const onDisk = getAtPath(onDiskRaw, ['skills']) !== undefined;
+    const isDefault = YAML.stringify(validated.skills) === YAML.stringify(defaults.skills);
+    if (onDisk || !isDefault) {
+      setAtPath(projectOnly, ['skills'], validated.skills);
+    }
+  }
+
   fs.mkdirSync(vaultDir, { recursive: true });
   atomicWriteFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
   invalidateMergedConfigCache(vaultDir);
@@ -698,11 +853,15 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   const groveRaw = grovePath ? readRawYamlDoc(grovePath) : {};
   const local = loadLocalConfig(vaultDir);
 
-  // Sparse merge — each tier contributes only the keys it explicitly
-  // sets. Defaults are filled in by the final Zod parse.
-  const stage1 = deepMergeConfig(machineRaw, groveRaw);
-  const stage2 = deepMergeConfig(stage1, projectRaw);
-  const stage3 = deepMergeConfig(stage2, local as Record<string, unknown>);
+  // Scope-aware sparse merge — each tier contributes only the leaves the
+  // scope registry assigns to it. A stray field in a tier that doesn't own
+  // it is dropped before merge, so it can't override the real owner. This
+  // replaces the project-tier merge-time denylist with a systematic
+  // allowlist driven by SCOPE_REGISTRY. Defaults are filled in by the final
+  // Zod parse.
+  const stage1 = deepMergeConfig(pruneToTier(machineRaw, 'machine'), pruneToTier(groveRaw, 'grove'));
+  const stage2 = deepMergeConfig(stage1, pruneToTier(projectRaw, 'project'));
+  const stage3 = deepMergeConfig(stage2, pruneToTier(local as Record<string, unknown>, 'local'));
   const result = MycoConfigSchema.parse(stage3);
 
   // Re-stat after load — loadConfig may have written a migrated file back.

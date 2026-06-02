@@ -20,7 +20,9 @@
  */
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { resolveTenantConfig } from './request-config.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
@@ -31,7 +33,7 @@ import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
@@ -46,12 +48,12 @@ const JSON_INDENT = 2;
 // ---------------------------------------------------------------------------
 
 /**
- * Dependencies for `buildCortexPrompt` / `getCortexInstructionsSnapshot`
- * call sites. Config is pre-resolved because the caller (the HTTP handler)
- * snapshots it per-request.
+ * Dependencies for `buildCortexPrompt`. Config is NOT passed in: it is
+ * resolved per-request from the tenant's vault + grove inside the function so
+ * the grove/project-tier `cortex.*` delivery contract follows the request, not
+ * the daemon's bootstrap-home `liveConfig`.
  */
 export interface CortexServicesDeps {
-  config: MycoConfig;
   embeddingManager?: EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
   logger: DaemonLogger;
@@ -60,14 +62,24 @@ export interface CortexServicesDeps {
 }
 
 /**
- * Dependencies for `triggerCortexInstructions`. Takes a live config holder
- * (not a snapshot) because the trigger is invoked from background contexts
- * where the config may change between calls.
+ * Dependencies for `triggerCortexInstructions`. Config is NOT passed in: it is
+ * resolved per-request from the tenant's vault + grove inside the trigger.
+ * Agent config is grove-tier (PR #394), so reading the daemon's bootstrap-home
+ * `liveConfig` here would gate the refresh on the wrong grove's provider state.
  */
 export interface TriggerCortexInstructionsDeps {
   vaultDir: string;
+  /**
+   * Caller-authorized tenant context. The trigger MUST act against this
+   * tenant's project/grove, not re-derive context from `vaultDir` — on the
+   * global daemon `vaultDir` for a request-scoped caller is the tenant vault,
+   * but the request's project/grove identity is the source of truth and is
+   * carried here so a future change to how vaults map to tenants can't leak
+   * a refresh into the wrong project. It also drives the per-request config
+   * resolution (`loadMergedConfig(vaultDir, { groveId })`) for the provider gate.
+   */
+  requestContext: MycoRequestContext;
   embeddingManager: EmbeddingManager;
-  liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
@@ -137,6 +149,38 @@ function getLatestReportForAction(runId: string, action: string, scope: import('
   return undefined;
 }
 
+/**
+ * Resolve the merged config for a Cortex tenant request through the shared
+ * `resolveTenantConfig` seam, so cortex gains the seam's fail-loud logging on a
+ * present-tenant config-load failure instead of throwing an unlogged error.
+ *
+ * Behaviour-equivalent to the previous inline
+ * `loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null })`:
+ *   - groveId PRESENT → the seam calls `loadMergedConfig(vaultDir, { groveId })`;
+ *     on failure it logs (groveId + vaultDir + error) and returns the fallback.
+ *   - groveId null (legacy non-Grove) → the seam returns the fallback directly,
+ *     and the fallback IS `loadMergedConfig(vaultDir, { groveId: null })` — the
+ *     exact config the inline path produced for that case.
+ *
+ * The fallback is the null-grove merged config for the same vault (not the
+ * daemon's bootstrap-home liveConfig, which cortex deps don't carry), keeping
+ * the grove/project-tier `cortex.*`/`agent.*` resolution tied to the request
+ * vault rather than a phantom home.
+ */
+function resolveCortexTenantConfig(
+  vaultDir: string,
+  requestContext: MycoRequestContext,
+  logger: DaemonLogger,
+): MycoConfig {
+  const groveId = requestContext.groveId ?? null;
+  const fallback = loadMergedConfig(vaultDir, { groveId: null });
+  return resolveTenantConfig(
+    { projectVaultDir: vaultDir, groveId },
+    fallback,
+    { logger },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot + result readers
 // ---------------------------------------------------------------------------
@@ -171,14 +215,20 @@ export async function buildCortexPrompt(
   vaultDir: string,
   deps: CortexServicesDeps,
   goal: string,
-  requestedSymbiont?: string,
+  requestedSymbiont: string | undefined,
+  requestContext: MycoRequestContext,
 ): Promise<CortexPromptBuilderStartResult> {
-  const requestContext = resolveRequestContextForVault(vaultDir);
-  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext?.groveId ?? null, requestedSymbiont);
-  const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
-  const scope: import('@myco/grove/ids.js').ProjectScope = requestContext?.projectId
-    ? { kind: 'project', id: requestContext.projectId }
-    : { kind: 'global' };
+  const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext.groveId ?? null, requestedSymbiont);
+  // Resolve config for the REQUEST's tenant through the shared seam. `cortex.*`
+  // is grove/project-tier, so the daemon's bootstrap-home snapshot would pick
+  // the wrong grove's delivery contract. The seam resolves from the request
+  // vault + grove (same as the run) and is loud on a present-tenant load failure.
+  const config = resolveCortexTenantConfig(vaultDir, requestContext, deps.logger);
+  const delivery = resolveInstructionDelivery(config.cortex, targetSymbiont);
+  const scope: import('@myco/grove/ids.js').ProjectScope = {
+    kind: 'project',
+    id: requestContext.projectId,
+  };
   const instructions = delivery.inlineInstructions
     ? getCortexInstructions(DEFAULT_AGENT_ID, scope)
     : null;
@@ -283,9 +333,16 @@ export function getCortexPromptResult(
 export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
-  const { vaultDir, embeddingManager, liveConfig, logger, getTeamClient } = deps;
+  const { vaultDir, requestContext, embeddingManager, logger, getTeamClient } = deps;
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
-  const config = liveConfig.current;
+  // Resolve config for the REQUEST's tenant through the shared seam, not the
+  // daemon's bootstrap home. Agent config is grove-tier (PR #394), so reading
+  // the daemon's bootstrap-home liveConfig would gate this refresh on the wrong
+  // grove's provider state. This mirrors how the actual run resolves provider
+  // config — the executor calls `resolveRunConfig(..., requestContext.groveId)`
+  // → `loadMergedConfig(vaultDir, { groveId })` — so the gate and the run agree
+  // on the same tenant config. The seam adds fail-loud logging on a load failure.
+  const config = resolveCortexTenantConfig(vaultDir, requestContext, logger);
 
   if (config.agent.event_tasks_enabled === false) {
     return { started: false, reason: 'event-tasks-disabled' };
@@ -309,7 +366,6 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const requestContext = resolveRequestContextForVault(vaultDir);
     const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
     const resultPromise = dispatchFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,

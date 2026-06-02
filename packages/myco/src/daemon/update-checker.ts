@@ -21,7 +21,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import semver from 'semver';
-import { loadLocalConfig, updateLocalConfig } from '../config/loader.js';
+import { loadMachineConfig, saveMachineConfig } from '../config/loader.js';
 
 import {
   NPM_REGISTRY_BASE_URL,
@@ -102,7 +102,8 @@ export interface CheckResult {
   latest_stable: string;
   latest_beta: string | null;
   channel: ReleaseChannel;
-  channel_scope: 'project';
+  /** Always `'machine'` — the channel is machine-scoped (decision-46130740). */
+  channel_scope: 'machine';
   /**
    * `'managed'` — the daemon is dispatched through `~/.myco/runtime/`
    * (managed beta runtime). `'machine'` — no machine-runtime pin, the
@@ -299,33 +300,29 @@ export function isManagedMachineRuntime(cliEntry: string): boolean {
   return normalized.startsWith(managedPrefix);
 }
 
-export function readProjectReleaseChannel(vaultDir: string): ReleaseChannel {
-  const local = loadLocalConfig(vaultDir);
-  const projectChannel = local.update?.channel;
-  if (RELEASE_CHANNELS.includes(projectChannel as ReleaseChannel)) {
-    return projectChannel as ReleaseChannel;
-  }
-
-  // Migration fallback: before 0.22, the channel lived in the machine-global
-  // ~/.myco/update.yaml. Honor that preference when this project has not
-  // explicitly set one, so existing beta users don't silently fall back to
-  // stable after upgrading. Per-project opt-out via the Operations UI writes
-  // to local.yaml and shadows this fallback.
-  const legacyChannel = readUpdateConfig().channel;
-  return RELEASE_CHANNELS.includes(legacyChannel) ? legacyChannel : DEFAULT_RELEASE_CHANNEL;
+/**
+ * The effective release channel is MACHINE-scoped (decision-46130740): it
+ * comes from machine config `daemon.update_channel`. There is NO project or
+ * personal override — a legacy `update.channel` in a project local.yaml is
+ * ignored. The `vaultDir` parameter is retained for call-site compatibility
+ * (the API layer passes it) but is not consulted.
+ */
+export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
+  const channel = loadMachineConfig().daemon.update_channel;
+  return RELEASE_CHANNELS.includes(channel) ? channel : DEFAULT_RELEASE_CHANNEL;
 }
 
-export function writeProjectReleaseChannel(vaultDir: string, channel: ReleaseChannel): void {
-  updateLocalConfig(vaultDir, (local) => {
-    const next = { ...local };
-
-    if (channel === DEFAULT_RELEASE_CHANNEL) {
-      delete next.update;
-    } else {
-      next.update = { channel };
-    }
-
-    return next;
+/**
+ * Persist the release channel at MACHINE scope (decision-46130740). Writes
+ * `daemon.update_channel` into `~/.myco/config.yaml` via the canonical
+ * machine-config writer; it must never touch a project local.yaml. The
+ * `vaultDir` parameter is retained for call-site compatibility only.
+ */
+export function writeProjectReleaseChannel(_vaultDir: string | undefined, channel: ReleaseChannel): void {
+  const machine = loadMachineConfig();
+  saveMachineConfig({
+    ...machine,
+    daemon: { ...machine.daemon, update_channel: channel },
   });
 }
 
@@ -786,7 +783,7 @@ function buildCheckResult(
     latest_stable: latestStable,
     latest_beta: latestBeta,
     channel,
-    channel_scope: 'project',
+    channel_scope: 'machine',
     runtime_scope: runtimeScope,
     check_interval_hours: config.check_interval_hours,
     last_check: cache.checked_at,
@@ -911,7 +908,7 @@ export async function checkForUpdate(
       latest_stable: currentVersion,
       latest_beta: null,
       channel: effectiveChannel,
-      channel_scope: 'project',
+      channel_scope: 'machine',
       runtime_scope:
         runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
           ? 'managed'

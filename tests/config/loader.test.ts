@@ -7,6 +7,7 @@ import {
   saveLocalConfig,
   updateLocalConfig,
 } from '@myco/config/loader';
+import { clearProjectManifestCache } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -127,20 +128,24 @@ intelligence:
     expect(config.embedding.provider).toBe('openai-compatible');
   });
 
-  it('updateConfig applies transform and persists', () => {
-    const yaml = `version: 3\ncapture:\n  buffer_max_events: 500\n`;
+  it('updateConfig applies transform and persists (project-tier field)', () => {
+    // capture.* moved to Machine tier (2026-06 scope correction), so it's no
+    // longer a project-file field. Use a project-tier field
+    // (release_provenance.*) to exercise the same updateConfig→saveConfig
+    // round-trip against myco.yaml.
+    const yaml = `version: 3\nrelease_provenance:\n  enabled: true\n`;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
 
     const result = updateConfig(tmpDir, (config) => ({
       ...config,
-      capture: { ...config.capture, buffer_max_events: 999 },
+      release_provenance: { ...config.release_provenance, enabled: false },
     }));
 
-    expect(result.capture.buffer_max_events).toBe(999);
+    expect(result.release_provenance.enabled).toBe(false);
 
     // Verify it was persisted to disk
     const reloaded = loadConfig(tmpDir);
-    expect(reloaded.capture.buffer_max_events).toBe(999);
+    expect(reloaded.release_provenance.enabled).toBe(false);
   });
 
   it('updateConfig rejects invalid transforms without writing', () => {
@@ -245,10 +250,15 @@ describe('Local config overlay', () => {
   });
 
   it('merged-array policy: local arrays replace project arrays', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\ncapture:\n  plan_dirs: ['a', 'b']\n`);
-    writeLocal(tmpDir, `capture:\n  plan_dirs: ['c']\n`);
+    // cortex.canopy.exclude.patterns is project-home + local-overridable
+    // (scope registry), so both tiers survive the scope-aware prune and the
+    // arrayStrategy:'replace' merge applies. (release_provenance.* and
+    // capture.* are locked now, so neither can carry this assertion; the
+    // user-additive canopy `patterns` array is the genuine project+local case.)
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\ncortex:\n  canopy:\n    exclude:\n      patterns: ['a', 'b']\n`);
+    writeLocal(tmpDir, `cortex:\n  canopy:\n    exclude:\n      patterns: ['c']\n`);
     const merged = loadMergedConfig(tmpDir);
-    expect(merged.capture.plan_dirs).toEqual(['c']);
+    expect(merged.cortex.canopy.exclude.patterns).toEqual(['c']);
   });
 
   it('loadLocalConfig returns {} and warns when YAML is malformed', () => {
@@ -373,52 +383,73 @@ describe('Grove-tier promotion — merge verification', () => {
     expect(rawOnDisk.agent).toBeUndefined();
   });
 
-  it('retains legacy project-tier agent config when the project is not Grove-bound', () => {
+  it('a grove-scoped field placed in the project tier is not honored in merged config (pruned)', () => {
+    // Every myco-enabled project is Grove-bound; agent/skills are grove-scoped
+    // and stripped from project myco.yaml. The old "no-Grove deferral" (keep a
+    // grove-scoped field in myco.yaml until a Grove exists) is a dead scenario.
+    // If a stale grove-scoped value somehow lands in the project tier, the
+    // scope-aware merge must NOT let it override the Grove's value: the Grove
+    // owns the field, so the Grove value wins and the project stray is dropped.
     const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
     fs.writeFileSync(
       mycoYamlPath,
-      'version: 3\nagent:\n  provider:\n    type: openrouter\n',
+      'version: 3\nskills:\n  confidence_threshold: 0.31\n',
     );
-    // No groveId and no project.toml grove association → hasGrove=false →
-    // grove-tier fields are kept until a Grove exists to honor them.
-    const config = loadMergedConfig(tmpDir, { mycoHome: mycoHomeDir });
+    // Grove has its own explicit skills value — the authoritative grove-tier
+    // owner. (This also pins the migration's relocation guard: with an explicit
+    // grove value, the stale project field is stripped, not lifted.)
+    writeGroveConfig('skills:\n  confidence_threshold: 0.55\n');
 
-    expect(config.agent.provider).toEqual({ type: 'openrouter' });
-    const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
-    expect((rawOnDisk.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    // Grove value wins; the project-tier stray (0.31) is never honored.
+    expect(config.skills.confidence_threshold).toBeCloseTo(0.55);
   });
 });
 
 describe('loadMergedConfig caching', () => {
   let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cache-'));
+    // Sandbox MYCO_HOME: the tier-strip migration now relocates capture/
+    // notifications to machine config, so without this the merge would write
+    // into the developer's real ~/.myco/config.yaml.
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-cache-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
     invalidateMergedConfigCache();
   });
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
     invalidateMergedConfigCache();
   });
 
   it('returns the same object reference on a back-to-back call', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nrelease_provenance:\n  enabled: true\n`);
     const first = loadMergedConfig(tmpDir);
     const second = loadMergedConfig(tmpDir);
     expect(second).toBe(first);
   });
 
   it('reloads when myco.yaml changes on disk', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n`);
+    // release_provenance.* is still a project-tier field (stays in myco.yaml),
+    // so it's the right signal for "project file changed on disk".
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nrelease_provenance:\n  enabled: true\n`);
     const first = loadMergedConfig(tmpDir);
-    expect(first.notifications.enabled).toBe(true);
+    expect(first.release_provenance.enabled).toBe(true);
 
     // Bump mtime + content to invalidate the fingerprint deterministically.
-    const next = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: false\n`;
+    const next = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nrelease_provenance:\n  enabled: false\n`;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), next);
     fs.utimesSync(path.join(tmpDir, 'myco.yaml'), new Date(), new Date(Date.now() + 2000));
 
     const second = loadMergedConfig(tmpDir);
-    expect(second.notifications.enabled).toBe(false);
+    expect(second.release_provenance.enabled).toBe(false);
     expect(second).not.toBe(first);
   });
 
@@ -427,6 +458,8 @@ describe('loadMergedConfig caching', () => {
     const first = loadMergedConfig(tmpDir);
     expect(first.notifications.enabled).toBe(true);
 
+    // local.yaml is the highest-precedence overlay and tier-agnostic, so a
+    // notifications override there still wins over the migrated machine value.
     writeLocal(tmpDir, `notifications:\n  enabled: false\n`);
     const second = loadMergedConfig(tmpDir);
     expect(second.notifications.enabled).toBe(false);
@@ -438,5 +471,265 @@ describe('loadMergedConfig caching', () => {
     loadMergedConfig(tmpDir);
     saveLocalConfig(tmpDir, { notifications: { enabled: false } });
     expect(loadMergedConfig(tmpDir).notifications.enabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-06 settings-scope correction:
+//   capture.*       PROJECT → MACHINE
+//   notifications.* PROJECT → MACHINE
+//   skills.*        PROJECT → GROVE
+// The tier-strip migration must relocate planted project values to their new
+// tier file, strip them from myco.yaml, and never re-commit them.
+// ---------------------------------------------------------------------------
+describe('Settings-scope correction (2026-06) — tier migration', () => {
+  let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
+  const groveId = 'grove_' + 'b'.repeat(32);
+
+  function machinePath(): string {
+    return path.join(mycoHomeDir, 'config.yaml');
+  }
+  function grovePath(): string {
+    return path.join(mycoHomeDir, 'groves', groveId, 'grove.yaml');
+  }
+  function readYaml(p: string): Record<string, unknown> {
+    return (YAML.parse(fs.readFileSync(p, 'utf-8')) ?? {}) as Record<string, unknown>;
+  }
+  function bindGrove(dir: string, id: string): void {
+    // Minimal project.toml that loadProjectManifest can resolve a grove.id from.
+    fs.writeFileSync(
+      path.join(dir, 'project.toml'),
+      `[project]\nid = "proj_${'c'.repeat(32)}"\nname = "test"\n\n[grove]\nid = "${id}"\nslug = "test-grove"\nmode = "local"\n`,
+    );
+    clearProjectManifestCache();
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-scope-'));
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-scope-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
+    invalidateMergedConfigCache();
+    clearProjectManifestCache();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
+    invalidateMergedConfigCache();
+    clearProjectManifestCache();
+  });
+
+  it('moves planted capture.* from myco.yaml to machine config and strips it', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(
+      tmpDir,
+      `version: 3\ncapture:\n  buffer_max_events: 999\n  artifact_extensions:\n    - .md\n    - .py\n`,
+    );
+
+    const merged = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    // Value preserved in the merged view…
+    expect(merged.capture.buffer_max_events).toBe(999);
+    expect(merged.capture.artifact_extensions).toEqual(['.md', '.py']);
+
+    // …relocated to machine config…
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(999);
+
+    // …and stripped from myco.yaml (no longer git-committed).
+    const projectRaw = readYaml(mycoYamlPath);
+    expect(projectRaw.capture).toBeUndefined();
+  });
+
+  it('moves planted notifications.* from myco.yaml to machine config and strips it', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(
+      tmpDir,
+      `version: 3\nnotifications:\n  enabled: false\n  default_mode: banner\n`,
+    );
+
+    const merged = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(merged.notifications.enabled).toBe(false);
+    expect(merged.notifications.default_mode).toBe('banner');
+
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.notifications as Record<string, unknown>).enabled).toBe(false);
+    expect((machineRaw.notifications as Record<string, unknown>).default_mode).toBe('banner');
+
+    const projectRaw = readYaml(mycoYamlPath);
+    expect(projectRaw.notifications).toBeUndefined();
+  });
+
+  it('moves planted skills.* from myco.yaml to GROVE config and strips it (Grove bound)', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(
+      tmpDir,
+      `version: 3\nskills:\n  confidence_threshold: 0.42\n  usage_stale_days: 7\n`,
+    );
+
+    const merged = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    expect(merged.skills.confidence_threshold).toBeCloseTo(0.42);
+    expect(merged.skills.usage_stale_days).toBe(7);
+
+    const groveRaw = readYaml(grovePath());
+    expect((groveRaw.skills as Record<string, unknown>).confidence_threshold).toBeCloseTo(0.42);
+    expect((groveRaw.skills as Record<string, unknown>).usage_stale_days).toBe(7);
+
+    const projectRaw = readYaml(mycoYamlPath);
+    expect(projectRaw.skills).toBeUndefined();
+  });
+
+  it('still moves capture/notifications to machine even when NO Grove is bound', () => {
+    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
+    writeProject(tmpDir, `version: 3\ncapture:\n  buffer_max_events: 250\nnotifications:\n  enabled: false\n`);
+
+    loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
+
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(250);
+    expect((machineRaw.notifications as Record<string, unknown>).enabled).toBe(false);
+
+    const projectRaw = readYaml(mycoYamlPath);
+    expect(projectRaw.capture).toBeUndefined();
+    expect(projectRaw.notifications).toBeUndefined();
+  });
+
+  it('is idempotent and does not clobber an explicit machine value', () => {
+    // Pre-seed an explicit machine notifications value the user set directly.
+    fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
+    fs.writeFileSync(machinePath(), `notifications:\n  enabled: true\n`);
+    writeProject(tmpDir, `version: 3\nnotifications:\n  enabled: false\n`);
+
+    loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    // The explicit machine value wins; the project value is NOT moved over it.
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.notifications as Record<string, unknown>).enabled).toBe(true);
+
+    // Second load is a no-op (idempotent): machine value still true.
+    invalidateMergedConfigCache();
+    loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+    const machineRaw2 = readYaml(machinePath());
+    expect((machineRaw2.notifications as Record<string, unknown>).enabled).toBe(true);
+  });
+
+  it('saveConfig strips machine-tier blocks (capture/notifications) but DEFERS grove-tier skills when NO Grove is bound', () => {
+    writeProject(tmpDir, 'version: 3\n');
+    const config = loadConfig(tmpDir);
+
+    // No project.toml / Grove binding → unbound project.
+    saveConfig(tmpDir, {
+      ...config,
+      capture: { ...config.capture, buffer_max_events: 777 },
+      notifications: { ...config.notifications, enabled: false },
+      skills: { ...config.skills, confidence_threshold: 0.9 },
+    });
+
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    // Machine-tier: always strippable (loadMergedConfig migrates them every read).
+    expect(persisted.capture).toBeUndefined();
+    expect(persisted.notifications).toBeUndefined();
+    // Grove-tier: deferred until a Grove is bound, so the user's value is NOT
+    // dropped (it'd be neither kept nor migrated → silent revert to default).
+    expect((persisted.skills as Record<string, unknown>)?.confidence_threshold).toBeCloseTo(0.9);
+    // Project-tier fields still allowed.
+    expect(persisted.version).toBe(3);
+  });
+
+  it('saveConfig strips grove-tier skills from myco.yaml when a Grove IS bound', () => {
+    // Bound project: the load-path migration relocates skills to grove config,
+    // so the save-path is free to strip it (no data loss — grove tier owns it).
+    bindGrove(tmpDir, groveId);
+    writeProject(tmpDir, 'version: 3\n');
+    const config = loadConfig(tmpDir);
+
+    saveConfig(tmpDir, {
+      ...config,
+      skills: { ...config.skills, confidence_threshold: 0.9 },
+    });
+
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.skills).toBeUndefined();
+    expect(persisted.version).toBe(3);
+  });
+
+  it('updateConfig does NOT drop capture/notifications on an un-migrated project (Fix #1 repro)', () => {
+    // Data-loss repro: the project myco.yaml still carries capture.* and
+    // notifications.* (never migrated — the load path that relocates them only
+    // runs with migrateTiers=true, which updateConfig→loadConfig does NOT set).
+    // An unrelated project-tier write goes through
+    //   updateConfig → loadConfig (no migrateTiers) → saveConfig.
+    // Before the fix, saveConfig's ProjectConfigSchema.parse unconditionally
+    // stripped capture/notifications and wrote them NOWHERE: not kept in
+    // myco.yaml (project tier), not relocated to machine config (relocation
+    // only happened on the load path). The values were silently destroyed.
+    writeProject(
+      tmpDir,
+      [
+        'version: 3',
+        'capture:',
+        '  buffer_max_events: 888',
+        '  artifact_extensions:',
+        '    - .md',
+        '    - .rs',
+        'notifications:',
+        '  enabled: false',
+        '  default_mode: banner',
+        'release_provenance:',
+        '  enabled: true',
+        '',
+      ].join('\n'),
+    );
+
+    updateConfig(tmpDir, (config) => ({
+      ...config,
+      release_provenance: { ...config.release_provenance, enabled: false },
+    }));
+
+    // capture/notifications must NOT survive in myco.yaml (they're machine-tier
+    // now — saveConfig still strips them) …
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
+    expect(persisted.notifications).toBeUndefined();
+    expect((persisted.release_provenance as Record<string, unknown>).enabled).toBe(false);
+
+    // … but the values must be RELOCATED to machine config, never lost.
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(888);
+    expect((machineRaw.capture as Record<string, unknown>).artifact_extensions).toEqual(['.md', '.rs']);
+    expect((machineRaw.notifications as Record<string, unknown>).enabled).toBe(false);
+    expect((machineRaw.notifications as Record<string, unknown>).default_mode).toBe('banner');
+
+    // And they remain the effective values on a subsequent merged read.
+    const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
+    expect(merged.capture.buffer_max_events).toBe(888);
+    expect(merged.notifications.enabled).toBe(false);
+    expect(merged.notifications.default_mode).toBe('banner');
+  });
+
+  it('saveConfig does not clobber a newer explicit machine capture value (Fix #1 idempotence)', () => {
+    // The user already set capture explicitly in machine config. A later
+    // un-migrated project save must NOT overwrite that newer machine value —
+    // saveConfig's relocation mirrors moveMachine's "skip if target present".
+    fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
+    fs.writeFileSync(machinePath(), 'capture:\n  buffer_max_events: 111\n');
+    writeProject(tmpDir, 'version: 3\ncapture:\n  buffer_max_events: 999\n');
+    const config = loadConfig(tmpDir);
+
+    saveConfig(tmpDir, config);
+
+    // The explicit machine value wins; the stale project value is NOT moved over it.
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(111);
+    // … and it's still stripped from myco.yaml.
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
   });
 });

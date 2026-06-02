@@ -4,8 +4,11 @@ import type { Database } from '../db/client.js';
 import { DaemonClient } from '../hooks/client.js';
 import { createMycoTools } from '../tools/index.js';
 import {
+  isCallerTenancy,
   requestContextFromHttpHeaders,
   tryResolveRequestContextForVault,
+  UnauthorizedRequestContextError,
+  type MycoRequestContext,
 } from '../tools/request-context.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
@@ -28,37 +31,84 @@ export interface StreamableMcpHttpHandlerOptions {
 }
 
 /**
- * Pre-flight legacy-vault check. Pre-Grove vaults — those without a
- * `project.toml` containing a Grove project id — would otherwise
- * cause `requestContextFromHttpHeaders` to throw inside the MCP
- * handler and surface as the opaque `tool_call_failed` JSON-RPC
- * error. Detect that state up front and return a structured 503
- * with a `legacy_vault` discriminator + a friendly message that
- * tells the user the project hasn't been auto-registered yet.
- *
- * Only triggers when the incoming request has *not* supplied
- * project-context headers — Grove-bound transports always do, so
- * the soft-fail path is reserved for callers that bind to the
- * vault directory alone (legacy CLI-style HTTP MCP clients).
+ * Build the JSON-RPC `legacy_vault` wire envelope. This is the HTTP-layer
+ * translation of the shared tools-runtime tenancy policy: when no
+ * caller-supplied (project/Grove) tenancy is available, the request must not
+ * silently default to the bootstrap-anchor vault. Surfaced as a structured
+ * 503 with a `legacy_vault` discriminator so MCP clients render a friendly
+ * "this project hasn't been auto-registered yet" message instead of the
+ * opaque `tool_call_failed` JSON-RPC error they'd otherwise get from the
+ * shared runtime rejecting the call inside dispatch.
  */
-function checkLegacyVault(req: http.IncomingMessage, vaultDir: string): { ok: false; body: string } | { ok: true } {
-  const hasContextHeaders = ['x-myco-project-root', 'x-myco-project-id', 'x-myco-grove-id']
-    .some((header) => typeof req.headers[header] === 'string' && (req.headers[header] as string).trim().length > 0);
-  if (hasContextHeaders) return { ok: true };
-
-  const result = tryResolveRequestContextForVault(vaultDir);
-  if (result.kind === 'grove') return { ok: true };
-
-  const body = JSON.stringify({
+function legacyVaultBody(message: string, vaultDir: string): string {
+  return JSON.stringify({
     jsonrpc: '2.0',
     error: {
       code: -32004,
-      message: result.reason,
-      data: { code: 'legacy_vault', vault_dir: result.vaultDir },
+      message,
+      data: { code: 'legacy_vault', vault_dir: vaultDir },
     },
     id: null,
   });
-  return { ok: false, body };
+}
+
+/**
+ * Resolve the request context for this MCP-HTTP call, or translate a
+ * non-caller / pre-Grove state into the `legacy_vault` wire error.
+ *
+ * The shared tools runtime (`createMycoTools`) is the single source of the
+ * tenancy policy: it rejects any context whose `tenancySource` is not
+ * `'caller'`. This pre-flight applies the *same* predicate at the transport
+ * boundary so the rejection becomes a clean structured 503 rather than an
+ * in-protocol `tool_call_failed` raised mid-dispatch. We do not re-implement
+ * the policy — we read the resolved context's `tenancySource` (the value the
+ * runtime checks) and translate it to the wire.
+ *
+ * A pre-Grove vault (no `project.toml` Grove id, no context headers) makes
+ * `requestContextFromHttpHeaders` throw; `tryResolveRequestContextForVault`
+ * gives us the friendly reason to return instead.
+ */
+function resolveRequestContextOrLegacy(
+  req: http.IncomingMessage,
+  vaultDir: string,
+): { ok: true; requestContext: MycoRequestContext } | { ok: false; body: string } {
+  let requestContext: MycoRequestContext;
+  try {
+    // G4: when the daemon has minted a bearer token (via env), enforce
+    // the same context-switch gate the daemon's main HTTP server uses.
+    requestContext = requestContextFromHttpHeaders(req.headers, vaultDir, {
+      expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
+    });
+  } catch (err) {
+    // Preserve the auth-gate contract: a context-switch without the
+    // daemon-issued bearer token is an authorization failure, not a
+    // legacy-vault soft-fail. Re-throw so the caller's existing handling
+    // applies.
+    if (err instanceof UnauthorizedRequestContextError) throw err;
+    // Pre-Grove vault: the resolver threw because there's no Grove project
+    // id to bind to. Surface the soft-fail reason rather than a 500.
+    const result = tryResolveRequestContextForVault(vaultDir);
+    const reason = result.kind === 'legacy'
+      ? result.reason
+      : `No authorized project tenancy for vault ${vaultDir}.`;
+    return { ok: false, body: legacyVaultBody(reason, vaultDir) };
+  }
+
+  if (!isCallerTenancy(requestContext)) {
+    // The request resolved to a synthesized (anchor-derived) tenancy — the
+    // shared runtime would reject this at dispatch. Translate to the
+    // legacy_vault wire contract up front.
+    return {
+      ok: false,
+      body: legacyVaultBody(
+        'This Myco project has no caller-supplied tenancy (it has not been auto-registered yet). '
+        + 'Open the dashboard and commit Myco config to this project from the Symbionts page.',
+        vaultDir,
+      ),
+    };
+  }
+
+  return { ok: true, requestContext };
 }
 
 export function createStreamableMcpHttpHandler(
@@ -67,18 +117,30 @@ export function createStreamableMcpHttpHandler(
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
   return async (req, res) => {
-    const legacyCheck = checkLegacyVault(req, vaultDir);
-    if (!legacyCheck.ok) {
+    let resolved: ReturnType<typeof resolveRequestContextOrLegacy>;
+    try {
+      resolved = resolveRequestContextOrLegacy(req, vaultDir);
+    } catch (err) {
+      // A context-switch without the daemon-issued bearer token is an
+      // authorization failure. Translate it to the same 401
+      // `unauthorized_context_switch` contract the main HTTP server path
+      // returns (daemon/server.ts) so MCP callers get a clear 401 instead
+      // of the generic raw-route -32603/500 that an uncaught throw becomes.
+      if (err instanceof UnauthorizedRequestContextError) {
+        res.statusCode = 401;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+        return;
+      }
+      throw err;
+    }
+    if (!resolved.ok) {
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');
-      res.end(legacyCheck.body);
+      res.end(resolved.body);
       return;
     }
-    // G4: when the daemon has minted a bearer token (via env), enforce
-    // the same context-switch gate the daemon's main HTTP server uses.
-    const requestContext = requestContextFromHttpHeaders(req.headers, vaultDir, {
-      expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
-    });
+    const { requestContext } = resolved;
     const tools = createMycoTools(vaultDir, client, {
       requestContext,
       resolveDatabase: options.resolveDatabase,

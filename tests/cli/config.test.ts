@@ -98,27 +98,34 @@ describe('myco config', () => {
   });
 
   describe('config set', () => {
+    // `myco config set` writes the project myco.yaml via updateConfig, so it
+    // only persists project-tier fields. capture.* moved to Machine tier
+    // (2026-06 scope correction), so these tests use a project-tier field
+    // (release_provenance.github.max_lookups_per_run) to exercise nested-path
+    // set + number coercion + intermediate-object creation.
     it('sets a nested value and persists to file', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'capture.buffer_max_events', '750'], tmpDir);
+      await run(['set', 'release_provenance.github.max_lookups_per_run', '50'], tmpDir);
       const config = readConfig(tmpDir);
-      expect((config.capture as Record<string, unknown>).buffer_max_events).toBe(750);
-      expect(logged.some((l) => l.includes('Set capture.buffer_max_events'))).toBe(true);
+      const rp = config.release_provenance as Record<string, unknown>;
+      expect((rp.github as Record<string, unknown>).max_lookups_per_run).toBe(50);
+      expect(logged.some((l) => l.includes('Set release_provenance.github.max_lookups_per_run'))).toBe(true);
     });
 
     it('coerces number values via JSON parse', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'capture.buffer_max_events', '1000'], tmpDir);
+      await run(['set', 'release_provenance.github.max_lookups_per_run', '100'], tmpDir);
       const config = readConfig(tmpDir);
-      expect((config.capture as Record<string, unknown>).buffer_max_events).toBe(1000);
+      const rp = config.release_provenance as Record<string, unknown>;
+      expect((rp.github as Record<string, unknown>).max_lookups_per_run).toBe(100);
     });
 
     it('creates intermediate objects along dot-path', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'capture.buffer_max_events', '200'], tmpDir);
+      await run(['set', 'release_provenance.github.max_lookups_per_run', '20'], tmpDir);
       const config = readConfig(tmpDir);
-      const capture = config.capture as Record<string, unknown>;
-      expect(capture.buffer_max_events).toBe(200);
+      const rp = config.release_provenance as Record<string, unknown>;
+      expect((rp.github as Record<string, unknown>).max_lookups_per_run).toBe(20);
     });
 
     it('exits 1 on Zod validation failure', async () => {

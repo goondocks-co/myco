@@ -1,46 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
+import { scopePolicyForPath, TIER_LABEL, TIER_TOOLTIP } from '../../config/scope-policy';
 
-type ScopeLabel = 'Personal' | 'Project' | 'Grove' | 'Machine';
-
-/**
- * Local-default mode (defaultScope='local'): a local override already exists.
- * Offers promote (→ project) and reset (→ project) actions.
- */
-interface ScopePillLocalDefaultProps {
-  mode: 'local-default';
-  /** Copy current effective value into project scope, then clear local override. */
-  onPromote: () => void | Promise<void>;
-  /** Clear the local override so the project value shines through. */
-  onReset: () => void | Promise<void>;
-}
-
-/**
- * Shared-default mode (defaultScope='grove'|'project'|'machine'): the field's
- * canonical home is a shared tier. The pill renders always:
- * - No local override: shows the default-tier badge with a "Save Personal"
- *   action — the hard opt-in that writes the current effective value to local.
- * - Local override present: shows "Personal" badge with a "Reset" action that
- *   clears the local override so the shared-tier value takes effect again.
- */
-interface ScopePillSharedDefaultProps {
-  mode: 'shared-default';
-  /** True when the user already has a local override for this field. */
-  hasLocalOverride: boolean;
-  /** The badge to show when no local override is active (e.g. 'grove', 'project'). */
-  defaultScopeBadge: ScopeBadgeProps['scope'];
-  /** Hard opt-in: write the current effective value to local scope. */
-  onSavePersonal: () => void | Promise<void>;
-  /** Clear the local override so the shared-tier value shines through. */
-  onReset: () => void | Promise<void>;
-}
-
-type ScopePillProps = ScopePillLocalDefaultProps | ScopePillSharedDefaultProps;
+type BadgeScope = 'personal' | 'project' | 'grove' | 'all-groves' | 'machine';
 
 interface ScopeBadgeProps {
-  scope: 'personal' | 'project' | 'grove' | 'all-groves' | 'machine';
+  scope: BadgeScope;
 }
 
-const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel | 'All Groves'> = {
+const SCOPE_BADGE_LABELS: Record<BadgeScope, string> = {
   personal: 'Personal',
   project: 'Project',
   grove: 'Grove',
@@ -48,7 +15,7 @@ const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel | 'All Gro
   machine: 'Machine',
 };
 
-const SCOPE_BADGE_TITLES: Record<ScopeBadgeProps['scope'], string> = {
+const SCOPE_BADGE_TITLES: Record<BadgeScope, string> = {
   personal: 'This setting is overridden on this machine',
   project: 'This setting is using the shared project value',
   grove: 'This setting applies to every project in this Grove',
@@ -56,7 +23,7 @@ const SCOPE_BADGE_TITLES: Record<ScopeBadgeProps['scope'], string> = {
   machine: 'This setting applies to every Grove on this machine',
 };
 
-const SCOPE_BADGE_CLASSES: Record<ScopeBadgeProps['scope'], string> = {
+const SCOPE_BADGE_CLASSES: Record<BadgeScope, string> = {
   personal: 'border-sage/40 bg-sage/5 text-sage',
   project: 'border-[var(--ghost-border)] bg-surface-container/40 text-on-surface-variant',
   grove: 'border-ochre/40 bg-ochre/5 text-ochre',
@@ -81,20 +48,43 @@ export function ScopeBadge({ scope }: ScopeBadgeProps) {
   );
 }
 
+/** The home tier maps to the matching display badge. `local` is labeled
+ *  Personal; the other tiers reuse their own badge. */
+const HOME_TIER_BADGE: Record<string, BadgeScope> = {
+  machine: 'machine',
+  grove: 'grove',
+  project: 'project',
+  local: 'personal',
+};
+
+interface ScopePillProps {
+  /** Dotted config path. The scope policy (home + overridableBy) is derived
+   *  from the registry — never passed in. */
+  path: string;
+  /** True when the user already has a Personal (local) override for this field. */
+  hasLocalOverride: boolean;
+  /** Hard opt-in: write the current effective value to the Personal (local) scope. */
+  onSavePersonal: () => void | Promise<void>;
+  /** Clear the Personal override so the home-tier value shines through again. */
+  onReset: () => void | Promise<void>;
+}
+
 /**
- * Compact scope indicator with a click-to-open action menu.
+ * Compact scope indicator with a click-to-open action menu. Scope is derived
+ * from the registry via the field's `path` — the home tier supplies the
+ * inactive badge, and the Personal opt-in/reset affordances appear only when
+ * the registry lists `local` in `overridableBy`. (A field whose policy does
+ * not allow `local` should not render a pill at all; ScopedField shows a
+ * static badge instead.)
  *
- * Two modes:
- * - `local-default`: the field has an active local override of a locally-
- *   defaulted field. Shows "Personal" badge with promote+reset actions.
- * - `shared-default`: the field's canonical tier is grove/project/machine.
- *   When no local override: shows the shared-tier badge with a "Save Personal"
- *   opt-in action. When a local override exists: shows "Personal" badge with
- *   a "Reset" action to restore the shared-tier value.
+ * - No local override: shows the home-tier badge with a "Save Personal"
+ *   opt-in action that writes the current effective value to local.
+ * - Local override present: shows the "Personal" badge with a
+ *   "Reset to <home>" action that clears the override.
  *
  * Closes on Escape or click-outside; menu items get keyboard focus order.
  */
-export function ScopePill(props: ScopePillProps) {
+export function ScopePill({ path, hasLocalOverride, onSavePersonal, onReset }: ScopePillProps) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLSpanElement>(null);
 
@@ -114,53 +104,13 @@ export function ScopePill(props: ScopePillProps) {
     };
   }, [open]);
 
-  if (props.mode === 'local-default') {
-    const { onPromote, onReset } = props;
-    return (
-      <span ref={wrapperRef} className="relative inline-block">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          title="This setting is overridden on this machine"
-          className="cursor-pointer transition-colors hover:bg-sage/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40 rounded-sm"
-        >
-          <ScopeBadge scope="personal" />
-        </button>
-        {open && (
-          <div
-            role="menu"
-            className="absolute left-0 top-full z-10 mt-1 w-44 rounded-md border border-[var(--ghost-border)] bg-surface-container-high p-1 text-xs shadow-lg"
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => { void onPromote(); setOpen(false); }}
-              className="block w-full rounded px-2 py-1 text-left hover:bg-surface-container-highest focus-visible:outline-none focus-visible:bg-surface-container-highest"
-            >
-              Save to project
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => { void onReset(); setOpen(false); }}
-              className="block w-full rounded px-2 py-1 text-left hover:bg-surface-container-highest focus-visible:outline-none focus-visible:bg-surface-container-highest"
-            >
-              Reset to project
-            </button>
-          </div>
-        )}
-      </span>
-    );
-  }
-
-  // shared-default mode
-  const { hasLocalOverride, defaultScopeBadge, onSavePersonal, onReset } = props;
-  const activeBadge: ScopeBadgeProps['scope'] = hasLocalOverride ? 'personal' : defaultScopeBadge;
+  const policy = scopePolicyForPath(path);
+  const homeBadge = HOME_TIER_BADGE[policy.home] ?? 'project';
+  const activeBadge: BadgeScope = hasLocalOverride ? 'personal' : homeBadge;
   const buttonTitle = hasLocalOverride
-    ? 'This setting is overridden on this machine'
-    : SCOPE_BADGE_TITLES[defaultScopeBadge];
+    ? SCOPE_BADGE_TITLES.personal
+    : (TIER_TOOLTIP[policy.home] ?? SCOPE_BADGE_TITLES[homeBadge]);
+  const homeLabel = TIER_LABEL[policy.home] ?? SCOPE_BADGE_LABELS[homeBadge];
 
   return (
     <span ref={wrapperRef} className="relative inline-block">
@@ -186,7 +136,7 @@ export function ScopePill(props: ScopePillProps) {
               onClick={() => { void onReset(); setOpen(false); }}
               className="block w-full rounded px-2 py-1 text-left hover:bg-surface-container-highest focus-visible:outline-none focus-visible:bg-surface-container-highest"
             >
-              Reset to {SCOPE_BADGE_LABELS[defaultScopeBadge]}
+              Reset to {homeLabel}
             </button>
           ) : (
             <button

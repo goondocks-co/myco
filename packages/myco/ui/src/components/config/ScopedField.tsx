@@ -5,6 +5,7 @@ import { useScopedConfig, type Scope } from '../../hooks/use-scoped-config';
 import { useMarkRestartDirty } from './restart-gate';
 import { ScopePill } from './ScopePill';
 import { FieldShell } from './FieldShell';
+import { scopePolicyForPath } from '../../config/scope-policy';
 import type { ConfigPath, ConfigValueAt } from '../../lib/config-paths';
 
 interface ScopedFieldRenderArgs<T> {
@@ -16,71 +17,56 @@ interface ScopedFieldRenderArgs<T> {
 interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
   /** Dotted path into MycoConfig — e.g. 'daemon.log_level'. Static paths
    *  autocomplete; dynamic paths (notifications.domains.<id>.enabled) accept
-   *  any string via the `(string & {})` escape hatch. */
+   *  any string via the `(string & {})` escape hatch.
+   *
+   *  Scope is derived entirely from this path via `scopePolicyForPath` — the
+   *  registry supplies the home (write) tier and whether a Personal override
+   *  is offered. No per-field scope props. */
   path: P;
   label: string;
   hint?: string;
-  /** Which scope to write to when this field changes. */
-  defaultScope?: Scope;
-  /** When set, locks writes to this scope and hides the Personal pill.
-   *  Use for fields that are project-only by design (plan dirs, team identity)
-   *  or machine-only by design (machine_id overrides etc.). */
-  lockScope?: Scope;
-  /**
-   * When false, no Personal pill or promote/reset affordances are rendered.
-   * Edits always land in `defaultScope` (or `lockScope`). Use for embedding
-   * fields or any field that must never have per-machine overrides.
-   * Defaults to `true`.
-   */
-  allowPersonal?: boolean;
   /** When true, flags the page-level restart gate on commit. */
   requiresRestart?: boolean;
   /** Inputs that accept typed text should commit on blur; toggles/selects commit on change. */
   commitOn?: 'change' | 'blur';
   /** Optional transform applied before writing (e.g. string-to-number for text inputs). */
   parse?: (v: T) => T;
-  /**
-   * Override the inactive-state scope badge. Use 'grove' for settings
-   * stored at project scope but applied across every project in the
-   * Grove (e.g. log retention, embedded against the shared Grove DB).
-   */
-  scopeBadgeOverride?: 'personal' | 'project' | 'grove';
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
-function resolveTierBadge(
-  scopeBadgeOverride: 'personal' | 'project' | 'grove' | undefined,
-  lockScope: Scope | undefined,
-  defaultScope: Scope,
-): 'personal' | 'project' | 'grove' {
-  if (scopeBadgeOverride) return scopeBadgeOverride;
-  if (lockScope === 'local') return 'personal';
-  if (lockScope === 'grove' || defaultScope === 'grove') return 'grove';
-  return 'project';
-}
+/** Home tier → the static-badge scope used when no Personal pill renders. */
+const HOME_TIER_STATIC_BADGE: Record<string, 'personal' | 'project' | 'grove' | 'machine'> = {
+  machine: 'machine',
+  grove: 'grove',
+  project: 'project',
+  local: 'personal',
+};
 
 export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   path,
   label,
   hint,
-  defaultScope = 'local',
-  lockScope,
-  allowPersonal = true,
   requiresRestart,
   commitOn = 'change',
   parse,
-  scopeBadgeOverride,
   children,
 }: ScopedFieldProps<P, T>) {
-  const { effective: effectiveConfig, local, setField, resetField, promoteField } = useScopedConfig();
+  const { effective: effectiveConfig, local, setField, resetField } = useScopedConfig();
   const markRestartDirty = useMarkRestartDirty();
+
+  // Scope flows from the registry, never from props. The home tier is the
+  // write target; the Personal affordance renders only when the policy lists
+  // `local` in `overridableBy`.
+  const policy = scopePolicyForPath(path);
+  const allowsPersonal = policy.overridableBy.includes('local');
+  const writeScope = policy.home as Scope;
 
   // Re-derive each render so values stay in sync; use a ref in commit so the
   // callback identity doesn't churn on every refetch (React Query returns a
   // new object reference even when data is unchanged).
   const effective = getAtPath((effectiveConfig ?? {}) as Record<string, unknown>, path) as T | undefined;
-  const hasLocalOverride = !lockScope && getAtPath((local ?? {}) as Record<string, unknown>, path) !== undefined;
-  const writeScope: Scope = lockScope ?? defaultScope;
+  const hasLocalOverride = allowsPersonal
+    && getAtPath((local ?? {}) as Record<string, unknown>, path) !== undefined;
 
   const effectiveRef = useRef(effective);
   effectiveRef.current = effective;
@@ -131,52 +117,28 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
     editingRef.current = false;
   }, [commit, commitOn, draft]);
 
-  // Resolve the badge for the field's default tier, used in both the static
-  // badge (inactive state) and the shared-default pill trigger.
-  const defaultTierBadge = resolveTierBadge(scopeBadgeOverride, lockScope, defaultScope);
-
-  let indicator: ReactNode = undefined;
-  if (!lockScope && allowPersonal) {
-    if (defaultScope === 'local') {
-      // Local-default: pill only appears when a local override exists.
-      // Offers promote (→ project) and reset (→ project) actions.
-      if (hasLocalOverride) {
-        indicator = (
-          <ScopePill
-            mode="local-default"
-            onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
-            onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
-          />
-        );
+  // Personal pill renders only when the registry allows a local override.
+  // When it does, the pill renders always: no override → "Save Personal"
+  // opt-in writes the effective value to local; override present → "Reset"
+  // clears local so the home tier takes effect.
+  const indicator: ReactNode = allowsPersonal ? (
+    <ScopePill
+      path={path}
+      hasLocalOverride={hasLocalOverride}
+      onSavePersonal={() =>
+        setField(path, effectiveRef.current as T, 'local').catch((err) =>
+          console.error('[scoped-field] save-personal failed', err),
+        )
       }
-    } else {
-      // Shared-default (grove / project / machine): pill renders always.
-      // No local override → "Save Personal" opt-in writes effective value → local.
-      // Local override present → "Reset" clears local so shared tier takes effect.
-      indicator = (
-        <ScopePill
-          mode="shared-default"
-          hasLocalOverride={hasLocalOverride}
-          defaultScopeBadge={defaultTierBadge === 'personal' ? 'project' : defaultTierBadge}
-          onSavePersonal={() =>
-            setField(path, effectiveRef.current as T, 'local').catch((err) =>
-              console.error('[scoped-field] save-personal failed', err),
-            )
-          }
-          onReset={() =>
-            resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))
-          }
-        />
-      );
-    }
-  }
+      onReset={() =>
+        resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))
+      }
+    />
+  ) : undefined;
 
-  // The static badge shown when no pill is rendered (allowPersonal=false, lockScope,
-  // or local-default with no override). When allowPersonal=true and shared-default,
-  // the pill always renders and replaces the static badge.
-  const staticBadge = (allowPersonal && defaultScope !== 'local' && !lockScope)
-    ? undefined  // pill always present, no separate badge needed
-    : defaultTierBadge;
+  // When no Personal pill renders (registry locks the field to its home tier),
+  // show a static home-tier badge instead.
+  const staticBadge = HOME_TIER_STATIC_BADGE[policy.home] ?? 'project';
 
   return (
     <div id={configFieldId(path)} data-config-field={path} className="rounded-md transition-all duration-300">

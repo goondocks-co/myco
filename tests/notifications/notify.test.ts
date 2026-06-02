@@ -17,9 +17,19 @@ import { clearAll } from '@myco/notifications/registry';
 
 describe('notify', () => {
   let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notify-'));
+    // notifications.* is Machine-tier (2026-06 scope correction), so the
+    // tier-strip migration inside loadMergedConfig relocates notifications
+    // from myco.yaml into machine config. Sandbox MYCO_HOME so that write
+    // lands in a temp dir instead of the developer's real ~/.myco/config.yaml
+    // (which would both contaminate it and break the idempotency skip).
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notify-home-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
     ensureProjectManifest(tmpDir, { projectName: 'notify-test' });
     const db = initDatabase(path.join(tmpDir, 'index.db'));
     createSchema(db);
@@ -32,6 +42,9 @@ describe('notify', () => {
     clearAll();
     closeDatabase();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
   });
 
   it('respects the global summary default over registry defaults', () => {

@@ -15,6 +15,7 @@
  */
 import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import type { RunRow, TaskRow } from '../../hooks/use-agent';
+import { REASONING_LEVELS } from '../../hooks/use-providers';
 import type { ProviderConfig, PhaseOverride } from '../../hooks/use-providers';
 import { extractSharedInputs, extractTemplateVars } from './shared-inputs';
 import { fromWireProvider, type LooseWireProviderConfig } from './provider-coercion';
@@ -44,8 +45,6 @@ export interface RerunPrefill {
   phaseOverrides: Record<string, PhaseOverride>;
   hasAnyOverride: boolean;
 }
-
-const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ['low', 'default', 'high'];
 
 function coerceReasoning(value: string | undefined): ReasoningLevel | undefined {
   if (!value) return undefined;

@@ -4,10 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
-import {
-  resolveRequestContextForVault,
-  type MycoRequestContext,
-} from './request-context.js';
+import { isCallerTenancy, type MycoRequestContext } from './request-context.js';
 import {
   readPivot,
   resolveCallContext,
@@ -157,11 +154,51 @@ const HANDLERS = new Map<string, ToolLoader>([
   }],
 ]);
 
+/**
+ * Require a caller-supplied tenancy on the tools runtime.
+ *
+ * Every NON-UI transport (CLI from env, MCP from headers, the stdio bridge,
+ * in-process agent runs) funnels through `createMycoTools`. A legitimate
+ * transport hands us a context whose `tenancySource` is `'caller'` — the
+ * project/grove identity was supplied by the caller and survived the
+ * context-switch auth gate. An absent context, or one whose tenancy was
+ * `'synthesized'` from the daemon's bootstrap-anchor vault, is the tool-layer
+ * twin of the bootstrap-anchor leak: it silently derives tenancy from the
+ * anchor instead of the caller. Reject it loudly with the same typed
+ * `legacy_vault` code the MCP-HTTP layer already returns, so CLI and MCP
+ * clients get a consistent, typed "this project context isn't authorized /
+ * hasn't been auto-registered yet" error rather than a silent anchor default.
+ *
+ * Lives at the tools layer (not `daemon/request-principal.ts`) because
+ * `tools/` is the shared runtime imported by daemon AND cli AND mcp; importing
+ * the daemon principal here would be a layering violation.
+ */
+function requireCallerTenancy(context: MycoRequestContext | undefined): MycoRequestContext {
+  if (!context || !isCallerTenancy(context)) {
+    throw new ToolError(
+      'legacy_vault',
+      'Myco tools require a caller-supplied request context (project/Grove tenancy). '
+      + 'No authorized tenancy was supplied; refusing to default to the bootstrap-anchor vault. '
+      + 'CLI callers set MYCO_PROJECT_ID/MYCO_GROVE_ID; MCP callers send x-myco-project-id/x-myco-grove-id.',
+    );
+  }
+  return context;
+}
+
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
   let logDirReady = false;
   let collectiveProbe: Promise<boolean> | null = null;
-  const requestContext = options.requestContext ?? resolveRequestContextForVault(vaultDir);
-  const logDir = resolveDaemonLogDir(vaultDir, { requestContext, env: process.env });
+  let logDirCache: string | null = null;
+
+  // Resolve the daemon log dir lazily and only once we have a guarded
+  // caller context — the previous eager `resolveRequestContextForVault`
+  // fallback derived tenancy from the anchor vault at construction time.
+  function resolveLogDir(context: MycoRequestContext): string {
+    if (logDirCache === null) {
+      logDirCache = resolveDaemonLogDir(vaultDir, { requestContext: context, env: process.env });
+    }
+    return logDirCache;
+  }
 
   async function runWithRequestDatabase<T>(
     context: MycoRequestContext,
@@ -281,7 +318,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     return 'a valid value';
   }
 
-  function logActivity(tool: string, detail: Record<string, unknown>): void {
+  function logActivity(context: MycoRequestContext, tool: string, detail: Record<string, unknown>): void {
     const entry = JSON.stringify({
       timestamp: new Date().toISOString(),
       component: 'mcp',
@@ -290,6 +327,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       ...detail,
     }) + '\n';
     try {
+      const logDir = resolveLogDir(context);
       if (!logDirReady) {
         fs.mkdirSync(logDir, { recursive: true });
         logDirReady = true;
@@ -317,12 +355,12 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     switch (op) {
       case 'digest': {
         const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client, context);
-        logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
         return result;
       }
       case 'instructions': {
         const result = await cortex.handleCortexInstructions(client, context);
-        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       case 'canopy_entry':
@@ -331,17 +369,17 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
         return await dispatchCanopyMap(input, context, start, cortex.handleCortexCanopyMap);
       case 'notifications': {
         const result = await cortex.handleCortexNotifications(input as unknown as Parameters<typeof cortex.handleCortexNotifications>[0], client, context);
-        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       case 'maintenance_summary': {
         const result = await cortex.handleCortexMaintenanceSummary(client, context);
-        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       case 'projects_activity': {
         const result = await cortex.handleCortexProjectsActivity(client, context);
-        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       default:
@@ -361,7 +399,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
           input as unknown as Parameters<typeof handleCortexCanopyEntry>[0],
           context,
         );
-        logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: context.projectId, path: input.path, duration_ms: Date.now() - start });
+        logActivity(context, TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: context.projectId, path: input.path, duration_ms: Date.now() - start });
         return result;
       });
     } catch (err) {
@@ -389,7 +427,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
         const machineId = context.machineId;
         const sessionId = context.sessionId;
         const result = await handleCortexCanopyMap({ projectId, machineId });
-        logActivity(TOOL_CORTEX, {
+        logActivity(context, TOOL_CORTEX, {
           op: 'canopy_map',
           is_empty: (result as { is_empty?: boolean }).is_empty === true,
           token_estimate: (result as { token_estimate?: number }).token_estimate,
@@ -415,9 +453,9 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
    * resolution — those fields aren't in their schemas, so they were
    * already rejected by `validateInput`.
    */
-  function effectiveContextFor(name: string, input: ToolInput): MycoRequestContext {
-    if (name.startsWith('collective_')) return requestContext;
-    return resolveCallContext(requestContext, readPivot(input));
+  function effectiveContextFor(base: MycoRequestContext, name: string, input: ToolInput): MycoRequestContext {
+    if (name.startsWith('collective_')) return base;
+    return resolveCallContext(base, readPivot(input));
   }
 
   return {
@@ -430,11 +468,15 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     },
 
     async callTool(name: string, args?: unknown): Promise<unknown> {
+      // Every tool call needs caller-supplied tenancy. Reject absent /
+      // synthesized contexts loudly before any DB or scope resolution so a
+      // caller can never silently default to the bootstrap-anchor vault.
+      const base = requireCallerTenancy(options.requestContext);
       const input = normalizeInput(args);
       const definition = await getAvailableDefinition(name);
       validateInput(definition, input);
       const start = Date.now();
-      const context = effectiveContextFor(name, input);
+      const context = effectiveContextFor(base, name, input);
       // Pivot fields are dispatcher-only; strip them so handlers can't
       // accidentally forward them as URL query params or row filters.
       const handlerInput = stripPivotFields(input);
@@ -447,7 +489,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
       const entry = await loader();
       const result = await runWithRequestDatabase(context, () => entry.handle(handlerInput, client, context));
-      logActivity(name, {
+      logActivity(context, name, {
         ...(entry.summarize?.(handlerInput, result) ?? {}),
         duration_ms: Date.now() - start,
       });

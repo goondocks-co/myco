@@ -15,6 +15,7 @@ import {
   tryResolveRequestContextForVault,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import { resolveTenantConfig } from './request-config.js';
 import {
   countBatchesBySession,
   PROMPT_BATCH_ORIGIN,
@@ -64,17 +65,12 @@ export async function triggerTitleSummary(
   trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
 ): Promise<void> {
   const { vaultDir, embeddingManager, liveConfig, logger } = deps;
-  const config = liveConfig.current;
 
-  if (config.agent.summary_batch_interval <= 0) return;
-  if (config.agent.event_tasks_enabled === false) return;
-
-  if (trigger?.evaluateBoundary) {
-    if (trigger.promptOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) return;
-    const humanCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
-    if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
-  }
-
+  // Resolve the request context BEFORE the config gates so the gates read the
+  // REQUEST grove's merged config — not the daemon's bootstrap-home liveConfig.
+  // `summary_batch_interval` / `event_tasks_enabled` are grove-tier (PR #394),
+  // so gating on liveConfig would gate a tenant op on the wrong grove.
+  //
   // runAgent calls projectScopeFromRequestContext, which throws when no
   // context is supplied. The Stop pipeline used to pass no context here
   // and every title-summary task failed with that exact error. Supply the
@@ -88,6 +84,19 @@ export async function triggerTitleSummary(
     }
     // Legacy non-Grove vaults fall through with requestContext undefined;
     // runAgent will surface the underlying error via its own try/catch.
+  }
+
+  // Legacy non-Grove vaults (requestContext undefined) fall back to liveConfig;
+  // resolveTenantConfig returns the fallback when no tenant context resolves.
+  const config = resolveTenantConfig(requestContext, liveConfig.current, { logger });
+
+  if (config.agent.summary_batch_interval <= 0) return;
+  if (config.agent.event_tasks_enabled === false) return;
+
+  if (trigger?.evaluateBoundary) {
+    if (trigger.promptOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) return;
+    const humanCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
+    if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
   }
 
   try {

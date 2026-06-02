@@ -18,7 +18,7 @@ import type { DaemonServer } from '../server.js';
 import type { PowerManager } from '../power.js';
 import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { resolveTenantConfig } from '../request-config.js';
 import { cleanStaleBuffers } from '@myco/capture/buffer.js';
 import { closeSession, updateSession, getSession } from '@myco/db/queries/sessions.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
@@ -110,15 +110,6 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     vaultDir,
   } = deps;
 
-  function configForRequest(req: RouteRequest): MycoConfig {
-    const ctx = req.requestContext;
-    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
-    try {
-      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
-    } catch {
-      return liveConfig.current;
-    }
-  }
   // Read through `deps` on every register call so the holder set after
   // registerPowerJobs becomes visible to subsequent SessionStart events.
   const canopyRegistryHolder = (): CanopyJobsRegistry | undefined => deps.canopyRegistry;
@@ -185,7 +176,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
         machineId: requestMachineId,
         sessionId: session_id,
         capturePoint: 'session_start',
-        productionRef: primaryProductionRef(configForRequest(req)),
+        productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
         logger,
       },
       (provenance) => {
@@ -250,7 +241,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       machineId: req.requestContext?.machineId ?? machineId,
       sessionId: session_id,
       capturePoint: 'session_end',
-      productionRef: primaryProductionRef(configForRequest(req)),
+      productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
       logger,
     });
     registry.unregister(session_id);

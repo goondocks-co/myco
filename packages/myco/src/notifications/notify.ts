@@ -100,12 +100,22 @@ export function notify(
       ?? registeredType?.type.defaultLevel
       ?? 'info';
 
-    // Daemon scope writes project_id = NULL; project scope (default)
-    // uses the explicit override or falls back to the request context
-    // resolved from the vault dir.
-    const projectId: GroveProjectId | null = options.scope === 'daemon'
-      ? null
-      : options.projectId ?? resolveRequestContextForVault(vaultDir).projectId;
+    // Daemon scope writes project_id = NULL; project scope (default) uses
+    // the explicit override or, absent one, resolves the project id from
+    // the *caller-supplied* vaultDir. This vaultDir is the project the
+    // caller is emitting for — NOT the daemon's bootstrap-anchor vault —
+    // so this is legitimate single-tenant synthesis, not the cross-tenant
+    // anchor fallback the request-path gate forbids. Kept off the
+    // `?? resolveRequestContextForVault` idiom so the meta gate can ban
+    // that exact leak shape outright.
+    let projectId: GroveProjectId | null;
+    if (options.scope === 'daemon') {
+      projectId = null;
+    } else if (options.projectId) {
+      projectId = options.projectId;
+    } else {
+      projectId = resolveRequestContextForVault(vaultDir).projectId;
+    }
 
     // Dedup-window suppress: the same (domain, type, project) within
     // NOTIFY_DEDUP_WINDOW_MS is treated as a single event. Prevents

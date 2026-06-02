@@ -136,9 +136,9 @@ describe('cross-route API key leak guard', () => {
     // Wire up a representative surface of routes.
     server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
     server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-    server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(tmpVault));
-    server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(tmpVault, req));
-    server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(tmpVault, req));
+    server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets());
+    server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
+    server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
     server.registerRoute('GET', '/api/models', handleGetModels);
 
     const embeddingManager = {

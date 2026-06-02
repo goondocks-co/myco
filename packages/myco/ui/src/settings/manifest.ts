@@ -161,13 +161,24 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         customRender: 'card-owns',
       },
       {
+        key: 'agent.reasoningLevel',
+        label: 'Default reasoning profile',
+        scope: 'grove',
+        kind: 'select',
+        category: 'Agent',
+        icon: 'Bot',
+        options: ['low', 'default', 'high'],
+        note: 'Grove-wide default reasoning tier. Resolves to a model through the reasoning profiles, so it stays portable across model upgrades. Tasks may override per-task.',
+        customRender: 'card-owns',
+      },
+      {
         key: 'agent.model',
-        label: 'Default model',
+        label: 'Default model (advanced)',
         scope: 'grove',
         kind: 'text',
         category: 'Agent',
         icon: 'Bot',
-        note: 'Grove-wide default model used when neither the provider block nor a per-task override sets one.',
+        note: 'Escape hatch — pins a specific model SKU when a reasoning tier has no mapping (e.g. local providers without a reasoning map).',
         customRender: 'card-owns',
       },
       {
@@ -280,7 +291,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.transcript_paths',
         label: 'Transcript paths',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -289,7 +300,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.plan_dirs',
         label: 'Plan directories',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -299,7 +310,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.ignore_plan_dirs_in_git',
         label: 'Add plan dirs to .gitignore',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -309,7 +320,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.artifact_extensions',
         label: 'Artifact extensions',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -318,7 +329,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.buffer_max_events',
         label: 'Event buffer size',
-        scope: 'project',
+        scope: 'machine',
         kind: 'number',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -440,7 +451,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.enabled',
         label: 'Enable notifications',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Notifications',
         icon: 'Bell',
@@ -450,7 +461,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.default_mode',
         label: 'Default mode',
-        scope: 'project',
+        scope: 'machine',
         kind: 'select',
         category: 'Notifications',
         icon: 'Bell',
@@ -461,7 +472,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.system_notifications',
         label: 'Browser system notifications',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Notifications',
         icon: 'Bell',
@@ -480,7 +491,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'skills.confidence_threshold',
         label: 'Auto-promote confidence',
-        scope: 'project',
+        scope: 'grove',
         kind: 'number',
         category: 'Skills',
         icon: 'Sparkles',
@@ -492,7 +503,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'skills.usage_stale_days',
         label: 'Stale-skill window (days)',
-        scope: 'project',
+        scope: 'grove',
         kind: 'number',
         category: 'Skills',
         icon: 'Sparkles',
@@ -673,7 +684,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         category: 'Update',
         icon: 'RotateCcw',
         options: ['stable', 'beta'],
-        note: 'Use beta for dogfood/preview builds. Project local.yaml can override per-project.',
+        note: 'Use beta for dogfood/preview builds. Machine-wide — one channel per machine.',
         customRender: 'card-owns',
       },
     ],

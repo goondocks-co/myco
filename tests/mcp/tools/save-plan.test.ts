@@ -153,6 +153,7 @@ describe('myco_plans op: save (in-process)', () => {
       groveId: 'grove-a',
       machineId: 'machine-a',
       source: 'explicit',
+      tenancySource: 'caller',
     });
     const contextB = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-b',
@@ -160,6 +161,7 @@ describe('myco_plans op: save (in-process)', () => {
       groveId: 'grove-a',
       machineId: 'machine-b',
       source: 'explicit',
+      tenancySource: 'caller',
     });
 
     const first = await handleMycoPlans({
@@ -201,6 +203,7 @@ describe('myco_plans op: save (in-process)', () => {
       groveId: 'grove-c',
       machineId: 'machine-c',
       source: 'explicit',
+      tenancySource: 'caller',
     });
 
     const result = await handleMycoPlans({
@@ -222,6 +225,7 @@ describe('myco_plans op: save (in-process)', () => {
       groveId: 'grove-d',
       machineId: 'machine-d',
       source: 'explicit',
+      tenancySource: 'caller',
     });
 
     const result = await handleMycoPlans({
