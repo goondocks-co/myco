@@ -27,6 +27,7 @@ import { composeSessionStartContext } from '@myco/context/session-start-context.
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
+import { resolveTenantConfig } from '../request-config.js';
 import { recordInjectionAndShouldSuppress } from '../injection-records.js';
 import { resolvePlanIntentNudge } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -88,7 +89,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
   return async function handleSessionContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, branch } = SessionContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
-    const config = liveConfig.current;
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
@@ -214,7 +215,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
   return async function handleSubagentContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, agent, agent_id, agent_type } = SubagentContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
-    const config = liveConfig.current;
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Subagent context query', {
       session_id,
@@ -411,7 +412,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig, embeddingManager } = deps;
-    const config = liveConfig.current;
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
 

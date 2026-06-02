@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { resolveTenantConfig } from '../request-config.js';
 import type { TeamSyncClient } from '../team-sync.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -36,13 +36,7 @@ export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) 
   // falling back to the daemon's `liveConfig` only when no tenant context is
   // resolved. Mirrors the pattern in event-dispatch / stop-processing.
   function configForRequest(req: RouteRequest): MycoConfig {
-    const ctx = req.requestContext;
-    if (!ctx?.projectVaultDir || !ctx.groveId) return deps.liveConfig.current;
-    try {
-      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
-    } catch {
-      return deps.liveConfig.current;
-    }
+    return resolveTenantConfig(req.requestContext, deps.liveConfig.current);
   }
 
   async function handleGetInstructions(
