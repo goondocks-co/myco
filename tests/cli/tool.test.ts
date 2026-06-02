@@ -4,29 +4,65 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/tool.js';
-import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { openDatabase, withDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
-import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveGroveDbPath, resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 
+const CLI_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
 describe('myco tool CLI', () => {
+  // Mkdtemp root, removed in afterEach.
+  let rootDir: string;
+  // Grove-bound vault dir handed to `run` — what the CLI binds to.
   let tmpDir: string;
   let originalStdoutWrite: typeof process.stdout.write;
   let written: string[];
   let servers: http.Server[];
   let digestHeaders: http.IncomingHttpHeaders[];
+  // Grove DB the CLI resolves to under the stubbed caller context — DB-backed
+  // tool calls (myco_plans) read/write here, not tmpDir/myco.db.
+  let groveDbPath: string;
 
   beforeAll(() => {
     setupTestDb();
   });
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tool-cli-'));
-    ensureProjectManifest(tmpDir, { projectName: 'tool-cli-test' });
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tool-cli-'));
+    // The CLI (requestContextFromEnvironment) only yields a caller-supplied
+    // tenancy for a Grove-bound project with MYCO_PROJECT_ID + MYCO_GROVE_ID
+    // in env. createMycoTools now rejects synthesized (anchor-derived)
+    // tenancy, so the test fixture mirrors the real post-Grove CLI contract:
+    // a registered Grove project plus the matching caller env.
+    const home = path.join(rootDir, 'home');
+    const projectRoot = path.join(rootDir, 'project');
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    vi.stubEnv('MYCO_HOME', home);
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: CLI_PROJECT_ID, name: 'tool-cli-test' },
+      grove: { binding_id: 'gbind-cli', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: CLI_PROJECT_ID,
+      projectName: 'tool-cli-test',
+      projectRoot,
+      bindingId: 'gbind-cli',
+    }, home);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, projectRoot);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, CLI_PROJECT_ID);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, grove.id);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.machineId, 'machine-a');
+    groveDbPath = resolveGroveDbPath(grove.id, home);
+    fs.mkdirSync(path.dirname(groveDbPath), { recursive: true });
+    tmpDir = vaultDir;
     written = [];
     servers = [];
     digestHeaders = [];
@@ -51,7 +87,7 @@ describe('myco tool CLI', () => {
     for (const server of servers) server.close();
     try { fs.unlinkSync(resolveServiceDaemonStatePath()); } catch { /* gone */ }
     process.exitCode = 0;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
   afterAll(() => {
@@ -105,12 +141,10 @@ describe('myco tool CLI', () => {
   });
 
   it('forwards explicit environment request context to daemon-backed tools', async () => {
-    const home = path.join(tmpDir, 'home');
-    const projectRoot = path.join(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const home = path.join(rootDir, 'explicit-home');
+    const projectRoot = path.join(rootDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const vaultDir = path.join(projectRoot, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
-    const { saveProjectManifest } = await import('@myco/config/project-manifest.js');
-    const { createGrove, registerProjectInGrove } = await import('@myco/grove/registry.js');
     const grove = createGrove('Work', home);
     saveProjectManifest(vaultDir, {
       project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
@@ -166,12 +200,16 @@ describe('myco tool CLI', () => {
 
   it('flushes large JSON tool output before returning', async () => {
     await startDaemonStub();
-    const db = openDatabase(path.join(tmpDir, 'myco.db'));
+    // The CLI resolves its DB from the caller context's Grove DB path, and
+    // grove-bound reads filter by project_id — write the plan there with the
+    // matching project scope so the read finds it.
+    const db = openDatabase(groveDbPath);
     try {
       createSchema(db);
       withDatabase(db, () => {
         upsertPlan({
           id: 'large-plan',
+          project_id: CLI_PROJECT_ID,
           logical_key: 'session:s:key:large-plan',
           title: 'Large plan',
           content: 'x'.repeat(70_000),

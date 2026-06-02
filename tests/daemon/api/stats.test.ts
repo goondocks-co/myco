@@ -118,6 +118,9 @@ describe('createLiveStatsHandler', () => {
       machineId: 'machine-a',
       sessionId: 'sess-a',
       source: 'explicit',
+      // Explicit project/grove pivot = caller-asserted tenancy; the scope seam
+      // binds a Grove-bound context to project scope only when caller-asserted.
+      tenancySource: 'caller',
     });
     requestContext.databasePath = '/tmp/grove-a/myco.db';
 

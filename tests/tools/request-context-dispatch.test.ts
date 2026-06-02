@@ -44,6 +44,9 @@ function createFixture(projectId = PROJECT_A): {
     groveId: 'grove-a',
     machineId: 'machine-a',
     source: 'explicit',
+    // createMycoTools requires caller-supplied tenancy; the fixture stands
+    // in for a real CLI/MCP caller context.
+    tenancySource: 'caller',
   });
 
   return {

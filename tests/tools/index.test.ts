@@ -14,6 +14,10 @@ const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());
 const FIXTURE_CONTEXT = resolveLegacyRequestContext(FIXTURE_VAULT, {
   projectId: FIXTURE_PROJECT_ID,
   machineId: 'test-machine',
+  // Legitimate transports (CLI env, MCP headers) hand createMycoTools a
+  // caller-supplied context; the runtime now rejects absent/synthesized
+  // tenancy, so the fixture mirrors the real caller case.
+  tenancySource: 'caller',
 });
 
 function mockClient(options?: { collective?: boolean; digest?: unknown }): DaemonClient {
@@ -143,6 +147,16 @@ describe('Myco tools dispatcher', () => {
       return dir;
     }
 
+    // createMycoTools now requires a caller-supplied context — the runtime no
+    // longer falls back to deriving tenancy from the anchor vault.
+    function callerContext(vaultDir: string) {
+      return resolveLegacyRequestContext(vaultDir, {
+        projectId: FIXTURE_PROJECT_ID,
+        machineId: 'test-machine',
+        tenancySource: 'caller',
+      });
+    }
+
     // Both log-shape tests pair an async dispatcher call with a synchronous
     // log-file read. logActivity() uses fs.appendFileSync (deliberate — see
     // tools/index.ts) so the entry is on disk before await resolves; under
@@ -154,7 +168,7 @@ describe('Myco tools dispatcher', () => {
       const vaultDir = freshVault();
       const tools = createMycoTools(vaultDir, mockClient({
         digest: { tiers: [{ tier: 5000, content: 'd', generated_at: 1 }] },
-      }));
+      }), { requestContext: callerContext(vaultDir) });
       await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
       const entry = await readLastLog(vaultDir);
       expect(entry.tool).toBe('myco_cortex');
@@ -173,7 +187,7 @@ describe('Myco tools dispatcher', () => {
           if (endpoint === '/api/team/status') return { ok: true, data: { collective_connected: false } };
           return { ok: true, data: { results: [] } };
         });
-      const tools = createMycoTools(vaultDir, client);
+      const tools = createMycoTools(vaultDir, client, { requestContext: callerContext(vaultDir) });
       await tools.callTool('myco_search', { query: 'auth' });
       const entry = await readLastLog(vaultDir);
       expect(entry.tool).toBe('myco_search');

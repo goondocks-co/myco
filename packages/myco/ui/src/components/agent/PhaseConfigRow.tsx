@@ -27,6 +27,7 @@ import { Input } from '../ui/input';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
 import {
   resolveReasoningModel,
+  REASONING_LEVELS,
   type ProviderConfig,
   type ProviderInfo,
   type PhaseOverride,
@@ -45,8 +46,6 @@ export interface PhaseConfigRowProps {
   isLoadingProviders: boolean;
   onChange: (update: PhaseOverride | null) => void;
 }
-
-const REASONING_LEVELS: ReasoningLevelUi[] = ['low', 'default', 'high'];
 
 export function PhaseConfigRow({
   phase,

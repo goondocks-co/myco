@@ -90,6 +90,45 @@ export function propagateLegacySecrets(vaultDir: string, mycoHome: string): stri
   return propagated;
 }
 
+/**
+ * Relocate a legacy project-vault `secrets.env` into the machine-wide
+ * `~/.myco/secrets.env` and DELETE the project file. Combines
+ * `propagateLegacySecrets` (lift keys, machine value wins on conflict)
+ * with an unconditional purge of the project file.
+ *
+ * Unlike the one-shot global-install migration — which performs the same
+ * relocate+purge but is sentinel-gated and runs ONCE per project — this
+ * helper is idempotent and safe to call on EVERY daemon boot. The
+ * sentinel-gated migration leaves a window open: a project `secrets.env`
+ * that materializes AFTER the migration sentinel is written (a hand-placed
+ * file, a resurrected branch) is never lifted or purged. The provider-secrets
+ * dashboard no longer reads the `project` scope, so such a file becomes an
+ * orphaned credential — still consumed by `loadLayeredSecrets` at provider
+ * init, yet invisible and undeletable in the UI. Running this at the
+ * secrets-load seam closes that window: the project file is relocated to
+ * machine secrets (where the dashboard CAN see and delete it) and removed
+ * before it can be loaded as a project-scoped fallback.
+ *
+ * No-op when the project `secrets.env` is absent. Returns the keys lifted
+ * (machine-absent keys only); keys already present at machine scope are
+ * dropped on purge since the machine value is canonical.
+ */
+export function relocateLegacyProjectSecrets(vaultDir: string, mycoHome: string): string[] {
+  const secretsPath = path.join(vaultDir, SECRETS_FILE);
+  if (!fs.existsSync(secretsPath)) return [];
+  const propagated = propagateLegacySecrets(vaultDir, mycoHome);
+  // Purge the project file regardless of how many keys were lifted: keys
+  // already at machine scope are intentionally discarded (machine wins),
+  // and lifted keys now live at their canonical home. Best-effort — a
+  // failed unlink retries on the next boot.
+  try {
+    fs.rmSync(secretsPath, { force: true });
+  } catch {
+    // Leave the file in place; the next boot retries the relocate+purge.
+  }
+  return propagated;
+}
+
 /** Remove one or more secrets from <vault>/secrets.env, preserving remaining entries. */
 export function deleteSecrets(vaultDir: string, keys: string[]): void {
   const secretsPath = path.join(vaultDir, SECRETS_FILE);

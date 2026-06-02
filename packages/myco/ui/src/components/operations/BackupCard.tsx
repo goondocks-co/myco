@@ -263,7 +263,6 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         <ScopedField
           path="backup.dir"
           label="Backup Directory"
-          defaultScope="local"
           commitOn="blur"
           requiresRestart
           hint="leave blank for default .myco/backups; ~ supported"

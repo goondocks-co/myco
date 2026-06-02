@@ -36,6 +36,14 @@ export const TEST_REQUEST_CONTEXT: MycoRequestContext = resolveLegacyRequestCont
   projectId: TEST_PROJECT_ID,
   groveId: null,
   machineId: 'test-machine',
+  // These fixtures stand in for a legitimate caller-supplied request context
+  // (the kind production transports hand handlers). The scope seam
+  // (projectScopeFromRequestContext) now binds a Grove-bound context to its
+  // project scope ONLY when tenancy is caller-asserted; a synthesized context
+  // resolves to GLOBAL_SCOPE. Default to 'caller' so Grove-bound fixtures keep
+  // exercising project-scoped reads. Tests that specifically need a synthesized
+  // context pass `tenancySource: 'synthesized'`.
+  tenancySource: 'caller',
 });
 
 /**
@@ -50,6 +58,7 @@ export function makeTestRequestContext(
     groveId: string | null;
     machineId: string;
     sessionId: string | null;
+    tenancySource: MycoRequestContext['tenancySource'];
   }> = {},
 ): MycoRequestContext {
   return resolveLegacyRequestContext(overrides.vaultDir ?? TEST_VAULT_DIR, {
@@ -57,5 +66,6 @@ export function makeTestRequestContext(
     groveId: overrides.groveId ?? null,
     machineId: overrides.machineId ?? 'test-machine',
     sessionId: overrides.sessionId ?? null,
+    tenancySource: overrides.tenancySource ?? 'caller',
   });
 }

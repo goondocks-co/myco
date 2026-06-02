@@ -47,6 +47,7 @@ import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
 import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
+import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -263,6 +264,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
   const lastReleaseReconcileAt = new Map<string, number>();
+  const lastManagedReconcileAt = new Map<string, number>();
 
   // Daemon-scope notification (project_id = NULL) so failures surface in
   // the dashboard regardless of which project the user is viewing.
@@ -658,6 +660,58 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       // can't grow unbounded across long-running daemons.
       for (const key of lastReleaseReconcileAt.keys()) {
         if (!visited.has(key)) lastReleaseReconcileAt.delete(key);
+      }
+    },
+  });
+
+  // Periodically re-sync each registered project's managed local files
+  // (AGENTS.md guidance block + `.gitignore` Myco block) against its merged
+  // config. This replaces the write-time fan-out, which only reconciled the
+  // one project just edited: machine-scoped `capture.*` settings affect every
+  // project's `.gitignore`/AGENTS.md, so a single project's write can't be the
+  // trigger. The sweep walks all registered projects through the same
+  // single-writer reconciler and is idempotent — a project already in sync is
+  // a no-op.
+  powerManager.register({
+    name: POWER_JOB_NAMES.MANAGED_FILES_RECONCILE,
+    runIn: ['active', 'idle', 'sleep'],
+    fn: async () => {
+      const now = Date.now();
+      const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+      const visited = new Set<string>();
+      await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ grove, projectId, projectRoot, projectVaultDir }: RegisteredProjectScope) => {
+          const key = `${grove.id}:${projectId}`;
+          visited.add(key);
+          const lastRun = lastManagedReconcileAt.get(key) ?? 0;
+          if (now - lastRun < RECONCILE_INTERVAL_MS) return;
+          lastManagedReconcileAt.set(key, now);
+          const result = reconcileManagedProjectFiles(projectRoot, projectVaultDir, grove.id);
+          if (result && (result.gitignore || result.agentsMd)) {
+            logger.info(
+              LOG_KINDS.MANAGED_FILES_RECONCILE,
+              'Reconciled managed project files',
+              { project_id: projectId, gitignore: result.gitignore, agents_md: result.agentsMd },
+            );
+          }
+        },
+        {
+          mycoHome,
+          daemonStateDir,
+          machineId,
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.managed_files_reconcile_failed',
+            'Managed files reconcile',
+          ),
+        },
+      );
+      // Drop throttle entries for projects no longer registered so the map
+      // can't grow unbounded across long-running daemons.
+      for (const key of lastManagedReconcileAt.keys()) {
+        if (!visited.has(key)) lastManagedReconcileAt.delete(key);
       }
     },
   });

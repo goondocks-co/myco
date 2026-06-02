@@ -68,6 +68,9 @@ function seedSearchDb(projectId: string): { tempDir: string; dbPath: string; req
       projectVaultDir,
       databasePath: dbPath,
       source: 'headers',
+      // Explicit project/grove context = caller-asserted tenancy; the scope
+      // seam binds it to project scope only when caller-asserted.
+      tenancySource: 'caller',
     },
   };
 }

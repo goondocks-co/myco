@@ -15,14 +15,15 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import type { CandidateInsert } from '@myco/db/queries/skill-candidates.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
-import type { RouteRequest } from '@myco/daemon/router';
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import type { RouteRequest, RouteResponse } from '@myco/daemon/router';
+import type { RequestPrincipal } from '@myco/daemon/request-principal';
+import { makeTestRequestContext } from '../../helpers/request-context';
 import {
-  handleListCandidates,
-  handleGetCandidate,
-  handleUpdateCandidate,
-  handleListSkillRecords,
-  handleGetSkillRecord,
+  handleListCandidates as rawHandleListCandidates,
+  handleGetCandidate as rawHandleGetCandidate,
+  handleUpdateCandidate as rawHandleUpdateCandidate,
+  handleListSkillRecords as rawHandleListSkillRecords,
+  handleGetSkillRecord as rawHandleGetSkillRecord,
 } from '@myco/daemon/api/skills';
 
 // ---------------------------------------------------------------------------
@@ -31,17 +32,50 @@ import {
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
-/** Build a minimal RouteRequest. */
+// Skill routes are now wrapped in `tenantRoute`, so each handler derives its
+// scope from the AUTHORIZED principal — always project-scoped (a tenant
+// principal always carries a groveId). The fixtures therefore use a Grove-
+// bound context + matching principal, and seed rows tagged with the same
+// project_id so the project-scoped queries match them.
+const TEST_GROVE_ID = 'grove_eeee5555eeee5555eeee5555eeee5555';
+const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+/** The principal a `tenantRoute` would hand each skill handler. */
+function makePrincipal(): RequestPrincipal {
+  return {
+    identity: { machineId: 'test-machine', userId: null },
+    tenancy: {
+      projectVaultDir: '/tmp/myco-test/.myco' as RequestPrincipal['tenancy']['projectVaultDir'],
+      projectId: TEST_PROJECT_ID,
+      groveId: TEST_GROVE_ID,
+      requestContext: {
+        projectVaultDir: '/tmp/myco-test/.myco',
+        projectId: TEST_PROJECT_ID,
+        groveId: TEST_GROVE_ID,
+      },
+    },
+  };
+}
+
+/** Build a minimal RouteRequest carrying a Grove-bound (authorized) context. */
 function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     params: {},
     query: {},
     body: undefined,
-    requestContext: TEST_REQUEST_CONTEXT,
+    requestContext: makeTestRequestContext({ projectId: TEST_PROJECT_ID, groveId: TEST_GROVE_ID }),
     pathname: '/api/skill-candidates',
     ...overrides,
   };
 }
+
+// Thin wrappers that inject the authorized principal the way `tenantRoute`
+// does at runtime, so the existing call sites stay single-argument.
+const handleListCandidates = (req: RouteRequest): Promise<RouteResponse> => rawHandleListCandidates(req, makePrincipal());
+const handleGetCandidate = (req: RouteRequest): Promise<RouteResponse> => rawHandleGetCandidate(req, makePrincipal());
+const handleUpdateCandidate = (req: RouteRequest): Promise<RouteResponse> => rawHandleUpdateCandidate(req, makePrincipal());
+const handleListSkillRecords = (req: RouteRequest): Promise<RouteResponse> => rawHandleListSkillRecords(req, makePrincipal());
+const handleGetSkillRecord = (req: RouteRequest): Promise<RouteResponse> => rawHandleGetSkillRecord(req, makePrincipal());
 
 /** Build a minimal valid CandidateInsert. */
 function makeCandidate(overrides: Partial<CandidateInsert> = {}): CandidateInsert {
@@ -49,6 +83,7 @@ function makeCandidate(overrides: Partial<CandidateInsert> = {}): CandidateInser
   const suffix = Math.random().toString(36).slice(2, 8);
   return {
     id: `cand-${suffix}`,
+    project_id: TEST_PROJECT_ID,
     agent_id: 'agent-test',
     topic: 'Use Vitest for all tests',
     rationale: 'Vitest is the preferred test runner in this codebase',
@@ -76,7 +111,7 @@ function seedQualitySources(): void {
   const now = epochNow();
   upsertSession({
     id: 'session-api-source-001',
-    project_id: null,
+    project_id: TEST_PROJECT_ID,
     agent: 'claude-code',
     started_at: now - 100,
     ended_at: now - 50,
@@ -88,7 +123,7 @@ function seedQualitySources(): void {
   for (const id of ['spore-api-source-001', 'spore-api-source-002']) {
     insertSpore({
       id,
-      project_id: null,
+      project_id: TEST_PROJECT_ID,
       agent_id: 'agent-test',
       session_id: 'session-api-source-001',
       observation_type: 'decision',
@@ -106,6 +141,7 @@ function makeSkillRecord(overrides: Partial<SkillRecordInsert> = {}): SkillRecor
   const name = `skill-api-test-${suffix}`;
   return {
     id: `skill-${suffix}`,
+    project_id: TEST_PROJECT_ID,
     agent_id: 'agent-test',
     name,
     display_name: 'Test Skill',
@@ -567,6 +603,7 @@ describe('handleGetSkillRecord', () => {
     });
     insertLineage({
       id: 'lin-1',
+      project_id: TEST_PROJECT_ID,
       skill_id: record.id,
       generation: 1,
       action: 'created',

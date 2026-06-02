@@ -356,6 +356,9 @@ function buildRegisteredProjectScope(input: {
     projectVaultDir,
     databasePath: input.databasePath,
     source: 'explicit',
+    // Daemon-internal sweep over registered projects: tenancy is derived
+    // from the Grove registry, not supplied by an external caller.
+    tenancySource: 'synthesized',
   };
   return {
     grove: input.grove,

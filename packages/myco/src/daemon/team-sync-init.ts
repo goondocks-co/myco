@@ -731,6 +731,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       projectVaultDir,
       databasePath,
       source: 'explicit',
+      // Daemon-synthesized fan-out context; no external caller tenancy.
+      tenancySource: 'synthesized',
     };
   }
 

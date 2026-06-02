@@ -135,7 +135,13 @@ describe('resolveBootstrapVaultDir', () => {
     );
   }
 
-  test('dev variant picks a Grove with served_by = service-dev', () => {
+  test('global dev daemon ignores the registry and stays home-scoped (null)', () => {
+    // The global, multi-tenant daemon has no bootstrap project. Even with
+    // a matching-variant Grove + project registered on disk, the variant
+    // path returns null so startup materializes the phantom MYCO_HOME and
+    // the daemon serves tenants by request context. Picking the first
+    // registered project — the old behavior — was the tenant-scope-leak
+    // bug-attractor this change removes.
     const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const prodRoot = makeProject('prod');
@@ -147,13 +153,13 @@ describe('resolveBootstrapVaultDir', () => {
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
-      expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(devRoot, '.myco'));
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
 
-  test('documented service-dev variant picks a Grove with served_by = service-dev', () => {
+  test('global service-dev daemon ignores the registry and stays home-scoped (null)', () => {
     const prodGrove = 'grove_1111111111111111111111111111111a';
     const devGrove = 'grove_1111111111111111111111111111111b';
     const prodRoot = makeProject('prod-service-name');
@@ -165,25 +171,22 @@ describe('resolveBootstrapVaultDir', () => {
     writeProjectsToml(devGrove, [{ id: 'proj_dev_service_name', root: devRoot }]);
     process.env.MYCO_SERVICE_VARIANT = 'service-dev';
     try {
-      expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(devRoot, '.myco'));
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
 
-  test('prod variant refuses to bind a default Grove with served_by=service-dev (task #9)', () => {
-    // The cross-variant escape hatch: a user sets a dev Grove as
-    // default_grove_id and then installs the prod daemon. Before
-    // task #9 the prod daemon would silently bind to the dev Grove
-    // via the default-Grove fast-path, ignoring served_by. The fix
-    // makes the prod variant skip a dev-owned default and fall
-    // through to the served_by-filtered loop (which finds nothing
-    // here), returning null so the rebind watcher keeps waiting.
-    const devGrove = 'grove_2222222222222222222222222222222a';
-    const devRoot = makeProject('escape-hatch-dev');
-    writeRegistry(devGrove); // default points at a dev Grove
-    writeGroveToml(devGrove, 'service-dev');
-    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+  test('global prod daemon ignores a registered default Grove and stays home-scoped (null)', () => {
+    // Even with a fully-registered prod default Grove on disk, the global
+    // prod daemon returns null and runs phantom from MYCO_HOME. The anchor
+    // is gone from the global path entirely — no project, dev or prod, is
+    // ever selected for the global daemon.
+    const prodGrove = 'grove_2222222222222222222222222222222a';
+    const prodRoot = makeProject('global-prod-default');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     process.env.MYCO_SERVICE_VARIANT = 'prod';
     try {
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
@@ -192,7 +195,7 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 
-  test('prod variant (default) still picks the default Grove', () => {
+  test('variant-less daemon (no MYCO_SERVICE_VARIANT) still picks the default Grove', () => {
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
     const prodRoot = makeProject('prod2');
@@ -254,12 +257,14 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 
-  test('variant-pinned dev daemon ignores cwd inside a prod-grove project', () => {
-    // The regression: a hook running inside /Users/x/unifi-mcp lazy-spawns
-    // the dev daemon. cwd-walk would resolve to unifi-mcp's vault, but
-    // unifi-mcp belongs to the prod Grove. The dashboard then refuses
-    // every cross-Grove request. The fix: when the variant env is set,
-    // the cwd is ignored — the variant pins us to its own Grove.
+  test('global dev daemon ignores cwd inside a prod-grove project (home-scoped, null)', () => {
+    // The original regression: a hook running inside /Users/x/unifi-mcp
+    // lazy-spawns the dev daemon. cwd-walk would resolve to unifi-mcp's
+    // vault, but unifi-mcp belongs to the prod Grove. The global daemon
+    // now ignores cwd AND the registry entirely — it has no bootstrap
+    // project, so it returns null and runs phantom from MYCO_HOME. No
+    // cross-Grove anchor can be selected because no anchor is selected
+    // at all.
     const prodGrove = 'grove_ffffffffffffffffffffffffffffffff';
     const devGrove = 'grove_99999999999999999999999999999999';
     const prodRoot = makeProject('prod-cwd');
@@ -272,16 +277,18 @@ describe('resolveBootstrapVaultDir', () => {
 
     process.env.MYCO_SERVICE_VARIANT = 'dev';
     try {
-      // cwd is inside the prod-grove project — but we are the dev daemon.
-      expect(resolveBootstrapVaultDir(prodRoot)).toBe(path.join(devRoot, '.myco'));
+      // cwd is inside the prod-grove project — but the global daemon has
+      // no current project regardless.
+      expect(resolveBootstrapVaultDir(prodRoot)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
 
-  test('variant-pinned prod daemon ignores cwd inside a dev-grove project', () => {
-    // Symmetric: the prod daemon shouldn't be hijacked by a cwd that
-    // happens to fall inside the dogfood project either.
+  test('global prod daemon ignores cwd inside a dev-grove project (home-scoped, null)', () => {
+    // Symmetric: the prod global daemon isn't hijacked by a cwd inside the
+    // dogfood project, and doesn't anchor to a registered prod project
+    // either — it stays home-scoped.
     const prodGrove = 'grove_88888888888888888888888888888888';
     const devGrove = 'grove_77777777777777777777777777777777';
     const prodRoot = makeProject('prod-target');
@@ -294,7 +301,7 @@ describe('resolveBootstrapVaultDir', () => {
 
     process.env.MYCO_SERVICE_VARIANT = 'prod';
     try {
-      expect(resolveBootstrapVaultDir(devRoot)).toBe(path.join(prodRoot, '.myco'));
+      expect(resolveBootstrapVaultDir(devRoot)).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
     }

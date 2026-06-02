@@ -111,6 +111,9 @@ function requestContext(projectId: string) {
     groveId: 'grove-test',
     machineId: 'machine-test',
     source: 'explicit',
+    // Explicit project/grove pivot = caller-asserted tenancy; the scope seam
+    // binds a Grove-bound context to its project scope only when caller-asserted.
+    tenancySource: 'caller',
   });
 }
 

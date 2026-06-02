@@ -43,7 +43,7 @@ import { ensureSession, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { resolveTenantConfig } from './request-config.js';
 import { EmbeddingManager } from './embedding/index.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { triggerTitleSummary as sharedTriggerTitleSummary } from './trigger-title-summary.js';
@@ -196,16 +196,6 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     machineId = 'local',
     planWatchConfig,
   } = deps;
-
-  function configForRequest(req: Parameters<RouteHandler>[0]): MycoConfig {
-    const ctx = req.requestContext;
-    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
-    try {
-      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
-    } catch {
-      return liveConfig.current;
-    }
-  }
 
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
@@ -725,7 +715,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       ? filesystemRootFromRequestContext(req.requestContext)
       : planWatchConfig.projectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
-    const requestProductionRef = primaryProductionRef(configForRequest(req));
+    const requestProductionRef = primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger }));
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';

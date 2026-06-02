@@ -118,4 +118,29 @@ describe('useScopedConfig.setField', () => {
     });
     expect(writeScopedConfigMock).not.toHaveBeenCalled();
   });
+
+  it("scope 'machine' routes to PUT /machine-config with { patch } body", async () => {
+    // capture.* / notifications.* moved to Machine tier (2026-06 correction);
+    // their cards write through the 'machine' scope, which must hit
+    // /machine-config — never the project scoped-config endpoint.
+    const { result } = renderHook(() => useScopedConfig(), { wrapper: makeWrapper() });
+    await act(async () => {
+      await result.current.setField('notifications.enabled', false, 'machine');
+    });
+    expect(putJsonMock).toHaveBeenCalledWith('/machine-config', {
+      patch: { notifications: { enabled: false } },
+    });
+    expect(writeScopedConfigMock).not.toHaveBeenCalled();
+  });
+
+  it("scope 'machine' sends a correctly nested patch for a deep dotted path", async () => {
+    const { result } = renderHook(() => useScopedConfig(), { wrapper: makeWrapper() });
+    await act(async () => {
+      await result.current.setField('capture.buffer_max_events', 250, 'machine');
+    });
+    expect(putJsonMock).toHaveBeenCalledWith('/machine-config', {
+      patch: { capture: { buffer_max_events: 250 } },
+    });
+    expect(writeScopedConfigMock).not.toHaveBeenCalled();
+  });
 });

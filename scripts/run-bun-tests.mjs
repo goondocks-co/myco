@@ -32,6 +32,27 @@ import { fileURLToPath } from 'node:url';
 const WATCHDOG_QUIET_MS = Number(process.env.MYCO_RUNNER_QUIET_MS ?? 30000);
 const WATCHDOG_INTERVAL_MS = Number(process.env.MYCO_RUNNER_HEARTBEAT_INTERVAL_MS ?? 10000);
 
+// Hard phase-kill deadline. The heartbeat above only *logs* a quiet phase; a
+// genuinely wedged phase (a rare bun `--isolate` runtime spin — CPU-bound,
+// synchronous, with no pending await for a test-side timeout to abort, leaving
+// orphaned isolate workers holding test ports) would otherwise sit silent
+// until the CI job-level timeout kills the whole job 10+ minutes later. When a
+// phase produces NO output for `PHASE_KILL_QUIET_MS`, the runner kills the
+// child's entire process group (bash + bun + every isolate worker) and fails
+// the phase fast and visibly. This is defense-in-depth: the test-side
+// ephemeral-port isolation prevents the collision that triggers most wedges;
+// this guarantees that any wedge that slips through fails loudly instead of
+// hanging. Generous by default so a slow-but-progressing phase is never
+// killed; tune down for local debugging via the env override.
+const PHASE_KILL_QUIET_MS = Number(process.env.MYCO_RUNNER_PHASE_KILL_QUIET_MS ?? 180000);
+
+// How many times to re-run a phase that was killed for being wedged. A
+// wedge-kill is provably not an assertion failure (no test output, killed by
+// the quiet-deadline), and leaves no orphan, so a bounded retry turns the
+// non-deterministic bun `--isolate` spin into a reliable green run instead of
+// a suite failure. Set to 0 to disable (a wedge then fails the suite at 124).
+const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const FAST_EXCLUDES = [
@@ -51,7 +72,14 @@ const INTEGRATION_INCLUDES = [
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
 const forwardedArgs = process.argv.slice(2);
-const ISOLATED_NODE_CHUNK_SIZE = 8;
+// Isolated files are bundled into chunks to amortize bun's `--isolate`
+// startup cost. Capped at 4 (was 8): the bun 1.3.14 `--isolate` runtime spin
+// emerges from the multi-file isolate/SQLite-teardown churn, and an 8-file
+// chunk of SQLite-heavy tests triggers it reliably under load (≤3-file groups
+// verified clean). 4 keeps the per-chunk startup amortization while staying
+// below the spin threshold; the phase-kill + wedge-retry above remain the
+// safety net for any chunk that still spins. Env-tunable for CI.
+const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_SIZE ?? 4);
 
 // Bun's `--isolate` mode pays a large per-file startup cost. These groups
 // have been validated to run correctly when imported through one generated
@@ -737,7 +765,19 @@ async function runPhase(label, extraArgs, bunfig, { isolate }) {
       `--reporter-outfile=${reportFile}`,
       ...extraArgs,
     ];
-    const status = await runWithTeeAndHeartbeat('bun', args, teeFile, label);
+    // A wedge-kill (exit 124, no test output) is never a real assertion
+    // failure — it's the synchronous bun `--isolate` runtime spin that this
+    // workload triggers non-deterministically. Because the phase-kill leaves
+    // no orphan to poison a re-run, retrying the wedged phase once recovers a
+    // clean pass without masking any genuine failure (a real failure exits
+    // with assertion output and `wedged:false`, so it is never retried).
+    let { status, wedged } = await runWithTeeAndHeartbeat('bun', args, teeFile, label);
+    for (let attempt = 1; wedged && attempt <= WEDGE_RETRIES; attempt += 1) {
+      const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
+      process.stderr.write(note);
+      fs.writeFileSync(teeFile, ''); // fresh log for the retry
+      ({ status, wedged } = await runWithTeeAndHeartbeat('bun', args, teeFile, label));
+    }
     return status;
   } finally {
     if (restored) {
@@ -849,11 +889,23 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
+    // `detached: true` puts the child in its own process group so a hard
+    // phase-kill can signal the WHOLE tree (bash + bun + bun's isolate
+    // workers) via the negative pid. Without this, killing only the bash
+    // wrapper would leave the spinning bun worker (and the test ports it
+    // holds) orphaned — the exact failure that poisons subsequent runs.
     const child = spawn('/bin/bash', ['-c', shellCmd], {
       cwd: REPO,
       env: process.env,
       stdio: ['inherit', 'pipe', 'pipe'],
+      detached: true,
     });
+
+    let killedForHang = false;
+    function killPhaseTree(signal) {
+      try { process.kill(-child.pid, signal); }
+      catch { try { child.kill(signal); } catch { /* already gone */ } }
+    }
 
     let lastNonEmptyLine = '';
     let lastOutputMs = Date.now();
@@ -890,6 +942,17 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
 
     const watchdog = setInterval(() => {
       const sinceLastOutput = Date.now() - lastOutputMs;
+      if (sinceLastOutput >= PHASE_KILL_QUIET_MS && !killedForHang) {
+        killedForHang = true;
+        const totalElapsed = Date.now() - startMs;
+        const msg = `[run-bun-tests] WEDGED ${label} — no output for ${sinceLastOutput}ms (>${PHASE_KILL_QUIET_MS}ms), ${totalElapsed}ms elapsed; killing phase tree. Last line: ${lastNonEmptyLine || '(none)'}\n`;
+        process.stderr.write(msg);
+        try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
+        killPhaseTree('SIGTERM');
+        // Escalate to SIGKILL shortly after, in case the tree ignores SIGTERM.
+        setTimeout(() => killPhaseTree('SIGKILL'), 2000).unref?.();
+        return;
+      }
       if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
         const totalElapsed = Date.now() - startMs;
         const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
@@ -905,17 +968,19 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label) {
     child.on('error', (err) => {
       clearInterval(watchdog);
       process.stderr.write(`[run-bun-tests] FAILED TO SPAWN ${label}: ${err?.message ?? err}\n`);
-      resolve(1);
+      resolve({ status: 1, wedged: false });
     });
 
     child.on('close', (code) => {
       clearInterval(watchdog);
       const totalMs = Date.now() - startMs;
       const tail = lastNonEmptyLine ? ` (last line: ${lastNonEmptyLine})` : '';
-      const completion = `[run-bun-tests] FINISHED ${label} in ${totalMs}ms (exit ${code ?? 1})${tail}\n`;
+      const exit = killedForHang ? 124 : (code ?? 1);
+      const verb = killedForHang ? 'KILLED (wedged)' : 'FINISHED';
+      const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
       try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      resolve(code ?? 1);
+      resolve({ status: exit, wedged: killedForHang });
     });
   });
 }

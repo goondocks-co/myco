@@ -10,10 +10,11 @@ import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
 import type { ConfigPath } from '../lib/config-paths';
 import { useUpdateGroveConfig } from './use-grove-config';
+import { useUpdateMachineConfig, type MachineConfigPatch } from './use-machine-config';
 import { useActiveProjectSelection } from './use-project-selection';
 import { requestContextHeadersForSelection, selectionKey } from '../lib/selection';
 
-export type Scope = 'project' | 'local' | 'grove';
+export type Scope = 'project' | 'local' | 'grove' | 'machine';
 
 const MERGED_KEY = ['config', 'merged'] as const;
 const LOCAL_KEY = ['config', 'local'] as const;
@@ -38,6 +39,7 @@ const NOTIFICATIONS_KEY = ['notifications'] as const;
 export function useScopedConfig() {
   const qc = useQueryClient();
   const updateGroveConfig = useUpdateGroveConfig();
+  const updateMachineConfig = useUpdateMachineConfig();
   const activeSelection = useActiveProjectSelection();
   const activeSelectionKey = activeSelection ? selectionKey(activeSelection) : 'none';
   const contextHeaders = useMemo(
@@ -89,12 +91,15 @@ export function useScopedConfig() {
       if (scope === 'grove') {
         await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
         invalidateNotifications();
+      } else if (scope === 'machine') {
+        await updateMachineConfig.mutateAsync(patch as MachineConfigPatch);
+        invalidateNotifications();
       } else {
         await writeScopedConfig(scope, patch, undefined, contextHeaders);
         invalidateForScope(scope);
       }
     },
-    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig],
+    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig, updateMachineConfig],
   );
 
   /**
@@ -119,12 +124,17 @@ export function useScopedConfig() {
       if (scope === 'grove') {
         await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
         invalidateNotifications();
+      } else if (scope === 'machine') {
+        // Machine config has no local-override layer; clearPaths is ignored
+        // (mirrors the grove branch's clearPaths contract).
+        await updateMachineConfig.mutateAsync(patch as MachineConfigPatch);
+        invalidateNotifications();
       } else {
         await writeScopedConfig(scope, patch, clearPaths as string[] | undefined, contextHeaders);
         invalidateForScope(scope);
       }
     },
-    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig],
+    [contextHeaders, invalidateForScope, invalidateNotifications, updateGroveConfig, updateMachineConfig],
   );
 
   const resetField = useCallback(async (path: ConfigPath): Promise<void> => {

@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { GroveConfigSchema, ProjectConfigSchema, PROJECT_TIER_LEGACY_FIELDS } from '@myco/config/schema';
+import {
+  GroveConfigSchema,
+  ProjectConfigSchema,
+  MachineConfigSchema,
+  PROJECT_TIER_LEGACY_FIELDS,
+} from '@myco/config/schema';
 
 describe('GroveAgentSchema', () => {
   test('accepts promoted agent runtime fields', () => {
@@ -80,6 +85,47 @@ describe('GroveEmbeddingSchema', () => {
   });
 });
 
+describe('Grove skills scope (2026-06 correction)', () => {
+  test('accepts skills thresholds at the Grove tier', () => {
+    const parsed = GroveConfigSchema.parse({
+      skills: { confidence_threshold: 0.85, usage_stale_days: 21 },
+    });
+    expect(parsed.skills.confidence_threshold).toBeCloseTo(0.85);
+    expect(parsed.skills.usage_stale_days).toBe(21);
+  });
+
+  test('skills defaults match the prior project-tier defaults', () => {
+    const parsed = GroveConfigSchema.parse({});
+    expect(parsed.skills.confidence_threshold).toBeCloseTo(0.7);
+    expect(parsed.skills.usage_stale_days).toBe(30);
+  });
+});
+
+describe('Machine capture + notifications scope (2026-06 correction)', () => {
+  test('accepts capture config at the Machine tier', () => {
+    const parsed = MachineConfigSchema.parse({
+      capture: { buffer_max_events: 250, plan_dirs: ['/tmp/plans'] },
+    });
+    expect(parsed.capture.buffer_max_events).toBe(250);
+    expect(parsed.capture.plan_dirs).toEqual(['/tmp/plans']);
+  });
+
+  test('accepts notifications config at the Machine tier', () => {
+    const parsed = MachineConfigSchema.parse({
+      notifications: { enabled: false, default_mode: 'banner' },
+    });
+    expect(parsed.notifications.enabled).toBe(false);
+    expect(parsed.notifications.default_mode).toBe('banner');
+  });
+
+  test('capture + notifications carry their defaults', () => {
+    const parsed = MachineConfigSchema.parse({});
+    expect(parsed.capture.buffer_max_events).toBe(500);
+    expect(parsed.notifications.enabled).toBe(true);
+    expect(parsed.notifications.default_mode).toBe('summary');
+  });
+});
+
 describe('Grove appearance scope', () => {
   test('accepts appearance values at the Grove tier', () => {
     const parsed = GroveConfigSchema.parse({
@@ -104,16 +150,29 @@ describe('ProjectConfigSchema', () => {
     expect(parsed).not.toHaveProperty('embedding');
   });
 
-  test('still accepts cortex, capture, notifications, and strips appearance', () => {
+  test('accepts cortex + release_provenance + symbionts; strips machine/grove tier blocks', () => {
+    // 2026-06 scope correction: capture.* / notifications.* → Machine,
+    // skills.* → Grove. ProjectConfigSchema no longer declares them, so Zod's
+    // default strip drops them from the project file (along with appearance,
+    // which is Grove-tier).
     const parsed = ProjectConfigSchema.parse({
       version: 3,
       config_version: 10,
       cortex: { enabled: true },
+      release_provenance: { enabled: true },
+      symbionts: { 'claude-code': { enabled: false } },
       capture: {},
       notifications: { enabled: true },
+      skills: { confidence_threshold: 0.5 },
       appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
     });
     expect(parsed.cortex.enabled).toBe(true);
+    expect(parsed.release_provenance.enabled).toBe(true);
+    expect(parsed.symbionts).toEqual({ 'claude-code': { enabled: false } });
+    // Moved/foreign-tier blocks are stripped.
+    expect(parsed).not.toHaveProperty('capture');
+    expect(parsed).not.toHaveProperty('notifications');
+    expect(parsed).not.toHaveProperty('skills');
     expect(parsed).not.toHaveProperty('appearance');
   });
 });
@@ -151,5 +210,14 @@ describe('PROJECT_TIER_LEGACY_FIELDS', () => {
     expect(stringified).toContain('embedding.run_in_deep_sleep');
     expect(stringified).toContain('agent.scheduled_tasks_active_window_days');
     expect(stringified).toContain('appearance');
+  });
+
+  test('includes the 2026-06 scope-correction entries (capture/notifications/skills)', () => {
+    const stringified = PROJECT_TIER_LEGACY_FIELDS.map((p) => p.join('.'));
+    // capture.* + notifications.* → Machine; skills.* → Grove. All are stripped
+    // from myco.yaml once relocated (skills only when a Grove is bound).
+    expect(stringified).toContain('capture');
+    expect(stringified).toContain('notifications');
+    expect(stringified).toContain('skills');
   });
 });

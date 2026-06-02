@@ -398,7 +398,6 @@ function InstructionsTab() {
               <ScopedField
                 path={CORTEX_PATHS.instructions.injectOnSessionStart}
                 label="Managed instructions"
-                defaultScope="project"
               >
                 {({ value, onChange }) => (
                   <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -409,7 +408,6 @@ function InstructionsTab() {
                 <ScopedField
                   path={CORTEX_PATHS.digest.injectOnSessionStart}
                   label="Preferred digest"
-                  defaultScope="project"
                 >
                   {({ value, onChange }) => (
                     <Switch checked={value ?? false} onCheckedChange={onChange} />
@@ -441,7 +439,6 @@ function InstructionsTab() {
               <ScopedField
                 path={CORTEX_PATHS.instructions.injectOnSubagentStart}
                 label="Subagent instructions"
-                defaultScope="project"
               >
                 {({ value, onChange }) => (
                   <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -461,7 +458,6 @@ function InstructionsTab() {
               <ScopedField
                 path={CORTEX_PATHS.spores.injectOnPromptSubmit}
                 label="Spore retrieval"
-                defaultScope="project"
               >
                 {({ value, onChange }) => (
                   <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -471,7 +467,6 @@ function InstructionsTab() {
               <ScopedField
                 path={CORTEX_PATHS.spores.maxPerPrompt}
                 label="Max spores"
-                defaultScope="project"
               >
                 {({ value, onChange }) => (
                   <Input
@@ -959,7 +954,6 @@ function DigestTab() {
         <ScopedField
           path={CORTEX_PATHS.digest.tier}
           label="Preferred digest tier"
-          defaultScope="project"
         >
           {({ value, onChange }) => (
             <Select value={String(value ?? DEFAULT_DIGEST_TIER)} onValueChange={(next) => onChange(Number(next))}>
@@ -1135,7 +1129,6 @@ function CanopyTab() {
         <ScopedField<typeof CORTEX_PATHS.canopy.exclude.defaultPatterns, string[]>
           path={CORTEX_PATHS.canopy.exclude.defaultPatterns}
           label="Myco baseline (read-only)"
-          defaultScope="project"
         >
           {({ value }) => {
             const patterns = value ?? [];
@@ -1163,7 +1156,6 @@ function CanopyTab() {
         <ScopedField<typeof CORTEX_PATHS.canopy.exclude.patterns, string[]>
           path={CORTEX_PATHS.canopy.exclude.patterns}
           label="Your patterns"
-          defaultScope="project"
         >
           {({ value, onChange }) => (
             <ExcludePatternsEditor
@@ -1189,7 +1181,6 @@ function CanopyTab() {
           <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundEnabled, boolean>
             path={CORTEX_PATHS.canopy.refresh.backgroundEnabled}
             label="Periodic background scan"
-            defaultScope="project"
           >
             {({ value, onChange }) => (
               <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -1199,7 +1190,6 @@ function CanopyTab() {
           <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes, number>
             path={CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes}
             label="Period (minutes)"
-            defaultScope="project"
           >
             {({ value, onChange }) => (
               <Input
@@ -1224,7 +1214,6 @@ function CanopyTab() {
           <ScopedField<typeof CORTEX_PATHS.canopy.injectOnPreToolUse, boolean>
             path={CORTEX_PATHS.canopy.injectOnPreToolUse}
             label="Inject canopy on Read"
-            defaultScope="project"
           >
             {({ value, onChange }) => (
               <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -1234,7 +1223,6 @@ function CanopyTab() {
           <ScopedField<typeof CORTEX_PATHS.canopy.minFileBytes, number>
             path={CORTEX_PATHS.canopy.minFileBytes}
             label="Minimum file size (bytes)"
-            defaultScope="project"
           >
             {({ value, onChange }) => (
               <Input

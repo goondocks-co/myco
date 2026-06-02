@@ -189,6 +189,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
   resolveReasoningModel: () => '',
   seedDraftFromProviderType: () => ({}),
   draftToProviderConfig: () => undefined,
+  REASONING_LEVELS: ['low', 'default', 'high'],
   LOCAL_BACKEND_DEFAULT_BASE_URLS: {},
 }));
 

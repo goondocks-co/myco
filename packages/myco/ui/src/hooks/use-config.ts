@@ -66,6 +66,7 @@ export interface MycoConfig {
       };
       context_length?: number;
     };
+    reasoningLevel?: 'low' | 'default' | 'high';
     model?: string;
     tasks?: Record<string, unknown>;
   };

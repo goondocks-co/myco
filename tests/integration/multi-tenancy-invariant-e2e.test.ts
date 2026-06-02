@@ -187,18 +187,21 @@ describe('multi-tenancy invariant — end-to-end through dispatcher', () => {
     const vaultA = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cfg-tenant-a-'));
     const vaultB = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cfg-tenant-b-'));
     try {
+      // release_provenance.* is a stable project-tier field (notifications.*
+      // moved to Machine tier in the 2026-06 scope correction, so it's stripped
+      // from myco.yaml by saveConfig and can't carry the per-vault signal).
       saveConfig(
         vaultA,
         MycoConfigSchema.parse({
           version: 3,
-          notifications: { enabled: false },
+          release_provenance: { enabled: false },
         }),
       );
       saveConfig(
         vaultB,
         MycoConfigSchema.parse({
           version: 3,
-          notifications: { enabled: true },
+          release_provenance: { enabled: true },
         }),
       );
 
@@ -206,26 +209,25 @@ describe('multi-tenancy invariant — end-to-end through dispatcher', () => {
       // vaultDir we passed — never the other project's.
       const resA = await handleGetConfig(vaultA);
       const resB = await handleGetConfig(vaultB);
-      const bodyA = resA.body as { notifications?: { enabled?: boolean } };
-      const bodyB = resB.body as { notifications?: { enabled?: boolean } };
+      const bodyA = resA.body as { release_provenance?: { enabled?: boolean } };
+      const bodyB = resB.body as { release_provenance?: { enabled?: boolean } };
 
-      // Notifications is a stable project-tier field. Both reads should
+      // release_provenance is a stable project-tier field. Both reads should
       // come back as the value we wrote, never crossed.
-      expect(bodyA.notifications?.enabled).toBe(false);
-      expect(bodyB.notifications?.enabled).toBe(true);
+      expect(bodyA.release_provenance?.enabled).toBe(false);
+      expect(bodyB.release_provenance?.enabled).toBe(true);
 
       // And a PUT under vaultA must never bleed into vaultB. handlePutScopedConfig
       // writes to the project tier (vaultDir/myco.yaml), so the post-write
-      // re-read should show the patched notification setting only in the vault we
-      // targeted.
+      // re-read should show the patched setting only in the vault we targeted.
       await handlePutScopedConfig(vaultA, {
         scope: 'project',
-        patch: { notifications: { enabled: true } },
+        patch: { release_provenance: { enabled: true } },
       });
       const resA2 = await handleGetConfig(vaultA);
       const resB2 = await handleGetConfig(vaultB);
-      expect((resA2.body as { notifications?: { enabled?: boolean } }).notifications?.enabled).toBe(true);
-      expect((resB2.body as { notifications?: { enabled?: boolean } }).notifications?.enabled).toBe(true);
+      expect((resA2.body as { release_provenance?: { enabled?: boolean } }).release_provenance?.enabled).toBe(true);
+      expect((resB2.body as { release_provenance?: { enabled?: boolean } }).release_provenance?.enabled).toBe(true);
     } finally {
       fs.rmSync(vaultA, { recursive: true, force: true });
       fs.rmSync(vaultB, { recursive: true, force: true });

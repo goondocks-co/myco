@@ -13,6 +13,8 @@ export interface MachineConfigResponse {
 
 export type MachineConfigPatch = {
   daemon?: Partial<MachineConfig['daemon']>;
+  capture?: Partial<MachineConfig['capture']>;
+  notifications?: Partial<MachineConfig['notifications']>;
   machine_id?: string;
 };
 

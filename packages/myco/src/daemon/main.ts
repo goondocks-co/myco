@@ -37,7 +37,6 @@ import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHa
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
 import { createUpdateHandlers } from './api/update.js';
-import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
@@ -104,6 +103,7 @@ import {
   createSubagentContextHandler,
 } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
+import { tenantRoute } from './api/route-helpers.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
 import {
@@ -588,6 +588,11 @@ export async function main(): Promise<void> {
   const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
   const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
     resolveBootstrapVaultDirOrPhantom();
+  // The global, multi-tenant daemon (run under a service supervisor with
+  // MYCO_SERVICE_VARIANT set) has no bootstrap project. It always boots
+  // phantom (home-scoped to MYCO_HOME) and serves every tenant by request
+  // context — it never anchors to, nor rebinds to, a registered project.
+  const isGlobalDaemon = (process.env.MYCO_SERVICE_VARIANT?.trim() ?? '') !== '';
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   // BEFORE the first getMachineId() call mints a fresh value, scan every
@@ -610,13 +615,33 @@ export async function main(): Promise<void> {
     MYCO_MACHINE_ID: machineId,
   });
 
+  // Relocate any legacy project-vault `secrets.env` into machine secrets
+  // BEFORE loading. The provider-secrets dashboard no longer reads the
+  // `project` scope, so a project `secrets.env` that materializes after
+  // the one-shot global-install migration sentinel (hand-placed file,
+  // resurrected branch) would otherwise be loaded here yet stay invisible
+  // and undeletable in the UI — an orphaned-and-consumed credential. This
+  // relocate is the same lift+purge the migration performs, but idempotent
+  // and sentinel-independent, so the window can never persist. Skip in the
+  // phantom/global daemon, where bootstrapVaultDir IS the machine home.
+  const mycoHome = resolveMycoHome();
+  if (!bootstrapIsPhantom && path.resolve(bootstrapVaultDir) !== path.resolve(mycoHome)) {
+    try {
+      const { relocateLegacyProjectSecrets } = await import('../config/secrets.js');
+      relocateLegacyProjectSecrets(bootstrapVaultDir, mycoHome);
+    } catch {
+      // Best-effort: a failed relocate falls through to the legacy
+      // load-as-fallback below and retries on the next boot.
+    }
+  }
+
   // Load file-backed provider secrets before any provider init. Legacy project
   // `.myco/secrets.env` remains a fallback, while machine secrets are the
   // forward path for daemon-wide provider credentials. Existing process env
   // vars still win.
   loadLayeredSecrets([
     bootstrapVaultDir,
-    resolveMycoHome(),
+    mycoHome,
   ]);
 
   // Merged = machine + grove + project + personal. Any gate downstream
@@ -672,7 +697,11 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
-  if (bootstrapIsPhantom) {
+  if (bootstrapIsPhantom && isGlobalDaemon) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Global daemon home resolved (MYCO_HOME); serving tenants by request context', {
+      home_vault: bootstrapVaultDir,
+    });
+  } else if (bootstrapIsPhantom) {
     logger.info(LOG_KINDS.DAEMON_START, 'No project bound; polling registry from unbound bootstrap', {
       unbound_vault: bootstrapVaultDir,
     });
@@ -1040,7 +1069,6 @@ export async function main(): Promise<void> {
   // above still drives Grove-level housekeeping (embedding-reconcile,
   // backup, …); per-project state is consulted by scheduled-task
   // dispatch.
-  const mycoHome = resolveMycoHome();
   const projectStateTracker = new ProjectPowerStateTracker({
     idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
     sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
@@ -1235,14 +1263,13 @@ export async function main(): Promise<void> {
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
     liveConfig,
-    vaultDir: bootstrapVaultDir,
     getDatabase,
   }));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
   let configHash = computeConfigHash(bootstrapVaultDir);
-  const cortexHandlers = createCortexHandlers(bootstrapVaultDir, {
+  const cortexHandlers = createCortexHandlers({
     liveConfig,
     embeddingManager,
     logger,
@@ -1259,10 +1286,11 @@ export async function main(): Promise<void> {
     req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
   ));
   server.registerRoute('POST', '/api/symbionts/drain-migration', async () => handleDrainMigration());
-  server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
-  server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
-  server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
-  server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
+  const cortexTenant = { machineId, logger };
+  server.registerRoute('GET', '/api/cortex/instructions', tenantRoute(cortexTenant, cortexHandlers.handleGetInstructions));
+  server.registerRoute('POST', '/api/cortex/instructions/refresh', tenantRoute(cortexTenant, cortexHandlers.handleRefreshInstructions));
+  server.registerRoute('POST', '/api/cortex/prompt-builder', tenantRoute(cortexTenant, cortexHandlers.handleBuildPrompt));
+  server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', tenantRoute(cortexTenant, cortexHandlers.handleGetPromptResult));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -1286,14 +1314,11 @@ export async function main(): Promise<void> {
   // toggle flips immediately.
   reactions.on([], (ctx) => { liveConfig.current = ctx; });
 
-  // Reconcile the WRITTEN project's `.gitignore` when its capture dirs or
-  // symbiont enablement change. Uses the per-write scope (not bootstrapVaultDir)
-  // so a write for project B reconciles project B — the old code hardcoded the
-  // bootstrap project. Reconcile no longer re-installs project-local launchers;
-  // symbiont hooks are global.
-  reactions.on(['capture', 'symbionts'], (_ctx, scope) => {
-    reconcileConfiguredSymbionts(resolveProjectRoot(scope.vaultDir), scope.vaultDir, scope.groveId);
-  });
+  // Managed project files (AGENTS.md guidance + `.gitignore` Myco block) are no
+  // longer reconciled at write time. A write only knows the one project it
+  // touched, but machine-scoped `capture.*` settings affect every project's
+  // managed files — so reconciliation is a periodic all-projects PowerManager
+  // sweep (POWER_JOB_NAMES.MANAGED_FILES_RECONCILE) instead.
 
   // Refresh the in-memory plan-watch list on capture changes.
   reactions.on(['capture'], createPlanWatchReaction({
@@ -1610,13 +1635,20 @@ export async function main(): Promise<void> {
   });
 
   // --- Skill lifecycle API routes ---
-  server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
-  server.registerRoute('GET', '/api/skill-candidates/:id', handleGetCandidate);
-  server.registerRoute('PUT', '/api/skill-candidates/:id', handleUpdateCandidate);
-  server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
-  server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
-  server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
-  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir: bootstrapVaultDir, logger }));
+  //
+  // Every skill-candidate/skill-record route is tenant-scoped: candidates and
+  // records carry a project_id, and a read/mutate must only ever see the
+  // REQUEST's own project. Wrap each in tenantRoute so a synthesized/anchor
+  // context is rejected (400 + tenancy.violation) before the handler derives
+  // its scope from the authorized principal — never the daemon's bootstrap
+  // anchor.
+  server.registerRoute('GET', '/api/skill-candidates', tenantRoute({ machineId, logger }, handleListCandidates));
+  server.registerRoute('GET', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleGetCandidate));
+  server.registerRoute('PUT', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleUpdateCandidate));
+  server.registerRoute('GET', '/api/skill-records', tenantRoute({ machineId, logger }, handleListSkillRecords));
+  server.registerRoute('GET', '/api/skill-records/:id', tenantRoute({ machineId, logger }, handleGetSkillRecord));
+  server.registerRoute('DELETE', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleDeleteCandidate));
+  server.registerRoute('DELETE', '/api/skill-records/:id', tenantRoute({ machineId, logger }, createSkillRecordDeleteHandler({ logger })));
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
@@ -1699,9 +1731,11 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(bootstrapVaultDir, req));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(bootstrapVaultDir, req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(bootstrapVaultDir, req));
+  // Machine-scoped, daemon-global: these read/write `~/.myco/secrets.env`
+  // (machine-level keys), not any tenant's vault, so they take no vault dir.
+  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(req));
+  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
+  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
@@ -1993,13 +2027,32 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(bootstrapVaultDir, req.query, req.requestContext));
-  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(bootstrapVaultDir, req.body, req.requestContext));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(bootstrapVaultDir, req.params.id, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(bootstrapVaultDir, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
+  //
+  // The READ/MUTATE routes (list, unread-count, PATCH status, dismiss-all,
+  // mark-all-read) are the GLOBAL notification banner poll: the UI hits them on
+  // EVERY page, including global pages (/settings, /logs, /groves) that carry
+  // NO selected-project context. So they are deliberately NOT wrapped in
+  // tenantRoute — a synthesized (no caller project/grove) context must SUCCEED,
+  // not 400. This is a reviewed exemption, not a leak: the global daemon
+  // bootstraps a PHANTOM home (Phase 5, _unbound-bootstrap, no project anchor),
+  // so a no-context read scopes (via projectScopeFromRequestContext) to the
+  // global/phantom scope → empty project rows + the daemon-scope (project_id IS
+  // NULL) rows under ?include_daemon. No cross-tenant data is exposed. (A prior
+  // review explicitly offered "wrap OR document the exemption" for these read
+  // routes; we take the exemption. See tests/meta/no-anchor-as-tenancy.test.ts.)
+  //
+  // The CREATE route stays wrapped in tenantRoute: the UI never calls it (it is
+  // API-only), so it has no global-poll regression, and a create must land a
+  // project-scoped row tagged with the caller's project (with its enabled-gate
+  // config resolved from the request's grove + vault, never the anchor). The
+  // registry route is global metadata (domain descriptors, no tenant rows).
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(req));
+  server.registerRoute('POST', '/api/notifications', tenantRoute({ machineId, logger }, handleCreateNotification));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(req));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(req));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(req));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
+  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req));
 
   // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
   // port is bound. reconcileClient() above only arms the boot Grove's flag;
@@ -2215,14 +2268,26 @@ export async function main(): Promise<void> {
     });
   }
 
-  // Greenfield rebind: when the daemon booted without a vault (phantom
-  // bootstrap), poll the Grove registry every 5s. The first hook-driven
-  // auto-Grove-create writes a project under the default Grove; once a
-  // registered project shows up, restart so the next boot resolves a
-  // real vault via `firstProjectVaultFromRegistry()` and brings up the
-  // full Grove-bound surface (sqlite, embeddings, scope iteration).
+  // Greenfield rebind: when a *variant-less* daemon booted without a vault
+  // (phantom bootstrap), poll the Grove registry every 5s. The first
+  // hook-driven auto-Grove-create writes a project under the default
+  // Grove; once a registered project shows up, restart so the next boot
+  // resolves a real vault via `resolveBootstrapVaultDir()` and brings up
+  // the full Grove-bound surface (sqlite, embeddings, scope iteration).
+  //
+  // The GLOBAL daemon (MYCO_SERVICE_VARIANT set) is excluded: it has no
+  // bootstrap project and never rebinds to one. Its home is MYCO_HOME and
+  // every request carries its own tenancy, so it stays phantom (home-
+  // scoped) for its whole lifetime. Running the rebind poll for the global
+  // daemon would be pointless (the resolver returns null by design) and
+  // misleading — it must not "rebind to the first registered project",
+  // that anchor is exactly the tenant-scope leak we removed.
   let phantomRebindWatcher: ReturnType<typeof setInterval> | null = null;
-  if (bootstrapIsPhantom) {
+  if (bootstrapIsPhantom && isGlobalDaemon) {
+    logger.info(LOG_KINDS.DAEMON_START, 'Global daemon — home-scoped (MYCO_HOME), serving tenants by request context', {
+      home_vault: bootstrapVaultDir,
+    });
+  } else if (bootstrapIsPhantom) {
     const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
     logger.info(LOG_KINDS.DAEMON_START, 'Greenfield daemon — bootstrapped with phantom vault, watching registry for first project', {
       phantom_vault: bootstrapVaultDir,

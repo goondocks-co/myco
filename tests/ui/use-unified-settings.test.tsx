@@ -14,7 +14,10 @@ const updateMachineMutateMock = vi.fn();
 const projectState = {
   effective: {
     agent: { provider: { context_length: 4096 } },
-    notifications: { enabled: true },
+    // release_provenance.* is the canonical project-tier example after the
+    // 2026-06 scope correction (capture/notifications → machine, skills →
+    // grove). The merged "effective" view still carries it for reads.
+    release_provenance: { enabled: true },
   } as Record<string, unknown>,
   isLoading: false,
 };
@@ -101,7 +104,7 @@ function findField(key: string): SettingField {
   throw new Error(`Test fixture: missing field for key ${key}`);
 }
 
-const PROJECT_FIELD = findField('notifications.enabled');
+const PROJECT_FIELD = findField('release_provenance.enabled');
 const GROVE_FIELD = findField('maintenance.auto_optimize_interval_hours');
 const MACHINE_FIELD = findField('daemon.log_level');
 
@@ -156,7 +159,7 @@ describe('useUnifiedSettings', () => {
       await result.current.writeField(PROJECT_FIELD, false);
     });
     expect(setFieldMock).toHaveBeenCalledWith(
-      'notifications.enabled',
+      'release_provenance.enabled',
       false,
       'project',
     );
@@ -211,7 +214,10 @@ describe('useUnifiedSettings', () => {
     }
     const { result } = renderHook(() => useUnifiedSettings());
     expect(result.current.scopeCounts).toEqual(expected);
-    expect(expected.project).toBeGreaterThan(0);
+    // After the 2026-06 scope correction every project-scoped manifest entry
+    // is owned by a custom card (release_provenance.*), so the renderable
+    // project-row count is legitimately 0. Grove and machine still surface
+    // standalone rows.
     expect(expected.grove).toBeGreaterThan(0);
     expect(expected.machine).toBeGreaterThan(0);
   });

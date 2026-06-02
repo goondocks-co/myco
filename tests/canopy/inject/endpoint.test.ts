@@ -9,6 +9,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { assertGroveProjectId } from '@myco/grove/ids';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -68,6 +69,28 @@ function makeConfig(overrides: Partial<{ inject_on_pre_tool_use: boolean; min_fi
 let tmpVault: string;
 let tmpProjectId: string;
 
+/**
+ * The caller-supplied request context every handler call gets. The handler
+ * derives tenancy from this — NOT from a daemon bootstrap-anchor vault — so
+ * tests must provide it explicitly (the daemon resolves and authorizes it
+ * before dispatch in production). See tests/meta/no-anchor-as-tenancy.test.ts.
+ */
+function ctx(overrides: Partial<MycoRequestContext> = {}): MycoRequestContext {
+  return {
+    projectRoot: tmpVault,
+    callerRoot: null,
+    projectId: assertGroveProjectId(tmpProjectId),
+    groveId: null,
+    machineId: 'local',
+    sessionId: null,
+    projectVaultDir: path.join(tmpVault, '.myco'),
+    databasePath: path.join(tmpVault, '.myco', SQLITE_DB_FILE),
+    source: 'explicit',
+    tenancySource: 'caller',
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   closeDatabase();
   _resetPendingInjections();
@@ -89,7 +112,6 @@ describe('POST /canopy/inject — handler', () => {
     const cfg = makeConfig();
     const handler = createCanopyInjectHandler({
       liveConfig: { current: cfg },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({ body: { not: 'valid' } });
@@ -100,10 +122,10 @@ describe('POST /canopy/inject — handler', () => {
     const cfg = makeConfig();
     const handler = createCanopyInjectHandler({
       liveConfig: { current: cfg },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'definitely-not-real',
@@ -117,10 +139,10 @@ describe('POST /canopy/inject — handler', () => {
     const cfg = makeConfig();
     const handler = createCanopyInjectHandler({
       liveConfig: { current: cfg },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's1', agent: 'cursor', toolInput: { file_path: 'foo.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
@@ -130,10 +152,10 @@ describe('POST /canopy/inject — handler', () => {
     const cfg = makeConfig({ inject_on_pre_tool_use: false });
     const handler = createCanopyInjectHandler({
       liveConfig: { current: cfg },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'foo.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'disabled' });
@@ -144,10 +166,10 @@ describe('POST /canopy/inject — handler', () => {
   it('returns targeted when offset is set', async () => {
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'claude-code',
@@ -160,10 +182,10 @@ describe('POST /canopy/inject — handler', () => {
   it('returns unknown_file when path is not in canopy_entries', async () => {
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'claude-code',
@@ -178,10 +200,10 @@ describe('POST /canopy/inject — handler', () => {
     seed(projectId, [{ path: 'tiny.ts', size: 200 }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'tiny.ts' } },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'small_file' });
@@ -200,10 +222,10 @@ describe('POST /canopy/inject — handler', () => {
     ]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'claude-code',
@@ -229,11 +251,11 @@ describe('POST /canopy/inject — handler', () => {
     seed(tmpProjectId, [{ path: 'src/big.ts', size: 4096 }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const absPath = path.join(tmpVault, 'src/big.ts');
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'claude-code',
@@ -250,7 +272,6 @@ describe('POST /canopy/inject — handler', () => {
     seed(tmpProjectId, [{ path: 'src/worktree.ts', size: 4096 }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const absoluteWorktreePath = path.join(worktreeRoot, 'src/worktree.ts');
@@ -300,15 +321,16 @@ describe('POST /canopy/inject — handler', () => {
 
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const first = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
     });
     expect(first.body).toMatchObject({ inject: true, path: 'src/big.ts' });
 
     const second = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's-canopy-dedup', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
     });
     expect(second.body).toMatchObject({ inject: false, reason: 'already_injected' });
@@ -335,11 +357,10 @@ describe('POST /canopy/inject — handler', () => {
 
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
-    const a = await handler({ body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/a.ts' } } });
-    const b = await handler({ body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/b.ts' } } });
+    const a = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/a.ts' } } });
+    const b = await handler({ requestContext: ctx(), body: { sessionId: 's-canopy-multi', agent: 'claude-code', toolInput: { file_path: 'src/b.ts' } } });
     expect(a.body).toMatchObject({ inject: true, path: 'src/a.ts' });
     expect(b.body).toMatchObject({ inject: true, path: 'src/b.ts' });
   });
@@ -352,10 +373,10 @@ describe('POST /canopy/inject — handler', () => {
     seed(tmpProjectId, [{ path: 'src/c.ts', size: 4096, exports: ['c'] }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: { sessionId: 's-canopy-no-batch', agent: 'claude-code', toolInput: { file_path: 'src/c.ts' } },
     });
     expect(res.body).toMatchObject({ inject: true, path: 'src/c.ts' });
@@ -373,10 +394,10 @@ describe('POST /canopy/inject — handler', () => {
     ]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 's1',
         agent: 'claude-code',

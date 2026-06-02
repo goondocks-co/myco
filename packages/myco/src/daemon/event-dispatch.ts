@@ -16,7 +16,7 @@ import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { resolveTenantConfig } from './request-config.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
   isPlanWriteEvent,
@@ -38,7 +38,6 @@ import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import {
   filesystemRootFromRequestContext,
   projectScopeFromRequestContext,
-  resolveRequestContextForVault,
   rowProjectIdFromRequestContext,
 } from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
@@ -138,16 +137,6 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const planTagsByAgent = new Map(
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
   );
-
-  function configForRequest(req: Parameters<RouteHandler>[0]): MycoConfig {
-    const ctx = req.requestContext;
-    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
-    try {
-      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
-    } catch {
-      return liveConfig.current;
-    }
-  }
 
   // FIFO dedup cache for event idempotency. Key includes session_id, type,
   // and a content fingerprint (see `@myco/capture/dedup.js`) so the cache
@@ -349,7 +338,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             machineId: requestMachineId,
             sessionId: event.session_id,
             capturePoint: 'session_start',
-            productionRef: primaryProductionRef(configForRequest(req)),
+            productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
             logger,
           },
           (provenance) => {
@@ -458,7 +447,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           sessionId: event.session_id,
           promptBatchId: batchId,
           capturePoint: 'prompt_batch_start',
-          productionRef: primaryProductionRef(configForRequest(req)),
+          productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
           promptOrigin,
           logger,
         });
@@ -494,14 +483,19 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // the persistence logic is shared between both paths via
         // captureBatchImages.
         const eventImages = event.images as CapturedImage[] | undefined;
-        if (Array.isArray(eventImages) && eventImages.length > 0) {
+        // Tenancy is the caller's request context — never the daemon's
+        // bootstrap-anchor vault. Without a resolved project id we have no
+        // tenant to attribute the attachment rows to; skip rather than
+        // synthesizing tenancy from the anchor (the cross-tenant leak class).
+        const imageProjectId = req.requestContext?.projectId;
+        if (Array.isArray(eventImages) && eventImages.length > 0 && imageProjectId) {
           captureBatchImages({
             sessionId: event.session_id,
             promptBatchId: batchId,
             promptNumber,
             images: eventImages,
             logger,
-            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
+            projectId: imageProjectId,
           });
         }
 
@@ -532,11 +526,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         session_id: event.session_id,
         tool_name: toolName,
       });
-      // Plan capture — detect writes to watched directories (async, non-blocking)
+      // Plan capture — detect writes to watched directories (async, non-blocking).
+      // Resolve the watch dirs against the REQUEST's project root, not
+      // `planWatchConfig.projectRoot` — on the global daemon that root is the
+      // bootstrap/phantom home (MYCO_HOME), so matching a plan write in the
+      // requesting project's tree against it always fails and the write is
+      // never captured in real time (only the Stop-scan backstop, which already
+      // uses the request root, catches it). Same per-request tenancy rule as
+      // the rest of the daemon.
       const planFilePath = isPlanWriteEvent(
         toolName,
         event.tool_input as Record<string, unknown> | undefined,
-        planWatchConfig,
+        { ...planWatchConfig, projectRoot: requestProjectRoot },
       );
       if (planFilePath) {
         const captureSessionId = event.session_id;
@@ -603,23 +604,30 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       }
       // Canopy: rescan the touched file after acknowledging capture.
       // Best-effort; handleCanopyToolUse swallows its own errors.
-      setTimeout(() => {
-        try {
-          handleCanopyToolUse({
-            db: getDatabase(),
-            logger,
-            machineId: requestMachineId,
-            projectRoot: requestFilesystemRoot,
-            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
-            toolName,
-            toolInput: event.tool_input,
-            defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,
-            excludePatterns: liveConfig.current.cortex.canopy.exclude.patterns,
-          });
-        } catch {
-          // The deferred scanner is observability-only; capture already succeeded.
-        }
-      }, 0);
+      // Tenancy is the caller's request context — never the daemon's
+      // bootstrap-anchor vault. Without a resolved project id we skip the
+      // rescan rather than synthesizing tenancy from the anchor (the
+      // cross-tenant leak class); capture has already succeeded regardless.
+      const canopyProjectId = req.requestContext?.projectId;
+      if (canopyProjectId) {
+        setTimeout(() => {
+          try {
+            handleCanopyToolUse({
+              db: getDatabase(),
+              logger,
+              machineId: requestMachineId,
+              projectRoot: requestFilesystemRoot,
+              projectId: canopyProjectId,
+              toolName,
+              toolInput: event.tool_input,
+              defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,
+              excludePatterns: liveConfig.current.cortex.canopy.exclude.patterns,
+            });
+          } catch {
+            // The deferred scanner is observability-only; capture already succeeded.
+          }
+        }, 0);
+      }
     }
 
     if (event.type === 'tool_failure') {

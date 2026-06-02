@@ -180,6 +180,9 @@ function makeRequestContext(
     projectVaultDir: vaultDir,
     databasePath: path.join(vaultDir, 'vault.db'),
     source: 'explicit',
+    // Explicit project/grove context = caller-asserted tenancy; the scope seam
+    // binds it to project scope only when caller-asserted.
+    tenancySource: 'caller',
   };
 }
 

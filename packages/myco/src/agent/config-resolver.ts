@@ -22,7 +22,7 @@ import {
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
-import type { ProviderConfig, EffectiveConfig, HarnessId } from './types.js';
+import type { ProviderConfig, EffectiveConfig, HarnessId, ReasoningLevel } from './types.js';
 import { HARNESS_CLAUDE_SDK } from './types.js';
 import { inferHarnessFromProviderType } from './provider-harness.js';
 
@@ -87,18 +87,32 @@ function toProviderConfig(p: {
   };
 }
 
-function applyTaskConfigOverrides(
+/**
+ * Apply the myco.yaml task-config overrides on top of the resolved effective
+ * config. Reasoning-tier precedence (highest first):
+ *   1. per-task override — `agent.tasks[name].reasoningLevel`
+ *   2. task's own level  — the task definition's intrinsic `reasoningLevel`
+ *   3. grove default     — `agent.reasoningLevel`
+ *   4. (unset → the executor's built-in `default` tier)
+ * The `execution.reasoningLevel` mirror is rewritten only for the per-task
+ * override, preserving the task definition's own execution block otherwise.
+ *
+ * Exported for unit tests that lock this precedence.
+ */
+export function applyTaskConfigOverrides(
   config: EffectiveConfig,
   taskConfig: TaskProviderOverride | undefined,
   harness: HarnessId,
+  defaultReasoningLevel?: ReasoningLevel,
 ): EffectiveConfig {
-  const reasoningLevel = taskConfig?.reasoningLevel;
+  const overrideReasoning = taskConfig?.reasoningLevel;
+  const reasoningLevel = overrideReasoning ?? config.reasoningLevel ?? defaultReasoningLevel;
   return {
     ...config,
     harness,
     ...(reasoningLevel ? { reasoningLevel } : {}),
-    ...(reasoningLevel && config.execution
-      ? { execution: { ...config.execution, reasoningLevel } }
+    ...(overrideReasoning && config.execution
+      ? { execution: { ...config.execution, reasoningLevel: overrideReasoning } }
       : {}),
     ...(taskConfig?.model ? { model: taskConfig.model } : {}),
     ...(taskConfig?.maxTurns ? { maxTurns: taskConfig.maxTurns } : {}),
@@ -180,11 +194,15 @@ export function resolveRunConfig(
   let taskParams: Record<string, string | number | boolean> | undefined;
   let harness: HarnessId = config.execution?.harness
     ?? HARNESS_CLAUDE_SDK;
+  // Grove-wide default reasoning tier — applied below when neither the
+  // per-task override nor the task definition sets one.
+  let defaultReasoningLevel: ReasoningLevel | undefined;
   try {
     const mycoConfig = loadMergedConfig(vaultDir, { groveId });
 
     // Per-task override takes priority over global
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
+    defaultReasoningLevel = mycoConfig.agent.reasoningLevel;
     const globalProvider = mycoConfig.agent.provider;
     harness = taskConfig?.harness
       ?? inferHarnessFromProviderType(taskConfig?.provider?.type)
@@ -227,7 +245,7 @@ export function resolveRunConfig(
   }
 
   return {
-    config: applyTaskConfigOverrides(config, taskConfig, harness),
+    config: applyTaskConfigOverrides(config, taskConfig, harness, defaultReasoningLevel),
     definitionsDir,
     taskProviderOverride,
     phaseProviderOverrides,

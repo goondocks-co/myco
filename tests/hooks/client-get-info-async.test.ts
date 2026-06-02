@@ -26,6 +26,7 @@ import { DaemonClient } from '@myco/hooks/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { resolveGlobalDaemonPort } from '@myco/daemon/service-state';
+import { canBindPort } from '../helpers/net.js';
 
 let vaultDir: string;
 let mycoHome: string;
@@ -63,16 +64,6 @@ afterEach(async () => {
   if (previousHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = previousHome;
 });
-
-async function canBindPort(port: number): Promise<boolean> {
-  const probe = http.createServer((_req, res) => res.end());
-  return new Promise<boolean>((resolve) => {
-    probe.once('error', () => resolve(false));
-    probe.listen(port, '127.0.0.1', () => {
-      probe.close(() => resolve(true));
-    });
-  });
-}
 
 async function startServer(handler: http.RequestListener): Promise<void> {
   server = http.createServer(handler);

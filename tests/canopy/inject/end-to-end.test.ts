@@ -10,6 +10,8 @@ import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { assertGroveProjectId } from '@myco/grove/ids';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -56,9 +58,25 @@ beforeEach(async () => {
   const cfg = MycoConfigSchema.parse({ version: 3 });
   const handler = createCanopyInjectHandler({
     liveConfig: { current: cfg },
-    vaultDir: path.join(tmpVault, '.myco'),
     getDatabase,
   });
+
+  // The real daemon resolves + authorizes the request context before the
+  // handler runs; this minimal harness stands in for that, supplying the
+  // caller's tenancy explicitly. The handler must NOT re-derive tenancy from
+  // a bootstrap-anchor vault. See tests/meta/no-anchor-as-tenancy.test.ts.
+  const requestContext: MycoRequestContext = {
+    projectRoot: tmpVault,
+    callerRoot: null,
+    projectId: assertGroveProjectId(tmpProjectId),
+    groveId: null,
+    machineId: 'local',
+    sessionId: null,
+    projectVaultDir: path.join(tmpVault, '.myco'),
+    databasePath: path.join(tmpVault, '.myco', SQLITE_DB_FILE),
+    source: 'explicit',
+    tenancySource: 'caller',
+  };
 
   server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/canopy/inject') {
@@ -70,7 +88,7 @@ beforeEach(async () => {
     req.on('data', (c) => chunks.push(c));
     req.on('end', async () => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      const result = await handler({ body });
+      const result = await handler({ requestContext, body });
       res.statusCode = result.status ?? 200;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(result.body));

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Loader2, Zap, Clock, ChevronRight, ChevronDown } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Zap, Clock } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
-import { ModelSelectField } from '../providers/ModelSelectField';
+import { AdvancedModelPin } from '../providers/AdvancedModelPin';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
 import {
   Select,
@@ -23,6 +23,7 @@ import {
   useTestProvider,
   useUpdateTaskConfig,
   maybeInferHarnessFromProviderType,
+  REASONING_LEVELS,
   type ProviderConfig,
   type PhaseOverride,
   type ScheduleOverride,
@@ -76,7 +77,6 @@ const POWER_STATE_LABELS: Record<PowerState, string> = {
 };
 
 const TASK_DEFAULT_SENTINEL = '__task_default__';
-const REASONING_OPTIONS: ReasoningLevelUi[] = ['low', 'default', 'high'];
 
 function serializeComparable(value: unknown): string {
   return JSON.stringify(value ?? null);
@@ -359,7 +359,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             <SelectItem value={TASK_DEFAULT_SENTINEL}>
               Use inherited default ({defaults?.reasoningLevel ?? 'default'})
             </SelectItem>
-            {REASONING_OPTIONS.map((opt) => (
+            {REASONING_LEVELS.map((opt) => (
               <SelectItem key={opt} value={opt}>
                 {opt}
               </SelectItem>
@@ -388,35 +388,20 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       )}
 
       {/* Advanced — pin a specific model SKU (escape hatch / local providers
-          without a reasoning map). */}
+          without a reasoning map). Controlled here so a saved model override
+          auto-opens it on load and "Clear All Overrides" collapses it. */}
       {providerType !== '' && (
-        <div className="space-y-2">
-          <button
-            type="button"
-            onClick={() => { setAdvancedOpen((v) => !v); }}
-            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface"
-          >
-            {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            Advanced: pin a specific model
-          </button>
-          {advancedOpen && (
-            <>
-              <ModelSelectField
-                providerType={providerType}
-                localBackend={draft.localBackend}
-                baseUrl={baseUrl}
-                model={model}
-                modelPlaceholder={defaults?.model}
-                providers={providers}
-                onModelChange={handleDraftModelChange}
-              />
-              <p className="font-sans text-[11px] text-on-surface-variant/70">
-                Used only when the selected reasoning profile has no mapping —
-                e.g. local providers without a reasoning map.
-              </p>
-            </>
-          )}
-        </div>
+        <AdvancedModelPin
+          open={advancedOpen}
+          onOpenChange={setAdvancedOpen}
+          providerType={providerType}
+          localBackend={draft.localBackend}
+          baseUrl={baseUrl}
+          model={model}
+          modelPlaceholder={defaults?.model}
+          providers={providers}
+          onModelChange={handleDraftModelChange}
+        />
       )}
 
       {/* Task-level maxTurns + timeout */}

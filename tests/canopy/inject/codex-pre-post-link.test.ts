@@ -8,6 +8,8 @@ import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { assertGroveProjectId } from '@myco/grove/ids';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -46,6 +48,26 @@ function makeConfig(): MycoConfig {
 let tmpVault: string;
 let tmpProjectId: string;
 
+/**
+ * The caller-supplied request context the daemon would resolve + authorize
+ * before dispatch. The handler derives tenancy from this, never from a
+ * bootstrap-anchor vault. See tests/meta/no-anchor-as-tenancy.test.ts.
+ */
+function ctx(): MycoRequestContext {
+  return {
+    projectRoot: tmpVault,
+    callerRoot: null,
+    projectId: assertGroveProjectId(tmpProjectId),
+    groveId: null,
+    machineId: 'local',
+    sessionId: null,
+    projectVaultDir: path.join(tmpVault, '.myco'),
+    databasePath: path.join(tmpVault, '.myco', SQLITE_DB_FILE),
+    source: 'explicit',
+    tenancySource: 'caller',
+  };
+}
+
 beforeEach(() => {
   closeDatabase();
   _resetPendingInjections();
@@ -73,11 +95,11 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
 
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
 
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-1',
         agent: 'codex',
@@ -112,11 +134,11 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
 
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
 
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 'cursor-sess-1',
         agent: 'cursor',
@@ -135,11 +157,11 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
 
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
 
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-2',
         agent: 'codex',
@@ -156,11 +178,11 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
     // and must not pollute the pending registry.
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
 
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-3',
         agent: 'codex',
@@ -178,11 +200,11 @@ describe('Codex Pre→Post linkage records canopy_injection_tokens', () => {
     // so a fresh project doesn't surface a misleading Canopy block.
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
-      vaultDir: path.join(tmpVault, '.myco'),
       getDatabase,
     });
 
     const res = await handler({
+      requestContext: ctx(),
       body: {
         sessionId: 'codex-sess-cold',
         agent: 'codex',

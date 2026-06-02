@@ -80,6 +80,7 @@ export const LOG_KINDS = {
   DAEMON_RECONCILE: 'daemon.reconcile',
   DAEMON_LAG: 'daemon.lag',
   DAEMON_STATE_MUTATION: 'daemon.state-mutation',
+  TENANCY_VIOLATION: 'tenancy.violation',
 
   // Provider-level fetch instrumentation (cross-runtime: anything that
   // routes outbound LLM/embedding requests through `instrumentedFetch`).
@@ -130,6 +131,9 @@ export const LOG_KINDS = {
 
   // Release provenance
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance.reconcile',
+
+  // Symbionts
+  MANAGED_FILES_RECONCILE: 'symbionts.managed-files-reconcile',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];
