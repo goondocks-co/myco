@@ -182,7 +182,6 @@ export function ReleaseProvenanceCard() {
             path="release_provenance.production_refs"
             label="Production refs"
             hint="one per line"
-            lockScope="project"
           >
             {({ value, onChange }) => (
               <div className="space-y-2">
@@ -200,7 +199,6 @@ export function ReleaseProvenanceCard() {
             path="release_provenance.integration_refs"
             label="Integration refs"
             hint="one per line"
-            lockScope="project"
           >
             {({ value, onChange }) => (
               <div className="space-y-2">
@@ -225,7 +223,6 @@ export function ReleaseProvenanceCard() {
             path="release_provenance.github.repo"
             label="Repository"
             hint="owner/name"
-            lockScope="project"
             commitOn="blur"
           >
             {({ value, onChange, onBlur }) => (
@@ -286,7 +283,6 @@ export function ReleaseProvenanceCard() {
           <ScopedField
             path="release_provenance.github.max_lookups_per_run"
             label="PR lookups"
-            lockScope="project"
             commitOn="blur"
             parse={(value) => Number(value)}
           >
@@ -315,7 +311,6 @@ export function ReleaseProvenanceCard() {
           <ScopedField
             path="release_provenance.enabled"
             label="Enabled"
-            lockScope="project"
           >
             {({ value, onChange }) => (
               <div className="space-y-2">
@@ -329,7 +324,6 @@ export function ReleaseProvenanceCard() {
             path="release_provenance.reconcile_interval_minutes"
             label="Reconcile interval"
             hint="minutes"
-            defaultScope="project"
             commitOn="blur"
             parse={(value) => Number(value)}
           >
@@ -351,7 +345,6 @@ export function ReleaseProvenanceCard() {
           <ScopedField
             path="release_provenance.production_debug_include_unknown"
             label="Include unknown debug"
-            lockScope="project"
           >
             {({ value, onChange }) => (
               <div className="space-y-2">
@@ -371,7 +364,6 @@ export function ReleaseProvenanceCard() {
           path="release_provenance.package_map"
           label="Monorepo release mapping"
           hint="path => release tag ref"
-          lockScope="project"
         >
           {({ value, onChange }) => (
             <div className="space-y-2">

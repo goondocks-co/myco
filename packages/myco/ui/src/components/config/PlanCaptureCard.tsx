@@ -15,9 +15,10 @@ interface PlanDirsAgentResponse {
 /**
  * Plan Capture — machine-tier (2026-06 scope correction). Symbionts install
  * globally now, so the watched plan dirs and the managed-.gitignore toggle are
- * a per-machine capture policy, not a per-repo git-committed setting. Both
- * fields use lockScope='machine' so they write to ~/.myco/config.yaml and the
- * Personal pill never appears. The daemon's config-write reaction still runs
+ * a per-machine capture policy, not a per-repo git-committed setting. The
+ * scope registry homes `capture.*` at the machine tier with no Personal
+ * override, so these fields write to ~/.myco/config.yaml and the Personal
+ * pill never appears. The daemon's config-write reaction still runs
  * symbiont reconciliation (.gitignore on the active project) and refreshes the
  * in-memory plan watcher on every successful machine-config write.
  */
@@ -83,7 +84,6 @@ export function PlanCaptureCard() {
           <ScopedField
             path="capture.ignore_plan_dirs_in_git"
             label="Ignore Custom Plan Dirs In Git"
-            lockScope="machine"
             hint=".gitignore is rewritten on every change"
           >
             {({ value, onChange }) => (
@@ -94,7 +94,6 @@ export function PlanCaptureCard() {
           <ScopedField
             path="capture.plan_dirs"
             label="Custom Directories"
-            lockScope="machine"
             hint="extra paths to watch for plan files"
           >
             {({ value, onChange }) => {

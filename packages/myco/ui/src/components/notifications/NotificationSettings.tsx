@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from '../ui/select';
 import { ScopedField } from '../config/ScopedField';
-import { ScopeBadge, ScopePill } from '../config/ScopePill';
+import { ScopePill } from '../config/ScopePill';
 
 const MODE_LABELS = {
   banner: 'Banner',
@@ -35,7 +35,7 @@ function SectionCard({ children }: { children: React.ReactNode }) {
  * can still opt one domain out without touching the machine-wide default.
  */
 export function NotificationSettings() {
-  const { effective, setField, resetField, promoteField, isLocalOverride } = useScopedConfig();
+  const { effective, setField, resetField, isLocalOverride } = useScopedConfig();
   const { data: registryData } = useNotificationRegistry();
   const domains = registryData?.domains ?? [];
 
@@ -78,7 +78,6 @@ export function NotificationSettings() {
             path="notifications.enabled"
             label="Notifications"
             hint="master switch for this machine"
-            defaultScope="machine"
           >
             {({ value, onChange }) => (
               <Switch checked={value ?? true} onCheckedChange={onChange} />
@@ -92,7 +91,6 @@ export function NotificationSettings() {
               path="notifications.default_mode"
               label="Default Display"
               hint="summary = panel only; banner = temporary popup"
-              defaultScope="machine"
             >
               {({ value, onChange }) => (
                 <Select
@@ -117,7 +115,6 @@ export function NotificationSettings() {
               path="notifications.system_notifications"
               label="Browser Notifications"
               hint="OS popups when tab unfocused; only for banner mode"
-              defaultScope="machine"
             >
               {({ value, onChange }) => (
                 <Switch checked={value ?? false} onCheckedChange={onChange} disabled={controlsDisabled} />
@@ -156,15 +153,12 @@ export function NotificationSettings() {
                               <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
                                 {domainEnabled ? MODE_LABELS[effectiveMode] : 'Off'}
                               </span>
-                              {personal ? (
-                                <ScopePill
-                                  mode="local-default"
-                                  onPromote={() => promoteField(domainPath)}
-                                  onReset={() => resetField(domainPath)}
-                                />
-                              ) : (
-                                <ScopeBadge scope="machine" />
-                              )}
+                              <ScopePill
+                                path={domainPath}
+                                hasLocalOverride={personal}
+                                onSavePersonal={() => setField(domainPath, domainConfig, 'local')}
+                                onReset={() => resetField(domainPath)}
+                              />
                             </div>
                             <p className="text-[11px] text-on-surface-variant">
                               {d.types.map((t) => t.label).join(', ')}

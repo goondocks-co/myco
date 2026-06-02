@@ -45,11 +45,23 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'team': { home: 'grove', overridableBy: [] },
   // grove + Personal (seed = current cards — RATIFY, see note)
   'agent': { home: 'grove', overridableBy: ['local'] },
+  // Agent task-enablement toggles are Grove-locked: each Grove opts its whole
+  // task pipeline in once; no per-machine Personal override (matches the old
+  // UI's allowPersonal={false} on both). Specific leaves win via longest-prefix
+  // over the `agent` block.
+  'agent.scheduled_tasks_enabled': { home: 'grove', overridableBy: [] },
+  'agent.event_tasks_enabled': { home: 'grove', overridableBy: [] },
   'skills': { home: 'grove', overridableBy: ['local'] },
   'maintenance': { home: 'grove', overridableBy: ['local'] },
-  'backup': { home: 'grove', overridableBy: ['local'] },
-  // project + Personal
-  'release_provenance': { home: 'project', overridableBy: ['local'] },
+  // backup is a Grove-level resource: the Grove is a DB boundary and one
+  // project sets the backup for the ENTIRE Grove, so a per-project/per-machine
+  // Personal override is meaningless. (The old UI's backup.dir
+  // defaultScope="local" was wrong; grove-only is correct.)
+  'backup': { home: 'grove', overridableBy: [] },
+  // project (locked — the old UI used lockScope="project" on every release
+  // field; project-level overrides are a future opt-in, not now). The
+  // reconcile-interval leaf is the one exception below.
+  'release_provenance': { home: 'project', overridableBy: [] },
   'release_provenance.reconcile_interval_minutes': { home: 'grove', overridableBy: ['project', 'local'] },
   'cortex': { home: 'project', overridableBy: ['local'] },
   'symbionts': { home: 'project', overridableBy: ['local'] },

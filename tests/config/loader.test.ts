@@ -250,14 +250,15 @@ describe('Local config overlay', () => {
   });
 
   it('merged-array policy: local arrays replace project arrays', () => {
-    // release_provenance.production_refs is project-home + local-overridable
+    // cortex.canopy.exclude.patterns is project-home + local-overridable
     // (scope registry), so both tiers survive the scope-aware prune and the
-    // arrayStrategy:'replace' merge applies. (capture.* is machine-locked now,
-    // so it can no longer carry this assertion.)
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nrelease_provenance:\n  production_refs: ['a', 'b']\n`);
-    writeLocal(tmpDir, `release_provenance:\n  production_refs: ['c']\n`);
+    // arrayStrategy:'replace' merge applies. (release_provenance.* and
+    // capture.* are locked now, so neither can carry this assertion; the
+    // user-additive canopy `patterns` array is the genuine project+local case.)
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\ncortex:\n  canopy:\n    exclude:\n      patterns: ['a', 'b']\n`);
+    writeLocal(tmpDir, `cortex:\n  canopy:\n    exclude:\n      patterns: ['c']\n`);
     const merged = loadMergedConfig(tmpDir);
-    expect(merged.release_provenance.production_refs).toEqual(['c']);
+    expect(merged.cortex.canopy.exclude.patterns).toEqual(['c']);
   });
 
   it('loadLocalConfig returns {} and warns when YAML is malformed', () => {

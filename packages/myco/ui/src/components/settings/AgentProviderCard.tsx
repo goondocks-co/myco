@@ -218,9 +218,8 @@ export function AgentProviderCard() {
         <span className="flex items-center gap-2">
           Myco Agent
           <ScopePill
-            mode="shared-default"
+            path="agent.provider"
             hasLocalOverride={personal}
-            defaultScopeBadge="grove"
             onSavePersonal={handleSavePersonal}
             onReset={handleResetScope}
           />

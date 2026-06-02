@@ -189,8 +189,6 @@ export function AgentConfig() {
           <ScopedField
             path="agent.scheduled_tasks_enabled"
             label="Scheduled Tasks"
-            defaultScope="grove"
-            allowPersonal={false}
             hint="runs intelligence/skill-survey/skill-evolve on a cron"
           >
             {({ value, onChange }) => (
@@ -205,8 +203,6 @@ export function AgentConfig() {
           <ScopedField
             path="agent.event_tasks_enabled"
             label="Event-Driven Tasks"
-            defaultScope="grove"
-            allowPersonal={false}
             hint="titles + summaries on session end"
           >
             {({ value, onChange }) => (
@@ -235,7 +231,6 @@ export function AgentConfig() {
         <ScopedField
           path="agent.summary_batch_interval"
           label="Title & Summary Batch Interval"
-          defaultScope="grove"
           commitOn="blur"
           hint="batches between event-driven summary triggers; 0 disables"
         >
