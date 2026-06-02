@@ -1620,12 +1620,19 @@ export async function main(): Promise<void> {
   });
 
   // --- Skill lifecycle API routes ---
-  server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
-  server.registerRoute('GET', '/api/skill-candidates/:id', handleGetCandidate);
-  server.registerRoute('PUT', '/api/skill-candidates/:id', handleUpdateCandidate);
-  server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
-  server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
-  server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
+  //
+  // Every skill-candidate/skill-record route is tenant-scoped: candidates and
+  // records carry a project_id, and a read/mutate must only ever see the
+  // REQUEST's own project. Wrap each in tenantRoute so a synthesized/anchor
+  // context is rejected (400 + tenancy.violation) before the handler derives
+  // its scope from the authorized principal — never the daemon's bootstrap
+  // anchor.
+  server.registerRoute('GET', '/api/skill-candidates', tenantRoute({ machineId, logger }, handleListCandidates));
+  server.registerRoute('GET', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleGetCandidate));
+  server.registerRoute('PUT', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleUpdateCandidate));
+  server.registerRoute('GET', '/api/skill-records', tenantRoute({ machineId, logger }, handleListSkillRecords));
+  server.registerRoute('GET', '/api/skill-records/:id', tenantRoute({ machineId, logger }, handleGetSkillRecord));
+  server.registerRoute('DELETE', '/api/skill-candidates/:id', tenantRoute({ machineId, logger }, handleDeleteCandidate));
   server.registerRoute('DELETE', '/api/skill-records/:id', tenantRoute({ machineId, logger }, createSkillRecordDeleteHandler({ logger })));
 
   // --- Mycelium API routes ---
@@ -2005,18 +2012,23 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(bootstrapVaultDir, req.query, req.requestContext));
-  // The create route is wrapped in tenantRoute: it is purely tenant-scoped
-  // (every HTTP create lands a project-scoped row tagged with the request's
-  // project, and the enabled-gate config resolves from the request's grove +
-  // vault, never the anchor). Daemon-scope rows come only from internal
-  // notify(..., { scope: 'daemon' }) callers, which bypass HTTP.
+  //
+  // Every tenant-scoped notification route is wrapped in tenantRoute: it
+  // requires caller-supplied tenancy and rejects a synthesized/anchor context
+  // (400 + tenancy.violation) before the handler runs, so a read/mutate is
+  // always scoped to the REQUEST's project — never the daemon's bootstrap
+  // anchor. The list + unread-count routes still merge daemon-scope
+  // (project_id IS NULL) rows via ?include_daemon; that merge is intact (a
+  // tenant read merges daemon rows, it does not widen scope). The registry
+  // route is global metadata (domain descriptors, no tenant rows) so it stays
+  // unwrapped.
+  server.registerRoute('GET', '/api/notifications', tenantRoute({ machineId, logger }, handleListNotifications));
   server.registerRoute('POST', '/api/notifications', tenantRoute({ machineId, logger }, handleCreateNotification));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(bootstrapVaultDir, req.params.id, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(bootstrapVaultDir, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
+  server.registerRoute('PATCH', '/api/notifications/:id', tenantRoute({ machineId, logger }, handleUpdateNotification));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', tenantRoute({ machineId, logger }, handleDismissAll));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', tenantRoute({ machineId, logger }, handleMarkAllRead));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
+  server.registerRoute('GET', '/api/notifications/unread-count', tenantRoute({ machineId, logger }, handleUnreadCount));
 
   // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
   // port is bound. reconcileClient() above only arms the boot Grove's flag;

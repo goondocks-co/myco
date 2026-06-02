@@ -19,8 +19,19 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
-import { projectScopeFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
-import type { GroveProjectId } from '../../grove/ids.js';
+import { projectScope, type GroveProjectId, type ProjectScope } from '../../grove/ids.js';
+
+/**
+ * Tenant scope for a route that ran through `tenantRoute`. The wrapper has
+ * already proved `principal.tenancy.projectId`/`groveId` are caller-supplied
+ * (a synthesized/anchor context was rejected with 400 before we got here), so
+ * a notification read/mutate is always scoped to the request's own project —
+ * never the daemon's bootstrap anchor. Daemon-scope (`project_id IS NULL`)
+ * rows are merged in separately via `?include_daemon`, not by widening scope.
+ */
+function tenantProjectScope(principal: RequestPrincipal): ProjectScope {
+  return projectScope(principal.tenancy.projectId as GroveProjectId);
+}
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -45,12 +56,20 @@ const UpdateStatusBody = z.object({
 // Handlers
 // ---------------------------------------------------------------------------
 
-/** GET /api/notifications — list notifications with optional filters. */
+/**
+ * GET /api/notifications — list notifications with optional filters.
+ *
+ * Registered as a `tenantRoute`, so this handler always runs with an
+ * authorized `principal` — a synthesized/anchor context is rejected (400 +
+ * `tenancy.violation`) by the wrapper before we get here. The read is scoped
+ * to the REQUEST's project; daemon-scope (`project_id IS NULL`) rows are
+ * merged in only when the caller passes `?include_daemon`.
+ */
 export async function handleListNotifications(
-  _vaultDir: string,
-  query: Record<string, string>,
-  requestContext?: MycoRequestContext,
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
+  const query = req.query;
   const status = query.status as 'unread' | 'read' | 'dismissed' | undefined;
   const domain = query.domain;
   const mode = query.mode as NotificationMode | undefined;
@@ -60,7 +79,7 @@ export async function handleListNotifications(
   // the request's project rows so a single feed surfaces both layers.
   const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
 
-  const scope = projectScopeFromRequestContext(requestContext);
+  const scope = tenantProjectScope(principal);
   const items = listNotifications({
     status,
     domain,
@@ -111,7 +130,6 @@ export async function handleCreateNotification(
   const { domain, type, title, message, link, metadata } = parsed.data;
 
   const vaultDir = principal.tenancy.projectVaultDir;
-  const requestContext = req.requestContext;
 
   // Resolve the enabled-gate against the REQUEST's grove + vault (Grove-tier
   // default merged under the personal/local override), never the bootstrap
@@ -137,7 +155,7 @@ export async function handleCreateNotification(
   if (!id) {
     return { body: { ok: true, suppressed: true, reason: 'unknown' } };
   }
-  const scope = projectScopeFromRequestContext(requestContext);
+  const scope = tenantProjectScope(principal);
 
   return {
     body: {
@@ -148,19 +166,23 @@ export async function handleCreateNotification(
   };
 }
 
-/** PATCH /api/notifications/:id — update status (read/dismissed). */
+/**
+ * PATCH /api/notifications/:id — update status (read/dismissed).
+ *
+ * Tenant-scoped via `tenantRoute`: the status update only matches a row owned
+ * by the REQUEST's project, so a synthesized/anchor context (rejected upstream)
+ * can never mutate another tenant's notifications.
+ */
 export async function handleUpdateNotification(
-  _vaultDir: string,
-  id: string,
-  body: unknown,
-  requestContext?: MycoRequestContext,
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
-  const parsed = UpdateStatusBody.safeParse(body);
+  const parsed = UpdateStatusBody.safeParse(req.body);
   if (!parsed.success) {
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const updated = updateNotificationStatus(id, parsed.data.status, projectScopeFromRequestContext(requestContext));
+  const updated = updateNotificationStatus(req.params.id, parsed.data.status, tenantProjectScope(principal));
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
@@ -170,23 +192,21 @@ export async function handleUpdateNotification(
 
 /** POST /api/notifications/dismiss-all — dismiss all (optionally per domain). */
 export async function handleDismissAll(
-  _vaultDir: string,
-  body: unknown,
-  requestContext?: MycoRequestContext,
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
-  const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain, projectScopeFromRequestContext(requestContext));
+  const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
+  const count = dismissAllNotifications(domain, tenantProjectScope(principal));
   return { body: { ok: true, dismissed: count } };
 }
 
 /** POST /api/notifications/mark-all-read — mark all unread as read. */
 export async function handleMarkAllRead(
-  _vaultDir: string,
-  body: unknown,
-  requestContext?: MycoRequestContext,
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
-  const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain, projectScopeFromRequestContext(requestContext));
+  const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
+  const count = markAllRead(domain, tenantProjectScope(principal));
   return { body: { ok: true, marked: count } };
 }
 
@@ -195,15 +215,21 @@ export async function handleGetRegistry(): Promise<RouteResponse> {
   return { body: { domains: getAllDomains() } };
 }
 
-/** GET /api/notifications/unread-count — lightweight unread count endpoint. */
+/**
+ * GET /api/notifications/unread-count — lightweight unread count endpoint.
+ *
+ * Tenant-scoped via `tenantRoute`. Daemon-scope rows are merged in only when
+ * `?include_daemon` is set (the badge counts both layers), keeping the
+ * daemon-scope merge intact while the base count stays the request's project.
+ */
 export async function handleUnreadCount(
-  requestContext?: MycoRequestContext,
-  query: Record<string, string> = {},
+  req: RouteRequest,
+  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
-  const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
+  const includeDaemon = req.query.include_daemon === '1' || req.query.include_daemon === 'true';
   return {
     body: {
-      count: countNotifications('unread', projectScopeFromRequestContext(requestContext), {
+      count: countNotifications('unread', tenantProjectScope(principal), {
         includeDaemonScope: includeDaemon,
       }),
     },

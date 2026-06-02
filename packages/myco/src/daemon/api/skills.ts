@@ -37,8 +37,19 @@ import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
+
+/**
+ * Tenant scope for a skill route that ran through `tenantRoute`. The wrapper
+ * has already proved `principal.tenancy.projectId`/`groveId` are caller-
+ * supplied (a synthesized/anchor context was rejected with 400 before the
+ * handler ran), so every skill read/mutate is scoped to the REQUEST's own
+ * project — never the daemon's bootstrap anchor.
+ */
+function tenantProjectScope(principal: RequestPrincipal): ProjectScope {
+  return projectScope(principal.tenancy.projectId as GroveProjectId);
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -82,10 +93,10 @@ export function isSafeSkillNameForFs(name: string): boolean {
  *     filtering (e.g. `status=approved,generated`)
  *   - limit, offset: standard pagination
  */
-export async function handleListCandidates(req: RouteRequest): Promise<RouteResponse> {
+export async function handleListCandidates(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
 
   const { items: candidates, total } = listCandidatesWithCount({
     scope,
@@ -102,8 +113,8 @@ export async function handleListCandidates(req: RouteRequest): Promise<RouteResp
  *
  * Returns 404 if not found.
  */
-export async function handleGetCandidate(req: RouteRequest): Promise<RouteResponse> {
-  const scope = projectScopeFromRequestContext(req.requestContext);
+export async function handleGetCandidate(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
+  const scope = tenantProjectScope(principal);
   const candidate = getCandidate(req.params.id, scope);
   if (!candidate) {
     return { status: 404, body: { error: `Not found: ${req.params.id}` } };
@@ -151,9 +162,9 @@ const UpdateCandidateBody = z.object({
  * Returns 400 if no body or if the status value is not in ALLOWED_REST_STATUSES,
  * 404 if candidate not found.
  */
-export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteResponse> {
+export async function handleUpdateCandidate(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const id = req.params.id;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
   if (req.body === undefined || req.body === null) {
     return { status: 400, body: { error: 'Request body required' } };
   }
@@ -286,11 +297,11 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
  *
  * Query params: status, limit, offset
  */
-export async function handleListSkillRecords(req: RouteRequest): Promise<RouteResponse> {
+export async function handleListSkillRecords(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const status = req.query.status || undefined;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
 
   const { items: records, total } = listSkillRecordsWithCount({ scope, status, limit, offset });
 
@@ -303,9 +314,9 @@ export async function handleListSkillRecords(req: RouteRequest): Promise<RouteRe
  *
  * Tries id first, then falls back to name lookup. Returns 404 if not found.
  */
-export async function handleGetSkillRecord(req: RouteRequest): Promise<RouteResponse> {
+export async function handleGetSkillRecord(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const idOrName = req.params.id;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
 
   const record = getSkillRecord(idOrName, scope) ?? getSkillRecordByName(idOrName, scope);
 
@@ -339,9 +350,9 @@ export async function handleGetSkillRecord(req: RouteRequest): Promise<RouteResp
 /**
  * Delete a skill candidate by id.
  */
-export async function handleDeleteCandidate(req: RouteRequest): Promise<RouteResponse> {
+export async function handleDeleteCandidate(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const id = req.params.id;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
   const deleted = deleteCandidate(id, scope);
   if (!deleted) return { status: 404, body: { error: `Not found: ${id}` } };
 
@@ -351,9 +362,9 @@ export async function handleDeleteCandidate(req: RouteRequest): Promise<RouteRes
 /**
  * Delete a skill record by id or name, including lineage and usage data.
  */
-export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteResponse> {
+export async function handleDeleteSkillRecord(req: RouteRequest, principal: RequestPrincipal): Promise<RouteResponse> {
   const idOrName = req.params.id;
-  const scope = projectScopeFromRequestContext(req.requestContext);
+  const scope = tenantProjectScope(principal);
   const result = deleteSkillRecordCascade(idOrName, scope);
   if (!result) return { status: 404, body: { error: `Not found: ${idOrName}` } };
 
@@ -390,7 +401,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
     req: RouteRequest,
     principal: RequestPrincipal,
   ): Promise<RouteResponse> {
-    const result = await handleDeleteSkillRecord(req);
+    const result = await handleDeleteSkillRecord(req, principal);
     // Delete skill file and symlinks from disk if the DB delete succeeded
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
