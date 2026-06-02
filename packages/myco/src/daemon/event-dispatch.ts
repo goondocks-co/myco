@@ -338,7 +338,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             machineId: requestMachineId,
             sessionId: event.session_id,
             capturePoint: 'session_start',
-            productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
+            productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
             logger,
           },
           (provenance) => {
@@ -447,7 +447,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           sessionId: event.session_id,
           promptBatchId: batchId,
           capturePoint: 'prompt_batch_start',
-          productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
+          productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
           promptOrigin,
           logger,
         });

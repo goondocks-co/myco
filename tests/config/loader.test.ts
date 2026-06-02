@@ -685,4 +685,77 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
     expect(merged.skills.confidence_threshold).toBeCloseTo(0.31);
   });
+
+  it('updateConfig does NOT drop capture/notifications on an un-migrated project (Fix #1 repro)', () => {
+    // Data-loss repro: the project myco.yaml still carries capture.* and
+    // notifications.* (never migrated — the load path that relocates them only
+    // runs with migrateTiers=true, which updateConfig→loadConfig does NOT set).
+    // An unrelated project-tier write goes through
+    //   updateConfig → loadConfig (no migrateTiers) → saveConfig.
+    // Before the fix, saveConfig's ProjectConfigSchema.parse unconditionally
+    // stripped capture/notifications and wrote them NOWHERE: not kept in
+    // myco.yaml (project tier), not relocated to machine config (relocation
+    // only happened on the load path). The values were silently destroyed.
+    writeProject(
+      tmpDir,
+      [
+        'version: 3',
+        'capture:',
+        '  buffer_max_events: 888',
+        '  artifact_extensions:',
+        '    - .md',
+        '    - .rs',
+        'notifications:',
+        '  enabled: false',
+        '  default_mode: banner',
+        'release_provenance:',
+        '  enabled: true',
+        '',
+      ].join('\n'),
+    );
+
+    updateConfig(tmpDir, (config) => ({
+      ...config,
+      release_provenance: { ...config.release_provenance, enabled: false },
+    }));
+
+    // capture/notifications must NOT survive in myco.yaml (they're machine-tier
+    // now — saveConfig still strips them) …
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
+    expect(persisted.notifications).toBeUndefined();
+    expect((persisted.release_provenance as Record<string, unknown>).enabled).toBe(false);
+
+    // … but the values must be RELOCATED to machine config, never lost.
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(888);
+    expect((machineRaw.capture as Record<string, unknown>).artifact_extensions).toEqual(['.md', '.rs']);
+    expect((machineRaw.notifications as Record<string, unknown>).enabled).toBe(false);
+    expect((machineRaw.notifications as Record<string, unknown>).default_mode).toBe('banner');
+
+    // And they remain the effective values on a subsequent merged read.
+    const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
+    expect(merged.capture.buffer_max_events).toBe(888);
+    expect(merged.notifications.enabled).toBe(false);
+    expect(merged.notifications.default_mode).toBe('banner');
+  });
+
+  it('saveConfig does not clobber a newer explicit machine capture value (Fix #1 idempotence)', () => {
+    // The user already set capture explicitly in machine config. A later
+    // un-migrated project save must NOT overwrite that newer machine value —
+    // saveConfig's relocation mirrors moveMachine's "skip if target present".
+    fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
+    fs.writeFileSync(machinePath(), 'capture:\n  buffer_max_events: 111\n');
+    writeProject(tmpDir, 'version: 3\ncapture:\n  buffer_max_events: 999\n');
+    const config = loadConfig(tmpDir);
+
+    saveConfig(tmpDir, config);
+
+    // The explicit machine value wins; the stale project value is NOT moved over it.
+    const machineRaw = readYaml(machinePath());
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(111);
+    // … and it's still stripped from myco.yaml.
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
+  });
 });

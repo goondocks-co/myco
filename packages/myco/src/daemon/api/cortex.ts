@@ -31,12 +31,12 @@ const PromptBuilderStatusParams = z.object({
   runId: z.string().trim().min(1),
 });
 
-export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) {
+export function createCortexHandlers(deps: CortexDeps) {
   // Resolve config for the REQUEST's tenant (grove/project-tier `cortex.*`),
   // falling back to the daemon's `liveConfig` only when no tenant context is
   // resolved. Mirrors the pattern in event-dispatch / stop-processing.
   function configForRequest(req: RouteRequest): MycoConfig {
-    return resolveTenantConfig(req.requestContext, deps.liveConfig.current);
+    return resolveTenantConfig(req.requestContext, deps.liveConfig.current, { logger: deps.logger });
   }
 
   async function handleGetInstructions(

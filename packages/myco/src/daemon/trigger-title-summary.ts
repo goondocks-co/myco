@@ -88,7 +88,7 @@ export async function triggerTitleSummary(
 
   // Legacy non-Grove vaults (requestContext undefined) fall back to liveConfig;
   // resolveTenantConfig returns the fallback when no tenant context resolves.
-  const config = resolveTenantConfig(requestContext, liveConfig.current);
+  const config = resolveTenantConfig(requestContext, liveConfig.current, { logger });
 
   if (config.agent.summary_batch_interval <= 0) return;
   if (config.agent.event_tasks_enabled === false) return;

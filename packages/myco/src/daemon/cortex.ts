@@ -22,6 +22,7 @@ import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { resolveTenantConfig } from './request-config.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
@@ -148,6 +149,38 @@ function getLatestReportForAction(runId: string, action: string, scope: import('
   return undefined;
 }
 
+/**
+ * Resolve the merged config for a Cortex tenant request through the shared
+ * `resolveTenantConfig` seam, so cortex gains the seam's fail-loud logging on a
+ * present-tenant config-load failure instead of throwing an unlogged error.
+ *
+ * Behaviour-equivalent to the previous inline
+ * `loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null })`:
+ *   - groveId PRESENT → the seam calls `loadMergedConfig(vaultDir, { groveId })`;
+ *     on failure it logs (groveId + vaultDir + error) and returns the fallback.
+ *   - groveId null (legacy non-Grove) → the seam returns the fallback directly,
+ *     and the fallback IS `loadMergedConfig(vaultDir, { groveId: null })` — the
+ *     exact config the inline path produced for that case.
+ *
+ * The fallback is the null-grove merged config for the same vault (not the
+ * daemon's bootstrap-home liveConfig, which cortex deps don't carry), keeping
+ * the grove/project-tier `cortex.*`/`agent.*` resolution tied to the request
+ * vault rather than a phantom home.
+ */
+function resolveCortexTenantConfig(
+  vaultDir: string,
+  requestContext: MycoRequestContext,
+  logger: DaemonLogger,
+): MycoConfig {
+  const groveId = requestContext.groveId ?? null;
+  const fallback = loadMergedConfig(vaultDir, { groveId: null });
+  return resolveTenantConfig(
+    { projectVaultDir: vaultDir, groveId },
+    fallback,
+    { logger },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot + result readers
 // ---------------------------------------------------------------------------
@@ -186,11 +219,11 @@ export async function buildCortexPrompt(
   requestContext: MycoRequestContext,
 ): Promise<CortexPromptBuilderStartResult> {
   const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext.groveId ?? null, requestedSymbiont);
-  // Resolve config for the REQUEST's tenant. `cortex.*` is grove/project-tier,
-  // so the daemon's bootstrap-home snapshot (`deps.config`, which the handler
-  // sources from `liveConfig.current`) would pick the wrong grove's delivery
-  // contract. Resolve from the request vault + grove, the same way the run does.
-  const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null });
+  // Resolve config for the REQUEST's tenant through the shared seam. `cortex.*`
+  // is grove/project-tier, so the daemon's bootstrap-home snapshot would pick
+  // the wrong grove's delivery contract. The seam resolves from the request
+  // vault + grove (same as the run) and is loud on a present-tenant load failure.
+  const config = resolveCortexTenantConfig(vaultDir, requestContext, deps.logger);
   const delivery = resolveInstructionDelivery(config.cortex, targetSymbiont);
   const scope: import('@myco/grove/ids.js').ProjectScope = {
     kind: 'project',
@@ -302,14 +335,14 @@ export async function triggerCortexInstructions(
 ): Promise<TriggerCortexInstructionsResult> {
   const { vaultDir, requestContext, embeddingManager, logger, getTeamClient } = deps;
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
-  // Resolve config for the REQUEST's tenant, not the daemon's bootstrap home.
-  // Agent config is grove-tier (PR #394), so `liveConfig.current` — the merged
-  // config for the daemon's (now phantom) bootstrap home — would gate this
-  // refresh on the wrong grove's provider state. This mirrors how the actual
-  // run resolves provider config: the executor calls
-  // `resolveRunConfig(..., requestContext.groveId)` → `loadMergedConfig(vaultDir,
-  // { groveId })`, so the gate and the run agree on the same tenant config.
-  const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null });
+  // Resolve config for the REQUEST's tenant through the shared seam, not the
+  // daemon's bootstrap home. Agent config is grove-tier (PR #394), so reading
+  // the daemon's bootstrap-home liveConfig would gate this refresh on the wrong
+  // grove's provider state. This mirrors how the actual run resolves provider
+  // config — the executor calls `resolveRunConfig(..., requestContext.groveId)`
+  // → `loadMergedConfig(vaultDir, { groveId })` — so the gate and the run agree
+  // on the same tenant config. The seam adds fail-loud logging on a load failure.
+  const config = resolveCortexTenantConfig(vaultDir, requestContext, logger);
 
   if (config.agent.event_tasks_enabled === false) {
     return { started: false, reason: 'event-tasks-disabled' };

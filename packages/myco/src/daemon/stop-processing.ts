@@ -715,7 +715,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       ? filesystemRootFromRequestContext(req.requestContext)
       : planWatchConfig.projectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
-    const requestProductionRef = primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current));
+    const requestProductionRef = primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger }));
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';

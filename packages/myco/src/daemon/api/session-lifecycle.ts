@@ -176,7 +176,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
         machineId: requestMachineId,
         sessionId: session_id,
         capturePoint: 'session_start',
-        productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
+        productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
         logger,
       },
       (provenance) => {
@@ -241,7 +241,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       machineId: req.requestContext?.machineId ?? machineId,
       sessionId: session_id,
       capturePoint: 'session_end',
-      productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
+      productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current, { logger })),
       logger,
     });
     registry.unregister(session_id);

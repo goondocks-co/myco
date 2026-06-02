@@ -1251,7 +1251,7 @@ export async function main(): Promise<void> {
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
   let configHash = computeConfigHash(bootstrapVaultDir);
-  const cortexHandlers = createCortexHandlers(bootstrapVaultDir, {
+  const cortexHandlers = createCortexHandlers({
     liveConfig,
     embeddingManager,
     logger,

@@ -89,7 +89,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
   return async function handleSessionContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, branch } = SessionContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
-    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
@@ -215,7 +215,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
   return async function handleSubagentContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, agent, agent_id, agent_type } = SubagentContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
-    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Subagent context query', {
       session_id,
@@ -412,7 +412,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig, embeddingManager } = deps;
-    const config = resolveTenantConfig(req.requestContext, liveConfig.current);
+    const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
 

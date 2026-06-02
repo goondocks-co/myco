@@ -96,11 +96,12 @@ describe('createCortexHandlers', () => {
     vi.clearAllMocks();
   });
 
-  // Handlers are constructed with the daemon's bootstrap-anchor vault (project
-  // A) — exactly as `main.ts` wires them. A correct handler must NOT act
-  // against this anchor when the request carries a different tenant.
+  // Handlers no longer take an anchor vault: every op resolves its vault from
+  // the REQUEST's tenant. The dead `_anchorVaultDir` param was removed (Fix
+  // #10b). A correct handler must act against the request tenant — never any
+  // bootstrap anchor — which the ANCHOR_* constants below still assert against.
   function makeHandlers() {
-    return createCortexHandlers(ANCHOR_VAULT_DIR, {
+    return createCortexHandlers({
       liveConfig: { current: MycoConfigSchema.parse({ version: 3 }) },
       embeddingManager: { reconcile: vi.fn() } as never,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,

@@ -133,4 +133,65 @@ describe('resolveTenantConfig resolves config from the request grove', () => {
     }).not.toThrow();
     expect(result).toBe(fallback);
   });
+
+  // ---------------------------------------------------------------------------
+  // Fix #3: a PRESENT tenant whose config FAILS to load must be LOUD (warn in
+  // logs, carrying groveId + projectVaultDir + error) while still returning the
+  // fallback. The legitimate ABSENT-tenancy fallback must stay SILENT.
+  // ---------------------------------------------------------------------------
+
+  it('logs a warning (groveId + vaultDir + error) when a PRESENT tenant config fails to load', () => {
+    const notADir = path.join(home.path, 'present-tenant-not-a-dir');
+    fs.writeFileSync(notADir, 'not a directory\n', 'utf-8');
+
+    const warn = mockFn();
+    const result = resolveTenantConfig(
+      { projectVaultDir: notADir, groveId: GROVE_B_ID },
+      fallback,
+      { logger: { debug() {}, info() {}, warn, error() {} } },
+    );
+
+    expect(result).toBe(fallback);
+    expect(warn.calls.length).toBe(1);
+    const [kind, message, data] = warn.calls[0]!;
+    expect(kind).toBe('daemon.config');
+    expect(typeof message).toBe('string');
+    expect(data).toMatchObject({
+      grove_id: GROVE_B_ID,
+      project_vault_dir: notADir,
+    });
+    expect(typeof (data as Record<string, unknown>).error).toBe('string');
+  });
+
+  it('stays SILENT (no warn) when tenancy is ABSENT — the legitimate fallback', () => {
+    const warn = mockFn();
+    const logger = { debug() {}, info() {}, warn, error() {} };
+
+    expect(resolveTenantConfig(undefined, fallback, { logger })).toBe(fallback);
+    expect(resolveTenantConfig({ projectVaultDir: vaultB, groveId: null }, fallback, { logger })).toBe(fallback);
+    expect(resolveTenantConfig({ groveId: GROVE_B_ID }, fallback, { logger })).toBe(fallback);
+
+    expect(warn.calls.length).toBe(0);
+  });
+
+  it('does NOT warn on a successful tenant config resolution', () => {
+    const warn = mockFn();
+    const result = resolveTenantConfig(
+      { projectVaultDir: vaultB, groveId: GROVE_B_ID },
+      fallback,
+      { logger: { debug() {}, info() {}, warn, error() {} } },
+    );
+    expect(result.agent.event_tasks_enabled).toBe(false);
+    expect(warn.calls.length).toBe(0);
+  });
 });
+
+/** Minimal call-recording stand-in (avoids importing a mocking lib into this suite). */
+function mockFn(): { (...args: unknown[]): void; calls: unknown[][] } {
+  const calls: unknown[][] = [];
+  const fn = (...args: unknown[]): void => {
+    calls.push(args);
+  };
+  (fn as { calls: unknown[][] }).calls = calls;
+  return fn as { (...args: unknown[]): void; calls: unknown[][] };
+}
