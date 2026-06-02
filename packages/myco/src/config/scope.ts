@@ -28,6 +28,12 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'daemon.log_level': { home: 'machine', overridableBy: [] },
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },
   'daemon.update_channel': { home: 'machine', overridableBy: [] }, // decision-46130740
+  // Legacy per-project release-channel override. The loader migrates
+  // `update.channel` → `daemon.update_channel` (machine) on read and strips
+  // `update` from project myco.yaml (PROJECT_TIER_LEGACY_FIELDS), so its
+  // behavior-matching home is machine — same as its canonical sibling.
+  // RATIFY: Task 5 folds this into daemon.update_channel outright.
+  'update.channel': { home: 'machine', overridableBy: [] },
   // machine + Personal (deliberate change — see spec §A1)
   'notifications': { home: 'machine', overridableBy: ['local'] },
   // grove (locked — existing invariants)
