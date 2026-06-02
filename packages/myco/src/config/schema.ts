@@ -194,7 +194,20 @@ const AgentBaseSchema = z.object({
   provider: ProviderOverrideSchema.optional(),
   /** Global default harness — applies to all tasks unless overridden per-task. */
   harness: HarnessIdSchema.optional(),
-  /** Global default model — applies to all tasks unless overridden per-task. */
+  /**
+   * Grove-wide default reasoning tier. Resolves through the provider's
+   * `reasoning_map` at run time, so it stays portable across model upgrades
+   * and runtime swaps — the same rationale as the per-task/per-phase
+   * `reasoningLevel`. Applies when a task sets no reasoning level of its own;
+   * falls back to the built-in `default` tier when unset. Prefer this over
+   * `model:`; `model:` is the escape hatch that pins a specific SKU.
+   */
+  reasoningLevel: ReasoningLevelSchema.optional(),
+  /**
+   * Global default model — the escape hatch that pins a specific SKU when a
+   * reasoning tier has no mapping (e.g. local providers without a
+   * reasoning_map). Applies to all tasks unless overridden per-task.
+   */
   model: z.string().optional(),
   /** Per-task overrides keyed by task name. */
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
@@ -549,6 +562,7 @@ const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
   provider: ProviderOverrideSchema.optional(),
   harness: HarnessIdSchema.optional(),
+  reasoningLevel: ReasoningLevelSchema.optional(),
   model: z.string().optional(),
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 }));
@@ -618,6 +632,7 @@ export const GROVE_PROMOTED_FIELDS: ReadonlyArray<readonly string[]> = [
   ['embedding', 'base_url'],
   ['agent', 'provider'],
   ['agent', 'harness'],
+  ['agent', 'reasoningLevel'],
   ['agent', 'model'],
   ['agent', 'tasks'],
   ['agent', 'summary_batch_interval'],

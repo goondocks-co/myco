@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle, ChevronDown, ChevronRight, Loader2, XCircle } from 'lucide-react';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import {
   defaultBaseUrlForProvider,
@@ -7,7 +7,7 @@ import {
   useProviders,
   useTestProvider,
 } from '../../hooks/use-providers';
-import type { ProviderDraft } from '../../hooks/use-providers';
+import type { ProviderDraft, ReasoningLevelUi } from '../../hooks/use-providers';
 import {
   draftToNormalizedProviderConfig,
   useProviderConfigDraft,
@@ -24,9 +24,19 @@ import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
 import { ScopePill } from '../config/ScopePill';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
+import { ModelSelectField } from '../providers/ModelSelectField';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
+
+const REASONING_OPTIONS: readonly ReasoningLevelUi[] = ['low', 'default', 'high'];
 
 type AgentSecretProvider = Extract<SecretProvider, 'openai' | 'openrouter'>;
 
@@ -60,7 +70,7 @@ export function AgentProviderCard() {
   const {
     draft,
     savedDraft,
-    isDirty,
+    isDirty: isProviderDirty,
     clearDraft,
     resetDraft,
     handleHarnessChange,
@@ -86,6 +96,20 @@ export function AgentProviderCard() {
   const supportsReasoningMap = draft.type !== '';
   useEffect(() => { setApiKeyInput(''); }, [draft.type]);
 
+  // Grove-wide default reasoning tier. Tracked separately from the provider
+  // draft (it lives at `agent.reasoningLevel`, not inside `agent.provider`),
+  // mirroring how Task Config holds its reasoning level outside the draft. An
+  // unset value is the built-in `default` tier, so it displays as 'default'.
+  const savedReasoningLevel = effective?.agent?.reasoningLevel;
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevelUi>(savedReasoningLevel ?? 'default');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  useEffect(() => {
+    setReasoningLevel(savedReasoningLevel ?? 'default');
+  }, [savedReasoningLevel]);
+  // One dirty signal across the whole card: the provider draft (harness,
+  // provider, model, reasoning_map, …) OR the runtime's default reasoning tier.
+  const isDirty = isProviderDirty || reasoningLevel !== (savedReasoningLevel ?? 'default');
+
   const personal = isLocalOverride('agent.provider') || isLocalOverride('agent.harness');
   const handleResetScope = useCallback(async () => {
     const harness = isLocalOverride('agent.harness');
@@ -101,16 +125,18 @@ export function AgentProviderCard() {
       [
         { path: 'agent.harness', value: draft.harness || maybeInferHarnessFromProviderType(draft.type) },
         { path: 'agent.provider', value },
+        { path: 'agent.reasoningLevel', value: reasoningLevel },
       ],
       'local',
     );
-  }, [draft, reasoningModels, setFields]);
+  }, [draft, reasoningLevel, reasoningModels, setFields]);
 
   const writeProvider = useCallback((next: ProviderDraft, autoEnableTasks: boolean) => {
     const value = draftToNormalizedProviderConfig(next, reasoningModels);
-    const fields: Array<{ path: 'agent.harness' | 'agent.provider' | 'agent.scheduled_tasks_enabled' | 'agent.event_tasks_enabled'; value: unknown }> = [
+    const fields: Array<{ path: 'agent.harness' | 'agent.provider' | 'agent.reasoningLevel' | 'agent.scheduled_tasks_enabled' | 'agent.event_tasks_enabled'; value: unknown }> = [
       { path: 'agent.harness', value: next.harness || maybeInferHarnessFromProviderType(next.type) },
       { path: 'agent.provider', value },
+      { path: 'agent.reasoningLevel', value: reasoningLevel },
     ];
     if (autoEnableTasks) {
       fields.push(
@@ -119,7 +145,7 @@ export function AgentProviderCard() {
       );
     }
     void setFields(fields, personal ? 'local' : 'grove');
-  }, [personal, reasoningModels, setFields]);
+  }, [personal, reasoningLevel, reasoningModels, setFields]);
 
   const handleClear = useCallback(() => {
     clearDraft();
@@ -128,8 +154,9 @@ export function AgentProviderCard() {
 
   const handleResetDraft = useCallback(() => {
     resetDraft();
+    setReasoningLevel(savedReasoningLevel ?? 'default');
     agentTestMutation.reset();
-  }, [agentTestMutation, resetDraft]);
+  }, [agentTestMutation, resetDraft, savedReasoningLevel]);
 
   const handleSaveProvider = useCallback(async () => {
     const isClearingProvider = draft.type === '';
@@ -141,7 +168,7 @@ export function AgentProviderCard() {
             { path: 'agent.event_tasks_enabled', value: false },
           ],
           personal ? 'local' : 'grove',
-          ['agent.provider', 'agent.harness'],
+          ['agent.provider', 'agent.harness', 'agent.reasoningLevel'],
         );
       } catch (err) {
         console.error('[agent-card] clear provider failed', err);
@@ -218,6 +245,7 @@ export function AgentProviderCard() {
         contextLength={draft.contextLength}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
+        showModelSelector={false}
         onHarnessChange={(harness) => {
           handleHarnessChange(harness);
           agentTestMutation.reset();
@@ -236,6 +264,27 @@ export function AgentProviderCard() {
       />
 
       {supportsReasoningMap && (
+        <div className="space-y-1">
+          <label className="font-sans text-xs text-on-surface-variant">Default reasoning profile</label>
+          <Select value={reasoningLevel} onValueChange={(val) => setReasoningLevel(val as ReasoningLevelUi)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {REASONING_OPTIONS.map((opt) => (
+                <SelectItem key={opt} value={opt}>
+                  {opt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="font-sans text-[11px] text-on-surface-variant/70">
+            Resolves to a model through the reasoning profiles below. Tasks may override per-task.
+          </p>
+        </div>
+      )}
+
+      {supportsReasoningMap && (
         <ReasoningProfiles
           description="Built-in tasks resolve `low`, `default`, and `high` reasoning phases through these model mappings."
           values={{
@@ -248,6 +297,35 @@ export function AgentProviderCard() {
           fallbackModel={draft.model}
           placeholderWhenEmpty="Use default model"
         />
+      )}
+
+      {supportsReasoningMap && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => { setAdvancedOpen((v) => !v); }}
+            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface"
+          >
+            {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            Advanced: pin a specific model
+          </button>
+          {advancedOpen && (
+            <>
+              <ModelSelectField
+                providerType={draft.type}
+                localBackend={draft.localBackend}
+                baseUrl={draft.baseUrl}
+                model={draft.model}
+                providers={providers}
+                onModelChange={handleModelChange}
+              />
+              <p className="font-sans text-[11px] text-on-surface-variant/70">
+                Used only when the selected reasoning profile has no mapping —
+                e.g. local providers without a reasoning map.
+              </p>
+            </>
+          )}
+        </div>
       )}
 
       {secretProvider && (
