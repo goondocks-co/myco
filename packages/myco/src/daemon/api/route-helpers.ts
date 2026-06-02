@@ -20,6 +20,7 @@ import {
   TenancyViolationError,
   type RequestPrincipal,
 } from '../request-principal.js';
+import { errorBody } from './error-envelope.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
@@ -63,7 +64,9 @@ export function tenantRoute(
           pathname: req.pathname,
           detail: e.detail,
         });
-        return { status: 400, body: { ok: false, error: e.message, reason: 'tenancy-violation' } };
+        // Canonical repo error envelope: { error: { code, message } } — clients
+        // key on `error.code === 'tenancy-violation'` (matches sibling 400s).
+        return { status: 400, body: errorBody('tenancy-violation', e.message) };
       }
       throw e;
     }

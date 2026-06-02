@@ -219,7 +219,7 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
     } as RouteRequest);
 
     expect(response.status).toBe(400);
-    expect(response.body).toMatchObject({ reason: 'tenancy-violation' });
+    expect(response.body).toMatchObject({ error: { code: 'tenancy-violation' } });
     expect(kinds).toContain('tenancy.violation');
     const n = getDatabase().prepare('SELECT COUNT(*) AS n FROM notifications').get() as { n: number };
     expect(n.n).toBe(0);

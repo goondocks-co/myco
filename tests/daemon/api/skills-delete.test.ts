@@ -102,10 +102,10 @@ describe('skill record API deletion', () => {
     // trigger, which gates on this Grove's per-Grove team_sync_state flag.
     setTeamSyncEnabled(true);
 
-    const response = await handleDeleteSkillRecord({
-      params: { id: 'skill-scoped' },
-      requestContext: REQUEST_CONTEXT,
-    } as never);
+    const response = await handleDeleteSkillRecord(
+      { params: { id: 'skill-scoped' }, requestContext: REQUEST_CONTEXT } as never,
+      principalFor(REQUEST_CONTEXT),
+    );
 
     expect(response.status ?? 200).toBe(200);
     const row = getDatabase().prepare(
@@ -131,10 +131,10 @@ describe('skill record API deletion', () => {
     initTeamContext('machine-a');
     setTeamSyncEnabled(false);
 
-    const response = await handleDeleteSkillRecord({
-      params: { id: 'skill-disabled' },
-      requestContext: REQUEST_CONTEXT,
-    } as never);
+    const response = await handleDeleteSkillRecord(
+      { params: { id: 'skill-disabled' }, requestContext: REQUEST_CONTEXT } as never,
+      principalFor(REQUEST_CONTEXT),
+    );
 
     expect(response.status ?? 200).toBe(200);
     const n = getDatabase().prepare(
@@ -333,7 +333,7 @@ describe('createSkillRecordDeleteHandler — fs cascade is scoped to the request
     } as never);
 
     expect(response.status).toBe(400);
-    expect(response.body).toMatchObject({ reason: 'tenancy-violation' });
+    expect(response.body).toMatchObject({ error: { code: 'tenancy-violation' } });
     expect(warnings.some((w) => w.kind === 'tenancy.violation')).toBe(true);
     // The DB row survives (delete never ran) and NO disk was touched on
     // either the request project or the anchor.

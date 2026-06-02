@@ -111,7 +111,7 @@ describe('tenantRoute', () => {
     expect((res.body as { vault: string }).vault).toBe(CALLER_CONTEXT.projectVaultDir);
   });
 
-  it('rejects a synthesized context with 400 + reason and does NOT call the handler', async () => {
+  it('rejects a synthesized context with 400 + errorBody envelope and does NOT call the handler', async () => {
     const logger = makeLogger();
     let handlerCalled = false;
     const synthesized = { ...CALLER_CONTEXT, tenancySource: 'synthesized' as const };
@@ -130,8 +130,12 @@ describe('tenantRoute', () => {
 
     expect(handlerCalled).toBe(false);
     expect(res.status).toBe(400);
-    expect((res.body as { reason: string }).reason).toBe('tenancy-violation');
-    expect((res.body as { ok: boolean }).ok).toBe(false);
+    // Canonical repo error envelope: { error: { code, message } } — a client
+    // keys on `error.code === 'tenancy-violation'`.
+    const body = res.body as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('tenancy-violation');
+    expect(typeof body.error.message).toBe('string');
+    expect(body.error.message.length).toBeGreaterThan(0);
   });
 
   it('emits a tenancy.violation warning when the context is synthesized', async () => {
@@ -173,7 +177,7 @@ describe('tenantRoute', () => {
 
     expect(handlerCalled).toBe(false);
     expect(res.status).toBe(400);
-    expect((res.body as { reason: string }).reason).toBe('tenancy-violation');
+    expect((res.body as { error: { code: string } }).error.code).toBe('tenancy-violation');
     expect(logger.logs.filter((l) => l.kind === LOG_KINDS.TENANCY_VIOLATION)).toHaveLength(1);
   });
 });

@@ -349,7 +349,7 @@ describe('createCortexHandlers', () => {
       const response = await wrapped(makeRequest({ requestContext: synthesized }));
 
       expect(response.status).toBe(400);
-      expect(response.body).toMatchObject({ reason: 'tenancy-violation' });
+      expect(response.body).toMatchObject({ error: { code: 'tenancy-violation' } });
       expect(warn).toHaveBeenCalledWith(
         'tenancy.violation',
         expect.any(String),
