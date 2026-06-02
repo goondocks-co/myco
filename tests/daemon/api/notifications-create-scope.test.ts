@@ -1,19 +1,22 @@
 /**
  * Regression: `POST /api/notifications` (create) must resolve its enabled-gate
- * config against the REQUEST's grove + vault — not the daemon's bootstrap
- * anchor project.
+ * config against the REQUEST's tenancy (vault + grove) — not the daemon's
+ * bootstrap anchor project.
  *
  * The leak: the create handler read `loadMergedConfig` against the anchor
  * `bootstrapVaultDir`, so whether a notification was suppressed was decided by
  * the *anchor* project's config tiers, not the request's. Notification settings
- * are a per-machine/user preference (Grove-tier default + personal/local
- * override, NEVER project `myco.yaml`), so the request's grove is authoritative.
+ * are a per-machine/user preference: machine-tier default + personal/LOCAL
+ * (`<vaultDir>/local.yaml`) override, NEVER project `myco.yaml` and — by the
+ * scope decision in scope.ts — NEVER grove. So the request's own project/local
+ * config is authoritative, and the anchor must have no say.
  *
- * These tests pin distinct groves for the anchor (A) and the request tenant
- * (B) and prove:
- *   1. A grove-tier `notifications.enabled = false` on B's grove suppresses a
- *      create that carries B's caller context — even though the anchor grove's
- *      setting (and anchor vault) say enabled. The anchor has no say.
+ * These tests pin distinct groves+projects for the anchor (A) and the request
+ * tenant (B) and prove:
+ *   1. A per-project LOCAL (Personal) `notifications.enabled = false` on B's
+ *      project suppresses a create that carries B's caller context — even
+ *      though the anchor project's local config says enabled. The anchor has
+ *      no say.
  *   2. The notification row lands tagged with the REQUEST's project id (the
  *      project-scope regression guard).
  *   3. A synthesized/anchor-fallback context is rejected by `tenantRoute` with
@@ -35,7 +38,6 @@ import {
   ensureGroveExistsLocally,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import { resolveGroveConfigPath } from '@myco/grove/paths.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
@@ -86,11 +88,18 @@ function recordingLogger(kinds: string[]) {
   } as never;
 }
 
-/** Write a raw `notifications` block into a Grove's grove.yaml. */
-function writeGroveNotifications(groveId: string, mycoHome: string, enabled: boolean): void {
-  const grovePath = resolveGroveConfigPath(groveId, mycoHome);
-  fs.mkdirSync(path.dirname(grovePath), { recursive: true });
-  fs.writeFileSync(grovePath, `notifications:\n  enabled: ${enabled}\n`, 'utf-8');
+/**
+ * Write a `notifications` block into a project's LOCAL (Personal) tier —
+ * `<vaultDir>/local.yaml`. `notifications` is machine-home + local-overridable
+ * (see scope.ts), so this is the per-project, per-machine override the gate
+ * resolves against. Groves can no longer disable notifications.
+ */
+function writeLocalNotifications(projectVaultDir: string, enabled: boolean): void {
+  fs.writeFileSync(
+    path.join(projectVaultDir, 'local.yaml'),
+    `notifications:\n  enabled: ${enabled}\n`,
+    'utf-8',
+  );
   invalidateMergedConfigCache();
 }
 
@@ -121,7 +130,7 @@ function makeProject(prefix: string, groveId: string, mycoHome: string): {
   return { projectRoot, vaultDir, projectId };
 }
 
-describe('POST /api/notifications — enabled-gate resolves against the request grove, not the anchor', () => {
+describe('POST /api/notifications — enabled-gate resolves against the request project, not the anchor', () => {
   const home = useIsolatedHome('myco-notif-home-');
   let anchor: ReturnType<typeof makeProject>;
   let tenantB: ReturnType<typeof makeProject>;
@@ -145,11 +154,12 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
     fs.rmSync(path.dirname(tenantB.vaultDir), { recursive: true, force: true });
   });
 
-  it('suppresses when B’s grove disables notifications — anchor grove stays enabled', async () => {
-    // Anchor's grove says ENABLED; B's grove says DISABLED. The old code read
-    // the anchor and would have created the row. The fix reads B's grove.
-    writeGroveNotifications(GROVE_ANCHOR, home.path, true);
-    writeGroveNotifications(GROVE_TENANT_B, home.path, false);
+  it('suppresses when B’s local config disables notifications — anchor’s Personal config stays enabled', async () => {
+    // Anchor's local (Personal) says ENABLED; B's local says DISABLED. The old
+    // code read the anchor and would have created the row. The fix reads B's
+    // own project/local config.
+    writeLocalNotifications(anchor.vaultDir, true);
+    writeLocalNotifications(tenantB.vaultDir, false);
 
     const ctx = callerContext({ vaultDir: tenantB.vaultDir, projectId: tenantB.projectId, groveId: GROVE_TENANT_B });
     const response = await handleCreateNotification(
@@ -162,11 +172,11 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
     expect(n.n).toBe(0);
   });
 
-  it('creates when B’s grove enables notifications — anchor grove disabled has no effect', async () => {
-    // Inverse: anchor grove DISABLED, B's grove ENABLED. The fix must let B's
+  it('creates when B’s local config enables notifications — anchor’s Personal disable has no effect', async () => {
+    // Inverse: anchor's local DISABLED, B's local ENABLED. The fix must let B's
     // notification through despite the anchor being off.
-    writeGroveNotifications(GROVE_ANCHOR, home.path, false);
-    writeGroveNotifications(GROVE_TENANT_B, home.path, true);
+    writeLocalNotifications(anchor.vaultDir, false);
+    writeLocalNotifications(tenantB.vaultDir, true);
 
     const ctx = callerContext({ vaultDir: tenantB.vaultDir, projectId: tenantB.projectId, groveId: GROVE_TENANT_B });
     const response = await handleCreateNotification(
@@ -186,10 +196,10 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
   });
 
   it('rejects a synthesized (anchor-fallback) context with 400 + tenancy-violation and creates no row', async () => {
-    // Both groves enabled — the only reason nothing should be created is the
-    // tenancy gate, not a config suppression.
-    writeGroveNotifications(GROVE_ANCHOR, home.path, true);
-    writeGroveNotifications(GROVE_TENANT_B, home.path, true);
+    // Both projects' local configs enabled — the only reason nothing should be
+    // created is the tenancy gate, not a config suppression.
+    writeLocalNotifications(anchor.vaultDir, true);
+    writeLocalNotifications(tenantB.vaultDir, true);
 
     const kinds: string[] = [];
     const wrapped = tenantRoute(
