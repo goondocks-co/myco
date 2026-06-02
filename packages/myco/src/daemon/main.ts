@@ -616,13 +616,33 @@ export async function main(): Promise<void> {
     MYCO_MACHINE_ID: machineId,
   });
 
+  // Relocate any legacy project-vault `secrets.env` into machine secrets
+  // BEFORE loading. The provider-secrets dashboard no longer reads the
+  // `project` scope, so a project `secrets.env` that materializes after
+  // the one-shot global-install migration sentinel (hand-placed file,
+  // resurrected branch) would otherwise be loaded here yet stay invisible
+  // and undeletable in the UI — an orphaned-and-consumed credential. This
+  // relocate is the same lift+purge the migration performs, but idempotent
+  // and sentinel-independent, so the window can never persist. Skip in the
+  // phantom/global daemon, where bootstrapVaultDir IS the machine home.
+  const mycoHome = resolveMycoHome();
+  if (!bootstrapIsPhantom && path.resolve(bootstrapVaultDir) !== path.resolve(mycoHome)) {
+    try {
+      const { relocateLegacyProjectSecrets } = await import('../config/secrets.js');
+      relocateLegacyProjectSecrets(bootstrapVaultDir, mycoHome);
+    } catch {
+      // Best-effort: a failed relocate falls through to the legacy
+      // load-as-fallback below and retries on the next boot.
+    }
+  }
+
   // Load file-backed provider secrets before any provider init. Legacy project
   // `.myco/secrets.env` remains a fallback, while machine secrets are the
   // forward path for daemon-wide provider credentials. Existing process env
   // vars still win.
   loadLayeredSecrets([
     bootstrapVaultDir,
-    resolveMycoHome(),
+    mycoHome,
   ]);
 
   // Merged = machine + grove + project + personal. Any gate downstream
@@ -1050,7 +1070,6 @@ export async function main(): Promise<void> {
   // above still drives Grove-level housekeeping (embedding-reconcile,
   // backup, …); per-project state is consulted by scheduled-task
   // dispatch.
-  const mycoHome = resolveMycoHome();
   const projectStateTracker = new ProjectPowerStateTracker({
     idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
     sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
