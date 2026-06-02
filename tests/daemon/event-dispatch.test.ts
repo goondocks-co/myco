@@ -15,7 +15,10 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
-function makeHandler(opts: { liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void } = {}) {
+function makeHandler(opts: {
+  liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void;
+  planWatchConfig?: { watchDirs: string[]; projectRoot: string; extensions?: string[] };
+} = {}) {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
   const logger = new DaemonLogger(logDir, { level: 'debug' });
   const registry = new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} });
@@ -42,7 +45,7 @@ function makeHandler(opts: { liveReconcile?: (sessionId: string, agent: string, 
     } as never },
     vaultDir,
     reconcileSession: () => {},
-    planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
+    planWatchConfig: opts.planWatchConfig ?? { watchDirs: [], projectRoot: vaultDir },
     triggerTitleSummary: async () => {},
     liveReconcile: opts.liveReconcile,
   });
@@ -118,6 +121,56 @@ describe('createEventDispatcher', () => {
     logger.close();
     fs.rmSync(vaultDir, { recursive: true, force: true });
     fs.rmSync(transcriptDir, { recursive: true, force: true });
+  });
+
+  it('captures a real-time plan write against the REQUEST project root, not the daemon phantom root', async () => {
+    // On the global daemon, planWatchConfig.projectRoot is the bootstrap/phantom
+    // home — a DIFFERENT dir from the request's project. A plan write lands in
+    // the request project's tree, so isPlanWriteEvent must match against the
+    // request root; matching against the phantom root silently drops the
+    // real-time capture (regression guard for that tenancy leak).
+    const phantomRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-phantom-home-'));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-real-project-'));
+    fs.mkdirSync(path.join(projectRoot, 'plans'), { recursive: true });
+    const planFile = path.join(projectRoot, 'plans', 'feature.md');
+    fs.writeFileSync(planFile, '# Real plan\n\nbody\n', 'utf-8');
+
+    const { handler, logger, vaultDir } = makeHandler({
+      planWatchConfig: { watchDirs: ['plans/'], projectRoot: phantomRoot, extensions: ['.md'] },
+    });
+    const sessionId = 'plan-write-request-root-001';
+    const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-write-tx-'));
+    const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(transcriptPath, `${JSON.stringify({ type: 'session_meta' })}\n`, 'utf-8');
+
+    await handler({
+      requestContext: { ...TEST_REQUEST_CONTEXT, projectRoot },
+      body: {
+        type: 'tool_use',
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        tool_name: 'Write',
+        tool_input: { file_path: planFile },
+      },
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+
+    // Plan capture from a tool_use is async (readFile -> capturePlan). Poll.
+    let plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
+    for (let i = 0; i < 50 && plans.length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+      plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
+    }
+    expect(plans).toHaveLength(1);
+    expect(plans[0].source_path).toContain('plans/feature.md');
+
+    logger.close();
+    for (const d of [phantomRoot, projectRoot, transcriptDir, vaultDir]) {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
   });
 
   it('captures a Claude Ultraplan prompt tag into the session plans table', async () => {

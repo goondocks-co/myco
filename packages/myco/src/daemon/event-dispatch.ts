@@ -526,11 +526,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         session_id: event.session_id,
         tool_name: toolName,
       });
-      // Plan capture — detect writes to watched directories (async, non-blocking)
+      // Plan capture — detect writes to watched directories (async, non-blocking).
+      // Resolve the watch dirs against the REQUEST's project root, not
+      // `planWatchConfig.projectRoot` — on the global daemon that root is the
+      // bootstrap/phantom home (MYCO_HOME), so matching a plan write in the
+      // requesting project's tree against it always fails and the write is
+      // never captured in real time (only the Stop-scan backstop, which already
+      // uses the request root, catches it). Same per-request tenancy rule as
+      // the rest of the daemon.
       const planFilePath = isPlanWriteEvent(
         toolName,
         event.tool_input as Record<string, unknown> | undefined,
-        planWatchConfig,
+        { ...planWatchConfig, projectRoot: requestProjectRoot },
       );
       if (planFilePath) {
         const captureSessionId = event.session_id;
