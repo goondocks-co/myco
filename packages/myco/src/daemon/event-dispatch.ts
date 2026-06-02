@@ -16,7 +16,7 @@ import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { PowerManager } from './power.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { resolveTenantConfig } from './request-config.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
   isPlanWriteEvent,
@@ -137,16 +137,6 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const planTagsByAgent = new Map(
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
   );
-
-  function configForRequest(req: Parameters<RouteHandler>[0]): MycoConfig {
-    const ctx = req.requestContext;
-    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
-    try {
-      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
-    } catch {
-      return liveConfig.current;
-    }
-  }
 
   // FIFO dedup cache for event idempotency. Key includes session_id, type,
   // and a content fingerprint (see `@myco/capture/dedup.js`) so the cache
@@ -348,7 +338,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             machineId: requestMachineId,
             sessionId: event.session_id,
             capturePoint: 'session_start',
-            productionRef: primaryProductionRef(configForRequest(req)),
+            productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
             logger,
           },
           (provenance) => {
@@ -457,7 +447,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           sessionId: event.session_id,
           promptBatchId: batchId,
           capturePoint: 'prompt_batch_start',
-          productionRef: primaryProductionRef(configForRequest(req)),
+          productionRef: primaryProductionRef(resolveTenantConfig(req.requestContext, liveConfig.current)),
           promptOrigin,
           logger,
         });

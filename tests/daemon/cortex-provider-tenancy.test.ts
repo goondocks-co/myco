@@ -27,6 +27,7 @@ import { saveGroveConfig, saveMachineConfig, invalidateMergedConfigCache } from 
 import { triggerCortexInstructions } from '@myco/daemon/cortex';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context';
 import { assertGroveProjectId } from '@myco/grove/ids';
+import { useIsolatedHome } from '../support/isolated-home';
 
 const GROVE_B_ID = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const PROJECT_B_ID = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -39,17 +40,11 @@ function noopLogger() {
 }
 
 describe('triggerCortexInstructions resolves provider config from the request grove', () => {
-  let mycoHome: string;
-  let previousMycoHome: string | undefined;
+  useIsolatedHome('myco-cortex-tenancy-home-');
   let vaultB: string;
   let vaultC: string;
 
   beforeEach(() => {
-    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cortex-tenancy-home-'));
-    previousMycoHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = mycoHome;
-    invalidateMergedConfigCache();
-
     // Machine tier: NO provider, so the bootstrap default can't mask the
     // per-grove difference.
     saveMachineConfig({} as never);
@@ -72,11 +67,8 @@ describe('triggerCortexInstructions resolves provider config from the request gr
   });
 
   afterEach(() => {
-    fs.rmSync(mycoHome, { recursive: true, force: true });
     fs.rmSync(vaultB, { recursive: true, force: true });
     fs.rmSync(vaultC, { recursive: true, force: true });
-    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
-    else process.env.MYCO_HOME = previousMycoHome;
     invalidateMergedConfigCache();
   });
 

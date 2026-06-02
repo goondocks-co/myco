@@ -27,23 +27,18 @@ import {
 } from '@myco/config/loader';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '@myco/daemon/request-config';
+import { useIsolatedHome } from '../support/isolated-home';
 
 const GROVE_B_ID = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 describe('resolveTenantConfig resolves config from the request grove', () => {
-  let mycoHome: string;
-  let previousMycoHome: string | undefined;
+  const home = useIsolatedHome('myco-tenant-config-home-');
   let vaultB: string;
   // A fallback config that carries the OPPOSITE grove-tier value so any leak
   // of the daemon liveConfig into a tenant op is observable.
   let fallback: MycoConfig;
 
   beforeEach(() => {
-    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tenant-config-home-'));
-    previousMycoHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = mycoHome;
-    invalidateMergedConfigCache();
-
     // Machine tier carries no agent overrides so the per-grove difference is
     // not masked by a bootstrap default.
     saveMachineConfig({} as never);
@@ -66,10 +61,7 @@ describe('resolveTenantConfig resolves config from the request grove', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(mycoHome, { recursive: true, force: true });
     fs.rmSync(vaultB, { recursive: true, force: true });
-    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
-    else process.env.MYCO_HOME = previousMycoHome;
     invalidateMergedConfigCache();
   });
 
@@ -129,7 +121,7 @@ describe('resolveTenantConfig resolves config from the request grove', () => {
     // resolution joins paths under it and reads/migrates them, which throws
     // ENOTDIR. The helper must swallow that and return the fallback unchanged,
     // never propagating the throw to the tenant request handler.
-    const notADir = path.join(mycoHome, 'this-is-a-file-not-a-dir');
+    const notADir = path.join(home.path, 'this-is-a-file-not-a-dir');
     fs.writeFileSync(notADir, 'not a directory\n', 'utf-8');
 
     let result: MycoConfig | undefined;
