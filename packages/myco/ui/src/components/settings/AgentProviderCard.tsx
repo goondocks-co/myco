@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle, ChevronDown, ChevronRight, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle, Loader2, XCircle } from 'lucide-react';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import {
   defaultBaseUrlForProvider,
@@ -7,6 +7,7 @@ import {
   useProviders,
   useTestProvider,
 } from '../../hooks/use-providers';
+import { REASONING_LEVELS } from '../../hooks/use-providers';
 import type { ProviderDraft, ReasoningLevelUi } from '../../hooks/use-providers';
 import {
   draftToNormalizedProviderConfig,
@@ -33,10 +34,8 @@ import {
 } from '../ui/select';
 import { ScopePill } from '../config/ScopePill';
 import { ProviderModelSelector } from '../providers/ProviderModelSelector';
-import { ModelSelectField } from '../providers/ModelSelectField';
+import { AdvancedModelPin } from '../providers/AdvancedModelPin';
 import { ReasoningProfiles } from '../providers/ReasoningProfiles';
-
-const REASONING_OPTIONS: readonly ReasoningLevelUi[] = ['low', 'default', 'high'];
 
 type AgentSecretProvider = Extract<SecretProvider, 'openai' | 'openrouter'>;
 
@@ -102,7 +101,6 @@ export function AgentProviderCard() {
   // unset value is the built-in `default` tier, so it displays as 'default'.
   const savedReasoningLevel = effective?.agent?.reasoningLevel;
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevelUi>(savedReasoningLevel ?? 'default');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   useEffect(() => {
     setReasoningLevel(savedReasoningLevel ?? 'default');
   }, [savedReasoningLevel]);
@@ -271,7 +269,7 @@ export function AgentProviderCard() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {REASONING_OPTIONS.map((opt) => (
+              {REASONING_LEVELS.map((opt) => (
                 <SelectItem key={opt} value={opt}>
                   {opt}
                 </SelectItem>
@@ -300,32 +298,14 @@ export function AgentProviderCard() {
       )}
 
       {supportsReasoningMap && (
-        <div className="space-y-2">
-          <button
-            type="button"
-            onClick={() => { setAdvancedOpen((v) => !v); }}
-            className="flex items-center gap-1 font-sans text-xs text-on-surface-variant hover:text-on-surface"
-          >
-            {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            Advanced: pin a specific model
-          </button>
-          {advancedOpen && (
-            <>
-              <ModelSelectField
-                providerType={draft.type}
-                localBackend={draft.localBackend}
-                baseUrl={draft.baseUrl}
-                model={draft.model}
-                providers={providers}
-                onModelChange={handleModelChange}
-              />
-              <p className="font-sans text-[11px] text-on-surface-variant/70">
-                Used only when the selected reasoning profile has no mapping —
-                e.g. local providers without a reasoning map.
-              </p>
-            </>
-          )}
-        </div>
+        <AdvancedModelPin
+          providerType={draft.type}
+          localBackend={draft.localBackend}
+          baseUrl={draft.baseUrl}
+          model={draft.model}
+          providers={providers}
+          onModelChange={handleModelChange}
+        />
       )}
 
       {secretProvider && (

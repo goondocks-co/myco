@@ -112,6 +112,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({
   useTestProvider: () => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, isSuccess: false, isError: false }),
   defaultBaseUrlForProvider: () => '',
   maybeInferHarnessFromProviderType: () => 'claude-code-sdk',
+  REASONING_LEVELS: ['low', 'default', 'high'],
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-provider-secrets', () => ({

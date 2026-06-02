@@ -36,6 +36,7 @@ import {
   parseHarnessId,
   resolveReasoningModel,
   useProviders,
+  REASONING_LEVELS,
   type PhaseOverride,
   type ProviderConfig,
 } from '../../hooks/use-providers';
@@ -59,8 +60,6 @@ const VAR_LABELS: Record<string, string> = {
 const VAR_PLACEHOLDERS: Record<string, string> = {
   session_id: 'e.g. 36858a44-4ef7-4448-96e8-382e992e8ba4',
 };
-
-const REASONING_OPTIONS: ReasoningLevel[] = ['low', 'default', 'high'];
 
 /** Sentinel value used in Select components — native <Select> can't bind to
  *  `undefined`, so "use task default" gets encoded as this literal and
@@ -553,7 +552,7 @@ export function RunTaskDialog({
                         <SelectItem value={TASK_DEFAULT_SENTINEL}>
                           Use task default ({taskDefaultReasoning ?? 'default'})
                         </SelectItem>
-                        {REASONING_OPTIONS.map((opt) => (
+                        {REASONING_LEVELS.map((opt) => (
                           <SelectItem key={opt} value={opt}>
                             {opt}
                           </SelectItem>

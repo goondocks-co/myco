@@ -72,6 +72,11 @@ export interface ProviderConfig {
 
 export type ReasoningLevelUi = 'low' | 'default' | 'high';
 
+/** Canonical ordered reasoning tiers (low → default → high). The single
+ *  source of truth for every UI Select / option list — import this instead of
+ *  re-spelling the literal so the order and membership stay consistent. */
+export const REASONING_LEVELS: readonly ReasoningLevelUi[] = ['low', 'default', 'high'];
+
 export interface PhaseOverride {
   provider?: ProviderConfig;
   /**
