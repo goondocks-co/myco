@@ -594,13 +594,25 @@ export class DaemonClient {
       // runs and test fixtures keep working.
     }
 
-    const { execPath, cliEntry } = resolveCliEntryPath();
-    const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {
-      detached: true,
-      stdio: 'ignore',
-      cwd: path.dirname(this.vaultDir),
-    });
-    child.unref();
+    // Best-effort, fire-and-forget recovery: every failed request path invokes
+    // this (usually unawaited), so it must never throw into the caller. The
+    // runtime binary may not be where `resolveCliEntryPath()` expects it — e.g.
+    // a CI runner whose bun lives outside `process.execPath`'s resolved path —
+    // and bun's `spawn()` throws ENOENT *synchronously* in that case (Node would
+    // defer to an async 'error' event). An unguarded throw here propagated up
+    // through the request that triggered recovery, turning a transient
+    // daemon-down condition into a hard tool-call failure. The supervisor /
+    // next probe is the real recovery path; if the raw spawn can't fire, swallow
+    // it and let the caller proceed with its `{ ok: false }` result.
+    try {
+      const { execPath, cliEntry } = resolveCliEntryPath();
+      const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {
+        detached: true,
+        stdio: 'ignore',
+        cwd: path.dirname(this.vaultDir),
+      });
+      child.unref();
+    } catch { /* runtime binary unresolvable; supervisor / next probe recovers */ }
   }
 
   private spawnIsInFlight(): boolean {
