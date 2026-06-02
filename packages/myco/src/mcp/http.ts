@@ -116,7 +116,23 @@ export function createStreamableMcpHttpHandler(
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
   return async (req, res) => {
-    const resolved = resolveRequestContextOrLegacy(req, vaultDir);
+    let resolved: ReturnType<typeof resolveRequestContextOrLegacy>;
+    try {
+      resolved = resolveRequestContextOrLegacy(req, vaultDir);
+    } catch (err) {
+      // A context-switch without the daemon-issued bearer token is an
+      // authorization failure. Translate it to the same 401
+      // `unauthorized_context_switch` contract the main HTTP server path
+      // returns (daemon/server.ts) so MCP callers get a clear 401 instead
+      // of the generic raw-route -32603/500 that an uncaught throw becomes.
+      if (err instanceof UnauthorizedRequestContextError) {
+        res.statusCode = 401;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+        return;
+      }
+      throw err;
+    }
     if (!resolved.ok) {
       res.statusCode = 503;
       res.setHeader('Content-Type', 'application/json');

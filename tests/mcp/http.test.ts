@@ -120,6 +120,51 @@ describe('streamable HTTP MCP', () => {
     expect(payload.error?.data?.code).toBe('legacy_vault');
   });
 
+  it('rejects an unauthorized context-switch with a 401, not a generic 500', async () => {
+    const previousAuth = process.env.MYCO_DAEMON_AUTH;
+    process.env.MYCO_DAEMON_AUTH = 'daemon-secret-token';
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-unauth-'));
+    tmpDirs.push(tmp);
+    const vaultDir = path.join(tmp, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project HTTP MCP' },
+    });
+    const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient() });
+    const url = await listen((req, res) => {
+      void handler(req, res);
+    });
+
+    // Context-switch header present (x-myco-project-id) but no matching
+    // x-myco-auth bearer: the daemon's context-switch gate rejects with
+    // UnauthorizedRequestContextError. The /mcp transport must translate
+    // that to the same 401 `unauthorized_context_switch` contract the main
+    // HTTP path uses, NOT let it become a generic -32603/500.
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+    });
+    try {
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'x-myco-project-id': 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+        body,
+      });
+      expect(response.status).toBe(401);
+      const payload = await response.json() as { error?: string };
+      expect(payload.error).toBe('unauthorized_context_switch');
+    } finally {
+      if (previousAuth === undefined) delete process.env.MYCO_DAEMON_AUTH;
+      else process.env.MYCO_DAEMON_AUTH = previousAuth;
+    }
+  });
+
   it('passes HTTP request context headers into the shared tool runtime', async () => {
     const previousHome = process.env.MYCO_HOME;
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-context-'));
