@@ -15,6 +15,7 @@ import {
   type TeamConfig,
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
+import { pruneToTier } from './scope.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -818,11 +819,15 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   const groveRaw = grovePath ? readRawYamlDoc(grovePath) : {};
   const local = loadLocalConfig(vaultDir);
 
-  // Sparse merge — each tier contributes only the keys it explicitly
-  // sets. Defaults are filled in by the final Zod parse.
-  const stage1 = deepMergeConfig(machineRaw, groveRaw);
-  const stage2 = deepMergeConfig(stage1, projectRaw);
-  const stage3 = deepMergeConfig(stage2, local as Record<string, unknown>);
+  // Scope-aware sparse merge — each tier contributes only the leaves the
+  // scope registry assigns to it. A stray field in a tier that doesn't own
+  // it is dropped before merge, so it can't override the real owner. This
+  // replaces the project-tier merge-time denylist with a systematic
+  // allowlist driven by SCOPE_REGISTRY. Defaults are filled in by the final
+  // Zod parse.
+  const stage1 = deepMergeConfig(pruneToTier(machineRaw, 'machine'), pruneToTier(groveRaw, 'grove'));
+  const stage2 = deepMergeConfig(stage1, pruneToTier(projectRaw, 'project'));
+  const stage3 = deepMergeConfig(stage2, pruneToTier(local as Record<string, unknown>, 'local'));
   const result = MycoConfigSchema.parse(stage3);
 
   // Re-stat after load — loadConfig may have written a migrated file back.

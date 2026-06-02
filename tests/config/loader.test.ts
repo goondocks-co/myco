@@ -250,10 +250,14 @@ describe('Local config overlay', () => {
   });
 
   it('merged-array policy: local arrays replace project arrays', () => {
-    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\ncapture:\n  plan_dirs: ['a', 'b']\n`);
-    writeLocal(tmpDir, `capture:\n  plan_dirs: ['c']\n`);
+    // release_provenance.production_refs is project-home + local-overridable
+    // (scope registry), so both tiers survive the scope-aware prune and the
+    // arrayStrategy:'replace' merge applies. (capture.* is machine-locked now,
+    // so it can no longer carry this assertion.)
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nrelease_provenance:\n  production_refs: ['a', 'b']\n`);
+    writeLocal(tmpDir, `release_provenance:\n  production_refs: ['c']\n`);
     const merged = loadMergedConfig(tmpDir);
-    expect(merged.capture.plan_dirs).toEqual(['c']);
+    expect(merged.release_provenance.production_refs).toEqual(['c']);
   });
 
   it('loadLocalConfig returns {} and warns when YAML is malformed', () => {
@@ -378,19 +382,27 @@ describe('Grove-tier promotion — merge verification', () => {
     expect(rawOnDisk.agent).toBeUndefined();
   });
 
-  it('retains legacy project-tier agent config when the project is not Grove-bound', () => {
+  it('a grove-scoped field placed in the project tier is not honored in merged config (pruned)', () => {
+    // Every myco-enabled project is Grove-bound; agent/skills are grove-scoped
+    // and stripped from project myco.yaml. The old "no-Grove deferral" (keep a
+    // grove-scoped field in myco.yaml until a Grove exists) is a dead scenario.
+    // If a stale grove-scoped value somehow lands in the project tier, the
+    // scope-aware merge must NOT let it override the Grove's value: the Grove
+    // owns the field, so the Grove value wins and the project stray is dropped.
     const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
     fs.writeFileSync(
       mycoYamlPath,
-      'version: 3\nagent:\n  provider:\n    type: openrouter\n',
+      'version: 3\nskills:\n  confidence_threshold: 0.31\n',
     );
-    // No groveId and no project.toml grove association → hasGrove=false →
-    // grove-tier fields are kept until a Grove exists to honor them.
-    const config = loadMergedConfig(tmpDir, { mycoHome: mycoHomeDir });
+    // Grove has its own explicit skills value — the authoritative grove-tier
+    // owner. (This also pins the migration's relocation guard: with an explicit
+    // grove value, the stale project field is stripped, not lifted.)
+    writeGroveConfig('skills:\n  confidence_threshold: 0.55\n');
 
-    expect(config.agent.provider).toEqual({ type: 'openrouter' });
-    const rawOnDisk = YAML.parse(fs.readFileSync(mycoYamlPath, 'utf-8')) as Record<string, unknown>;
-    expect((rawOnDisk.agent as Record<string, unknown>)?.provider).toEqual({ type: 'openrouter' });
+    const config = loadMergedConfig(tmpDir, { groveId, mycoHome: mycoHomeDir });
+
+    // Grove value wins; the project-tier stray (0.31) is never honored.
+    expect(config.skills.confidence_threshold).toBeCloseTo(0.55);
   });
 });
 
@@ -573,18 +585,6 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     expect(projectRaw.skills).toBeUndefined();
   });
 
-  it('preserves skills.* in myco.yaml when NO Grove is bound (no data loss)', () => {
-    const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
-    writeProject(tmpDir, `version: 3\nskills:\n  confidence_threshold: 0.31\n`);
-
-    // groveId: null — Grove-tier strip must be deferred until a Grove exists.
-    const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
-    expect(merged.skills.confidence_threshold).toBeCloseTo(0.31);
-
-    const projectRaw = readYaml(mycoYamlPath);
-    expect((projectRaw.skills as Record<string, unknown>)?.confidence_threshold).toBeCloseTo(0.31);
-  });
-
   it('still moves capture/notifications to machine even when NO Grove is bound', () => {
     const mycoYamlPath = path.join(tmpDir, 'myco.yaml');
     writeProject(tmpDir, `version: 3\ncapture:\n  buffer_max_events: 250\nnotifications:\n  enabled: false\n`);
@@ -657,33 +657,6 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
     expect(persisted.skills).toBeUndefined();
     expect(persisted.version).toBe(3);
-  });
-
-  it('updateConfig (unrelated project-scope write) does NOT drop skills.* on an unbound project (Fix A repro)', () => {
-    // Repro: user has a skills threshold in an unbound project's myco.yaml.
-    // An unrelated project-tier write (release_provenance.enabled) goes through
-    // updateConfig → loadConfig → saveConfig. Before the fix, saveConfig's
-    // ProjectConfigSchema.parse unconditionally stripped skills, so the
-    // threshold silently reverted to default — neither kept (project) nor
-    // migrated (grove, since none is bound).
-    writeProject(
-      tmpDir,
-      `version: 3\nskills:\n  confidence_threshold: 0.31\nrelease_provenance:\n  enabled: true\n`,
-    );
-
-    updateConfig(tmpDir, (config) => ({
-      ...config,
-      release_provenance: { ...config.release_provenance, enabled: false },
-    }));
-
-    // skills.* must survive in myco.yaml (no Grove to migrate into).
-    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
-    expect((persisted.skills as Record<string, unknown>)?.confidence_threshold).toBeCloseTo(0.31);
-    expect((persisted.release_provenance as Record<string, unknown>).enabled).toBe(false);
-
-    // And it's still the effective value on read.
-    const merged = loadMergedConfig(tmpDir, { groveId: null, mycoHome: mycoHomeDir });
-    expect(merged.skills.confidence_threshold).toBeCloseTo(0.31);
   });
 
   it('updateConfig does NOT drop capture/notifications on an un-migrated project (Fix #1 repro)', () => {
