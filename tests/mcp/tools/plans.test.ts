@@ -156,6 +156,9 @@ describe('myco_plans op: list / get (in-process)', () => {
       projectVaultDir: '/legacy/project/.myco',
       databasePath: ':memory:',
       source: 'explicit',
+      // Explicit project/grove context = caller-asserted tenancy; the scope
+      // seam binds it to project (Grove) scope only when caller-asserted.
+      tenancySource: 'caller',
     }) as { id: string; content: string };
 
     expect(result.id).toBe('plan_new');

@@ -4,6 +4,7 @@ import type { Database } from '../db/client.js';
 import { DaemonClient } from '../hooks/client.js';
 import { createMycoTools } from '../tools/index.js';
 import {
+  isCallerTenancy,
   requestContextFromHttpHeaders,
   tryResolveRequestContextForVault,
   UnauthorizedRequestContextError,
@@ -93,7 +94,7 @@ function resolveRequestContextOrLegacy(
     return { ok: false, body: legacyVaultBody(reason, vaultDir) };
   }
 
-  if (requestContext.tenancySource !== 'caller') {
+  if (!isCallerTenancy(requestContext)) {
     // The request resolved to a synthesized (anchor-derived) tenancy — the
     // shared runtime would reject this at dispatch. Translate to the
     // legacy_vault wire contract up front.

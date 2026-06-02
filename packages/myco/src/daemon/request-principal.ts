@@ -16,6 +16,8 @@
  * by construction and noisy when attempted.
  */
 
+import { isCallerTenancy } from '@myco/tools/request-context.js';
+
 // Branded types so the daemon's own home can never be used where a tenant
 // vault is expected. A bare `string` cannot satisfy either brand; the only
 // constructors are this module's resolver (for `ProjectVaultDir`, via a
@@ -33,7 +35,6 @@ export interface Tenancy {
   readonly projectVaultDir: ProjectVaultDir;
   readonly projectId: string;
   readonly groveId: string;
-  readonly requestContext: { projectVaultDir: string; projectId: string; groveId: string };
 }
 
 export interface RequestPrincipal {
@@ -77,7 +78,7 @@ export function resolvePrincipal(
   if (!rc?.projectVaultDir || !rc.projectId || !rc.groveId) {
     throw new TenancyViolationError('missing project/grove on request');
   }
-  if (rc.tenancySource !== 'caller') {
+  if (!isCallerTenancy(rc)) {
     throw new TenancyViolationError(
       'tenancy synthesized from the daemon fallback, not caller-supplied',
     );
@@ -88,11 +89,6 @@ export function resolvePrincipal(
       projectVaultDir: rc.projectVaultDir as ProjectVaultDir,
       projectId: rc.projectId,
       groveId: rc.groveId,
-      requestContext: {
-        projectVaultDir: rc.projectVaultDir,
-        projectId: rc.projectId,
-        groveId: rc.groveId,
-      },
     },
   };
 }

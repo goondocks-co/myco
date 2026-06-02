@@ -113,6 +113,23 @@ export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
  */
 export type TenancySource = 'caller' | 'synthesized';
 
+/**
+ * The single predicate for "this request's tenancy was supplied by the
+ * caller" (vs synthesized from the daemon's bootstrap-anchor fallback).
+ *
+ * Every tenancy gate — the request-principal resolver, the tools-runtime
+ * guard, and the MCP-HTTP pre-flight — must decide caller-vs-synthesized
+ * through this one function so the rule lives in exactly one place. Each
+ * call site keeps its own error envelope (TenancyViolationError /
+ * ToolError('legacy_vault') / the legacy_vault wire body); only the
+ * predicate is shared.
+ */
+export function isCallerTenancy(
+  context: { tenancySource?: TenancySource } | undefined,
+): boolean {
+  return context?.tenancySource === 'caller';
+}
+
 export interface MycoRequestContext {
   projectRoot: string;
   /**
@@ -254,13 +271,23 @@ export function requestContextFromHttpHeaders(
 
 /**
  * Decide tenancy provenance from an explicit (header/env) context input.
- * `'caller'` iff the caller supplied a project id or Grove id — the same
- * identity the context-switch auth gate guards. Other explicit fields
- * (projectRoot, machineId, sessionId) do not by themselves authorize a
- * tenancy switch, so they leave the context synthesized.
+ * `'caller'` iff the caller supplied a project id, a Grove id, OR a project
+ * root — all three are caller assertions of "act against THIS project". A
+ * caller-supplied `projectRoot` (x-myco-project-root / MYCO_PROJECT_ROOT)
+ * resolves a real registered project via its `project.toml`/Grove manifest;
+ * stamping that 'synthesized' wrongly rejected a legitimate project pivot
+ * (the regression this widening fixes). Incidental fields (machineId,
+ * sessionId) still leave the context synthesized.
+ *
+ * This only ever sees CALLER-supplied input: the daemon's fallback root is
+ * applied by `tryBuildVaultFallback` (tenancySource 'synthesized') and the
+ * server-anchor manifest backfill by `resolveManifestRequestContext`
+ * (tenancySource 'synthesized'), neither of which routes through here. So a
+ * project id/grove id back-filled from the SERVER's fallback root stays
+ * synthesized; only a root the caller themselves asserted counts as 'caller'.
  */
 function tenancySourceFromExplicit(input: ExplicitContextInput): TenancySource {
-  return input.projectId || input.groveId ? 'caller' : 'synthesized';
+  return input.projectId || input.groveId || input.projectRoot ? 'caller' : 'synthesized';
 }
 
 /**
@@ -499,7 +526,16 @@ export function projectScopeFromRequestContext(
       + 'If a cross-project read is intended, pass ALL_PROJECTS_SCOPE explicitly.',
     );
   }
-  return context.groveId ? projectScope(context.projectId) : GLOBAL_SCOPE;
+  // Enforce provenance at the scope seam so EVERY read consumer
+  // (sessions/spores/search/reports/notifications/…) is protected at once,
+  // not per-route. A synthesized context carries the daemon's bootstrap-anchor
+  // project id; binding it to `projectScope(anchorId)` would leak the anchor's
+  // rows to an unauthorized request. Only a caller-asserted, Grove-bound
+  // context may bind to a specific project scope; everything else resolves to
+  // GLOBAL_SCOPE (`project_id IS NULL`), which returns zero cross-project rows.
+  return isCallerTenancy(context) && context.groveId
+    ? projectScope(context.projectId)
+    : GLOBAL_SCOPE;
 }
 
 function compactHeaders(values: Record<string, string | null | undefined>): Record<string, string> {

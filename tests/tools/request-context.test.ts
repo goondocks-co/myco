@@ -12,6 +12,7 @@ import {
   REQUEST_CONTEXT_HEADERS,
   UnauthorizedRequestContextError,
   filesystemRootFromRequestContext,
+  isCallerTenancy,
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
   requestContextHeaders,
@@ -375,10 +376,11 @@ describe('tool request context', () => {
   // Direct branch coverage for projectScopeFromRequestContext. The
   // wider request-context tests focus on rowProjectIdFromRequestContext
   // (the ID extractor) but the SCOPE shape is what the read-side
-  // queries actually consume. Three branches:
-  //   - Grove-bound context  → { kind: 'project', id }
-  //   - Legacy non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
-  //   - Missing context      → throws (D5 strictness gate)
+  // queries actually consume. The seam enforces tenancy provenance:
+  //   - Caller + Grove-bound   → { kind: 'project', id }
+  //   - Caller + non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
+  //   - Synthesized (any)      → GLOBAL_SCOPE even with a groveId
+  //   - Missing context        → throws (D5 strictness gate)
   describe('projectScopeFromRequestContext', () => {
     it('throws when no context is supplied (D5 strictness gate)', () => {
       // Post-D5: missing context is a programming error, not a silent
@@ -388,25 +390,44 @@ describe('tool request context', () => {
       expect(() => projectScopeFromRequestContext(undefined)).toThrow();
     });
 
-    it('returns GLOBAL_SCOPE for legacy non-Grove contexts', () => {
+    it('returns GLOBAL_SCOPE for legacy non-Grove caller contexts', () => {
       const projectId = assertGroveProjectId(createProjectId());
       const legacy = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
         projectId,
         groveId: null,
+        tenancySource: 'caller',
       });
       const scope = projectScopeFromRequestContext(legacy);
       expect(scope).toBe(GLOBAL_SCOPE);
       expect(scope.kind).toBe('global');
     });
 
-    it('scopes Grove-bound contexts to their project id', () => {
+    it('scopes caller-supplied Grove-bound contexts to their project id', () => {
       const projectId = assertGroveProjectId(createProjectId());
       const grove = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
         projectId,
         groveId: 'grove-a',
+        tenancySource: 'caller',
       });
       const scope = projectScopeFromRequestContext(grove);
       expect(scope).toEqual({ kind: 'project', id: projectId });
+    });
+
+    it('returns GLOBAL_SCOPE for a synthesized context EVEN WITH a groveId (no anchor leak)', () => {
+      // #2: the seam enforces provenance. A synthesized context carries the
+      // daemon's bootstrap-anchor project/grove id; binding it to
+      // projectScope(anchorId) would leak the anchor's rows to an
+      // unauthorized request. It must resolve to GLOBAL_SCOPE
+      // (project_id IS NULL → zero cross-project rows) regardless of groveId.
+      const projectId = assertGroveProjectId(createProjectId());
+      const synthesized = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-anchor',
+        tenancySource: 'synthesized',
+      });
+      const scope = projectScopeFromRequestContext(synthesized);
+      expect(scope).toBe(GLOBAL_SCOPE);
+      expect(scope.kind).toBe('global');
     });
   });
 
@@ -478,6 +499,87 @@ describe('tool request context', () => {
 
         expect(resolved.tenancySource).toBe('caller');
       });
+    });
+
+    // #4a regression: a caller that pivots by PROJECT ROOT only
+    // (x-myco-project-root, no project-id/grove-id) resolves a real
+    // registered project from its project.toml — that IS a caller assertion
+    // of "act against THIS project". It must be tagged 'caller' (not
+    // 'synthesized'), or the tenancy gates reject a legitimate pivot.
+    it('tags an HTTP projectRoot-only context as caller (regression #4a)', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        // Resolve against a DIFFERENT fallback vault so the projectRoot header
+        // is the only thing pointing at this project — proving the root, not
+        // the fallback, drives the caller stamp.
+        const otherRoot = path.join(path.dirname(projectRoot), 'other-fallback');
+        const otherVaultDir = resolveProjectVaultDir(otherRoot);
+        fs.mkdirSync(otherVaultDir, { recursive: true });
+        saveProjectManifest(otherVaultDir, {
+          project: { id: assertGroveProjectId(createProjectId()), name: 'Other Fallback' },
+        });
+
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+        }, otherVaultDir);
+
+        // The projectRoot header resolved the real registered project AND was
+        // stamped caller — both halves of the regression fix.
+        expect(resolved.projectId).toBe(projectId);
+        expect(resolved.groveId).toBe(groveId);
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
+    // #4b: a context whose project/grove id came from the SERVER's
+    // fallback-root manifest (no caller-supplied root, project-id, or grove-id)
+    // must STAY synthesized — even though it back-fills a real groveId.
+    it('keeps a server-fallback-derived (grove-only-via-server-root) context synthesized (#4b)', () => {
+      withRegisteredProject(({ vaultDir, groveId }) => {
+        // No context headers at all → the resolver back-fills project/grove
+        // from the SERVER's anchor manifest. That id is the daemon's, not the
+        // caller's assertion, so it must remain synthesized.
+        const resolved = requestContextFromHttpHeaders({}, vaultDir);
+
+        expect(resolved.groveId).toBe(groveId);
+        expect(resolved.tenancySource).toBe('synthesized');
+      });
+    });
+  });
+
+  // #7: the single shared caller-tenancy predicate. The three tenancy gates
+  // (request-principal resolver, tools-runtime guard, MCP-HTTP pre-flight) all
+  // decide caller-vs-synthesized through this one function.
+  describe('isCallerTenancy (shared predicate, #7)', () => {
+    it('returns true only for tenancySource === "caller"', () => {
+      expect(isCallerTenancy({ tenancySource: 'caller' })).toBe(true);
+    });
+
+    it('returns false for a synthesized context', () => {
+      expect(isCallerTenancy({ tenancySource: 'synthesized' })).toBe(false);
+    });
+
+    it('returns false for undefined / an unmarked context', () => {
+      expect(isCallerTenancy(undefined)).toBe(false);
+      expect(isCallerTenancy({})).toBe(false);
+    });
+
+    it('agrees with the seam: caller→project scope, synthesized→GLOBAL_SCOPE', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const caller = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-a',
+        tenancySource: 'caller',
+      });
+      const synthesized = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-a',
+        tenancySource: 'synthesized',
+      });
+
+      expect(isCallerTenancy(caller)).toBe(true);
+      expect(projectScopeFromRequestContext(caller)).toEqual({ kind: 'project', id: projectId });
+      expect(isCallerTenancy(synthesized)).toBe(false);
+      expect(projectScopeFromRequestContext(synthesized)).toBe(GLOBAL_SCOPE);
     });
   });
 

@@ -34,11 +34,17 @@ describe('resolvePrincipal', () => {
     expect(principal.tenancy.projectId).toBe(CALLER_CONTEXT.projectId);
     expect(principal.tenancy.groveId).toBe(CALLER_CONTEXT.groveId);
     expect(principal.tenancy.projectVaultDir).toBe(CALLER_CONTEXT.projectVaultDir);
-    expect(principal.tenancy.requestContext).toEqual({
-      projectVaultDir: CALLER_CONTEXT.projectVaultDir,
-      projectId: CALLER_CONTEXT.projectId,
-      groveId: CALLER_CONTEXT.groveId,
-    });
+  });
+
+  it('exposes tenancy via flat fields only (no duplicated nested requestContext, #10a)', () => {
+    const principal = resolvePrincipal({ requestContext: CALLER_CONTEXT }, ENV);
+
+    expect(principal.tenancy.projectVaultDir).toBe(CALLER_CONTEXT.projectVaultDir);
+    expect(principal.tenancy.projectId).toBe(CALLER_CONTEXT.projectId);
+    expect(principal.tenancy.groveId).toBe(CALLER_CONTEXT.groveId);
+    // The nested requestContext field was removed: it duplicated the flat
+    // siblings and was read by no handler.
+    expect('requestContext' in principal.tenancy).toBe(false);
   });
 
   it('carries identity from env (machineId + userId)', () => {

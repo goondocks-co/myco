@@ -4,7 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
-import type { MycoRequestContext } from './request-context.js';
+import { isCallerTenancy, type MycoRequestContext } from './request-context.js';
 import {
   readPivot,
   resolveCallContext,
@@ -174,7 +174,7 @@ const HANDLERS = new Map<string, ToolLoader>([
  * the daemon principal here would be a layering violation.
  */
 function requireCallerTenancy(context: MycoRequestContext | undefined): MycoRequestContext {
-  if (!context || context.tenancySource !== 'caller') {
+  if (!context || !isCallerTenancy(context)) {
     throw new ToolError(
       'legacy_vault',
       'Myco tools require a caller-supplied request context (project/Grove tenancy). '
