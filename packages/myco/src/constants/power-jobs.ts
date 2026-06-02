@@ -13,6 +13,7 @@ export const POWER_JOB_NAMES = {
   STAGING_GC: 'staging-gc',
   CANOPY_BACKGROUND_SCAN: 'canopy-background-scan',
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance-reconcile',
+  MANAGED_FILES_RECONCILE: 'managed-files-reconcile',
   SELF_RECONCILE: 'self-reconcile',
   /**
    * Periodic re-detection of installed coding agents. Walks the manifest

@@ -131,6 +131,9 @@ export const LOG_KINDS = {
 
   // Release provenance
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance.reconcile',
+
+  // Symbionts
+  MANAGED_FILES_RECONCILE: 'symbionts.managed-files-reconcile',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];
