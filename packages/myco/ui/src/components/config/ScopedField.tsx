@@ -44,17 +44,18 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
    * stored at project scope but applied across every project in the
    * Grove (e.g. log retention, embedded against the shared Grove DB).
    */
-  scopeBadgeOverride?: 'personal' | 'project' | 'grove';
+  scopeBadgeOverride?: 'personal' | 'project' | 'grove' | 'machine';
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
 function resolveTierBadge(
-  scopeBadgeOverride: 'personal' | 'project' | 'grove' | undefined,
+  scopeBadgeOverride: 'personal' | 'project' | 'grove' | 'machine' | undefined,
   lockScope: Scope | undefined,
   defaultScope: Scope,
-): 'personal' | 'project' | 'grove' {
+): 'personal' | 'project' | 'grove' | 'machine' {
   if (scopeBadgeOverride) return scopeBadgeOverride;
   if (lockScope === 'local') return 'personal';
+  if (lockScope === 'machine' || defaultScope === 'machine') return 'machine';
   if (lockScope === 'grove' || defaultScope === 'grove') return 'grove';
   return 'project';
 }

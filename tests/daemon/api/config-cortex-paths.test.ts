@@ -208,9 +208,13 @@ describe('non-cortex paths still work post-v8 (regression check)', () => {
     else process.env.MYCO_HOME = prevMycoHome;
   });
 
-  it('notifications.enabled toggles cleanly (agent.* is now Grove-tier)', async () => {
+  it('notifications.enabled toggles cleanly via the personal overlay (notifications.* is now Machine-tier)', async () => {
+    // notifications.* moved to Machine tier (2026-06 scope correction), so a
+    // project scoped write would be stripped from myco.yaml. A user can still
+    // override it through the personal (local) overlay, which merges on top of
+    // the machine value — that's the scoped-handler path this guards.
     const res = await handlePutScopedConfig(tmpDir, {
-      scope: 'project',
+      scope: 'local',
       patch: patchFromPath(NOTIFICATIONS_PATHS.enabled, false),
     });
     expect(res.status === undefined || res.status < 400).toBe(true);

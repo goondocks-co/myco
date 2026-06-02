@@ -48,9 +48,12 @@ describe('scoped config HTTP handlers', () => {
   });
 
   it('PUT /scoped scope=project with patch deep-merges into myco.yaml', async () => {
+    // notifications.* moved to Machine tier (2026-06 scope correction), so a
+    // project scoped PUT now exercises a project-tier field
+    // (release_provenance.*) which is what actually persists to myco.yaml.
     await handlePutScopedConfig(tmpDir, {
       scope: 'project',
-      patch: { notifications: { enabled: false } },
+      patch: { release_provenance: { enabled: false } },
     });
     const project = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
     expect(project).toContain('enabled: false');

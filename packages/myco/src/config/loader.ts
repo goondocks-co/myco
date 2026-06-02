@@ -66,6 +66,9 @@ function stripLegacyProjectFields(
     ['appearance'],
     ['team'],
     ...GROVE_PROMOTED_FIELDS,
+    // 2026-06: skills.* is Grove-tier; only strip once a Grove is bound so
+    // the value can be migrated rather than dropped.
+    ['skills'],
   ];
   const groveTierKeys = new Set(GROVE_TIER_FIELDS.map((seg) => seg.join('.')));
 
@@ -249,6 +252,8 @@ function migrateLegacyProjectFields(
     tryMove(['agent', 'scheduled_tasks_active_window_days'], ['agent', 'scheduled_tasks_active_window_days']);
     tryMove(['appearance'], ['appearance']);
     tryMove(['team'], ['team']);
+    // 2026-06 settings-scope correction: skills.* → Grove tier.
+    tryMove(['skills'], ['skills']);
 
     if (groveDirty) {
       try {
@@ -282,6 +287,11 @@ function migrateLegacyProjectFields(
   // strips it on read; this drop ensures it never gets re-written.
   moveMachine(['daemon', 'log_level'], ['daemon', 'log_level']);
   moveMachine(['daemon', 'log_retention_days'], ['daemon', 'log_retention_days']);
+  // 2026-06 settings-scope correction: capture.* and notifications.* → Machine
+  // tier. Symbionts are global now, so capture policy is per-machine; notification
+  // preferences are a local per-user setting that must never be git-committed.
+  moveMachine(['capture'], ['capture']);
+  moveMachine(['notifications'], ['notifications']);
   // `update.channel` from legacy schema → daemon.update_channel.
   const updateChannel = getAtPath(parsed, ['update', 'channel']);
   if (updateChannel !== undefined && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined) {

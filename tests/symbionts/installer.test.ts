@@ -313,9 +313,20 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Test Skill\n');
 }
 
+let installerMycoHome: string;
+
 beforeEach(() => {
   projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-project-'));
   packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-package-'));
+  // Sandbox MYCO_HOME for every installer test. The installer reads config via
+  // loadMergedConfig, whose tier-strip migration now relocates capture.* (and
+  // notifications.*) into machine config. Without a clean temp home this would
+  // both contaminate the developer's real ~/.myco/config.yaml and, when that
+  // file already carries a capture block, skip the move (idempotency) so a
+  // planted capture.plan_dirs value would be lost. Tests that need a specific
+  // home still override process.env.MYCO_HOME locally.
+  installerMycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+  process.env.MYCO_HOME = installerMycoHome;
   setupPackageRoot();
 });
 
@@ -324,6 +335,7 @@ afterEach(() => {
   else process.env.MYCO_HOME = originalMycoHome;
   fs.rmSync(projectRoot, { recursive: true, force: true });
   fs.rmSync(packageRoot, { recursive: true, force: true });
+  fs.rmSync(installerMycoHome, { recursive: true, force: true });
 });
 
 // =====================
@@ -1103,8 +1115,12 @@ describe('gitignore management', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
 
-    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
-      'version: 3',
+    // capture.* is Machine-tier (2026-06 scope correction): the first install's
+    // loadMergedConfig relocated the planted capture block out of myco.yaml and
+    // into machine config. To flip the flag we must edit the machine config,
+    // not myco.yaml (which no longer carries capture).
+    const machineConfigPath = path.join(installerMycoHome, 'config.yaml');
+    fs.writeFileSync(machineConfigPath, [
       'capture:',
       '  plan_dirs:',
       '    - docs/design',

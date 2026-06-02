@@ -499,6 +499,21 @@ export const MachineConfigSchema = z.preprocess((raw) => {
   return raw;
 }, z.object({
   daemon: MachineDaemonSchema.default(() => MachineDaemonSchema.parse({})),
+  /**
+   * Plan/transcript/artifact capture. Machine-tier post global-install:
+   * symbionts are installed globally now, so the watched plan/transcript
+   * dirs, artifact extensions, and buffer cap are a per-machine capture
+   * policy — not a per-repo, git-committed setting. The per-project
+   * side-effect (managed `.gitignore` block) still fires via the
+   * capture config-write reaction, which runs on machine-config writes too.
+   */
+  capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+  /**
+   * Notification preferences. Machine-tier: noise tolerance, display mode,
+   * and per-domain overrides are a local per-user preference that must
+   * never be git-committed.
+   */
+  notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   /** Optional override of the auto-resolved machine id. */
   machine_id: z.string().optional(),
 }).strict());
@@ -548,6 +563,13 @@ export const GroveConfigSchema = z.object({
   appearance: AppearanceConfigSchema,
   /** Team sync activation — Grove-scoped per the migration plan. */
   team: TeamSchema.default(() => TeamSchema.parse({})),
+  /**
+   * Skill-lifecycle thresholds. Grove-tier: skills are *generated* per
+   * project, but these are myco-agent thresholds (survey auto-promote
+   * confidence, stale-usage window) that belong to the Grove the same way
+   * the rest of `agent.*` does.
+   */
+  skills: SkillsSchema.default(() => SkillsSchema.parse({})),
 }).strict();
 
 /**
@@ -559,10 +581,12 @@ export const GroveConfigSchema = z.object({
 export const ProjectConfigSchema = z.object({
   version: z.literal(3),
   config_version: z.number().int().nonnegative().default(0),
-  capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+  // capture.* → Machine, notifications.* → Machine, skills.* → Grove as of
+  // the 2026-06 settings-scope correction. Removed from the project tier so
+  // saveConfig strips any residue from myco.yaml; the tier-strip migration
+  // (PROJECT_TIER_LEGACY_FIELDS + migrateLegacyProjectFields) relocates
+  // existing values to their new tier files.
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
-  skills: SkillsSchema.default(() => SkillsSchema.parse({})),
-  notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),
   symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
 });
@@ -616,6 +640,12 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['agent', 'scheduled_tasks_active_window_days'],
   ['appearance'],
   ...GROVE_PROMOTED_FIELDS,
+  // 2026-06 settings-scope correction.
+  // Machine-tier (always strippable — machine config is always writable):
+  ['capture'],
+  ['notifications'],
+  // Grove-tier (only strippable once a Grove is bound — see GROVE_TIER_FIELDS):
+  ['skills'],
 ];
 
 export const MycoConfigSchema = z.preprocess(

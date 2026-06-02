@@ -280,7 +280,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.transcript_paths',
         label: 'Transcript paths',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -289,7 +289,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.plan_dirs',
         label: 'Plan directories',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -299,7 +299,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.ignore_plan_dirs_in_git',
         label: 'Add plan dirs to .gitignore',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -309,7 +309,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.artifact_extensions',
         label: 'Artifact extensions',
-        scope: 'project',
+        scope: 'machine',
         kind: 'list',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -318,7 +318,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'capture.buffer_max_events',
         label: 'Event buffer size',
-        scope: 'project',
+        scope: 'machine',
         kind: 'number',
         category: 'Capture',
         icon: 'MessageSquare',
@@ -440,7 +440,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.enabled',
         label: 'Enable notifications',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Notifications',
         icon: 'Bell',
@@ -450,7 +450,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.default_mode',
         label: 'Default mode',
-        scope: 'project',
+        scope: 'machine',
         kind: 'select',
         category: 'Notifications',
         icon: 'Bell',
@@ -461,7 +461,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'notifications.system_notifications',
         label: 'Browser system notifications',
-        scope: 'project',
+        scope: 'machine',
         kind: 'toggle',
         category: 'Notifications',
         icon: 'Bell',
@@ -480,7 +480,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'skills.confidence_threshold',
         label: 'Auto-promote confidence',
-        scope: 'project',
+        scope: 'grove',
         kind: 'number',
         category: 'Skills',
         icon: 'Sparkles',
@@ -492,7 +492,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
       {
         key: 'skills.usage_stale_days',
         label: 'Stale-skill window (days)',
-        scope: 'project',
+        scope: 'grove',
         kind: 'number',
         category: 'Skills',
         icon: 'Sparkles',
