@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { useIsolatedHome } from '../../support/isolated-home';
 import { getDatabase } from '@myco/db/client.js';
 import { handleCreateNotification } from '@myco/daemon/api/notifications.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
@@ -121,8 +122,7 @@ function makeProject(prefix: string, groveId: string, mycoHome: string): {
 }
 
 describe('POST /api/notifications — enabled-gate resolves against the request grove, not the anchor', () => {
-  let mycoHome: string;
-  let originalHome: string | undefined;
+  const home = useIsolatedHome('myco-notif-home-');
   let anchor: ReturnType<typeof makeProject>;
   let tenantB: ReturnType<typeof makeProject>;
 
@@ -132,32 +132,24 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
   beforeEach(() => {
     cleanTestDb();
     _clearNotifyDedupForTests();
-    invalidateMergedConfigCache();
-    originalHome = process.env.MYCO_HOME;
-    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notif-home-'));
-    process.env.MYCO_HOME = mycoHome;
 
-    ensureGroveExistsLocally(GROVE_ANCHOR, { name: 'Anchor', slug: 'anchor' }, mycoHome);
-    ensureGroveExistsLocally(GROVE_TENANT_B, { name: 'Tenant B', slug: 'tenant-b' }, mycoHome);
+    ensureGroveExistsLocally(GROVE_ANCHOR, { name: 'Anchor', slug: 'anchor' }, home.path);
+    ensureGroveExistsLocally(GROVE_TENANT_B, { name: 'Tenant B', slug: 'tenant-b' }, home.path);
 
-    anchor = makeProject('myco-notif-anchor-', GROVE_ANCHOR, mycoHome);
-    tenantB = makeProject('myco-notif-tenant-', GROVE_TENANT_B, mycoHome);
+    anchor = makeProject('myco-notif-anchor-', GROVE_ANCHOR, home.path);
+    tenantB = makeProject('myco-notif-tenant-', GROVE_TENANT_B, home.path);
   });
 
   afterEach(() => {
-    if (originalHome === undefined) delete process.env.MYCO_HOME;
-    else process.env.MYCO_HOME = originalHome;
-    fs.rmSync(mycoHome, { recursive: true, force: true });
     fs.rmSync(path.dirname(anchor.vaultDir), { recursive: true, force: true });
     fs.rmSync(path.dirname(tenantB.vaultDir), { recursive: true, force: true });
-    invalidateMergedConfigCache();
   });
 
   it('suppresses when B’s grove disables notifications — anchor grove stays enabled', async () => {
     // Anchor's grove says ENABLED; B's grove says DISABLED. The old code read
     // the anchor and would have created the row. The fix reads B's grove.
-    writeGroveNotifications(GROVE_ANCHOR, mycoHome, true);
-    writeGroveNotifications(GROVE_TENANT_B, mycoHome, false);
+    writeGroveNotifications(GROVE_ANCHOR, home.path, true);
+    writeGroveNotifications(GROVE_TENANT_B, home.path, false);
 
     const ctx = callerContext({ vaultDir: tenantB.vaultDir, projectId: tenantB.projectId, groveId: GROVE_TENANT_B });
     const response = await handleCreateNotification(
@@ -173,8 +165,8 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
   it('creates when B’s grove enables notifications — anchor grove disabled has no effect', async () => {
     // Inverse: anchor grove DISABLED, B's grove ENABLED. The fix must let B's
     // notification through despite the anchor being off.
-    writeGroveNotifications(GROVE_ANCHOR, mycoHome, false);
-    writeGroveNotifications(GROVE_TENANT_B, mycoHome, true);
+    writeGroveNotifications(GROVE_ANCHOR, home.path, false);
+    writeGroveNotifications(GROVE_TENANT_B, home.path, true);
 
     const ctx = callerContext({ vaultDir: tenantB.vaultDir, projectId: tenantB.projectId, groveId: GROVE_TENANT_B });
     const response = await handleCreateNotification(
@@ -196,8 +188,8 @@ describe('POST /api/notifications — enabled-gate resolves against the request 
   it('rejects a synthesized (anchor-fallback) context with 400 + tenancy-violation and creates no row', async () => {
     // Both groves enabled — the only reason nothing should be created is the
     // tenancy gate, not a config suppression.
-    writeGroveNotifications(GROVE_ANCHOR, mycoHome, true);
-    writeGroveNotifications(GROVE_TENANT_B, mycoHome, true);
+    writeGroveNotifications(GROVE_ANCHOR, home.path, true);
+    writeGroveNotifications(GROVE_TENANT_B, home.path, true);
 
     const kinds: string[] = [];
     const wrapped = tenantRoute(
