@@ -1,17 +1,5 @@
 version: 3
 config_version: 9
-capture:
-  transcript_paths: []
-  plan_dirs:
-    - docs/superpowers/specs/
-    - docs/superpowers/plans/
-    - docs/design/
-    - docs/plans
-    - docs/superpowers/handoffs
-  ignore_plan_dirs_in_git: true
-  artifact_extensions:
-    - .md
-  buffer_max_events: 500
 release_provenance:
   enabled: true
   production_refs:
@@ -36,24 +24,6 @@ release_provenance:
       tag_pattern: refs/tags/myco-collective/v*
     - path_glob: packages/myco-shared/
       tag_pattern: refs/tags/myco-shared/v*
-skills:
-  confidence_threshold: 0.7
-  usage_stale_days: 30
-notifications:
-  enabled: true
-  system_notifications: true
-  default_mode: summary
-  domains:
-    skills:
-      enabled: true
-      mode: banner
-    sessions:
-      enabled: false
-    mycelium:
-      enabled: true
-    settings:
-      enabled: true
-      mode: banner
 cortex:
   enabled: true
   instructions:
