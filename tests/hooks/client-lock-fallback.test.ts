@@ -25,6 +25,7 @@ import {
   resolveServiceDir,
 } from '@myco/grove/paths';
 import { resolveMycoHome } from '@myco/grove/paths';
+import { listenEphemeral, closeServer } from '../helpers/net.js';
 
 let vaultDir: string;
 let mycoHome: string;
@@ -32,9 +33,14 @@ let serviceDir: string;
 let lockPath: string;
 let statePath: string;
 let previousHome: string | undefined;
+let previousNoAutoSpawn: string | undefined;
 
 beforeEach(() => {
   previousHome = process.env.MYCO_HOME;
+  // Never let a fetch-failure recovery path fork a real daemon racing for the
+  // canonical port — that is itself a flake source.
+  previousNoAutoSpawn = process.env.MYCO_NO_AUTO_SPAWN;
+  process.env.MYCO_NO_AUTO_SPAWN = '1';
   vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lock-fallback-'));
   mycoHome = path.join(vaultDir, 'home');
   fs.mkdirSync(mycoHome, { recursive: true });
@@ -51,6 +57,8 @@ afterEach(() => {
   fs.rmSync(vaultDir, { recursive: true, force: true });
   if (previousHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = previousHome;
+  if (previousNoAutoSpawn === undefined) delete process.env.MYCO_NO_AUTO_SPAWN;
+  else process.env.MYCO_NO_AUTO_SPAWN = previousNoAutoSpawn;
 });
 
 function writeLock(holder: { pid: number; port?: number; authToken?: string }): void {
@@ -137,30 +145,30 @@ describe('DaemonClient — auth header recovered from the lock', () => {
     // daemon's auth gate — even though `getInfoAsync` later finds the
     // daemon via the lock. The lock-tier fallback in
     // `resolveDaemonAuthHeader` closes that window.
-    writeLock({ pid: process.pid, port: 31341, authToken: 'token-from-lock' });
-
-    // No daemon.json on disk. Capture any outbound fetch the client
-    // makes via a stub server bound to the lock's recorded port; the
-    // request must arrive with `x-myco-auth: token-from-lock`.
+    //
+    // Bind the stub on an OS-assigned ephemeral port and write THAT port
+    // into the lock. A hardcoded port (the prior 31341) collides with a
+    // live daemon, a sibling test, or an orphaned bun --isolate worker
+    // that survived an interrupted run still holding it — surfacing as an
+    // EADDRINUSE failure or, on the connect path, an unbounded hang.
     const seenAuth: string[] = [];
-    const http = await import('node:http');
-    const stub = http.createServer((req, res) => {
+    const { server: stub, port: stubPort } = await listenEphemeral((req, res) => {
       const h = req.headers['x-myco-auth'];
       if (typeof h === 'string') seenAuth.push(h);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
-    await new Promise<void>((resolve, reject) => {
-      stub.once('error', reject);
-      stub.listen(31341, '127.0.0.1', () => resolve());
-    });
+    writeLock({ pid: process.pid, port: stubPort, authToken: 'token-from-lock' });
+
+    // No daemon.json on disk. The client discovers the stub via the lock's
+    // recorded port; the request must arrive with `x-myco-auth: token-from-lock`.
     try {
       const client = new DaemonClient(vaultDir);
       const result = await client.capturePost('/events', { type: 'user_prompt', session_id: 'probe' });
       expect(result.ok).toBe(true);
       expect(seenAuth).toContain('token-from-lock');
     } finally {
-      await new Promise<void>((r) => stub.close(() => r()));
+      await closeServer(stub);
     }
   });
 });
