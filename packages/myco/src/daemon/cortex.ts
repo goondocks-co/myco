@@ -20,6 +20,7 @@
  */
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -46,12 +47,12 @@ const JSON_INDENT = 2;
 // ---------------------------------------------------------------------------
 
 /**
- * Dependencies for `buildCortexPrompt` / `getCortexInstructionsSnapshot`
- * call sites. Config is pre-resolved because the caller (the HTTP handler)
- * snapshots it per-request.
+ * Dependencies for `buildCortexPrompt`. Config is NOT passed in: it is
+ * resolved per-request from the tenant's vault + grove inside the function so
+ * the grove/project-tier `cortex.*` delivery contract follows the request, not
+ * the daemon's bootstrap-home `liveConfig`.
  */
 export interface CortexServicesDeps {
-  config: MycoConfig;
   embeddingManager?: EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
   logger: DaemonLogger;
@@ -60,9 +61,10 @@ export interface CortexServicesDeps {
 }
 
 /**
- * Dependencies for `triggerCortexInstructions`. Takes a live config holder
- * (not a snapshot) because the trigger is invoked from background contexts
- * where the config may change between calls.
+ * Dependencies for `triggerCortexInstructions`. Config is NOT passed in: it is
+ * resolved per-request from the tenant's vault + grove inside the trigger.
+ * Agent config is grove-tier (PR #394), so reading the daemon's bootstrap-home
+ * `liveConfig` here would gate the refresh on the wrong grove's provider state.
  */
 export interface TriggerCortexInstructionsDeps {
   vaultDir: string;
@@ -72,11 +74,11 @@ export interface TriggerCortexInstructionsDeps {
    * global daemon `vaultDir` for a request-scoped caller is the tenant vault,
    * but the request's project/grove identity is the source of truth and is
    * carried here so a future change to how vaults map to tenants can't leak
-   * a refresh into the wrong project.
+   * a refresh into the wrong project. It also drives the per-request config
+   * resolution (`loadMergedConfig(vaultDir, { groveId })`) for the provider gate.
    */
   requestContext: MycoRequestContext;
   embeddingManager: EmbeddingManager;
-  liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
@@ -184,7 +186,12 @@ export async function buildCortexPrompt(
   requestContext: MycoRequestContext,
 ): Promise<CortexPromptBuilderStartResult> {
   const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestContext.groveId ?? null, requestedSymbiont);
-  const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
+  // Resolve config for the REQUEST's tenant. `cortex.*` is grove/project-tier,
+  // so the daemon's bootstrap-home snapshot (`deps.config`, which the handler
+  // sources from `liveConfig.current`) would pick the wrong grove's delivery
+  // contract. Resolve from the request vault + grove, the same way the run does.
+  const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null });
+  const delivery = resolveInstructionDelivery(config.cortex, targetSymbiont);
   const scope: import('@myco/grove/ids.js').ProjectScope = {
     kind: 'project',
     id: requestContext.projectId,
@@ -293,9 +300,16 @@ export function getCortexPromptResult(
 export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
-  const { vaultDir, requestContext, embeddingManager, liveConfig, logger, getTeamClient } = deps;
+  const { vaultDir, requestContext, embeddingManager, logger, getTeamClient } = deps;
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
-  const config = liveConfig.current;
+  // Resolve config for the REQUEST's tenant, not the daemon's bootstrap home.
+  // Agent config is grove-tier (PR #394), so `liveConfig.current` — the merged
+  // config for the daemon's (now phantom) bootstrap home — would gate this
+  // refresh on the wrong grove's provider state. This mirrors how the actual
+  // run resolves provider config: the executor calls
+  // `resolveRunConfig(..., requestContext.groveId)` → `loadMergedConfig(vaultDir,
+  // { groveId })`, so the gate and the run agree on the same tenant config.
+  const config = loadMergedConfig(vaultDir, { groveId: requestContext.groveId ?? null });
 
   if (config.agent.event_tasks_enabled === false) {
     return { started: false, reason: 'event-tasks-disabled' };

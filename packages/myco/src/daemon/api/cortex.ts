@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { TeamSyncClient } from '../team-sync.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
@@ -31,6 +32,19 @@ const PromptBuilderStatusParams = z.object({
 });
 
 export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) {
+  // Resolve config for the REQUEST's tenant (grove/project-tier `cortex.*`),
+  // falling back to the daemon's `liveConfig` only when no tenant context is
+  // resolved. Mirrors the pattern in event-dispatch / stop-processing.
+  function configForRequest(req: RouteRequest): MycoConfig {
+    const ctx = req.requestContext;
+    if (!ctx?.projectVaultDir || !ctx.groveId) return deps.liveConfig.current;
+    try {
+      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
+    } catch {
+      return deps.liveConfig.current;
+    }
+  }
+
   async function handleGetInstructions(
     req: RouteRequest,
     principal: RequestPrincipal,
@@ -39,7 +53,11 @@ export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) 
       kind: 'project',
       id: principal.tenancy.projectId as import('@myco/grove/ids.js').GroveProjectId,
     };
-    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current, scope);
+    // The snapshot's `enabled` flag reads grove/project-tier `cortex.*` config,
+    // so resolve it from the REQUEST's tenant — not the daemon's bootstrap-home
+    // `liveConfig` (a phantom home post-Phase-5).
+    const config = configForRequest(req);
+    const snapshot = getCortexInstructionsSnapshot(config, scope);
     return { body: snapshot };
   }
 
@@ -51,7 +69,6 @@ export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) 
       vaultDir: principal.tenancy.projectVaultDir,
       requestContext: req.requestContext!,
       embeddingManager: deps.embeddingManager,
-      liveConfig: deps.liveConfig,
       logger: deps.logger,
       getTeamClient: deps.getTeamClient,
       registerInflightRun: deps.registerInflightRun,
@@ -82,7 +99,6 @@ export function createCortexHandlers(_anchorVaultDir: string, deps: CortexDeps) 
     const result = await buildCortexPrompt(
       principal.tenancy.projectVaultDir,
       {
-        config: deps.liveConfig.current,
         embeddingManager: deps.embeddingManager,
         getTeamClient: deps.getTeamClient,
         logger: deps.logger,
