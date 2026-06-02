@@ -59,6 +59,36 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 // suite (tests/integration/multi-tenancy-invariant-e2e.test.ts) instead.
 
 // ---------------------------------------------------------------------------
+// Deliberate exemption — the notification banner READ/MUTATE routes are GLOBAL
+// ---------------------------------------------------------------------------
+//
+// `GET /api/notifications`, `GET /api/notifications/unread-count`,
+// `PATCH /api/notifications/:id`, `POST /api/notifications/dismiss-all`, and
+// `POST /api/notifications/mark-all-read` are intentionally NOT wrapped in
+// `tenantRoute` (unlike their sibling CREATE route, which stays wrapped).
+//
+// Why this is correct and NOT a leak: the notification banner is a global,
+// no-context-required read. The UI polls these routes on EVERY page, including
+// global pages (/settings, /logs, /groves) that carry no selected-project
+// context, so the request arrives with a synthesized (no caller project/grove)
+// tenancy. Wrapping them in `tenantRoute` rejected those polls with 400 +
+// tenancy.violation, so daemon-scope notifications never surfaced on global
+// pages (the browser-verified regression this exemption fixes). The handlers
+// scope by `projectScopeFromRequestContext(req.requestContext)` — NOT by
+// synthesizing tenancy from a vault path — so a no-context read resolves to the
+// global scope (`project_id IS NULL`) and returns ONLY daemon-scope rows plus,
+// with a caller context, that project's own rows. The global daemon's phantom
+// home (Phase 5, `_unbound-bootstrap`) anchors no project, so no tenant's rows
+// can ever be exposed. A prior code review explicitly offered "wrap OR document
+// the exemption" for these read routes; we take the documented exemption.
+//
+// This gate does NOT flag these handlers (they call
+// `projectScopeFromRequestContext`, not `resolveRequestContextForVault`); the
+// note exists so the exemption is a reviewed, recorded decision rather than an
+// oversight. The corresponding positive behavior — synthesized reads SUCCEED,
+// leak-safe — is pinned in tests/daemon/api/notifications-read-scope.test.ts.
+
+// ---------------------------------------------------------------------------
 // Allowlist — the ONLY src files permitted to call
 // `resolveRequestContextForVault(...)`.
 //

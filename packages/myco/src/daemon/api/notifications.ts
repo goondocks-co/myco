@@ -19,15 +19,21 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
+import { projectScopeFromRequestContext } from '../../tools/request-context.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '../../grove/ids.js';
 
 /**
- * Tenant scope for a route that ran through `tenantRoute`. The wrapper has
- * already proved `principal.tenancy.projectId`/`groveId` are caller-supplied
- * (a synthesized/anchor context was rejected with 400 before we got here), so
- * a notification read/mutate is always scoped to the request's own project —
- * never the daemon's bootstrap anchor. Daemon-scope (`project_id IS NULL`)
- * rows are merged in separately via `?include_daemon`, not by widening scope.
+ * Tenant scope for the CREATE route, which runs through `tenantRoute`. The
+ * wrapper has already proved `principal.tenancy.projectId`/`groveId` are
+ * caller-supplied (a synthesized/anchor context was rejected with 400 before we
+ * got here), so a create is always scoped to the request's own project — never
+ * the daemon's bootstrap anchor.
+ *
+ * The READ/MUTATE routes do NOT use this — they are the global, no-context
+ * notification banner poll and scope by `projectScopeFromRequestContext` (which
+ * resolves to the global/phantom scope when no project is selected). See the
+ * route registrations in daemon/main.ts for why they are intentionally
+ * unwrapped.
  */
 function tenantProjectScope(principal: RequestPrincipal): ProjectScope {
   return projectScope(principal.tenancy.projectId as GroveProjectId);
@@ -59,15 +65,18 @@ const UpdateStatusBody = z.object({
 /**
  * GET /api/notifications — list notifications with optional filters.
  *
- * Registered as a `tenantRoute`, so this handler always runs with an
- * authorized `principal` — a synthesized/anchor context is rejected (400 +
- * `tenancy.violation`) by the wrapper before we get here. The read is scoped
- * to the REQUEST's project; daemon-scope (`project_id IS NULL`) rows are
- * merged in only when the caller passes `?include_daemon`.
+ * GLOBAL, no-context banner poll: NOT wrapped in `tenantRoute`. The UI polls
+ * this on every page, including global pages (`/settings`, `/logs`, `/groves`)
+ * that carry no selected-project context, so a synthesized (no project/grove)
+ * context must SUCCEED — not 400. It is leak-safe: with no project context
+ * `projectScopeFromRequestContext` resolves to the global/phantom scope, so a
+ * synthesized read returns no project rows (the phantom home has none) and only
+ * the daemon-scope (`project_id IS NULL`) rows under `?include_daemon`. With a
+ * caller-supplied context the read is scoped to the REQUEST's project; the
+ * daemon-scope rows are merged in only when `?include_daemon` is passed.
  */
 export async function handleListNotifications(
   req: RouteRequest,
-  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
   const query = req.query;
   const status = query.status as 'unread' | 'read' | 'dismissed' | undefined;
@@ -79,7 +88,7 @@ export async function handleListNotifications(
   // the request's project rows so a single feed surfaces both layers.
   const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
 
-  const scope = tenantProjectScope(principal);
+  const scope = projectScopeFromRequestContext(req.requestContext);
   const items = listNotifications({
     status,
     domain,
@@ -169,20 +178,24 @@ export async function handleCreateNotification(
 /**
  * PATCH /api/notifications/:id — update status (read/dismissed).
  *
- * Tenant-scoped via `tenantRoute`: the status update only matches a row owned
- * by the REQUEST's project, so a synthesized/anchor context (rejected upstream)
- * can never mutate another tenant's notifications.
+ * GLOBAL, no-context route (NOT wrapped in `tenantRoute`): the banner marks a
+ * notification read/dismissed from any page. The update is scoped by
+ * `projectScopeFromRequestContext`, so a synthesized/no-project context can
+ * only ever match a global/phantom row — never another tenant's notification.
  */
 export async function handleUpdateNotification(
   req: RouteRequest,
-  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
   const parsed = UpdateStatusBody.safeParse(req.body);
   if (!parsed.success) {
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const updated = updateNotificationStatus(req.params.id, parsed.data.status, tenantProjectScope(principal));
+  const updated = updateNotificationStatus(
+    req.params.id,
+    parsed.data.status,
+    projectScopeFromRequestContext(req.requestContext),
+  );
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
@@ -190,23 +203,33 @@ export async function handleUpdateNotification(
   return { body: { ok: true } };
 }
 
-/** POST /api/notifications/dismiss-all — dismiss all (optionally per domain). */
+/**
+ * POST /api/notifications/dismiss-all — dismiss all (optionally per domain).
+ *
+ * GLOBAL, no-context route (NOT wrapped in `tenantRoute`): scoped by
+ * `projectScopeFromRequestContext`, so a synthesized/no-project context only
+ * dismisses global/phantom rows, never a tenant's.
+ */
 export async function handleDismissAll(
   req: RouteRequest,
-  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain, tenantProjectScope(principal));
+  const count = dismissAllNotifications(domain, projectScopeFromRequestContext(req.requestContext));
   return { body: { ok: true, dismissed: count } };
 }
 
-/** POST /api/notifications/mark-all-read — mark all unread as read. */
+/**
+ * POST /api/notifications/mark-all-read — mark all unread as read.
+ *
+ * GLOBAL, no-context route (NOT wrapped in `tenantRoute`): scoped by
+ * `projectScopeFromRequestContext`, so a synthesized/no-project context only
+ * marks global/phantom rows, never a tenant's.
+ */
 export async function handleMarkAllRead(
   req: RouteRequest,
-  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain, tenantProjectScope(principal));
+  const count = markAllRead(domain, projectScopeFromRequestContext(req.requestContext));
   return { body: { ok: true, marked: count } };
 }
 
@@ -218,18 +241,20 @@ export async function handleGetRegistry(): Promise<RouteResponse> {
 /**
  * GET /api/notifications/unread-count — lightweight unread count endpoint.
  *
- * Tenant-scoped via `tenantRoute`. Daemon-scope rows are merged in only when
- * `?include_daemon` is set (the badge counts both layers), keeping the
- * daemon-scope merge intact while the base count stays the request's project.
+ * GLOBAL, no-context badge poll (NOT wrapped in `tenantRoute`): the unread
+ * badge polls on every page. Scoped by `projectScopeFromRequestContext`, so a
+ * synthesized/no-project context counts only global/phantom rows (zero unless
+ * `?include_daemon` merges the daemon-scope rows) — never a tenant's. With a
+ * caller context the base count is the request's project; daemon-scope rows are
+ * merged in only when `?include_daemon` is set.
  */
 export async function handleUnreadCount(
   req: RouteRequest,
-  principal: RequestPrincipal,
 ): Promise<RouteResponse> {
   const includeDaemon = req.query.include_daemon === '1' || req.query.include_daemon === 'true';
   return {
     body: {
-      count: countNotifications('unread', tenantProjectScope(principal), {
+      count: countNotifications('unread', projectScopeFromRequestContext(req.requestContext), {
         includeDaemonScope: includeDaemon,
       }),
     },
