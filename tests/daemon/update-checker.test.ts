@@ -31,6 +31,14 @@ const fsMocks = {
     err.code = 'ENOENT';
     throw err;
   }),
+  // statSync gates the machine-config tier cache (readTierConfig keys on
+  // mtime+size). Default throws ENOENT so missing files stay missing; the
+  // mockFileContent/mockNoFiles helpers drive it in lockstep with readFileSync.
+  statSync: mock(() => {
+    const err: NodeJS.ErrnoException = new Error('ENOENT');
+    err.code = 'ENOENT';
+    throw err;
+  }),
   realpathSync: mock((p: unknown) => String(p)),
   writeFileSync: mock(() => undefined),
   mkdirSync: mock(() => undefined),
@@ -130,11 +138,24 @@ function makeRegistryResponse(latest: string, beta?: string): Record<string, unk
   };
 }
 
+/** Build a synthetic fs.Stats keyed by content so the machine-config tier
+ *  cache invalidates whenever the mocked content changes (defends against
+ *  cross-test machineConfigCache leakage — see readTierConfig). */
+function fakeStat(content: string): fs.Stats {
+  return { mtimeMs: content.length + 1, size: content.length } as unknown as fs.Stats;
+}
+
 /** Helper: mock fs.readFileSync to return specific content for a path. */
 function mockFileContent(filePath: string, content: string): void {
   vi.mocked(fs.existsSync).mockImplementation((p) => p === filePath);
   vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
     if (p === filePath) return content;
+    const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+    err.code = 'ENOENT';
+    throw err;
+  });
+  vi.mocked(fs.statSync).mockImplementation((p) => {
+    if (p === filePath) return fakeStat(content);
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
     err.code = 'ENOENT';
     throw err;
@@ -145,6 +166,11 @@ function mockFileContent(filePath: string, content: string): void {
 function mockNoFiles(): void {
   vi.mocked(fs.existsSync).mockReturnValue(false);
   vi.mocked(fs.readFileSync).mockImplementation((p) => {
+    const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+    err.code = 'ENOENT';
+    throw err;
+  });
+  vi.mocked(fs.statSync).mockImplementation((p) => {
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
     err.code = 'ENOENT';
     throw err;
@@ -181,6 +207,11 @@ beforeEach(() => {
   // "expect prod" assertion.
   setDevBuildCliEntry(null);
   vi.mocked(fs.existsSync).mockReturnValue(false);
+  vi.mocked(fs.statSync).mockImplementation((p) => {
+    const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+    err.code = 'ENOENT';
+    throw err;
+  });
   vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
   vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
   vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
@@ -312,86 +343,106 @@ describe('isManagedMachineRuntime()', () => {
   });
 });
 
-describe('project release channel helpers', () => {
-  it('defaults to stable when local.yaml has no update override', () => {
+describe('release channel helpers (machine-scoped, decision-46130740)', () => {
+  // The effective channel is `daemon.update_channel` at MACHINE scope.
+  // There is no project/personal override: a stray `update.channel` in a
+  // project local.yaml is ignored. Machine config lives at
+  // `<MYCO_HOME>/config.yaml` — here `/mock-home/.myco/config.yaml`.
+  const MACHINE_CONFIG_PATH = '/mock-home/.myco/config.yaml';
+
+  it('defaults to stable when machine config has no channel', () => {
     mockNoFiles();
     expect(readProjectReleaseChannel('/vault/.myco')).toBe('stable');
   });
 
-  it('reads update.channel from local.yaml when present', () => {
-    mockFileContent('/vault/.myco/local.yaml', 'update:\n  channel: beta\n');
+  it('reads daemon.update_channel from machine config', () => {
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: beta\n');
     expect(readProjectReleaseChannel('/vault/.myco')).toBe('beta');
   });
 
-  it('writes beta to local.yaml as a project-local override', () => {
-    mockNoFiles();
-
-    writeProjectReleaseChannel('/vault/.myco', 'beta');
-
-    // Atomic write (H.1): openSync(tmp, O_CREAT|O_EXCL|O_WRONLY) →
-    // writeSync(fd, buf) → fsyncSync(fd) → closeSync(fd) → renameSync.
-    // Assert the open and rename land on the sibling tempfile path and
-    // that the written buffer carries the channel marker.
-    expect(fs.openSync).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      expect.any(Number),
-      expect.any(Number),
-    );
-    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
-    const wroteBeta = writeCalls.some(([, buf]) => {
-      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
-      return text.includes('channel: beta');
-    });
-    expect(wroteBeta).toBe(true);
-    expect(fs.renameSync).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      '/vault/.myco/local.yaml',
-    );
-  });
-
-  it('clears the local override when switching back to stable', () => {
+  it('ignores a legacy update.channel sitting in project local.yaml', () => {
+    // Pre-migration, the channel was a per-project override in local.yaml.
+    // Post decision-46130740 the machine value wins and local.yaml is not
+    // consulted — a stray local override must NOT change the channel.
     mockFileContent('/vault/.myco/local.yaml', 'update:\n  channel: beta\n');
-
-    writeProjectReleaseChannel('/vault/.myco', 'stable');
-
-    expect(fs.openSync).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      expect.any(Number),
-      expect.any(Number),
-    );
-    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
-    const wroteEmpty = writeCalls.some(([, buf]) => {
-      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
-      return text === '{}\n';
-    });
-    expect(wroteEmpty).toBe(true);
-    expect(fs.renameSync).toHaveBeenCalledWith(
-      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      '/vault/.myco/local.yaml',
-    );
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('stable');
   });
 
-  it('migrates legacy machine-global beta preference when project has no override', () => {
-    // Pre-0.22 users had channel in the global update.yaml. Honor it so they
-    // don't silently fall back to stable after upgrading. Project-local
-    // local.yaml shadows this when explicitly set.
-    mockFileContent(UPDATE_CONFIG_PATH, 'channel: beta\ncheck_interval_hours: 6\n');
-
-    expect(readProjectReleaseChannel('/vault/.myco')).toBe('beta');
-  });
-
-  it('prefers project-local channel over legacy machine-global channel', () => {
+  it('machine config wins over a legacy update.channel in local.yaml', () => {
     const localPath = '/vault/.myco/local.yaml';
-    vi.mocked(fs.existsSync).mockImplementation((p) => p === localPath || p === UPDATE_CONFIG_PATH);
+    const localContent = 'update:\n  channel: stable\n';
+    const machineContent = 'daemon:\n  update_channel: beta\n';
+    vi.mocked(fs.existsSync).mockImplementation(
+      (p) => p === localPath || p === MACHINE_CONFIG_PATH,
+    );
     vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (p === localPath) return 'update:\n  channel: stable\n';
-      if (p === UPDATE_CONFIG_PATH) return 'channel: beta\ncheck_interval_hours: 6\n';
+      if (p === localPath) return localContent;
+      if (p === MACHINE_CONFIG_PATH) return machineContent;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === localPath) return fakeStat(localContent);
+      if (p === MACHINE_CONFIG_PATH) return fakeStat(machineContent);
       const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
       err.code = 'ENOENT';
       throw err;
     });
 
-    expect(readProjectReleaseChannel('/vault/.myco')).toBe('stable');
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('beta');
+  });
+
+  it('writes beta to machine config daemon.update_channel', () => {
+    mockNoFiles();
+
+    writeProjectReleaseChannel('/vault/.myco', 'beta');
+
+    // saveMachineConfig flows through the atomic writer (openSync(O_EXCL) →
+    // writeSync → fsyncSync → closeSync → renameSync) targeting the machine
+    // config.yaml tempfile sibling. Assert the rename lands on the machine
+    // config path and the written buffer carries the channel marker.
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock-home\/\.myco\/config\.yaml\.tmp-/),
+      MACHINE_CONFIG_PATH,
+    );
+    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
+    const wroteBeta = writeCalls.some(([, buf]) => {
+      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
+      return text.includes('update_channel: beta');
+    });
+    expect(wroteBeta).toBe(true);
+  });
+
+  it('does NOT write update.channel into project local.yaml', () => {
+    mockNoFiles();
+
+    writeProjectReleaseChannel('/vault/.myco', 'beta');
+
+    // The retired path wrote `<vault>/.myco/local.yaml`. The machine-scoped
+    // writer must never touch the project local.yaml tempfile.
+    const renameCalls = vi.mocked(fs.renameSync).mock.calls;
+    const touchedLocalYaml = renameCalls.some(
+      ([, dest]) => dest === '/vault/.myco/local.yaml',
+    );
+    expect(touchedLocalYaml).toBe(false);
+  });
+
+  it('writes stable to machine config daemon.update_channel', () => {
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: beta\n');
+
+    writeProjectReleaseChannel('/vault/.myco', 'stable');
+
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/mock-home\/\.myco\/config\.yaml\.tmp-/),
+      MACHINE_CONFIG_PATH,
+    );
+    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
+    const wroteStable = writeCalls.some(([, buf]) => {
+      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
+      return text.includes('update_channel: stable');
+    });
+    expect(wroteStable).toBe(true);
   });
 });
 

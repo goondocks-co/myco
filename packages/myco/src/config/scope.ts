@@ -28,11 +28,14 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'daemon.log_level': { home: 'machine', overridableBy: [] },
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },
   'daemon.update_channel': { home: 'machine', overridableBy: [] }, // decision-46130740
-  // Legacy per-project release-channel override. The loader migrates
-  // `update.channel` → `daemon.update_channel` (machine) on read and strips
-  // `update` from project myco.yaml (PROJECT_TIER_LEGACY_FIELDS), so its
-  // behavior-matching home is machine — same as its canonical sibling.
-  // RATIFY: Task 5 folds this into daemon.update_channel outright.
+  // Legacy `update.channel` leaf. Task 5 (decision-46130740) retired it at
+  // runtime: the effective channel now reads/writes machine
+  // `daemon.update_channel` exclusively, and the loader lifts any legacy
+  // `update.channel` (from myco.yaml or local.yaml) to machine once, then
+  // strips it. `UpdateSchema` stays in MycoConfigSchema for back-compat, so
+  // `update.channel` is still an enumerated leaf — this bridge row keeps the
+  // scope-registry-sync coverage test green. Its home is machine to match the
+  // canonical sibling.
   'update.channel': { home: 'machine', overridableBy: [] },
   // machine + Personal (deliberate change — see spec §A1)
   'notifications': { home: 'machine', overridableBy: ['local'] },

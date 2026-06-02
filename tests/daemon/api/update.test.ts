@@ -239,7 +239,7 @@ describe('handleUpdateStatus', () => {
     expect(body.update_available).toBe(false);
     expect(body.running_version).toBe('1.0.0');
     expect(body.channel).toBe('stable');
-    expect(body.channel_scope).toBe('project');
+    expect(body.channel_scope).toBe('machine');
     expect(body.runtime_scope).toBe('machine');
     expect(body.last_check).toBe('');
   });
@@ -610,7 +610,7 @@ describe('handleUpdateChannel', () => {
     expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.channel).toBe('beta');
-    expect(body.channel_scope).toBe('project');
+    expect(body.channel_scope).toBe('machine');
     expect(body.runtime_scope).toBe('machine');
     expect(body.last_check).toBe('');
   });

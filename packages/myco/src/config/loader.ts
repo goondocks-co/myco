@@ -287,6 +287,7 @@ function migrateLegacyProjectFields(
   parsed: Record<string, unknown>,
   groveId: string | null,
   mycoHome: string,
+  vaultDir: string,
 ): boolean {
   let moved = false;
 
@@ -352,10 +353,43 @@ function migrateLegacyProjectFields(
     moveMachine(sourcePath, targetPath);
   }
   // `update.channel` from legacy schema → daemon.update_channel.
-  const updateChannel = getAtPath(parsed, ['update', 'channel']);
-  if (updateChannel !== undefined && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined) {
-    setAtPath(machineRaw, ['daemon', 'update_channel'], updateChannel);
-    machineDirty = true;
+  // Two legacy homes existed: project myco.yaml (the original per-project
+  // schema field) and project local.yaml (the per-project override the
+  // retired Operations setter wrote). Decision-46130740 makes the channel
+  // machine-scoped, so lift either source to machine ONCE (only when machine
+  // has no explicit value yet — idempotent) and strip the now-dead leaf from
+  // local.yaml on the way out. myco.yaml's `update` is stripped separately by
+  // stripLegacyProjectFields (PROJECT_TIER_LEGACY_FIELDS includes `update`).
+  const liftUpdateChannel = (source: unknown): void => {
+    if (
+      source !== undefined
+      && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined
+    ) {
+      setAtPath(machineRaw, ['daemon', 'update_channel'], source);
+      machineDirty = true;
+    }
+  };
+  liftUpdateChannel(getAtPath(parsed, ['update', 'channel']));
+
+  // Strip + lift the legacy local.yaml override. Read the raw doc so we don't
+  // resurrect Zod defaults into the sparse file.
+  const localPath = localConfigPath(vaultDir);
+  if (fs.existsSync(localPath)) {
+    const localRaw = readRawYamlDoc(localPath);
+    if (getAtPath(localRaw, ['update', 'channel']) !== undefined) {
+      liftUpdateChannel(getAtPath(localRaw, ['update', 'channel']));
+      // Remove only the migrated leaf and prune `update` if now empty — a
+      // future `update.*` field in local.yaml must survive the strip.
+      unsetAtPath(localRaw, ['update', 'channel'], { pruneEmptyParents: true });
+      try {
+        atomicWriteFileSync(localPath, YAML.stringify(localRaw), 'utf-8');
+        invalidateMergedConfigCache(vaultDir);
+        moved = true;
+      } catch {
+        // Non-fatal: the runtime already ignores local.yaml's channel, so a
+        // failed strip leaves a dead field but does not change behavior.
+      }
+    }
   }
 
   if (machineDirty) {
@@ -480,7 +514,7 @@ function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): 
   const groveId = options.groveId ?? null;
   const shouldMigrate = options.migrateTiers === true;
   const tierMoved = shouldMigrate
-    ? migrateLegacyProjectFields(parsed, groveId, mycoHome)
+    ? migrateLegacyProjectFields(parsed, groveId, mycoHome, vaultDir)
     : false;
   const tierStripped = shouldMigrate
     ? stripLegacyProjectFields(parsed, { hasGrove: groveId !== null })

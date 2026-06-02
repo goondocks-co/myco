@@ -684,7 +684,7 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         category: 'Update',
         icon: 'RotateCcw',
         options: ['stable', 'beta'],
-        note: 'Use beta for dogfood/preview builds. Project local.yaml can override per-project.',
+        note: 'Use beta for dogfood/preview builds. Machine-wide — one channel per machine.',
         customRender: 'card-owns',
       },
     ],

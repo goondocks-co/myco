@@ -92,7 +92,7 @@ function makeStatus(overrides: Partial<CheckResult> = {}): CheckResult {
     latest_stable: '1.1.0',
     latest_beta: null,
     channel: 'stable',
-    channel_scope: 'project',
+    channel_scope: 'machine',
     runtime_scope: 'machine',
     check_interval_hours: 6,
     last_check: new Date().toISOString(),

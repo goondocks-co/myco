@@ -255,11 +255,13 @@ const MaintenanceSchema = z.object({
 });
 
 /**
- * Per-project release channel override. Lives in project local.yaml so
- * one project can dogfood/beta-test without changing the machine-wide
- * baseline that's stored on `daemon.update_channel` of the machine
- * config. The two settings coexist intentionally — machine config is
- * the default, project local override is the per-project preference.
+ * Legacy release-channel block. Kept on `MycoConfigSchema` for back-compat
+ * only — the release channel is now machine-scoped on
+ * `daemon.update_channel` (decision-46130740). A `update.channel` value in
+ * any project file (myco.yaml or local.yaml) is ignored at runtime; the
+ * loader's `migrateLegacyProjectFields` lifts it to machine once (only when
+ * machine has no explicit value) and then strips it. Do not reintroduce a
+ * per-project override here.
  */
 const UpdateSchema = z.object({
   channel: z.enum(['stable', 'beta']).default('stable'),
