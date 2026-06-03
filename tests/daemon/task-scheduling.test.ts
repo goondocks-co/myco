@@ -56,7 +56,7 @@ describe('registerScheduledTasks', () => {
     const baseDeps = {
       definitionsDir: '/tmp/defs',
       vaultDir,
-      embeddingManager: {} as never,
+      resolveEmbeddingManager: () => ({} as never),
       logger: logger as never,
       cache: new GroveRuntimeCache(),
       mycoHome: vaultDir,

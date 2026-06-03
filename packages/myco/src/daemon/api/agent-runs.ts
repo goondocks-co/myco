@@ -122,7 +122,10 @@ export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK, SKILL_SUR
 
 export interface AgentRunDeps {
   vaultDir: string;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for the request — never the daemon
+   *  bootstrap manager (anchor-leak Variant A: the agent's vector/canopy search
+   *  tools must hit the caller's grove store). */
+  resolveEmbeddingManager: (requestContext: RouteRequest['requestContext']) => EmbeddingManager;
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
 }
@@ -132,11 +135,13 @@ export interface AgentRunDeps {
 // ---------------------------------------------------------------------------
 
 export function createAgentRunHandlers(deps: AgentRunDeps) {
-  const { vaultDir, embeddingManager, logger, getTeamClient } = deps;
+  const { vaultDir, resolveEmbeddingManager, logger, getTeamClient } = deps;
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
     const parsedBody = AgentRunBody.safeParse(req.body);
+    // Grove-scoped manager for this run — resolved from the request context.
+    const embeddingManager = resolveEmbeddingManager(req.requestContext);
     if (!parsedBody.success) {
       return {
         status: 400,
@@ -377,6 +382,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     const { mode } = ResumeRunBody.parse(req.body ?? {});
+    const embeddingManager = resolveEmbeddingManager(req.requestContext);
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
     const resultPromise = dispatchAgentRun(vaultDir, {
       agentId: run.agent_id,

@@ -136,7 +136,7 @@ describe('cross-route API key leak guard', () => {
     } as never;
     const agentRunHandlers = createAgentRunHandlers({
       vaultDir: tmpVault,
-      embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       logger: makeLogger() as never,
     });
     server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);

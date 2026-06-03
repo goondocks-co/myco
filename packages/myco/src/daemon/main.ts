@@ -1342,7 +1342,9 @@ export async function main(): Promise<void> {
     scheduledTaskKicker = await registerScheduledTasks(powerManager, {
       definitionsDir,
       vaultDir: bootstrapVaultDir,
-      embeddingManager,
+      // Per-run grove resolution — the agent's vector/canopy search tools must
+      // hit the run's grove store, never the bootstrap anchor (anchor-leak A).
+      resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
       logger,
       getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
@@ -1665,7 +1667,8 @@ export async function main(): Promise<void> {
   // --- Agent API routes ---
   const agentRunHandlers = createAgentRunHandlers({
     vaultDir: bootstrapVaultDir,
-    embeddingManager,
+    // Per-request grove resolution — never the bootstrap manager (anchor-leak A).
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
   });

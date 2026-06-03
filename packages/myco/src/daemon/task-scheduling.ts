@@ -39,6 +39,7 @@ import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -93,7 +94,10 @@ export interface TaskSchedulingDeps {
   definitionsDir: string | undefined;
   /** Boot vault dir for user-defined tasks under `<vaultDir>/agents/tasks/`. */
   vaultDir?: string;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for a run's request context. Per-run
+   *  resolution — never the daemon-bootstrap manager (anchor-leak Variant A:
+   *  the agent's vector/canopy search tools must hit the run's grove store). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   logger: DaemonLogger;
   getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
   cache: GroveRuntimeCache;
@@ -151,7 +155,7 @@ export async function registerScheduledTasks(
   const {
     definitionsDir,
     vaultDir,
-    embeddingManager,
+    resolveEmbeddingManager,
     logger,
     getTeamClient,
     cache,
@@ -233,6 +237,8 @@ export async function registerScheduledTasks(
     const config = resolveProjectConfig(scope);
     if (!config) return;
     const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
+    // Grove-scoped manager for this project's run — never the bootstrap anchor.
+    const embeddingManager = resolveEmbeddingManager(requestContext);
     const readScope: ProjectScope = toProjectScope(projectId);
     const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
       ? null
