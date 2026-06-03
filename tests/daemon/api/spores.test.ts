@@ -16,7 +16,7 @@ import { registerAgent } from '@myco/db/queries/agents';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
 import { createGetSporeHandler, handleListSpores } from '@myco/daemon/api/mycelium';
 import type { RouteRequest } from '@myco/daemon/router';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {

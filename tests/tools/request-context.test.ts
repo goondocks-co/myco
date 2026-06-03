@@ -19,7 +19,7 @@ import {
   rowProjectIdFromRequestContext,
   projectScopeFromRequestContext,
   resolveLegacyRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import { GLOBAL_SCOPE } from '@myco/grove/ids.js';
 
 function withRegisteredProject<T>(fn: (args: {

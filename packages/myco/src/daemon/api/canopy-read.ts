@@ -2,7 +2,7 @@
 
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
 import { getSessionMycoToolCallCounts } from '@myco/db/queries/myco-tool-usage.js';
 import type { CanopyEntry } from '@myco/db/schema.js';

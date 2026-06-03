@@ -10,7 +10,7 @@
 import { CONTENT_SNIPPET_CHARS } from '@myco/constants.js';
 import { fullTextSearch } from '@myco/db/queries/search.js';
 import { connectToDaemon, initVaultDb } from './shared.js';
-import { projectScopeFromRequestContext, requestContextFromEnvironment } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, requestContextFromEnvironment } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants

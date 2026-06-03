@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import type { RouteRequest } from '@myco/daemon/router';
 import { MycoConfigSchema } from '@myco/config/schema';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import { tenantRoute } from '@myco/daemon/api/route-helpers';
 import type { RequestPrincipal } from '@myco/daemon/request-principal';

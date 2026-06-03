@@ -16,7 +16,7 @@
  * `resolveRequestContextForVault(...)` — the function that *synthesizes* a
  * tenancy context from a vault path — appearing OUTSIDE the request-context
  * module. Legitimately it belongs only inside
- * `packages/myco/src/tools/request-context.ts` (its definition + the
+ * `packages/myco/src/grove/request-context.ts` (its definition + the
  * daemon-fallback synthesis site). A handful of single-tenant call sites
  * (agent-task gathers and vault-tool dep helpers that receive a
  * caller-supplied vaultDir, never the bootstrap anchor) are explicitly
@@ -104,7 +104,7 @@ const ALLOWLIST: readonly { file: string; why: string }[] = [
   {
     // Defines `resolveRequestContextForVault` and the daemon-fallback
     // synthesis it wraps. This is the home of the function.
-    file: 'packages/myco/src/tools/request-context.ts',
+    file: 'packages/myco/src/grove/request-context.ts',
     why: 'definition + the legitimate daemon-fallback synthesis site',
   },
   {
@@ -265,7 +265,7 @@ describe('no-anchor-as-tenancy meta gate', () => {
     // Keeps the allowlist honest: a stale entry (the call was removed) should
     // be deleted so the list reflects reality and re-tightens the gate.
     for (const entry of ALLOWLIST) {
-      if (entry.file === 'packages/myco/src/tools/request-context.ts') {
+      if (entry.file === 'packages/myco/src/grove/request-context.ts') {
         // The definition file always references the name; assert existence only.
         expect(fs.existsSync(path.join(REPO_ROOT, entry.file)), `${entry.file} is missing`).toBe(true);
         continue;

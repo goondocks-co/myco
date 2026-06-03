@@ -47,7 +47,7 @@ import {
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';

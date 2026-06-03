@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAttachmentByFilePath } from '@myco/db/queries/attachments.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------

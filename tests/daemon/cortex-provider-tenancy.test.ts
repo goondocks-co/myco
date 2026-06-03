@@ -25,7 +25,7 @@ import path from 'node:path';
 
 import { saveGroveConfig, saveMachineConfig, invalidateMergedConfigCache } from '@myco/config/loader';
 import { triggerCortexInstructions } from '@myco/daemon/cortex';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import { useIsolatedHome } from '../support/isolated-home';
 

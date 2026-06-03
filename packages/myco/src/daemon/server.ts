@@ -14,7 +14,7 @@ import {
   UnauthorizedRequestContextError,
   requestContextFromHttpHeaders,
   type MycoRequestContext,
-} from '../tools/request-context.js';
+} from '../grove/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';

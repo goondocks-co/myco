@@ -4,7 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
-import { isCallerTenancy, type MycoRequestContext } from './request-context.js';
+import { isCallerTenancy, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   readPivot,
   resolveCallContext,

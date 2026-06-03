@@ -11,7 +11,7 @@ import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js'
 import { handleDeleteSkillRecord, createSkillRecordDeleteHandler, isSafeSkillNameForFs } from '@myco/daemon/api/skills.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
 import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId;

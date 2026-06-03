@@ -14,7 +14,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
   tryResolveRequestContextForVault,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import { resolveTenantConfig } from './request-config.js';
 import {
   countBatchesBySession,

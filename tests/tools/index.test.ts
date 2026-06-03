@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { vi } from '../helpers/vi-shim.js';
 import { createMycoTools } from '@myco/tools/index.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import type { DaemonClient } from '@myco/hooks/client.js';

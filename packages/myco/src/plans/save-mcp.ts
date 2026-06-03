@@ -17,7 +17,7 @@ import {
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 
 export interface SaveMcpPlanInput {
   id?: string;

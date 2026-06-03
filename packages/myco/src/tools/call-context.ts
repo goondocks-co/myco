@@ -29,7 +29,7 @@ import { ToolError } from './error.js';
 import {
   REQUEST_CONTEXT_HEADERS,
   type MycoRequestContext,
-} from './request-context.js';
+} from '@myco/grove/request-context.js';
 import {
   assertGroveProjectId,
   isGroveEraId,

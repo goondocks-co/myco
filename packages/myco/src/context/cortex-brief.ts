@@ -28,7 +28,7 @@ import { getMachineId } from '@myco/daemon/machine-id.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {

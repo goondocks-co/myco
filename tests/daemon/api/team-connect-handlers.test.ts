@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { RouteRequest, RouteResponse } from '@myco/daemon/router.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { createTeamId } from '@myco/grove/ids.js';
 import { teamRegistry } from '@myco/team/registry.js';
 

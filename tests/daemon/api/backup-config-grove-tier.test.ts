@@ -24,7 +24,7 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 import type { RouteRequest } from '@myco/daemon/router';
 
 describe('PUT /api/backup/config — persists at Grove tier', () => {

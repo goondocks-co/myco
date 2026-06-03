@@ -234,7 +234,7 @@ function withRequestContextHeaders(directory: string, init?: RequestInit): Reque
   }
   // The daemon rejects any request that carries context-switching headers
   // (x-myco-project-id, etc.) without the daemon-issued bearer token —
-  // see packages/myco/src/tools/request-context.ts. Read the token from
+  // see packages/myco/src/grove/request-context.ts. Read the token from
   // daemon.json (same file we read the port from) and attach it.
   if (hasContextSwitchingHeader && !headers.has(MYCO_AUTH_HEADER)) {
     const token = readDaemonAuthTokenFromDisk(resolveDaemonStatePath(directory));

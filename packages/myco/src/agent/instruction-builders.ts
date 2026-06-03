@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import {
   computeInputsHash,
   MAP_TASK_PROMPT_VERSION,
@@ -27,7 +27,7 @@ import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';

@@ -16,7 +16,7 @@ mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => 
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
@@ -28,7 +28,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { buildCortexInstructionsInput } from '@myco/context/cortex-brief.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,

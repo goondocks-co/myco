@@ -53,7 +53,7 @@ import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
-import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';

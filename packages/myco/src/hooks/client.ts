@@ -21,7 +21,7 @@ import {
   requestContextFromEnvironment,
   requestContextHeaders,
   type MycoRequestContext,
-} from '../tools/request-context.js';
+} from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,

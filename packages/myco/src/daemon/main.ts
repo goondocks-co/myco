@@ -205,7 +205,7 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,

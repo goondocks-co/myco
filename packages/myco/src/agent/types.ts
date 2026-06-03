@@ -7,7 +7,7 @@
  */
 
 import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)

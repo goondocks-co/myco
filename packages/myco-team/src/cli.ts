@@ -23,7 +23,7 @@ import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js'
 import { assertGroveProjectId, createTeamId, slugifyGroveName } from '@myco/grove/ids.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import type { TeamDeploymentRecord, TeamRecord } from '@myco/team/registry.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   extractJsonArray,
   installDeploymentDeps,

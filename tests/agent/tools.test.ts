@@ -32,7 +32,7 @@ import { insertEntity } from '@myco/db/queries/entities.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';

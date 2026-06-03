@@ -1,7 +1,7 @@
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage } from '@myco/agent/types.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 export type HarnessCapability =
   | 'supportsSessionResume'

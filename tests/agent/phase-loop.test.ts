@@ -114,7 +114,7 @@ mock.module('@myco/agent/phase-preconditions.js', () => ({
 
 // projectScopeFromRequestContext is called only when a requestContext is
 // present; tests that supply one need a non-throwing stub.
-mock.module('@myco/tools/request-context.js', () => ({
+mock.module('@myco/grove/request-context.js', () => ({
   projectScopeFromRequestContext: () => ({ kind: 'all' as const }),
 }));
 

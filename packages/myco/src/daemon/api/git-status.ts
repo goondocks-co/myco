@@ -10,7 +10,7 @@
 
 import { spawnSync } from 'node:child_process';
 import type { RouteHandler, RouteResponse } from '../router.js';
-import { filesystemRootFromRequestContext } from '../../tools/request-context.js';
+import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
 import { errorBody } from './error-envelope.js';
 
 // Cap subprocess wall time so a wedged index.lock or slow NFS doesn't

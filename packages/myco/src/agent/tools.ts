@@ -42,7 +42,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 
 // Re-exports for backward compatibility
 export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
