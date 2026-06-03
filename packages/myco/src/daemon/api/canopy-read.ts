@@ -11,6 +11,7 @@ import { errorBody } from './error-envelope.js';
 import { composeBlob } from '@myco/canopy/inject/compose.js';
 import { relativizeForLookup } from './canopy-inject.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
+import { readCanopyEntry } from '@myco/canopy/read-service.js';
 
 function notFound(reason: string): RouteResponse {
   return { status: 404, body: errorBody('not_found', reason) };
@@ -235,11 +236,7 @@ export async function handleCanopyEntriesList(
 export async function handleCanopyEntryGet(
   args: { project_id: string; path: string },
 ): Promise<Record<string, unknown>> {
-  const row = getDatabase().prepare(
-    `SELECT * FROM canopy_entries WHERE project_id = ? AND path = ?`,
-  ).get(args.project_id, args.path) as Record<string, unknown> | undefined;
-  if (!row) throw new Error(`Canopy entry not found: ${args.path}`);
-  return row;
+  return readCanopyEntry(args);
 }
 
 export async function handleCanopyEntryReembed(
