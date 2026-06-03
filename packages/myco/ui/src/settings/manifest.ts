@@ -2,10 +2,10 @@
  * Settings manifest — the canonical, hand-authored layout for the unified
  * `/settings` page. Each `SettingGroup` becomes a card on the page; each
  * `SettingField` becomes a labelled control inside that card. The control
- * components (Task 4) render off this manifest; a sync test (Task 3)
- * enforces that every entry's `key` resolves to a real leaf in the Zod
- * config schemas at `packages/myco/src/config/schema.ts`, so drift between
- * the schema and this file is caught at test time rather than runtime.
+ * components render off this manifest; a sync test enforces that every
+ * entry's `key` resolves to a real leaf in the Zod config schemas at
+ * `packages/myco/src/config/schema.ts`, so drift between the schema and this
+ * file is caught at test time rather than runtime.
  *
  * Out of scope intentionally: `cortex.*` (its own page), `appearance.*`
  * (sidebar control), `symbionts.*` (separate surface), team credentials

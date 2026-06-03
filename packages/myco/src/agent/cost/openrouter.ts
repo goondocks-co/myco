@@ -1,4 +1,4 @@
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { CostResolution } from './types.js';
 import type { RuntimeUsage } from '@myco/agent/types.js';
 import { buildTokenBreakdown } from './breakdown.js';

@@ -1,7 +1,5 @@
 import { CloudEmbeddingBase } from './cloud-embedding-base.js';
-
-/** Environment variable for OpenAI API key (stored in secrets.env). */
-export const OPENAI_API_KEY_ENV = 'MYCO_OPENAI_API_KEY';
+import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 
 export class OpenAIEmbeddingProvider extends CloudEmbeddingBase {
   constructor(opts?: { api_key?: string; model?: string }) {

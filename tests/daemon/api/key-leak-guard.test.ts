@@ -38,8 +38,7 @@ import {
   handleGetSessionBatches,
   handleGetSessionPlans,
 } from '@myco/daemon/api/sessions';
-import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 const SENTINELS = {
   openai: 'sk-sentinel-openai-ABCDEF1234567890',

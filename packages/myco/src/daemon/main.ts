@@ -1,10 +1,9 @@
 /**
- * Myco daemon — SQLite capture engine.
+ * Myco daemon — global capture, API, MCP, and scheduled-work runtime.
  *
- * All data goes to a local SQLite database (better-sqlite3). The intelligence
- * pipeline (extraction, embedding, consolidation, digest) is removed — it
- * moves to Phase 2 Agent SDK. What remains is the capture layer: session
- * lifecycle, prompt batch tracking, activity recording, and transcript mining.
+ * The daemon is the per-machine authority for event ingestion, session
+ * recording, Grove-scoped API handling, in-process MCP HTTP, and recurring
+ * project work.
  */
 
 import { DaemonServer } from './server.js';

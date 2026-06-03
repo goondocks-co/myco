@@ -1,7 +1,6 @@
 import { deleteSecrets, readSecrets, writeSecret } from '@myco/config/secrets.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
-import { OPENAI_API_KEY_ENV } from '../../cli/providers/openai-embeddings.js';
-import { OPENROUTER_API_KEY_ENV } from '../../cli/providers/openrouter.js';
+import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { GITHUB_TOKEN_ENV } from '../../release-provenance/github.js';
 
