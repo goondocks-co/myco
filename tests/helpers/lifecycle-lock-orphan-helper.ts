@@ -31,8 +31,14 @@ if (!result.acquired) {
 let db: Database | null = null;
 if (dbPath) {
   db = new Database(dbPath);
-  db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 200');
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+  } catch {
+    // The parent may have just initialized the schema; holding any write lock
+    // is enough for this helper, so keep the existing journal mode on a race.
+  }
+  db.exec('PRAGMA busy_timeout = 5000');
   db.exec('BEGIN IMMEDIATE');
   db.exec('CREATE TABLE IF NOT EXISTS _orphan_witness (n INTEGER)');
   db.exec('INSERT INTO _orphan_witness (n) VALUES (1)');
