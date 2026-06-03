@@ -57,7 +57,6 @@ import {
   SKILL_SURVEY_RECONCILIATION_POLICY_MARKER,
   SKILL_SURVEY_RECONCILIATION_STATE_KEY,
   unknownCandidateQualityFailureCodes,
-  validateSkillCandidateQualityContract,
 } from '@myco/agent/skill-candidate-quality.js';
 import {
   validateSkillContent,
@@ -115,6 +114,10 @@ import {
   checkCandidateCoverage as checkCandidateCoverageForRows,
   validateCandidateWrite,
 } from './skill-candidate-validation.js';
+import {
+  emitSkillNotification,
+  requireGenerationReadyCandidate,
+} from './skill-promotion-support.js';
 
 const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
@@ -981,68 +984,6 @@ export function createSkillTools(deps: VaultToolDeps) {
   );
 
   /**
-   * Structural gate enforcing the skill lifecycle invariant: ONLY
-   * candidates in 'approved' state can be materialized into skills.
-   * Used by vault_stage_skill, vault_finalize_skill, and
-   * vault_write_skill's create path.
-   */
-  function requireApprovedCandidate(
-    candidateId: string,
-  ): Record<string, unknown> | null {
-    const candidate = getCandidate(candidateId, scope);
-    if (!candidate) {
-      return {
-        error:
-          `Candidate ${candidateId} not found. Skill writes require a ` +
-          'candidate in the approved state.',
-      };
-    }
-    if (candidate.status !== CANDIDATE_STATUS.APPROVED) {
-      return {
-        error:
-          `Candidate ${candidateId} is in '${candidate.status}' state. ` +
-          "Skills can only be generated from candidates in 'approved' " +
-          'state — the human review step. If a candidate in an earlier ' +
-          'state needs to become a skill, route it through the normal ' +
-          'approval flow first.',
-        candidate_status: candidate.status,
-      };
-    }
-    return null;
-  }
-
-  function requireGenerationReadyCandidate(
-    candidateId: string,
-  ): Record<string, unknown> | null {
-    const approvalError = requireApprovedCandidate(candidateId);
-    if (approvalError) return approvalError;
-
-    const candidate = getCandidate(candidateId, scope);
-    if (!candidate) {
-      return {
-        error:
-          `Candidate ${candidateId} not found. Skill writes require a ` +
-          'candidate in the approved state.',
-      };
-    }
-
-    const issues = validateSkillCandidateQualityContract(candidate, {
-      requireResolvedSources: true,
-      scope,
-    });
-    if (issues.length > 0) {
-      return {
-        error:
-          `Candidate ${candidateId} is approved but not generation-ready. ` +
-          'Approve only candidates with complete, resolvable evidence metadata.',
-        issues,
-      };
-    }
-
-    return null;
-  }
-
-  /**
    * Self-contained dedup gate for skill create paths. Returns `null`
    * when the write is allowed, or an error payload object ready for
    * textResult() when it should be rejected.
@@ -1276,21 +1217,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       path: relativePath,
       generation,
     };
-  }
-
-  /** Emit the standard notification after a successful create or evolve. */
-  function emitSkillNotification(
-    kind: 'created' | 'evolved',
-    opts: { name: string; display_name: string; description: string; recordId: string; generation: number },
-  ) {
-    notify(vaultDir, {
-      domain: 'skills',
-      type: kind === 'created' ? 'skill.created' : 'skill.evolved',
-      title: `Skill ${kind}: ${opts.display_name}`,
-      message: opts.description.slice(0, 120),
-      link: `/skills?skill=${encodeURIComponent(opts.name)}`,
-      metadata: { skillId: opts.recordId, name: opts.name, generation: opts.generation },
-    });
   }
 
   const vaultSkillCandidates = tool(
@@ -1692,7 +1618,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         // (above) skips this because the caller is updating an existing
         // skill, not materializing a fresh candidate.
         if (args.candidate_id) {
-          const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+          const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
           if (candidateError) {
             return textResult(candidateError);
           }
@@ -1725,7 +1651,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           label: 'vault_write_skill',
         });
         if ('error' in result) return textResult(result);
-        emitSkillNotification('created', {
+        emitSkillNotification(vaultDir, 'created', {
           name: result.name,
           display_name: args.display_name,
           description: args.description,
@@ -1804,7 +1730,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      emitSkillNotification('evolved', {
+      emitSkillNotification(vaultDir, 'evolved', {
         name: args.name,
         display_name: args.display_name,
         description: args.description,
@@ -1866,7 +1792,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Structural gate: candidate must exist, be approved, and carry
       // complete resolvable evidence metadata.
-      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
       if (candidateError) return textResult(candidateError);
 
       // Dedup gate — create-only, so rejectSameName surfaces the
@@ -1949,7 +1875,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       // finalize time. If a human (or another tool) dismissed the
       // candidate between stage and finalize, the finalize should
       // refuse rather than promote the now-rescinded skill.
-      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
       if (candidateError) return textResult(candidateError);
 
       // Defense-in-depth: re-run validation against the staged content.
@@ -2002,7 +1928,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Success — clean up staging and notify.
       cleanupStagedSkill(vaultDir, args.candidate_id);
-      emitSkillNotification('created', {
+      emitSkillNotification(vaultDir, 'created', {
         name: manifest.name,
         display_name: manifest.display_name,
         description: manifest.description,
