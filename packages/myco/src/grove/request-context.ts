@@ -63,6 +63,7 @@ export const REQUEST_CONTEXT_AUTH_ENV = 'MYCO_DAEMON_AUTH';
  * process could pick which Grove to act against.
  */
 const CONTEXT_SWITCHING_HEADERS = [
+  REQUEST_CONTEXT_HEADERS.projectRoot,
   REQUEST_CONTEXT_HEADERS.projectId,
   REQUEST_CONTEXT_HEADERS.groveId,
 ] as const;
@@ -83,8 +84,9 @@ export class UnauthorizedRequestContextError extends Error {
 export interface RequestContextAuthOptions {
   /**
    * Daemon-issued bearer token. When provided, any request that carries
-   * a context-switching header (`x-myco-grove-id` or
-   * `x-myco-project-id`) must present a matching `x-myco-auth` header.
+   * a context-switching header (`x-myco-project-root`,
+   * `x-myco-grove-id`, or `x-myco-project-id`) must present a matching
+   * `x-myco-auth` header.
    * When omitted (no token configured), the gate is disabled — this is
    * the legacy / pre-G4 behavior preserved for backwards compatibility
    * with non-daemon callers (e.g. unit tests).

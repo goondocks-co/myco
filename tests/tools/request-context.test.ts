@@ -605,6 +605,23 @@ describe('tool request context', () => {
       });
     });
 
+    it('rejects a projectRoot-only context switch without the auth bearer', () => {
+      withRegisteredProject(({ projectRoot, vaultDir }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
+    it('rejects a projectRoot-only context switch with the wrong auth bearer', () => {
+      withRegisteredProject(({ projectRoot, vaultDir }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+          [REQUEST_CONTEXT_AUTH_HEADER]: 'wrong-token',
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
     it('accepts context-switching headers when the auth bearer matches', () => {
       withRegisteredProject(({ vaultDir, groveId, projectId }) => {
         const resolved = requestContextFromHttpHeaders({
@@ -617,10 +634,30 @@ describe('tool request context', () => {
       });
     });
 
+    it('accepts a projectRoot-only context switch when the auth bearer matches', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const otherRoot = path.join(path.dirname(projectRoot), 'other-fallback-auth');
+        const otherVaultDir = resolveProjectVaultDir(otherRoot);
+        fs.mkdirSync(otherVaultDir, { recursive: true });
+        saveProjectManifest(otherVaultDir, {
+          project: { id: assertGroveProjectId(createProjectId()), name: 'Other Fallback' },
+        });
+
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+          [REQUEST_CONTEXT_AUTH_HEADER]: TOKEN,
+        }, otherVaultDir, { expectedAuthToken: TOKEN });
+
+        expect(resolved.projectId).toBe(projectId);
+        expect(resolved.groveId).toBe(groveId);
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
     it('lets requests through without context-switching headers regardless of token', () => {
       withRegisteredProject(({ vaultDir }) => {
-        // No project/grove headers → no auth gate. Legacy callers
-        // still work even when a token is configured.
+        // No project-root/project-id/grove-id headers → no auth gate.
+        // Legacy callers still work even when a token is configured.
         const resolved = requestContextFromHttpHeaders({}, vaultDir, { expectedAuthToken: TOKEN });
         expect(resolved.source).toBe('headers');
       });
