@@ -24,7 +24,10 @@ import {
 
 export interface TriggerTitleSummaryDeps {
   vaultDir: string;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for the run's context — never the
+   *  bootstrap manager (anchor-leak Variant A). Resolved after the request
+   *  context is determined below. */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   // Holder rather than snapshot so the gates below observe toggle flips
   // (agent.event_tasks_enabled, agent.summary_batch_interval) from Settings
   // without a daemon restart.
@@ -64,7 +67,7 @@ export async function triggerTitleSummary(
   deps: TriggerTitleSummaryDeps,
   trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
 ): Promise<void> {
-  const { vaultDir, embeddingManager, liveConfig, logger } = deps;
+  const { vaultDir, resolveEmbeddingManager, liveConfig, logger } = deps;
 
   // Resolve the request context BEFORE the config gates so the gates read the
   // REQUEST grove's merged config — not the daemon's bootstrap-home liveConfig.
@@ -100,6 +103,8 @@ export async function triggerTitleSummary(
   }
 
   try {
+    // Grove-scoped manager resolved from the run's context (not the anchor).
+    const embeddingManager = resolveEmbeddingManager(requestContext);
     const { dispatchAgentRun } = await import('../agent/runner-host.js');
     dispatchAgentRun(vaultDir, {
       task: 'title-summary',

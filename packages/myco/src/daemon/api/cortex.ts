@@ -3,6 +3,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
 import type { TeamSyncClient } from '../team-sync.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { DaemonLogger } from '../logger.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { RequestPrincipal } from '../request-principal.js';
@@ -17,7 +18,9 @@ import { errorBody } from './error-envelope.js';
 export interface CortexDeps {
   liveConfig: { current: MycoConfig };
   getTeamClient?: () => TeamSyncClient | null;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for the request — never the bootstrap
+   *  manager (anchor-leak Variant A). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext) => EmbeddingManager;
   logger: DaemonLogger;
   /** Optional registry that tracks fire-and-forget runs so daemon shutdown can await them. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
@@ -62,7 +65,7 @@ export function createCortexHandlers(deps: CortexDeps) {
     const result = await triggerCortexInstructions({
       vaultDir: principal.tenancy.projectVaultDir,
       requestContext: req.requestContext!,
-      embeddingManager: deps.embeddingManager,
+      resolveEmbeddingManager: deps.resolveEmbeddingManager,
       logger: deps.logger,
       getTeamClient: deps.getTeamClient,
       registerInflightRun: deps.registerInflightRun,
@@ -93,7 +96,7 @@ export function createCortexHandlers(deps: CortexDeps) {
     const result = await buildCortexPrompt(
       principal.tenancy.projectVaultDir,
       {
-        embeddingManager: deps.embeddingManager,
+        resolveEmbeddingManager: deps.resolveEmbeddingManager,
         getTeamClient: deps.getTeamClient,
         logger: deps.logger,
         registerInflightRun: deps.registerInflightRun,

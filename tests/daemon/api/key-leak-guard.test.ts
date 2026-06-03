@@ -145,6 +145,7 @@ describe('cross-route API key leak guard', () => {
 
     const sessionMut = createSessionMutationHandlers({
       embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       vaultDir: tmpVault,
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

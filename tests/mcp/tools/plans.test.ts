@@ -290,6 +290,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     } as never;
     const sessionMut = createSessionMutationHandlers({
       embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       vaultDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

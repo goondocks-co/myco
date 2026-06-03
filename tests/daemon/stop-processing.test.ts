@@ -77,7 +77,7 @@ function makeStopProcessor(vaultDir: string, options?: { planWatchConfig?: { wat
     transcriptMiner: {
       getAllTurnsWithSource: vi.fn(() => ({ turns: [], source: 'transcript' })),
     } as never,
-    embeddingManager: { onRemoved: vi.fn() } as never,
+    embeddingManager: { onRemoved: vi.fn() } as never, resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -271,7 +271,7 @@ describe('createStopProcessor session capture rules', () => {
           source: 'cursor:direct',
         })),
       } as never,
-      embeddingManager: { onRemoved: vi.fn() } as never,
+      embeddingManager: { onRemoved: vi.fn() } as never, resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       vaultDir,
@@ -361,7 +361,7 @@ describe('createStopProcessor session capture rules', () => {
           source: 'cursor:direct',
         })),
       } as never,
-      embeddingManager: { onRemoved: vi.fn() } as never,
+      embeddingManager: { onRemoved: vi.fn() } as never, resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       vaultDir,

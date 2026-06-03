@@ -1170,6 +1170,7 @@ export async function main(): Promise<void> {
     sessionBuffers,
     transcriptMiner,
     embeddingManager,
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     liveConfig,
     vaultDir: bootstrapVaultDir,
@@ -1267,7 +1268,7 @@ export async function main(): Promise<void> {
   let configHash = computeConfigHash(bootstrapVaultDir);
   const cortexHandlers = createCortexHandlers({
     liveConfig,
-    embeddingManager,
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
     registerInflightRun: (p) => inflightRuns.register(p),
@@ -1516,7 +1517,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);

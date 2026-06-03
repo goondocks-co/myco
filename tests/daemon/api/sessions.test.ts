@@ -145,6 +145,7 @@ describe('handleCompleteSession', () => {
     };
     return createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
@@ -240,6 +241,7 @@ describe('handleCompleteSession', () => {
     const registryStub = { unregister: vi.fn() };
     const handlers = createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
@@ -274,6 +276,7 @@ describe('handleDeletePlan', () => {
   function makeHandlers() {
     return createSessionMutationHandlers({
       embeddingManager: embeddingManager as never,
+      resolveEmbeddingManager: () => embeddingManager as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
@@ -369,6 +372,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
   function makeHandlers() {
     return createSessionMutationHandlers({
       embeddingManager: embeddingManager as never,
+      resolveEmbeddingManager: () => embeddingManager as never,
       vaultDir: tmpDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

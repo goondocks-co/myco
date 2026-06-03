@@ -13,7 +13,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   releaseStateAnnotation,
   releaseStateAnnotationMap,
@@ -169,6 +169,9 @@ export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteRes
 
 export interface SessionMutationDeps {
   embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for a session's run context — used for
+   *  the title-summary agent run (anchor-leak Variant A). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   vaultDir: string;
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
@@ -187,7 +190,7 @@ export interface SessionMutationDeps {
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
+  const { embeddingManager, resolveEmbeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -246,7 +249,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       }, scope);
     }
 
-    await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
+    await triggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger });
 
     logger.info(LOG_KINDS.API_SESSION_COMPLETE, 'Session manually completed', {
       session_id: sessionId,

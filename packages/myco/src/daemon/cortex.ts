@@ -54,7 +54,9 @@ const JSON_INDENT = 2;
  * the daemon's bootstrap-home `liveConfig`.
  */
 export interface CortexServicesDeps {
-  embeddingManager?: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for the request — never the bootstrap
+   *  manager (anchor-leak Variant A). */
+  resolveEmbeddingManager?: (requestContext: MycoRequestContext) => EmbeddingManager;
   getTeamClient?: () => TeamSyncClient | null;
   logger: DaemonLogger;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
@@ -79,7 +81,9 @@ export interface TriggerCortexInstructionsDeps {
    * resolution (`loadMergedConfig(vaultDir, { groveId })`) for the provider gate.
    */
   requestContext: MycoRequestContext;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for the request's tenant — never the
+   *  bootstrap manager (anchor-leak Variant A). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext) => EmbeddingManager;
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
@@ -273,7 +277,7 @@ export async function buildCortexPrompt(
     task: CORTEX_PROMPT_BUILDER_TASK,
     agentId: DEFAULT_AGENT_ID,
     instruction: builderInstruction,
-    embeddingManager: deps.embeddingManager,
+    embeddingManager: deps.resolveEmbeddingManager?.(requestContext),
     logger: deps.logger,
     requestContext,
   });
@@ -333,7 +337,8 @@ export function getCortexPromptResult(
 export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
-  const { vaultDir, requestContext, embeddingManager, logger, getTeamClient } = deps;
+  const { vaultDir, requestContext, resolveEmbeddingManager, logger, getTeamClient } = deps;
+  const embeddingManager = resolveEmbeddingManager(requestContext);
   const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
   // Resolve config for the REQUEST's tenant through the shared seam, not the
   // daemon's bootstrap home. Agent config is grove-tier (PR #394), so reading
