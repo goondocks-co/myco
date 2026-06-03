@@ -11,7 +11,7 @@ import { vi } from '../helpers/vi-shim.js';
 // getTeamMachineId() fallback path is deterministic across machines and CI.
 // ---------------------------------------------------------------------------
 const TEST_MACHINE_ID = 'testuser_aabbccdd';
-mock.module('@myco/daemon/machine-id.js', () => ({
+mock.module('@myco/machine-id.js', () => ({
   getMachineId: () => TEST_MACHINE_ID,
 }));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';

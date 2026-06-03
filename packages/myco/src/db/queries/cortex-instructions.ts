@@ -1,5 +1,5 @@
 import { getDatabase } from '@myco/db/client.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 
 const CORTEX_INSTRUCTION_COLUMNS = [

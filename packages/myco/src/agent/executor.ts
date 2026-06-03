@@ -17,7 +17,7 @@ import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.j
 import { setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {

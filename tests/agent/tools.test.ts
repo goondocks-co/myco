@@ -20,7 +20,7 @@ mock.module('@myco/intelligence/embed-query.js', () => ({
 // deterministic across machines and CI (real ~/.myco/machine_id varies).
 // ---------------------------------------------------------------------------
 const TEST_MACHINE_ID = 'testuser_aabbccdd';
-mock.module('@myco/daemon/machine-id.js', () => ({
+mock.module('@myco/machine-id.js', () => ({
   getMachineId: () => TEST_MACHINE_ID,
 }));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';

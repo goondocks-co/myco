@@ -37,7 +37,7 @@ import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
 import { createUpdateHandlers } from './api/update.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
-import { getMachineId } from './machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -54,7 +54,7 @@ import {
   handleDeleteCandidate,
   createSkillRecordDeleteHandler,
 } from './api/skills.js';
-import { initTeamContext } from './team-context.js';
+import { initTeamContext } from '@myco/team/context.js';
 import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';

@@ -206,7 +206,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   ): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');
     const { createSchema } = await import('@myco/db/schema.js');
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
+    const { getMachineId } = await import('@myco/machine-id.js');
     if (options.resolveDatabase) {
       let db: Database;
       try {

@@ -22,7 +22,7 @@ import {
   type RulesFileInput,
 } from '@myco/canopy/map/inputs-hash.js';
 import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
   projectScopeFromRequestContext,

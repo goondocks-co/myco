@@ -974,7 +974,7 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
   // 10. Seed team config in the Worker
   console.log('Setting team configuration...');
   try {
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
+    const { getMachineId } = await import('@myco/machine-id.js');
     const creatorMachineId = getMachineId();
     await fetch(`${deployUrl}/config`, {
       method: 'PUT',

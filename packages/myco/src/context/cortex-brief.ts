@@ -24,7 +24,7 @@ import { listSessions } from '@myco/db/queries/sessions.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { releaseStateAnnotationMap } from '@myco/release-provenance/annotations.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,

@@ -8,7 +8,7 @@ import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers, createGetSessionHandler, handleListSessions } from '@myco/daemon/api/sessions';
-import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context';
+import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import type { RouteRequest } from '@myco/daemon/router';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';

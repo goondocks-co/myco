@@ -29,7 +29,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { writeCanopyMap, readCanopyMap } from '@myco/canopy/map/store.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { computeInputsHash, MAP_TASK_PROMPT_VERSION } from '@myco/canopy/map/inputs-hash.js';
 import {
   buildCanopyMapInstruction,

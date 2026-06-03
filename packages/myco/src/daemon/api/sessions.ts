@@ -4,7 +4,7 @@ import { listActivitiesByBatch, countActivities, countActivitiesBySessions } fro
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';

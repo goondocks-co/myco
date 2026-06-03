@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import path from 'node:path';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
 import {
