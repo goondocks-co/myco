@@ -254,6 +254,26 @@ describe('handleCompleteSession', () => {
     expect(reconcilerStub.clearSession).toHaveBeenCalledWith('sess-delete-clear-registry');
     expect(registryStub.unregister).toHaveBeenCalledWith('sess-delete-clear-registry');
   });
+
+  it('resolves the grove embedding manager from the request context for cascade cleanup (anchor-leak guard)', async () => {
+    // The cleanup-cascade must remove vectors from the run's grove store, not
+    // the daemon bootstrap manager (which would orphan the grove's vectors and
+    // miss the project's on-disk files). Assert it resolves per request context.
+    const now = epochNow();
+    upsertSession({ id: 'sess-cleanup-scope', agent: 'test-agent', started_at: now, created_at: now, status: 'completed' });
+    let seen: unknown = 'NOT_CALLED';
+    const handlers = createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: (rc) => { seen = rc; return makeEmbeddingManagerStub() as never; },
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn() },
+    });
+    await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-cleanup-scope' } }));
+    expect(seen).toBe(TEST_REQUEST_CONTEXT);
+  });
 });
 
 describe('handleDeletePlan', () => {

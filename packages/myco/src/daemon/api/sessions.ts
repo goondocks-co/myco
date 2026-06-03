@@ -212,9 +212,17 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     // Mirror the unregister sequence in `session-lifecycle.ts`.
     registry.unregister(sessionId);
 
-    // Fire-and-forget cleanup: embeddings, vault files, attachments,
-    // and the session's buffer journal.
-    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+    // Fire-and-forget cleanup: embeddings, vault files, attachments, and the
+    // session's buffer journal. Resolve the GROVE embedding manager + the
+    // request's project vault dir — the bootstrap manager/anchor vault would
+    // leave the grove's vectors orphaned and miss the project's on-disk files
+    // (markdown + buffer journal), defeating the same-id reload guard.
+    cleanupAfterSessionCascade(
+      sessionId,
+      result,
+      resolveEmbeddingManager(req.requestContext),
+      req.requestContext?.projectVaultDir ?? vaultDir,
+    ).catch(() => {});
 
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
       session_id: sessionId,
