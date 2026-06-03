@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import type { RouteRequest } from '@myco/daemon/router';
 import { MycoConfigSchema } from '@myco/config/schema';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import { tenantRoute } from '@myco/daemon/api/route-helpers';
 import type { RequestPrincipal } from '@myco/daemon/request-principal';
@@ -103,7 +103,7 @@ describe('createCortexHandlers', () => {
   function makeHandlers() {
     return createCortexHandlers({
       liveConfig: { current: MycoConfigSchema.parse({ version: 3 }) },
-      embeddingManager: { reconcile: vi.fn() } as never,
+      resolveEmbeddingManager: () => ({ reconcile: vi.fn() } as never),
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       getTeamClient: vi.fn(() => null),
     });

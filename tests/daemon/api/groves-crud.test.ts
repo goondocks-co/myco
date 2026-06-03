@@ -16,7 +16,7 @@ import {
   createUnarchiveProjectHandler,
   listGroveSummaries,
 } from '@myco/daemon/api/groves.js';
-import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
+import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveGroveDir, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {

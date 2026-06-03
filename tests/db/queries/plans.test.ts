@@ -21,7 +21,7 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import { buildPlanId } from '@myco/plans/identity.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
-import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
+import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */

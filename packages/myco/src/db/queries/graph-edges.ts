@@ -11,7 +11,7 @@
 import crypto from 'node:crypto';
 import { getDatabase } from '@myco/db/client.js';
 import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 

@@ -8,9 +8,9 @@ import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers, createGetSessionHandler, handleListSessions } from '@myco/daemon/api/sessions';
-import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context';
+import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import type { RouteRequest } from '@myco/daemon/router';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
@@ -145,6 +145,7 @@ describe('handleCompleteSession', () => {
     };
     return createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
@@ -240,6 +241,7 @@ describe('handleCompleteSession', () => {
     const registryStub = { unregister: vi.fn() };
     const handlers = createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
@@ -251,6 +253,26 @@ describe('handleCompleteSession', () => {
 
     expect(reconcilerStub.clearSession).toHaveBeenCalledWith('sess-delete-clear-registry');
     expect(registryStub.unregister).toHaveBeenCalledWith('sess-delete-clear-registry');
+  });
+
+  it('resolves the grove embedding manager from the request context for cascade cleanup (anchor-leak guard)', async () => {
+    // The cleanup-cascade must remove vectors from the run's grove store, not
+    // the daemon bootstrap manager (which would orphan the grove's vectors and
+    // miss the project's on-disk files). Assert it resolves per request context.
+    const now = epochNow();
+    upsertSession({ id: 'sess-cleanup-scope', agent: 'test-agent', started_at: now, created_at: now, status: 'completed' });
+    let seen: unknown = 'NOT_CALLED';
+    const handlers = createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: (rc) => { seen = rc; return makeEmbeddingManagerStub() as never; },
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: { unregister: vi.fn() },
+    });
+    await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-cleanup-scope' } }));
+    expect(seen).toBe(TEST_REQUEST_CONTEXT);
   });
 });
 
@@ -274,6 +296,7 @@ describe('handleDeletePlan', () => {
   function makeHandlers() {
     return createSessionMutationHandlers({
       embeddingManager: embeddingManager as never,
+      resolveEmbeddingManager: () => embeddingManager as never,
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
@@ -369,6 +392,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
   function makeHandlers() {
     return createSessionMutationHandlers({
       embeddingManager: embeddingManager as never,
+      resolveEmbeddingManager: () => embeddingManager as never,
       vaultDir: tmpDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

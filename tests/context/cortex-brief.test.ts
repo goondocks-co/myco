@@ -20,7 +20,7 @@ import { buildPlanId } from '@myco/plans/identity.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { assertGroveProjectId, createProjectId, type GroveProjectId } from '@myco/grove/ids.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 /**

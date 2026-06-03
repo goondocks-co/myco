@@ -9,8 +9,7 @@ import { describe, it, expect, afterEach, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleTestProvider } from '@myco/daemon/api/providers';
 import { handleGetModels } from '@myco/daemon/api/models';
-import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;

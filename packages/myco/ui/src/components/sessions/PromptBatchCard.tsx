@@ -7,7 +7,7 @@ import type { BatchRow, AttachmentRow } from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
 import { SteeringChildCard } from './SteeringChildCard';
 import { cn } from '../../lib/cn';
-import { withBasePath } from '../../lib/base-path';
+import { AttachmentImage, useAttachmentObjectUrls } from '../ui/attachment-image';
 import {
   PROMPT_PREVIEW_CHARS,
   TIMELINE_NODE_SIZE_CLASS,
@@ -32,6 +32,8 @@ export interface PromptBatchCardProps {
 export function PromptBatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = false, promptIndex, isLast }: PromptBatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // Authed blob URLs for the lightbox (bearer-token-gated resource route).
+  const lightboxUrls = useAttachmentObjectUrls(batchAttachments.map((a) => a.file_path));
 
   return (
     <div className="relative flex gap-2">
@@ -126,11 +128,10 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
                       className="rounded-md overflow-hidden hover:ring-2 hover:ring-primary/40 transition-all"
                       onClick={() => setLightboxIndex(idx)}
                     >
-                      <img
-                        src={withBasePath(`/api/attachments/${att.file_path}`)}
+                      <AttachmentImage
+                        filePath={att.file_path}
                         alt={att.description ?? att.file_path ?? ''}
                         className="max-w-[200px] max-h-[140px] object-cover rounded-md"
-                        loading="lazy"
                       />
                     </button>
                   ))}
@@ -138,8 +139,8 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
               )}
               {lightboxIndex !== null && (
                 <Lightbox
-                  images={batchAttachments.map((a) => ({
-                    src: withBasePath(`/api/attachments/${a.file_path}`),
+                  images={batchAttachments.map((a, i) => ({
+                    src: lightboxUrls[i] ?? '',
                     alt: a.description ?? a.file_path ?? '',
                   }))}
                   index={lightboxIndex}

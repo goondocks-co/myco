@@ -193,8 +193,6 @@ export const RELATED_SPORES_LIMIT = 50;
 // --- Context injection ---
 /** Max spores to inject per prompt. */
 export const PROMPT_CONTEXT_MAX_SPORES = 3;
-/** Minimum similarity score for prompt context injection (0-1). */
-export const PROMPT_CONTEXT_MIN_SIMILARITY = 0.3;
 /** Max token budget for session-start context injection. */
 export const SESSION_CONTEXT_MAX_TOKENS = 500;
 /** Max token budget for per-prompt context injection. */
@@ -202,8 +200,14 @@ export const PROMPT_CONTEXT_MAX_TOKENS = 300;
 /** Minimum prompt length to trigger context search. */
 export const PROMPT_CONTEXT_MIN_LENGTH = 10;
 
-/** Over-fetch multiplier for vector search to compensate for post-filtering. */
-export const PROMPT_VECTOR_OVER_FETCH = 2;
+/**
+ * Candidate pool size for per-prompt spore search. Relevance is decided by
+ * hubness-aware Mutual Proximity over this pool (see daemon/embedding/relevance),
+ * not an absolute similarity threshold — a fixed cosine cutoff is arbitrary and
+ * embedding-model-dependent. A larger pool gives a better query-side distance
+ * distribution estimate; the selector then injects only genuinely-separated spores.
+ */
+export const PROMPT_VECTOR_POOL_SIZE = 50;
 
 // --- Spore status filtering ---
 /** Spore statuses excluded from search results and context injection. */

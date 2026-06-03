@@ -4,7 +4,7 @@ import { listActivitiesByBatch, countActivities, countActivitiesBySessions } fro
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
@@ -13,7 +13,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   releaseStateAnnotation,
   releaseStateAnnotationMap,
@@ -169,6 +169,9 @@ export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteRes
 
 export interface SessionMutationDeps {
   embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for a session's run context — used for
+   *  the title-summary agent run (anchor-leak Variant A). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   vaultDir: string;
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
@@ -187,7 +190,7 @@ export interface SessionMutationDeps {
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
+  const { embeddingManager, resolveEmbeddingManager, vaultDir, logger, liveConfig, reconciler, registry } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -209,9 +212,17 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     // Mirror the unregister sequence in `session-lifecycle.ts`.
     registry.unregister(sessionId);
 
-    // Fire-and-forget cleanup: embeddings, vault files, attachments,
-    // and the session's buffer journal.
-    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+    // Fire-and-forget cleanup: embeddings, vault files, attachments, and the
+    // session's buffer journal. Resolve the GROVE embedding manager + the
+    // request's project vault dir — the bootstrap manager/anchor vault would
+    // leave the grove's vectors orphaned and miss the project's on-disk files
+    // (markdown + buffer journal), defeating the same-id reload guard.
+    cleanupAfterSessionCascade(
+      sessionId,
+      result,
+      resolveEmbeddingManager(req.requestContext),
+      req.requestContext?.projectVaultDir ?? vaultDir,
+    ).catch(() => {});
 
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
       session_id: sessionId,
@@ -246,7 +257,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       }, scope);
     }
 
-    await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
+    await triggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger });
 
     logger.info(LOG_KINDS.API_SESSION_COMPLETE, 'Session manually completed', {
       session_id: sessionId,

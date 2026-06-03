@@ -4,7 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
-import { isCallerTenancy, type MycoRequestContext } from './request-context.js';
+import { isCallerTenancy, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   readPivot,
   resolveCallContext,
@@ -206,7 +206,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   ): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');
     const { createSchema } = await import('@myco/db/schema.js');
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
+    const { getMachineId } = await import('@myco/machine-id.js');
     if (options.resolveDatabase) {
       let db: Database;
       try {

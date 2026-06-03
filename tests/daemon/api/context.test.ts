@@ -44,11 +44,16 @@ function mockEmbeddingManager(overrides: Record<string, unknown> = {}): Embeddin
   } as unknown as EmbeddingManager;
 }
 
-function makeDeps(overrides: Partial<ContextDeps> & { config?: MycoConfig } = {}): ContextDeps {
-  const { config, liveConfig, ...rest } = overrides;
+function makeDeps(
+  overrides: Partial<ContextDeps> & { config?: MycoConfig; embeddingManager?: EmbeddingManager } = {},
+): ContextDeps {
+  const { config, liveConfig, embeddingManager, ...rest } = overrides;
+  // Convenience: tests that pass a single `embeddingManager` get it returned by
+  // the per-request resolver; tests can override `resolveEmbeddingManager` via rest.
+  const resolved = embeddingManager ?? mockEmbeddingManager();
   return {
     vaultDir: '/tmp/myco-test-vault',
-    embeddingManager: mockEmbeddingManager(),
+    resolveEmbeddingManager: () => resolved,
     logger: mockLogger(),
     liveConfig: liveConfig ?? { current: config ?? MycoConfigSchema.parse({ version: 3 }) },
     ...rest,
@@ -504,6 +509,18 @@ describe('createPromptContextHandler', () => {
   });
 
   describe('with hydrated spore data', () => {
+    // A realistic over-fetched candidate pool: low-relevance background spores
+    // that let the hubness-aware selector estimate the query's distance
+    // distribution. Without them, a tiny 1-2 element mock pool has no spread and
+    // the Mutual Proximity gate cannot certify any candidate as relevant.
+    const backgroundPool = () =>
+      Array.from({ length: 4 }, (_, i) => ({
+        id: `spore-lim-${i}`,
+        namespace: 'spores',
+        similarity: 0.4,
+        metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.55, neighbor_std: 0.1 },
+      }));
+
     beforeEach(() => {
       cleanTestDb();
       registerAgent({ id: 'agent-fmt', name: 'test', created_at: NOW });
@@ -518,8 +535,9 @@ describe('createPromptContextHandler', () => {
       const handler = createPromptContextHandler(makeDeps({
         embeddingManager: mockEmbeddingManager({
           searchVectors: vi.fn().mockReturnValue([
-            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
-            { id: 'spore-b', namespace: 'spores', similarity: 0.72, metadata: { status: 'active', observation_type: 'decision' } },
+            { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+            { id: 'spore-b', namespace: 'spores', similarity: 0.86, metadata: { status: 'active', observation_type: 'decision', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+            ...backgroundPool(),
           ]),
         }),
       }));
@@ -553,7 +571,8 @@ describe('createPromptContextHandler', () => {
       const handler = createPromptContextHandler(makeDeps({
         embeddingManager: mockEmbeddingManager({
           searchVectors: vi.fn().mockReturnValue([
-            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
+            { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+            ...backgroundPool(),
           ]),
         }),
       }));
@@ -564,7 +583,7 @@ describe('createPromptContextHandler', () => {
       expect((second.body as { text: string }).text).toBe('');
     });
 
-    it('different prompts in the same session both inject (discriminator scopes dedup)', async () => {
+    it('different prompts inject different spores; an already-injected spore is not repeated (session dedup)', async () => {
       const { insertBatch } = await import('@myco/db/queries/batches');
       upsertSession({
         id: 's-spore-distinct',
@@ -582,17 +601,78 @@ describe('createPromptContextHandler', () => {
         project_id: TEST_REQUEST_CONTEXT.projectId,
       });
 
+      // First prompt surfaces spore-a; second prompt surfaces both, but spore-a
+      // was already injected so only the fresh spore-b should come through.
       const handler = createPromptContextHandler(makeDeps({
         embeddingManager: mockEmbeddingManager({
-          searchVectors: vi.fn().mockReturnValue([
-            { id: 'spore-a', namespace: 'spores', similarity: 0.85, metadata: { status: 'active', observation_type: 'gotcha' } },
-          ]),
+          searchVectors: vi.fn()
+            .mockReturnValueOnce([
+              { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+              ...backgroundPool(),
+            ])
+            .mockReturnValueOnce([
+              { id: 'spore-b', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'decision', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+              { id: 'spore-a', namespace: 'spores', similarity: 0.86, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+              ...backgroundPool(),
+            ]),
         }),
       }));
       const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-distinct' }));
       const second = await handler(makeReq({ prompt: 'Different prompt about caching strategies', session_id: 's-spore-distinct' }));
+      const secondText = (second.body as { text: string }).text;
       expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
-      expect((second.body as { text: string }).text).toContain('Always validate JWT expiry');
+      expect(secondText).toContain('Use session ID as durable key'); // fresh spore-b injected
+      expect(secondText).not.toContain('Always validate JWT expiry'); // spore-a deduped
+    });
+
+    it('resolves the embedding manager from the request context (per-request tenancy), not a fixed bootstrap manager', async () => {
+      // Anchor-leak guard (Variant A): the prompt search must run against the
+      // request's grove store, resolved per request — never a daemon-bootstrap
+      // manager. Assert the resolver is called with the request context and its
+      // returned manager's results are what get injected.
+      const groveManager = mockEmbeddingManager({
+        searchVectors: vi.fn().mockReturnValue([
+          { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+          ...backgroundPool(),
+        ]),
+      });
+      let seenProjectId: string | undefined = 'NOT_CALLED';
+      const handler = createPromptContextHandler(makeDeps({
+        resolveEmbeddingManager: (rc) => {
+          seenProjectId = rc?.projectId;
+          return groveManager;
+        },
+      }));
+      const result = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-tenancy' }));
+      expect(seenProjectId).toBe(TEST_REQUEST_CONTEXT.projectId);
+      expect((result.body as { text: string }).text).toContain('Always validate JWT expiry');
+    });
+
+    it('session dedup returns empty when the only relevant spore was already injected', async () => {
+      const { insertBatch } = await import('@myco/db/queries/batches');
+      upsertSession({ id: 's-spore-only', agent: 'antigravity', started_at: NOW, created_at: NOW });
+      insertBatch({
+        session_id: 's-spore-only',
+        kind: 'initial',
+        prompt_number: 1,
+        user_prompt: 'p1',
+        started_at: NOW,
+        created_at: NOW,
+        project_id: TEST_REQUEST_CONTEXT.projectId,
+      });
+
+      const handler = createPromptContextHandler(makeDeps({
+        embeddingManager: mockEmbeddingManager({
+          searchVectors: vi.fn().mockReturnValue([
+            { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+            ...backgroundPool(),
+          ]),
+        }),
+      }));
+      const first = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-spore-only' }));
+      const second = await handler(makeReq({ prompt: 'A completely different caching question', session_id: 's-spore-only' }));
+      expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
+      expect((second.body as { text: string }).text).toBe('');
     });
 
     it('respects max spores limit', async () => {

@@ -59,6 +59,23 @@ async function serviceAwareDaemonControl(action: 'start' | 'restart' | 'stop'): 
 }
 ```
 
+### MYCO_SERVICE_VARIANT and Phantom Bootstrap for Global Daemon
+
+**Critical invariant**: When `MYCO_SERVICE_VARIANT` is set (non-empty), the daemon runs as the global multi-tenant daemon. In this mode:
+
+- `resolveBootstrapVaultDirOrPhantom()` returns `isPhantom: true` — the bootstrap dir is home-scoped to `MYCO_HOME`, not a specific project directory.
+- The phantom path is `~/.myco/_unbound-bootstrap` (not a real project root). The daemon never anchors to, nor rebinds to, a registered project directory; it serves every tenant via request context.
+- **cwd is ignored** for anchor resolution when `MYCO_SERVICE_VARIANT` is set. This must be set in the service plist before startup; setting it after the daemon starts has no effect on the already-resolved bootstrap.
+
+```typescript
+// In packages/myco/src/daemon/main.ts — real production pattern
+const isGlobalDaemon = (process.env.MYCO_SERVICE_VARIANT?.trim() ?? '') !== '';
+const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
+  resolveBootstrapVaultDirOrPhantom();
+// When isGlobalDaemon=true: bootstrapIsPhantom=true, bootstrapVaultDir=~/.myco/_unbound-bootstrap
+// When isGlobalDaemon=false: bootstrapVaultDir = actual project .myco dir
+```
+
 ### Global Daemon Auto-Spawn via DaemonClient
 
 Grove architecture uses a global daemon that manages all projects through centralized DaemonClient:
@@ -315,10 +332,20 @@ async function selfUpdateWithServiceCoordination(): Promise<void> {
 }
 ```
 
-(Rest of content continues as in original skill...)
-
 ## Cross-Cutting Gotchas
 
 ### Three-Tier Startup Ordering
 
 **Tier ordering gotcha**: The three-tier startup discovery pattern (process check → port claim → expensive ops) must be strictly maintained. Reordering causes FTS rebuild races and "database is locked" errors. Always check for existing daemon and claim port BEFORE migrations.
+
+### daemon.json Succession via Atomic Overwrite, Not Delete-Then-Write
+
+**Critical invariant**: `reconcileExistingDaemon()` must complete (returning `'ok'`) BEFORE `server.start()` writes daemon.json. The succession uses atomic rename (`atomicWriteFileSync`) — readers always see either the predecessor's or successor's contents, never an absent file. **Do not unlink daemon.json during take-over** — the successor's atomic write already overwrites. Unlinking creates a multi-second absence window that masks capture regressions. The invariant is: `pid alive ⟺ daemon.json exists`.
+
+### bootstrapVaultDir is Transitional — Never Use as Primary Data Source
+
+**Invariant**: `bootstrapVaultDir` (from `resolveBootstrapVaultDirOrPhantom()`) is a transitional fallback for legacy code paths that lack a bound request context. Holding a reference to it is not a leak, but **using it as a data source when a request context is available is a bug** — the real vault dir for any request is `requestContext.projectVaultDir`. New code paths that touch per-project data must thread request context rather than falling back to bootstrapVaultDir.
+
+### MYCO_SERVICE_VARIANT Must Be Set in the Service Plist, Not at Runtime
+
+**Startup ordering gotcha**: `MYCO_SERVICE_VARIANT` is read once at process startup by `resolveBootstrapVaultDirOrPhantom()` to determine whether the daemon runs as global (phantom-anchored) or project-local. Setting or unsetting it after the process starts has no effect. Configure it in the launchd plist `EnvironmentVariables` key before the service loads; do not set it dynamically in CLI wrappers that exec into the daemon.

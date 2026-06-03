@@ -8,7 +8,7 @@
 
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { listSessionsForMcp, type SessionSummary } from '@myco/sessions/list-for-mcp.js';
-import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
+import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { ToolFailure } from './error.js';
 
 interface SessionsInput {

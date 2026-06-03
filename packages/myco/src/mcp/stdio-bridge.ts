@@ -59,7 +59,7 @@ import {
   REQUEST_CONTEXT_AUTH_HEADER,
   requestContextFromEnvironment,
   requestContextHeaders,
-} from '../tools/request-context.js';
+} from '../grove/request-context.js';
 
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 

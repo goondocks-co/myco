@@ -23,7 +23,7 @@ import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js'
 import { assertGroveProjectId, createTeamId, slugifyGroveName } from '@myco/grove/ids.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import type { TeamDeploymentRecord, TeamRecord } from '@myco/team/registry.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   extractJsonArray,
   installDeploymentDeps,
@@ -974,7 +974,7 @@ export async function teamInit(vaultDir: string, options: { name?: string; domai
   // 10. Seed team config in the Worker
   console.log('Setting team configuration...');
   try {
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
+    const { getMachineId } = await import('@myco/machine-id.js');
     const creatorMachineId = getMachineId();
     await fetch(`${deployUrl}/config`, {
       method: 'PUT',

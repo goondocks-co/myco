@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import path from 'node:path';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
 import {
@@ -63,6 +63,7 @@ export const REQUEST_CONTEXT_AUTH_ENV = 'MYCO_DAEMON_AUTH';
  * process could pick which Grove to act against.
  */
 const CONTEXT_SWITCHING_HEADERS = [
+  REQUEST_CONTEXT_HEADERS.projectRoot,
   REQUEST_CONTEXT_HEADERS.projectId,
   REQUEST_CONTEXT_HEADERS.groveId,
 ] as const;
@@ -80,11 +81,24 @@ export class UnauthorizedRequestContextError extends Error {
   }
 }
 
+/**
+ * The requested tenancy (Grove or project) does not exist in the registry —
+ * e.g. a stale/guessed id in a resource URL. Distinct from an internal
+ * integrity mismatch: the transport boundary maps this to 404, not 500.
+ */
+export class UnknownRequestContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnknownRequestContextError';
+  }
+}
+
 export interface RequestContextAuthOptions {
   /**
    * Daemon-issued bearer token. When provided, any request that carries
-   * a context-switching header (`x-myco-grove-id` or
-   * `x-myco-project-id`) must present a matching `x-myco-auth` header.
+   * a context-switching header (`x-myco-project-root`,
+   * `x-myco-grove-id`, or `x-myco-project-id`) must present a matching
+   * `x-myco-auth` header.
    * When omitted (no token configured), the gate is disabled — this is
    * the legacy / pre-G4 behavior preserved for backwards compatibility
    * with non-daemon callers (e.g. unit tests).
@@ -92,7 +106,7 @@ export interface RequestContextAuthOptions {
   expectedAuthToken?: string | null;
 }
 
-export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
+export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'url';
 
 /**
  * Provenance of the request's (project, grove) tenancy — distinct from
@@ -111,7 +125,7 @@ export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
  * distinction through transport so a later resolver can reject
  * synthesized tenancy and fail loud.
  */
-export type TenancySource = 'caller' | 'synthesized';
+export type TenancySource = 'caller' | 'synthesized' | 'daemon';
 
 /**
  * The single predicate for "this request's tenancy was supplied by the
@@ -128,6 +142,12 @@ export function isCallerTenancy(
   context: { tenancySource?: TenancySource } | undefined,
 ): boolean {
   return context?.tenancySource === 'caller';
+}
+
+export function isProjectScopedTenancy(
+  context: { tenancySource?: TenancySource } | undefined,
+): boolean {
+  return context?.tenancySource === 'caller' || context?.tenancySource === 'daemon';
 }
 
 export interface MycoRequestContext {
@@ -152,8 +172,9 @@ export interface MycoRequestContext {
   source: RequestContextSource;
   /**
    * Whether the (project, grove) tenancy was supplied by the caller
-   * (`'caller'`) or synthesized from the daemon's fallback vault
-   * (`'synthesized'`). See {@link TenancySource}.
+   * (`'caller'`), synthesized from the daemon's fallback vault
+   * (`'synthesized'`), or derived by daemon-internal iteration over the
+   * Grove registry (`'daemon'`). See {@link TenancySource}.
    */
   tenancySource: TenancySource;
 }
@@ -270,6 +291,45 @@ export function requestContextFromHttpHeaders(
 }
 
 /**
+ * Build a request context from a (Grove, project) id pair carried in a URL
+ * path — e.g. `/api/g/:groveId/p/:projectId/attachments/:filename`.
+ *
+ * Browser subresource loads (`<img>`, `<video>`, file downloads) cannot
+ * attach the `x-myco-*` tenancy headers the scripted API uses, so resource
+ * routes encode tenancy in the URL instead. Resolution runs through the same
+ * registry-validated path as the header resolver
+ * (`resolveRegisteredRequestContext`), so an unknown Grove or an unregistered
+ * project still fails loud, and the resolved context is stamped
+ * `tenancySource: 'caller'` so project-scoped reads apply — without it the
+ * lookup falls back to `GLOBAL_SCOPE` (`project_id IS NULL`) and can never
+ * match a Grove-bound row.
+ *
+ * Bearer-token gate: the URL params ARE the context switch, so the daemon
+ * token is required *unconditionally* (the header path only gates when x-myco-*
+ * switching headers are present, which browser subresource loads never send).
+ * Callers that can't attach the `x-myco-auth` header — bare `<img src>` — must
+ * fetch the resource with the header and stream it into a blob instead. When no
+ * token is configured (legacy / unit-test callers) the gate is a no-op.
+ */
+export function requestContextFromTenancyIds(
+  ids: { groveId: string; projectId: string },
+  fallbackVaultDir: string,
+  options: { headers: IncomingHttpHeaders; expectedAuthToken: string | null } = {
+    headers: {},
+    expectedAuthToken: null,
+  },
+): MycoRequestContext {
+  enforceUrlTenancyAuth(options.headers, options.expectedAuthToken);
+  const { context: fallback } = buildVaultFallback(fallbackVaultDir);
+  const explicit: ExplicitContextInput = {
+    groveId: ids.groveId,
+    projectId: ids.projectId,
+    sessionId: null,
+  };
+  return resolveRegisteredRequestContext(explicit, fallback, 'url', tenancySourceFromExplicit(explicit));
+}
+
+/**
  * Decide tenancy provenance from an explicit (header/env) context input.
  * `'caller'` iff the caller supplied a project id, a Grove id, OR a project
  * root — all three are caller assertions of "act against THIS project". A
@@ -299,6 +359,25 @@ function tenancySourceFromExplicit(input: ExplicitContextInput): TenancySource {
  * Throws `UnauthorizedRequestContextError` on mismatch — call sites at
  * the HTTP transport boundary translate this into a 401 response.
  */
+/**
+ * Verify the `x-myco-auth` header for a URL-scoped resource route. Unlike
+ * {@link enforceContextSwitchAuth}, this requires the token unconditionally
+ * because the URL path itself asserts the (Grove, project) — there are no
+ * switching headers to gate on. No-op when no daemon token is configured.
+ */
+function enforceUrlTenancyAuth(
+  headers: IncomingHttpHeaders,
+  expectedToken: string | null,
+): void {
+  if (!expectedToken) return;
+  const presented = readHeader(headers, REQUEST_CONTEXT_AUTH_HEADER);
+  if (!presented || !timingSafeStringEqual(presented, expectedToken)) {
+    throw new UnauthorizedRequestContextError(
+      'URL-scoped resource routes require the daemon-issued bearer token',
+    );
+  }
+}
+
 function enforceContextSwitchAuth(
   headers: IncomingHttpHeaders,
   expectedToken: string | null,
@@ -533,7 +612,7 @@ export function projectScopeFromRequestContext(
   // rows to an unauthorized request. Only a caller-asserted, Grove-bound
   // context may bind to a specific project scope; everything else resolves to
   // GLOBAL_SCOPE (`project_id IS NULL`), which returns zero cross-project rows.
-  return isCallerTenancy(context) && context.groveId
+  return isProjectScopedTenancy(context) && context.groveId
     ? projectScope(context.projectId)
     : GLOBAL_SCOPE;
 }
@@ -637,7 +716,7 @@ function resolveRegisteredRequestContext(
 
   const mycoHome = resolveMycoHome();
   const grove = loadGroveRecord(groveId!, mycoHome);
-  if (!grove) throw new Error(`Unknown Grove in request context: ${groveId}`);
+  if (!grove) throw new UnknownRequestContextError(`Unknown Grove in request context: ${groveId}`);
 
   if (manifestFromInputRoot && manifestFromInputRoot.project.id !== projectId) {
     throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifestFromInputRoot.project.id}`);
@@ -650,7 +729,7 @@ function resolveRegisteredRequestContext(
     projectRoot: inputProjectRoot,
   }, mycoHome);
   if (!registered) {
-    throw new Error(`Project ${projectId} is not registered in Grove ${grove.id}`);
+    throw new UnknownRequestContextError(`Project ${projectId} is not registered in Grove ${grove.id}`);
   }
 
   const registeredRoot = path.resolve(registered.project.root);

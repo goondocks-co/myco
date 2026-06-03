@@ -14,7 +14,7 @@ import { lookupLatestImportMappingBySource } from '@myco/db/queries/migration-im
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import { type ProjectScope, projectScope as toProjectScope } from '@myco/grove/ids.js';
 import {
   releaseStateAnnotationMap,

@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache, propagateLegacyMachineId } from '@myco/daemon/machine-id.js';
+import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache, propagateLegacyMachineId } from '@myco/machine-id.js';
 
 /** Create an isolated MYCO_HOME so the test doesn't depend on or mutate `~/.myco`. */
 function makeTmpHome(): string {

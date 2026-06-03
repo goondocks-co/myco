@@ -8,7 +8,7 @@
  * (bootstrap-anchor) request context for EVERY request before handlers run
  * (server.ts:347), so "is requestContext present?" is always true and can
  * never be trusted as authorization. `tenancySource` (added upstream in
- * `tools/request-context.ts`) carries the provenance distinction through
+ * `grove/request-context.ts`) carries the provenance distinction through
  * transport: `'caller'` means the caller explicitly supplied project/grove
  * identity that survived the context-switch auth gate; `'synthesized'` means
  * the daemon's fallback. This resolver accepts only `'caller'` tenancy and
@@ -16,7 +16,7 @@
  * by construction and noisy when attempted.
  */
 
-import { isCallerTenancy } from '@myco/tools/request-context.js';
+import { isCallerTenancy, type TenancySource } from '@myco/grove/request-context.js';
 
 // Branded types so the daemon's own home can never be used where a tenant
 // vault is expected. A bare `string` cannot satisfy either brand; the only
@@ -69,7 +69,7 @@ export function resolvePrincipal(
       projectId?: string;
       groveId?: string;
       machineId?: string;
-      tenancySource?: 'caller' | 'synthesized';
+      tenancySource?: TenancySource;
     };
   },
   env: { machineId: string; userId?: string | null },

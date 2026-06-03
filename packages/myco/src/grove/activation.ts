@@ -13,7 +13,7 @@ import {
 } from '@myco/db/queries/migration-import-journal.js';
 import { createSchema } from '@myco/db/schema.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { importProjectCoreRows, type ImportProjectCoreResult } from '@myco/grove/importer.js';
 import { createGroveBindingId, createGroveId, createMigrationId, createProjectId } from '@myco/grove/ids.js';

@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { vi } from '../../helpers/vi-shim.js';
 import {
   handleEmbeddingDetails,
+  createEmbeddingDetailsHandler,
   handleEmbeddingRebuild,
   handleEmbeddingReconcile,
   handleEmbeddingCleanOrphans,
   handleEmbeddingReembedStale,
 } from '@myco/daemon/api/embedding';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
+import { CANOPY_ENTRIES_TABLE } from '@myco/db/schema-ddl';
+import type { RouteRequest } from '@myco/daemon/router';
+import { createCanopyDescribeBacklogReader } from '@myco/canopy/describe-backlog';
 
 // ---------------------------------------------------------------------------
 // Mock factory
@@ -22,7 +27,10 @@ function createMockManager(): {
   return {
     getDetails: vi.fn().mockReturnValue({
       total: 42,
-      by_namespace: { sessions: 20, spores: 22 },
+      by_namespace: {
+        sessions: { embedded: 20, stale: 0 },
+        spores: { embedded: 22, stale: 0 },
+      },
       models: { 'bge-m3': 42 },
       pending: { sessions: 0, spores: 3 },
       provider: { name: 'ollama', model: 'bge-m3', dimensions: 1024 },
@@ -45,16 +53,90 @@ function createMockManager(): {
 describe('embedding operations API', () => {
   it('handleEmbeddingDetails delegates to manager.getDetails()', () => {
     const manager = createMockManager();
-    const result = handleEmbeddingDetails(manager as unknown as EmbeddingManager);
+    const result = handleEmbeddingDetails(manager as unknown as EmbeddingManager, {
+      projectId: 'proj_test',
+      canopyDescribe: { pending: 1, undescribed: 0, stale: 1 },
+    });
 
     expect(manager.getDetails).toHaveBeenCalledOnce();
     expect(result.body).toEqual({
       total: 42,
-      by_namespace: { sessions: 20, spores: 22 },
+      by_namespace: {
+        sessions: { embedded: 20, stale: 0 },
+        spores: { embedded: 22, stale: 0 },
+      },
       models: { 'bge-m3': 42 },
       pending: { sessions: 0, spores: 3 },
       provider: { name: 'ollama', model: 'bge-m3', dimensions: 1024 },
+      canopy_describe: { pending: 1, undescribed: 0, stale: 1 },
+      namespace_breakdown: {
+        sessions: { embedded: 20, pending: 0, stale: 0, total: 20 },
+        spores: { embedded: 22, pending: 3, stale: 0, total: 25 },
+        canopy_entries: { embedded: 0, pending: 0, stale: 1, total: 0 },
+      },
     });
+  });
+
+  it('createEmbeddingDetailsHandler reads Canopy backlog under the request runtime scope', async () => {
+    const manager = createMockManager();
+    const db = new Database(':memory:');
+    db.prepare(CANOPY_ENTRIES_TABLE).run();
+    db.prepare(
+      `INSERT INTO canopy_entries (
+        project_id,
+        path,
+        content_hash,
+        size_bytes,
+        token_estimate,
+        line_count,
+        mechanical_updated_at,
+        llm_description,
+        llm_updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('proj_test', 'stale.ts', 'hash-1', 10, 5, 1, 200, 'old description', 100);
+    db.prepare(
+      `INSERT INTO canopy_entries (
+        project_id,
+        path,
+        content_hash,
+        size_bytes,
+        token_estimate,
+        line_count,
+        mechanical_updated_at,
+        llm_description,
+        llm_updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('proj_other', 'other.ts', 'hash-2', 10, 5, 1, 200, null, null);
+
+    const handler = createEmbeddingDetailsHandler({
+      resolveRequestRuntime: () => ({
+        manager: manager as unknown as EmbeddingManager,
+        db,
+      }),
+      canopyDescribeBacklog: createCanopyDescribeBacklogReader(),
+    });
+
+    const result = await handler({
+      query: {},
+      requestContext: {
+        projectId: 'proj_test',
+        groveId: 'grove_test',
+        machineId: 'machine_test',
+        projectVaultDir: '/tmp/project/.myco',
+        projectRoot: '/tmp/project',
+        databasePath: '/tmp/grove/myco.db',
+        sessionId: null,
+        tenancySource: 'caller',
+      },
+    } as unknown as RouteRequest);
+
+    expect(result.body).toEqual(expect.objectContaining({
+      canopy_describe: { pending: 1, undescribed: 0, stale: 1 },
+      namespace_breakdown: expect.objectContaining({
+        canopy_entries: { embedded: 0, pending: 0, stale: 1, total: 0 },
+      }),
+    }));
+    db.close();
   });
 
   it('handleEmbeddingRebuild delegates to manager.rebuildAll()', async () => {

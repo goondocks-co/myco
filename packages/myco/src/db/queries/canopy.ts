@@ -417,6 +417,37 @@ export function countPendingCanopyDescribe(
   return row?.n ?? 0;
 }
 
+export interface CanopyDescribeBacklog {
+  pending: number;
+  undescribed: number;
+  stale: number;
+}
+
+/**
+ * Count the upstream Canopy scribe backlog. This is deliberately separate
+ * from embedding queue depth: changed files keep their old vector until the
+ * describe task refreshes llm_description and re-queues embedding.
+ */
+export function getCanopyDescribeBacklog(
+  db: Database,
+  scope: ProjectScope,
+): CanopyDescribeBacklog {
+  const { sql: projectSql, params } = projectScopeClause(scope);
+  const row = db.prepare(
+    `SELECT
+       SUM(CASE WHEN llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN llm_updated_at IS NULL THEN 1 ELSE 0 END) AS undescribed,
+       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS stale
+       FROM canopy_entries
+      WHERE 1 = 1${projectSql}`,
+  ).get(...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
+  return {
+    pending: Number(row?.pending ?? 0),
+    undescribed: Number(row?.undescribed ?? 0),
+    stale: Number(row?.stale ?? 0),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Per-session Read activities (with canopy column) for the UI
 // ---------------------------------------------------------------------------

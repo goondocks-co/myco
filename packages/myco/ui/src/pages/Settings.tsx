@@ -10,17 +10,14 @@ import {
   RotateCcw,
   Save,
   ScrollText,
-  Search,
   Sparkles,
   Users,
   Wrench,
-  X,
 } from 'lucide-react';
 import { Surface } from '../components/ui/surface';
 import { PageHeader } from '../components/ui/page-header';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
 import { RestartGateProvider, RestartBanner } from '../components/config/restart-gate';
 import { ScopeBadge } from '../components/config/ScopePill';
 import { configFieldId } from '@myco/config/focus';
@@ -44,6 +41,7 @@ import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScop
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import { cn } from '../lib/cn';
+import { SettingsFilterBar, type ScopeFilter } from './settings/SettingsFilterBar';
 
 /* ---------- Icon registry ---------- */
 
@@ -87,8 +85,6 @@ const SCOPE_BADGE_FOR: Record<SettingScope, 'project' | 'grove' | 'machine'> = {
 };
 
 /* ---------- Filter state ---------- */
-
-type ScopeFilter = 'all' | SettingScope;
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -377,7 +373,7 @@ function SettingsInner() {
           </div>
         )}
         <RestartBanner />
-        <FilterBar
+        <SettingsFilterBar
           scope={scope}
           onScopeChange={setScope}
           searchInput={searchInput}
@@ -414,88 +410,6 @@ function SettingsInner() {
             )}
           </main>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Filter bar ---------- */
-
-interface FilterBarProps {
-  scope: ScopeFilter;
-  onScopeChange: (scope: ScopeFilter) => void;
-  searchInput: string;
-  onSearchChange: (value: string) => void;
-  scopeCounts: Record<SettingScope, number>;
-}
-
-const SCOPE_OPTIONS: { value: ScopeFilter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'project', label: 'Project' },
-  { value: 'grove', label: 'Grove' },
-  { value: 'machine', label: 'Machine' },
-];
-
-function FilterBar({ scope, onScopeChange, searchInput, onSearchChange, scopeCounts }: FilterBarProps) {
-  const totalCount = scopeCounts.project + scopeCounts.grove + scopeCounts.machine;
-  return (
-    <div className="mb-4 flex flex-wrap items-center gap-3">
-      <div
-        role="tablist"
-        aria-label="Filter settings by scope"
-        className="inline-flex overflow-hidden rounded-md border border-[var(--ghost-border)] bg-surface-container-low"
-      >
-        {SCOPE_OPTIONS.map((opt) => {
-          const count = opt.value === 'all' ? totalCount : scopeCounts[opt.value];
-          const active = opt.value === scope;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => onScopeChange(opt.value)}
-              className={cn(
-                'relative flex items-center gap-1.5 px-3 py-1.5 transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40',
-                active
-                  ? 'bg-sage/10 text-on-surface'
-                  : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface',
-              )}
-            >
-              {active && (
-                <span
-                  aria-hidden
-                  className="absolute inset-x-0 top-0 h-[2px] bg-sage"
-                />
-              )}
-              <span className={cn('myco-display-xs', !active && 'text-on-surface-variant')}>
-                {opt.label}
-              </span>
-              <Badge variant="outline" className="px-1 py-0 text-[10px] font-mono">{count}</Badge>
-            </button>
-          );
-        })}
-      </div>
-      <div className="relative flex-1 min-w-[16rem] max-w-md">
-        <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
-        <Input
-          type="search"
-          value={searchInput}
-          placeholder="Search settings..."
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="pl-8 pr-8"
-        />
-        {searchInput && (
-          <button
-            type="button"
-            aria-label="Clear search"
-            onClick={() => onSearchChange('')}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-sm p-1 text-on-surface-variant hover:bg-surface-container-high/40 hover:text-on-surface"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
       </div>
     </div>
   );

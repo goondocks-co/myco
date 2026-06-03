@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs';
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';

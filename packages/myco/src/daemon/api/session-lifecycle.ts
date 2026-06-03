@@ -25,7 +25,7 @@ import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
 import { assertGroveProjectId, isGroveEraId, ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';

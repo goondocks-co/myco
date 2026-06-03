@@ -19,7 +19,7 @@ import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prom
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
-import { getTeamMachineId } from '../daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 
 function promptPrefix(text: string | null | undefined): string {
   return (text ?? '').slice(0, PROMPT_PREFIX_MATCH_CHARS);

@@ -23,13 +23,8 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { insertRun } from '@myco/db/queries/runs.js';
-import { handleGetProviders, handleTestProvider } from '@myco/daemon/api/providers';
 import { handleGetModels } from '@myco/daemon/api/models';
-import {
-  handleGetProviderSecrets,
-  handlePutProviderSecret,
-  handleDeleteProviderSecret,
-} from '@myco/daemon/api/provider-secrets';
+import { registerProviderRoutes } from '@myco/daemon/routes/providers.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import { createSessionMutationHandlers } from '@myco/daemon/api/sessions';
 import {
@@ -38,8 +33,7 @@ import {
   handleGetSessionBatches,
   handleGetSessionPlans,
 } from '@myco/daemon/api/sessions';
-import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 const SENTINELS = {
   openai: 'sk-sentinel-openai-ABCDEF1234567890',
@@ -134,11 +128,7 @@ describe('cross-route API key leak guard', () => {
     server = new DaemonServer({ vaultDir: tmpVault, logger });
 
     // Wire up a representative surface of routes.
-    server.registerRoute('GET', '/api/providers', async () => handleGetProviders());
-    server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-    server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets());
-    server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
-    server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
+    registerProviderRoutes(server);
     server.registerRoute('GET', '/api/models', handleGetModels);
 
     const embeddingManager = {
@@ -146,7 +136,7 @@ describe('cross-route API key leak guard', () => {
     } as never;
     const agentRunHandlers = createAgentRunHandlers({
       vaultDir: tmpVault,
-      embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       logger: makeLogger() as never,
     });
     server.registerRoute('POST', '/api/agent/run', agentRunHandlers.handleRun);
@@ -155,6 +145,7 @@ describe('cross-route API key leak guard', () => {
 
     const sessionMut = createSessionMutationHandlers({
       embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       vaultDir: tmpVault,
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

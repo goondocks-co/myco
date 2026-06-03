@@ -13,7 +13,7 @@ import { gatherStats } from '@myco/services/stats.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove } from '@myco/grove/registry.js';
 import { computeConfigHash, createLiveStatsHandler, resolveStatsContext } from '@myco/daemon/api/stats.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';

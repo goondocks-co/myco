@@ -1,5 +1,6 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { PowerManager } from './power.js';
 import type {
   ProjectTaskLastRunMap,
@@ -38,6 +39,7 @@ import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
@@ -92,10 +94,11 @@ export interface TaskSchedulingDeps {
   definitionsDir: string | undefined;
   /** Boot vault dir for user-defined tasks under `<vaultDir>/agents/tasks/`. */
   vaultDir?: string;
-  embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for a run's request context. Per-run
+   *  resolution — never the daemon-bootstrap manager (anchor-leak Variant A:
+   *  the agent's vector/canopy search tools must hit the run's grove store). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   logger: DaemonLogger;
-  // Holder so toggle flips (agent.scheduled_tasks_enabled) take effect without restart.
-  liveConfig: { current: MycoConfig };
   getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
   cache: GroveRuntimeCache;
   mycoHome: string;
@@ -152,9 +155,8 @@ export async function registerScheduledTasks(
   const {
     definitionsDir,
     vaultDir,
-    embeddingManager,
+    resolveEmbeddingManager,
     logger,
-    liveConfig,
     getTeamClient,
     cache,
     mycoHome,
@@ -173,16 +175,13 @@ export async function registerScheduledTasks(
   const runningTasks = new Set<string>();
 
   // Jobs always register. The scheduled_tasks_enabled gate lives inside
-  // forEachProject so flipping the toggle in Settings takes effect
-  // immediately — registration-time gating would lock the scheduler to
-  // its startup value.
-  let lastEnabled = liveConfig.current.agent.scheduled_tasks_enabled !== false;
-  if (!lastEnabled) {
-    logger.info(LOG_KINDS.AGENT_RUN, 'Scheduled agent tasks disabled (agent.scheduled_tasks_enabled: false) — jobs registered but will no-op until enabled');
-  }
+  // forEachProject so flipping the Grove-scoped toggle in Settings takes
+  // effect immediately.
+  const lastEnabledByProject = new Map<string, boolean>();
 
   // Per-(grove, project) cold-state log latch — emit warm/cold transition once.
   const lastColdState = new Map<string, 'warm' | 'cold' | null>();
+  const lastConfigErrorByProject = new Map<string, string>();
 
   // Single canonical task list — tasks are project-agnostic, only their queries differ.
   const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
@@ -190,6 +189,35 @@ export async function registerScheduledTasks(
   const taskAgentMap = new Map<string, string>();
   for (const task of allTasks) {
     taskAgentMap.set(task.name, task.agent);
+  }
+
+  function resolveProjectConfig(scope: RegisteredProjectScope): MycoConfig | null {
+    const key = `${scope.grove.id}:${scope.projectId}`;
+    try {
+      const config = loadMergedConfig(scope.projectVaultDir, {
+        groveId: scope.grove.id,
+        mycoHome,
+      });
+      if (lastConfigErrorByProject.has(key)) {
+        logger.info(LOG_KINDS.AGENT_RUN, 'Tenant config recovered for scheduled tasks', {
+          grove_id: scope.grove.id,
+          project_id: scope.projectId,
+        });
+        lastConfigErrorByProject.delete(key);
+      }
+      return config;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (lastConfigErrorByProject.get(key) !== message) {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'Failed to load tenant config for scheduled tasks; skipping project tick', {
+          grove_id: scope.grove.id,
+          project_id: scope.projectId,
+          error: message,
+        });
+        lastConfigErrorByProject.set(key, message);
+      }
+      return null;
+    }
   }
 
   // Boot-time seed across all registered Groves, keyed by
@@ -206,8 +234,11 @@ export async function registerScheduledTasks(
     scope: RegisteredProjectScope,
     taskName: string,
   ): Promise<void> {
-    const config = liveConfig.current;
+    const config = resolveProjectConfig(scope);
+    if (!config) return;
     const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
+    // Grove-scoped manager for this project's run — never the bootstrap anchor.
+    const embeddingManager = resolveEmbeddingManager(requestContext);
     const readScope: ProjectScope = toProjectScope(projectId);
     const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
       ? null
@@ -318,21 +349,6 @@ export async function registerScheduledTasks(
 
   const scheduledContext: ScheduledJobContext = {
     forEachProject: async (visit) => {
-      const config = liveConfig.current;
-      const enabled = config.agent.scheduled_tasks_enabled !== false;
-      if (enabled !== lastEnabled) {
-        logger.info(
-          LOG_KINDS.AGENT_RUN,
-          enabled
-            ? 'Scheduled agent tasks re-enabled — resuming'
-            : 'Scheduled agent tasks disabled — skipping until re-enabled',
-        );
-        lastEnabled = enabled;
-      }
-      if (!enabled) return;
-
-      const thresholdDays = config.agent.cold_project_threshold_days ?? 14;
-
       await forEachRegisteredProject(
         cache,
         logger,
@@ -344,6 +360,26 @@ export async function registerScheduledTasks(
           daemonStateDir,
           machineId,
           shouldVisit: (scope) => {
+            const config = resolveProjectConfig(scope);
+            if (!config) return false;
+            const enabled = config.agent.scheduled_tasks_enabled !== false;
+            const enabledKey = coldStateKey(scope.grove.id, scope.projectId);
+            const previousEnabled = lastEnabledByProject.get(enabledKey);
+            if (previousEnabled !== enabled) {
+              logger.info(
+                LOG_KINDS.AGENT_RUN,
+                enabled
+                  ? 'Scheduled agent tasks enabled for project'
+                  : 'Scheduled agent tasks disabled for project',
+                {
+                  grove_id: scope.grove.id,
+                  project_id: scope.projectId,
+                },
+              );
+              lastEnabledByProject.set(enabledKey, enabled);
+            }
+            if (!enabled) return false;
+
             // Long-running ops (move, vacuum) take a per-project pause;
             // skip the project so its DB stays untouched for the op.
             const paused = isProjectPausedInGrove(scope.grove.id, scope.projectId, mycoHome);
@@ -362,6 +398,7 @@ export async function registerScheduledTasks(
             }
             // Long-term cost backstop, separate from the per-project sleep
             // timer — keeps cold projects registered without burning tokens.
+            const thresholdDays = config.agent.cold_project_threshold_days ?? 14;
             const decision = decideColdProjectGate({
               db: scope.db,
               projectId: scope.projectId,
@@ -387,6 +424,11 @@ export async function registerScheduledTasks(
           },
         },
       );
+    },
+    getTaskConfig: (scope, taskName) => {
+      const config = resolveProjectConfig(scope);
+      if (!config) return { schedule: { enabled: false } };
+      return config.agent.tasks?.[taskName];
     },
     isTaskRunning: (groveId, projectId, name) =>
       runningTasks.has(runningKey(groveId, projectId, name)),
@@ -452,7 +494,6 @@ export async function registerScheduledTasks(
 
   const { jobs, kicker } = buildScheduledJobs(
     allTasks,
-    liveConfig.current.agent.tasks ?? {},
     scheduledContext,
     initialLastRuns,
   );

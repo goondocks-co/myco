@@ -7,7 +7,6 @@
  * via a single batched SQL lookup instead of N per-row queries.
  */
 
-import type { VectorStore } from '../daemon/embedding/types.js';
 import type { Database } from '../db/client.js';
 import { CANOPY_ENTRIES_NAMESPACE } from '../db/queries/embeddings.js';
 import { hydrateCanopyDescriptionsBatch } from './hydrate.js';
@@ -29,6 +28,12 @@ export interface CanopySearchRow {
   score: number;
 }
 
+interface CanopyVectorSearchResult {
+  id: string;
+  similarity: number;
+  metadata: Record<string, unknown>;
+}
+
 /**
  * Embed the query, search the canopy_entries vector namespace, and hydrate
  * llm_description for all results in a single batched SQL lookup.
@@ -39,7 +44,12 @@ export interface CanopySearchRow {
 export async function searchCanopy(
   embeddingManager: {
     embedQuery(text: string): Promise<number[] | null>;
-    searchVectors: VectorStore['search'];
+    searchVectors(query: number[], options?: {
+      namespace?: string;
+      limit?: number;
+      threshold?: number;
+      filters?: Record<string, unknown>;
+    }): CanopyVectorSearchResult[];
   },
   options: CanopySearchOptions,
 ): Promise<CanopySearchRow[] | null> {

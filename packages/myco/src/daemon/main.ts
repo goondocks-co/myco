@@ -1,10 +1,9 @@
 /**
- * Myco daemon — SQLite capture engine.
+ * Myco daemon — global capture, API, MCP, and scheduled-work runtime.
  *
- * All data goes to a local SQLite database (better-sqlite3). The intelligence
- * pipeline (extraction, embedding, consolidation, digest) is removed — it
- * moves to Phase 2 Agent SDK. What remains is the capture layer: session
- * lifecycle, prompt batch tracking, activity recording, and transcript mining.
+ * The daemon is the per-machine authority for event ingestion, session
+ * recording, Grove-scoped API handling, in-process MCP HTTP, and recurring
+ * project work.
  */
 
 import { DaemonServer } from './server.js';
@@ -38,7 +37,7 @@ import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
 import { createUpdateHandlers } from './api/update.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
-import { getMachineId } from './machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
@@ -55,7 +54,7 @@ import {
   handleDeleteCandidate,
   createSkillRecordDeleteHandler,
 } from './api/skills.js';
-import { initTeamContext } from './team-context.js';
+import { initTeamContext } from '@myco/team/context.js';
 import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
@@ -116,10 +115,11 @@ import {
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
 import {
-  handleGetEmbeddingStatus,
-  handleEmbeddingDetails,
+  createEmbeddingStatusHandler,
+  createEmbeddingDetailsHandler,
   createEmbeddingActionHandlers,
 } from './api/embedding.js';
+import { createCanopyDescribeBacklogReader } from '../canopy/describe-backlog.js';
 import { createDatabaseMaintenanceHandlers } from './api/database.js';
 import { createMaintenanceHandlers } from './api/maintenance.js';
 import { createProjectsActivityHandler } from './api/projects-activity.js';
@@ -127,15 +127,6 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
-import {
-  handleListNotifications,
-  handleCreateNotification,
-  handleUpdateNotification,
-  handleDismissAll,
-  handleMarkAllRead,
-  handleGetRegistry,
-  handleUnreadCount,
-} from './api/notifications.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
@@ -148,12 +139,8 @@ import {
   handleGetTaskConfig,
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
-import { handleGetProviders, handleTestProvider } from './api/providers.js';
-import {
-  handleDeleteProviderSecret,
-  handleGetProviderSecrets,
-  handlePutProviderSecret,
-} from './api/provider-secrets.js';
+import { registerProviderRoutes } from './routes/providers.js';
+import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -206,7 +193,7 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
@@ -965,10 +952,17 @@ export async function main(): Promise<void> {
     if (!requestContext) return { manager: embeddingManager };
     const scopedVectorsPath = resolveVectorsPathForRequestContext(requestContext);
     if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
-      return { manager: embeddingManager };
+      return { manager: embeddingManager, db };
     }
     const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, buildGroveEmbeddingRuntime);
     return { manager: entry.embeddingManager!, db: entry.db };
+  };
+  const getRequestEmbeddingRuntime = (req: RouteRequest): { manager: EmbeddingManager; db: Database } => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    if (!runtime.db) {
+      throw new Error('Embedding runtime requires a caller-supplied Grove request context');
+    }
+    return { manager: runtime.manager, db: runtime.db };
   };
 
   // --- Register built-in agents and tasks ---
@@ -1176,6 +1170,7 @@ export async function main(): Promise<void> {
     sessionBuffers,
     transcriptMiner,
     embeddingManager,
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     liveConfig,
     vaultDir: bootstrapVaultDir,
@@ -1250,7 +1245,9 @@ export async function main(): Promise<void> {
   let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
     vaultDir: bootstrapVaultDir,
-    embeddingManager,
+    // Per-request grove resolution — never the bootstrap manager (anchor-leak
+    // Variant A). Mirrors how /api/search and /api/embedding resolve runtime.
+    resolveEmbeddingManager: (rc: MycoRequestContext | undefined) => getEmbeddingRuntime(rc).manager,
     liveConfig,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
@@ -1271,7 +1268,7 @@ export async function main(): Promise<void> {
   let configHash = computeConfigHash(bootstrapVaultDir);
   const cortexHandlers = createCortexHandlers({
     liveConfig,
-    embeddingManager,
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
     registerInflightRun: (p) => inflightRuns.register(p),
@@ -1346,9 +1343,10 @@ export async function main(): Promise<void> {
     scheduledTaskKicker = await registerScheduledTasks(powerManager, {
       definitionsDir,
       vaultDir: bootstrapVaultDir,
-      embeddingManager,
+      // Per-run grove resolution — the agent's vector/canopy search tools must
+      // hit the run's grove store, never the bootstrap anchor (anchor-leak A).
+      resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
       logger,
-      liveConfig,
       getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
       mycoHome,
@@ -1519,7 +1517,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler, registry });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -1659,13 +1657,19 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
-  const attachments = createAttachmentHandler({ vaultDir: bootstrapVaultDir });
+  const attachments = createAttachmentHandler();
+  // Tenancy-scoped path for browser <img>/lightbox loads: a plain <img> can't
+  // send the x-myco-* tenancy headers, so it carries (Grove, project) in the
+  // URL and the server resolves scope from the path. The legacy unscoped route
+  // is kept for header-authenticated callers and the pre-migration disk fallback.
+  server.registerRoute('GET', '/api/g/:groveId/p/:projectId/attachments/:filename', attachments.handleGetAttachment);
   server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---
   const agentRunHandlers = createAgentRunHandlers({
     vaultDir: bootstrapVaultDir,
-    embeddingManager,
+    // Per-request grove resolution — never the bootstrap manager (anchor-leak A).
+    resolveEmbeddingManager: (rc) => getEmbeddingRuntime(rc).manager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
   });
@@ -1728,14 +1732,8 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // --- Provider detection & testing ---
-  server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
-  server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  // Machine-scoped, daemon-global: these read/write `~/.myco/secrets.env`
-  // (machine-level keys), not any tenant's vault, so they take no vault dir.
-  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(req));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
+  // --- Provider detection, testing, and machine-scoped secrets ---
+  registerProviderRoutes(server, { logger });
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
@@ -1961,30 +1959,25 @@ export async function main(): Promise<void> {
     machineId,
   }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
-  server.registerRoute('GET', '/api/embedding/status', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
-      db: runtime.db,
-      scope: projectScopeFromRequestContext(req.requestContext),
-      groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
-    });
+  const embeddingStatusHandler = createEmbeddingStatusHandler({
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
   });
-  server.registerRoute('GET', '/api/embedding/details', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    // ?scope=project narrows counts to the request context's project_id.
-    // ?scope=grove returns Grove-wide totals (no project filter).
-    // Default = project for back-compat with existing callers.
-    const scope = typeof req.query.scope === 'string' ? req.query.scope : 'project';
-    const projectId = scope === 'grove'
-      ? null
-      : (req.requestContext?.projectId ?? null);
-    return handleEmbeddingDetails(runtime.manager, { projectId });
+  server.registerRoute('GET', '/api/embedding/status', tenantRoute({ machineId, logger }, async (req) => {
+    return embeddingStatusHandler(req);
+  }));
+  const embeddingDetailsHandler = createEmbeddingDetailsHandler({
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
+    canopyDescribeBacklog: createCanopyDescribeBacklogReader(),
   });
+  server.registerRoute('GET', '/api/embedding/details', tenantRoute(
+    { machineId, logger },
+    async (req) => embeddingDetailsHandler(req),
+  ));
   const embeddingActionHandlers = createEmbeddingActionHandlers({
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     logger,
-    resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
     daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);
@@ -2027,32 +2020,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  //
-  // The READ/MUTATE routes (list, unread-count, PATCH status, dismiss-all,
-  // mark-all-read) are the GLOBAL notification banner poll: the UI hits them on
-  // EVERY page, including global pages (/settings, /logs, /groves) that carry
-  // NO selected-project context. So they are deliberately NOT wrapped in
-  // tenantRoute — a synthesized (no caller project/grove) context must SUCCEED,
-  // not 400. This is a reviewed exemption, not a leak: the global daemon
-  // bootstraps a PHANTOM home (Phase 5, _unbound-bootstrap, no project anchor),
-  // so a no-context read scopes (via projectScopeFromRequestContext) to the
-  // global/phantom scope → empty project rows + the daemon-scope (project_id IS
-  // NULL) rows under ?include_daemon. No cross-tenant data is exposed. (A prior
-  // review explicitly offered "wrap OR document the exemption" for these read
-  // routes; we take the exemption. See tests/meta/no-anchor-as-tenancy.test.ts.)
-  //
-  // The CREATE route stays wrapped in tenantRoute: the UI never calls it (it is
-  // API-only), so it has no global-poll regression, and a create must land a
-  // project-scoped row tagged with the caller's project (with its enabled-gate
-  // config resolved from the request's grove + vault, never the anchor). The
-  // registry route is global metadata (domain descriptors, no tenant rows).
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(req));
-  server.registerRoute('POST', '/api/notifications', tenantRoute({ machineId, logger }, handleCreateNotification));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(req));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(req));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(req));
-  server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req));
+  registerNotificationRoutes(server, { machineId, logger });
 
   // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
   // port is bound. reconcileClient() above only arms the boot Grove's flag;

@@ -7,7 +7,7 @@ import {
   handleGetProviderSecrets,
   handlePutProviderSecret,
 } from '@myco/daemon/api/provider-secrets.js';
-import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
+import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 import { GITHUB_TOKEN_ENV } from '@myco/release-provenance/github.js';
 
 describe('provider secret handlers', () => {

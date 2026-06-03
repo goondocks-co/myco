@@ -6,7 +6,7 @@ import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import {
   releaseStateAnnotation,
   releaseStateAnnotationMap,

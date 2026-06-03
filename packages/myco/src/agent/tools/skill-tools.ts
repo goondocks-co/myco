@@ -27,7 +27,7 @@
  */
 
 import crypto from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
@@ -51,22 +51,18 @@ import {
 } from '@myco/constants/skill-candidate-status.js';
 import { parseSourceRefs } from '@myco/agent/skill-candidate-evidence.js';
 import {
-  CANDIDATE_QUALITY_FAILURE_CODES,
   IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE,
   IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS,
   SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY,
   SKILL_SURVEY_RECONCILIATION_POLICY_MARKER,
   SKILL_SURVEY_RECONCILIATION_STATE_KEY,
   unknownCandidateQualityFailureCodes,
-  validateSkillCandidateQualityContract,
 } from '@myco/agent/skill-candidate-quality.js';
 import {
   validateSkillContent,
   checkFrontmatterPreservation,
   descriptionSimilarity,
-  topicOverlapSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
-  TOPIC_OVERLAP_THRESHOLD,
 } from './skill-validator.js';
 import {
   writeStagedSkill,
@@ -76,24 +72,53 @@ import {
   cleanupStagedSkill,
   type StagedManifest,
 } from './skill-staging.js';
+import {
+  publishedSkillRelativePath,
+  removePublishedSkillFileOrDirectory,
+  resolvePublishedSkillPaths,
+  syncPublishedSkillSymlinks,
+  writePublishedSkillFile,
+} from '@myco/skills/publication.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 import { buildSkillSurveyPreparation, hasHumanReviewEvidence } from '../skill-survey-prepare.js';
+import {
+  RECONCILIATION_HANDLED_GROUPS,
+  evidenceBundleForPlanEntry,
+  evidenceBundleMaps,
+  evidenceBundleMetadataForPlan,
+  isRecord,
+  mergeHumanReviewEvidence,
+  normalizedBundleLookupKey,
+  optionalNumberField,
+  optionalStringField,
+  parseJsonArrayParam,
+  parseJsonObjectParam,
+  parseOptionalStringArray,
+  parsePlanStringArrayField,
+  planSourceRefsAsJson,
+  planStringArrayAsJson,
+  reconciliationCreateEntries,
+  reconciliationEntries,
+  reconciliationEntryCandidateId,
+  reconciliationEntryHasReason,
+  reconciliationReason,
+  reconciliationRetainEntries,
+  sameStringSet,
+  validateIdentifiedPlanEntry,
+  validateReconciliationPlanMetadata,
+  parsedExistingQualityFailures,
+  type JsonRecord,
+} from './skill-survey-reconciliation.js';
+import {
+  candidateOverlapError,
+  checkCandidateCoverage as checkCandidateCoverageForRows,
+  validateCandidateWrite,
+} from './skill-candidate-validation.js';
+import {
+  emitSkillNotification,
+  requireGenerationReadyCandidate,
+} from './skill-promotion-support.js';
 
-type JsonRecord = Record<string, unknown>;
-
-const RECONCILIATION_HANDLED_GROUPS = ['Update', 'Defer', 'Dismiss', 'Blocked'] as const;
-const RECONCILIATION_RETAIN_GROUPS = ['Keep'] as const;
-
-const RECONCILIATION_GROUP_ALIASES: Record<typeof RECONCILIATION_HANDLED_GROUPS[number], string[]> = {
-  Update: ['Update', 'Updates', 'update', 'updates'],
-  Defer: ['Defer', 'Defers', 'defer', 'defers'],
-  Dismiss: ['Dismiss', 'Dismisses', 'dismiss', 'dismisses'],
-  Blocked: ['Blocked', 'blocked'],
-};
-const RECONCILIATION_RETAIN_ALIASES: Record<typeof RECONCILIATION_RETAIN_GROUPS[number], string[]> = {
-  Keep: ['Keep', 'Keeps', 'keep', 'keeps', 'Retain', 'Retains', 'retain', 'retains'],
-};
-const RECONCILIATION_CREATE_ALIASES = ['Create', 'Creates', 'create', 'creates'];
 const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
 
@@ -106,388 +131,11 @@ export function createSkillTools(deps: VaultToolDeps) {
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   const scope = projectScopeFromVaultToolDeps(deps);
 
-  /**
-   * Find the best-matching existing candidate (if any) whose topic
-   * overlaps the proposed new topic. Uses a two-path check:
-   *
-   * 1. Jaccard (`descriptionSimilarity` >= DESCRIPTION_DUPLICATE_THRESHOLD)
-   *    — catches classic near-duplicates with similar token counts.
-   * 2. Overlap coefficient (`topicOverlapSimilarity` >= TOPIC_OVERLAP_THRESHOLD)
-   *    — catches asymmetric kebab-case vs. natural-language duplicates
-   *    where a short topic's significant tokens are mostly a subset of
-   *    the longer one. Jaccard misses these because the inflated union
-   *    pushes the score below 0.4 even when the overlap is strong.
-   *
-   * Returns the candidate with the highest matching score under either
-   * metric. Reported `score` is the max of the two so the rejection
-   * message surfaces the stronger signal.
-   */
-  function findOverlappingCandidates(
-    newTopic: string,
-    existing: ReturnType<typeof listCandidates>,
-    options: { excludeId?: string } = {},
-  ): Array<{ candidate: typeof existing[number]; score: number }> {
-    const matches: Array<{ candidate: typeof existing[number]; score: number }> = [];
-    for (const candidate of existing) {
-      if (candidate.id === options.excludeId) continue;
-      const jaccard = descriptionSimilarity(newTopic, candidate.topic);
-      const overlap = topicOverlapSimilarity(newTopic, candidate.topic);
-      const hitsJaccard = jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD;
-      const hitsOverlap = overlap >= TOPIC_OVERLAP_THRESHOLD;
-      if (!hitsJaccard && !hitsOverlap) continue;
-      const score = Math.max(jaccard, overlap);
-      matches.push({ candidate, score });
-    }
-    return matches.sort((a, b) => b.score - a.score);
-  }
-
-  /**
-   * Build a status-aware rejection message. Each status gets guidance
-   * that matches the lifecycle: dismissed → stay away; generated →
-   * already fulfilled; approved → already queued; identified → update
-   * the existing entry instead of duplicating.
-   */
-  function candidateOverlapError(match: { status: string; topic: string }): string {
-    const common = `already has an existing candidate with a similar topic: "${match.topic}"`;
-    switch (match.status) {
-      case CANDIDATE_STATUS.DISMISSED:
-        return `Note: similar to dismissed candidate "${match.topic}". If this is a broader domain that subsumes the dismissed topic, creation is allowed.`;
-      case CANDIDATE_STATUS.GENERATED:
-        return `Candidate rejected: the vault ${common} that was already fulfilled by a generated skill. Do not re-identify.`;
-      case CANDIDATE_STATUS.APPROVED:
-        return `Candidate rejected: the vault ${common} that is already queued in approved state. Wait for the generate task to process it.`;
-      case CANDIDATE_STATUS.IDENTIFIED:
-        return `Candidate rejected: the vault ${common} already in the review queue. Update the existing candidate with new evidence (action: update) instead of creating a duplicate.`;
-      default:
-        return `Candidate rejected: the vault ${common} in status '${match.status}'.`;
-    }
-  }
-
-  function parseJsonArrayParam(
-    fieldName: 'quality_failures' | 'coverage_matches',
-    value: string | undefined,
-  ): { array?: string[]; error?: string } {
-    if (value === undefined) return {};
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      return { error: `${fieldName} must be a JSON array` };
-    }
-
-    if (!Array.isArray(parsed)) {
-      return { error: `${fieldName} must be a JSON array` };
-    }
-    if (!parsed.every((entry) => typeof entry === 'string')) {
-      return { error: `${fieldName} must be a JSON array of strings` };
-    }
-    if (fieldName === 'quality_failures') {
-      const unknown = unknownCandidateQualityFailureCodes(parsed);
-      if (unknown.length > 0) {
-        return {
-          error:
-            `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
-            `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
-        };
-      }
-    }
-    return { array: parsed };
-  }
-
-  function validateCandidateSourceIds(
-    sourceIds: string | undefined,
-    options: { required: boolean; minRefs: number },
-  ): { normalized?: string; error?: string } {
-    if (sourceIds === undefined) {
-      return options.required
-        ? { error: 'source_ids is required for identified skill candidates' }
-        : {};
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(sourceIds);
-    } catch {
-      return { error: 'source_ids must be a JSON array of valid source references' };
-    }
-    if (!Array.isArray(parsed)) {
-      return { error: 'source_ids must be a JSON array of valid source references' };
-    }
-
-    const invalidEntries = parsed.filter((entry) => parseSourceRefs([entry]).length !== 1);
-    if (invalidEntries.length > 0) {
-      return { error: 'source_ids contains invalid source reference entries' };
-    }
-
-    const refs = parseSourceRefs(parsed);
-    if (refs.length < options.minRefs) {
-      return { error: `source_ids must contain at least ${options.minRefs} valid source references` };
-    }
-
-    return { normalized: JSON.stringify(refs) };
-  }
-
-  function parseSupersedesNames(value: string | undefined | null): string[] {
-    if (!value) return [];
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed)
-        ? parsed.filter((entry): entry is string => typeof entry === 'string')
-        : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function isRecord(value: unknown): value is JsonRecord {
-    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-  }
-
-  function parseJsonObjectParam(fieldName: string, value: string): { object?: JsonRecord; error?: string } {
-    try {
-      const parsed: unknown = JSON.parse(value);
-      if (!isRecord(parsed)) {
-        return { error: `${fieldName} must be a JSON object` };
-      }
-      return { object: parsed };
-    } catch {
-      return { error: `${fieldName} must be valid JSON` };
-    }
-  }
-
-  function parseOptionalStringArray(value: unknown): string[] | null {
-    if (value === undefined) return null;
-    if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return null;
-    return value;
-  }
-
-  function sameStringSet(a: string[], b: string[]): boolean {
-    if (a.length !== b.length) return false;
-    const bSet = new Set(b);
-    return a.every((entry) => bSet.has(entry));
-  }
-
-  function getReconciliationActionRoot(plan: JsonRecord): JsonRecord {
-    return isRecord(plan.actions) ? plan.actions : plan;
-  }
-
-  function reconciliationEntries(plan: JsonRecord, group: typeof RECONCILIATION_HANDLED_GROUPS[number]): JsonRecord[] {
-    const root = getReconciliationActionRoot(plan);
-    const entries: JsonRecord[] = [];
-    for (const alias of RECONCILIATION_GROUP_ALIASES[group]) {
-      const value = root[alias];
-      if (Array.isArray(value)) {
-        entries.push(...value.filter(isRecord));
-      }
-    }
-    return entries;
-  }
-
-  function reconciliationRetainEntries(plan: JsonRecord): JsonRecord[] {
-    const root = getReconciliationActionRoot(plan);
-    const entries: JsonRecord[] = [];
-    for (const alias of RECONCILIATION_RETAIN_ALIASES.Keep) {
-      const value = root[alias];
-      if (Array.isArray(value)) {
-        entries.push(...value.filter(isRecord));
-      }
-    }
-    return entries;
-  }
-
-  function reconciliationCreateEntries(plan: JsonRecord): JsonRecord[] {
-    const root = getReconciliationActionRoot(plan);
-    const entries: JsonRecord[] = [];
-    for (const alias of RECONCILIATION_CREATE_ALIASES) {
-      const value = root[alias];
-      if (Array.isArray(value)) {
-        entries.push(...value.filter(isRecord));
-      }
-    }
-    return entries;
-  }
-
-  function reconciliationEntryCandidateId(entry: JsonRecord): string | null {
-    for (const key of ['id', 'candidate_id', 'candidateId', 'target_candidate_id', 'targetCandidateId']) {
-      const value = entry[key];
-      if (typeof value === 'string' && value.trim().length > 0) return value;
-    }
-    return null;
-  }
-
-  function reconciliationEntryHasReason(entry: JsonRecord): boolean {
-    return ['reason', 'rationale', 'reconciliation_reason', 'reconciliationReason']
-      .some((key) => typeof entry[key] === 'string' && entry[key].trim().length > 0);
-  }
-
-  function parsePlanStringArrayField(
-    entry: JsonRecord,
-    fieldName: 'quality_failures' | 'coverage_matches',
-  ): { array?: string[]; error?: string } {
-    const value = entry[fieldName];
-    if (value === undefined) return {};
-
-    let parsed: unknown = value;
-    if (typeof value === 'string') {
-      try {
-        parsed = JSON.parse(value);
-      } catch {
-        return { error: `${fieldName} must be a JSON array` };
-      }
-    }
-
-    if (!Array.isArray(parsed)) {
-      return { error: `${fieldName} must be a JSON array` };
-    }
-    if (!parsed.every((item) => typeof item === 'string')) {
-      return { error: `${fieldName} must be a JSON array of strings` };
-    }
-    if (fieldName === 'quality_failures') {
-      const unknown = unknownCandidateQualityFailureCodes(parsed);
-      if (unknown.length > 0) {
-        return {
-          error:
-            `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
-            `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
-        };
-      }
-    }
-    return { array: parsed };
-  }
-
-  function rawSourceRefCount(value: unknown): number | null {
-    if (Array.isArray(value)) return value.length;
-    if (typeof value !== 'string') return null;
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed.length : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function planStringArrayAsJson(
-    entry: JsonRecord,
-    fieldName: 'quality_failures' | 'coverage_matches',
-  ): string | undefined {
-    const parsed = parsePlanStringArrayField(entry, fieldName);
-    return parsed.array ? JSON.stringify(parsed.array) : undefined;
-  }
-
-  function planSourceRefsAsJson(entry: JsonRecord): string | undefined {
-    const rawCount = rawSourceRefCount(entry.source_ids);
-    if (rawCount === null) return undefined;
-    const refs = parseSourceRefs(entry.source_ids);
-    return JSON.stringify(refs);
-  }
-
-  function optionalStringField(entry: JsonRecord, key: string): string | undefined {
-    const value = entry[key];
-    return typeof value === 'string' ? value : undefined;
-  }
-
-  function optionalNumberField(entry: JsonRecord, key: string): number | undefined {
-    const value = entry[key];
-    return typeof value === 'number' ? value : undefined;
-  }
-
-  function reconciliationReason(entry: JsonRecord, fallback: string): string {
-    const reason = optionalStringField(entry, 'reconciliation_reason')
-      ?? optionalStringField(entry, 'reconciliationReason')
-      ?? optionalStringField(entry, 'reason')
-      ?? optionalStringField(entry, 'rationale')
-      ?? fallback;
-    return reason.includes(SKILL_SURVEY_RECONCILIATION_POLICY_MARKER)
-      ? reason
-      : `${SKILL_SURVEY_RECONCILIATION_POLICY_MARKER}: ${reason}`;
-  }
-
-  function validateIdentifiedPlanEntry(entry: JsonRecord, label: string): string[] {
-    const errors: string[] = [];
-    if (typeof entry.evidence_bundle_id !== 'string' || entry.evidence_bundle_id.trim().length === 0) {
-      errors.push(`${label}: evidence_bundle_id is required`);
-    }
-    if (typeof entry.quality_score !== 'number' || entry.quality_score < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
-      errors.push(`${label}: quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE}`);
-    }
-
-    const qualityFailures = parsePlanStringArrayField(entry, 'quality_failures');
-    if (qualityFailures.error) {
-      errors.push(`${label}: ${qualityFailures.error}`);
-    } else if (!qualityFailures.array || qualityFailures.array.length > 0) {
-      errors.push(`${label}: quality_failures must be an empty array for identified candidates`);
-    }
-
-    const coverageMatches = parsePlanStringArrayField(entry, 'coverage_matches');
-    if (coverageMatches.error) {
-      errors.push(`${label}: ${coverageMatches.error}`);
-    }
-
-    const rawCount = rawSourceRefCount(entry.source_ids);
-    const sourceRefs = parseSourceRefs(entry.source_ids);
-    if (rawCount === null) {
-      errors.push(`${label}: source_ids must be a JSON array of source references`);
-    } else if (sourceRefs.length !== rawCount) {
-      errors.push(`${label}: source_ids contains invalid source reference entries`);
-    } else if (sourceRefs.length < IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS) {
-      errors.push(`${label}: source_ids must contain at least ${IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS} valid source references`);
-    }
-    return errors;
-  }
-
-  function evidenceBundleMetadataForPlan(
-    bundle: ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number],
-  ): Pick<JsonRecord, 'quality_score' | 'quality_failures' | 'coverage_matches' | 'source_ids'> {
-    const sourceRefs = parseSourceRefs(bundle.sourceRefs);
-    return {
-      quality_score: bundle.score,
-      quality_failures: bundle.failures,
-      coverage_matches: bundle.coverageMatches,
-      source_ids: sourceRefs,
-    };
-  }
-
-  function mergeHumanReviewEvidence(entry: JsonRecord, metadata: JsonRecord | null): boolean {
-    if (!metadata) return false;
-    let merged = false;
-    const rationale = optionalStringField(metadata, 'rationale');
-    if (rationale && !hasHumanReviewEvidence(optionalStringField(entry, 'rationale'))) {
-      entry.rationale = rationale;
-      merged = true;
-    }
-    const confidence = optionalNumberField(metadata, 'confidence');
-    if (confidence !== undefined && optionalNumberField(entry, 'confidence') === undefined) {
-      entry.confidence = confidence;
-      merged = true;
-    }
-    return merged;
-  }
-
-  function evidenceBundleMaps(
-    preparation: ReturnType<typeof buildSkillSurveyPreparation>,
-  ): {
-    bundlesById: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number]>;
-    bundlesByTopic: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles']>;
-  } {
-    const bundlesById = new Map(
-      preparation.evidence_bundles.map(bundle => [bundle.id, bundle]),
-    );
-    const bundlesByTopic = new Map<string, typeof preparation.evidence_bundles>();
-    for (const bundle of preparation.evidence_bundles) {
-      const key = normalizedBundleLookupKey(bundle.topic);
-      const existing = bundlesByTopic.get(key) ?? [];
-      existing.push(bundle);
-      bundlesByTopic.set(key, existing);
-    }
-    return { bundlesById, bundlesByTopic };
-  }
-
   function hydrateIdentifiedPlanEntriesFromBundles(
     plan: JsonRecord,
     currentPreparation: ReturnType<typeof buildSkillSurveyPreparation>,
   ): number {
-    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation);
+    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation.evidence_bundles);
     let hydrated = 0;
 
     const hydrate = (entry: JsonRecord): void => {
@@ -598,7 +246,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     const currentPreparation = buildSkillSurveyPreparation(agentId, deps.requestContext, {
       ignoreWatermark: args.ignore_watermark === true,
     });
-    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation);
+    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation.evidence_bundles);
     const errors: string[] = [];
     const canonicalDecisions: JsonRecord[] = [];
     let hydrated = 0;
@@ -737,78 +385,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       rejected_decision_count: rejected,
       stored_at: state.updated_at,
     };
-  }
-
-  function normalizedBundleLookupKey(value: unknown): string {
-    return typeof value === 'string'
-      ? value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
-      : '';
-  }
-
-  function evidenceBundleForPlanEntry(
-    entry: JsonRecord,
-    bundlesById: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number]>,
-    bundlesByTopic: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles']>,
-  ): ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number] | null {
-    if (typeof entry.evidence_bundle_id === 'string') {
-      const exact = bundlesById.get(entry.evidence_bundle_id);
-      if (exact) return exact;
-    }
-
-    const byTopic = bundlesByTopic.get(normalizedBundleLookupKey(entry.topic));
-    if (byTopic?.length === 1) return byTopic[0];
-
-    return null;
-  }
-
-  function validateNonIdentifiedPlanEntry(
-    entry: JsonRecord,
-    label: string,
-    options: { requireQualityFailures: boolean },
-  ): string[] {
-    const failures = parsePlanStringArrayField(entry, 'quality_failures');
-    if (failures.error) return [`${label}: ${failures.error}`];
-    if (options.requireQualityFailures && (!failures.array || failures.array.length === 0)) {
-      return [`${label}: quality_failures must include at least one canonical reason code`];
-    }
-    return [];
-  }
-
-  function validateReconciliationPlanMetadata(plan: JsonRecord): string[] {
-    const errors: string[] = [];
-    reconciliationCreateEntries(plan).forEach((entry, index) => {
-      errors.push(...validateIdentifiedPlanEntry(entry, `Create[${index}]`));
-    });
-
-    reconciliationEntries(plan, 'Update').forEach((entry, index) => {
-      const status = typeof entry.status === 'string' ? entry.status : CANDIDATE_STATUS.IDENTIFIED;
-      if (status === CANDIDATE_STATUS.IDENTIFIED) {
-        errors.push(...validateIdentifiedPlanEntry(entry, `Update[${index}]`));
-      } else {
-        errors.push(...validateNonIdentifiedPlanEntry(entry, `Update[${index}]`, {
-          requireQualityFailures: status === CANDIDATE_STATUS.DEFERRED || status === CANDIDATE_STATUS.DISMISSED,
-        }));
-      }
-    });
-
-    for (const group of ['Defer', 'Dismiss'] as const) {
-      reconciliationEntries(plan, group).forEach((entry, index) => {
-        errors.push(...validateNonIdentifiedPlanEntry(entry, `${group}[${index}]`, {
-          requireQualityFailures: true,
-        }));
-      });
-    }
-    reconciliationEntries(plan, 'Blocked').forEach((entry, index) => {
-      errors.push(...validateNonIdentifiedPlanEntry(entry, `Blocked[${index}]`, {
-        requireQualityFailures: false,
-      }));
-    });
-    return errors;
-  }
-
-  function parsedExistingQualityFailures(candidate: { quality_failures: string }): string[] {
-    const parsed = parseJsonArrayParam('quality_failures', candidate.quality_failures);
-    return parsed.array ?? [];
   }
 
   function validateDispositionReasonsAgainstCandidateState(plan: JsonRecord): string[] {
@@ -1045,118 +621,14 @@ export function createSkillTools(deps: VaultToolDeps) {
     topic: string;
     supersedes?: string | null;
     excludeCandidateId?: string;
-  }): { error?: Record<string, unknown>; dismissedMatch?: ReturnType<typeof findOverlappingCandidates>[number] } {
-    const supersedesSet = new Set(parseSupersedesNames(args.supersedes));
-
+  }) {
     const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
-    const topicLower = args.topic.toLowerCase();
-    const overlapping = activeSkills.filter((s) => {
-      if (supersedesSet.has(s.name)) return false;
-      const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
-      if (nameWords.length < 2) return false;
-      return nameWords.every((w: string) => topicLower.includes(w));
-    });
-    if (overlapping.length > 0) {
-      return {
-        error: {
-          error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
-          overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
-        },
-      };
-    }
-
     const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
-    const matches = findOverlappingCandidates(args.topic, allExisting, {
-      excludeId: args.excludeCandidateId,
+    return checkCandidateCoverageForRows({
+      ...args,
+      activeSkills,
+      existingCandidates: allExisting,
     });
-    const match = matches.find((entry) => entry.candidate.status !== CANDIDATE_STATUS.DISMISSED)
-      ?? matches[0];
-    if (!match) return {};
-    if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
-      return { dismissedMatch: match };
-    }
-    return {
-      error: {
-        error: candidateOverlapError(match.candidate),
-        existing_candidate: {
-          id: match.candidate.id,
-          status: match.candidate.status,
-          topic: match.candidate.topic,
-        },
-        similarity: match.score,
-      },
-    };
-  }
-
-  function validateCandidateWrite(args: {
-    status?: string;
-    source_ids?: string;
-    evidence_bundle_id?: string | null;
-    quality_score?: number | null;
-    quality_failures?: string;
-    coverage_matches?: string;
-  }, existing?: {
-    status: string;
-    source_ids: string;
-    evidence_bundle_id: string | null;
-    quality_score: number | null;
-    quality_failures: string;
-    coverage_matches: string;
-  }): { error?: string; normalizedSourceIds?: string } {
-    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
-    const sourceIds = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-      ? args.source_ids ?? existing?.source_ids
-      : args.source_ids;
-    const sourceIdsValidation = validateCandidateSourceIds(sourceIds, {
-      required: resultingStatus === CANDIDATE_STATUS.IDENTIFIED,
-      minRefs: resultingStatus === CANDIDATE_STATUS.IDENTIFIED ? IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS : 1,
-    });
-    if (sourceIdsValidation.error) return { error: sourceIdsValidation.error };
-
-    const qualityFailures = parseJsonArrayParam(
-      'quality_failures',
-      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-        ? args.quality_failures ?? existing?.quality_failures
-        : args.quality_failures,
-    );
-    if (qualityFailures.error) return { error: qualityFailures.error };
-
-    const coverageMatches = parseJsonArrayParam(
-      'coverage_matches',
-      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-        ? args.coverage_matches ?? existing?.coverage_matches
-        : args.coverage_matches,
-    );
-    if (coverageMatches.error) return { error: coverageMatches.error };
-
-    if (
-      (args.status === CANDIDATE_STATUS.DEFERRED || args.status === CANDIDATE_STATUS.DISMISSED) &&
-      (!qualityFailures.array || qualityFailures.array.length === 0)
-    ) {
-      return { error: 'quality_failures must include at least one canonical reason code for deferred or dismissed skill candidates' };
-    }
-
-    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) {
-      return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
-    }
-
-    const evidenceBundleId = args.evidence_bundle_id ?? existing?.evidence_bundle_id ?? null;
-    if (!evidenceBundleId || evidenceBundleId.trim().length === 0) {
-      return { error: 'evidence_bundle_id is required for identified skill candidates' };
-    }
-
-    const qualityScore = args.quality_score ?? existing?.quality_score ?? null;
-    if (qualityScore === null || qualityScore < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
-      return {
-        error: `quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE} for identified skill candidates`,
-      };
-    }
-
-    if (!qualityFailures.array || qualityFailures.array.length > 0) {
-      return { error: 'quality_failures must be an empty array for identified skill candidates' };
-    }
-
-    return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
   }
 
   function validateAndApplySkillSurveyReconciliation(args: {
@@ -1512,68 +984,6 @@ export function createSkillTools(deps: VaultToolDeps) {
   );
 
   /**
-   * Structural gate enforcing the skill lifecycle invariant: ONLY
-   * candidates in 'approved' state can be materialized into skills.
-   * Used by vault_stage_skill, vault_finalize_skill, and
-   * vault_write_skill's create path.
-   */
-  function requireApprovedCandidate(
-    candidateId: string,
-  ): Record<string, unknown> | null {
-    const candidate = getCandidate(candidateId, scope);
-    if (!candidate) {
-      return {
-        error:
-          `Candidate ${candidateId} not found. Skill writes require a ` +
-          'candidate in the approved state.',
-      };
-    }
-    if (candidate.status !== CANDIDATE_STATUS.APPROVED) {
-      return {
-        error:
-          `Candidate ${candidateId} is in '${candidate.status}' state. ` +
-          "Skills can only be generated from candidates in 'approved' " +
-          'state — the human review step. If a candidate in an earlier ' +
-          'state needs to become a skill, route it through the normal ' +
-          'approval flow first.',
-        candidate_status: candidate.status,
-      };
-    }
-    return null;
-  }
-
-  function requireGenerationReadyCandidate(
-    candidateId: string,
-  ): Record<string, unknown> | null {
-    const approvalError = requireApprovedCandidate(candidateId);
-    if (approvalError) return approvalError;
-
-    const candidate = getCandidate(candidateId, scope);
-    if (!candidate) {
-      return {
-        error:
-          `Candidate ${candidateId} not found. Skill writes require a ` +
-          'candidate in the approved state.',
-      };
-    }
-
-    const issues = validateSkillCandidateQualityContract(candidate, {
-      requireResolvedSources: true,
-      scope,
-    });
-    if (issues.length > 0) {
-      return {
-        error:
-          `Candidate ${candidateId} is approved but not generation-ready. ` +
-          'Approve only candidates with complete, resolvable evidence metadata.',
-        issues,
-      };
-    }
-
-    return null;
-  }
-
-  /**
    * Self-contained dedup gate for skill create paths. Returns `null`
    * when the write is allowed, or an error payload object ready for
    * textResult() when it should be rejected.
@@ -1707,21 +1117,19 @@ export function createSkillTools(deps: VaultToolDeps) {
     | { error: string }
   > {
     const root = projectRoot ?? process.cwd();
-    const skillDir = resolve(root, '.agents', 'skills', params.name);
-    const skillPath = resolve(skillDir, 'SKILL.md');
+    const publishedPaths = resolvePublishedSkillPaths(root, params.name);
+    if (!publishedPaths.ok) {
+      return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
+    }
     // If the directory already exists for a create, it's an orphan
     // from a prior failed run — we overwrite the file and only remove
     // the file itself on rollback (not the whole directory) to avoid
     // clobbering anything else that may share the dir.
-    const skillDirPreexisted = existsSync(skillDir);
+    const skillDirPreexisted = existsSync(publishedPaths.paths.skillDir);
 
     async function cleanupCreatedSkillArtifactsOnRollback(): Promise<void> {
       try {
-        if (!skillDirPreexisted) {
-          rmSync(skillDir, { recursive: true, force: true });
-        } else {
-          rmSync(skillPath, { force: true });
-        }
+        removePublishedSkillFileOrDirectory(root, params.name, { fileOnly: skillDirPreexisted });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] file rollback after DB failure also failed:`,
@@ -1730,8 +1138,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       }
 
       try {
-        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-        syncSkillSymlinks(root, params.name, { remove: true });
+        syncPublishedSkillSymlinks(root, params.name, { remove: true });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] symlink rollback after DB failure also failed:`,
@@ -1741,8 +1148,10 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      mkdirSync(skillDir, { recursive: true });
-      writeFileSync(skillPath, params.content, 'utf-8');
+      const writeResult = writePublishedSkillFile(root, params.name, params.content);
+      if (!writeResult.ok) {
+        return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
+      }
     } catch (err) {
       return {
         error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}`,
@@ -1750,8 +1159,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-      syncSkillSymlinks(root, params.name);
+      syncPublishedSkillSymlinks(root, params.name);
     } catch (err) {
       console.warn(
         `[${params.label}] syncSkillSymlinks failed:`,
@@ -1760,7 +1168,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     const now = epochSeconds();
-    const relativePath = `.agents/skills/${params.name}/SKILL.md`;
+    const relativePath = publishedSkillRelativePath(params.name);
     const recordId = crypto.randomUUID();
     const generation = 1;
 
@@ -1809,21 +1217,6 @@ export function createSkillTools(deps: VaultToolDeps) {
       path: relativePath,
       generation,
     };
-  }
-
-  /** Emit the standard notification after a successful create or evolve. */
-  function emitSkillNotification(
-    kind: 'created' | 'evolved',
-    opts: { name: string; display_name: string; description: string; recordId: string; generation: number },
-  ) {
-    notify(vaultDir, {
-      domain: 'skills',
-      type: kind === 'created' ? 'skill.created' : 'skill.evolved',
-      title: `Skill ${kind}: ${opts.display_name}`,
-      message: opts.description.slice(0, 120),
-      link: `/skills?skill=${encodeURIComponent(opts.name)}`,
-      metadata: { skillId: opts.recordId, name: opts.name, generation: opts.generation },
-    });
   }
 
   const vaultSkillCandidates = tool(
@@ -2112,13 +1505,11 @@ export function createSkillTools(deps: VaultToolDeps) {
           // Disk + symlink cleanup (best-effort)
           const root = projectRoot ?? process.cwd();
           if (!/[/\\]|\.\./.test(result.name)) {
-            const skillDir = resolve(root, '.agents', 'skills', result.name);
-            try { rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+            try { removePublishedSkillFileOrDirectory(root, result.name); } catch (err) {
               console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
             }
             try {
-              const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-              syncSkillSymlinks(root, result.name, { remove: true });
+              syncPublishedSkillSymlinks(root, result.name, { remove: true });
             } catch (err) {
               console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
             }
@@ -2175,7 +1566,8 @@ export function createSkillTools(deps: VaultToolDeps) {
       const existing = getSkillRecordByName(args.name, scope);
 
       const root = projectRoot ?? process.cwd();
-      const skillPath = resolve(root, '.agents', 'skills', args.name, 'SKILL.md');
+      // Path shape is owned by the publication module — don't hand-build it.
+      const skillPath = resolve(root, publishedSkillRelativePath(args.name));
 
       // Frontmatter preservation guard — when updating an existing skill,
       // reject writes that change protected fields (user-invocable, allowed-tools).
@@ -2227,7 +1619,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         // (above) skips this because the caller is updating an existing
         // skill, not materializing a fresh candidate.
         if (args.candidate_id) {
-          const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+          const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
           if (candidateError) {
             return textResult(candidateError);
           }
@@ -2260,7 +1652,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           label: 'vault_write_skill',
         });
         if ('error' in result) return textResult(result);
-        emitSkillNotification('created', {
+        emitSkillNotification(vaultDir, 'created', {
           name: result.name,
           display_name: args.display_name,
           description: args.description,
@@ -2282,20 +1674,22 @@ export function createSkillTools(deps: VaultToolDeps) {
       const priorSkillContent = readFileSync(skillPath, 'utf-8');
 
       try {
-        writeFileSync(skillPath, args.content, 'utf-8');
+        const writeResult = writePublishedSkillFile(root, args.name, args.content);
+        if (!writeResult.ok) {
+          return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
+        }
       } catch (err) {
         return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
       }
 
       try {
-        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-        syncSkillSymlinks(root, args.name);
+        syncPublishedSkillSymlinks(root, args.name);
       } catch (err) {
         console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
       }
 
       const now = epochSeconds();
-      const relativePath = `.agents/skills/${args.name}/SKILL.md`;
+      const relativePath = publishedSkillRelativePath(args.name);
       const generation = existing.generation + 1;
       const recordId = existing.id;
 
@@ -2324,8 +1718,13 @@ export function createSkillTools(deps: VaultToolDeps) {
           });
         })();
       } catch (err) {
+        // Route the rollback through the single skill-artifact writer too, so
+        // path/guard semantics can never diverge between write and rollback.
         try {
-          writeFileSync(skillPath, priorSkillContent, 'utf-8');
+          const rollback = writePublishedSkillFile(root, args.name, priorSkillContent);
+          if (!rollback.ok) {
+            console.warn('[vault_write_skill] file rollback refused:', rollback.reason);
+          }
         } catch (rollbackErr) {
           console.warn(
             '[vault_write_skill] file rollback after DB failure also failed:',
@@ -2337,7 +1736,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      emitSkillNotification('evolved', {
+      emitSkillNotification(vaultDir, 'evolved', {
         name: args.name,
         display_name: args.display_name,
         description: args.description,
@@ -2399,7 +1798,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Structural gate: candidate must exist, be approved, and carry
       // complete resolvable evidence metadata.
-      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
       if (candidateError) return textResult(candidateError);
 
       // Dedup gate — create-only, so rejectSameName surfaces the
@@ -2482,7 +1881,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       // finalize time. If a human (or another tool) dismissed the
       // candidate between stage and finalize, the finalize should
       // refuse rather than promote the now-rescinded skill.
-      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id, scope);
       if (candidateError) return textResult(candidateError);
 
       // Defense-in-depth: re-run validation against the staged content.
@@ -2535,7 +1934,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
       // Success — clean up staging and notify.
       cleanupStagedSkill(vaultDir, args.candidate_id);
-      emitSkillNotification('created', {
+      emitSkillNotification(vaultDir, 'created', {
         name: manifest.name,
         display_name: manifest.display_name,
         description: manifest.description,

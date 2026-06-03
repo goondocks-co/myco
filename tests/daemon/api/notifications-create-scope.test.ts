@@ -39,7 +39,7 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
 import type { RouteRequest } from '@myco/daemon/router.js';

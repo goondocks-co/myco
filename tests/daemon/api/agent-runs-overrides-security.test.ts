@@ -51,7 +51,7 @@ function makeHandlers() {
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   return createAgentRunHandlers({
     vaultDir: VAULT_DIR,
-    embeddingManager: {} as never,
+    resolveEmbeddingManager: () => ({} as never),
     logger: logger as never,
   });
 }
@@ -110,6 +110,24 @@ describe('POST /api/agent/run — executionOverrides security', () => {
 
     const [, opts] = runAgentSpy.mock.calls[0] as [string, { executionOverrides?: { provider?: { baseUrl?: string } } }];
     expect(opts.executionOverrides?.provider?.baseUrl).toBeUndefined();
+  });
+
+  it('resolves the embedding manager from the request context (per-request tenancy, not bootstrap)', async () => {
+    // Anchor-leak guard (Variant A): the agent run's vector/canopy search tools
+    // must get the run's grove manager, resolved from its request context.
+    const groveManager = { tag: 'grove-mgr' } as never;
+    let seenContext: unknown;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { handleRun } = createAgentRunHandlers({
+      vaultDir: VAULT_DIR,
+      resolveEmbeddingManager: (rc) => { seenContext = rc; return groveManager; },
+      logger: logger as never,
+    });
+    await handleRun(makeRequest({ body: { task: 't', instruction: 'go', agentId: 'myco-agent' } }));
+    expect(seenContext).toBe(TEST_REQUEST_CONTEXT);
+    expect(runAgentSpy).toHaveBeenCalledTimes(1);
+    const [, opts] = runAgentSpy.mock.calls[0] as [string, { embeddingManager?: unknown }];
+    expect(opts.embeddingManager).toBe(groveManager);
   });
 
   it('PRESERVES provider.baseUrl for type=openai-compatible (legitimate local path)', async () => {

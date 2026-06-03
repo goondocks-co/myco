@@ -11,15 +11,17 @@ import {
   REQUEST_CONTEXT_ENV,
   REQUEST_CONTEXT_HEADERS,
   UnauthorizedRequestContextError,
+  UnknownRequestContextError,
   filesystemRootFromRequestContext,
   isCallerTenancy,
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
+  requestContextFromTenancyIds,
   requestContextHeaders,
   rowProjectIdFromRequestContext,
   projectScopeFromRequestContext,
   resolveLegacyRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import { GLOBAL_SCOPE } from '@myco/grove/ids.js';
 
 function withRegisteredProject<T>(fn: (args: {
@@ -114,6 +116,82 @@ describe('tool request context', () => {
       expect(resolved.projectVaultDir).toBe(vaultDir);
       expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
       expect(resolved.source).toBe('headers');
+    });
+  });
+
+  it('resolves URL-addressable tenancy (img/resource routes) to the Grove DB with caller scope', () => {
+    withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+      // Browser <img> loads can't send x-myco-* headers, so resource routes
+      // carry (grove, project) in the URL path. This resolver must reach the
+      // same Grove DB + caller tenancy the header path produces — otherwise
+      // the lookup falls back to GLOBAL_SCOPE and 404s on Grove-bound rows.
+      const resolved = requestContextFromTenancyIds({ groveId, projectId }, vaultDir);
+
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.projectRoot).toBe(projectRoot);
+      expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
+      expect(resolved.source).toBe('url');
+      // The crux of the attachment 404 fix: scope must be caller (project),
+      // not the synthesized GLOBAL_SCOPE that can never match a Grove row.
+      expect(isCallerTenancy(resolved)).toBe(true);
+      expect(projectScopeFromRequestContext(resolved)).not.toEqual(GLOBAL_SCOPE);
+      expect(rowProjectIdFromRequestContext(resolved)).toBe(projectId);
+    });
+  });
+
+  it('requires the daemon bearer token when one is configured (URL routes assert tenancy)', () => {
+    withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+      // The URL params ARE a context switch, so the token is required
+      // unconditionally — unlike the header path which gates on x-myco-* headers.
+      expect(() =>
+        requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+          headers: {},
+          expectedAuthToken: 'secret-token',
+        }),
+      ).toThrow(UnauthorizedRequestContextError);
+
+      // Wrong token is also rejected.
+      expect(() =>
+        requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+          headers: { [REQUEST_CONTEXT_AUTH_HEADER]: 'wrong' },
+          expectedAuthToken: 'secret-token',
+        }),
+      ).toThrow(UnauthorizedRequestContextError);
+    });
+  });
+
+  it('accepts a matching daemon bearer token on a URL-addressable resource path', () => {
+    withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+      const resolved = requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+        headers: { [REQUEST_CONTEXT_AUTH_HEADER]: 'secret-token' },
+        expectedAuthToken: 'secret-token',
+      });
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.source).toBe('url');
+    });
+  });
+
+  it('throws UnknownRequestContextError (→ 404) for an unknown Grove in a resource URL', () => {
+    withRegisteredProject(({ vaultDir, projectId }) => {
+      // A guessed/stale grove id in a resource URL must surface as a typed
+      // not-found (mapped to 404 at the transport boundary), not a generic
+      // Error (which the dispatcher would map to a 500 server error).
+      expect(() =>
+        requestContextFromTenancyIds({ groveId: 'grove_does_not_exist', projectId }, vaultDir),
+      ).toThrow(UnknownRequestContextError);
+    });
+  });
+
+  it('throws UnknownRequestContextError for a project not registered in the Grove', () => {
+    withRegisteredProject(({ vaultDir, groveId }) => {
+      expect(() =>
+        requestContextFromTenancyIds(
+          { groveId, projectId: 'proj_ffffffffffffffffffffffffffffffff' },
+          vaultDir,
+        ),
+      ).toThrow(UnknownRequestContextError);
     });
   });
 
@@ -380,6 +458,7 @@ describe('tool request context', () => {
   //   - Caller + Grove-bound   → { kind: 'project', id }
   //   - Caller + non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
   //   - Synthesized (any)      → GLOBAL_SCOPE even with a groveId
+  //   - Daemon + Grove-bound   → { kind: 'project', id }
   //   - Missing context        → throws (D5 strictness gate)
   describe('projectScopeFromRequestContext', () => {
     it('throws when no context is supplied (D5 strictness gate)', () => {
@@ -428,6 +507,17 @@ describe('tool request context', () => {
       const scope = projectScopeFromRequestContext(synthesized);
       expect(scope).toBe(GLOBAL_SCOPE);
       expect(scope.kind).toBe('global');
+    });
+
+    it('scopes daemon-internal Grove registry contexts to their project id', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-internal',
+        tenancySource: 'daemon',
+      });
+      const scope = projectScopeFromRequestContext(daemon);
+      expect(scope).toEqual({ kind: 'project', id: projectId });
     });
   });
 
@@ -558,12 +648,16 @@ describe('tool request context', () => {
       expect(isCallerTenancy({ tenancySource: 'synthesized' })).toBe(false);
     });
 
+    it('returns false for a daemon-internal context', () => {
+      expect(isCallerTenancy({ tenancySource: 'daemon' })).toBe(false);
+    });
+
     it('returns false for undefined / an unmarked context', () => {
       expect(isCallerTenancy(undefined)).toBe(false);
       expect(isCallerTenancy({})).toBe(false);
     });
 
-    it('agrees with the seam: caller→project scope, synthesized→GLOBAL_SCOPE', () => {
+    it('agrees with the seam: caller and daemon scope to project, synthesized stays global', () => {
       const projectId = assertGroveProjectId(createProjectId());
       const caller = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
         projectId,
@@ -575,11 +669,18 @@ describe('tool request context', () => {
         groveId: 'grove-a',
         tenancySource: 'synthesized',
       });
+      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-a',
+        tenancySource: 'daemon',
+      });
 
       expect(isCallerTenancy(caller)).toBe(true);
       expect(projectScopeFromRequestContext(caller)).toEqual({ kind: 'project', id: projectId });
       expect(isCallerTenancy(synthesized)).toBe(false);
       expect(projectScopeFromRequestContext(synthesized)).toBe(GLOBAL_SCOPE);
+      expect(isCallerTenancy(daemon)).toBe(false);
+      expect(projectScopeFromRequestContext(daemon)).toEqual({ kind: 'project', id: projectId });
     });
   });
 
@@ -605,6 +706,23 @@ describe('tool request context', () => {
       });
     });
 
+    it('rejects a projectRoot-only context switch without the auth bearer', () => {
+      withRegisteredProject(({ projectRoot, vaultDir }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
+    it('rejects a projectRoot-only context switch with the wrong auth bearer', () => {
+      withRegisteredProject(({ projectRoot, vaultDir }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+          [REQUEST_CONTEXT_AUTH_HEADER]: 'wrong-token',
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
     it('accepts context-switching headers when the auth bearer matches', () => {
       withRegisteredProject(({ vaultDir, groveId, projectId }) => {
         const resolved = requestContextFromHttpHeaders({
@@ -617,10 +735,30 @@ describe('tool request context', () => {
       });
     });
 
+    it('accepts a projectRoot-only context switch when the auth bearer matches', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const otherRoot = path.join(path.dirname(projectRoot), 'other-fallback-auth');
+        const otherVaultDir = resolveProjectVaultDir(otherRoot);
+        fs.mkdirSync(otherVaultDir, { recursive: true });
+        saveProjectManifest(otherVaultDir, {
+          project: { id: assertGroveProjectId(createProjectId()), name: 'Other Fallback' },
+        });
+
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+          [REQUEST_CONTEXT_AUTH_HEADER]: TOKEN,
+        }, otherVaultDir, { expectedAuthToken: TOKEN });
+
+        expect(resolved.projectId).toBe(projectId);
+        expect(resolved.groveId).toBe(groveId);
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
     it('lets requests through without context-switching headers regardless of token', () => {
       withRegisteredProject(({ vaultDir }) => {
-        // No project/grove headers → no auth gate. Legacy callers
-        // still work even when a token is configured.
+        // No project-root/project-id/grove-id headers → no auth gate.
+        // Legacy callers still work even when a token is configured.
         const resolved = requestContextFromHttpHeaders({}, vaultDir, { expectedAuthToken: TOKEN });
         expect(resolved.source).toBe('headers');
       });

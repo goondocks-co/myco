@@ -25,7 +25,7 @@ import path from 'node:path';
 
 import { saveGroveConfig, saveMachineConfig, invalidateMergedConfigCache } from '@myco/config/loader';
 import { triggerCortexInstructions } from '@myco/daemon/cortex';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import { useIsolatedHome } from '../support/isolated-home';
 
@@ -83,7 +83,7 @@ describe('triggerCortexInstructions resolves provider config from the request gr
     const result = await triggerCortexInstructions({
       vaultDir: vaultB,
       requestContext,
-      embeddingManager: { reconcile() {} } as never,
+      resolveEmbeddingManager: () => ({ reconcile() {} } as never),
       logger: noopLogger(),
       // Force the post-gate branch to short-circuit so the test does not need a
       // live DB / agent runtime. Reaching this branch proves the provider gate
@@ -108,7 +108,7 @@ describe('triggerCortexInstructions resolves provider config from the request gr
     const result = await triggerCortexInstructions({
       vaultDir: vaultC,
       requestContext,
-      embeddingManager: { reconcile() {} } as never,
+      resolveEmbeddingManager: () => ({ reconcile() {} } as never),
       logger: noopLogger(),
       loadRunner: () => Promise.reject(new Error('runner should not be reached')),
     });

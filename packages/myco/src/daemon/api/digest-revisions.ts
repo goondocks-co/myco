@@ -16,7 +16,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants

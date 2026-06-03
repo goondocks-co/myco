@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { type MycoRequestContext, requestContextFromEnvironment } from '@myco/tools/request-context.js';
+import { type MycoRequestContext, requestContextFromEnvironment } from '@myco/grove/request-context.js';
 import {
   GROVE_VECTORS_FILENAME,
   resolveGroveVectorsPath,

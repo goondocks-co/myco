@@ -1,6 +1,6 @@
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import type { EmbeddingManager, SqliteVecVectorStore } from './embedding/index.js';
 
 export interface GroveRuntimeEntry {

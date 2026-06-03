@@ -51,7 +51,7 @@ import { summarizePhaseCosts } from './run-accounting.js';
 import { executeMapPhase } from './map-phase.js';
 import { createVaultTools } from './tools.js';
 import { checkPhasePreCondition } from './phase-preconditions.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 
 /**
  * Pull the cap-hit classification off a caught error. Returns true when

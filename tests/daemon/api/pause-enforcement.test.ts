@@ -5,7 +5,7 @@ import {
   REQUEST_CONTEXT_AUTH_HEADER,
   requestContextHeaders,
   resolveLegacyRequestContext,
-} from '@myco/tools/request-context';
+} from '@myco/grove/request-context';
 import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveProjectVaultDir } from '@myco/grove/paths';
 import {

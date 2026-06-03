@@ -7,7 +7,18 @@ export interface EmbeddingDetails {
   by_namespace: Record<string, { embedded: number; stale: number }>;
   models: Record<string, number>;
   pending: Record<string, number>;
+  namespace_breakdown?: Record<string, {
+    embedded: number;
+    pending: number;
+    stale: number;
+    total: number;
+  }>;
   provider: { name: string; model: string; available: boolean };
+  canopy_describe?: {
+    pending: number;
+    undescribed: number;
+    stale: number;
+  };
 }
 
 /**

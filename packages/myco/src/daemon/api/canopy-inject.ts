@@ -22,7 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { filesystemRootFromRequestContext } from '../../tools/request-context.js';
+import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';

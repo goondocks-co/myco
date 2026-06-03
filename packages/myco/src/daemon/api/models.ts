@@ -4,8 +4,7 @@ import {
   createLocalOpenAIBackend,
   inferLocalOpenAIBackendKind,
 } from '../../intelligence/local-openai-backends.js';
-import { OPENAI_API_KEY_ENV } from '../../cli/providers/openai-embeddings.js';
-import { OPENROUTER_API_KEY_ENV } from '../../cli/providers/openrouter.js';
+import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { errorMessage } from '@myco/utils/error-message.js';

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { COLLECTIVE_TOOL_DEFINITIONS, TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 import { isToolError } from '@myco/tools/error.js';
-import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
+import { requestContextFromEnvironment } from '@myco/grove/request-context.js';
 import { isCollectiveEnabled } from '@myco/tools/shared.js';
 
 interface ToolCliError {

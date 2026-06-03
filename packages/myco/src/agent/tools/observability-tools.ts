@@ -9,7 +9,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { textResult, type VaultToolDeps } from './types.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Factory

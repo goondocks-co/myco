@@ -10,7 +10,7 @@ import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 
 export const RELEASE_CAPTURE_POINTS = [
   'session_start',

@@ -13,7 +13,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { TEAM_SYNC_OBSERVED_TABLES, type TeamSyncObservedTable } from '@myco/db/schema-ddl.js';
 import { getTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ import {
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 
 const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;

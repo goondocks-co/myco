@@ -18,7 +18,7 @@ import {
 import { createGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { listRegisteredProjects } from '@myco/grove/registry.js';
-import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
+import { requestContextFromEnvironment } from '@myco/grove/request-context.js';
 
 describe('Grove project activation', () => {
   let tmpDir: string;

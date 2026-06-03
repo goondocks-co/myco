@@ -39,7 +39,7 @@ import {
   filesystemRootFromRequestContext,
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';

@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { getType } from './registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';

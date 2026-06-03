@@ -8,7 +8,7 @@ import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { openDatabase, withDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
-import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
+import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/grove/request-context.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';

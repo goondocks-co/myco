@@ -74,6 +74,14 @@ describe('resolvePrincipal', () => {
     );
   });
 
+  it('rejects daemon-internal tenancy at the external authorization seam', () => {
+    const daemon = { ...CALLER_CONTEXT, tenancySource: 'daemon' as const };
+
+    expect(() => resolvePrincipal({ requestContext: daemon }, ENV)).toThrow(
+      TenancyViolationError,
+    );
+  });
+
   it('rejects a context with no tenancySource marker', () => {
     const unmarked = {
       projectVaultDir: CALLER_CONTEXT.projectVaultDir,

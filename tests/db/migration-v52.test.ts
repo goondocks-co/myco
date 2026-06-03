@@ -7,7 +7,7 @@ import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { createGroveId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
-import { getMachineId, resetMachineIdCache } from '@myco/daemon/machine-id.js';
+import { getMachineId, resetMachineIdCache } from '@myco/machine-id.js';
 import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 
 /**

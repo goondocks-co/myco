@@ -7,7 +7,7 @@ import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { listGroves, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 
 /** Compute config hash from the YAML file on disk. Cache this at startup and after saves. */

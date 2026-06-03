@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import {
   computeInputsHash,
   MAP_TASK_PROMPT_VERSION,
@@ -22,12 +22,12 @@ import {
   type RulesFileInput,
 } from '@myco/canopy/map/inputs-hash.js';
 import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
-import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import { getMachineId } from '@myco/machine-id.js';
+import type { AgentTeamStatusPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
@@ -1088,7 +1088,7 @@ export async function buildTaskInstruction(
   projectRoot?: string,
   retrievalProvider?: SemanticSearchProvider,
   config?: MycoConfig,
-  getTeamClient?: () => TeamSyncClient | null,
+  getTeamClient?: () => AgentTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<BuiltTaskInstruction | undefined> {
   switch (taskName) {

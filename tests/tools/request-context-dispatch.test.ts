@@ -9,7 +9,7 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { seedCanopyEntry } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';

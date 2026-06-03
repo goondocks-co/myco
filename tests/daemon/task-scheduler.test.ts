@@ -53,6 +53,7 @@ interface FakeContextOptions {
   /** Override per-project state lookup. Defaults to always 'idle'. */
   getProjectPowerState?: ScheduledJobContext['getProjectPowerState'];
   getRecentTaskRunCount?: ScheduledJobContext['getRecentTaskRunCount'];
+  getTaskConfig?: ScheduledJobContext['getTaskConfig'];
 }
 
 function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
@@ -71,6 +72,7 @@ function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
     onTaskError: opts.onTaskError,
     getProjectPowerState: opts.getProjectPowerState ?? (() => 'idle'),
     getRecentTaskRunCount: opts.getRecentTaskRunCount,
+    getTaskConfig: opts.getTaskConfig ?? (() => undefined),
   };
 }
 
@@ -86,7 +88,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       makeTask('task-c', undefined),
     ];
 
-    const { jobs } = buildScheduledJobs(tasks, {});
+    const { jobs } = buildScheduledJobs(tasks, makeContext());
     expect(jobs).toHaveLength(1);
     expect(jobs[0].name).toBe('scheduled:tasks');
     // The collapsed job runs in every schedulable state; per-task runIn
@@ -94,38 +96,80 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
     expect(jobs[0].runIn).toEqual(['active', 'idle', 'sleep']);
   });
 
-  it('respects config override to enable a disabled task', async () => {
+  it('respects project config to enable a disabled-by-default task', async () => {
     const tasks = [
       makeTask('skill-survey', { enabled: false, intervalSeconds: 600, runIn: ['idle'] }),
     ];
     const calls: GroveProjectId[] = [];
     const ctx = makeContext({
       projects: [fakeScope(PROJECT_A)],
+      getTaskConfig: () => ({ schedule: { enabled: true } }),
       runTask: async (s) => { calls.push(s.projectId); },
     });
-    const { jobs } = buildScheduledJobs(
-      tasks,
-      { 'skill-survey': { schedule: { enabled: true } } },
-      ctx,
-    );
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
     expect(calls).toEqual([PROJECT_A]);
   });
 
-  it('respects config override to disable an enabled task', () => {
+  it('respects project config to disable an enabled-by-default task', async () => {
     const tasks = [
       makeTask('vault-evolve', { enabled: true, intervalSeconds: 300, runIn: ['active', 'idle'] }),
     ];
-    const ctx = makeContext({ projects: [fakeScope(PROJECT_A)] });
-    const { jobs } = buildScheduledJobs(
-      tasks,
-      { 'vault-evolve': { schedule: { enabled: false } } },
-      ctx,
-    );
-    // No enabled tasks → no PowerJob is registered.
-    expect(jobs).toHaveLength(0);
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      getTaskConfig: () => ({ schedule: { enabled: false } }),
+      runTask,
+    });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('resolves task enablement from each project config during the sweep', async () => {
+    const tasks = [
+      makeTask('canopy-describe', { enabled: false, intervalSeconds: 120, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      getTaskConfig: (scope, taskName) => {
+        if (taskName !== 'canopy-describe') return undefined;
+        return {
+          schedule: {
+            enabled: scope.projectId === PROJECT_A,
+          },
+        };
+      },
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+  });
+
+  it('uses the YAML default when project config is absent', async () => {
+    const tasks = [
+      makeTask('canopy-describe', { enabled: false, intervalSeconds: 120, runIn: ['idle'] }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      getTaskConfig: () => undefined,
+      runTask,
+    });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
   });
 
   it('dispatches a task once per project on a single tick', async () => {
@@ -140,7 +184,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       },
     });
 
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
@@ -158,7 +202,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
         calls.push(s.projectId);
       },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -185,8 +229,9 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       },
       preConditions: {},
       getProjectPowerState: () => 'idle',
+      getTaskConfig: () => undefined,
     };
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -210,7 +255,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       },
       getProjectPowerState: (s) => (s.projectId === PROJECT_A ? 'active' : 'idle'),
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -235,7 +280,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       },
       preConditions: { 'has-pending-canopy-rows': preCheck },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -255,7 +300,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
         calls.push(s.projectId);
       },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -268,7 +313,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
     ];
     const ctx = makeContext({ projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)] });
     const recent = Date.now() - 1_000;
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx, {
+    const { jobs } = buildScheduledJobs(tasks, ctx, {
       [key(GROVE_X, PROJECT_A, 'task-a')]: recent,
     });
 
@@ -289,7 +334,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       projects: [fakeScope(PROJECT_A)],
       setTaskRunning: setRunning,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     expect(setRunning).toHaveBeenCalledWith(GROVE_X, PROJECT_A, 'task-a', true);
@@ -309,7 +354,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       runTask: vi.fn().mockRejectedValue(boom),
       onTaskError,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -330,7 +375,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       projects: [fakeScope(PROJECT_A)],
       runTask,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     expect(runTask).toHaveBeenCalledTimes(1);
@@ -352,7 +397,7 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       projects: [fakeScope(PROJECT_A)],
       accelerators: { 'canopy-pending-describe': countFn },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -376,9 +421,10 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
       runTask: async (s) => { calls.push(s.projectId); },
       preConditions: {},
       getProjectPowerState: () => 'idle',
+      getTaskConfig: () => undefined,
       seedMissingLastRuns,
     };
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -406,7 +452,7 @@ describe('kicker', () => {
         calls.push(s.projectId);
       },
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -434,7 +480,7 @@ describe('kicker', () => {
         calls.push(s.projectId);
       },
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -462,7 +508,7 @@ describe('kicker', () => {
         calls.push(s.projectId);
       },
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -490,7 +536,7 @@ describe('kicker', () => {
       projects: [fakeScope(PROJECT_A)],
       isTaskRunning: () => true,
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     kicker.kick('task-a', { groveId: GROVE_X, projectId: PROJECT_A });
     await jobs[0].fn();
@@ -511,7 +557,7 @@ describe('kicker', () => {
       projects: [fakeScope(PROJECT_A)],
       preConditions: { 'has-pending-canopy-rows': () => false },
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     kicker.kick('task-a', { groveId: GROVE_X, projectId: PROJECT_A });
     await jobs[0].fn();
@@ -545,15 +591,10 @@ describe('accelerator-driven cadence (per project)', () => {
         'canopy-pending-describe': (s) => (s.projectId === PROJECT_A ? 1000 : 0),
       },
     });
-    const { jobs } = buildScheduledJobs(
-      tasks,
-      {},
-      ctx,
-      {
-        [key(GROVE_X, PROJECT_A, 'canopy-describe')]: Date.now() - 11_000,
-        [key(GROVE_X, PROJECT_B, 'canopy-describe')]: Date.now() - 11_000,
-      },
-    );
+    const { jobs } = buildScheduledJobs(tasks, ctx, {
+      [key(GROVE_X, PROJECT_A, 'canopy-describe')]: Date.now() - 11_000,
+      [key(GROVE_X, PROJECT_B, 'canopy-describe')]: Date.now() - 11_000,
+    });
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -579,7 +620,7 @@ describe('accelerator-driven cadence (per project)', () => {
         return 'sleep';
       },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -609,7 +650,7 @@ describe('accelerator-driven cadence (per project)', () => {
         return 'idle';
       },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -666,7 +707,7 @@ describe('maxRunsPerDay ceiling', () => {
       runTask,
       getRecentTaskRunCount: () => 3,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -687,7 +728,7 @@ describe('maxRunsPerDay ceiling', () => {
       runTask,
       getRecentTaskRunCount: () => 6,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -708,7 +749,7 @@ describe('maxRunsPerDay ceiling', () => {
       runTask,
       getRecentTaskRunCount: () => 12,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -729,7 +770,7 @@ describe('maxRunsPerDay ceiling', () => {
       runTask,
       getRecentTaskRunCount: () => 6,
     });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs, kicker } = buildScheduledJobs(tasks, ctx);
 
     kicker.kick('cap-task', { groveId: GROVE_X, projectId: PROJECT_A });
     await jobs[0].fn();
@@ -753,7 +794,7 @@ describe('maxRunsPerDay ceiling', () => {
         throw new Error('boom');
       },
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -772,7 +813,7 @@ describe('maxRunsPerDay ceiling', () => {
     const runTask = vi.fn().mockResolvedValue(undefined);
     // No getRecentTaskRunCount provided.
     const ctx = makeContext({ runTask });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -794,7 +835,7 @@ describe('maxRunsPerDay ceiling', () => {
       runTask,
       getRecentTaskRunCount: counter,
     });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));

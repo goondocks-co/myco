@@ -19,7 +19,7 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
-import { projectScopeFromRequestContext } from '../../tools/request-context.js';
+import { projectScopeFromRequestContext } from '../../grove/request-context.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '../../grove/ids.js';
 
 /**

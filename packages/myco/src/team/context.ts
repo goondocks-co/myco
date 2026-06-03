@@ -1,11 +1,27 @@
+/*
+ * Copyright 2026 Goondocks.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /**
- * Module-level machine identity for team sync. The enablement flag is NOT
- * here anymore — it is per-Grove in `team_sync_state` (read via
- * `getTeamSyncEnabled()`), so the write path can't be gated by the wrong
- * Grove's setting.
+ * Module-level machine identity for team sync.
+ *
+ * Enablement stays per-Grove in `team_sync_state`; this module only owns the
+ * machine identity used to stamp synced rows and outbox records.
  */
 import { SYNC_PROTOCOL_VERSION, DEFAULT_MACHINE_ID } from '@myco/constants.js';
-import { getMachineId } from './machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 
 let teamMachineId = DEFAULT_MACHINE_ID;
 

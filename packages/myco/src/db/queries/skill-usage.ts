@@ -10,7 +10,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 // skill_usage has no synced_at column — does not participate in team sync.
 

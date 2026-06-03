@@ -29,7 +29,7 @@ describe('triggerTitleSummary live-config gating', () => {
     const liveConfig = { current: makeConfig({ event_tasks_enabled: false }) };
     const deps = {
       vaultDir: '/tmp/ignored',
-      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       liveConfig,
       logger: makeLogger() as never,
     };
@@ -49,6 +49,21 @@ describe('triggerTitleSummary live-config gating', () => {
     await expect(triggerTitleSummary('sess-1', deps)).resolves.toBeUndefined();
   });
 
+  it('resolves the embedding manager from the request context (per-request tenancy, not bootstrap)', async () => {
+    // Anchor-leak guard (Variant A): the title-summary agent run must get the
+    // session's grove manager, resolved from its request context.
+    const rc = { projectId: 'proj_x', groveId: 'grove_x' } as never;
+    let seen: unknown = 'NOT_CALLED';
+    await triggerTitleSummary('sess-1', {
+      vaultDir: '/tmp/ignored',
+      resolveEmbeddingManager: (c: unknown) => { seen = c; return makeEmbeddingManagerStub() as never; },
+      liveConfig: { current: makeConfig({ event_tasks_enabled: true }) },
+      logger: makeLogger() as never,
+      requestContext: rc,
+    } as never);
+    expect(seen).toBe(rc);
+  });
+
   it('summary_batch_interval <= 0 short-circuits regardless of event_tasks_enabled', async () => {
     const liveConfig = {
       current: makeConfig({ summary_batch_interval: 0, event_tasks_enabled: true }),
@@ -56,7 +71,7 @@ describe('triggerTitleSummary live-config gating', () => {
     const logger = makeLogger();
     await expect(triggerTitleSummary('sess-1', {
       vaultDir: '/tmp/ignored',
-      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       liveConfig,
       logger: logger as never,
     })).resolves.toBeUndefined();

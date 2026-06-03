@@ -8,7 +8,7 @@
 
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveSpore, supersedeSpore, consolidateSpores } from '@myco/spores/write.js';
-import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
+import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
