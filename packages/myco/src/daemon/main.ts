@@ -126,15 +126,6 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
-import {
-  handleListNotifications,
-  handleCreateNotification,
-  handleUpdateNotification,
-  handleDismissAll,
-  handleMarkAllRead,
-  handleGetRegistry,
-  handleUnreadCount,
-} from './api/notifications.js';
 import { createEmbeddingProvider } from '../intelligence/llm.js';
 import {
   handleListTasks,
@@ -148,6 +139,7 @@ import {
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
 import { registerProviderRoutes } from './routes/providers.js';
+import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -2015,32 +2007,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  //
-  // The READ/MUTATE routes (list, unread-count, PATCH status, dismiss-all,
-  // mark-all-read) are the GLOBAL notification banner poll: the UI hits them on
-  // EVERY page, including global pages (/settings, /logs, /groves) that carry
-  // NO selected-project context. So they are deliberately NOT wrapped in
-  // tenantRoute — a synthesized (no caller project/grove) context must SUCCEED,
-  // not 400. This is a reviewed exemption, not a leak: the global daemon
-  // bootstraps a PHANTOM home (Phase 5, _unbound-bootstrap, no project anchor),
-  // so a no-context read scopes (via projectScopeFromRequestContext) to the
-  // global/phantom scope → empty project rows + the daemon-scope (project_id IS
-  // NULL) rows under ?include_daemon. No cross-tenant data is exposed. (A prior
-  // review explicitly offered "wrap OR document the exemption" for these read
-  // routes; we take the exemption. See tests/meta/no-anchor-as-tenancy.test.ts.)
-  //
-  // The CREATE route stays wrapped in tenantRoute: the UI never calls it (it is
-  // API-only), so it has no global-poll regression, and a create must land a
-  // project-scoped row tagged with the caller's project (with its enabled-gate
-  // config resolved from the request's grove + vault, never the anchor). The
-  // registry route is global metadata (domain descriptors, no tenant rows).
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(req));
-  server.registerRoute('POST', '/api/notifications', tenantRoute({ machineId, logger }, handleCreateNotification));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(req));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(req));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(req));
-  server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req));
+  registerNotificationRoutes(server, { machineId, logger });
 
   // Reconcile team_sync_state.enabled for every registered Grove BEFORE the
   // port is bound. reconcileClient() above only arms the boot Grove's flag;
