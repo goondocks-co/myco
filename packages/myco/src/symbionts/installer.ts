@@ -19,6 +19,7 @@ import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherRef
 import { loadMergedConfig } from '../config/loader.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
+import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -2406,7 +2407,7 @@ export function syncSkillSymlinks(
   // agent's skills dir (or, on remove, unlink an arbitrary same-name
   // file). Keep the rule identical to the API-layer gate in
   // `daemon/api/skills.ts` so both paths reject the same set.
-  if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(skillName)) return;
+  if (!isSafeSkillNameForFs(skillName)) return;
 
   // Resolve manifests dir — try sibling (source layout) then dist layout
   // (tsup bundles into dist/chunk-*.js, but manifests are at dist/src/symbionts/manifests/)

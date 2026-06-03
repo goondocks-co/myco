@@ -27,7 +27,7 @@
  */
 
 import crypto from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
@@ -76,6 +76,13 @@ import {
   cleanupStagedSkill,
   type StagedManifest,
 } from './skill-staging.js';
+import {
+  publishedSkillRelativePath,
+  removePublishedSkillFileOrDirectory,
+  resolvePublishedSkillPaths,
+  syncPublishedSkillSymlinks,
+  writePublishedSkillFile,
+} from '@myco/skills/publication.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 import { buildSkillSurveyPreparation, hasHumanReviewEvidence } from '../skill-survey-prepare.js';
 
@@ -1707,21 +1714,19 @@ export function createSkillTools(deps: VaultToolDeps) {
     | { error: string }
   > {
     const root = projectRoot ?? process.cwd();
-    const skillDir = resolve(root, '.agents', 'skills', params.name);
-    const skillPath = resolve(skillDir, 'SKILL.md');
+    const publishedPaths = resolvePublishedSkillPaths(root, params.name);
+    if (!publishedPaths.ok) {
+      return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
+    }
     // If the directory already exists for a create, it's an orphan
     // from a prior failed run — we overwrite the file and only remove
     // the file itself on rollback (not the whole directory) to avoid
     // clobbering anything else that may share the dir.
-    const skillDirPreexisted = existsSync(skillDir);
+    const skillDirPreexisted = existsSync(publishedPaths.paths.skillDir);
 
     async function cleanupCreatedSkillArtifactsOnRollback(): Promise<void> {
       try {
-        if (!skillDirPreexisted) {
-          rmSync(skillDir, { recursive: true, force: true });
-        } else {
-          rmSync(skillPath, { force: true });
-        }
+        removePublishedSkillFileOrDirectory(root, params.name, { fileOnly: skillDirPreexisted });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] file rollback after DB failure also failed:`,
@@ -1730,8 +1735,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       }
 
       try {
-        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-        syncSkillSymlinks(root, params.name, { remove: true });
+        syncPublishedSkillSymlinks(root, params.name, { remove: true });
       } catch (rollbackErr) {
         console.warn(
           `[${params.label}] symlink rollback after DB failure also failed:`,
@@ -1741,8 +1745,10 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      mkdirSync(skillDir, { recursive: true });
-      writeFileSync(skillPath, params.content, 'utf-8');
+      const writeResult = writePublishedSkillFile(root, params.name, params.content);
+      if (!writeResult.ok) {
+        return { error: 'Invalid skill name: resolved path escapes .agents/skills' };
+      }
     } catch (err) {
       return {
         error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}`,
@@ -1750,8 +1756,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     try {
-      const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-      syncSkillSymlinks(root, params.name);
+      syncPublishedSkillSymlinks(root, params.name);
     } catch (err) {
       console.warn(
         `[${params.label}] syncSkillSymlinks failed:`,
@@ -1760,7 +1765,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     const now = epochSeconds();
-    const relativePath = `.agents/skills/${params.name}/SKILL.md`;
+    const relativePath = publishedSkillRelativePath(params.name);
     const recordId = crypto.randomUUID();
     const generation = 1;
 
@@ -2112,13 +2117,11 @@ export function createSkillTools(deps: VaultToolDeps) {
           // Disk + symlink cleanup (best-effort)
           const root = projectRoot ?? process.cwd();
           if (!/[/\\]|\.\./.test(result.name)) {
-            const skillDir = resolve(root, '.agents', 'skills', result.name);
-            try { rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+            try { removePublishedSkillFileOrDirectory(root, result.name); } catch (err) {
               console.warn('[vault_skill_records] Failed to remove skill directory:', err instanceof Error ? err.message : err);
             }
             try {
-              const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-              syncSkillSymlinks(root, result.name, { remove: true });
+              syncPublishedSkillSymlinks(root, result.name, { remove: true });
             } catch (err) {
               console.warn('[vault_skill_records] Failed to remove symlinks:', err instanceof Error ? err.message : err);
             }
@@ -2282,20 +2285,22 @@ export function createSkillTools(deps: VaultToolDeps) {
       const priorSkillContent = readFileSync(skillPath, 'utf-8');
 
       try {
-        writeFileSync(skillPath, args.content, 'utf-8');
+        const writeResult = writePublishedSkillFile(root, args.name, args.content);
+        if (!writeResult.ok) {
+          return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
+        }
       } catch (err) {
         return textResult({ error: `Failed to write skill file: ${err instanceof Error ? err.message : String(err)}` });
       }
 
       try {
-        const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-        syncSkillSymlinks(root, args.name);
+        syncPublishedSkillSymlinks(root, args.name);
       } catch (err) {
         console.warn('[vault_write_skill] syncSkillSymlinks failed:', err instanceof Error ? err.message : err);
       }
 
       const now = epochSeconds();
-      const relativePath = `.agents/skills/${args.name}/SKILL.md`;
+      const relativePath = publishedSkillRelativePath(args.name);
       const generation = existing.generation + 1;
       const recordId = existing.id;
 
