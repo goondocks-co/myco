@@ -42,7 +42,15 @@ import type { TeamSyncClient } from '../team-sync.js';
 /** Dependencies injected by the daemon when registering context routes. */
 export interface ContextDeps {
   vaultDir: string;
-  embeddingManager: EmbeddingManager;
+  /**
+   * Resolve the embedding manager for THIS request's grove. Per-request
+   * resolution is mandatory: a fixed/bootstrap manager would search the daemon
+   * anchor's vector store for every tenant (anchor-leak Variant A — the prompt
+   * search must hit the caller's grove, like `/api/search` does). When tenancy
+   * is absent/synthesized this resolves to the phantom anchor, which holds no
+   * real data, so the search safe-fails to empty rather than leaking.
+   */
+  resolveEmbeddingManager: (requestContext: RouteRequest['requestContext']) => EmbeddingManager;
   logger: DaemonLogger;
   getTeamClient?: () => TeamSyncClient | null;
   // Holder so each request reads the current merged config — a user can
@@ -411,7 +419,9 @@ export function createResumeContextHandler(deps: ContextDeps) {
 export function createPromptContextHandler(deps: ContextDeps) {
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
-    const { logger, liveConfig, embeddingManager } = deps;
+    const { logger, liveConfig } = deps;
+    // Resolve the embedding manager for the caller's grove (per-request).
+    const embeddingManager = deps.resolveEmbeddingManager(req.requestContext);
     const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);

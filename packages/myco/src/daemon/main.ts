@@ -1244,7 +1244,9 @@ export async function main(): Promise<void> {
   let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
     vaultDir: bootstrapVaultDir,
-    embeddingManager,
+    // Per-request grove resolution — never the bootstrap manager (anchor-leak
+    // Variant A). Mirrors how /api/search and /api/embedding resolve runtime.
+    resolveEmbeddingManager: (rc: MycoRequestContext | undefined) => getEmbeddingRuntime(rc).manager,
     liveConfig,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),

@@ -44,11 +44,16 @@ function mockEmbeddingManager(overrides: Record<string, unknown> = {}): Embeddin
   } as unknown as EmbeddingManager;
 }
 
-function makeDeps(overrides: Partial<ContextDeps> & { config?: MycoConfig } = {}): ContextDeps {
-  const { config, liveConfig, ...rest } = overrides;
+function makeDeps(
+  overrides: Partial<ContextDeps> & { config?: MycoConfig; embeddingManager?: EmbeddingManager } = {},
+): ContextDeps {
+  const { config, liveConfig, embeddingManager, ...rest } = overrides;
+  // Convenience: tests that pass a single `embeddingManager` get it returned by
+  // the per-request resolver; tests can override `resolveEmbeddingManager` via rest.
+  const resolved = embeddingManager ?? mockEmbeddingManager();
   return {
     vaultDir: '/tmp/myco-test-vault',
-    embeddingManager: mockEmbeddingManager(),
+    resolveEmbeddingManager: () => resolved,
     logger: mockLogger(),
     liveConfig: liveConfig ?? { current: config ?? MycoConfigSchema.parse({ version: 3 }) },
     ...rest,
@@ -618,6 +623,29 @@ describe('createPromptContextHandler', () => {
       expect((first.body as { text: string }).text).toContain('Always validate JWT expiry');
       expect(secondText).toContain('Use session ID as durable key'); // fresh spore-b injected
       expect(secondText).not.toContain('Always validate JWT expiry'); // spore-a deduped
+    });
+
+    it('resolves the embedding manager from the request context (per-request tenancy), not a fixed bootstrap manager', async () => {
+      // Anchor-leak guard (Variant A): the prompt search must run against the
+      // request's grove store, resolved per request — never a daemon-bootstrap
+      // manager. Assert the resolver is called with the request context and its
+      // returned manager's results are what get injected.
+      const groveManager = mockEmbeddingManager({
+        searchVectors: vi.fn().mockReturnValue([
+          { id: 'spore-a', namespace: 'spores', similarity: 0.88, metadata: { status: 'active', observation_type: 'gotcha', neighbor_mean: 0.6, neighbor_std: 0.1 } },
+          ...backgroundPool(),
+        ]),
+      });
+      let seenProjectId: string | undefined = 'NOT_CALLED';
+      const handler = createPromptContextHandler(makeDeps({
+        resolveEmbeddingManager: (rc) => {
+          seenProjectId = rc?.projectId;
+          return groveManager;
+        },
+      }));
+      const result = await handler(makeReq({ prompt: 'How should I handle authentication?', session_id: 's-tenancy' }));
+      expect(seenProjectId).toBe(TEST_REQUEST_CONTEXT.projectId);
+      expect((result.body as { text: string }).text).toContain('Always validate JWT expiry');
     });
 
     it('session dedup returns empty when the only relevant spore was already injected', async () => {
