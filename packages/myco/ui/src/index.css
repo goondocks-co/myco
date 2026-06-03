@@ -216,6 +216,44 @@
   }
 }
 
+/* ---------- Scrollbars — themed to the active surface ----------
+ *
+ * The UI has no other scrollbar styling, so scroll containers fall back to
+ * the browser default — a light/white classic bar that clashes with the dark
+ * theme. Styling them via theme tokens keeps every scrollbar (main content,
+ * sidebar nav, list panes) consistent in both dark and light modes.
+ *
+ * Note: defining `::-webkit-scrollbar` opts out of macOS overlay (auto-hide)
+ * scrollbars — bars become always-visible wherever content overflows, but
+ * thin and theme-colored rather than the OS default.
+ */
+html {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--outline-variant) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--outline-variant);
+  border-radius: 8px;
+  /* Transparent border + padding-box clip renders the thumb as a thin inset
+     pill with breathing room inside the 10px track. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--outline);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ---------- Dashboard design-system utilities ---------- */
 
 .glass-panel {

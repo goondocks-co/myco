@@ -94,7 +94,7 @@ export interface RequestContextAuthOptions {
   expectedAuthToken?: string | null;
 }
 
-export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
+export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'url';
 
 /**
  * Provenance of the request's (project, grove) tenancy — distinct from
@@ -269,6 +269,38 @@ export function requestContextFromHttpHeaders(
   }
 
   return resolveManifestRequestContext(fallback, 'headers', manifest) ?? fallback;
+}
+
+/**
+ * Build a request context from a (Grove, project) id pair carried in a URL
+ * path — e.g. `/api/g/:groveId/p/:projectId/attachments/:filename`.
+ *
+ * Browser subresource loads (`<img>`, `<video>`, file downloads) cannot
+ * attach the `x-myco-*` tenancy headers the scripted API uses, so resource
+ * routes encode tenancy in the URL instead. Resolution runs through the same
+ * registry-validated path as the header resolver
+ * (`resolveRegisteredRequestContext`), so an unknown Grove or an unregistered
+ * project still fails loud, and the resolved context is stamped
+ * `tenancySource: 'caller'` so project-scoped reads apply — without it the
+ * lookup falls back to `GLOBAL_SCOPE` (`project_id IS NULL`) and can never
+ * match a Grove-bound row.
+ *
+ * No bearer-token gate: the auth gate guards context-switching *headers*
+ * (which a hostile local process could attach to redirect a write at another
+ * Grove). A URL-scoped resource route is read-only, loopback-bound, and
+ * CSRF-guarded; the URL itself is the asserted, registry-validated scope.
+ */
+export function requestContextFromTenancyIds(
+  ids: { groveId: string; projectId: string },
+  fallbackVaultDir: string,
+): MycoRequestContext {
+  const { context: fallback } = buildVaultFallback(fallbackVaultDir);
+  const explicit: ExplicitContextInput = {
+    groveId: ids.groveId,
+    projectId: ids.projectId,
+    sessionId: null,
+  };
+  return resolveRegisteredRequestContext(explicit, fallback, 'url', tenancySourceFromExplicit(explicit));
 }
 
 /**

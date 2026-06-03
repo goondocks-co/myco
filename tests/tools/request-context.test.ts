@@ -15,6 +15,7 @@ import {
   isCallerTenancy,
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
+  requestContextFromTenancyIds,
   requestContextHeaders,
   rowProjectIdFromRequestContext,
   projectScopeFromRequestContext,
@@ -114,6 +115,37 @@ describe('tool request context', () => {
       expect(resolved.projectVaultDir).toBe(vaultDir);
       expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
       expect(resolved.source).toBe('headers');
+    });
+  });
+
+  it('resolves URL-addressable tenancy (img/resource routes) to the Grove DB with caller scope', () => {
+    withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+      // Browser <img> loads can't send x-myco-* headers, so resource routes
+      // carry (grove, project) in the URL path. This resolver must reach the
+      // same Grove DB + caller tenancy the header path produces — otherwise
+      // the lookup falls back to GLOBAL_SCOPE and 404s on Grove-bound rows.
+      const resolved = requestContextFromTenancyIds({ groveId, projectId }, vaultDir);
+
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.projectRoot).toBe(projectRoot);
+      expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
+      expect(resolved.source).toBe('url');
+      // The crux of the attachment 404 fix: scope must be caller (project),
+      // not the synthesized GLOBAL_SCOPE that can never match a Grove row.
+      expect(isCallerTenancy(resolved)).toBe(true);
+      expect(projectScopeFromRequestContext(resolved)).not.toEqual(GLOBAL_SCOPE);
+      expect(rowProjectIdFromRequestContext(resolved)).toBe(projectId);
+    });
+  });
+
+  it('fails loud on an unknown Grove in a URL-addressable resource path', () => {
+    withRegisteredProject(({ vaultDir, projectId }) => {
+      // A guessed/stale grove id in a resource URL must throw (→ 404/500 at
+      // the transport boundary), not silently resolve to another scope.
+      expect(() =>
+        requestContextFromTenancyIds({ groveId: 'grove_does_not_exist', projectId }, vaultDir),
+      ).toThrow();
     });
   });
 

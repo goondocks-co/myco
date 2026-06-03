@@ -8,6 +8,8 @@ import { ActivityList } from './ActivityList';
 import { SteeringChildCard } from './SteeringChildCard';
 import { cn } from '../../lib/cn';
 import { withBasePath } from '../../lib/base-path';
+import { useProjectSelection } from '../../hooks/use-project-selection';
+import type { ProjectSelection } from '../../lib/selection';
 import {
   PROMPT_PREVIEW_CHARS,
   TIMELINE_NODE_SIZE_CLASS,
@@ -29,9 +31,27 @@ export interface PromptBatchCardProps {
  * Includes the numbered spine segment, the collapsible prompt header, attachments,
  * tool-call activities, steering/interrupt children, and the AI response summary.
  */
+/**
+ * Build the URL for an attachment image. Browser <img>/lightbox loads can't
+ * attach the x-myco-* tenancy headers the JSON API uses, so the (Grove,
+ * project) scope is carried in the URL path and the daemon resolves the right
+ * Grove DB + project scope from it. Falls back to the legacy unscoped path
+ * only when no project selection is active (which shouldn't happen inside a
+ * session detail).
+ */
+function attachmentSrc(filePath: string, selection: ProjectSelection | null): string {
+  if (selection) {
+    return withBasePath(
+      `/api/g/${selection.grove.id}/p/${selection.project.project_id}/attachments/${filePath}`,
+    );
+  }
+  return withBasePath(`/api/attachments/${filePath}`);
+}
+
 export function PromptBatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = false, promptIndex, isLast }: PromptBatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const selection = useProjectSelection();
 
   return (
     <div className="relative flex gap-2">
@@ -127,7 +147,7 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
                       onClick={() => setLightboxIndex(idx)}
                     >
                       <img
-                        src={withBasePath(`/api/attachments/${att.file_path}`)}
+                        src={attachmentSrc(att.file_path, selection)}
                         alt={att.description ?? att.file_path ?? ''}
                         className="max-w-[200px] max-h-[140px] object-cover rounded-md"
                         loading="lazy"
@@ -139,7 +159,7 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
               {lightboxIndex !== null && (
                 <Lightbox
                   images={batchAttachments.map((a) => ({
-                    src: withBasePath(`/api/attachments/${a.file_path}`),
+                    src: attachmentSrc(a.file_path, selection),
                     alt: a.description ?? a.file_path ?? '',
                   }))}
                   index={lightboxIndex}

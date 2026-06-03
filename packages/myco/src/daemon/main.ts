@@ -1646,6 +1646,11 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
   const attachments = createAttachmentHandler({ vaultDir: bootstrapVaultDir });
+  // Tenancy-scoped path for browser <img>/lightbox loads: a plain <img> can't
+  // send the x-myco-* tenancy headers, so it carries (Grove, project) in the
+  // URL and the server resolves scope from the path. The legacy unscoped route
+  // is kept for header-authenticated callers and the pre-migration disk fallback.
+  server.registerRoute('GET', '/api/g/:groveId/p/:projectId/attachments/:filename', attachments.handleGetAttachment);
   server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---

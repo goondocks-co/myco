@@ -13,6 +13,7 @@ import {
   REQUEST_CONTEXT_AUTH_ENV,
   UnauthorizedRequestContextError,
   requestContextFromHttpHeaders,
+  requestContextFromTenancyIds,
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
@@ -320,9 +321,7 @@ export class DaemonServer {
       try {
         const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
-        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
-          expectedAuthToken: this.authToken,
-        });
+        const requestContext = this.resolveRouteRequestContext(match.params, req.headers);
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
@@ -473,6 +472,31 @@ export class DaemonServer {
       res.end(JSON.stringify({ error: 'ui_dev_proxy_failed' }));
       return true;
     }
+  }
+
+  /**
+   * Resolve the request context for a matched route. Resource routes that
+   * browsers load directly (`<img>`/`<video>`/file downloads via the
+   * `/api/g/:groveId/p/:projectId/...` prefix) cannot attach the `x-myco-*`
+   * tenancy headers the scripted API uses, so they carry (Grove, project) in
+   * the URL path. When both params are present, resolve tenancy from the URL;
+   * otherwise fall back to the header-based resolver. No existing route
+   * declares both `:groveId` and `:projectId`, so this only engages for the
+   * new URL-scoped resource routes.
+   */
+  private resolveRouteRequestContext(
+    params: Record<string, string>,
+    headers: http.IncomingMessage['headers'],
+  ): MycoRequestContext {
+    if (params.groveId && params.projectId) {
+      return requestContextFromTenancyIds(
+        { groveId: params.groveId, projectId: params.projectId },
+        this.vaultDir,
+      );
+    }
+    return requestContextFromHttpHeaders(headers, this.vaultDir, {
+      expectedAuthToken: this.authToken,
+    });
   }
 
   private databaseForRequestContext(context: MycoRequestContext): Database | null {
