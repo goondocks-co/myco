@@ -71,6 +71,15 @@ export interface ScheduledJobContext {
   getProjectPowerState: (scope: RegisteredProjectScope, holdDeepSleep: boolean) => PowerState;
   /** Per-project task dispatcher. */
   runTask: (scope: RegisteredProjectScope, taskName: string) => Promise<void>;
+  /**
+   * Resolve the current tenant-scoped config for a task. The task YAML is a
+   * built-in default; Grove/project settings decide whether that task is
+   * enabled for this project.
+   */
+  getTaskConfig: (
+    scope: RegisteredProjectScope,
+    taskName: string,
+  ) => { schedule?: Partial<TaskSchedule> } | undefined;
   /** Pre-condition checks scoped to a project. */
   preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
   /** Backlog count functions keyed by accelerator name. */
@@ -138,17 +147,16 @@ const COLLAPSED_JOB_NAME = 'scheduled:tasks';
 
 interface CompiledTask {
   task: AgentTask;
-  effective: TaskSchedule;
+  yamlEffective: TaskSchedule;
 }
 
 /**
- * Build PowerManager jobs from task definitions + config overrides.
- * Returns one collapsed PowerJob plus a kicker.
+ * Build PowerManager jobs from task definitions. Returns one collapsed
+ * PowerJob plus a kicker; tenant-scoped config is resolved per project tick.
  */
 export function buildScheduledJobs(
   tasks: AgentTask[],
-  configOverrides: Record<string, unknown>,
-  context?: ScheduledJobContext,
+  context: ScheduledJobContext,
   initialLastRuns?: ProjectTaskLastRunMap,
 ): ScheduledJobBuildResult {
   // Per-(grove, project, task) bypass + history state.
@@ -172,19 +180,17 @@ export function buildScheduledJobs(
     },
   };
 
-  // Pre-resolve schedules once at registration; they don't depend on
-  // per-tick state and re-resolving per task per tick is wasteful.
+  // Keep every task that has a YAML schedule. Whether it is enabled is
+  // tenant-scoped, so the effective schedule is resolved inside the
+  // per-project tick.
   const compiled: CompiledTask[] = [];
   for (const task of tasks) {
     if (!task.schedule) continue;
-    const override = configOverrides[task.name] as { schedule?: Partial<TaskSchedule> } | undefined;
-    const effective = resolveSchedule(task.schedule, override);
-    if (!effective.enabled) continue;
-    compiled.push({ task, effective });
+    const yamlEffective = resolveSchedule(task.schedule);
+    compiled.push({ task, yamlEffective });
   }
 
-  // No enabled tasks → no PowerJob to register. Lets PowerManager skip
-  // the tick entirely until a task is enabled via config reload.
+  // No scheduled-capable tasks → no PowerJob to register.
   if (compiled.length === 0) {
     return { jobs: [], kicker };
   }
@@ -198,7 +204,6 @@ export function buildScheduledJobs(
     name: COLLAPSED_JOB_NAME,
     runIn: allRunIn,
     fn: async () => {
-      if (!context) return;
       // Snapshot broadcasts at tick entry so a kick mid-tick lands on the next pass.
       const broadcastSnapshot = new Set(broadcastKicks);
 
@@ -218,7 +223,13 @@ export function buildScheduledJobs(
           }
         }
 
-        for (const { task, effective } of compiled) {
+        for (const { task, yamlEffective } of compiled) {
+          const taskConfig = context.getTaskConfig(projectScope, task.name);
+          const effective = task.schedule
+            ? resolveSchedule(task.schedule, taskConfig)
+            : yamlEffective;
+          if (!effective.enabled) continue;
+
           if (context.isTaskRunning(groveId, projectId, task.name)) continue;
 
           const taskKey = lastRunKey(groveId, projectId, task.name);

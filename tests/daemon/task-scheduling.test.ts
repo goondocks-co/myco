@@ -49,23 +49,10 @@ describe('registerScheduledTasks', () => {
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
-  it('replaces scheduled jobs when task schedule overrides change', async () => {
+  it('registers the collapsed scheduler without daemon-scope task overrides', async () => {
     const powerManager = {
       replaceGroup: vi.fn(),
     };
-    const liveConfig = {
-      current: {
-        agent: {
-          scheduled_tasks_enabled: true,
-          tasks: {
-            'vault-evolve': {
-              schedule: { enabled: true },
-            },
-          },
-        },
-      },
-    };
-
     const baseDeps = {
       definitionsDir: '/tmp/defs',
       vaultDir,
@@ -83,7 +70,6 @@ describe('registerScheduledTasks', () => {
 
     await registerScheduledTasks(powerManager as never, {
       ...baseDeps,
-      liveConfig: liveConfig as never,
     });
 
     // Collapsed scheduler emits exactly one PowerJob; per-task gating is internal.
@@ -94,23 +80,17 @@ describe('registerScheduledTasks', () => {
       ]),
     );
 
-    liveConfig.current = {
-      agent: {
-        scheduled_tasks_enabled: true,
-        tasks: {
-          'vault-evolve': {
-            schedule: { enabled: false },
-          },
-        },
-      },
-    };
-
     await registerScheduledTasks(powerManager as never, {
       ...baseDeps,
-      liveConfig: liveConfig as never,
     });
 
-    // No enabled tasks → buildScheduledJobs returns no jobs.
-    expect(powerManager.replaceGroup).toHaveBeenLastCalledWith('scheduled:', []);
+    // Re-registration still emits the collapsed job; task enablement is
+    // resolved from tenant config during project ticks.
+    expect(powerManager.replaceGroup).toHaveBeenLastCalledWith(
+      'scheduled:',
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'scheduled:tasks' }),
+      ]),
+    );
   });
 });

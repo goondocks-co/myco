@@ -115,10 +115,11 @@ import {
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import { handleGetGitStatus } from './api/git-status.js';
 import {
-  handleGetEmbeddingStatus,
-  handleEmbeddingDetails,
+  createEmbeddingStatusHandler,
+  createEmbeddingDetailsHandler,
   createEmbeddingActionHandlers,
 } from './api/embedding.js';
+import { createCanopyDescribeBacklogReader } from '../canopy/describe-backlog.js';
 import { createDatabaseMaintenanceHandlers } from './api/database.js';
 import { createMaintenanceHandlers } from './api/maintenance.js';
 import { createProjectsActivityHandler } from './api/projects-activity.js';
@@ -192,7 +193,7 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
@@ -951,10 +952,17 @@ export async function main(): Promise<void> {
     if (!requestContext) return { manager: embeddingManager };
     const scopedVectorsPath = resolveVectorsPathForRequestContext(requestContext);
     if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
-      return { manager: embeddingManager };
+      return { manager: embeddingManager, db };
     }
     const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, buildGroveEmbeddingRuntime);
     return { manager: entry.embeddingManager!, db: entry.db };
+  };
+  const getRequestEmbeddingRuntime = (req: RouteRequest): { manager: EmbeddingManager; db: Database } => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    if (!runtime.db) {
+      throw new Error('Embedding runtime requires a caller-supplied Grove request context');
+    }
+    return { manager: runtime.manager, db: runtime.db };
   };
 
   // --- Register built-in agents and tasks ---
@@ -1334,7 +1342,6 @@ export async function main(): Promise<void> {
       vaultDir: bootstrapVaultDir,
       embeddingManager,
       logger,
-      liveConfig,
       getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
       mycoHome,
@@ -1946,30 +1953,25 @@ export async function main(): Promise<void> {
     machineId,
   }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
-  server.registerRoute('GET', '/api/embedding/status', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
-      db: runtime.db,
-      scope: projectScopeFromRequestContext(req.requestContext),
-      groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
-    });
+  const embeddingStatusHandler = createEmbeddingStatusHandler({
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
   });
-  server.registerRoute('GET', '/api/embedding/details', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    // ?scope=project narrows counts to the request context's project_id.
-    // ?scope=grove returns Grove-wide totals (no project filter).
-    // Default = project for back-compat with existing callers.
-    const scope = typeof req.query.scope === 'string' ? req.query.scope : 'project';
-    const projectId = scope === 'grove'
-      ? null
-      : (req.requestContext?.projectId ?? null);
-    return handleEmbeddingDetails(runtime.manager, { projectId });
+  server.registerRoute('GET', '/api/embedding/status', tenantRoute({ machineId, logger }, async (req) => {
+    return embeddingStatusHandler(req);
+  }));
+  const embeddingDetailsHandler = createEmbeddingDetailsHandler({
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
+    canopyDescribeBacklog: createCanopyDescribeBacklogReader(),
   });
+  server.registerRoute('GET', '/api/embedding/details', tenantRoute(
+    { machineId, logger },
+    async (req) => embeddingDetailsHandler(req),
+  ));
   const embeddingActionHandlers = createEmbeddingActionHandlers({
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     logger,
-    resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
+    resolveRequestRuntime: getRequestEmbeddingRuntime,
     daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);

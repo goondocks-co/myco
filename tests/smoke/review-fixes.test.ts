@@ -150,10 +150,11 @@ describe('P1 #4: Scheduler retry behavior', () => {
       runTask,
       preConditions: {},
       getProjectPowerState: () => 'active',
+      getTaskConfig: () => undefined,
       onTaskError: () => {},
     };
 
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
@@ -187,9 +188,10 @@ describe('P1 #4: Scheduler retry behavior', () => {
       runTask: vi.fn().mockResolvedValue(undefined),
       preConditions: {},
       getProjectPowerState: () => 'active',
+      getTaskConfig: () => undefined,
     };
 
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
 
     // Simulate task 'a' running for the (grove, project); task 'b' must still dispatch.
     runningTasks.add(taskKey(GROVE_ID, PROJECT_ID, 'a'));
@@ -208,9 +210,10 @@ describe('P1 #4: Scheduler retry behavior', () => {
       runTask: vi.fn().mockResolvedValue(undefined),
       preConditions: {},
       getProjectPowerState: () => 'active',
+      getTaskConfig: () => undefined,
     };
 
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, ctx);
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
     expect(ctx.runTask).not.toHaveBeenCalled();
