@@ -147,12 +147,7 @@ import {
   handleGetTaskConfig,
   handleUpdateTaskConfig,
 } from './api/agent-tasks.js';
-import { handleGetProviders, handleTestProvider } from './api/providers.js';
-import {
-  handleDeleteProviderSecret,
-  handleGetProviderSecrets,
-  handlePutProviderSecret,
-} from './api/provider-secrets.js';
+import { registerProviderRoutes } from './routes/providers.js';
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -1727,14 +1722,8 @@ export async function main(): Promise<void> {
     return result;
   });
 
-  // --- Provider detection & testing ---
-  server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
-  server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  // Machine-scoped, daemon-global: these read/write `~/.myco/secrets.env`
-  // (machine-level keys), not any tenant's vault, so they take no vault dir.
-  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(req));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(req));
+  // --- Provider detection, testing, and machine-scoped secrets ---
+  registerProviderRoutes(server, { logger });
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
