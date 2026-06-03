@@ -9,7 +9,7 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { estimateOpenRouterCost } from '@myco/agent/cost/openrouter';
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;

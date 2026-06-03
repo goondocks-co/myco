@@ -7,7 +7,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
-import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
+import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types

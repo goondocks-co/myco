@@ -23,7 +23,7 @@ import { upsertPlan, getPlan } from '@myco/db/queries/plans.js';
 import { recordImportMapping } from '@myco/db/queries/migration-import-journal.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getDatabase } from '@myco/db/client.js';
-import { initTeamContext } from '@myco/daemon/team-context.js';
+import { initTeamContext } from '@myco/team/context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -290,6 +290,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     } as never;
     const sessionMut = createSessionMutationHandlers({
       embeddingManager,
+      resolveEmbeddingManager: () => embeddingManager,
       vaultDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,

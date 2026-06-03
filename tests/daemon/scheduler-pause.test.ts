@@ -101,6 +101,7 @@ describe('scheduler skips paused projects', () => {
       runTask: async (scope) => { visited.push(scope.projectId); },
       preConditions: {},
       getProjectPowerState: () => 'idle',
+      getTaskConfig: () => undefined,
     };
   }
 
@@ -108,7 +109,7 @@ describe('scheduler skips paused projects', () => {
     pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', home);
 
     const visited: GroveProjectId[] = [];
-    const { jobs } = buildScheduledJobs([makeTask('vault-evolve')], {}, makeContext(visited));
+    const { jobs } = buildScheduledJobs([makeTask('vault-evolve')], makeContext(visited));
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
@@ -117,7 +118,7 @@ describe('scheduler skips paused projects', () => {
 
   it('runs scheduled tasks for unpaused projects', async () => {
     const visited: GroveProjectId[] = [];
-    const { jobs } = buildScheduledJobs([makeTask('vault-evolve')], {}, makeContext(visited));
+    const { jobs } = buildScheduledJobs([makeTask('vault-evolve')], makeContext(visited));
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 

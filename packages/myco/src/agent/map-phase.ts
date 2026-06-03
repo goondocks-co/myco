@@ -14,7 +14,7 @@ import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { getAtPath } from '@myco/utils/dot-path.js';
 import { interpolateArgs } from '@myco/utils/interpolate-args.js';
 import { interpolate } from '@myco/utils/interpolate.js';
-import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
 import {
@@ -43,7 +43,7 @@ export interface ExecuteMapPhaseInput {
   /** Project root threaded into per-item toolSurface (mirrors free-form path). */
   projectRoot?: string;
   /** Embedding manager threaded through so RAG-enabled tools work in flexible mode. */
-  embeddingManager?: EmbeddingManager;
+  embeddingManager?: AgentEmbeddingPort;
   /** Run-level logger. Per-item failures emit debug entries through this. */
   logger?: RunLogger;
   /** Run-level abort controller. Aborting it stops current and future map items. */

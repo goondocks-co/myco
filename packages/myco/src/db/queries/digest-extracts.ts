@@ -7,7 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { DIGEST_TIERS, epochSeconds } from '@myco/constants.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { type ProjectScope } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------

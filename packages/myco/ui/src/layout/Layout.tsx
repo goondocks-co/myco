@@ -278,7 +278,7 @@ function SidebarContent({
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 py-2" aria-label="Main navigation">
         {NAV_ORDER.map((category) => {
           const items = navItems.filter((i) => i.category === category);
           if (items.length === 0) return null;
@@ -498,7 +498,7 @@ export default function Layout() {
   }, [location.key, location.search]);
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
       <NotificationBanner panelOpen={notifPanelOpen} />
       <NotificationPanel open={notifPanelOpen} onClose={closeNotifPanel} />
@@ -594,7 +594,7 @@ export default function Layout() {
       {/* Main content */}
       <main
         className={cn(
-          'flex-1 overflow-auto bg-surface',
+          'flex flex-1 flex-col overflow-hidden bg-surface',
           drawer.isMobile && 'pt-12', // offset for fixed mobile top bar
         )}
         aria-label="Page content"
@@ -606,7 +606,15 @@ export default function Layout() {
             unreadCount={unreadCount}
           />
         )}
-        <Outlet />
+        {/* Scroll container for page content. `main` itself must not scroll —
+           the Topbar takes flow height, so an `h-full` page added to a
+           scrollable `main` would always overflow by the Topbar's height,
+           producing a permanent phantom scrollbar. Keeping `main` a clipped
+           flex column and scrolling this `flex-1 min-h-0` wrapper lets
+           `h-full` pages fill exactly the space below the Topbar. */}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

@@ -9,6 +9,7 @@ import {
   ALL_PROJECTS_SCOPE,
   type ProjectScope as DbProjectScope,
 } from '@myco/grove/ids.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import {
   resolveGroveDbPath,
   resolveMycoHome,
@@ -23,6 +24,8 @@ import {
   wrapPerGroveResult,
   type PerGroveResultBase as SharedPerGroveResultBase,
 } from './scoped-dispatch.js';
+import type { CanopyDescribeBacklogReader } from '@myco/canopy/describe-backlog.js';
+import type { CanopyDescribeBacklog } from '@myco/db/queries/canopy.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,12 +154,105 @@ export async function handleGetEmbeddingStatus(
   };
 }
 
+export interface EmbeddingStatusDeps {
+  resolveRequestRuntime: (req: RouteRequest) => { manager: EmbeddingManager; db: Database };
+}
+
+export interface EmbeddingNamespaceBreakdown {
+  embedded: number;
+  pending: number;
+  stale: number;
+  total: number;
+}
+
+export function createEmbeddingStatusHandler(deps: EmbeddingStatusDeps): RouteHandler {
+  return async (req) => {
+    const ctx = req.requestContext;
+    if (!ctx) {
+      throw new Error('Embedding status requires a caller-supplied Grove request context');
+    }
+    const runtime = deps.resolveRequestRuntime(req);
+    const scope = projectScopeFromRequestContext(ctx);
+    return withDatabase(runtime.db, () =>
+      handleGetEmbeddingStatus(ctx.projectVaultDir, {
+        scope,
+        groveId: ctx.groveId ?? null,
+      }),
+    );
+  };
+}
+
 export function handleEmbeddingDetails(
   manager: EmbeddingManager,
-  options: { projectId?: string | null } = {},
+  options: {
+    projectId?: string | null;
+    canopyDescribe: CanopyDescribeBacklog;
+  },
 ): RouteResponse {
   const details = manager.getDetails({ projectId: options.projectId });
-  return { body: details };
+  return {
+    body: {
+      ...details,
+      canopy_describe: options.canopyDescribe,
+      namespace_breakdown: buildNamespaceBreakdown(details, options.canopyDescribe),
+    },
+  };
+}
+
+function buildNamespaceBreakdown(
+  details: ReturnType<EmbeddingManager['getDetails']>,
+  canopyDescribe: CanopyDescribeBacklog,
+): Record<string, EmbeddingNamespaceBreakdown> {
+  const namespaces = new Set([
+    ...Object.keys(details.by_namespace),
+    ...Object.keys(details.pending),
+    'canopy_entries',
+  ]);
+  const breakdown: Record<string, EmbeddingNamespaceBreakdown> = {};
+  for (const namespace of namespaces) {
+    const stats = details.by_namespace[namespace];
+    const embedded = stats?.embedded ?? 0;
+    let pending = details.pending[namespace] ?? 0;
+    let stale = stats?.stale ?? 0;
+    if (namespace === 'canopy_entries') {
+      pending += canopyDescribe.undescribed;
+      stale = Math.max(stale, canopyDescribe.stale);
+    }
+    breakdown[namespace] = {
+      embedded,
+      pending,
+      stale,
+      total: embedded + pending,
+    };
+  }
+  return breakdown;
+}
+
+export interface EmbeddingDetailsDeps {
+  resolveRequestRuntime: (req: RouteRequest) => { manager: EmbeddingManager; db: Database };
+  canopyDescribeBacklog: CanopyDescribeBacklogReader;
+}
+
+export function createEmbeddingDetailsHandler(deps: EmbeddingDetailsDeps): RouteHandler {
+  return async (req) => {
+    const ctx = req.requestContext;
+    if (!ctx) {
+      throw new Error('Embedding details requires a caller-supplied Grove request context');
+    }
+    const runtime = deps.resolveRequestRuntime(req);
+    const scopeParam = typeof req.query.scope === 'string' ? req.query.scope : 'project';
+    const scope = scopeParam === 'grove'
+      ? ALL_PROJECTS_SCOPE
+      : projectScopeFromRequestContext(ctx);
+    const projectId = scope.kind === 'project' ? scope.id : null;
+
+    return withDatabase(runtime.db, () =>
+      handleEmbeddingDetails(runtime.manager, {
+        projectId,
+        canopyDescribe: deps.canopyDescribeBacklog.read(scope),
+      }),
+    );
+  };
 }
 
 // Original single-Grove action handlers — kept exported because other
@@ -215,7 +311,7 @@ export interface EmbeddingActionDeps {
    * for `kind: 'project'` so namespace-aware actions can run with the
    * existing per-request runtime instead of re-opening the DB.
    */
-  resolveRequestRuntime: (req: RouteRequest) => { manager: EmbeddingManager; db?: Database };
+  resolveRequestRuntime: (req: RouteRequest) => { manager: EmbeddingManager; db: Database };
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
   mycoHome?: string;
@@ -283,29 +379,12 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
       if (scope.kind === 'all-groves') return dispatchAllGroves(run);
       if (scope.kind === 'grove') return [await dispatchSingleGrove(scope.grove_id, run)];
       // 'project' — embedding actions for spores/plans have project-
-      // scoped namespaces, so 'project' is the narrowed path. Today's
-      // EmbeddingManager fans out across the Grove DB regardless of the
-      // request's project_id; the narrowing happens via the scope-aware
-      // queue-depth filter when the manager is invoked under
-      // withDatabase. Use the request runtime so non-Grove (legacy)
-      // deployments still work.
+      // scoped namespaces, so 'project' is the narrowed path. The
+      // request runtime is already Grove-bound by the action scope.
       const runtime = deps.resolveRequestRuntime(req);
       const slug = loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id;
-      // The legacy resolver may surface a runtime without a DB handle
-      // when the request lacks Grove context. Surface that explicitly
-      // as a per-Grove failure rather than passing `undefined as
-      // Database` and trusting the manager not to reach for it.
-      if (!runtime.db) {
-        return [{
-          grove_id: scope.grove_id,
-          grove_slug: slug,
-          ok: false,
-          error: 'embedding action requires a Grove-scoped database; request context is missing one',
-        } as PerGroveResultBase & T];
-      }
-      const runtimeDb: Database = runtime.db;
       return [await wrapPerGroveResult(scope.grove_id, slug, () =>
-        run(runtime.manager, runtimeDb),
+        run(runtime.manager, runtime.db),
       )];
     });
   }

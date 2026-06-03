@@ -9,7 +9,7 @@ import {
   tryResolveRequestContextForVault,
   UnauthorizedRequestContextError,
   type MycoRequestContext,
-} from '../tools/request-context.js';
+} from '../grove/request-context.js';
 import { createMcpProtocolServer } from './server.js';
 import type { Logger } from '../daemon/logger.js';
 

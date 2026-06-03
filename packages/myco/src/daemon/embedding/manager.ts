@@ -43,6 +43,9 @@ const EMBEDDING_MANAGER_CONCURRENCY = 2;
 // ---------------------------------------------------------------------------
 
 export class EmbeddingManager {
+  /** Last vector count per namespace at which hubness stats were recomputed. */
+  private lastHubnessCount = new Map<string, number>();
+
   constructor(
     private vectorStore: VectorStore,
     private embeddingProvider: ManagerEmbeddingProvider,
@@ -278,6 +281,12 @@ export class EmbeddingManager {
       orphans_cleaned += this.sweepOrphans(namespace);
     }
 
+    // Phase 4: Refresh the hubness baseline for the spore namespace once the
+    // backfill has settled and the corpus size changed. This is what lets
+    // per-prompt injection demote central "hub" spores. O(n^2), so it is
+    // gated on a settled, size-changed corpus rather than run every cycle.
+    this.maybeRecomputeHubness('spores');
+
     const duration_ms = Date.now() - start;
 
     if (embedded > 0 || stale_reembedded > 0 || orphans_cleaned > 0) {
@@ -296,6 +305,36 @@ export class EmbeddingManager {
     }
 
     return { embedded, stale_reembedded, orphans_cleaned, duration_ms };
+  }
+
+  /**
+   * Recompute and persist the corpus distance distribution (hubness baseline)
+   * for a namespace. Exposed for tests and ops; the reconcile loop calls it
+   * via {@link maybeRecomputeHubness}.
+   */
+  recomputeHubness(namespace: string): { records: number } {
+    const stats = this.vectorStore.computeHubnessStats(namespace);
+    if (stats.length > 0) this.vectorStore.upsertHubnessStats(namespace, stats);
+    this.logger.debug(
+      LOG_KINDS.EMBEDDING_RECONCILE,
+      `Hubness stats recomputed: ${stats.length} ${namespace} records`,
+      { namespace, records: stats.length },
+    );
+    return { records: stats.length };
+  }
+
+  /**
+   * Recompute hubness only when the namespace has settled (no pending embeds)
+   * and its vector count changed since the last recompute. Content-only
+   * re-embeds at a stable count are skipped — the hubness prior drifts slowly.
+   */
+  private maybeRecomputeHubness(namespace: string): void {
+    if (this.recordSource.getPendingCount(namespace) > 0) return;
+    const count = this.vectorStore.getEmbeddedIds(namespace).length;
+    if (count < 2) return;
+    if (this.lastHubnessCount.get(namespace) === count) return;
+    this.recomputeHubness(namespace);
+    this.lastHubnessCount.set(namespace, count);
   }
 
   /**

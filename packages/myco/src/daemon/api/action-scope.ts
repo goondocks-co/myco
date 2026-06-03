@@ -20,7 +20,7 @@
 
 import { z } from 'zod';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Schema

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleGetModels } from '@myco/daemon/api/models.js';
-import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
+import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;

@@ -18,8 +18,6 @@ import type { RequestPrincipal } from '../request-principal.js';
 import type { DaemonLogger } from '../logger.js';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import fs from 'node:fs';
-import path from 'node:path';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   listCandidatesWithCount,
@@ -39,6 +37,13 @@ import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
+import { isSafeSkillNameForFs } from '@myco/skills/names.js';
+import {
+  removePublishedSkillFileOrDirectory,
+  syncPublishedSkillSymlinks,
+} from '@myco/skills/publication.js';
+
+export { isSafeSkillNameForFs };
 
 /**
  * Tenant scope for a skill route that ran through `tenantRoute`. The wrapper
@@ -56,30 +61,6 @@ function tenantProjectScope(principal: RequestPrincipal): ProjectScope {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_LIST_OFFSET = 0;
-
-/**
- * Filesystem-safe shape for a skill `name`. The same regex is used as a
- * filesystem-path gate before `fs.rmSync(recursive, force)` and as a
- * defense-in-depth check before the resolved-path containment guard
- * (`path.relative` startsWith `..`).
- *
- * Rules:
- *   - lowercase a-z, 0-9, and hyphen only
- *   - must start with [a-z0-9]
- *   - length capped at 100 to keep symlink targets within typical PATH_MAX
- *
- * A skill_record row reaches this handler via team sync (peer Worker
- * push), and the name field is replayed onto the local filesystem to
- * cascade the delete. Without this gate, a peer-controlled name like
- * `../../etc` or `../../../foo` would resolve outside `.agents/skills/`
- * and `fs.rmSync({ recursive: true, force: true })` would happily walk
- * the traversed path.
- */
-const SAFE_SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,99}$/;
-
-export function isSafeSkillNameForFs(name: string): boolean {
-  return SAFE_SKILL_NAME_RE.test(name);
-}
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -425,17 +406,16 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
         // here). Deleting a skill from project B must remove B's files and
         // never the anchor project's.
         const projectRoot = resolveProjectRoot(principal.tenancy.projectVaultDir);
-        const skillsRoot = path.resolve(projectRoot, '.agents', 'skills');
-        const skillDir = path.resolve(skillsRoot, record.name);
-        const rel = path.relative(skillsRoot, skillDir);
-        if (rel.startsWith('..') || path.isAbsolute(rel) || rel === '') {
-          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: resolved path escapes skills root', {
-            name: record.name,
-            resolved: skillDir,
-          });
-          return result;
-        }
-        try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
+        try {
+          const removeResult = removePublishedSkillFileOrDirectory(projectRoot, record.name);
+          if (!removeResult.ok) {
+            logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: resolved path escapes skills root', {
+              name: record.name,
+              resolved: removeResult.skillDir,
+            });
+            return result;
+          }
+        } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
         }
         // Remove agent-specific symlinks (e.g., .claude/skills/<name>).
@@ -444,8 +424,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
         // (see symbionts/installer.ts), but the outer guard above means
         // we don't reach it with an unsafe name in the first place.
         try {
-          const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
-          syncSkillSymlinks(projectRoot, record.name, { remove: true });
+          syncPublishedSkillSymlinks(projectRoot, record.name, { remove: true });
         } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill symlinks', { name: record.name, error: String(err) });
         }

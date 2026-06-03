@@ -53,7 +53,7 @@ import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
-import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -68,6 +68,10 @@ export interface StopProcessorDeps {
   sessionBuffers: Map<string, EventBuffer>;
   transcriptMiner: TranscriptMiner;
   embeddingManager: EmbeddingManager;
+  /** Resolve the grove EmbeddingManager for a session's run context — used for
+   *  the title-summary agent run so it hits the session's grove store, not the
+   *  bootstrap anchor (anchor-leak Variant A). */
+  resolveEmbeddingManager: (requestContext: MycoRequestContext | undefined) => EmbeddingManager;
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   vaultDir: string;
@@ -189,6 +193,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionBuffers,
     transcriptMiner,
     embeddingManager,
+    resolveEmbeddingManager,
     logger,
     liveConfig,
     vaultDir,
@@ -233,7 +238,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger }, trigger);
+    sharedTriggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger }, trigger);
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);

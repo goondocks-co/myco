@@ -7,11 +7,11 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
-import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
+import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
 import { handleDeleteSkillRecord, createSkillRecordDeleteHandler, isSafeSkillNameForFs } from '@myco/daemon/api/skills.js';
 import { tenantRoute } from '@myco/daemon/api/route-helpers.js';
 import type { RequestPrincipal } from '@myco/daemon/request-principal.js';
-import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId;

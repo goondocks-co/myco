@@ -6,7 +6,7 @@
  */
 
 import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
-import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 

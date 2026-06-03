@@ -19,6 +19,7 @@ import {
   type VectorStore,
   type VectorSearchResult,
   type VectorStoreStats,
+  type HubnessStat,
 } from '@myco/daemon/embedding/types.js';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,19 @@ const METADATA_MODEL_INDEX = `
   CREATE INDEX IF NOT EXISTS idx_emb_meta_model
   ON embedding_metadata (namespace, model)`;
 
+// Per-record corpus distance distribution (hubness baseline). Recomputed
+// periodically by the reconcile loop; consumed by hubness-aware relevance
+// selection so central "hub" vectors are demoted unless unusually relevant.
+const HUBNESS_TABLE = `
+  CREATE TABLE IF NOT EXISTS hubness_stats (
+    namespace   TEXT NOT NULL,
+    record_id   TEXT NOT NULL,
+    dist_mean   REAL NOT NULL,
+    dist_std    REAL NOT NULL,
+    computed_at INTEGER NOT NULL,
+    PRIMARY KEY (namespace, record_id)
+  )`;
+
 /** Build the DDL for a single vec0 virtual table. */
 function vecTableDDL(namespace: EmbeddableNamespace): string {
   return `CREATE VIRTUAL TABLE IF NOT EXISTS vec_${namespace} USING vec0(
@@ -119,6 +133,7 @@ export class SqliteVecVectorStore implements VectorStore {
   private statsModelsStmt!: Statement;
   private staleIdsStmt!: Statement;
   private embeddedIdsStmt!: Statement;
+  private upsertHubnessStmt!: Statement;
 
   constructor(dbPath?: string) {
     // Ensure Database.setCustomSQLite has fired (libsqlite3 with extension support).
@@ -137,6 +152,7 @@ export class SqliteVecVectorStore implements VectorStore {
   private createSchema(): void {
     this.db.exec(METADATA_TABLE);
     this.db.exec(METADATA_MODEL_INDEX);
+    this.db.exec(HUBNESS_TABLE);
     for (const ns of EMBEDDABLE_NAMESPACES) {
       this.db.exec(vecTableDDL(ns));
     }
@@ -170,6 +186,14 @@ export class SqliteVecVectorStore implements VectorStore {
     this.embeddedIdsStmt = this.db.prepare(
       `SELECT record_id FROM embedding_metadata WHERE namespace = ?`
     );
+    this.upsertHubnessStmt = this.db.prepare(`
+      INSERT INTO hubness_stats (namespace, record_id, dist_mean, dist_std, computed_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (namespace, record_id) DO UPDATE SET
+        dist_mean = excluded.dist_mean,
+        dist_std = excluded.dist_std,
+        computed_at = excluded.computed_at
+    `);
 
     // Per-namespace statements
     for (const ns of EMBEDDABLE_NAMESPACES) {
@@ -185,10 +209,13 @@ export class SqliteVecVectorStore implements VectorStore {
         ns,
         this.db.prepare(`
           SELECT v.record_id, v.distance,
-                 em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata
+                 em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata,
+                 hs.dist_mean, hs.dist_std
           FROM vec_${ns} v
           LEFT JOIN embedding_metadata em
             ON em.namespace = '${ns}' AND em.record_id = v.record_id
+          LEFT JOIN hubness_stats hs
+            ON hs.namespace = '${ns}' AND hs.record_id = v.record_id
           WHERE v.embedding MATCH ?
             AND k = ?
           ORDER BY v.distance
@@ -347,6 +374,8 @@ export class SqliteVecVectorStore implements VectorStore {
               provider: row.provider,
               content_hash: row.content_hash,
               embedded_at: row.embedded_at,
+              ...(row.dist_mean != null ? { neighbor_mean: row.dist_mean } : {}),
+              ...(row.dist_std != null ? { neighbor_std: row.dist_std } : {}),
               ...(row.domain_metadata ? JSON.parse(row.domain_metadata as string) : {}),
             },
           });
@@ -466,6 +495,50 @@ export class SqliteVecVectorStore implements VectorStore {
     return pairs;
   }
 
+  computeHubnessStats(namespace: string): HubnessStat[] {
+    this.validateNamespace(namespace);
+    const ns = namespace as EmbeddableNamespace;
+
+    const allRows = this.db.prepare(
+      `SELECT record_id, embedding FROM vec_${ns}`,
+    ).all() as Array<{ record_id: string; embedding: Buffer }>;
+
+    if (allRows.length < 2) return [];
+
+    const searchStmt = this.searchStmts.get(ns)!;
+    const stats: HubnessStat[] = [];
+    for (const row of allRows) {
+      // KNN against the whole namespace; the row's distance to itself (~0) is
+      // dropped so the distribution reflects only the rest of the corpus.
+      const results = searchStmt.all(row.embedding, allRows.length) as Array<{
+        record_id: string;
+        distance: number;
+      }>;
+      const distances: number[] = [];
+      for (const match of results) {
+        if (match.record_id === row.record_id) continue;
+        distances.push(match.distance);
+      }
+      if (distances.length === 0) continue;
+      const mean = distances.reduce((a, b) => a + b, 0) / distances.length;
+      const variance =
+        distances.reduce((a, b) => a + (b - mean) ** 2, 0) / distances.length;
+      stats.push({ recordId: row.record_id, mean, std: Math.sqrt(variance) });
+    }
+    return stats;
+  }
+
+  upsertHubnessStats(namespace: string, stats: HubnessStat[]): void {
+    this.validateNamespace(namespace);
+    const now = Date.now();
+    const tx = this.db.transaction((rows: HubnessStat[]) => {
+      for (const s of rows) {
+        this.upsertHubnessStmt.run(namespace, s.recordId, s.mean, s.std, now);
+      }
+    });
+    tx(stats);
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -482,6 +555,7 @@ export class SqliteVecVectorStore implements VectorStore {
       this.statsModelsStmt,
       this.staleIdsStmt,
       this.embeddedIdsStmt,
+      this.upsertHubnessStmt,
     ];
     for (const stmt of stmts) {
       try { stmt?.finalize?.(); } catch { /* already finalized */ }
@@ -565,10 +639,13 @@ export class SqliteVecVectorStore implements VectorStore {
         ORDER BY distance
       )
       SELECT knn.record_id, knn.distance,
-             em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata
+             em.model, em.provider, em.content_hash, em.embedded_at, em.domain_metadata,
+             hs.dist_mean, hs.dist_std
       FROM knn
       INNER JOIN embedding_metadata em
         ON em.namespace = '${namespace}' AND em.record_id = knn.record_id
+      LEFT JOIN hubness_stats hs
+        ON hs.namespace = '${namespace}' AND hs.record_id = knn.record_id
       ${whereClause}
     `;
 

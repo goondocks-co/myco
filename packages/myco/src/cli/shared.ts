@@ -6,7 +6,7 @@ import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
 import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
-import { requestContextFromEnvironment } from '../tools/request-context.js';
+import { requestContextFromEnvironment } from '../grove/request-context.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 

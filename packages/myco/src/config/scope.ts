@@ -13,12 +13,12 @@ export interface ScopeEntry {
 }
 
 /**
- * SEED = current de-facto behavior (confirmed via spec review), plus the
- * update-channel correction (decision-46130740). Keys are leaf paths or block
- * prefixes (longest-prefix wins). Changing a row is the ONE place scope is
- * defined; merge + UI + validation follow. Task 4's sync test fails loudly for
- * any schema leaf this map miscovers, so treat that test as the safety net while
- * ratifying rows against the Zod tier schemas in schema.ts.
+ * Config scope registry.
+ *
+ * Keys are leaf paths or block prefixes (longest-prefix wins). This is the
+ * single source of truth for config scope; merge, UI, and validation should
+ * follow it. The scope-registry sync test fails loudly for schema leaves this
+ * map misses, so ratify changes against the Zod tier schemas in schema.ts.
  */
 export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // machine-only (locked)
@@ -27,15 +27,13 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'daemon.stale_session_threshold_ms': { home: 'grove', overridableBy: [] },
   'daemon.log_level': { home: 'machine', overridableBy: [] },
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },
-  'daemon.update_channel': { home: 'machine', overridableBy: [] }, // decision-46130740
-  // Legacy `update.channel` leaf. Task 5 (decision-46130740) retired it at
-  // runtime: the effective channel now reads/writes machine
+  'daemon.update_channel': { home: 'machine', overridableBy: [] },
+  // Legacy `update.channel` leaf. Runtime reads/writes machine
   // `daemon.update_channel` exclusively, and the loader lifts any legacy
-  // `update.channel` (from myco.yaml or local.yaml) to machine once, then
-  // strips it. `UpdateSchema` stays in MycoConfigSchema for back-compat, so
-  // `update.channel` is still an enumerated leaf — this bridge row keeps the
-  // scope-registry-sync coverage test green. Its home is machine to match the
-  // canonical sibling.
+  // `update.channel` from myco.yaml or local.yaml to machine once, then strips
+  // it. `UpdateSchema` stays in MycoConfigSchema for compatibility, so this
+  // bridge row keeps scope-registry-sync coverage aligned with the canonical
+  // sibling.
   'update.channel': { home: 'machine', overridableBy: [] },
   // machine + Personal (deliberate change — see spec §A1)
   'notifications': { home: 'machine', overridableBy: ['local'] },

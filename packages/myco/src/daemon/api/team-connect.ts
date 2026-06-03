@@ -37,7 +37,7 @@ import { loadGroveRecord } from '@myco/grove/registry.js';
 import { teamRegistry, withProjectRemoved } from '@myco/team/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
-import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { isGroveScoped, type MycoRequestContext } from '@myco/grove/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -48,7 +48,7 @@ function makeHandlers() {
   };
   return createAgentRunHandlers({
     vaultDir: '/tmp/fake-vault',
-    embeddingManager: {} as never,
+    resolveEmbeddingManager: () => ({} as never),
     logger: logger as never,
   });
 }

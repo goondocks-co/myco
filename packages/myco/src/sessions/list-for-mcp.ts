@@ -10,7 +10,7 @@ import { listSessions } from '@myco/db/queries/sessions.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
-} from '@myco/tools/request-context.js';
+} from '@myco/grove/request-context.js';
 
 export interface SessionSummary {
   id: string;

@@ -47,7 +47,7 @@ import {
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
@@ -357,8 +357,10 @@ function buildRegisteredProjectScope(input: {
     databasePath: input.databasePath,
     source: 'explicit',
     // Daemon-internal sweep over registered projects: tenancy is derived
-    // from the Grove registry, not supplied by an external caller.
-    tenancySource: 'synthesized',
+    // from the Grove registry, not supplied by an external caller. This is
+    // project-scoped for DB reads/writes, but it is still rejected by external
+    // request-principal authorization because it is not caller tenancy.
+    tenancySource: 'daemon',
   };
   return {
     grove: input.grove,

@@ -15,8 +15,8 @@
  * choice explicit.
  */
 
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const TEST_VAULT_DIR = '/tmp/myco-test/.myco';
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;

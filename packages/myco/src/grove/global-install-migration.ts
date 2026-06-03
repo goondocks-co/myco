@@ -26,7 +26,7 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
-import { propagateLegacyMachineId } from '../daemon/machine-id.js';
+import { propagateLegacyMachineId } from '@myco/machine-id.js';
 import { propagateLegacySecrets } from '../config/secrets.js';
 import { epochSeconds } from '@myco/constants.js';
 

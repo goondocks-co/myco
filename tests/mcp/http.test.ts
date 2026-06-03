@@ -7,7 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { vi } from '../helpers/vi-shim.js';

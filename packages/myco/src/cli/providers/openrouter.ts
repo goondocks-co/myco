@@ -1,7 +1,5 @@
 import { CloudEmbeddingBase } from './cloud-embedding-base.js';
-
-/** Environment variable for OpenRouter API key (stored in secrets.env). */
-export const OPENROUTER_API_KEY_ENV = 'MYCO_OPENROUTER_API_KEY';
+import { OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 export class OpenRouterEmbeddingProvider extends CloudEmbeddingBase {
   constructor(opts?: { api_key?: string; model?: string }) {

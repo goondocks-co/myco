@@ -11,17 +11,17 @@ import {
   getTeamMachineId,
   getTeamSyncProtocolVersion,
   resetTeamContext,
-} from '@myco/daemon/team-context.js';
+} from '@myco/team/context.js';
 
 // ---------------------------------------------------------------------------
-// Mock getMachineId so team-context tests are environment-independent.
+// Mock getMachineId so team context tests are environment-independent.
 // The persisted ~/.myco/machine_id value varies per machine; pin it to a
 // fixed sentinel so assertions don't depend on the real filesystem.
 // ---------------------------------------------------------------------------
 
 const PERSISTED_MACHINE_ID = 'test_machine_abc';
 
-mock.module('@myco/daemon/machine-id.js', () => ({
+mock.module('@myco/machine-id.js', () => ({
   getMachineId: () => PERSISTED_MACHINE_ID,
 }));
 

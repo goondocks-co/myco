@@ -11,7 +11,7 @@ import { MycoConfigSchema } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { assertGroveProjectId } from '@myco/grove/ids';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,

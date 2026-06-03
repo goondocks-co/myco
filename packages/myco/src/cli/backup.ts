@@ -7,7 +7,7 @@ import {
   readSnapshotHeader,
   restoreBackup,
 } from '@myco/daemon/backup.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import {
   resolveBackupsRoot,
   resolveGroveDbPath,

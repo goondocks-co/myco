@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { handleMycoSkills } from '@myco/tools/skills.js';
 import { DaemonClient } from '@myco/hooks/client.js';
-import { REQUEST_CONTEXT_HEADERS, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { REQUEST_CONTEXT_HEADERS, type MycoRequestContext } from '@myco/grove/request-context.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
   return {

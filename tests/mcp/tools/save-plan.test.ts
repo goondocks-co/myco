@@ -16,7 +16,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getPlan, upsertPlan } from '@myco/db/queries/plans.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 function mockClient(): DaemonClient {

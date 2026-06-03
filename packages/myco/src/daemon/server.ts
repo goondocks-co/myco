@@ -12,9 +12,11 @@ import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   REQUEST_CONTEXT_AUTH_ENV,
   UnauthorizedRequestContextError,
+  UnknownRequestContextError,
   requestContextFromHttpHeaders,
+  requestContextFromTenancyIds,
   type MycoRequestContext,
-} from '../tools/request-context.js';
+} from '../grove/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';
@@ -320,9 +322,7 @@ export class DaemonServer {
       try {
         const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
-        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
-          expectedAuthToken: this.authToken,
-        });
+        const requestContext = this.resolveRouteRequestContext(match.params, req.headers);
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
@@ -368,6 +368,13 @@ export class DaemonServer {
           // daemon-issued bearer token. Refuse before any handler runs.
           res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
           res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: error.message }));
+          return;
+        }
+        if (error instanceof UnknownRequestContextError) {
+          // Stale/guessed Grove or project id (e.g. in a resource URL): the
+          // requested tenancy doesn't exist. 404, not a 500 server error.
+          res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({ error: 'unknown_tenancy', message: error.message }));
           return;
         }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
@@ -473,6 +480,32 @@ export class DaemonServer {
       res.end(JSON.stringify({ error: 'ui_dev_proxy_failed' }));
       return true;
     }
+  }
+
+  /**
+   * Resolve the request context for a matched route. Resource routes that
+   * browsers load directly (`<img>`/`<video>`/file downloads via the
+   * `/api/g/:groveId/p/:projectId/...` prefix) cannot attach the `x-myco-*`
+   * tenancy headers the scripted API uses, so they carry (Grove, project) in
+   * the URL path. When both params are present, resolve tenancy from the URL;
+   * otherwise fall back to the header-based resolver. No existing route
+   * declares both `:groveId` and `:projectId`, so this only engages for the
+   * new URL-scoped resource routes.
+   */
+  private resolveRouteRequestContext(
+    params: Record<string, string>,
+    headers: http.IncomingMessage['headers'],
+  ): MycoRequestContext {
+    if (params.groveId && params.projectId) {
+      return requestContextFromTenancyIds(
+        { groveId: params.groveId, projectId: params.projectId },
+        this.vaultDir,
+        { headers, expectedAuthToken: this.authToken },
+      );
+    }
+    return requestContextFromHttpHeaders(headers, this.vaultDir, {
+      expectedAuthToken: this.authToken,
+    });
   }
 
   private databaseForRequestContext(context: MycoRequestContext): Database | null {

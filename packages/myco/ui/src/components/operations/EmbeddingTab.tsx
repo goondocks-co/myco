@@ -78,11 +78,12 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
         </thead>
         <tbody>
           {EMBEDDABLE_NAMESPACES.map((ns, idx) => {
+            const composed = data.namespace_breakdown?.[ns];
             const nsStats = data.by_namespace[ns];
-            const embedded = nsStats?.embedded ?? 0;
-            const stale = nsStats?.stale ?? 0;
-            const pending = data.pending[ns] ?? 0;
-            const total = embedded + pending;
+            const embedded = composed?.embedded ?? nsStats?.embedded ?? 0;
+            const pending = composed?.pending ?? data.pending[ns] ?? 0;
+            const stale = composed?.stale ?? nsStats?.stale ?? 0;
+            const total = composed?.total ?? embedded + pending;
             return (
               <tr
                 key={ns}
@@ -318,6 +319,7 @@ export function EmbeddingTab() {
   // --- Aggregate totals ---
   const totalPending = Object.values(data.pending).reduce((a, b) => a + b, 0);
   const totalStale = Object.values(data.by_namespace).reduce((a, ns) => a + ns.stale, 0);
+  const canopyDescribePending = data.canopy_describe?.pending ?? 0;
 
   return (
     <div className="space-y-6">
@@ -341,10 +343,20 @@ export function EmbeddingTab() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <StatCard label="Total Vectors" value={String(data.total)} sparklineData={totalHistory} accent="sage" />
         <StatCard label="Pending" value={String(totalPending)} accent={totalPending > 0 ? 'ochre' : 'outline'} />
         <StatCard label="Stale" value={String(totalStale)} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
+        <StatCard
+          label="Canopy Scribe"
+          value={String(canopyDescribePending)}
+          sublabel={
+            canopyDescribePending > 0
+              ? `${data.canopy_describe?.undescribed ?? 0} new, ${data.canopy_describe?.stale ?? 0} stale`
+              : 'fresh'
+          }
+          accent={canopyDescribePending > 0 ? 'ochre' : 'outline'}
+        />
       </div>
 
       {/* Namespace breakdown — always Grove-wide (the vector store

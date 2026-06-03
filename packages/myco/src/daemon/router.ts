@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 export interface RouteRequest {
   body: unknown;
@@ -17,6 +17,15 @@ export interface RouteResponse {
 }
 
 export type RouteHandler = (req: RouteRequest) => Promise<RouteResponse>;
+
+/**
+ * Minimal surface a route-registrar module needs from the daemon server. Shared
+ * by the per-domain registrars under `daemon/routes/` so the registration shape
+ * lives in one place as more route groups are extracted from `main.ts`.
+ */
+export interface RouteRegistrar {
+  registerRoute(method: string, routePath: string, handler: RouteHandler): void;
+}
 
 interface RouteEntry {
   method: string;

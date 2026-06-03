@@ -7,7 +7,7 @@ import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeRequest(query: Record<string, string>, requestContext?: MycoRequestContext): RouteRequest {

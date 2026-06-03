@@ -43,7 +43,7 @@ import {
   resolveServiceDaemonStatePath,
   resolveServiceDir,
 } from '@myco/grove/paths.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { readJsonFile } from '../utils/json.js';
 import { derivePort } from './port.js';
 

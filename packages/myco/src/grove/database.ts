@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
+import { getMachineId } from '@myco/machine-id.js';
 import { resolveGroveDbPath, resolveMycoHome } from '@myco/grove/paths.js';
 
 export interface EnsureGroveDatabaseResult {

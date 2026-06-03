@@ -18,7 +18,7 @@ import {
   requestContextHeaders,
   resolveRequestContextForVault,
   type MycoRequestContext,
-} from './request-context.js';
+} from '@myco/grove/request-context.js';
 import { extractErrorMessage, type ToolFailure } from './error.js';
 
 // ---------------------------------------------------------------------------

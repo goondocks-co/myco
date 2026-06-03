@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { getCostProvider, resolveCost } from '@myco/agent/cost/index.js';
-import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
+import { OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();

@@ -201,6 +201,35 @@ export function hasInjectionRecord(
   return row !== undefined && row !== null;
 }
 
+/**
+ * Collect the spore IDs already injected into a session across all prior
+ * prompts. Used to suppress re-injecting the same spore turn after turn (the
+ * "same observation every prompt" symptom). Reads `spore_ids` from the stored
+ * trigger metadata of each `myco:inject:spores:<sessionId>:*` record.
+ */
+export function getSessionInjectedSporeIds(sessionId: string): Set<string> {
+  const db = getDatabase();
+  const rows = db
+    .prepare(
+      `SELECT tool_input FROM activities
+       WHERE session_id = ? AND content_hash LIKE 'myco:inject:spores:%'`,
+    )
+    .all(sessionId) as Array<{ tool_input: string | null }>;
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (!row.tool_input) continue;
+    try {
+      const parsed = JSON.parse(row.tool_input) as { spore_ids?: unknown };
+      if (Array.isArray(parsed.spore_ids)) {
+        for (const id of parsed.spore_ids) if (typeof id === 'string') ids.add(id);
+      }
+    } catch {
+      // Malformed tool_input — skip; dedup is best-effort.
+    }
+  }
+  return ids;
+}
+
 function isUniqueConstraintError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const code = (err as { code?: string }).code ?? '';

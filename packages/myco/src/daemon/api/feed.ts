@@ -1,6 +1,6 @@
 import { getActivityFeed } from '@myco/db/queries/feed.js';
 import { FEED_DEFAULT_LIMIT } from '@myco/constants.js';
-import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------

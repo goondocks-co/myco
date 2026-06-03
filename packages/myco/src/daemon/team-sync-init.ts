@@ -56,7 +56,7 @@ import {
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove } from './scope-iteration.js';
 import { withDatabase, getDatabase } from '@myco/db/client.js';

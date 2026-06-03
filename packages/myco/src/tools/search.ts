@@ -12,7 +12,7 @@ import type {
   ReleaseStateValue,
 } from '@myco/db/queries/release-provenance.js';
 import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
-import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
+import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------

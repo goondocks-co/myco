@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { getDatabase } from '@myco/db/client.js';
-import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db';
@@ -97,7 +97,7 @@ describe('vault_search_canopy', () => {
           metadata: { project_id: 'p', path: 'auth/login.ts', language: 'typescript' },
         },
       ],
-    } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+    } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
@@ -147,7 +147,7 @@ describe('vault_search_canopy', () => {
           },
         ];
       },
-    } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+    } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
@@ -166,7 +166,7 @@ describe('vault_search_canopy', () => {
         capturedFilters = opts?.filters;
         return [];
       },
-    } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+    } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
@@ -196,7 +196,7 @@ describe('vault_search_canopy', () => {
           metadata: { project_id: 'p', path: 'ghost.ts', language: 'typescript' },
         },
       ],
-    } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+    } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
