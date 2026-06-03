@@ -63,9 +63,7 @@ import {
   validateSkillContent,
   checkFrontmatterPreservation,
   descriptionSimilarity,
-  topicOverlapSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
-  TOPIC_OVERLAP_THRESHOLD,
 } from './skill-validator.js';
 import {
   writeStagedSkill,
@@ -98,7 +96,6 @@ import {
   parseJsonObjectParam,
   parseOptionalStringArray,
   parsePlanStringArrayField,
-  parseSupersedesNames,
   planSourceRefsAsJson,
   planStringArrayAsJson,
   reconciliationCreateEntries,
@@ -108,12 +105,16 @@ import {
   reconciliationReason,
   reconciliationRetainEntries,
   sameStringSet,
-  validateCandidateSourceIds,
   validateIdentifiedPlanEntry,
   validateReconciliationPlanMetadata,
   parsedExistingQualityFailures,
   type JsonRecord,
 } from './skill-survey-reconciliation.js';
+import {
+  candidateOverlapError,
+  checkCandidateCoverage as checkCandidateCoverageForRows,
+  validateCandidateWrite,
+} from './skill-candidate-validation.js';
 
 const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
@@ -126,63 +127,6 @@ export function createSkillTools(deps: VaultToolDeps) {
   const { agentId, machineId, projectRoot, vaultDir, embeddingManager, dryRun } = deps;
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   const scope = projectScopeFromVaultToolDeps(deps);
-
-  /**
-   * Find the best-matching existing candidate (if any) whose topic
-   * overlaps the proposed new topic. Uses a two-path check:
-   *
-   * 1. Jaccard (`descriptionSimilarity` >= DESCRIPTION_DUPLICATE_THRESHOLD)
-   *    — catches classic near-duplicates with similar token counts.
-   * 2. Overlap coefficient (`topicOverlapSimilarity` >= TOPIC_OVERLAP_THRESHOLD)
-   *    — catches asymmetric kebab-case vs. natural-language duplicates
-   *    where a short topic's significant tokens are mostly a subset of
-   *    the longer one. Jaccard misses these because the inflated union
-   *    pushes the score below 0.4 even when the overlap is strong.
-   *
-   * Returns the candidate with the highest matching score under either
-   * metric. Reported `score` is the max of the two so the rejection
-   * message surfaces the stronger signal.
-   */
-  function findOverlappingCandidates(
-    newTopic: string,
-    existing: ReturnType<typeof listCandidates>,
-    options: { excludeId?: string } = {},
-  ): Array<{ candidate: typeof existing[number]; score: number }> {
-    const matches: Array<{ candidate: typeof existing[number]; score: number }> = [];
-    for (const candidate of existing) {
-      if (candidate.id === options.excludeId) continue;
-      const jaccard = descriptionSimilarity(newTopic, candidate.topic);
-      const overlap = topicOverlapSimilarity(newTopic, candidate.topic);
-      const hitsJaccard = jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD;
-      const hitsOverlap = overlap >= TOPIC_OVERLAP_THRESHOLD;
-      if (!hitsJaccard && !hitsOverlap) continue;
-      const score = Math.max(jaccard, overlap);
-      matches.push({ candidate, score });
-    }
-    return matches.sort((a, b) => b.score - a.score);
-  }
-
-  /**
-   * Build a status-aware rejection message. Each status gets guidance
-   * that matches the lifecycle: dismissed → stay away; generated →
-   * already fulfilled; approved → already queued; identified → update
-   * the existing entry instead of duplicating.
-   */
-  function candidateOverlapError(match: { status: string; topic: string }): string {
-    const common = `already has an existing candidate with a similar topic: "${match.topic}"`;
-    switch (match.status) {
-      case CANDIDATE_STATUS.DISMISSED:
-        return `Note: similar to dismissed candidate "${match.topic}". If this is a broader domain that subsumes the dismissed topic, creation is allowed.`;
-      case CANDIDATE_STATUS.GENERATED:
-        return `Candidate rejected: the vault ${common} that was already fulfilled by a generated skill. Do not re-identify.`;
-      case CANDIDATE_STATUS.APPROVED:
-        return `Candidate rejected: the vault ${common} that is already queued in approved state. Wait for the generate task to process it.`;
-      case CANDIDATE_STATUS.IDENTIFIED:
-        return `Candidate rejected: the vault ${common} already in the review queue. Update the existing candidate with new evidence (action: update) instead of creating a duplicate.`;
-      default:
-        return `Candidate rejected: the vault ${common} in status '${match.status}'.`;
-    }
-  }
 
   function hydrateIdentifiedPlanEntriesFromBundles(
     plan: JsonRecord,
@@ -674,118 +618,14 @@ export function createSkillTools(deps: VaultToolDeps) {
     topic: string;
     supersedes?: string | null;
     excludeCandidateId?: string;
-  }): { error?: Record<string, unknown>; dismissedMatch?: ReturnType<typeof findOverlappingCandidates>[number] } {
-    const supersedesSet = new Set(parseSupersedesNames(args.supersedes));
-
+  }) {
     const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
-    const topicLower = args.topic.toLowerCase();
-    const overlapping = activeSkills.filter((s) => {
-      if (supersedesSet.has(s.name)) return false;
-      const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
-      if (nameWords.length < 2) return false;
-      return nameWords.every((w: string) => topicLower.includes(w));
-    });
-    if (overlapping.length > 0) {
-      return {
-        error: {
-          error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
-          overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
-        },
-      };
-    }
-
     const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
-    const matches = findOverlappingCandidates(args.topic, allExisting, {
-      excludeId: args.excludeCandidateId,
+    return checkCandidateCoverageForRows({
+      ...args,
+      activeSkills,
+      existingCandidates: allExisting,
     });
-    const match = matches.find((entry) => entry.candidate.status !== CANDIDATE_STATUS.DISMISSED)
-      ?? matches[0];
-    if (!match) return {};
-    if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
-      return { dismissedMatch: match };
-    }
-    return {
-      error: {
-        error: candidateOverlapError(match.candidate),
-        existing_candidate: {
-          id: match.candidate.id,
-          status: match.candidate.status,
-          topic: match.candidate.topic,
-        },
-        similarity: match.score,
-      },
-    };
-  }
-
-  function validateCandidateWrite(args: {
-    status?: string;
-    source_ids?: string;
-    evidence_bundle_id?: string | null;
-    quality_score?: number | null;
-    quality_failures?: string;
-    coverage_matches?: string;
-  }, existing?: {
-    status: string;
-    source_ids: string;
-    evidence_bundle_id: string | null;
-    quality_score: number | null;
-    quality_failures: string;
-    coverage_matches: string;
-  }): { error?: string; normalizedSourceIds?: string } {
-    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
-    const sourceIds = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-      ? args.source_ids ?? existing?.source_ids
-      : args.source_ids;
-    const sourceIdsValidation = validateCandidateSourceIds(sourceIds, {
-      required: resultingStatus === CANDIDATE_STATUS.IDENTIFIED,
-      minRefs: resultingStatus === CANDIDATE_STATUS.IDENTIFIED ? IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS : 1,
-    });
-    if (sourceIdsValidation.error) return { error: sourceIdsValidation.error };
-
-    const qualityFailures = parseJsonArrayParam(
-      'quality_failures',
-      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-        ? args.quality_failures ?? existing?.quality_failures
-        : args.quality_failures,
-    );
-    if (qualityFailures.error) return { error: qualityFailures.error };
-
-    const coverageMatches = parseJsonArrayParam(
-      'coverage_matches',
-      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
-        ? args.coverage_matches ?? existing?.coverage_matches
-        : args.coverage_matches,
-    );
-    if (coverageMatches.error) return { error: coverageMatches.error };
-
-    if (
-      (args.status === CANDIDATE_STATUS.DEFERRED || args.status === CANDIDATE_STATUS.DISMISSED) &&
-      (!qualityFailures.array || qualityFailures.array.length === 0)
-    ) {
-      return { error: 'quality_failures must include at least one canonical reason code for deferred or dismissed skill candidates' };
-    }
-
-    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) {
-      return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
-    }
-
-    const evidenceBundleId = args.evidence_bundle_id ?? existing?.evidence_bundle_id ?? null;
-    if (!evidenceBundleId || evidenceBundleId.trim().length === 0) {
-      return { error: 'evidence_bundle_id is required for identified skill candidates' };
-    }
-
-    const qualityScore = args.quality_score ?? existing?.quality_score ?? null;
-    if (qualityScore === null || qualityScore < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
-      return {
-        error: `quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE} for identified skill candidates`,
-      };
-    }
-
-    if (!qualityFailures.array || qualityFailures.array.length > 0) {
-      return { error: 'quality_failures must be an empty array for identified skill candidates' };
-    }
-
-    return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
   }
 
   function validateAndApplySkillSurveyReconciliation(args: {
