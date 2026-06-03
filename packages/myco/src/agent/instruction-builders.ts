@@ -23,7 +23,7 @@ import {
 } from '@myco/canopy/map/inputs-hash.js';
 import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
-import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import type { AgentTeamStatusPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
   type MycoRequestContext,
@@ -1088,7 +1088,7 @@ export async function buildTaskInstruction(
   projectRoot?: string,
   retrievalProvider?: SemanticSearchProvider,
   config?: MycoConfig,
-  getTeamClient?: () => TeamSyncClient | null,
+  getTeamClient?: () => AgentTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<BuiltTaskInstruction | undefined> {
   switch (taskName) {

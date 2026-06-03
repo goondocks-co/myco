@@ -467,8 +467,8 @@ export interface RunOptions {
   taskParams?: Record<string, string | number | boolean>;
   /** Resume a previous run by its ID (re-uses existing session state). */
   resumeRunId?: string;
-  /** Embedding manager for immediate vector operations during agent tool calls. */
-  embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
+  /** Embedding runtime for immediate vector operations during agent tool calls. */
+  embeddingManager?: import('@myco/agent/runtime/ports.js').AgentEmbeddingPort;
   /** Resolved Grove/project request context for in-process vault tool access. */
   requestContext?: MycoRequestContext;
   /**

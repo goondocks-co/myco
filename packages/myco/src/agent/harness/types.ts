@@ -1,5 +1,5 @@
 import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
-import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage } from '@myco/agent/types.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
@@ -16,7 +16,7 @@ export interface HarnessToolSurface {
   vaultDir?: string;
   requestContext?: MycoRequestContext;
   readOnly?: boolean;
-  embeddingManager?: EmbeddingManager;
+  embeddingManager?: AgentEmbeddingPort;
   /**
    * If true, the scoped tool server wraps write-annotated tools to record
    * intents instead of mutating the vault. Set by the executor from

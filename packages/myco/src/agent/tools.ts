@@ -40,8 +40,7 @@ import { createCanopyTools } from './tools/canopy-tools.js';
 import { textResult, toSdkMcpToolDefinitions } from './tools/types.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
-import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
-import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 
 // Re-exports for backward compatibility
@@ -54,8 +53,8 @@ export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } fr
 /** Options for createVaultTools beyond the required agentId and runId. */
 export interface VaultToolOptions {
   turnOffset?: number;
-  embeddingManager?: EmbeddingManager;
-  teamClient?: TeamSyncClient | null;
+  embeddingManager?: AgentEmbeddingPort;
+  teamClient?: AgentTeamSearchPort | null;
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;

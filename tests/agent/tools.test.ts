@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { getDatabase } from '@myco/db/client.js';
-import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
+import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
 mock.module('@myco/intelligence/embed-query.js', () => ({
@@ -768,7 +768,7 @@ describe('vault tools', () => {
             metadata: { session_id: completedSession.id, observation_type: 'decision' },
           },
         ],
-      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+      } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
       const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
@@ -819,7 +819,7 @@ describe('vault tools', () => {
       const embeddingManager = {
         embedQuery: async () => [0.1, 0.2],
         searchVectors,
-      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+      } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
       const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
@@ -883,7 +883,7 @@ describe('vault tools', () => {
       const embeddingManager = {
         embedQuery: async () => [0.1, 0.2],
         searchVectors,
-      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+      } as Pick<AgentEmbeddingPort, 'embedQuery' | 'searchVectors'> as AgentEmbeddingPort;
 
       const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
         embeddingManager,

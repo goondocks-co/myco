@@ -3,8 +3,7 @@
  */
 
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
-import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
-import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import type { AgentEmbeddingPort, AgentTeamSearchPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
   resolveRequestContextForVault,
@@ -76,8 +75,8 @@ export function dryRunResult(
 export interface VaultToolDeps {
   agentId: string;
   runId: string;
-  embeddingManager?: EmbeddingManager;
-  teamClient?: TeamSyncClient | null;
+  embeddingManager?: AgentEmbeddingPort;
+  teamClient?: AgentTeamSearchPort | null;
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;

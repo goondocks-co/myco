@@ -1,4 +1,4 @@
-import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
+import type { AgentVectorSearchResult } from '@myco/agent/runtime/ports.js';
 
 export interface SemanticShortlistProvider {
   embedQuery(text: string): Promise<number[] | null>;
@@ -7,7 +7,7 @@ export interface SemanticShortlistProvider {
     limit?: number;
     threshold?: number;
     filters?: Record<string, unknown>;
-  }): VectorSearchResult[];
+  }): AgentVectorSearchResult[];
 }
 
 export interface SemanticShortlistOptions {

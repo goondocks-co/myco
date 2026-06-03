@@ -30,7 +30,6 @@ import {
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
-import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
   TOOL_DEFINITIONS,
   COLLECTIVE_TOOL_DEFINITIONS,
@@ -90,6 +89,15 @@ export interface DeliveryDecision {
   reason: 'missing-symbiont' | 'session-start-supported' | 'session-start-disabled' | 'no-session-start';
 }
 
+interface CortexTeamStatus {
+  connected: boolean;
+  capabilities?: string[];
+}
+
+interface CortexTeamStatusPort {
+  getCollectiveStatus(): Promise<CortexTeamStatus>;
+}
+
 function toCortexToolGuidance(
   tool: Pick<ToolDefinition, 'name' | 'cortex'>,
 ): CortexToolGuidance | null {
@@ -111,7 +119,7 @@ export const RETRIEVAL_GUIDANCE: CortexToolGuidance[] = ALL_CORTEX_TOOL_DEFINITI
 
 export async function resolveCortexCapabilities(
   config: Pick<MycoConfig, 'team'>,
-  getTeamClient?: () => TeamSyncClient | null,
+  getTeamClient?: () => CortexTeamStatusPort | null,
 ): Promise<CortexCapabilities> {
   const teamClient = getTeamClient?.() ?? null;
   const teamEnabled = Boolean(config.team.enabled && teamClient);
@@ -323,7 +331,7 @@ export interface CortexInstructionPayload {
 export async function buildCortexInstructionsInput(
   config: MycoConfig,
   vaultDir: string,
-  getTeamClient?: () => TeamSyncClient | null,
+  getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload> {
   // Probe the Canopy Map state once at build time so the prompt can branch
@@ -461,7 +469,7 @@ export async function buildCortexInstructionsInput(
 export async function buildScheduledCortexInstruction(
   config: MycoConfig,
   vaultDir: string,
-  getTeamClient?: () => TeamSyncClient | null,
+  getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload | undefined> {
   const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
