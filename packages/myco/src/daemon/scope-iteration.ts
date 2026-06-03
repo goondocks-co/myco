@@ -357,8 +357,10 @@ function buildRegisteredProjectScope(input: {
     databasePath: input.databasePath,
     source: 'explicit',
     // Daemon-internal sweep over registered projects: tenancy is derived
-    // from the Grove registry, not supplied by an external caller.
-    tenancySource: 'synthesized',
+    // from the Grove registry, not supplied by an external caller. This is
+    // project-scoped for DB reads/writes, but it is still rejected by external
+    // request-principal authorization because it is not caller tenancy.
+    tenancySource: 'daemon',
   };
   return {
     grove: input.grove,

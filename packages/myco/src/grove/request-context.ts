@@ -113,7 +113,7 @@ export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'ur
  * distinction through transport so a later resolver can reject
  * synthesized tenancy and fail loud.
  */
-export type TenancySource = 'caller' | 'synthesized';
+export type TenancySource = 'caller' | 'synthesized' | 'daemon';
 
 /**
  * The single predicate for "this request's tenancy was supplied by the
@@ -130,6 +130,12 @@ export function isCallerTenancy(
   context: { tenancySource?: TenancySource } | undefined,
 ): boolean {
   return context?.tenancySource === 'caller';
+}
+
+export function isProjectScopedTenancy(
+  context: { tenancySource?: TenancySource } | undefined,
+): boolean {
+  return context?.tenancySource === 'caller' || context?.tenancySource === 'daemon';
 }
 
 export interface MycoRequestContext {
@@ -154,8 +160,9 @@ export interface MycoRequestContext {
   source: RequestContextSource;
   /**
    * Whether the (project, grove) tenancy was supplied by the caller
-   * (`'caller'`) or synthesized from the daemon's fallback vault
-   * (`'synthesized'`). See {@link TenancySource}.
+   * (`'caller'`), synthesized from the daemon's fallback vault
+   * (`'synthesized'`), or derived by daemon-internal iteration over the
+   * Grove registry (`'daemon'`). See {@link TenancySource}.
    */
   tenancySource: TenancySource;
 }
@@ -567,7 +574,7 @@ export function projectScopeFromRequestContext(
   // rows to an unauthorized request. Only a caller-asserted, Grove-bound
   // context may bind to a specific project scope; everything else resolves to
   // GLOBAL_SCOPE (`project_id IS NULL`), which returns zero cross-project rows.
-  return isCallerTenancy(context) && context.groveId
+  return isProjectScopedTenancy(context) && context.groveId
     ? projectScope(context.projectId)
     : GLOBAL_SCOPE;
 }

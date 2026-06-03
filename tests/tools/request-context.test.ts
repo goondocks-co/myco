@@ -412,6 +412,7 @@ describe('tool request context', () => {
   //   - Caller + Grove-bound   → { kind: 'project', id }
   //   - Caller + non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
   //   - Synthesized (any)      → GLOBAL_SCOPE even with a groveId
+  //   - Daemon + Grove-bound   → { kind: 'project', id }
   //   - Missing context        → throws (D5 strictness gate)
   describe('projectScopeFromRequestContext', () => {
     it('throws when no context is supplied (D5 strictness gate)', () => {
@@ -460,6 +461,17 @@ describe('tool request context', () => {
       const scope = projectScopeFromRequestContext(synthesized);
       expect(scope).toBe(GLOBAL_SCOPE);
       expect(scope.kind).toBe('global');
+    });
+
+    it('scopes daemon-internal Grove registry contexts to their project id', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-internal',
+        tenancySource: 'daemon',
+      });
+      const scope = projectScopeFromRequestContext(daemon);
+      expect(scope).toEqual({ kind: 'project', id: projectId });
     });
   });
 
@@ -590,12 +602,16 @@ describe('tool request context', () => {
       expect(isCallerTenancy({ tenancySource: 'synthesized' })).toBe(false);
     });
 
+    it('returns false for a daemon-internal context', () => {
+      expect(isCallerTenancy({ tenancySource: 'daemon' })).toBe(false);
+    });
+
     it('returns false for undefined / an unmarked context', () => {
       expect(isCallerTenancy(undefined)).toBe(false);
       expect(isCallerTenancy({})).toBe(false);
     });
 
-    it('agrees with the seam: caller→project scope, synthesized→GLOBAL_SCOPE', () => {
+    it('agrees with the seam: caller and daemon scope to project, synthesized stays global', () => {
       const projectId = assertGroveProjectId(createProjectId());
       const caller = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
         projectId,
@@ -607,11 +623,18 @@ describe('tool request context', () => {
         groveId: 'grove-a',
         tenancySource: 'synthesized',
       });
+      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-a',
+        tenancySource: 'daemon',
+      });
 
       expect(isCallerTenancy(caller)).toBe(true);
       expect(projectScopeFromRequestContext(caller)).toEqual({ kind: 'project', id: projectId });
       expect(isCallerTenancy(synthesized)).toBe(false);
       expect(projectScopeFromRequestContext(synthesized)).toBe(GLOBAL_SCOPE);
+      expect(isCallerTenancy(daemon)).toBe(false);
+      expect(projectScopeFromRequestContext(daemon)).toEqual({ kind: 'project', id: projectId });
     });
   });
 

@@ -44,7 +44,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { epochSeconds } from '@myco/constants.js';
 
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import { TEST_REQUEST_CONTEXT, makeTestRequestContext } from '../../helpers/request-context';
 function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
   return MycoConfigSchema.parse({
@@ -384,6 +384,54 @@ describe('canopy-map task', () => {
       expect(stored!.inputs_hash).toBe(inputsHash);
       expect(stored!.generated_by_run_id).toBe(runId);
       expect(stored!.token_estimate).toBeGreaterThan(0);
+    });
+
+    it('finds project-scoped reports for daemon-internal scheduled runs', async () => {
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+
+      const built = await buildCanopyMapInstruction(undefined, projectRoot);
+      const inputsHash = built!.context!.canopy_map_inputs_hash!;
+
+      const runId = 'run-finalize-daemon-scope';
+      getDatabase().prepare(
+        `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`,
+      ).run(TEST_AGENT_ID, TEST_AGENT_ID, epochSeconds());
+      getDatabase().prepare(
+        `INSERT INTO agent_runs
+           (id, project_id, agent_id, task, instruction, status, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(runId, projectId, TEST_AGENT_ID, CANOPY_MAP_TASK, built!.instruction, 'completed', epochSeconds());
+
+      insertReport({
+        run_id: runId,
+        project_id: projectId,
+        agent_id: TEST_AGENT_ID,
+        action: 'canopy_map',
+        summary: 'scheduled map',
+        details: JSON.stringify({ content: '# Scheduled map\n## Directory skeleton\n- src — core' }),
+        created_at: epochSeconds(),
+      });
+
+      await finalizeOnTaskSuccess({
+        taskName: CANOPY_MAP_TASK,
+        agentId: TEST_AGENT_ID,
+        runId,
+        runContext: { canopy_map_inputs_hash: inputsHash },
+        vaultDir,
+        requestContext: makeTestRequestContext({
+          vaultDir,
+          projectId,
+          groveId: 'grove_internal_test',
+          machineId,
+          tenancySource: 'daemon',
+        }),
+      });
+
+      const stored = readCanopyMap(projectId, machineId);
+      expect(stored).not.toBeNull();
+      expect(stored!.content).toContain('## Directory skeleton');
+      expect(stored!.generated_by_run_id).toBe(runId);
     });
 
     it('throws when canopy_map_inputs_hash is missing from runContext', async () => {

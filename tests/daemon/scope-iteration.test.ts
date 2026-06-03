@@ -240,6 +240,7 @@ describe('scope-iteration', () => {
         sessionId: null,
         databasePath: resolveGroveDbPath(a.id, mycoHome),
         source: 'explicit',
+        tenancySource: 'daemon',
       });
       cache.closeAll();
     });
@@ -460,4 +461,3 @@ describe('scope-iteration', () => {
     });
   });
 });
-

@@ -16,7 +16,7 @@
  * by construction and noisy when attempted.
  */
 
-import { isCallerTenancy } from '@myco/grove/request-context.js';
+import { isCallerTenancy, type TenancySource } from '@myco/grove/request-context.js';
 
 // Branded types so the daemon's own home can never be used where a tenant
 // vault is expected. A bare `string` cannot satisfy either brand; the only
@@ -69,7 +69,7 @@ export function resolvePrincipal(
       projectId?: string;
       groveId?: string;
       machineId?: string;
-      tenancySource?: 'caller' | 'synthesized';
+      tenancySource?: TenancySource;
     };
   },
   env: { machineId: string; userId?: string | null },
