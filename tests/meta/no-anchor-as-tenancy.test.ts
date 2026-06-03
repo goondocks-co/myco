@@ -214,6 +214,64 @@ interface Violation {
   text: string;
 }
 
+// ---------------------------------------------------------------------------
+// Rule 2 — agent runs must not use the daemon's bootstrap EmbeddingManager
+// ---------------------------------------------------------------------------
+//
+// A sibling shape of the anchor-leak class: the global daemon holds ONE
+// bootstrap `EmbeddingManager` (built over the phantom `_unbound-bootstrap`
+// vector store). Passing it into an agent run means the Myco agent's own
+// vector/canopy search tools (read-tools `searchCanopy`/`searchVectors`) query
+// the anchor store instead of the run's grove — empty/stale results, and the
+// same cross-tenant shape the rest of this gate guards. The fix everywhere is
+// per-run resolution: `getEmbeddingRuntime(requestContext).manager` /
+// `resolveEmbeddingManager(requestContext)` (see commits f3bf47b6, dfb392c4,
+// 2204aa01). A bare `embeddingManager:` grep can't gate this — the field is a
+// legitimate dep for reconcile/ops/cleanup, so it would flag correct code
+// (same reason the `?? bootstrapVaultDir` companion gate above was rejected).
+//
+// The high-signal, reliably-scannable invariant instead: every file that
+// CALLS `dispatchAgentRun(` (the single choke point all agent runs route
+// through) must also reference a per-request manager resolver. A new dispatch
+// site that grabs a fixed/bootstrap manager with no resolver in scope is the
+// exact reintroduction this catches. The definition site (runner-host.ts) is
+// allowlisted — it forwards options, never selects a manager.
+
+const DISPATCH_ALLOWLIST = new Set<string>([
+  // Defines/forwards dispatchAgentRun; does not pick an EmbeddingManager.
+  'packages/myco/src/agent/runner-host.js',
+  'packages/myco/src/agent/runner-host.ts',
+]);
+
+/** A call to `dispatchAgentRun(` (matches the definition signature too). */
+const DISPATCH_CALL_PATTERN = /\bdispatchAgentRun\s*\(/;
+
+/** Per-request embedding-manager resolution — the required companion of a run. */
+const EMBEDDING_RESOLVER_PATTERN = /\b(?:resolveEmbeddingManager|getEmbeddingRuntime)\b/;
+
+interface DispatchViolation {
+  file: string;
+  reason: string;
+}
+
+function scanDispatchSites(): DispatchViolation[] {
+  const violations: DispatchViolation[] = [];
+  for (const absPath of listSourceFiles(SRC_ROOT)) {
+    const rel = relPosix(absPath);
+    if (DISPATCH_ALLOWLIST.has(rel)) continue;
+    const code = stripComments(fs.readFileSync(absPath, 'utf8'));
+    if (!DISPATCH_CALL_PATTERN.test(code)) continue;
+    if (!EMBEDDING_RESOLVER_PATTERN.test(code)) {
+      violations.push({
+        file: rel,
+        reason: 'calls dispatchAgentRun but never resolves the embedding manager '
+          + 'per request (resolveEmbeddingManager / getEmbeddingRuntime)',
+      });
+    }
+  }
+  return violations;
+}
+
 function relPosix(absPath: string): string {
   return path.relative(REPO_ROOT, absPath).split(path.sep).join('/');
 }
@@ -259,6 +317,37 @@ describe('no-anchor-as-tenancy meta gate', () => {
       + 'single-tenant synthesis site (a caller-supplied project vaultDir, not the '
       + 'daemon bootstrap anchor), add it to ALLOWLIST with a justification — and '
       + 'never use the `?? resolveRequestContextForVault(...)` fallback idiom.').toBe(0);
+  });
+
+  it('the dispatch scan has live subjects (rule is wired, not silently dormant)', () => {
+    // If dispatchAgentRun is renamed/removed and this count drops to 0, the
+    // rule would pass vacuously — surface that as a failure so the gate is
+    // re-pointed rather than quietly disabled.
+    const callers = listSourceFiles(SRC_ROOT).filter((abs) => {
+      const rel = relPosix(abs);
+      if (DISPATCH_ALLOWLIST.has(rel)) return false;
+      return DISPATCH_CALL_PATTERN.test(stripComments(fs.readFileSync(abs, 'utf8')));
+    });
+    expect(callers.length).toBeGreaterThan(0);
+  });
+
+  it('every dispatchAgentRun caller resolves the embedding manager per-request (no bootstrap anchor manager)', () => {
+    const violations = scanDispatchSites();
+    const detail = violations.map((v) => `  ${v.file} — ${v.reason}`).join('\n');
+    expect(violations.length, `agent-run anchor-leak anti-pattern reintroduced:\n${detail}\n\n`
+      + 'An agent run must receive the run\'s GROVE embedding manager, resolved from '
+      + 'the request context (resolveEmbeddingManager(rc) / getEmbeddingRuntime(rc)) — '
+      + 'never the daemon\'s fixed bootstrap EmbeddingManager, which would make the '
+      + 'agent\'s vector/canopy search query the phantom anchor store. Resolve the '
+      + 'manager in the dispatching file, or route through a deps '
+      + '`resolveEmbeddingManager` like the existing agent-run surfaces.').toBe(0);
+  });
+
+  it('the dispatch-resolver allowlist only holds the runner-host definition site', () => {
+    // Keep the allowlist from quietly absorbing real dispatch callers.
+    for (const rel of DISPATCH_ALLOWLIST) {
+      expect(rel.includes('runner-host'), `unexpected dispatch allowlist entry: ${rel}`).toBe(true);
+    }
   });
 
   it('every allowlisted file still exists and still calls resolveRequestContextForVault', () => {
@@ -321,6 +410,33 @@ describe('no-anchor-as-tenancy matcher self-test', () => {
     const hits = stripped.split('\n').filter((l) => CALL_PATTERN.test(l));
     expect(hits.length).toBe(1);
     expect(hits[0]).toContain('real');
+  });
+
+  it('DISPATCH_CALL_PATTERN flags a call but not an import/type reference', () => {
+    expect(DISPATCH_CALL_PATTERN.test('const r = dispatchAgentRun(vaultDir, opts);')).toBe(true);
+    expect(DISPATCH_CALL_PATTERN.test('import { dispatchAgentRun } from \'./runner-host.js\';')).toBe(false);
+  });
+
+  it('EMBEDDING_RESOLVER_PATTERN matches both resolver forms, not the bare type', () => {
+    expect(EMBEDDING_RESOLVER_PATTERN.test('resolveEmbeddingManager(req.requestContext)')).toBe(true);
+    expect(EMBEDDING_RESOLVER_PATTERN.test('getEmbeddingRuntime(rc).manager')).toBe(true);
+    // The bare type annotation / field is NOT a resolver and must not satisfy the rule.
+    expect(EMBEDDING_RESOLVER_PATTERN.test('embeddingManager: EmbeddingManager;')).toBe(false);
+  });
+
+  it('a dispatch site with NO resolver is flagged; adding a resolver clears it (end-to-end proof)', () => {
+    const leaky = [
+      'const { embeddingManager } = deps;',
+      'dispatchAgentRun(vaultDir, { task, embeddingManager, requestContext });',
+    ].join('\n');
+    const fixed = [
+      'const embeddingManager = resolveEmbeddingManager(requestContext);',
+      'dispatchAgentRun(vaultDir, { task, embeddingManager, requestContext });',
+    ].join('\n');
+    const hasDispatch = (s: string) => DISPATCH_CALL_PATTERN.test(stripComments(s));
+    const hasResolver = (s: string) => EMBEDDING_RESOLVER_PATTERN.test(stripComments(s));
+    expect(hasDispatch(leaky) && !hasResolver(leaky)).toBe(true); // would be a violation
+    expect(hasDispatch(fixed) && hasResolver(fixed)).toBe(true); // clears the rule
   });
 
   it('the planted violation WOULD be caught if it lived in src (end-to-end matcher proof)', () => {
