@@ -12,6 +12,7 @@ import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   REQUEST_CONTEXT_AUTH_ENV,
   UnauthorizedRequestContextError,
+  UnknownRequestContextError,
   requestContextFromHttpHeaders,
   requestContextFromTenancyIds,
   type MycoRequestContext,
@@ -369,6 +370,13 @@ export class DaemonServer {
           res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: error.message }));
           return;
         }
+        if (error instanceof UnknownRequestContextError) {
+          // Stale/guessed Grove or project id (e.g. in a resource URL): the
+          // requested tenancy doesn't exist. 404, not a 500 server error.
+          res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({ error: 'unknown_tenancy', message: error.message }));
+          return;
+        }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
           path: req.url,
           error: (error as Error).message,
@@ -492,6 +500,7 @@ export class DaemonServer {
       return requestContextFromTenancyIds(
         { groveId: params.groveId, projectId: params.projectId },
         this.vaultDir,
+        { headers, expectedAuthToken: this.authToken },
       );
     }
     return requestContextFromHttpHeaders(headers, this.vaultDir, {

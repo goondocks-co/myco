@@ -46,23 +46,19 @@ const RECONCILIATION_RETAIN_ALIASES: Record<typeof RECONCILIATION_RETAIN_GROUPS[
 
 const RECONCILIATION_CREATE_ALIASES = ['Create', 'Creates', 'create', 'creates'];
 
-export function parseJsonArrayParam(
+/**
+ * Validate an already-parsed value as an array of strings, applying the
+ * quality-failure reason-code check. Shared by the direct-param and plan-entry
+ * parsers so the rules (and their messages) stay in one place.
+ */
+function validateStringArrayField(
   fieldName: 'quality_failures' | 'coverage_matches',
-  value: string | undefined,
+  parsed: unknown,
 ): { array?: string[]; error?: string } {
-  if (value === undefined) return {};
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return { error: `${fieldName} must be a JSON array` };
-  }
-
   if (!Array.isArray(parsed)) {
     return { error: `${fieldName} must be a JSON array` };
   }
-  if (!parsed.every((entry) => typeof entry === 'string')) {
+  if (!parsed.every((item) => typeof item === 'string')) {
     return { error: `${fieldName} must be a JSON array of strings` };
   }
   if (fieldName === 'quality_failures') {
@@ -76,6 +72,21 @@ export function parseJsonArrayParam(
     }
   }
   return { array: parsed };
+}
+
+export function parseJsonArrayParam(
+  fieldName: 'quality_failures' | 'coverage_matches',
+  value: string | undefined,
+): { array?: string[]; error?: string } {
+  if (value === undefined) return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { error: `${fieldName} must be a JSON array` };
+  }
+  return validateStringArrayField(fieldName, parsed);
 }
 
 export function validateCandidateSourceIds(
@@ -222,24 +233,7 @@ export function parsePlanStringArrayField(
       return { error: `${fieldName} must be a JSON array` };
     }
   }
-
-  if (!Array.isArray(parsed)) {
-    return { error: `${fieldName} must be a JSON array` };
-  }
-  if (!parsed.every((item) => typeof item === 'string')) {
-    return { error: `${fieldName} must be a JSON array of strings` };
-  }
-  if (fieldName === 'quality_failures') {
-    const unknown = unknownCandidateQualityFailureCodes(parsed);
-    if (unknown.length > 0) {
-      return {
-        error:
-          `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
-          `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
-      };
-    }
-  }
-  return { array: parsed };
+  return validateStringArrayField(fieldName, parsed);
 }
 
 export function rawSourceRefCount(value: unknown): number | null {

@@ -16,7 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { isSafeSkillNameForFs } from '@myco/skills/names.js';
+import { CANONICAL_PROJECT_SKILLS_DIR, isSafeSkillNameForFs } from '@myco/skills/names.js';
 import { ensureSymlink } from '../install-helpers.js';
 
 /** Filename when installed into the project .agents/ directory. */
@@ -37,8 +37,8 @@ export const CLI_LAUNCHER_PROJECT_PATH = `.agents/${CLI_LAUNCHER_INSTALLED_FILEN
  */
 export const LEGACY_HOOK_GUARD_PATH = '.agents/myco-hook.cjs';
 
-/** Canonical cross-agent skills directory. */
-export const CANONICAL_SKILLS_DIR = '.agents/skills';
+/** Canonical cross-agent skills directory (single source of truth in skills/names). */
+export const CANONICAL_SKILLS_DIR = CANONICAL_PROJECT_SKILLS_DIR;
 
 /** Built-in skill names retired from the package but still present in older installs. */
 export const LEGACY_BUILTIN_SKILL_NAMES = ['myco-curate', 'rules'];

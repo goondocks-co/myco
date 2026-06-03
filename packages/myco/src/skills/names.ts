@@ -25,3 +25,11 @@ export const SAFE_SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,99}$/;
 export function isSafeSkillNameForFs(name: string): boolean {
   return SAFE_SKILL_NAME_RE.test(name);
 }
+
+/**
+ * Canonical project-relative directory that holds published skills
+ * (`<root>/.agents/skills/<name>/SKILL.md`). Single source of truth — both the
+ * skill publication writer and the symbiont installer's symlink reconciler
+ * import this so the write side and the link side can never disagree.
+ */
+export const CANONICAL_PROJECT_SKILLS_DIR = '.agents/skills';

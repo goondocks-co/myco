@@ -11,6 +11,7 @@ import {
   REQUEST_CONTEXT_ENV,
   REQUEST_CONTEXT_HEADERS,
   UnauthorizedRequestContextError,
+  UnknownRequestContextError,
   filesystemRootFromRequestContext,
   isCallerTenancy,
   requestContextFromEnvironment,
@@ -139,13 +140,58 @@ describe('tool request context', () => {
     });
   });
 
-  it('fails loud on an unknown Grove in a URL-addressable resource path', () => {
+  it('requires the daemon bearer token when one is configured (URL routes assert tenancy)', () => {
+    withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+      // The URL params ARE a context switch, so the token is required
+      // unconditionally — unlike the header path which gates on x-myco-* headers.
+      expect(() =>
+        requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+          headers: {},
+          expectedAuthToken: 'secret-token',
+        }),
+      ).toThrow(UnauthorizedRequestContextError);
+
+      // Wrong token is also rejected.
+      expect(() =>
+        requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+          headers: { [REQUEST_CONTEXT_AUTH_HEADER]: 'wrong' },
+          expectedAuthToken: 'secret-token',
+        }),
+      ).toThrow(UnauthorizedRequestContextError);
+    });
+  });
+
+  it('accepts a matching daemon bearer token on a URL-addressable resource path', () => {
+    withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+      const resolved = requestContextFromTenancyIds({ groveId, projectId }, vaultDir, {
+        headers: { [REQUEST_CONTEXT_AUTH_HEADER]: 'secret-token' },
+        expectedAuthToken: 'secret-token',
+      });
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.source).toBe('url');
+    });
+  });
+
+  it('throws UnknownRequestContextError (→ 404) for an unknown Grove in a resource URL', () => {
     withRegisteredProject(({ vaultDir, projectId }) => {
-      // A guessed/stale grove id in a resource URL must throw (→ 404/500 at
-      // the transport boundary), not silently resolve to another scope.
+      // A guessed/stale grove id in a resource URL must surface as a typed
+      // not-found (mapped to 404 at the transport boundary), not a generic
+      // Error (which the dispatcher would map to a 500 server error).
       expect(() =>
         requestContextFromTenancyIds({ groveId: 'grove_does_not_exist', projectId }, vaultDir),
-      ).toThrow();
+      ).toThrow(UnknownRequestContextError);
+    });
+  });
+
+  it('throws UnknownRequestContextError for a project not registered in the Grove', () => {
+    withRegisteredProject(({ vaultDir, groveId }) => {
+      expect(() =>
+        requestContextFromTenancyIds(
+          { groveId, projectId: 'proj_ffffffffffffffffffffffffffffffff' },
+          vaultDir,
+        ),
+      ).toThrow(UnknownRequestContextError);
     });
   });
 

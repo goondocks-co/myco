@@ -25,7 +25,7 @@ import {
 } from '../api/notifications.js';
 import { tenantRoute } from '../api/route-helpers.js';
 import type { DaemonLogger } from '../logger.js';
-import type { RouteHandler } from '../router.js';
+import type { RouteRegistrar } from '../router.js';
 
 export type NotificationRouteScope = 'global' | 'tenant';
 
@@ -39,17 +39,13 @@ export const NOTIFICATION_ROUTE_SCOPES = {
   'GET /api/notifications/unread-count': 'global',
 } as const satisfies Record<string, NotificationRouteScope>;
 
-export interface NotificationRouteServer {
-  registerRoute(method: string, routePath: string, handler: RouteHandler): void;
-}
-
 export interface NotificationRouteDeps {
   machineId: string;
   logger: DaemonLogger;
 }
 
 export function registerNotificationRoutes(
-  server: NotificationRouteServer,
+  server: RouteRegistrar,
   deps: NotificationRouteDeps,
 ): void {
   // The READ/MUTATE routes (list, unread-count, PATCH status, dismiss-all,

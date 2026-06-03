@@ -24,7 +24,7 @@ import {
   handlePutProviderSecret,
 } from '../api/provider-secrets.js';
 import type { DaemonLogger } from '../logger.js';
-import type { RouteHandler } from '../router.js';
+import type { RouteRegistrar } from '../router.js';
 
 export type ProviderRouteScope = 'machine';
 
@@ -36,16 +36,12 @@ export const PROVIDER_ROUTE_SCOPES = {
   'DELETE /api/providers/secrets/:provider': 'machine',
 } as const satisfies Record<string, ProviderRouteScope>;
 
-export interface ProviderRouteServer {
-  registerRoute(method: string, routePath: string, handler: RouteHandler): void;
-}
-
 export interface ProviderRouteDeps {
   logger?: DaemonLogger;
 }
 
 export function registerProviderRoutes(
-  server: ProviderRouteServer,
+  server: RouteRegistrar,
   deps: ProviderRouteDeps = {},
 ): void {
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(deps.logger));

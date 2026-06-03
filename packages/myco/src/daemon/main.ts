@@ -1645,7 +1645,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
-  const attachments = createAttachmentHandler({ vaultDir: bootstrapVaultDir });
+  const attachments = createAttachmentHandler();
   // Tenancy-scoped path for browser <img>/lightbox loads: a plain <img> can't
   // send the x-myco-* tenancy headers, so it carries (Grove, project) in the
   // URL and the server resolves scope from the path. The legacy unscoped route

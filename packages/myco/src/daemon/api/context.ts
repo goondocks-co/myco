@@ -11,11 +11,11 @@ import { ensureSessionRowExists, ENSURE_SESSION_SOURCE } from '../session-lifecy
 import {
   EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
-  PROMPT_CONTEXT_MIN_SIMILARITY,
   PROMPT_CONTEXT_MAX_TOKENS,
-  PROMPT_VECTOR_OVER_FETCH,
+  PROMPT_VECTOR_POOL_SIZE,
   estimateTokens,
 } from '@myco/constants.js';
+import { selectRelevantSpores } from '@myco/daemon/embedding/relevance.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
@@ -28,7 +28,7 @@ import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '
 import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { resolveTenantConfig } from '../request-config.js';
-import { recordInjectionAndShouldSuppress } from '../injection-records.js';
+import { recordInjectionAndShouldSuppress, getSessionInjectedSporeIds } from '../injection-records.js';
 import { resolvePlanIntentNudge } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -457,11 +457,12 @@ export function createPromptContextHandler(deps: ContextDeps) {
       return respond('');
     }
 
-    // Search spores namespace — over-fetch to compensate for post-filtering
+    // Over-fetch a candidate pool (no absolute threshold) so the selector can
+    // estimate the query's distance distribution. Relevance is decided by
+    // hubness-aware Mutual Proximity, not a magic cosine cutoff.
     const vectorResults = embeddingManager.searchVectors(queryVector, {
       namespace: 'spores',
-      limit: maxSpores * PROMPT_VECTOR_OVER_FETCH,
-      threshold: PROMPT_CONTEXT_MIN_SIMILARITY,
+      limit: PROMPT_VECTOR_POOL_SIZE,
       filters: {
         status: 'active',
         ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
@@ -485,8 +486,40 @@ export function createPromptContextHandler(deps: ContextDeps) {
       return respond('');
     }
 
-    const topResults = eligible.slice(0, maxSpores);
-    const hydrated = hydrateSearchResults(topResults, { scope });
+    // Spores already injected earlier in this session — excluded so the same
+    // observation is not re-served prompt after prompt.
+    const alreadyInjected = session_id ? getSessionInjectedSporeIds(session_id) : new Set<string>();
+
+    // Hubness-aware relevance gate. Returns [] when no spore is genuinely
+    // relevant — we inject nothing rather than poison the context with a hub.
+    const selected = selectRelevantSpores(
+      eligible.map((r) => ({
+        id: r.id,
+        similarity: r.similarity,
+        neighborMean:
+          typeof r.metadata.neighbor_mean === 'number' ? r.metadata.neighbor_mean : undefined,
+        neighborStd:
+          typeof r.metadata.neighbor_std === 'number' ? r.metadata.neighbor_std : undefined,
+        alreadyInjected: alreadyInjected.has(r.id),
+      })),
+      { maxResults: maxSpores },
+    );
+
+    if (selected.length === 0) {
+      logger.debug(LOG_KINDS.CONTEXT_FILTER, 'No spore cleared the relevance gate', {
+        session_id,
+        pool: eligible.length,
+        top_similarity: eligible[0]?.similarity,
+      });
+      return respond('');
+    }
+
+    // Hydrate the selected spores, preserving selection order.
+    const byId = new Map(eligible.map((r) => [r.id, r]));
+    const selectedResults = selected
+      .map((s) => byId.get(s.id))
+      .filter((r): r is NonNullable<typeof r> => r != null);
+    const hydrated = hydrateSearchResults(selectedResults, { scope });
     const spores = hydrated.filter((r) => r.type === 'spore');
 
     if (spores.length === 0) return respond('');
@@ -519,6 +552,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
         trigger: {
           metadata: {
             spore_titles: spores.map((s) => s.title),
+            spore_ids: spores.map((s) => s.id),
             spore_count: spores.length,
           },
         },

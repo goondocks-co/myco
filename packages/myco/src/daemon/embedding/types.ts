@@ -84,6 +84,13 @@ export interface ReconcileResult {
 }
 
 /** VectorStore — owns vectors and metadata, fully decoupled from record store. */
+/** One record's cosine-distance distribution to the rest of its namespace. */
+export interface HubnessStat {
+  recordId: string;
+  mean: number;
+  std: number;
+}
+
 export interface VectorStore {
   upsert(namespace: string, id: string, embedding: number[], metadata?: Record<string, unknown>): void;
   remove(namespace: string, id: string): void;
@@ -98,6 +105,14 @@ export interface VectorStore {
   getStaleIds(namespace: string, currentModel: string, limit: number): string[];
   getEmbeddedIds(namespace: string): string[];
   pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
+  /**
+   * Compute each record's cosine-distance distribution to the rest of its
+   * namespace (the hubness baseline). Returns [] for namespaces with < 2
+   * vectors. O(n^2) — call from the periodic reconcile loop, not per request.
+   */
+  computeHubnessStats(namespace: string): HubnessStat[];
+  /** Persist hubness stats so search results carry neighbor distribution metadata. */
+  upsertHubnessStats(namespace: string, stats: HubnessStat[]): void;
   /**
    * Patch the `domain_metadata` JSON column for one record without re-embedding.
    * Used by release-provenance reconciliation to propagate state/confidence

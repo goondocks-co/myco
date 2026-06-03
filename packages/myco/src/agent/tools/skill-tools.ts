@@ -27,7 +27,7 @@
  */
 
 import crypto from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
@@ -1566,7 +1566,8 @@ export function createSkillTools(deps: VaultToolDeps) {
       const existing = getSkillRecordByName(args.name, scope);
 
       const root = projectRoot ?? process.cwd();
-      const skillPath = resolve(root, '.agents', 'skills', args.name, 'SKILL.md');
+      // Path shape is owned by the publication module — don't hand-build it.
+      const skillPath = resolve(root, publishedSkillRelativePath(args.name));
 
       // Frontmatter preservation guard — when updating an existing skill,
       // reject writes that change protected fields (user-invocable, allowed-tools).
@@ -1717,8 +1718,13 @@ export function createSkillTools(deps: VaultToolDeps) {
           });
         })();
       } catch (err) {
+        // Route the rollback through the single skill-artifact writer too, so
+        // path/guard semantics can never diverge between write and rollback.
         try {
-          writeFileSync(skillPath, priorSkillContent, 'utf-8');
+          const rollback = writePublishedSkillFile(root, args.name, priorSkillContent);
+          if (!rollback.ok) {
+            console.warn('[vault_write_skill] file rollback refused:', rollback.reason);
+          }
         } catch (rollbackErr) {
           console.warn(
             '[vault_write_skill] file rollback after DB failure also failed:',

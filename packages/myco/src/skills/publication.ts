@@ -17,9 +17,9 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { syncSkillSymlinks } from '@myco/symbionts/installer.js';
-import { isSafeSkillNameForFs } from './names.js';
+import { CANONICAL_PROJECT_SKILLS_DIR, isSafeSkillNameForFs } from './names.js';
 
-export const CANONICAL_PROJECT_SKILLS_DIR = '.agents/skills';
+export { CANONICAL_PROJECT_SKILLS_DIR };
 export const SKILL_MARKDOWN_FILE = 'SKILL.md';
 
 export interface PublishedSkillPaths {

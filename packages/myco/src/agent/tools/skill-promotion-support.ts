@@ -20,47 +20,57 @@ import { getCandidate } from '@myco/db/queries/skill-candidates.js';
 import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import { notify } from '@myco/notifications/notify.js';
 
-export function requireApprovedCandidate(
+type Candidate = NonNullable<ReturnType<typeof getCandidate>>;
+
+/**
+ * Fetch a candidate once and check it is approved. Returns the loaded row on
+ * success so callers needing further checks don't re-query the same row.
+ */
+function loadApprovedCandidate(
   candidateId: string,
   scope: ProjectScope,
-): Record<string, unknown> | null {
+): { candidate: Candidate } | { error: Record<string, unknown> } {
   const candidate = getCandidate(candidateId, scope);
   if (!candidate) {
     return {
-      error:
-        `Candidate ${candidateId} not found. Skill writes require a ` +
-        'candidate in the approved state.',
+      error: {
+        error:
+          `Candidate ${candidateId} not found. Skill writes require a ` +
+          'candidate in the approved state.',
+      },
     };
   }
   if (candidate.status !== CANDIDATE_STATUS.APPROVED) {
     return {
-      error:
-        `Candidate ${candidateId} is in '${candidate.status}' state. ` +
-        "Skills can only be generated from candidates in 'approved' " +
-        'state — the human review step. If a candidate in an earlier ' +
-        'state needs to become a skill, route it through the normal ' +
-        'approval flow first.',
-      candidate_status: candidate.status,
+      error: {
+        error:
+          `Candidate ${candidateId} is in '${candidate.status}' state. ` +
+          "Skills can only be generated from candidates in 'approved' " +
+          'state — the human review step. If a candidate in an earlier ' +
+          'state needs to become a skill, route it through the normal ' +
+          'approval flow first.',
+        candidate_status: candidate.status,
+      },
     };
   }
-  return null;
+  return { candidate };
+}
+
+export function requireApprovedCandidate(
+  candidateId: string,
+  scope: ProjectScope,
+): Record<string, unknown> | null {
+  const result = loadApprovedCandidate(candidateId, scope);
+  return 'error' in result ? result.error : null;
 }
 
 export function requireGenerationReadyCandidate(
   candidateId: string,
   scope: ProjectScope,
 ): Record<string, unknown> | null {
-  const approvalError = requireApprovedCandidate(candidateId, scope);
-  if (approvalError) return approvalError;
-
-  const candidate = getCandidate(candidateId, scope);
-  if (!candidate) {
-    return {
-      error:
-        `Candidate ${candidateId} not found. Skill writes require a ` +
-        'candidate in the approved state.',
-    };
-  }
+  const result = loadApprovedCandidate(candidateId, scope);
+  if ('error' in result) return result.error;
+  const candidate = result.candidate;
 
   const issues = validateSkillCandidateQualityContract(candidate, {
     requireResolvedSources: true,
