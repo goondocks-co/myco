@@ -105,17 +105,26 @@ export class JobRunner {
     // run can't starve it. A housekeeping job runs only when free slots exceed
     // the number of non-housekeeping jobs still waiting to dispatch this pass.
     let remainingNonHousekeeping = eligible.filter((j) => j.kind !== 'housekeeping').length;
+    const dispatched: string[] = [];
+    const skipped: string[] = [];
     for (const job of eligible) {
       const free = this.opts.concurrency - this.inFlight.size;
       if (free <= 0) break;
       if (job.kind === 'housekeeping') {
-        if (free <= remainingNonHousekeeping) continue;
+        if (free <= remainingNonHousekeeping) { skipped.push(job.name); continue; }
         this.run(job);
+        dispatched.push(job.name);
       } else {
         this.run(job);
+        dispatched.push(job.name);
         remainingNonHousekeeping--;
       }
     }
+    this.opts.logger.debug(LOG_KINDS.POWER_TICK, 'Dispatch tick', {
+      state,
+      dispatched,
+      skipped,
+    });
   }
 
   private run(job: RunnerJob): void {
@@ -157,7 +166,7 @@ export class JobRunner {
     const unsubscribe = probe?.addTickListener((lag) => {
       if (lag > peakLagDuringMs) peakLagDuringMs = lag;
     });
-    const settle = async (err?: unknown): Promise<void> => {
+    const settle = async (err?: unknown, outcome?: JobOutcome | void): Promise<void> => {
       // Yield once to libuv's timer phase so any probe tick deferred by a
       // sync-heavy job fires and reaches the listener before unsubscribe.
       if (probe) {
@@ -171,9 +180,18 @@ export class JobRunner {
         event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
         status: err === undefined ? 'ok' : 'error',
       });
+      if (job.kind === 'drain' && err === undefined && outcome != null && typeof outcome === 'object') {
+        this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Drain slice', {
+          drain_record: true,
+          job: job.name,
+          processed: (outcome as JobOutcome).processed,
+          remaining: (outcome as JobOutcome).remaining,
+          slice: job.drain?.slice,
+        });
+      }
       cleanup(err);
     };
-    void job.fn(ctx).then(() => settle(), (err) => settle(err));
+    void job.fn(ctx).then((outcome) => settle(undefined, outcome), (err) => settle(err));
   }
 
   /** Name of the first job holding deep-sleep, or null. Defensive: a failing probe never holds. */

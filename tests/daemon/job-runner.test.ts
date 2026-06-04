@@ -147,3 +147,27 @@ describe('JobRunner deep-sleep hold', () => {
     expect(r.providesHold()).toBeNull();
   });
 });
+
+describe('JobRunner drain record', () => {
+  it('logs a drain record with processed/remaining for drain jobs', async () => {
+    const records: any[] = [];
+    const captureLogger = { ...silentLogger(), info: (_k: string, _m: string, d?: any) => { if (d?.drain_record) records.push(d); } };
+    const r = new JobRunner({ concurrency: 2, logger: captureLogger as any, clock: () => 0 });
+    r.register({ name: 'embedding', runIn: ['sleep'], kind: 'drain', drain: { slice: 10 },
+      fn: async () => ({ processed: 7, remaining: 3 }) });
+    r.dispatch('sleep');
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ job: 'embedding', processed: 7, remaining: 3, slice: 10 });
+  });
+
+  it('does NOT log a drain record for housekeeping jobs', async () => {
+    const records: any[] = [];
+    const captureLogger = { ...silentLogger(), info: (_k: string, _m: string, d?: any) => { if (d?.drain_record) records.push(d); } };
+    const r = new JobRunner({ concurrency: 2, logger: captureLogger as any, clock: () => 0 });
+    r.register({ name: 'backup', runIn: ['sleep'], kind: 'housekeeping', fn: async () => {} });
+    r.dispatch('sleep');
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(records).toHaveLength(0);
+  });
+});
