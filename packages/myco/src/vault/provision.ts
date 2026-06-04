@@ -83,11 +83,6 @@ export function ensureProjectVault(
   // Cold path: create the vault from scratch.
   fs.mkdirSync(vaultDir, { recursive: true });
 
-  // myco.yaml — minimal stub; the config loader applies schema defaults
-  // on read, so a single `version: 3` line is enough to mark this as
-  // a real vault rather than a half-bootstrapped scratch dir.
-  fs.writeFileSync(mycoYamlPath, MINIMAL_MYCO_YAML, 'utf-8');
-
   // Canonical `.gitignore` body. Idempotent — rewrites only when stale.
   ensureVaultGitignoreCurrent(vaultDir);
 
@@ -132,6 +127,12 @@ export function ensureProjectVault(
     setAtPath(captureOnlyPatch, cap.masterGate, false);
   }
   saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
+
+  // myco.yaml is written LAST — it is the hot-path existence sentinel (the
+  // check at the top of this function). Writing it last means a mid-provision
+  // crash leaves no sentinel on disk, so the next call re-runs the cold path
+  // and self-heals to the correct capture-only state.
+  fs.writeFileSync(mycoYamlPath, MINIMAL_MYCO_YAML, 'utf-8');
 
   return { vaultDir, created: true, projectId: manifest.project.id };
 }
