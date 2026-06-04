@@ -1,5 +1,9 @@
+import { CAPABILITIES } from '@myco/config/capabilities.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import type { CapabilityId } from '@myco/config/scope.js';
 import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
+import { getAtPath } from '@myco/utils/dot-path.js';
 import {
   createGrove,
   deleteGrove,
@@ -40,6 +44,7 @@ export interface GroveProjectSummary {
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
+  capabilities: Record<CapabilityId, boolean>;
 }
 
 export interface GroveSummary {
@@ -101,7 +106,7 @@ export function listGroveSummaries(
     const projects = listRegisteredProjects(grove.id, undefined, {
       includeArchived: options.includeArchived,
     })
-      .map((project) => serializeProject(project));
+      .map((project) => serializeProject(project, grove.id));
     return {
       id: grove.id,
       name: grove.name,
@@ -116,7 +121,29 @@ export function listGroveSummaries(
   return { groves };
 }
 
-function serializeProject(project: RegisteredProject): GroveProjectSummary {
+/**
+ * Resolve per-capability master-gate booleans for a project.
+ *
+ * Reuses `loadMergedConfig` (mtime-cached) + `CAPABILITIES[id].masterGate`
+ * + `getAtPath`, exactly matching the `getCapabilityEnabled` pattern in
+ * task-scheduling.ts. On load failure all capabilities default to `true`
+ * (schema defaults), so a broken vault never crashes the Groves list.
+ */
+function resolveCapabilities(projectRoot: string, groveId: string): Record<CapabilityId, boolean> {
+  const capIds = Object.keys(CAPABILITIES) as CapabilityId[];
+  const allTrue = Object.fromEntries(capIds.map((id) => [id, true])) as Record<CapabilityId, boolean>;
+  try {
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    const config = loadMergedConfig(vaultDir, { groveId });
+    return Object.fromEntries(
+      capIds.map((id) => [id, getAtPath(config, CAPABILITIES[id].masterGate) !== false]),
+    ) as Record<CapabilityId, boolean>;
+  } catch {
+    return allTrue;
+  }
+}
+
+function serializeProject(project: RegisteredProject, groveId: string): GroveProjectSummary {
   return {
     project_id: project.project_id,
     name: project.name,
@@ -128,6 +155,7 @@ function serializeProject(project: RegisteredProject): GroveProjectSummary {
     created_at: project.created_at,
     updated_at: project.updated_at,
     manifest_state: manifestState(project),
+    capabilities: resolveCapabilities(project.root, groveId),
   };
 }
 

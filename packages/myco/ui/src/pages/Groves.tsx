@@ -17,6 +17,8 @@ import {
   type GroveSummary,
   type GroveProjectSummary,
 } from '../lib/selection';
+import { buildCapabilityBadges } from '../lib/capability-badges';
+import { CapabilityChip } from '../components/symbionts/CapabilityChip';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { Panel } from '../components/ui/panel';
@@ -253,6 +255,17 @@ export default function Groves() {
                               <span className="block truncate text-[11px] text-on-surface-variant">
                                 {lastActivity ? `last active ${formatTimeAgo(lastActivity)}` : 'no activity yet'}
                               </span>
+                              {project.capabilities && (
+                                <span className="mt-1.5 flex flex-wrap gap-1">
+                                  {buildCapabilityBadges(project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>).map((chip) => (
+                                    <CapabilityChip
+                                      key={chip.id}
+                                      chip={chip}
+                                      href={chip.to ? `${projectPath({ grove, project })}${chip.to}` : '#'}
+                                    />
+                                  ))}
+                                </span>
+                              )}
                             </span>
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>

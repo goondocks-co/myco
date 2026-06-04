@@ -9,6 +9,7 @@ export interface GroveProjectSummary {
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
+  capabilities?: Record<string, boolean>;
 }
 
 export interface GroveSummary {
