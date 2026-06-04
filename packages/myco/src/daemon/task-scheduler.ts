@@ -106,6 +106,12 @@ export interface ScheduledJobContext {
    * completed before the daemon came up.
    */
   seedMissingLastRuns?: (scope: RegisteredProjectScope) => Map<string, number>;
+  /**
+   * Global probe for pending canopy-describe work across all served Groves.
+   * Called on every PowerManager tick to gate deep_sleep transitions.
+   * When omitted the hold defaults to 0 (never holds).
+   */
+  canopyPendingProbe?: () => number;
 }
 
 /**
@@ -204,9 +210,7 @@ export function buildScheduledJobs(
     name: COLLAPSED_JOB_NAME,
     runIn: allRunIn,
     kind: 'scheduler',
-    // Real global canopy-pending hold probe is wired in a later task; this
-    // stub compiles and never holds for now.
-    hold: { pending: () => 0 },
+    hold: { pending: () => context.canopyPendingProbe?.() ?? 0 },
     fn: async () => {
       // Snapshot broadcasts at tick entry so a kick mid-tick lands on the next pass.
       const broadcastSnapshot = new Set(broadcastKicks);

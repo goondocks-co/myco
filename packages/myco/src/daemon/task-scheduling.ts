@@ -34,7 +34,12 @@ import {
   forEachRegisteredProject,
   isProjectActive,
 } from './scope-iteration.js';
-import { isProjectPausedInGrove } from '@myco/grove/registry.js';
+import { isProjectPausedInGrove, listGroves, listRegisteredProjects } from '@myco/grove/registry.js';
+import {
+  resolveGroveDbPath,
+  resolveMycoHome,
+  resolveServiceDirName,
+} from '@myco/grove/paths.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
@@ -42,6 +47,80 @@ import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
+
+// ---------------------------------------------------------------------------
+// Canopy-pending hold probe
+// ---------------------------------------------------------------------------
+
+// Mirrors the embedding-reconcile hold probe in power-jobs.ts: cache the
+// zero state for 30s so the PowerManager tick doesn't walk every Grove on
+// every poll cycle when the canopy queue is fully drained.
+const CANOPY_ZERO_PENDING_TTL_MS = 30_000;
+const CANOPY_PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
+
+// Accelerator cap used to bound the per-project COUNT. The hold only needs
+// ">0"; stopping at the accelerated threshold avoids an unbounded COUNT on
+// large canopy_entries tables.
+const CANOPY_PROBE_COUNT_CAP = 50;
+
+interface CanopyPendingProbeCache {
+  total: number;
+  expiresAt: number;
+}
+
+export interface CanopyPendingProbeDeps {
+  cache: GroveRuntimeCache;
+  logger: DaemonLogger;
+  mycoHome?: string;
+  daemonStateDir: string;
+}
+
+export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () => number {
+  let probeCache: CanopyPendingProbeCache | null = null;
+  const lastWarnAt = new Map<string, number>();
+  return () => {
+    if (probeCache && Date.now() < probeCache.expiresAt) return probeCache.total;
+    const mycoHome = deps.mycoHome ?? resolveMycoHome();
+    const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
+    let total = 0;
+    for (const grove of listGroves(mycoHome, { servedBy })) {
+      try {
+        const databasePath = resolveGroveDbPath(grove.id, mycoHome);
+        const db = deps.cache.getDatabase(databasePath);
+        const projects = listRegisteredProjects(grove.id, mycoHome);
+        let grovePending = 0;
+        for (const project of projects) {
+          grovePending += withDatabase(db, () =>
+            countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP),
+          );
+          if (grovePending > 0) break;
+        }
+        total += grovePending;
+        if (total > 0) {
+          probeCache = null;
+          return total;
+        }
+      } catch (err) {
+        const now = Date.now();
+        const last = lastWarnAt.get(grove.id) ?? 0;
+        if (now - last >= CANOPY_PROBE_FAILURE_WARN_INTERVAL_MS) {
+          lastWarnAt.set(grove.id, now);
+          deps.logger.warn(
+            LOG_KINDS.CANOPY_ERROR,
+            'Canopy pending-probe failed for Grove',
+            {
+              grove_id: grove.id,
+              grove_slug: grove.slug,
+              error: errorMessage(err),
+            },
+          );
+        }
+      }
+    }
+    probeCache = { total: 0, expiresAt: Date.now() + CANOPY_ZERO_PENDING_TTL_MS };
+    return total;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Cold-project gate
@@ -490,6 +569,7 @@ export async function registerScheduledTasks(
       for (const row of rows) out.set(row.task, row.last_completed_seconds * 1000);
       return out;
     },
+    canopyPendingProbe: makeTotalCanopyPendingProbe({ cache, logger, mycoHome, daemonStateDir }),
   };
 
   const { jobs, kicker } = buildScheduledJobs(
