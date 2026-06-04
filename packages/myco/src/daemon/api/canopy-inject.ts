@@ -24,6 +24,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
+import { loadMergedConfig } from '../../config/loader.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -108,7 +109,19 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
     const projectId = ctx.projectId;
-    const config = deps.liveConfig.current.cortex.canopy;
+    let projectConfig;
+    try {
+      projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? undefined });
+    } catch {
+      // Project not yet initialized — fall back to the bootstrap config so
+      // partially-initialized projects don't break injection.
+      projectConfig = deps.liveConfig.current;
+    }
+    if (!projectConfig.cortex.canopy.enabled) {
+      const body: InjectResponseBody = { inject: false, reason: 'capability_off' };
+      return { body };
+    }
+    const config = projectConfig.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
 
