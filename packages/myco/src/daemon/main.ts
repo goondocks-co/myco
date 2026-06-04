@@ -173,6 +173,7 @@ import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
+import { JobRunner } from './job-runner.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
@@ -1045,6 +1046,13 @@ export async function main(): Promise<void> {
   // it in for per-job lag attribution.
   const eventLoopLagProbe = new EventLoopLagProbe(logger);
 
+  const jobRunner = new JobRunner({
+    concurrency: 3,
+    logger,
+    lagProbe: eventLoopLagProbe,
+    onError: (jobName, err) =>
+      logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${jobName}" failed`, { error: errorMessage(err) }),
+  });
   const powerManager = new PowerManager({
     idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
     sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
@@ -1052,7 +1060,8 @@ export async function main(): Promise<void> {
     activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
-    lagProbe: eventLoopLagProbe,
+    onTick: (state) => jobRunner.dispatch(state),
+    shouldHoldDeepSleep: () => jobRunner.providesHold() !== null,
   });
 
   // Per-project power state. Pre-Grove, each project ran in its own
@@ -1340,7 +1349,7 @@ export async function main(): Promise<void> {
   };
 
   async function syncScheduledTasks() {
-    scheduledTaskKicker = await registerScheduledTasks(powerManager, {
+    scheduledTaskKicker = await registerScheduledTasks(jobRunner, {
       definitionsDir,
       vaultDir: bootstrapVaultDir,
       // Per-run grove resolution — the agent's vector/canopy search tools must
@@ -2146,7 +2155,7 @@ export async function main(): Promise<void> {
   // The canopy mass-add callback feeds the scheduler kicker so a fresh
   // populate or recovery scan drains immediately on the next compatible
   // tick instead of waiting one full canopy-describe interval.
-  const powerJobs = registerPowerJobs(powerManager, {
+  const powerJobs = registerPowerJobs(jobRunner, {
     registry,
     logger,
     liveConfig,
@@ -2166,7 +2175,7 @@ export async function main(): Promise<void> {
     projectRoot,
     scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
-  teamSync.registerFlushJob(powerManager, runtimeCache);
+  teamSync.registerFlushJob(jobRunner, runtimeCache);
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner

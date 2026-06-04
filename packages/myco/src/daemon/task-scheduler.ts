@@ -11,7 +11,7 @@
 import type { AgentTask, AcceleratorConfig, TaskSchedule } from '@myco/agent/types.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { RegisteredProjectScope } from './scope-iteration.js';
-import type { PowerJob } from './power.js';
+import type { RunnerJob } from './job-runner.js';
 import type { PowerState } from './power.js';
 
 /** Resolve effective schedule: YAML defaults + myco.yaml overrides. */
@@ -124,7 +124,7 @@ export interface ScheduledJobKicker {
 }
 
 export interface ScheduledJobBuildResult {
-  jobs: PowerJob[];
+  jobs: RunnerJob[];
   kicker: ScheduledJobKicker;
 }
 
@@ -200,9 +200,13 @@ export function buildScheduledJobs(
   // power state inside the loop.
   const allRunIn: PowerState[] = ['active', 'idle', 'sleep'];
 
-  const job: PowerJob = {
+  const job: RunnerJob = {
     name: COLLAPSED_JOB_NAME,
     runIn: allRunIn,
+    kind: 'scheduler',
+    // Real global canopy-pending hold probe is wired in a later task; this
+    // stub compiles and never holds for now.
+    hold: { pending: () => 0 },
     fn: async () => {
       // Snapshot broadcasts at tick entry so a kick mid-tick lands on the next pass.
       const broadcastSnapshot = new Set(broadcastKicks);

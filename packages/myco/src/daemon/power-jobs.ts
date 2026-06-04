@@ -1,5 +1,5 @@
 import type { DaemonLogger, Logger } from './logger.js';
-import type { PowerManager } from './power.js';
+import type { JobRunner } from './job-runner.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -217,7 +217,7 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
+export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJobsResult {
   const {
     registry,
     logger,
@@ -333,16 +333,17 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
   let reconcileRunning = false;
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.EMBEDDING_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
-    preventsDeepSleep: () => {
-      if (liveConfig.current.embedding.run_in_deep_sleep === false) return false;
-      try {
-        return totalPendingProbe() > 0;
-      } catch {
-        return false;
-      }
+    kind: 'drain',
+    drain: { slice: EMBEDDING_BATCH_SIZE },
+    hold: {
+      // Read the toggle live each tick — `liveConfig.current` is reassigned
+      // on config save. Equivalent to the old preventsDeepSleep gate:
+      // toggle off → 0 → no hold; else hold iff there is pending work.
+      pending: () =>
+        liveConfig.current.embedding.run_in_deep_sleep === false ? 0 : totalPendingProbe(),
     },
     fn: async () => {
       if (reconcileRunning) return;
@@ -358,9 +359,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.SESSION_MAINTENANCE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.SESSION_MAINTENANCE, async (scope) => {
       const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
       await runSessionMaintenance({
@@ -373,9 +375,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.LOG_RETENTION,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.LOG_RETENTION, async (scope) => {
       const retentionDays = liveConfig.current.daemon.log_retention_days;
       const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
@@ -395,9 +398,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.AUTO_BACKUP,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.AUTO_BACKUP, async (scope) => {
       try {
         const backupDir = resolveGroveBackupDir(liveConfig.current, scope.grove, scope.groveHome);
@@ -434,9 +438,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.DATABASE_OPTIMIZE,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_OPTIMIZE, async (scope) => {
       const config = liveConfig.current;
       if (!config.maintenance?.auto_optimize) return;
@@ -452,10 +457,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK,
     // Heavier than optimize; only run when the user is away.
     runIn: ['sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK, async (scope) => {
       const config = liveConfig.current;
       if (!config.maintenance?.auto_integrity_check) return;
@@ -507,9 +513,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   // state.
   let lastSymbiontDetectionAt = 0;
   const SYMBIONT_DETECTION_INTERVAL_MS = 60 * 60 * 1000;
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.SYMBIONT_DETECTION,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       const now = Date.now();
       if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
@@ -546,9 +553,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.STAGING_GC,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       await forEachRegisteredProject(
         cache,
@@ -586,9 +594,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.RELEASE_PROVENANCE_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
+    priority: 'low',
     fn: async () => {
       const now = Date.now();
       const visited = new Set<string>();
@@ -672,9 +682,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   // trigger. The sweep walks all registered projects through the same
   // single-writer reconciler and is idempotent — a project already in sync is
   // a no-op.
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.MANAGED_FILES_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       const now = Date.now();
       const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
@@ -716,7 +727,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  const canopy = registerCanopyJobs(powerManager, {
+  const canopy = registerCanopyJobs(runner, {
     logger,
     machineId,
     liveConfig,

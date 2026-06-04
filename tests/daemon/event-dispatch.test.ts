@@ -29,6 +29,8 @@ function makeHandler(opts: {
     activeIntervalMs: 60_000,
     sleepIntervalMs: 60_000,
     logger,
+    onTick: () => {},
+    shouldHoldDeepSleep: () => false,
   });
   const sessionBuffers = new Map();
   const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-vault-'));

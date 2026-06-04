@@ -60,6 +60,8 @@ function makeDispatcher() {
     activeIntervalMs: 60_000,
     sleepIntervalMs: 60_000,
     logger,
+    onTick: () => {},
+    shouldHoldDeepSleep: () => false,
   });
   const sessionBuffers = new Map();
 
@@ -264,6 +266,8 @@ function makeDispatcherWithRealReconciler(opts: { bufferDir: string; vaultDir?: 
     activeIntervalMs: 60_000,
     sleepIntervalMs: 60_000,
     logger,
+    onTick: () => {},
+    shouldHoldDeepSleep: () => false,
   });
   const sessionBuffers = new Map();
   const reconciler = createReconciler({ bufferDirs: [opts.bufferDir], logger: logger as never, projectRoot: process.cwd() });

@@ -1,7 +1,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import type { PowerManager } from './power.js';
+import type { JobRunner } from './job-runner.js';
 import type {
   ProjectTaskLastRunMap,
   ScheduledJobContext,
@@ -149,7 +149,7 @@ async function seedInitialLastRuns(
 // ---------------------------------------------------------------------------
 
 export async function registerScheduledTasks(
-  powerManager: PowerManager,
+  runner: JobRunner,
   deps: TaskSchedulingDeps,
 ): Promise<ScheduledJobKicker> {
   const {
@@ -497,7 +497,7 @@ export async function registerScheduledTasks(
     scheduledContext,
     initialLastRuns,
   );
-  powerManager.replaceGroup(SCHEDULED_JOB_PREFIX, jobs);
+  runner.replaceGroup(SCHEDULED_JOB_PREFIX, jobs);
   logger.info(LOG_KINDS.DAEMON_START, `Synced ${jobs.length} scheduled task(s)`, {
     tasks: jobs.map((j) => j.name),
   });

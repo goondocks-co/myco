@@ -80,7 +80,7 @@ function setupGrove(opts: { pendingCount?: number } = {}): GroveFixture {
   });
 
   // Force the cache to associate the shared embeddingMock with this Grove
-  // so subsequent .getEmbeddingRuntime calls (from preventsDeepSleep,
+  // so subsequent .getEmbeddingRuntime calls (from the hold probe,
   // embedding-reconcile fan-out) all resolve to it.
   cache.getEmbeddingRuntime(databasePath, factory);
 
@@ -105,15 +105,42 @@ function setupGrove(opts: { pendingCount?: number } = {}): GroveFixture {
   };
 }
 
-class FakePowerManager {
-  jobs: Array<{ name: string; runIn: string[]; fn: () => Promise<void>; preventsDeepSleep?: () => boolean }> = [];
-  register(job: { name: string; runIn: string[]; fn: () => Promise<void>; preventsDeepSleep?: () => boolean }) {
+interface FakeJob {
+  name: string;
+  runIn: string[];
+  kind: string;
+  priority?: string;
+  drain?: { slice: number; softDeadlineMs?: number };
+  hold?: { pending: () => number; allowDeepSleepHold?: boolean };
+  fn: (ctx?: unknown) => Promise<unknown>;
+}
+
+class FakeJobRunner {
+  jobs: FakeJob[] = [];
+  register(job: FakeJob) {
     this.jobs.push(job);
+  }
+  replaceGroup(prefix: string, jobs: FakeJob[]) {
+    this.jobs = this.jobs.filter((j) => !j.name.startsWith(prefix));
+    this.jobs.push(...jobs);
   }
   find(name: string) {
     const job = this.jobs.find((j) => j.name === name);
     if (!job) throw new Error('job not found: ' + name);
     return job;
+  }
+}
+
+// Mirror JobRunner.providesHold's per-job decision: a job holds deep sleep
+// only when its hold spec opts in (allowDeepSleepHold !== false) and its
+// pending probe reports work. A failing probe never holds.
+function jobHoldsDeepSleep(job: FakeJob): boolean {
+  if (!job.hold) return false;
+  if ((job.hold.allowDeepSleepHold ?? true) === false) return false;
+  try {
+    return job.hold.pending() > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -157,11 +184,11 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
 // ---------------------------------------------------------------------------
 describe('database-optimize power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -241,11 +268,11 @@ describe('database-optimize power job', () => {
 
 describe('registerPowerJobs — staging-gc', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -324,11 +351,11 @@ describe('registerPowerJobs — staging-gc', () => {
 
 describe('release-provenance power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -346,11 +373,11 @@ describe('release-provenance power job', () => {
 
 describe('embedding-reconcile power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -361,22 +388,22 @@ describe('embedding-reconcile power job', () => {
     expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
   });
 
-  it('preventsDeepSleep returns true when toggle is on and any Grove has pending work', () => {
+  it('hold holds deep sleep when toggle is on and any Grove has pending work', () => {
     fx.cleanup();
     fx = setupGrove({ pendingCount: 5 });
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
     registerPowerJobs(pm as never, buildDeps(fx));
     const job = pm.find('embedding-reconcile');
-    expect(job.preventsDeepSleep?.()).toBe(true);
+    expect(jobHoldsDeepSleep(job)).toBe(true);
   });
 
-  it('preventsDeepSleep returns false when toggle is on but every Grove queue is empty', () => {
+  it('hold does not hold deep sleep when toggle is on but every Grove queue is empty', () => {
     registerPowerJobs(pm as never, buildDeps(fx));
     const job = pm.find('embedding-reconcile');
-    expect(job.preventsDeepSleep?.()).toBe(false);
+    expect(jobHoldsDeepSleep(job)).toBe(false);
   });
 
-  it('preventsDeepSleep ignores pending work in Groves served by a different daemon', () => {
+  it('hold ignores pending work in Groves served by a different daemon', () => {
     const devGrove = createGrove('Dogfood', fx.mycoHome, { servedBy: 'service-dev' });
     ensureGroveDatabase(devGrove.id, fx.mycoHome);
     const devDatabasePath = resolveGroveDbPath(devGrove.id, fx.mycoHome);
@@ -396,13 +423,13 @@ describe('embedding-reconcile power job', () => {
     registerPowerJobs(pm as never, deps);
 
     const job = pm.find('embedding-reconcile');
-    expect(job.preventsDeepSleep?.()).toBe(false);
+    expect(jobHoldsDeepSleep(job)).toBe(false);
   });
 
-  it('preventsDeepSleep returns false when toggle is off, even with pending work', () => {
+  it('hold does not hold deep sleep when toggle is off, even with pending work', () => {
     fx.cleanup();
     fx = setupGrove({ pendingCount: 50 });
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
     registerPowerJobs(pm as never, buildDeps(fx, {
       config: {
         daemon: { log_retention_days: 30, stale_session_threshold_ms: 60 * 60 * 1000 },
@@ -418,7 +445,7 @@ describe('embedding-reconcile power job', () => {
       },
     }));
     const job = pm.find('embedding-reconcile');
-    expect(job.preventsDeepSleep?.()).toBe(false);
+    expect(jobHoldsDeepSleep(job)).toBe(false);
   });
 
   it('reconcile body invokes the per-Grove embedding manager', async () => {
@@ -434,11 +461,11 @@ describe('embedding-reconcile power job', () => {
 
 describe('log-retention power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -519,11 +546,11 @@ describe('log-retention power job', () => {
 
 describe('auto-backup power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -588,11 +615,11 @@ describe('auto-backup power job', () => {
 
 describe('database-integrity-check power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -643,13 +670,13 @@ describe('database-integrity-check power job', () => {
 describe('Grove-DB fan-out — auto-backup', () => {
   let fx: GroveFixture;
   let secondGrove: GroveRecord;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
     secondGrove = createGrove('Second', fx.mycoHome);
     ensureGroveDatabase(secondGrove.id, fx.mycoHome);
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -671,11 +698,11 @@ describe('Grove-DB fan-out — auto-backup', () => {
 
 describe('canopy-background-scan power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
   beforeEach(() => {
     fx = setupGrove();
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());
@@ -768,7 +795,7 @@ describe('canopy-background-scan power job', () => {
 
 describe('session-maintenance power job', () => {
   let fx: GroveFixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
   let projectRoot: string;
   let projectVaultDir: string;
   const PROJECT_ID = 'proj_' + 'a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5';
@@ -783,7 +810,7 @@ describe('session-maintenance power job', () => {
       projectName: 'p1',
       projectRoot,
     }, fx.mycoHome);
-    pm = new FakePowerManager();
+    pm = new FakeJobRunner();
   });
 
   afterEach(() => fx.cleanup());

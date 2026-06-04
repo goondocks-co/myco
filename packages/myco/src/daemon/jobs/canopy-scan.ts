@@ -25,7 +25,7 @@
 import type { Database } from 'bun:sqlite';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { PowerManager } from '../power.js';
+import type { JobRunner } from '../job-runner.js';
 import { scanProject } from '@myco/canopy/scanner/scan-project.js';
 import { deltaScan } from '@myco/canopy/scanner/delta-scan.js';
 import type { CanopyScanResult } from '@myco/canopy/types.js';
@@ -381,11 +381,11 @@ export interface CanopyJobsRegistration {
 }
 
 /**
- * Register the canopy background-scan PowerManager job and return the
+ * Register the canopy background-scan job on the runner and return the
  * project-keyed registry the daemon uses to dispatch on SessionStart.
  */
 export function registerCanopyJobs(
-  powerManager: PowerManager,
+  runner: JobRunner,
   ctx: CanopyJobsContext,
 ): CanopyJobsRegistration {
   const registry = new CanopyJobsRegistry({
@@ -402,9 +402,10 @@ export function registerCanopyJobs(
     (now) => ctx.dispatchBackground(registry, now),
   );
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.CANOPY_BACKGROUND_SCAN,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: () => dispatcher.tick(),
   });
 

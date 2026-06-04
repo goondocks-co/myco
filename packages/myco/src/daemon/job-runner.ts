@@ -16,6 +16,8 @@
 
 import type { Logger } from './logger.js';
 import type { PowerState } from './power.js';
+import type { EventLoopLagProbe } from './event-loop-lag.js';
+import { LOG_KINDS } from '../constants/log-kinds.js';
 
 export type JobKind = 'housekeeping' | 'drain' | 'scheduler';
 
@@ -53,6 +55,9 @@ export interface JobRunnerOptions {
   logger: Logger;
   clock?: () => number;
   onError?: (jobName: string, err: unknown) => void;
+  /** Optional. When provided, every job completion emits a `power.job` log
+   *  entry annotated with the peak event-loop lag observed while it ran. */
+  lagProbe?: EventLoopLagProbe;
 }
 
 export class JobRunner {
@@ -142,7 +147,33 @@ export class JobRunner {
       this.nextEligibleAt.set(job.name, this.now() + delay);
       this.opts.onError?.(job.name, err);
     };
-    void job.fn(ctx).then(() => cleanup(), (err) => cleanup(err));
+
+    // Per-job timing + event-loop-lag attribution. Emitted for every job
+    // (housekeeping/drain/scheduler) so daemon-log verification keeps the
+    // `power.job` line it relies on.
+    const probe = this.opts.lagProbe;
+    const startMs = performance.now();
+    let peakLagDuringMs = 0;
+    const unsubscribe = probe?.addTickListener((lag) => {
+      if (lag > peakLagDuringMs) peakLagDuringMs = lag;
+    });
+    const settle = async (err?: unknown): Promise<void> => {
+      // Yield once to libuv's timer phase so any probe tick deferred by a
+      // sync-heavy job fires and reaches the listener before unsubscribe.
+      if (probe) {
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
+      unsubscribe?.();
+      const durationMs = performance.now() - startMs;
+      this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Power job completed', {
+        job_name: job.name,
+        duration_ms: durationMs,
+        event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
+        status: err === undefined ? 'ok' : 'error',
+      });
+      cleanup(err);
+    };
+    void job.fn(ctx).then(() => settle(), (err) => settle(err));
   }
 
   /** Name of the first job holding deep-sleep, or null. Defensive: a failing probe never holds. */

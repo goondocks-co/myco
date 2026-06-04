@@ -1,16 +1,7 @@
 import type { DaemonLogger } from './logger.js';
-import type { EventLoopLagProbe } from './event-loop-lag.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 
 export type PowerState = 'active' | 'idle' | 'sleep' | 'deep_sleep';
-
-export interface PowerJob {
-  name: string;
-  runIn: PowerState[];
-  fn: () => Promise<void>;
-  /** When true, prevents transition from sleep → deep_sleep. */
-  preventsDeepSleep?: () => boolean;
-}
 
 export interface PowerManagerConfig {
   idleThresholdMs: number;
@@ -19,16 +10,15 @@ export interface PowerManagerConfig {
   activeIntervalMs: number;
   sleepIntervalMs: number;
   logger: DaemonLogger;
-  /** Optional. When provided, every job invocation emits a `power.job`
-   *  log entry annotated with the peak event-loop lag observed during
-   *  the job's runtime. */
-  lagProbe?: EventLoopLagProbe;
+  /** Called once per tick with the resolved state. The runner dispatches; PowerManager never runs jobs. */
+  onTick: (state: PowerState) => void;
+  /** True keeps the daemon at `sleep` instead of dropping to `deep_sleep`. Supplied by the runner. */
+  shouldHoldDeepSleep: () => boolean;
 }
 
 export class PowerManager {
   private state: PowerState = 'active';
   private lastActivity: number = Date.now();
-  private jobs: PowerJob[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private config: PowerManagerConfig;
@@ -38,15 +28,6 @@ export class PowerManager {
   constructor(config: PowerManagerConfig) {
     this.config = config;
     this.logger = config.logger;
-  }
-
-  register(job: PowerJob): void {
-    this.jobs.push(job);
-  }
-
-  replaceGroup(prefix: string, jobs: PowerJob[]): void {
-    this.jobs = this.jobs.filter((job) => !job.name.startsWith(prefix));
-    this.jobs.push(...jobs);
   }
 
   recordActivity(): void {
@@ -65,9 +46,7 @@ export class PowerManager {
     this.state = 'active';
     this.running = true;
     this.scheduleNextTick();
-    this.logger.info(LOG_KINDS.POWER_STATE, 'PowerManager started', {
-      jobs: this.jobs.map((j) => j.name),
-    });
+    this.logger.info(LOG_KINDS.POWER_STATE, 'PowerManager started');
   }
 
   stop(): void {
@@ -89,12 +68,11 @@ export class PowerManager {
     let target: PowerState;
 
     if (idleMs >= this.config.deepSleepThresholdMs) {
-      const blocker = this.jobs.find((j) => j.preventsDeepSleep?.());
-      if (blocker) {
+      if (this.config.shouldHoldDeepSleep()) {
         target = 'sleep';
         if (!this.deepSleepHeld) {
           this.deepSleepHeld = true;
-          this.logger.info(LOG_KINDS.POWER_STATE, 'Deep sleep held', { by: blocker.name });
+          this.logger.info(LOG_KINDS.POWER_STATE, 'Deep sleep held', { by: 'runner' });
         }
       } else {
         target = 'deep_sleep';
@@ -141,50 +119,19 @@ export class PowerManager {
       return;
     }
 
-    // Run eligible jobs
-    const eligible = this.jobs.filter((j) => j.runIn.includes(this.state));
-    this.logger.debug(LOG_KINDS.POWER_TICK, 'Tick', {
-      state: this.state,
-      jobs: eligible.map((j) => j.name),
-    });
-
-    for (const job of eligible) {
-      await this.runJob(job);
-    }
+    this.config.onTick(this.state);
 
     this.scheduleNextTick();
   }
 
-  private async runJob(job: PowerJob): Promise<void> {
-    const probe = this.config.lagProbe;
-    const startMs = performance.now();
-    let peakLagDuringMs = 0;
-    const unsubscribe = probe?.addTickListener((lag) => {
-      if (lag > peakLagDuringMs) peakLagDuringMs = lag;
-    });
-    let errored: Error | null = null;
-    try {
-      await job.fn();
-    } catch (err) {
-      errored = err as Error;
-    }
-    // Yield once to libuv's timer phase so any probe tick deferred by a
-    // sync-heavy job fires and reaches the listener before unsubscribe.
-    if (probe) {
-      await new Promise<void>((r) => setTimeout(r, 0));
-    }
-    unsubscribe?.();
-    const durationMs = performance.now() - startMs;
-    this.logger.info(LOG_KINDS.POWER_JOB, 'Power job completed', {
-      job_name: job.name,
-      duration_ms: durationMs,
-      event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
-      status: errored ? 'error' : 'ok',
-    });
-    if (errored) {
-      this.logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${job.name}" failed`, {
-        error: errored.message,
-      });
-    }
+  /** Drive exactly one tick. Test-only — avoids start()'s real timer. */
+  tickOnceForTest(): void {
+    void this.tick();
+  }
+
+  /** Re-evaluate and return the resolved state. Test-only. */
+  evaluateStateForTest(): PowerState {
+    this.evaluateState();
+    return this.state;
   }
 }
