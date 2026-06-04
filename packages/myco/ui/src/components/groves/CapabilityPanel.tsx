@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
-import { getAtPath } from '@myco/utils/dot-path';
-import { CAPABILITIES } from '@myco/config/capabilities';
+import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities';
+import type { MycoConfig } from '@myco/config/schema';
 import type { CapabilityId } from '@myco/config/scope';
 import { CAPABILITY_IDS } from '@myco/config/scope';
 import { useScopedConfigForSelection } from '../../hooks/use-scoped-config';
@@ -14,13 +14,6 @@ export interface CapabilityPanelProps {
   onClose: () => void;
 }
 
-/** Read a boolean from a merged config by dotted path, defaulting to true. */
-function readBool(config: unknown, path: string): boolean {
-  if (config == null) return true;
-  const val = getAtPath(config as Record<string, unknown>, path);
-  return val === undefined ? true : Boolean(val);
-}
-
 function CapabilityToggleRow({
   capId,
   scoped,
@@ -29,7 +22,7 @@ function CapabilityToggleRow({
   scoped: ReturnType<typeof useScopedConfigForSelection>;
 }) {
   const cap = CAPABILITIES[capId];
-  const enabled = readBool(scoped.effective, cap.masterGate);
+  const enabled = capabilityEnabled(scoped.effective as MycoConfig, capId);
 
   return (
     <div className="flex items-start justify-between gap-4 py-3 border-b border-outline-variant/15 last:border-b-0">

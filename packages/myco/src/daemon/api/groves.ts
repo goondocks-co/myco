@@ -1,9 +1,8 @@
-import { CAPABILITIES } from '@myco/config/capabilities.js';
+import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import type { CapabilityId } from '@myco/config/scope.js';
 import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
-import { getAtPath } from '@myco/utils/dot-path.js';
 import {
   createGrove,
   deleteGrove,
@@ -122,25 +121,23 @@ export function listGroveSummaries(
 }
 
 /**
- * Resolve per-capability master-gate booleans for a project.
- *
- * Reuses `loadMergedConfig` (mtime-cached) + `CAPABILITIES[id].masterGate`
- * + `getAtPath`, exactly matching the `getCapabilityEnabled` pattern in
- * task-scheduling.ts. On load failure all capabilities default to `true`
- * (schema defaults), so a broken vault never crashes the Groves list.
+ * Resolve per-capability master-gate booleans for a project. Uses
+ * `capabilityEnabled` as the single gate predicate — fail-closed: a
+ * broken or unloadable vault yields capture-only (all false) rather than
+ * all-true, so badges reflect the fail-closed runtime behavior.
  */
 function resolveCapabilities(projectRoot: string, groveId: string): Record<CapabilityId, boolean> {
   const capIds = Object.keys(CAPABILITIES) as CapabilityId[];
-  const allTrue = Object.fromEntries(capIds.map((id) => [id, true])) as Record<CapabilityId, boolean>;
+  let config = null;
   try {
     const vaultDir = resolveProjectVaultDir(projectRoot);
-    const config = loadMergedConfig(vaultDir, { groveId });
-    return Object.fromEntries(
-      capIds.map((id) => [id, getAtPath(config, CAPABILITIES[id].masterGate) !== false]),
-    ) as Record<CapabilityId, boolean>;
+    config = loadMergedConfig(vaultDir, { groveId });
   } catch {
-    return allTrue;
+    // Unloadable config → capabilityEnabled(null, …) returns false (fail-closed).
   }
+  return Object.fromEntries(
+    capIds.map((id) => [id, capabilityEnabled(config, id)]),
+  ) as Record<CapabilityId, boolean>;
 }
 
 function serializeProject(project: RegisteredProject, groveId: string): GroveProjectSummary {

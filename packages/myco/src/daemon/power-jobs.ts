@@ -41,6 +41,7 @@ import {
   listGroves,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { withDatabase } from '@myco/db/client.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
@@ -729,10 +730,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         async ({ databasePath, projectId, projectRoot, projectVaultDir, grove }: RegisteredProjectScope) => {
           try {
             const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
-            if (!projectConfig.cortex.canopy.enabled) return;
+            if (!capabilityEnabled(projectConfig, 'canopy')) return;
           } catch {
-            // Project not yet initialized — proceed with scan; the gate
-            // only applies when the project's config explicitly disables canopy.
+            // Project not yet initialized — capabilityEnabled with null config
+            // would return false (fail-closed), but we allow uninitialized
+            // projects to proceed so the canopy scan can bootstrap them.
           }
           const runner = canopyRegistry.ensureRunner({
             databasePath,

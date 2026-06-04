@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import { loadMergedConfig } from '../../config/loader.js';
+import { capabilityEnabled } from '../../config/capabilities.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -109,19 +110,20 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
     const projectId = ctx.projectId;
-    let projectConfig: MycoConfig;
+    let projectConfig: MycoConfig | null = null;
     try {
       projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? null });
     } catch {
-      // Project not yet initialized — fall back to the bootstrap config so
-      // partially-initialized projects don't break injection.
-      projectConfig = deps.liveConfig.current;
+      // Project not yet initialized — treat as capability_off (fail-closed)
+      // rather than falling back to the bootstrap config, which could leak
+      // cross-tenant config or silently inject for projects whose config
+      // is temporarily unreadable.
     }
-    if (!projectConfig.cortex.canopy.enabled) {
+    if (!capabilityEnabled(projectConfig, 'canopy')) {
       const body: InjectResponseBody = { inject: false, reason: 'capability_off' };
       return { body };
     }
-    const config = projectConfig.cortex.canopy;
+    const config = projectConfig!.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
 

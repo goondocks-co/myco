@@ -1,3 +1,5 @@
+import { getAtPath } from '../utils/dot-path.js';
+import type { MycoConfig } from './schema.js';
 import type { CapabilityId } from './scope.js';
 
 /**
@@ -67,4 +69,19 @@ export function capabilityForTask(taskName: string): CapabilityId | null {
     if (cap.scheduledTasks.includes(taskName)) return cap.id;
   }
   return null;
+}
+
+/**
+ * Single authoritative capability gate. Fail-closed: a null/unloadable
+ * config disables the capability. A master gate defaults on (only `false`
+ * disables) — matching the gate-honoring contract.
+ */
+export function capabilityEnabled(config: MycoConfig | null | undefined, capId: CapabilityId): boolean {
+  if (!config) return false;
+  return getAtPath(config, CAPABILITIES[capId].masterGate) !== false;
+}
+
+/** All opt-in capabilities off → the project is capture-only. */
+export function isCaptureOnly(config: MycoConfig | null | undefined): boolean {
+  return (Object.keys(CAPABILITIES) as CapabilityId[]).every((id) => !capabilityEnabled(config, id));
 }
