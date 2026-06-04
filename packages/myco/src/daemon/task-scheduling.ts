@@ -34,12 +34,9 @@ import {
   forEachRegisteredProject,
   isProjectActive,
 } from './scope-iteration.js';
-import { isProjectPausedInGrove, listGroves, listRegisteredProjects } from '@myco/grove/registry.js';
-import {
-  resolveGroveDbPath,
-  resolveMycoHome,
-  resolveServiceDirName,
-} from '@myco/grove/paths.js';
+import { isProjectPausedInGrove, listRegisteredProjects } from '@myco/grove/registry.js';
+import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
@@ -52,21 +49,10 @@ const SCHEDULED_JOB_PREFIX = 'scheduled:';
 // Canopy-pending hold probe
 // ---------------------------------------------------------------------------
 
-// Mirrors the embedding-reconcile hold probe in power-jobs.ts: cache the
-// zero state for 30s so the PowerManager tick doesn't walk every Grove on
-// every poll cycle when the canopy queue is fully drained.
-const CANOPY_ZERO_PENDING_TTL_MS = 30_000;
-const CANOPY_PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
-
 // Accelerator cap used to bound the per-project COUNT. The hold only needs
 // ">0"; stopping at the accelerated threshold avoids an unbounded COUNT on
 // large canopy_entries tables.
 const CANOPY_PROBE_COUNT_CAP = 50;
-
-interface CanopyPendingProbeCache {
-  total: number;
-  expiresAt: number;
-}
 
 export interface CanopyPendingProbeDeps {
   cache: GroveRuntimeCache;
@@ -75,51 +61,34 @@ export interface CanopyPendingProbeDeps {
   daemonStateDir: string;
 }
 
+// Holds the daemon awake only when canopy-describe will actually drain the
+// pending rows. canopy-describe defaults to `schedule.enabled: false` while
+// canopy-background-scan ALWAYS populates pending rows — so an ungated hold
+// would pin a default install awake for work a disabled task never runs.
+// Count pending rows ONLY for projects where canopy-describe is enabled.
 export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () => number {
-  let probeCache: CanopyPendingProbeCache | null = null;
-  const lastWarnAt = new Map<string, number>();
-  return () => {
-    if (probeCache && Date.now() < probeCache.expiresAt) return probeCache.total;
-    const mycoHome = deps.mycoHome ?? resolveMycoHome();
-    const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
-    let total = 0;
-    for (const grove of listGroves(mycoHome, { servedBy })) {
-      try {
-        const databasePath = resolveGroveDbPath(grove.id, mycoHome);
-        const db = deps.cache.getDatabase(databasePath);
-        const projects = listRegisteredProjects(grove.id, mycoHome);
-        let grovePending = 0;
-        for (const project of projects) {
-          grovePending += withDatabase(db, () =>
-            countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP),
-          );
-          if (grovePending > 0) break;
-        }
-        total += grovePending;
-        if (total > 0) {
-          probeCache = null;
-          return total;
-        }
-      } catch (err) {
-        const now = Date.now();
-        const last = lastWarnAt.get(grove.id) ?? 0;
-        if (now - last >= CANOPY_PROBE_FAILURE_WARN_INTERVAL_MS) {
-          lastWarnAt.set(grove.id, now);
-          deps.logger.warn(
-            LOG_KINDS.CANOPY_ERROR,
-            'Canopy pending-probe failed for Grove',
-            {
-              grove_id: grove.id,
-              grove_slug: grove.slug,
-              error: errorMessage(err),
-            },
-          );
-        }
+  return makeGrovePendingProbe({
+    cache: deps.cache,
+    logger: deps.logger,
+    daemonStateDir: deps.daemonStateDir,
+    mycoHome: deps.mycoHome,
+    logKind: LOG_KINDS.CANOPY_ERROR,
+    // Runs inside the helper's `withDatabase(groveDb)`, so the ambient db
+    // for `countPendingCanopyDescribe` is this Grove's DB.
+    countForGrove: ({ grove, mycoHome }) => {
+      let grovePending = 0;
+      for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+        const config = loadMergedConfig(resolveProjectVaultDir(project.root), {
+          groveId: grove.id,
+          mycoHome,
+        });
+        if (config.agent.tasks?.['canopy-describe']?.schedule?.enabled !== true) continue;
+        grovePending += countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP);
+        if (grovePending > 0) break;
       }
-    }
-    probeCache = { total: 0, expiresAt: Date.now() + CANOPY_ZERO_PENDING_TTL_MS };
-    return total;
-  };
+      return grovePending;
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

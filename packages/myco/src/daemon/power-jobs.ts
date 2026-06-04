@@ -33,15 +33,12 @@ import {
 import {
   resolveMycoHome,
   resolveProjectVaultDir,
-  resolveGroveDbPath,
-  resolveServiceDirName,
 } from '@myco/grove/paths.js';
 import {
   pauseAwareShouldVisit,
-  listGroves,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
-import { withDatabase } from '@myco/db/client.js';
+import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
@@ -50,17 +47,6 @@ import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-me
 import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-// Cached results for `totalPendingAcrossGroves`. The predicate fires on
-// every PowerManager tick to gate sleep transitions; once the queue
-// drains we don't need to re-walk every Grove for ZERO_PENDING_TTL_MS.
-const ZERO_PENDING_TTL_MS = 30_000;
-
-// Rate-limit window for per-Grove embedding-probe failures. The probe
-// fires on every PowerManager tick; without throttling, a Grove with
-// a persistent embedding error would log on every tick. One warn per
-// hour per Grove is enough to expose the failure without flooding.
-const PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -157,60 +143,22 @@ function getGroveEmbeddingManager(
   return entry.embeddingManager;
 }
 
-interface PendingProbeCache {
-  total: number;
-  expiresAt: number;
-}
-
-// Sum of pending embedding work across every Grove. Caches the
-// last-known zero state for ZERO_PENDING_TTL_MS so the deep-sleep
-// predicate doesn't walk every Grove on every tick when fully drained.
+// Sum of pending embedding work across every Grove via the shared
+// multi-Grove probe. The per-Grove count resolves this Grove's
+// EmbeddingManager from the cache (runs inside the helper's
+// `withDatabase`, so `totalPendingCount()` hits the right Grove DB).
 function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
-  let cache: PendingProbeCache | null = null;
-  // Per-Grove last-warn timestamps so a persistently-broken Grove
-  // surfaces in logs without flooding on every tick.
-  const lastWarnAt = new Map<string, number>();
-  return () => {
-    if (cache && Date.now() < cache.expiresAt) return cache.total;
-    const mycoHome = deps.mycoHome ?? resolveMycoHome();
-    const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
-    let total = 0;
-    for (const grove of listGroves(mycoHome, { servedBy })) {
-      try {
-        const databasePath = resolveGroveDbPath(grove.id, mycoHome);
-        const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);
-        const manager = entry.embeddingManager;
-        if (!manager) continue;
-        // withDatabase is sync (AsyncLocalStorage.run returns fn's value).
-        total += withDatabase(entry.db, () => manager.totalPendingCount());
-        if (total > 0) {
-          cache = null;
-          return total;
-        }
-      } catch (err) {
-        // Swallow per-Grove failure — better to risk an early sleep than
-        // hold the whole machine awake on a transiently-broken signal.
-        // But surface the failure at warn level (rate-limited per Grove)
-        // so persistent breakage is visible in the daemon log.
-        const now = Date.now();
-        const last = lastWarnAt.get(grove.id) ?? 0;
-        if (now - last >= PROBE_FAILURE_WARN_INTERVAL_MS) {
-          lastWarnAt.set(grove.id, now);
-          deps.logger.warn(
-            LOG_KINDS.EMBEDDING_RECONCILE,
-            'Embedding pending-probe failed for Grove',
-            {
-              grove_id: grove.id,
-              grove_slug: grove.slug,
-              error: errorMessage(err),
-            },
-          );
-        }
-      }
-    }
-    cache = { total: 0, expiresAt: Date.now() + ZERO_PENDING_TTL_MS };
-    return total;
-  };
+  return makeGrovePendingProbe({
+    cache: deps.cache,
+    logger: deps.logger,
+    daemonStateDir: deps.daemonStateDir,
+    mycoHome: deps.mycoHome,
+    logKind: LOG_KINDS.EMBEDDING_RECONCILE,
+    countForGrove: ({ databasePath }) => {
+      const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);
+      return entry.embeddingManager ? entry.embeddingManager.totalPendingCount() : 0;
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
