@@ -18,6 +18,7 @@ import { describe, it, expect } from 'bun:test';
 import { JobRunner, type RunnerJob } from '@myco/daemon/job-runner.js';
 import type { Logger } from '@myco/daemon/logger.js';
 import type { PowerState } from '@myco/daemon/power.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 function noopJob(name: string, overrides: Partial<RunnerJob> = {}): RunnerJob {
   return {
@@ -169,5 +170,95 @@ describe('JobRunner drain record', () => {
     r.dispatch('sleep');
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     expect(records).toHaveLength(0);
+  });
+});
+
+describe('JobRunner power.job telemetry', () => {
+  it('emits status=ok with lag attribution when a lagProbe is provided', async () => {
+    // Fake lagProbe: captures the listener so the test can push a lag value.
+    let capturedListener: ((lag: number) => void) | null = null;
+    let unsubscribeCalled = false;
+    const fakeLagProbe = {
+      addTickListener(fn: (lag: number) => void): () => void {
+        capturedListener = fn;
+        return () => { unsubscribeCalled = true; };
+      },
+    };
+
+    const powerJobLogs: any[] = [];
+    const captureLogger = {
+      ...silentLogger(),
+      info: (_k: string, _m: string, d?: any) => {
+        if (_k === LOG_KINDS.POWER_JOB && !d?.drain_record) powerJobLogs.push(d);
+      },
+    };
+
+    const r = new JobRunner({
+      concurrency: 2,
+      logger: captureLogger as any,
+      clock: () => 0,
+      lagProbe: fakeLagProbe as any,
+    });
+    r.register({ name: 'my-job', runIn: ['sleep'], kind: 'housekeeping', fn: async () => {} });
+    r.dispatch('sleep');
+
+    // Deliver a lag value before the job's Promise resolves — the listener is
+    // registered synchronously in run(), so capturedListener is already set.
+    capturedListener?.(42);
+
+    // The job fn is trivial, so it resolves as a microtask. Drain microtasks
+    // so the .then(settle) fires, then yield to the timer phase (settle awaits
+    // a setTimeout(0) when a probe is present), then drain remaining microtasks.
+    await Promise.resolve(); // fn resolves
+    await Promise.resolve(); // .then(settle) fires, settle starts
+    await new Promise<void>((res) => setTimeout(res, 0)); // settle's timer yield
+    await Promise.resolve(); // settle logs + calls cleanup
+    await Promise.resolve();
+
+    expect(powerJobLogs).toHaveLength(1);
+    const log = powerJobLogs[0];
+    expect(log.job_name).toBe('my-job');
+    expect(log.status).toBe('ok');
+    expect(typeof log.duration_ms).toBe('number');
+    expect(log.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(log.event_loop_lag_during_ms).toBe(42);
+    expect(unsubscribeCalled).toBe(true);
+  });
+
+  it('emits status=error with null lag when no lagProbe and job rejects', async () => {
+    const powerJobLogs: any[] = [];
+    const errors: string[] = [];
+    const captureLogger = {
+      ...silentLogger(),
+      info: (_k: string, _m: string, d?: any) => {
+        if (_k === LOG_KINDS.POWER_JOB && !d?.drain_record) powerJobLogs.push(d);
+      },
+    };
+
+    const r = new JobRunner({
+      concurrency: 2,
+      logger: captureLogger as any,
+      clock: () => 0,
+      onError: (name) => errors.push(name),
+    });
+    r.register({
+      name: 'bad-job',
+      runIn: ['sleep'],
+      kind: 'housekeeping',
+      fn: async () => { throw new Error('boom'); },
+    });
+    r.dispatch('sleep');
+
+    // No probe → settle does not await a timer, only microtasks needed.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(powerJobLogs).toHaveLength(1);
+    const log = powerJobLogs[0];
+    expect(log.job_name).toBe('bad-job');
+    expect(log.status).toBe('error');
+    expect(log.event_loop_lag_during_ms).toBeNull();
+    expect(errors).toEqual(['bad-job']);
   });
 });

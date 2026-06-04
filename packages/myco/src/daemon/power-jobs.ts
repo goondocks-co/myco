@@ -602,7 +602,6 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
     name: POWER_JOB_NAMES.RELEASE_PROVENANCE_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
     kind: 'housekeeping',
-    priority: 'low',
     fn: async () => {
       const now = Date.now();
       const visited = new Set<string>();

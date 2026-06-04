@@ -44,7 +44,6 @@ export interface RunnerJob {
   name: string;
   runIn: PowerState[];
   kind: JobKind;
-  priority?: 'normal' | 'low'; // 'low' = heavy; yields slots under contention
   drain?: DrainSpec;
   hold?: HoldSpec;
   fn: (ctx: JobRunContext) => Promise<JobOutcome | void>;

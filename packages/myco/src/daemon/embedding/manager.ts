@@ -63,8 +63,8 @@ export class EmbeddingManager {
 
   /**
    * Sum of pending (unembedded) row counts across every embeddable namespace.
-   * Public so the PowerManager `preventsDeepSleep` predicate can short-circuit
-   * the deep-sleep transition while the embedding queue still has work to do.
+   * Consumed by the `totalPendingProbe` in power-jobs.ts, which feeds the
+   * JobRunner's deep-sleep hold via the embedding drain job's `hold.pending`.
    */
   totalPendingCount(): number {
     return EMBEDDABLE_NAMESPACES.reduce(
