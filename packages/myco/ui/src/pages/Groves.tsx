@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search } from 'lucide-react';
+import { Plus, Search, Settings2 } from 'lucide-react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
 import { useProjectsActivity } from '../hooks/use-maintenance-summary';
@@ -31,6 +31,7 @@ import { RenameGroveModal } from '../components/groves/RenameGroveModal';
 import { DeleteGroveModal } from '../components/groves/DeleteGroveModal';
 import { MoveProjectModal } from '../components/groves/MoveProjectModal';
 import { DeleteProjectModal } from '../components/groves/DeleteProjectModal';
+import { CapabilityPanel } from '../components/groves/CapabilityPanel';
 import { showToast } from '../components/groves/toast';
 import { useMachineConfig, useUpdateMachineConfig } from '../hooks/use-machine-config';
 
@@ -38,6 +39,8 @@ interface MoveTarget {
   grove: GroveSummary;
   project: GroveProjectSummary;
 }
+
+type CapabilityTarget = MoveTarget;
 
 export default function Groves() {
   const navigate = useNavigate();
@@ -56,6 +59,7 @@ export default function Groves() {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [capabilityTarget, setCapabilityTarget] = useState<CapabilityTarget | null>(null);
 
   const archiveAwareQuery = useGroves({ includeArchived });
   const groves = archiveAwareQuery.data?.groves ?? [];
@@ -255,6 +259,15 @@ export default function Groves() {
                             )}
                             {project.status === 'archived' && <Badge variant="outline">archived</Badge>}
                           </NavLink>
+                          <button
+                            type="button"
+                            onClick={() => setCapabilityTarget({ grove, project })}
+                            aria-label={`Configure ${project.name} capabilities`}
+                            title="Configure capabilities"
+                            className="shrink-0 rounded-md p-1.5 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
+                          >
+                            <Settings2 className="h-4 w-4" />
+                          </button>
                           <ProjectActionMenu
                             projectName={project.name}
                             archived={project.status === 'archived'}
@@ -319,6 +332,14 @@ export default function Groves() {
           groveId={deleteProjectTarget.grove.id}
           projectId={deleteProjectTarget.project.project_id}
           projectName={deleteProjectTarget.project.name}
+        />
+      )}
+
+      {capabilityTarget && (
+        <CapabilityPanel
+          target={capabilityTarget}
+          open
+          onClose={() => setCapabilityTarget(null)}
         />
       )}
     </PageLoading>
