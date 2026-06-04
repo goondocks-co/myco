@@ -16,13 +16,13 @@ Comprehensive procedures for authoring, configuring, and maintaining Myco's Powe
 
 ### Registering New PowerManager Jobs
 
-PowerManager jobs are registered through the `registerPowerJobs()` function in `packages/myco/src/daemon/main.ts`:
+PowerManager jobs are registered through `registerPowerJobs()` in `packages/myco/src/daemon/power-jobs.ts`. The function signature takes a `JobRunner` instance (not `PowerManager`):
 
 ```typescript
 import { registerPowerJobs } from './power-jobs.js';
 
 // Register all power-managed jobs during daemon startup
-const powerJobs = registerPowerJobs(powerManager, {
+const powerJobs = registerPowerJobs(jobRunner, {
   registry,
   logger,
   liveConfig,
@@ -37,16 +37,17 @@ const powerJobs = registerPowerJobs(powerManager, {
 
 ### Implementing New PowerManager Jobs
 
-Add new job implementations to `packages/myco/src/daemon/power-jobs.ts` within the `registerPowerJobs()` function:
+Add new job implementations to `packages/myco/src/daemon/power-jobs.ts` within the `registerPowerJobs()` function using the `JobRunner` API. The `kind` field controls two-lane fair scheduling — `'drain'` for time-sensitive jobs (embedding drain, outbox), `'housekeeping'` for background maintenance:
 
 ```typescript
-export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
+export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJobsResult {
   // Register existing jobs (embedding-reconcile, session-maintenance, etc.)
   
   // Add your new job
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.YOUR_NEW_JOB,
     runIn: ['active', 'idle', 'sleep'], // States where job can run
+    kind: 'housekeeping', // 'housekeeping' (maintenance) or 'drain' (time-sensitive)
     fn: () => yourNewJobImplementation(deps)
   });
   
@@ -57,7 +58,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
 ### Grove-Scoped Iteration Pattern
 
-Use the `forEachGrove` primitive for jobs that need to iterate across all Groves:
+Use the `forEachGrove` primitive from `packages/myco/src/daemon/scope-iteration.ts` for jobs that need to iterate across all Groves:
 
 ```typescript
 import { forEachGrove } from './scope-iteration.js';
@@ -89,26 +90,32 @@ await forEachGrove(cache, logger, async (scope) => {
 
 ### Task Scheduler Implementation
 
-The task scheduler in `packages/myco/src/daemon/task-scheduling.ts` implements per-project scheduled task dispatch:
+Scheduled tasks are registered via `registerScheduledTasks()` in `packages/myco/src/daemon/task-scheduling.ts`. It takes a `JobRunner` and returns a `ScheduledJobKicker`:
 
 ```typescript
-import type { ScheduledJobContext, ScheduledJobKicker } from './task-scheduler.js';
-import { buildScheduledJobs } from './task-scheduler.js';
+import { registerScheduledTasks } from './task-scheduling.js';
 
-// Build scheduled jobs from agent task registry
-const scheduledJobs = buildScheduledJobs(loadedTasks, config);
-
-// Initialize per-project context and kicker
-const scheduledJobContext = new ScheduledJobContext(config, powerStateTracker);
-const scheduledJobKicker = new ScheduledJobKicker();
+// Register all scheduled tasks with the JobRunner during daemon startup
+const scheduledTaskKicker = await registerScheduledTasks(jobRunner, {
+  definitionsDir,
+  vaultDir,
+  logger,
+  cache: runtimeCache,
+  mycoHome,
+  daemonStateDir,
+  machineId,
+  projectStateTracker,
+});
 ```
+
+Internally, `registerScheduledTasks` uses `buildScheduledJobs` from `packages/myco/src/daemon/task-scheduler.ts` to register each agent task as a `JobRunner` job. The `ScheduledJobKicker` interface is returned for manual kicks (e.g., `kick('canopy-describe', { groveId, projectId })`).
 
 ### Understanding Scheduler Dispatch Patterns
 
 The task scheduler implements:
 
-- **Per-project dispatch**: Each project gets independent task throttling and execution via `ScheduledJobContext`
-- **Broadcast snapshot semantics**: Kick sets captured once per cycle via `ScheduledJobKicker`, preventing thundering herd
+- **Per-project dispatch**: Each project gets independent task throttling and execution
+- **Broadcast snapshot semantics**: Kick sets captured once per cycle, preventing thundering herd
 - **Idempotent kicks**: Multiple kicks to same project in one cycle execute only once
 
 ### Configuring Agent Task Parameters
@@ -349,9 +356,10 @@ await Promise.all(grovePromises);
 
 ### Fair-Share Scheduler Coordination
 
-The `ScheduledJobContext` and `ScheduledJobKicker` prevent resource contention through:
+The `JobRunner` prevents resource contention through two-lane fair scheduling:
 
-- **Per-project running flags**: Prevents concurrent task execution per project via `ProjectTaskLastRunMap`
+- **Two-lane scheduling**: `kind: 'drain'` (time-sensitive: embedding, outbox) and `kind: 'housekeeping'` (background maintenance). When both lanes have work, neither holds more than `concurrency-1` slots — each lane is always guaranteed at least one slot.
+- **Per-project running flags**: Prevents concurrent task execution per project
 - **Independent throttle timers**: Each project maintains separate `lastRun` timestamp using binding_id
 - **Broadcast semantics**: Multiple events for same project coalesce into single dispatch via kick deduplication
 
@@ -382,10 +390,10 @@ return cache.withPinned(grove.databasePath, async () => {
 
 Only record activity at the two designated points (session registration and user prompt dispatch). Additional recording points create false warmth signals and skew power state transitions.
 
-### PowerManager Job Registration vs Task Scheduler
+### Power Job Registration vs Task Scheduler
 
-- **PowerManager jobs**: Background maintenance tasks (embedding-reconcile, session-maintenance) registered via `registerPowerJobs()`
-- **Scheduled tasks**: Agent tasks (skill-survey, vault-evolve) dispatched via `ScheduledJobContext`/`ScheduledJobKicker`
+- **Power jobs** (`packages/myco/src/daemon/power-jobs.ts`, `registerPowerJobs(runner, deps)`): Background and drain jobs registered directly with `runner.register({..., kind: 'housekeeping' | 'drain'})`. Two-lane fair scheduling ensures drain jobs (time-sensitive) are never starved by housekeeping jobs.
+- **Scheduled tasks** (`packages/myco/src/daemon/task-scheduling.ts`, `registerScheduledTasks(runner, deps)`): Agent tasks (skill-survey, vault-evolve) dispatched per-project with throttling via `run_in` intervals.
 
 These are separate systems with different lifecycle patterns and configuration mechanisms.
 

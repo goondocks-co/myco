@@ -189,7 +189,7 @@ Myco's three-tier scoped configuration enables machine-global defaults, grove-le
 - **Project tier** (`myco.yaml`) — committed team-shared settings that affect how the team collaborates
 - **Personal tier** (`.myco/local.yaml`) — gitignored per-machine overrides for individual developer preferences
 
-The daemon uses `loadConfig()` to deep-merge these files with `arrayStrategy: 'replace'` where higher-tier values win (personal → project → grove → machine). This allows individuals to override team settings locally, teams to override grove settings for specific projects, and groves to override machine defaults, all without changing the lower-tier configuration.
+The daemon uses `loadMergedConfig()` which calls `pruneToTier(raw, tier)` for each tier before merging. `pruneToTier` is the **primary enforcement mechanism** — it uses `SCOPE_REGISTRY` from `packages/myco/src/config/scope.ts` to keep only leaf paths whose `home` or `overridableBy` tiers allow them. Deep-merge follows with `arrayStrategy: 'replace'` where higher-tier (personal) values win.
 
 ### Grove architecture coordination patterns
 
@@ -211,22 +211,24 @@ When adding any new user-configurable behavior, follow these steps to determine 
 - **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
-**Step 2: Reference the classification matrix**
-Use these established patterns as precedent:
+**Step 2: Consult the scope registry**
+The canonical tier assignment for every config field lives in `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts`. This registry is the single source of truth — it drives `pruneToTier()` enforcement during config loading and the UI scope indicators. Look up the closest parent path in the registry to find precedent for similar fields.
 
-*Personal Settings (11 fields):* Per-machine preferences that do not affect team collaboration
+Use these established patterns as representative examples (verify against the live registry for current state):
+
+*Personal Settings:* Per-machine preferences that do not affect team collaboration
 - Daemon operational settings (`daemon.port`, `daemon.log_level`)
 - UI personalization (`appearance.theme`, `appearance.font_size`, `appearance.dark_mode`, `appearance.density`)
 - Notification preferences (`notifications.*`)
 - Maintenance automation (`maintenance.auto_optimize`)
 
-*Project Settings (6 fields):* Shared team configuration affecting workflow behavior
+*Project Settings:* Shared team configuration affecting workflow behavior
 - Symbiont manifest (`symbionts.*`)
 - Agent operational limits (`agent.timeout`, `agent.context_window`)
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
 - Team sync enablement (`sync.enabled`)
 
-*Grove Settings (5 fields):* Multi-project coordination within a grove (NEW in PR #353)
+*Grove Settings:* Multi-project coordination within a grove
 - Agent provider and model selection (`agent.provider`, `agent.model`)
 - Agent harness configuration (`agent.harness`)
 - Task configuration overlays (`agent.tasks.*`)
@@ -237,37 +239,33 @@ Use these established patterns as precedent:
 - Machine-level authentication
 - Global logging and diagnostics
 
-**Step 3: Document your decision**
+**Step 3: Add the field to SCOPE_REGISTRY and the Zod schema**
+New fields must be registered in `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with the correct `home` tier and `overridableBy` array. The scope-registry sync test will fail if a schema leaf is not covered, so ratify against the Zod tier schemas in `packages/myco/src/config/schema.ts`.
+
+**Step 4: Document your decision**
 Add the new field to the appropriate tier in comments and update any scope defaults matrices in the UI layer.
 
 ### Handle Legacy Config Fields During Tier Migration
 
-When architectural changes move fields between tiers (e.g., PR #353 migrated agent.provider to Grove tier), use the `PROJECT_TIER_LEGACY_FIELDS` pattern in `packages/myco/src/config/schema.ts` to strip fields from outdated locations:
+When architectural changes move fields between tiers, two mechanisms cooperate:
 
-```typescript
-// In schema.ts
-export const PROJECT_TIER_LEGACY_FIELDS = [
-  'agent.provider',  // moved to Grove tier in PR #353
-  'agent.model',     // moved to Grove tier in PR #353
-  'embedding.provider', // moved to Grove tier in PR #353
-];
+**Primary enforcement — `pruneToTier()`**: The loader calls `pruneToTier(raw, tier)` for every tier in `loadMergedConfig`. This uses `SCOPE_REGISTRY` to silently drop any fields that don't belong to the given tier — so once a field's `home` tier is updated in the registry, misplaced values in other tiers are automatically ignored at load time.
 
-// During config load, filter legacy fields from Project tier
-if (projectConfig) {
-  for (const legacyPath of PROJECT_TIER_LEGACY_FIELDS) {
-    deepDeleteByPath(projectConfig, legacyPath);
-  }
-}
-```
+**Legacy strip — `PROJECT_TIER_LEGACY_FIELDS`**: For fields that historically lived in the wrong tier and need to be actively removed from committed `myco.yaml` files (not just ignored), add them to `PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts`. The loader's `stripLegacyProjectFields()` function iterates this list and calls `unsetAtPath()` to physically remove them from the YAML document, preventing stale fields from cluttering project configs.
 
-This silent-strip pattern ensures that when developers pull code with the tier reorganization, old fields in `myco.yaml` do not interfere with new grove-tier values, preventing silent shadowing of grove defaults.
+**When to use each:**
+- New field at correct tier from day one → just add to `SCOPE_REGISTRY`; `pruneToTier` enforces it automatically
+- Field moved from project → grove tier → add to `SCOPE_REGISTRY` with new home; also add to `PROJECT_TIER_LEGACY_FIELDS` so the old project-tier value gets stripped from `myco.yaml` on next load
+- Field removed entirely → add to `PROJECT_TIER_LEGACY_FIELDS` to clean up existing configs; no registry entry needed
+
+This silent-strip pattern ensures that when developers pull code with a tier reorganization, old fields in `myco.yaml` do not interfere with new grove-tier values, preventing silent shadowing of grove defaults.
 
 ### Two-Layer Config Migration Procedures
 
 When migrating existing projects to a new config architecture, use a two-layer approach:
 
 **Layer 1: Client-side silent strip**
-The client removes legacy fields during `loadConfig()` before merging. This protects against old project-tier fields shadowing new grove-tier defaults.
+The client removes legacy fields during `loadConfig()` before merging via `stripLegacyProjectFields()`. This protects against old project-tier fields shadowing new grove-tier defaults.
 
 **Layer 2: Daemon-side reconciliation**
 On next daemon startup after the migration-aware code is deployed, the daemon detects legacy fields in `myco.yaml` and offers a migration guide. This allows teams to understand what changed without breaking existing setups.
@@ -299,7 +297,17 @@ const TasksSchema = z.object({
 });
 ```
 
-**Step 2: Verify the scoped config endpoint handles your field**
+**Step 2: Register the field in SCOPE_REGISTRY**
+Add the new field to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with correct `home` and `overridableBy`:
+
+```typescript
+// In scope.ts SCOPE_REGISTRY
+'your.new.field': { home: 'grove', overridableBy: ['local'] },
+```
+
+The scope-registry sync test will fail if this entry is missing, so add it before running tests.
+
+**Step 3: Verify the scoped config endpoint handles your field**
 The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch merging with validation via `handlePutScopedConfig`:
 
 ```typescript
@@ -309,7 +317,7 @@ The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch m
 
 Your new field should automatically work through this endpoint once added to the schema.
 
-**Step 3: Add field to scope defaults matrix (for UI)**
+**Step 4: Add field to scope defaults matrix (for UI)**
 If your field will appear in the daemon UI, update the scope defaults in the appropriate Settings component:
 
 ```typescript
@@ -322,7 +330,7 @@ const scopeDefaults = {
 };
 ```
 
-**Step 4: Handle restart-required fields (if applicable)**
+**Step 5: Handle restart-required fields (if applicable)**
 If the field requires daemon restart rather than live-reload, add it to the restart-required pattern in the UI:
 
 ```typescript
@@ -441,7 +449,9 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Config tier migration false positives:** During drift analysis, config property paths like `myco.yaml` and `backup.dir` are configuration property references, not missing file paths. Verify that core config safety functions remain present in the loader module before assuming drift.
 
-**Legacy field shadowing:** When using PROJECT_TIER_LEGACY_FIELDS to silent-strip old fields, ensure the silent-strip happens BEFORE tier merging. If legacy project-tier `agent.provider` exists alongside new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's removed.
+**Legacy field shadowing:** When adding to PROJECT_TIER_LEGACY_FIELDS for migration, ensure the strip happens at load time before tier merging. If a legacy project-tier `agent.provider` exists alongside a new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's stripped.
+
+**SCOPE_REGISTRY sync test:** A scope-registry sync test enforces that every Zod schema leaf has a registry entry. After adding a new config field to the schema, always add it to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` — or the test will fail loudly.
 
 **loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` when groveId is provided. When groveId is not provided, it auto-resolves from `loadProjectManifest(vaultDir)` to detect the project's grove association. If groveId is undefined and the project manifest contains no grove association, grove-tier settings are skipped.
 
@@ -455,11 +465,11 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Settings page only sets fields it owns — no pass-through of other pages' sections
 - [ ] Modern settings UI uses ScopedField components or patch endpoints directly
 - [ ] If touching daemon-behavior fields, reload signal is sent
-- [ ] New scoped config fields have correct tier classification (Machine/Grove/Project/Personal)
+- [ ] New scoped config fields added to both Zod schema AND `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts`
 - [ ] Config reactions follow closure factory pattern and idempotency constraints
 - [ ] Config toggle side-effects use managed blocks and in-process reconciliation
 - [ ] Grove architecture compatibility considered for multi-project coordination
 - [ ] Three-tier merge precedence understood and documented
 - [ ] Config tier migration compatibility verified for grove coordination features
-- [ ] Legacy field handling verified if tier restructuring involved
+- [ ] Legacy field handling: use `PROJECT_TIER_LEGACY_FIELDS` in schema.ts for fields that need physical removal from project YAML; `pruneToTier` auto-enforces scope for everything else
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss
