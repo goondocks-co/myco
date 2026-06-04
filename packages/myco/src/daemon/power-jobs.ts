@@ -332,7 +332,6 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
-  let reconcileRunning = false;
   runner.register({
     name: POWER_JOB_NAMES.EMBEDDING_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
@@ -346,19 +345,13 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         liveConfig.current.embedding.run_in_deep_sleep === false ? 0 : totalPendingProbe(),
     },
     fn: async (ctx) => {
-      if (reconcileRunning) return;
-      reconcileRunning = true;
       let processed = 0, remaining = 0;
-      try {
-        await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
-          const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
-          const out = await manager.reconcileSlice(ctx.sliceBudget);
-          processed += out.processed;
-          remaining += out.remaining;
-        })();
-      } finally {
-        reconcileRunning = false;
-      }
+      await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
+        const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
+        const out = await manager.reconcileSlice(ctx.sliceBudget);
+        processed += out.processed;
+        remaining += out.remaining;
+      })();
       return { processed, remaining };
     },
   });

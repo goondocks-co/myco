@@ -167,6 +167,7 @@ import {
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
   RESTART_RESPONSE_FLUSH_MS,
+  JOB_RUNNER_CONCURRENCY,
   epochSeconds,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
@@ -1047,7 +1048,7 @@ export async function main(): Promise<void> {
   const eventLoopLagProbe = new EventLoopLagProbe(logger);
 
   const jobRunner = new JobRunner({
-    concurrency: 3,
+    concurrency: JOB_RUNNER_CONCURRENCY,
     logger,
     lagProbe: eventLoopLagProbe,
     onError: (jobName, err) =>

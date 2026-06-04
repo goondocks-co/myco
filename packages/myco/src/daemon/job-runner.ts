@@ -32,10 +32,13 @@ export interface DrainSpec {
   softDeadlineMs?: number;  // default 2000
 }
 
+/**
+ * Runtime context passed to each job fn. `sliceBudget` controls how many
+ * items a drain job processes per invocation. (Signal and cross-slice state
+ * will be re-added when there is a concrete consumer.)
+ */
 export interface JobRunContext {
-  signal: AbortSignal;
   sliceBudget: { maxItems: number; softDeadlineMs: number };
-  drainState: Map<string, unknown>; // persisted per-job across slices
 }
 
 export interface JobOutcome { processed: number; remaining: number }
@@ -64,7 +67,6 @@ export class JobRunner {
   private readonly now: () => number;
   private readonly inFlight = new Set<string>();
   private readonly lastDispatched = new Map<string, number>();
-  private readonly drainStates = new Map<string, Map<string, unknown>>();
   private readonly failures = new Map<string, number>();
   private readonly nextEligibleAt = new Map<string, number>();
   private static readonly BACKOFF_BASE_MS = 30_000;
@@ -100,44 +102,53 @@ export class JobRunner {
         (this.lastDispatched.get(a.name) ?? -Infinity) -
         (this.lastDispatched.get(b.name) ?? -Infinity),
       );
-    // Reserve slots for eligible drain/scheduler work so a long housekeeping
-    // run can't starve it. A housekeeping job runs only when free slots exceed
-    // the number of non-housekeeping jobs still waiting to dispatch this pass.
-    let remainingNonHousekeeping = eligible.filter((j) => j.kind !== 'housekeeping').length;
+
+    // Two-lane fair sharing. background = housekeeping; foreground = drain/scheduler
+    // (time-sensitive). When BOTH lanes have work (in-flight or eligible), neither
+    // may hold more than concurrency-1 slots, so each lane is always guaranteed at
+    // least one slot. Cross-tick in-flight jobs are counted so a long background job
+    // from a prior tick still can't crowd out foreground work (and vice versa).
+    const laneOf = (job: RunnerJob): 'background' | 'foreground' =>
+      job.kind === 'housekeeping' ? 'background' : 'foreground';
+    const kindByName = new Map(this.jobs.map((j) => [j.name, laneOf(j)] as const));
+    const inFlightByLane = { background: 0, foreground: 0 };
+    for (const name of this.inFlight) {
+      const lane = kindByName.get(name);
+      if (lane) inFlightByLane[lane]++;
+    }
+    const eligibleByLane = { background: 0, foreground: 0 };
+    for (const job of eligible) eligibleByLane[laneOf(job)]++;
+
     const dispatched: string[] = [];
     const skipped: string[] = [];
     for (const job of eligible) {
-      const free = this.opts.concurrency - this.inFlight.size;
-      if (free <= 0) break;
-      if (job.kind === 'housekeeping') {
-        if (free <= remainingNonHousekeeping) { skipped.push(job.name); continue; }
-        this.run(job);
-        dispatched.push(job.name);
-      } else {
-        this.run(job);
-        dispatched.push(job.name);
-        remainingNonHousekeeping--;
+      if (this.inFlight.size >= this.opts.concurrency) break;
+      const lane = laneOf(job);
+      const other = lane === 'background' ? 'foreground' : 'background';
+      eligibleByLane[lane]--; // now being considered
+      const otherWantsASlot = inFlightByLane[other] > 0 || eligibleByLane[other] > 0;
+      if (otherWantsASlot && inFlightByLane[lane] >= this.opts.concurrency - 1) {
+        skipped.push(job.name);
+        continue; // reserve the last slot for the other lane
       }
+      this.run(job);
+      inFlightByLane[lane]++;
+      dispatched.push(job.name);
     }
-    this.opts.logger.debug(LOG_KINDS.POWER_TICK, 'Dispatch tick', {
-      state,
-      dispatched,
-      skipped,
-    });
+
+    this.opts.logger.debug(LOG_KINDS.POWER_TICK, 'Dispatch tick', { state, dispatched, skipped });
   }
 
+  // Single-flight per job: dispatch never invokes run() for a job already in
+  // inFlight, so fn is never executing concurrently for the same job name.
   private run(job: RunnerJob): void {
     this.inFlight.add(job.name);
     this.lastDispatched.set(job.name, this.now());
-    // AbortSignal for cooperative cancellation; no abort source wired yet.
-    const controller = new AbortController();
     const ctx: JobRunContext = {
-      signal: controller.signal,
       sliceBudget: {
         maxItems: job.drain?.slice ?? 0,
         softDeadlineMs: job.drain?.softDeadlineMs ?? 2000,
       },
-      drainState: this.drainStateFor(job.name),
     };
     const cleanup = (err?: unknown) => {
       this.inFlight.delete(job.name);
@@ -205,12 +216,4 @@ export class JobRunner {
     return null;
   }
 
-  private drainStateFor(name: string): Map<string, unknown> {
-    let s = this.drainStates.get(name);
-    if (!s) {
-      s = new Map();
-      this.drainStates.set(name, s);
-    }
-    return s;
-  }
 }

@@ -86,6 +86,13 @@ export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
 export const DIGEST_LLM_REQUEST_TIMEOUT_MS = 600_000;
 /** Stdin read timeout for hooks (ms). */
 export const STDIN_TIMEOUT_MS = 100;
+
+// --- Job runner ---
+/**
+ * Default concurrency cap for the daemon JobRunner. The two-lane fair
+ * scheduler reserves ≥1 slot per lane, so this must be ≥2.
+ */
+export const JOB_RUNNER_CONCURRENCY = 3;
 /** Provider detection timeout for detect-providers CLI command (ms). */
 export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 

@@ -836,11 +836,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       // time so Team selection changes take effect without a daemon restart.
       // The job fans out across every registered Grove so non-boot Groves'
       // outboxes drain on the same cadence as the boot Grove.
-      let running = false;
       runner.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
-        kind: 'drain',
+        kind: 'housekeeping',
         hold: {
           // Best-effort: the boot/legacy outbox guarded the deep-sleep
           // gate previously. With multi-Grove fan-out we'd need to scope
@@ -850,13 +849,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
             groveParticipates(defaultRequestContext?.groveId ?? null) ? countPending() : 0,
         },
         fn: async () => {
-          if (running) return;
-          running = true;
-          try {
-            await flushAllGroves(cache);
-          } finally {
-            running = false;
-          }
+          await flushAllGroves(cache);
         },
       });
     },

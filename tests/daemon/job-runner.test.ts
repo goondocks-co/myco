@@ -83,6 +83,52 @@ describe('JobRunner fairness', () => {
     expect(inFlight.filter((n) => n !== 'embedding').length).toBe(1); // only ONE housekeeping
   });
 
+  it('cap=3: 3 foreground + 2 housekeeping — each lane gets ≥1 slot, neither takes all 3', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    const hang = (name: string, kind: 'housekeeping' | 'drain' | 'scheduler'): RunnerJob => ({
+      name, runIn: ['sleep'], kind,
+      drain: kind === 'drain' ? { slice: 10 } : undefined,
+      fn: () => new Promise<void>(() => {}), // never resolves
+    });
+    r.register(hang('drain-a', 'drain'));
+    r.register(hang('scheduler-a', 'scheduler'));
+    r.register(hang('drain-b', 'drain'));
+    r.register(hang('hk-a', 'housekeeping'));
+    r.register(hang('hk-b', 'housekeeping'));
+
+    r.dispatch('sleep');
+    const inFlight = r.inFlightNames();
+    expect(inFlight.length).toBe(3); // cap respected
+
+    const fgCount = inFlight.filter((n) => n.startsWith('drain-') || n.startsWith('scheduler-')).length;
+    const bgCount = inFlight.filter((n) => n.startsWith('hk-')).length;
+    expect(bgCount).toBeGreaterThanOrEqual(1); // housekeeping guaranteed ≥1 slot
+    expect(fgCount).toBeGreaterThanOrEqual(1); // foreground guaranteed ≥1 slot
+    expect(fgCount).toBeLessThanOrEqual(2);    // foreground cannot hold all 3 slots
+    expect(bgCount).toBeLessThanOrEqual(2);    // background cannot hold all 3 slots
+  });
+
+  it('cross-tick: 2 housekeeping already in-flight at cap=3 — a foreground job still gets the reserved slot', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    const hang = (name: string, kind: 'housekeeping' | 'drain'): RunnerJob => ({
+      name, runIn: ['sleep'], kind,
+      drain: kind === 'drain' ? { slice: 10 } : undefined,
+      fn: () => new Promise<void>(() => {}), // never resolves
+    });
+    // First tick: fill 2 housekeeping slots (no foreground eligible yet)
+    r.register(hang('hk-a', 'housekeeping'));
+    r.register(hang('hk-b', 'housekeeping'));
+    r.dispatch('sleep');
+    expect(r.inFlightNames().sort()).toEqual(['hk-a', 'hk-b']);
+
+    // Second tick: a foreground job becomes eligible — it must get the one remaining slot
+    r.register(hang('drain-a', 'drain'));
+    r.dispatch('sleep');
+    const inFlight = r.inFlightNames();
+    expect(inFlight).toContain('drain-a'); // foreground gets the reserved slot
+    expect(inFlight.length).toBe(3);       // cap respected
+  });
+
   it('dispatches least-recently-dispatched first, not registration order', async () => {
     let now = 0;
     const r = new JobRunner({ concurrency: 1, logger: silentLogger(), clock: () => now });
