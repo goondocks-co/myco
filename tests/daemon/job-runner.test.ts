@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'bun:test';
 import { JobRunner, type RunnerJob } from '@myco/daemon/job-runner.js';
 import type { Logger } from '@myco/daemon/logger.js';
+import type { PowerState } from '@myco/daemon/power.js';
 
 function noopJob(name: string, overrides: Partial<RunnerJob> = {}): RunnerJob {
   return {
@@ -40,3 +41,24 @@ function silentLogger(): Logger {
   const noop = () => {};
   return { debug: noop, info: noop, warn: noop, error: noop };
 }
+
+describe('JobRunner dispatch', () => {
+  it('dispatches eligible-for-state jobs detached, never exceeding the cap', async () => {
+    const release: Array<() => void> = [];
+    const make = (name: string, runIn: PowerState[] = ['sleep']): RunnerJob => ({
+      name, runIn, kind: 'housekeeping',
+      fn: () => new Promise<void>((res) => release.push(res)),
+    });
+    const r = new JobRunner({ concurrency: 2, logger: silentLogger(), clock: () => 0 });
+    r.register(make('a')); r.register(make('b')); r.register(make('c'));
+    r.register(make('active-only', ['active']));
+
+    r.dispatch('sleep');
+    expect(r.inFlightNames().sort()).toEqual(['a', 'b']); // c blocked by cap, active-only ineligible
+
+    release.shift()!();                 // a resolves
+    await Promise.resolve();            // let .finally run
+    r.dispatch('sleep');
+    expect(r.inFlightNames().sort()).toEqual(['b', 'c']);
+  });
+});

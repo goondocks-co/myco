@@ -58,6 +58,9 @@ export interface JobRunnerOptions {
 export class JobRunner {
   private jobs: RunnerJob[] = [];
   private readonly now: () => number;
+  private readonly inFlight = new Set<string>();
+  private readonly lastDispatched = new Map<string, number>();
+  private readonly drainStates = new Map<string, Map<string, unknown>>();
 
   constructor(private readonly opts: JobRunnerOptions) {
     this.now = opts.clock ?? Date.now;
@@ -71,4 +74,44 @@ export class JobRunner {
   }
 
   jobNames(): string[] { return this.jobs.map((j) => j.name); }
+
+  inFlightNames(): string[] { return [...this.inFlight]; }
+
+  dispatch(state: PowerState): void {
+    const eligible = this.jobs
+      .filter((j) => j.runIn.includes(state) && !this.inFlight.has(j.name))
+      .sort((a, b) =>
+        (this.lastDispatched.get(a.name) ?? -Infinity) -
+        (this.lastDispatched.get(b.name) ?? -Infinity),
+      );
+    for (const job of eligible) {
+      if (this.inFlight.size >= this.opts.concurrency) break;
+      this.run(job);
+    }
+  }
+
+  private run(job: RunnerJob): void {
+    this.inFlight.add(job.name);
+    this.lastDispatched.set(job.name, this.now());
+    const controller = new AbortController();
+    const ctx: JobRunContext = {
+      signal: controller.signal,
+      sliceBudget: {
+        maxItems: job.drain?.slice ?? 0,
+        softDeadlineMs: job.drain?.softDeadlineMs ?? 2000,
+      },
+      drainState: this.drainStateFor(job.name),
+    };
+    const cleanup = (err?: unknown) => {
+      this.inFlight.delete(job.name);
+      if (err !== undefined) this.opts.onError?.(job.name, err);
+    };
+    void job.fn(ctx).then(() => cleanup(), (err) => cleanup(err));
+  }
+
+  private drainStateFor(name: string): Map<string, unknown> {
+    let s = this.drainStates.get(name);
+    if (!s) { s = new Map(); this.drainStates.set(name, s); }
+    return s;
+  }
 }
