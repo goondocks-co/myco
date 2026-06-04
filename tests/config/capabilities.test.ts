@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { CAPABILITY_IDS, scopePolicyForPath } from '../../packages/myco/src/config/scope';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
+import { CAPABILITIES } from '../../packages/myco/src/config/capabilities';
+import { enumerateLeafPaths } from '../../packages/myco/src/config/leaf-paths';
 
 describe('capability ids', () => {
   it('declares the four capability ids', () => {
@@ -36,5 +38,29 @@ describe('capability master-gate schema defaults', () => {
   });
   it('vault_evolution.enabled defaults true', () => {
     expect(cfg.vault_evolution.enabled).toBe(true);
+  });
+});
+
+describe('capability map', () => {
+  const merged = MycoConfigSchema.parse({ version: 3 }) as Record<string, unknown>;
+  const schemaLeaves = new Set(enumerateLeafPaths(merged));
+
+  it('has one entry per capability id', () => {
+    expect(Object.keys(CAPABILITIES).sort()).toEqual([...CAPABILITY_IDS].sort());
+  });
+
+  it('every master/member gate is a real schema leaf gated by that capability', () => {
+    for (const cap of Object.values(CAPABILITIES)) {
+      for (const path of [cap.masterGate, ...cap.memberGates]) {
+        expect(schemaLeaves.has(path)).toBe(true);
+        expect(scopePolicyForPath(path).gate).toBe(cap.id);
+      }
+    }
+  });
+
+  it('every capability lists at least one scheduled task', () => {
+    for (const cap of Object.values(CAPABILITIES)) {
+      expect(cap.scheduledTasks.length).toBeGreaterThan(0);
+    }
   });
 });
