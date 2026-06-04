@@ -57,7 +57,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     masterGate: 'vault_evolution.enabled',
     memberGates: [],
     scheduledTasks: ['vault-evolve'],
-    advancedSettingsLink: '/settings#agent',
+    advancedSettingsLink: '/settings#vault_evolution',
   },
 };
 

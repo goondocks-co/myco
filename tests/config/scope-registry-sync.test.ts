@@ -40,8 +40,7 @@ describe('scope registry sync', () => {
   it('every capability master gate resolves to a row with its own gate', () => {
     const errors: string[] = [];
     for (const cap of Object.values(CAPABILITIES)) {
-      let policy; try { policy = scopePolicyForPath(cap.masterGate); }
-      catch { errors.push(`${cap.id}: master '${cap.masterGate}' has no registry entry`); continue; }
+      let policy; try { policy = scopePolicyForPath(cap.masterGate); } catch { errors.push(`${cap.id}: master '${cap.masterGate}' has no registry entry`); continue; }
       if (policy.gate !== cap.id) errors.push(`${cap.id}: master '${cap.masterGate}' gate is '${policy.gate}'`);
     }
     if (errors.length) throw new Error(`Capability/registry drift:\n  ${errors.join('\n  ')}`);

@@ -30,6 +30,9 @@ describe('capability gate annotations', () => {
 
 describe('capability master-gate schema defaults', () => {
   const cfg = MycoConfigSchema.parse({ version: 3 }) as any;
+  it('cortex.enabled defaults true', () => {
+    expect(cfg.cortex.enabled).toBe(true);
+  });
   it('cortex.canopy.enabled defaults true', () => {
     expect(cfg.cortex.canopy.enabled).toBe(true);
   });

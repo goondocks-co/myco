@@ -479,12 +479,6 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
  * MCP children all converge on the same value without per-machine config
  * lookup. See `daemon/port.ts`.
  */
-const VaultEvolutionSchema = z.object({
-  /** Master gate for the Vault-Evolution capability (the `vault-evolve`
-   *  scheduled task). Grove-tier home; per-project Personal override. */
-  enabled: z.boolean().default(true),
-});
-
 const MachineDaemonSchema = z.object({
   /** Log verbosity for the daemon process (stdout/stderr). */
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -580,6 +574,12 @@ const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
   model: z.string().optional(),
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 }));
+
+const VaultEvolutionSchema = z.object({
+  /** Master gate for the Vault-Evolution capability (the `vault-evolve`
+   *  scheduled task). Grove-tier home; per-project Personal override. */
+  enabled: z.boolean().default(true),
+});
 
 export const GroveConfigSchema = z.object({
   daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),
