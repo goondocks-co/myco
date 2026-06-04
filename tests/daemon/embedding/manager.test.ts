@@ -458,6 +458,89 @@ describe('EmbeddingManager', () => {
       // No info log when no work done
       expect(logger.info).not.toHaveBeenCalled();
     });
+
+    // -------------------------------------------------------------------------
+    // Round-robin cursor
+    // -------------------------------------------------------------------------
+
+    it('round-robin under deadline: cursor advances so late namespaces are not starved', async () => {
+      // Deterministic strategy: use a provider that sleeps 2ms per embed so
+      // Date.now() advances enough for a deadline to fire after the first
+      // namespace completes. This simulates a slow embedding provider.
+      //
+      // With a 3ms deadline, namespace[0] ('sessions') processes (embed takes 2ms),
+      // then the check fires before namespace[1] ('spores'). The cursor advances to 1.
+      // On the next call the cursor is at 1, so 'spores' processes first, and so on.
+      // Over N such calls every namespace is visited — none are starved.
+
+      const NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'];
+      const N = NAMESPACES.length;
+      const EMBED_DELAY_MS = 2;
+      const DEADLINE_BUDGET_MS = EMBED_DELAY_MS + 1; // enough for 1 namespace, not 2
+
+      // Slow provider: each embed takes EMBED_DELAY_MS.
+      provider.embed.mockImplementation(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, EMBED_DELAY_MS));
+        return MOCK_EMBEDDING;
+      });
+
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
+        { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
+      ]);
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      const allVisited = new Set<string>();
+      vectorStore.upsert.mockImplementation((ns: string) => { allVisited.add(ns as string); });
+
+      // N calls, each with a tight deadline → each call services ~1 namespace.
+      for (let i = 0; i < N; i++) {
+        await manager.reconcile(BATCH_SIZE, Date.now() + DEADLINE_BUDGET_MS);
+      }
+
+      // After N calls, every namespace must have been visited at least once.
+      for (const ns of NAMESPACES) {
+        expect(allVisited).toContain(ns);
+      }
+    }, 200 /* generous wall-clock budget */);
+
+    it('round-robin: no-deadline call processes all namespaces and cursor returns to start', async () => {
+      // Two consecutive no-deadline calls must both process all N namespaces and
+      // produce the same visit order (cursor is idempotent after a full pass).
+      const NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'];
+
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
+        { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
+      ]);
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      const visitOrder1: string[] = [];
+      const visitOrder2: string[] = [];
+
+      vectorStore.upsert.mockImplementation((ns: string) => { visitOrder1.push(ns as string); });
+      const result1 = await manager.reconcile(BATCH_SIZE);
+
+      vectorStore.upsert.mockImplementation((ns: string) => { visitOrder2.push(ns as string); });
+      const result2 = await manager.reconcile(BATCH_SIZE);
+
+      // Both calls must have processed all 6 namespaces.
+      expect(result1.embedded).toBe(NAMESPACES.length);
+      expect(result2.embedded).toBe(NAMESPACES.length);
+
+      // Both calls must cover every namespace.
+      for (const ns of NAMESPACES) {
+        expect(visitOrder1).toContain(ns);
+        expect(visitOrder2).toContain(ns);
+      }
+
+      // Both calls start at the same namespace (cursor returns to startIdx after full pass).
+      expect(visitOrder1[0]).toBe(visitOrder2[0]);
+      // The full visit order is identical.
+      expect(visitOrder1).toEqual(visitOrder2);
+    });
   });
 
   // -------------------------------------------------------------------------

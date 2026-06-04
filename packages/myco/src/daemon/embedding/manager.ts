@@ -46,6 +46,13 @@ export class EmbeddingManager {
   /** Last vector count per namespace at which hubness stats were recomputed. */
   private lastHubnessCount = new Map<string, number>();
 
+  /**
+   * Round-robin cursor into EMBEDDABLE_NAMESPACES. reconcile() starts each
+   * call at this index so that a slice deadline can't perpetually starve
+   * namespaces that appear late in the array.
+   */
+  private nextNamespaceIndex = 0;
+
   constructor(
     private vectorStore: VectorStore,
     private embeddingProvider: ManagerEmbeddingProvider,
@@ -229,8 +236,17 @@ export class EmbeddingManager {
     let orphans_cleaned = 0;
     const currentModel = this.embeddingProvider.model;
 
-    for (const namespace of EMBEDDABLE_NAMESPACES) {
+    // Round-robin: start at the cursor so a slice deadline can't perpetually
+    // starve namespaces that appear late in EMBEDDABLE_NAMESPACES.
+    const namespaces = EMBEDDABLE_NAMESPACES;
+    const n = namespaces.length;
+    const startIdx = this.nextNamespaceIndex % n;
+    let processed = 0;
+
+    for (let i = 0; i < n; i++) {
       if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
+      const namespace = namespaces[(startIdx + i) % n];
+
       // Phase 1: Embed missing rows
       const rows = this.recordSource.getEmbeddableRows(namespace, batchSize);
       const embeddedBatch = await this.embedRecords(namespace, rows, { markEmbedded: true });
@@ -284,7 +300,14 @@ export class EmbeddingManager {
 
       // Phase 3: Orphan sweep
       orphans_cleaned += this.sweepOrphans(namespace);
+      processed++;
     }
+
+    // Resume after the namespaces we serviced this call. When no deadline
+    // (processed === n), cursor returns to startIdx — behavior unchanged for
+    // callers that omit deadlineMs. When the deadline cut us short, the next
+    // call resumes at the first un-serviced namespace.
+    this.nextNamespaceIndex = (startIdx + processed) % n;
 
     // Phase 4: Refresh the hubness baseline for the spore namespace once the
     // backfill has settled and the corpus size changed. This is what lets
