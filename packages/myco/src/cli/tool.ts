@@ -55,7 +55,14 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     try {
       const input = parseInput(parsed.input ?? '{}');
       const { createMycoTools } = await import('@myco/tools/index.js');
-      const requestContext = requestContextFromEnvironment(process.env, vaultDir);
+      // Launch-context tenancy: `vaultDir` was resolved by walking up from the
+      // caller's cwd to this project's `.myco`, so a registered Grove-bound
+      // manifest here is the caller asserting THIS project — accepted by the
+      // tenancy guard without any env from the agent or user. Falls back to
+      // 'synthesized' (→ rejected) for an unregistered/unbound launch context.
+      const requestContext = requestContextFromEnvironment(process.env, vaultDir, {
+        launchContextTenancy: true,
+      });
       const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir), { requestContext });
       const result = await tools.callTool(tool, input);
       await writeEnvelope({ ok: true, tool, result });

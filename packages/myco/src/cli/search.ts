@@ -45,7 +45,12 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const cleanup = await initVaultDb(vaultDir);
   try {
-    const requestContext = requestContextFromEnvironment(process.env, vaultDir);
+    // Launch-context tenancy (see cli/tool.ts): resolve THIS project's caller
+    // scope from the cwd-derived vault. Without it a Grove-bound project
+    // resolves to GLOBAL_SCOPE and silently returns only NULL-project rows.
+    const requestContext = requestContextFromEnvironment(process.env, vaultDir, {
+      launchContextTenancy: true,
+    });
     const scope = projectScopeFromRequestContext(requestContext);
     const results = fullTextSearch(query, { limit: CLI_SEARCH_LIMIT, scope });
 
