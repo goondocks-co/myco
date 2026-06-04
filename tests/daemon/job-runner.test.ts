@@ -119,3 +119,31 @@ describe('JobRunner backoff', () => {
     expect(errors.length).toBe(2);                // backoff (30s) elapsed → retried
   });
 });
+
+describe('JobRunner deep-sleep hold', () => {
+  it('holds when any job with a HoldSpec reports pending > 0', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    let canopyPending = 0;
+    r.register({ name: 'scheduled:tasks', runIn: ['sleep'], kind: 'scheduler',
+      hold: { pending: () => canopyPending }, fn: async () => {} });
+    r.register({ name: 'backup', runIn: ['sleep'], kind: 'housekeeping', fn: async () => {} });
+
+    expect(r.providesHold()).toBeNull();   // nothing pending
+    canopyPending = 5;
+    expect(r.providesHold()).toBe('scheduled:tasks');
+  });
+
+  it('respects allowDeepSleepHold:false', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    r.register({ name: 'embedding', runIn: ['sleep'], kind: 'drain', drain: { slice: 10 },
+      hold: { pending: () => 99, allowDeepSleepHold: false }, fn: async () => {} });
+    expect(r.providesHold()).toBeNull();
+  });
+
+  it('a throwing hold probe does not throw and does not hold', () => {
+    const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
+    r.register({ name: 'x', runIn: ['sleep'], kind: 'drain', drain: { slice: 1 },
+      hold: { pending: () => { throw new Error('probe down'); } }, fn: async () => {} });
+    expect(r.providesHold()).toBeNull();
+  });
+});

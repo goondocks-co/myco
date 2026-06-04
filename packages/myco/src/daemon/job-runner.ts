@@ -145,6 +145,18 @@ export class JobRunner {
     void job.fn(ctx).then(() => cleanup(), (err) => cleanup(err));
   }
 
+  /** Name of the first job holding deep-sleep, or null. Defensive: a failing probe never holds. */
+  providesHold(): string | null {
+    for (const job of this.jobs) {
+      if (!job.hold) continue;
+      if ((job.hold.allowDeepSleepHold ?? true) === false) continue;
+      let pending = 0;
+      try { pending = job.hold.pending(); } catch { pending = 0; }
+      if (pending > 0) return job.name;
+    }
+    return null;
+  }
+
   private drainStateFor(name: string): Map<string, unknown> {
     let s = this.drainStates.get(name);
     if (!s) {
