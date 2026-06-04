@@ -8,7 +8,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Debug Production Daemon Errors
 
-The Myco daemon is a long-running process that hosts multiple subsystems: a PowerManager job scheduler, SQLite-backed state, an outbox drain loop, session lifecycle tracking, and a phased task executor. Bugs in each subsystem have distinct failure signatures and require different surgical fixes. This skill teaches you how to identify which subsystem is implicated, trace to the root cause, apply a minimal fix, and prevent regression.
+The Myco daemon is a long-running process that hosts multiple subsystems: a JobRunner-based scheduler, SQLite-backed state, an outbox drain loop, session lifecycle tracking, and a phased task executor. Bugs in each subsystem have distinct failure signatures and require different surgical fixes. This skill teaches you how to identify which subsystem is implicated, trace to the root cause, apply a minimal fix, and prevent regression.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ cat ~/.myco/daemon.log | tail -200
 
 Look for the **first anomalous line**, not just the error message. Record:
 - The timestamp of the first unexpected event
-- The subsystem prefix in the log line (e.g., `[PowerManager]`, `[Outbox]`, `[Session]`, `[Executor]`)
+- The subsystem prefix in the log line (e.g., `[JobRunner]`, `[Outbox]`, `[Session]`, `[Executor]`)
 - Whether the error is a hard crash, a silent return, or a loop
 
 **Pitfall:** Don't jump to fixing based on the exception message alone. `FOREIGN KEY constraint failed` looks like a schema bug but is almost always a deletion order problem.
@@ -45,7 +45,7 @@ Each daemon subsystem has a distinct failure signature:
 
 | Subsystem | Failure Signature |
 |-----------|-------------------|
-| **PowerManager** | A registered job stops firing after initial runs; scheduler log goes quiet |
+| **JobRunner/Scheduler** | A registered job stops firing; wrong `kind` field causes two-lane starvation, or `runIn` states don't match current power state |
 | **SQLite FK cascade** | `FOREIGN KEY constraint failed` on delete; orphaned child rows after parent deletion |
 | **Outbox drain** | Drain runs on every tick but the same records never leave; loop visible in logs |
 | **Session lifecycle** | Two sessions created for one conversation; session ID missing mid-run |
@@ -60,15 +60,21 @@ Each daemon subsystem has a distinct failure signature:
 
 ## Step 3 — Trace the Root Cause (Subsystem Playbooks)
 
-### PowerManager — Scheduler Starvation
+### JobRunner — Job Starvation (Two-Lane Scheduler)
 
-**Trace:** Check whether `scheduleNextRun` is called after inserting new work.
+**Trace:** Check the job's `kind` field. The JobRunner implements two-lane fair scheduling separating `'drain'` (time-sensitive: embedding, outbox) and `'housekeeping'` (background maintenance) jobs. When both lanes are contended, each is capped at `concurrency-1` slots. A job registered with the wrong `kind` may lose slots it needs, or a housekeeping job can appear to stall when drain jobs are busy.
 
-**Fix pattern:**
+**Fix pattern:** Set `kind: 'drain'` for time-sensitive jobs; `kind: 'housekeeping'` for background maintenance:
 ```typescript
-await db.insert(workTable).values(newWork);
-scheduler.wake(); // ensure this exists in every insert path
+runner.register({
+  name: POWER_JOB_NAMES.YOUR_JOB,
+  kind: 'drain',       // ensures fair-share slot even when housekeeping is running
+  runIn: ['active', 'idle', 'sleep'],
+  fn: yourJobFn,
+});
 ```
+
+Also verify `runIn` includes all power states where the job should fire — a job registered only for `['active']` won't run in `'idle'` or `'sleep'` states.
 
 ### SQLite FK Cascade — Wrong Deletion Order
 
@@ -405,7 +411,7 @@ All mutations require mandatory reason parameters with structured logging (kind=
 When troubleshooting daemon restart failures, consult this table of the four independent daemon state sources:
 
 | State Source | Location | Authority | Consistency Guarantee | Failure Mode |
-|--------------|----------|-----------|----------------------|--------------|
+|--------------|----------|-----------|----------------------|--------------| 
 | **daemon.json** | ~/.myco/daemon.json | Daemon self (intent-based) | Atomic write via temp-file rename; ownerPid prevents third-contender race | Stale PID; malformed JSON; third-contender deletion race |
 | **Process list** | /proc/[pid]/stat (Unix) or tasklist (Windows) | OS kernel | Real-time; immediate on kill | Race: process exits between check and reconciliation |
 | **Port claim** | Port 20915 (TCP socket) | OS kernel | Atomic on listen(); owner identifies PID | Port stuck in TIME_WAIT after unclean shutdown; EADDRINUSE false positive |
@@ -422,7 +428,7 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 | Error / Symptom | Likely Cause | Fix |
 |----------------|--------------|-----|
 | `FOREIGN KEY constraint failed` on delete | Wrong deletion order | Delete children before parents |
-| Job registered but never fires | Scheduler not woken after insert | Call `scheduler.wake()` after inserting work |
+| Job registered but never fires | Wrong `kind` for two-lane scheduler, or `runIn` excludes current power state | Set `kind: 'drain'` for time-sensitive jobs; verify `runIn` includes relevant power states |
 | Two sessions for one conversation | No duplicate guard on session insert | Check for existing session ID before insert |
 | Sessions vanish mid-run, no explicit error | `findDeadSessionIds()` too aggressive | Set `DEAD_SESSION_MAX_PROMPTS = 0`; add `status != 'active'` filter |
 | Task shows "process aborted by user" without user action | Phase timeout, next phase runs under dead AbortController | Create fresh `AbortController` for each phase |

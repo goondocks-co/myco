@@ -38,6 +38,8 @@ Myco captures project memory in a local vault and serves it back through context
 - Prefer extending existing patterns over one-off patches.
 - Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
+- One implementation per operation across surfaces. UI, MCP/symbiont tools, and CLI MUST share the same underlying code path for the same operation; a user and a symbiont doing the same thing MUST get the same result. Divergent implementations for one operation are a bug.
+- Never swallow errors. Do not turn a failure into an empty or default result (e.g. `return []` when a call fails); propagate or surface it. Silent failure hides real problems — cross-tenant rejections, auth failures, lost connectivity — behind "no data".
 - Preserve clear domain ownership. Do not blur module boundaries without a reason. Callout and fix when you see this happening.
 - Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
 - Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.

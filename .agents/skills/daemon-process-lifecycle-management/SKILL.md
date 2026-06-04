@@ -349,3 +349,7 @@ async function selfUpdateWithServiceCoordination(): Promise<void> {
 ### MYCO_SERVICE_VARIANT Must Be Set in the Service Plist, Not at Runtime
 
 **Startup ordering gotcha**: `MYCO_SERVICE_VARIANT` is read once at process startup by `resolveBootstrapVaultDirOrPhantom()` to determine whether the daemon runs as global (phantom-anchored) or project-local. Setting or unsetting it after the process starts has no effect. Configure it in the launchd plist `EnvironmentVariables` key before the service loads; do not set it dynamically in CLI wrappers that exec into the daemon.
+
+### PowerManager Serial Tick Starvation
+
+**Architectural gotcha** (`packages/myco/src/daemon/power.ts`): `PowerManager` runs all eligible jobs **serially** — each job is awaited before the next starts. The effective tick period is therefore `base_interval + Σ(job durations)`, not just `base_interval`. A single long-running job delays every subsequent job registered for that tick, including embedding and canopy scans. When adding a new `PowerJob`, account for this: long jobs starve later jobs. If a job's runtime is unbounded or variable, monitor `event_loop_lag_during_ms` in power job log entries to detect runaway jobs early. The `preventsDeepSleep` guard can gate a job but does not make it run concurrently.

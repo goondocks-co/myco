@@ -125,7 +125,7 @@ timeout 5s curl -H "X-Myco-Context: project:test,grove:test" \
 
 ## Procedure 3: Implementing Recovery Patterns with Decoupled Self-Reconcile
 
-**For capture-critical hooks, always use `capturePost()` instead of raw `DaemonClient.post()`:**
+**For capture-critical hooks, always use `capturePost()` instead of raw `post()`:**
 
 ```typescript
 // ❌ Fragile - no managed service recovery
@@ -135,7 +135,7 @@ await client.post('/events', {
 });
 
 // ✅ Resilient - triggers service restart on failure
-await capturePost('/events', {
+await client.capturePost('/events', {
   kind: 'prompt',
   data: promptData
 });
@@ -146,22 +146,22 @@ await capturePost('/events', {
 - Prompt submit (`/events` with `prompt` kind)
 - Tool use (`/events` with `tool_use` kind)
 - Generic event send (`/events` with other kinds)
-- Session stop (`/events` with `stop` kind)
+- Session stop (`/events/stop`)
 
 **Non-capture hooks keep ordinary `post()`:**
 - Health checks, context switches, stats reads
 - These get basic `spawnDaemon()` recovery, appropriate for unmanaged daemons
 
 **Self-Reconcile Architecture (v0.27.17+):**
-Self-reconciliation is now decoupled from PowerManager scheduling and runs on a dedicated interval:
+Self-reconciliation is now decoupled from PowerManager scheduling. It is started via `startSelfReconcileLoop` in `packages/myco/src/daemon/self-reconcile-wiring.ts` on a dedicated interval:
 
 ```typescript
-// Self-reconcile runs independently every N minutes
-setInterval(async () => {
-  // Compare buffer state to database state
-  // Recover any orphaned sessions or incomplete batches
-  await daemon.selfReconcile();
-}, SELF_RECONCILE_INTERVAL);  // No longer co-scheduled with PowerManager
+// packages/myco/src/daemon/self-reconcile-wiring.ts
+const SELF_RECONCILE_INTERVAL_MS = 30_000;
+
+// started in daemon main.ts:
+const selfReconcileLoop = startSelfReconcileLoop(logger, { ... });
+// runs every SELF_RECONCILE_INTERVAL_MS — not co-scheduled with PowerManager
 ```
 
 **Key differences from previous pattern:**
@@ -172,13 +172,7 @@ setInterval(async () => {
 
 **Implementation in `packages/myco/src/hooks/client.ts`:**
 
-```typescript
-async function capturePost(endpoint: string, data: any) {
-  return DaemonClient.post(endpoint, data, {
-    recoverDaemonOnFailure: true
-  });
-}
-```
+`DaemonClient.capturePost()` wraps `postWithRecovery` with `{ captureCritical: true }`, which triggers service manager restart (not just `spawnDaemon()`) when the managed daemon is alive but wedged.
 
 **Key pattern:** For managed services (launchd/systemd), `spawnDaemon()` is ineffective on a live-but-stuck daemon. Recovery must go through `ServiceManager.restart()` with coalescing to prevent restart storms.
 
@@ -382,16 +376,14 @@ Double-fire hooks are **normal and expected**. Symbionts and agents consume hook
 ### Solution Pattern (Post-v0.27.17)
 ```typescript
 // Shared fingerprint in packages/myco/src/capture/dedup.ts
-// 10-second dedup window
-// Both live dispatcher and buffer reconciler use same key
+// Dedup window defined by EVENT_DEDUP_WINDOW_MS
+// Both live dispatcher (event-dispatch.ts) and reconciliation.ts use same key
 
-const fingerprint = eventDedupKey(event); // 10s window built-in
-if (isProcessedRecently(fingerprint)) {
-  return { status: 'duplicate', reason: 'within-window' };
-}
+const key = eventDedupKey(event); // stable fingerprint for dedup
+// Both dispatch and reconcile paths check this key against a seen-set
 ```
 
-**Test coverage:** See `tests/daemon/reconciliation-dedup.test.ts` for regression tests covering session 019e2bc0.
+**Test coverage:** See `tests/capture/dedup.test.ts` for regression tests covering the dedup key contract.
 
 ## Cross-Cutting Gotchas
 
@@ -408,7 +400,7 @@ if (isProcessedRecently(fingerprint)) {
 
 **Three-tier daemon.lock discovery:** The three-tier pattern allows daemon.lock to be discovered from explicit paths, grove directories, or global machine scan. Understand which tier applies to your setup when debugging location mismatches.
 
-**Self-reconcile is independent:** Self-reconciliation no longer depends on PowerManager scheduling. It runs continuously on its own interval, even when PowerManager tasks are suspended.
+**Self-reconcile is independent:** Self-reconciliation no longer depends on PowerManager scheduling. It runs continuously on its own interval (`SELF_RECONCILE_INTERVAL_MS = 30_000`), even when PowerManager tasks are suspended.
 
 **Silent Failure Patterns:**
 - **Multiple simultaneous bugs:** The May 15 incident had three independent failures. Fix one layer, then re-test the full pipeline.

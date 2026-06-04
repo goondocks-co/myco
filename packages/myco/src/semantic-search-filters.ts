@@ -1,5 +1,81 @@
 import type { EmbeddingMetadata } from '@myco/daemon/embedding/types.js';
 
+/**
+ * Single source of truth for how each filterable `domain_metadata` key is
+ * applied in the vector store. The sqlite-vec store derives its vec0 schema,
+ * its upsert column projection, and its KNN query routing from this one
+ * registry — so the filterable-key set is defined once, here, alongside the
+ * post-fetch matcher (`matchesSemanticSearchFilters`) that must agree with it.
+ *
+ *   - `'partition'` → a vec0 partition key. Equality-only; the tenancy scope.
+ *   - `'column'`    → a vec0 metadata column (TEXT), filtered INSIDE the KNN so
+ *                     a small `k` still returns the top-k OF MATCHING rows.
+ *                     ONLY for keys that are (a) equality-filtered, (b) short
+ *                     (<12 chars — sqlite-vec's efficient bound), and (c)
+ *                     STABLE for the vector's lifetime: set at embed, and any
+ *                     change re-embeds or removes the vector (so the column can
+ *                     never go stale). Missing binds the `''` sentinel, which
+ *                     is correct for equality (`'' ≠ any real value`) but WRONG
+ *                     for comparisons — which is exactly why range keys are
+ *                     never columns.
+ *   - `'postKnn'`   → filtered AFTER the KNN via `json_extract` on the live
+ *                     `domain_metadata` JSON (over an over-fetched candidate
+ *                     pool). Required for: RANGE/nullable keys (`created_at` —
+ *                     SQL NULL is the correct "missing" contract, no sentinel
+ *                     collision); keys PATCHED in place after embed
+ *                     (`release_state`/`release_confidence` via
+ *                     `patchDomainMetadata` — a column would go stale); and
+ *                     LONG-STRING keys (sqlite-vec metadata columns are
+ *                     inefficient past ~12 chars).
+ *
+ * Invariant: a key is in exactly one strategy, and every key here is a
+ * `domain_metadata` field. Promoting a key to `'column'` requires it satisfy
+ * (a)+(b)+(c) above; when in doubt, `'postKnn'` is always correct (just slower).
+ */
+export type VectorFilterStrategy = 'partition' | 'column' | 'postKnn';
+
+export interface FilterableKeySpec {
+  /** `domain_metadata` key; also the vec0 column/partition name when promoted. */
+  readonly key: string;
+  readonly strategy: VectorFilterStrategy;
+}
+
+export const FILTERABLE_KEY_REGISTRY: readonly FilterableKeySpec[] = [
+  { key: 'project_id', strategy: 'partition' },
+  // In-KNN columns — equality-only, short, embed-stable.
+  { key: 'observation_type', strategy: 'column' },
+  { key: 'status', strategy: 'column' },
+  { key: 'language', strategy: 'column' },
+  // Post-KNN — ranges, patched-in-place, and long strings.
+  { key: 'created_at', strategy: 'postKnn' },
+  { key: 'release_state', strategy: 'postKnn' },
+  { key: 'release_confidence', strategy: 'postKnn' },
+  { key: 'release_basis_kind', strategy: 'postKnn' },
+  { key: 'release_checked_at', strategy: 'postKnn' },
+  { key: 'session_id', strategy: 'postKnn' },
+  { key: 'project_root', strategy: 'postKnn' },
+  { key: 'name', strategy: 'postKnn' },
+  { key: 'source_path', strategy: 'postKnn' },
+  { key: 'path', strategy: 'postKnn' },
+];
+
+const keysWithStrategy = (s: VectorFilterStrategy): string[] =>
+  FILTERABLE_KEY_REGISTRY.filter((k) => k.strategy === s).map((k) => k.key);
+
+/** vec0 partition-key column names (currently just `project_id`). */
+export const VECTOR_PARTITION_KEYS: readonly string[] = keysWithStrategy('partition');
+/** vec0 metadata-column names, filtered in-KNN. */
+export const VECTOR_COLUMN_KEYS: readonly string[] = keysWithStrategy('column');
+/** Keys promoted to vec0 (partition + column) — filterable inside the KNN. */
+export const VECTOR_INDEXED_KEYS: ReadonlySet<string> = new Set([
+  ...VECTOR_PARTITION_KEYS,
+  ...VECTOR_COLUMN_KEYS,
+]);
+/** Every recognized filterable `domain_metadata` key. */
+export const FILTERABLE_DOMAIN_KEYS: ReadonlySet<string> = new Set(
+  FILTERABLE_KEY_REGISTRY.map((k) => k.key),
+);
+
 export interface SemanticSearchFilters {
   status?: string;
   session_id?: string;

@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'bun:test';
-import { matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
+import {
+  matchesSemanticSearchFilters,
+  FILTERABLE_KEY_REGISTRY,
+  VECTOR_PARTITION_KEYS,
+  VECTOR_COLUMN_KEYS,
+  VECTOR_INDEXED_KEYS,
+  FILTERABLE_DOMAIN_KEYS,
+} from '@myco/semantic-search-filters.js';
+
+describe('filterable-key registry invariants', () => {
+  it('has no duplicate keys', () => {
+    const keys = FILTERABLE_KEY_REGISTRY.map((k) => k.key);
+    expect(keys.length).toBe(new Set(keys).size);
+  });
+
+  it('indexed keys (partition + column) are the union, and a subset of all filterable keys', () => {
+    expect([...VECTOR_INDEXED_KEYS].sort()).toEqual([...VECTOR_PARTITION_KEYS, ...VECTOR_COLUMN_KEYS].sort());
+    for (const k of VECTOR_INDEXED_KEYS) expect(FILTERABLE_DOMAIN_KEYS.has(k)).toBe(true);
+  });
+
+  it('the store supports exactly one partition key (tenancy)', () => {
+    expect(VECTOR_PARTITION_KEYS.length).toBe(1);
+  });
+
+  it('every registry key has a single recognized strategy', () => {
+    for (const spec of FILTERABLE_KEY_REGISTRY) {
+      expect(['partition', 'column', 'postKnn']).toContain(spec.strategy);
+    }
+  });
+});
 
 describe('matchesSemanticSearchFilters', () => {
   it('matches equality filters against embedding metadata', () => {
