@@ -8,10 +8,33 @@ import { createStopProcessor } from '@myco/daemon/stop-processing.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
+import { insertActivity } from '@myco/db/queries/activities.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
+
+/**
+ * Record an authoring write activity — the authorship evidence the stop-time
+ * plan backstop now requires. `relPath` is relative to the capture root, matching
+ * the form `handleToolUse` stores via `relativizeToolPath`.
+ */
+function recordPlanWrite(
+  sessionId: string,
+  promptBatchId: number,
+  relPath: string,
+  ts: number,
+  toolName = 'Write',
+): void {
+  insertActivity({
+    session_id: sessionId,
+    prompt_batch_id: promptBatchId,
+    tool_name: toolName,
+    file_path: relPath,
+    timestamp: ts,
+    created_at: ts,
+  });
+}
 
 function writeCodexSubagentTranscript(sessionId: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-codex-subagent-'));
@@ -477,7 +500,7 @@ describe('createStopProcessor session capture rules', () => {
     expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
-  it('reconciles a plan-dir file written outside the fast-path tool gate', async () => {
+  it('reconciles a plan-dir file the live fast-path missed, from its write activity', async () => {
     const sessionId = 'claude-plan-reconcile-001';
     const now = epochNow();
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-reconcile-'));
@@ -495,6 +518,18 @@ describe('createStopProcessor session capture rules', () => {
       started_at: now - 60,
       created_at: now - 60,
     });
+    // The agent's Write tool fired (activity recorded) but the live plan
+    // fast-path didn't capture it — the stop backstop must recover it from
+    // the recorded authorship.
+    const batch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'Write the spec',
+      started_at: now - 50,
+      created_at: now - 50,
+      status: 'completed',
+    });
+    recordPlanWrite(sessionId, batch.id, 'docs/superpowers/specs/reconciled.md', now - 45);
 
     const stopProcessor = makeStopProcessor(vaultDir, {
       planWatchConfig: {
@@ -524,7 +559,7 @@ describe('createStopProcessor session capture rules', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('reconciliation assigns the batch that matches the file mtime instead of the latest batch', async () => {
+  it('attributes the captured plan to the batch its authoring write belongs to, not the latest batch', async () => {
     const sessionId = 'claude-plan-reconcile-002';
     const now = epochNow();
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-batch-'));
@@ -558,7 +593,9 @@ describe('createStopProcessor session capture rules', () => {
       created_at: now - 10,
       status: 'active',
     });
-    fs.utimesSync(specPath, new Date((now - 60) * 1000), new Date((now - 60) * 1000));
+    // The authoring write happened in the FIRST batch; a later batch exists but
+    // did not touch the file. Attribution must follow the write, not recency.
+    recordPlanWrite(sessionId, firstBatch.id, 'docs/superpowers/specs/batch-mapped.md', now - 80);
 
     const stopProcessor = makeStopProcessor(vaultDir, {
       planWatchConfig: {
@@ -610,6 +647,17 @@ describe('createStopProcessor session capture rules', () => {
       started_at: now - 60,
       created_at: now - 60,
     });
+    // Authorship evidence: the write activity's file_path is relativized to the
+    // worktree (caller) root, matching what the backstop anchors against.
+    const batch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'Write the worktree spec',
+      started_at: now - 50,
+      created_at: now - 50,
+      status: 'completed',
+    });
+    recordPlanWrite(sessionId, batch.id, 'docs/superpowers/specs/worktree-spec.md', now - 45);
 
     const stopProcessor = makeStopProcessor(vaultDir, {
       planWatchConfig: {
@@ -651,6 +699,128 @@ describe('createStopProcessor session capture rules', () => {
 
     fs.rmSync(registeredRoot, { recursive: true, force: true });
     fs.rmSync(worktreeRoot, { recursive: true, force: true });
+  });
+
+  it('does NOT claim a plan file the stopping session never wrote (no authoring activity)', async () => {
+    // Regression for the mtime-window over-claim: a plan file present in a watch
+    // dir during a session's lifetime must NOT be attributed to that session
+    // unless it actually authored it. The session below has an open batch but
+    // never wrote the file — so no plan row may be created for it.
+    const sessionId = 'claude-plan-no-authorship';
+    const now = epochNow();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-noauthor-'));
+    const transcriptPath = path.join(projectRoot, `${sessionId}.jsonl`);
+    const specDir = path.join(projectRoot, 'docs/superpowers/specs');
+    const specPath = path.join(specDir, 'foreign.md');
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(transcriptPath, '', 'utf-8');
+    fs.writeFileSync(specPath, '# Foreign Plan\n\nWritten by someone else.', 'utf-8');
+
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      status: 'active',
+      started_at: now - 60,
+      created_at: now - 60,
+    });
+    const batch = insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: 'Unrelated work',
+      started_at: now - 50,
+      created_at: now - 50,
+      status: 'active',
+    });
+    // The session only READ the plan file — reading is not authorship.
+    recordPlanWrite(sessionId, batch.id, 'docs/superpowers/specs/foreign.md', now - 40, 'Read');
+
+    const stopProcessor = makeStopProcessor(vaultDir, {
+      planWatchConfig: {
+        watchDirs: ['docs/superpowers/specs'],
+        projectRoot,
+        extensions: ['.md'],
+      },
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'done',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true });
+    await stopProcessor.getActiveProcessing();
+
+    expect(listPlansBySession(sessionId, ALL_PROJECTS_SCOPE)).toHaveLength(0);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it('two concurrent sessions over one plan file associate only the authoring session', async () => {
+    // The core bug: with several agents running at once, a single plan file used
+    // to be duplicated into every concurrently-open session by mtime. Now only
+    // the session whose write activity targets the file is associated.
+    const now = epochNow();
+    const authorId = 'claude-plan-concurrent-author';
+    const bystanderId = 'claude-plan-concurrent-bystander';
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-concurrent-'));
+    const specDir = path.join(projectRoot, 'docs/superpowers/specs');
+    const specPath = path.join(specDir, 'shared.md');
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(specPath, '# Shared Plan\n\nAuthored by exactly one session.', 'utf-8');
+
+    for (const id of [authorId, bystanderId]) {
+      const transcriptPath = path.join(projectRoot, `${id}.jsonl`);
+      fs.writeFileSync(transcriptPath, '', 'utf-8');
+      upsertSession({
+        id,
+        agent: 'claude-code',
+        status: 'active',
+        started_at: now - 60,
+        created_at: now - 60,
+      });
+      const batch = insertBatch({
+        session_id: id,
+        prompt_number: 1,
+        user_prompt: 'work',
+        started_at: now - 50,
+        created_at: now - 50,
+        status: 'active',
+      });
+      // Only the author actually wrote the shared plan file.
+      if (id === authorId) {
+        recordPlanWrite(id, batch.id, 'docs/superpowers/specs/shared.md', now - 45);
+      }
+    }
+
+    const stopProcessor = makeStopProcessor(vaultDir, {
+      planWatchConfig: {
+        watchDirs: ['docs/superpowers/specs'],
+        projectRoot,
+        extensions: ['.md'],
+      },
+    });
+
+    for (const id of [authorId, bystanderId]) {
+      const res = await stopProcessor.handleStopRoute({
+        body: {
+          session_id: id,
+          agent: 'claude-code',
+          transcript_path: path.join(projectRoot, `${id}.jsonl`),
+          last_assistant_message: 'done',
+        },
+      } as never);
+      expect(res.body).toEqual({ ok: true });
+      await stopProcessor.getActiveProcessing();
+    }
+
+    expect(listPlansBySession(authorId, ALL_PROJECTS_SCOPE)).toHaveLength(1);
+    expect(listPlansBySession(bystanderId, ALL_PROJECTS_SCOPE)).toHaveLength(0);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   // Regression for /code-review finding C1: a Stop event declaring only

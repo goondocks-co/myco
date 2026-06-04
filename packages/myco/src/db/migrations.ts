@@ -6,6 +6,7 @@
  * iterate over instead of hand-coding version checks.
  */
 
+import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
@@ -117,6 +118,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 53, migrate: (db) => migrateV52ToV53(db) },
   { version: 54, migrate: (db) => migrateV53ToV54(db) },
   { version: 55, migrate: (db) => migrateV54ToV55(db) },
+  { version: 56, migrate: (db, machineId) => migrateV55ToV56(db, machineId) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3387,6 +3389,110 @@ function migrateV54ToV55(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(55, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v55 → v56: retire mtime-over-claimed plan associations.
+ *
+ * The stop-time plan reconcile historically claimed every plan file whose mtime
+ * fell within a session's lifetime, regardless of authorship. With several
+ * agents running concurrently, that duplicated a single plan into every open
+ * session as a `session:<sid>:file:<path>` row — diverging, stale copies. The
+ * live capture pattern is now authorship-gated (a recorded Write/Edit/Create
+ * activity on the file); this applies the same definition retroactively to
+ * remove the phantom duplicates already persisted.
+ *
+ * Rules (data-preservation safe — never delete the last copy):
+ *   - Candidates: file-backed, session-scoped rows only (`session:%:file:%`,
+ *     excluding `transcript:` tag plans, which are genuine per-session artifacts).
+ *   - LOCAL rows only (`machine_id = thisMachine`). `activities` are machine-local
+ *     and never sync, so a row synced in from another machine would look
+ *     unauthored here; evaluating it could falsely delete a genuine plan. Each
+ *     machine cleans its own rows on its own v56 run.
+ *   - A candidate is *authored* when its session has a write-tool activity on the
+ *     same (canonicalized) file path.
+ *   - A non-authored candidate is deleted ONLY when another row for the same
+ *     (project, canonical path) IS authored. Groups with no authored row are
+ *     left untouched.
+ *
+ * `plans` carries an AFTER DELETE team-sync trigger, so deletes also enqueue
+ * tombstones for any row that had been synced out.
+ */
+function migrateV55ToV56(db: Database, machineId: string): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'plans') && tableExists(db, 'activities')) {
+      // Cross-symbiont file-write tool names, FROZEN at v56. Do NOT import the
+      // live FILE_WRITE_TOOLS set — a historical migration must not change
+      // behavior when that set evolves. Mirrors plan-capture.ts at this revision.
+      const WRITE_TOOLS = ['Write', 'Edit', 'Create', 'write', 'edit', 'patch', 'create'] as const;
+
+      // Canonicalize a stored path so a symbiont's `./`-prefixed or backslash
+      // form matches the normalized `source_path` that capture writes.
+      const canonical = (value: string): string =>
+        path.posix.normalize(value.replace(/\\/g, '/')).replace(/^\.\//, '');
+
+      const candidates = db.prepare(
+        `SELECT id, project_id, session_id, source_path
+           FROM plans
+          WHERE logical_key LIKE 'session:%:file:%'
+            AND source_path IS NOT NULL
+            AND source_path NOT LIKE 'transcript:%'
+            AND machine_id = ?`,
+      ).all(machineId) as Array<{
+        id: string;
+        project_id: string | null;
+        session_id: string | null;
+        source_path: string;
+      }>;
+
+      const writePathsBySession = new Map<string, Set<string>>();
+      const writeActivityStmt = db.prepare(
+        `SELECT file_path FROM activities
+          WHERE session_id = ?
+            AND file_path IS NOT NULL
+            AND tool_name IN (${WRITE_TOOLS.map(() => '?').join(', ')})`,
+      );
+      const authoredPathsFor = (sessionId: string): Set<string> => {
+        const cached = writePathsBySession.get(sessionId);
+        if (cached) return cached;
+        const set = new Set<string>();
+        const rows = writeActivityStmt.all(sessionId, ...WRITE_TOOLS) as Array<{ file_path: string }>;
+        for (const row of rows) set.add(canonical(row.file_path));
+        writePathsBySession.set(sessionId, set);
+        return set;
+      };
+      const isAuthored = (candidate: { session_id: string | null; source_path: string }): boolean =>
+        candidate.session_id !== null
+        && authoredPathsFor(candidate.session_id).has(canonical(candidate.source_path));
+
+      // Group by (project, canonical path). A non-authored row is removable only
+      // when a sibling row in the same group IS authored.
+      const groups = new Map<string, typeof candidates>();
+      for (const candidate of candidates) {
+        const key = `${candidate.project_id ?? ''} ${canonical(candidate.source_path)}`;
+        const bucket = groups.get(key) ?? [];
+        bucket.push(candidate);
+        groups.set(key, bucket);
+      }
+
+      const deleteStmt = db.prepare(`DELETE FROM plans WHERE id = ?`);
+      for (const bucket of groups.values()) {
+        if (!bucket.some(isAuthored)) continue;
+        for (const candidate of bucket) {
+          if (!isAuthored(candidate)) deleteStmt.run(candidate.id);
+        }
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(56, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

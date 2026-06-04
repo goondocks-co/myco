@@ -338,6 +338,37 @@ export function listActivities(
 }
 
 /**
+ * List a session's file-touching activities (every row with a non-null
+ * `file_path`), ordered by timestamp ASC.
+ *
+ * This is the authorship-evidence feed for plan capture: which files a session
+ * actually wrote. The caller decides which of these are *plan* writes via the
+ * shared `isPlanWriteEvent` predicate (single source of truth for plan-write
+ * detection across every symbiont), so this query intentionally does NOT filter
+ * by tool name. Unbounded by design — one session's file activity set is small,
+ * and a `LIMIT` could silently drop an authoring write and resurrect the
+ * over-association bug.
+ */
+export function listSessionFileActivities(
+  sessionId: string,
+  scope: ProjectScope,
+): ActivityRow[] {
+  const db = getDatabase();
+  const conditions = ['session_id = ?', 'file_path IS NOT NULL'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, scope);
+
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+     FROM activities
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY timestamp ASC`,
+  ).all(...params) as Record<string, unknown>[];
+
+  return rows.map(toActivityRow);
+}
+
+/**
  * List all activities for a specific batch, ordered by timestamp ASC.
  */
 export function listActivitiesByBatch(

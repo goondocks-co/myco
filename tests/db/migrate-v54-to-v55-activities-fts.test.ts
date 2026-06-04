@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { createSchema } from '@myco/db/schema.js';
+import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 
 const now = 1_780_346_900;
 
@@ -51,10 +51,16 @@ describe('migration v54 -> v55: activities_fts triggers', () => {
     ).get() as { n: number };
     expect(match.n).toBe(1);
 
+    // createSchema runs the full migration chain, so the terminal version is
+    // the current SCHEMA_VERSION; assert the v55 step ran on its own.
+    const v55Applied = db.prepare(
+      `SELECT COUNT(*) AS n FROM schema_version WHERE version = 55`,
+    ).get() as { n: number };
+    expect(v55Applied.n).toBe(1);
     const version = db.prepare(
       `SELECT MAX(version) AS version FROM schema_version`,
     ).get() as { version: number };
-    expect(version.version).toBe(55);
+    expect(version.version).toBe(SCHEMA_VERSION);
     db.close();
   });
 });

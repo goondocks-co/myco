@@ -25,7 +25,9 @@ import {
   persistPlan,
   resolvePlanWatchDir,
   extractTaggedPlans,
+  selectAuthoredPlanWrites,
   type PlanWatchConfig,
+  type PlanWriteActivity,
 } from '@myco/daemon/plan-capture.js';
 import { buildPathPlanLogicalKey, buildFilePlanLogicalKey } from '@myco/plans/identity.js';
 import type { Logger } from '@myco/daemon/logger.js';
@@ -751,5 +753,94 @@ describe('extractTaggedPlans', () => {
     expect(results).toHaveLength(2);
     expect(results[0].content).toBe('# Original Plan');
     expect(results[1].content).toBe('# Revised Plan');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectAuthoredPlanWrites — authorship-from-activities (the regression guard)
+// ---------------------------------------------------------------------------
+
+describe('selectAuthoredPlanWrites', () => {
+  const config: PlanWatchConfig = {
+    watchDirs: ['docs/plans'],
+    projectRoot: '/home/user/proj',
+    extensions: ['.md'],
+  };
+
+  const act = (over: Partial<PlanWriteActivity>): PlanWriteActivity => ({
+    tool_name: 'Write',
+    file_path: 'docs/plans/sprint.md',
+    prompt_batch_id: 1,
+    timestamp: 100,
+    ...over,
+  });
+
+  it('selects a plan-dir write activity as authorship', () => {
+    const result = selectAuthoredPlanWrites([act({})], config);
+    expect(result).toEqual([{ filePath: 'docs/plans/sprint.md', promptBatchId: 1 }]);
+  });
+
+  it('ignores writes outside any plan directory', () => {
+    const result = selectAuthoredPlanWrites(
+      [act({ file_path: 'src/index.ts' })],
+      config,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('ignores non-write tools even when targeting a plan file (Read is not authorship)', () => {
+    const result = selectAuthoredPlanWrites([act({ tool_name: 'Read' })], config);
+    expect(result).toEqual([]);
+  });
+
+  it('ignores activities with no file_path', () => {
+    const result = selectAuthoredPlanWrites([act({ file_path: null })], config);
+    expect(result).toEqual([]);
+  });
+
+  it('dedupes repeated edits of one file, keeping the latest write batch', () => {
+    const result = selectAuthoredPlanWrites(
+      [
+        act({ prompt_batch_id: 1, timestamp: 100 }),
+        act({ tool_name: 'Edit', prompt_batch_id: 2, timestamp: 200 }),
+        act({ tool_name: 'Edit', prompt_batch_id: 3, timestamp: 300 }),
+      ],
+      config,
+    );
+    expect(result).toEqual([{ filePath: 'docs/plans/sprint.md', promptBatchId: 3 }]);
+  });
+
+  it('returns one entry per distinct authored plan file', () => {
+    const result = selectAuthoredPlanWrites(
+      [
+        act({ file_path: 'docs/plans/a.md', prompt_batch_id: 1 }),
+        act({ file_path: 'docs/plans/b.md', prompt_batch_id: 2 }),
+      ],
+      config,
+    );
+    expect(result).toHaveLength(2);
+    expect(result.map((w) => w.filePath).sort()).toEqual(['docs/plans/a.md', 'docs/plans/b.md']);
+  });
+
+  it('honors the extension filter (non-.md plan-dir writes are not plans)', () => {
+    const result = selectAuthoredPlanWrites(
+      [act({ file_path: 'docs/plans/notes.txt' })],
+      config,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('detects authorship across symbionts (lowercase write tools, raw absolute paths)', () => {
+    // opencode emits lowercase tool names; a symbiont may record an absolute path.
+    const result = selectAuthoredPlanWrites(
+      [
+        act({ tool_name: 'write', file_path: '/home/user/proj/docs/plans/x.md', prompt_batch_id: 7 }),
+        act({ tool_name: 'patch', file_path: '/home/user/proj/docs/plans/x.md', prompt_batch_id: 8, timestamp: 250 }),
+      ],
+      config,
+    );
+    expect(result).toEqual([
+      { filePath: '/home/user/proj/docs/plans/x.md', promptBatchId: 8 },
+    ]);
   });
 });
