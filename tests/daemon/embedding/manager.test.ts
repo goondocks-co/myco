@@ -464,46 +464,56 @@ describe('EmbeddingManager', () => {
     // -------------------------------------------------------------------------
 
     it('round-robin under deadline: cursor advances so late namespaces are not starved', async () => {
-      // Deterministic strategy: use a provider that sleeps 2ms per embed so
-      // Date.now() advances enough for a deadline to fire after the first
-      // namespace completes. This simulates a slow embedding provider.
-      //
-      // With a 3ms deadline, namespace[0] ('sessions') processes (embed takes 2ms),
-      // then the check fires before namespace[1] ('spores'). The cursor advances to 1.
-      // On the next call the cursor is at 1, so 'spores' processes first, and so on.
-      // Over N such calls every namespace is visited — none are starved.
-
+      // Hermetic: control time via a mocked Date.now so the deadline break is
+      // exact regardless of machine speed. Each embed advances the clock by a
+      // fixed step. With deadlineMs = currentNow + 1, the i=0 check passes,
+      // namespace[0] processes, its embed advances the clock past the deadline,
+      // and the i=1 check breaks — exactly 1 namespace per call, every time.
       const NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'];
       const N = NAMESPACES.length;
-      const EMBED_DELAY_MS = 2;
-      const DEADLINE_BUDGET_MS = EMBED_DELAY_MS + 1; // enough for 1 namespace, not 2
+      const CLOCK_STEP = 10;
 
-      // Slow provider: each embed takes EMBED_DELAY_MS.
-      provider.embed.mockImplementation(async () => {
-        await new Promise<void>((resolve) => setTimeout(resolve, EMBED_DELAY_MS));
-        return MOCK_EMBEDDING;
-      });
+      let currentNow = 1_000_000;
+      const realNow = Date.now;
+      Date.now = () => currentNow;
 
-      recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
-        { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
-      ]);
-      vectorStore.getStaleIds.mockReturnValue([]);
-      vectorStore.getEmbeddedIds.mockReturnValue([]);
-      recordSource.getActiveRecordIds.mockReturnValue([]);
+      try {
+        // Each embed advances the clock so the next deadline check trips.
+        provider.embed.mockImplementation(async () => {
+          currentNow += CLOCK_STEP;
+          return MOCK_EMBEDDING;
+        });
 
-      const allVisited = new Set<string>();
-      vectorStore.upsert.mockImplementation((ns: string) => { allVisited.add(ns as string); });
+        recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
+          { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
+        ]);
+        vectorStore.getStaleIds.mockReturnValue([]);
+        vectorStore.getEmbeddedIds.mockReturnValue([]);
+        recordSource.getActiveRecordIds.mockReturnValue([]);
 
-      // N calls, each with a tight deadline → each call services ~1 namespace.
-      for (let i = 0; i < N; i++) {
-        await manager.reconcile(BATCH_SIZE, Date.now() + DEADLINE_BUDGET_MS);
+        const allVisited = new Set<string>();
+        vectorStore.upsert.mockImplementation((ns: string) => { allVisited.add(ns as string); });
+
+        // N calls, each servicing exactly one namespace; assert the cursor walks
+        // 1 → 2 → 3 → 4 → 5 → 0 deterministically (proves no late namespace is
+        // skipped) and that every namespace is serviced over the N calls.
+        const expectedCursorAfter = [1, 2, 3, 4, 5, 0];
+        for (let call = 0; call < N; call++) {
+          // deadline = currentNow + 1: namespace[startIdx] processes, its embed
+          // pushes the clock to currentNow + CLOCK_STEP, then the next check breaks.
+          await manager.reconcile(BATCH_SIZE, currentNow + 1);
+          expect(manager['nextNamespaceIndex']).toBe(expectedCursorAfter[call]);
+        }
+
+        // Every namespace was serviced across the N calls — the last namespace
+        // ('canopy_entries') is not starved.
+        for (const ns of NAMESPACES) {
+          expect(allVisited).toContain(ns);
+        }
+      } finally {
+        Date.now = realNow;
       }
-
-      // After N calls, every namespace must have been visited at least once.
-      for (const ns of NAMESPACES) {
-        expect(allVisited).toContain(ns);
-      }
-    }, 200 /* generous wall-clock budget */);
+    });
 
     it('round-robin: no-deadline call processes all namespaces and cursor returns to start', async () => {
       // Two consecutive no-deadline calls must both process all N namespaces and
