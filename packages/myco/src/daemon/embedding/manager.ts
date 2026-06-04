@@ -217,8 +217,12 @@ export class EmbeddingManager {
   /**
    * Embed missing rows, re-embed stale vectors, and clean orphans across all namespaces.
    * Called by the reconcile worker on a timer.
+   *
+   * @param deadlineMs - Optional wall-clock deadline (ms since epoch). When provided, the
+   * namespace loop breaks early if the deadline is reached before the next namespace starts.
+   * Existing callers omitting this parameter get identical behavior.
    */
-  async reconcile(batchSize: number): Promise<ReconcileResult> {
+  async reconcile(batchSize: number, deadlineMs?: number): Promise<ReconcileResult> {
     const start = Date.now();
     let embedded = 0;
     let stale_reembedded = 0;
@@ -226,6 +230,7 @@ export class EmbeddingManager {
     const currentModel = this.embeddingProvider.model;
 
     for (const namespace of EMBEDDABLE_NAMESPACES) {
+      if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
       // Phase 1: Embed missing rows
       const rows = this.recordSource.getEmbeddableRows(namespace, batchSize);
       const embeddedBatch = await this.embedRecords(namespace, rows, { markEmbedded: true });
@@ -305,6 +310,18 @@ export class EmbeddingManager {
     }
 
     return { embedded, stale_reembedded, orphans_cleaned, duration_ms };
+  }
+
+  /**
+   * Run one bounded work-slice of reconcile and report progress.
+   * Called by the JobRunner drain path; honors both maxItems and softDeadlineMs.
+   */
+  async reconcileSlice(budget: { maxItems: number; softDeadlineMs: number }): Promise<{ processed: number; remaining: number }> {
+    const result = await this.reconcile(budget.maxItems, Date.now() + budget.softDeadlineMs);
+    return {
+      processed: result.embedded + result.stale_reembedded,
+      remaining: this.totalPendingCount(),
+    };
   }
 
   /**

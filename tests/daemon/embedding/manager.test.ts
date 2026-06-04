@@ -591,6 +591,89 @@ describe('EmbeddingManager', () => {
   });
 
   // -------------------------------------------------------------------------
+  // reconcileSlice
+  // -------------------------------------------------------------------------
+
+  describe('reconcileSlice', () => {
+    it('returns processed count bounded by maxItems and remaining from totalPendingCount', async () => {
+      // sessions namespace has 3 pending rows
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return [
+            { id: 's1', text: 'text 1', metadata: {} },
+            { id: 's2', text: 'text 2', metadata: {} },
+            { id: 's3', text: 'text 3', metadata: {} },
+          ];
+        }
+        return [];
+      });
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+      // After reconcile, pending drops to 0
+      recordSource.getPendingCount.mockReturnValue(0);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 2000 });
+
+      // processed = embedded + stale_reembedded; 3 rows embedded in sessions
+      expect(out.processed).toBe(3);
+      // remaining = totalPendingCount() after reconcile
+      expect(out.remaining).toBe(0);
+      // processed + remaining <= maxItems * namespaces
+      expect(out.processed).toBeLessThanOrEqual(10 * 6);
+    });
+
+    it('processed + remaining is consistent with starting pending count for single-namespace fixture', async () => {
+      const PENDING = 4;
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return Array.from({ length: PENDING }, (_, i) => ({
+            id: `s${i}`,
+            text: `text ${i}`,
+            metadata: {},
+          }));
+        }
+        return [];
+      });
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+      recordSource.getPendingCount.mockReturnValue(0);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 2000 });
+
+      expect(out.processed).toBe(PENDING);
+      expect(out.remaining).toBe(0);
+      expect(out.processed + out.remaining).toBe(PENDING);
+    });
+
+    it('breaks early when softDeadlineMs is 0 (deadline already expired) — processed is 0', async () => {
+      // With softDeadlineMs: 0, deadlineMs = Date.now() + 0; the check at
+      // the top of the namespace loop fires immediately for the first namespace.
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return [
+            { id: 's1', text: 'text 1', metadata: {} },
+            { id: 's2', text: 'text 2', metadata: {} },
+          ];
+        }
+        return [];
+      });
+      // totalPendingCount() sums getPendingCount across all 6 EMBEDDABLE_NAMESPACES.
+      // Return 2 per namespace → total remaining = 12.
+      recordSource.getPendingCount.mockReturnValue(2);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 0 });
+
+      // Deadline fires on the first namespace check → no embedding work done
+      expect(out.processed).toBe(0);
+      // remaining = totalPendingCount() = 2 per namespace × 6 namespaces
+      expect(out.remaining).toBe(12);
+      expect(provider.embed).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // getDetails
   // -------------------------------------------------------------------------
 

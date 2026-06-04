@@ -27,7 +27,7 @@ interface GroveFixture {
   databasePath: string;
   cache: GroveRuntimeCache;
   logger: DaemonLogger;
-  embeddingMock: { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn> };
+  embeddingMock: { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn>; reconcileSlice: ReturnType<typeof vi.fn> };
   factory: EmbeddingRuntimeFactory;
   cleanup: () => void;
 }
@@ -70,6 +70,7 @@ function setupGrove(opts: { pendingCount?: number } = {}): GroveFixture {
   const embeddingMock = {
     totalPendingCount: () => opts.pendingCount ?? 0,
     reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })),
+    reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })),
   };
   const factory: EmbeddingRuntimeFactory = (db, dbPath) => ({
     // The embedding runtime cache only cares that the factory returns a
@@ -408,9 +409,9 @@ describe('embedding-reconcile power job', () => {
     ensureGroveDatabase(devGrove.id, fx.mycoHome);
     const devDatabasePath = resolveGroveDbPath(devGrove.id, fx.mycoHome);
 
-    const managers = new Map<string, { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn> }>([
-      [fx.databasePath, { totalPendingCount: () => 0, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })) }],
-      [devDatabasePath, { totalPendingCount: () => 5, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })) }],
+    const managers = new Map<string, { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn>; reconcileSlice: ReturnType<typeof vi.fn> }>([
+      [fx.databasePath, { totalPendingCount: () => 0, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })), reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })) }],
+      [devDatabasePath, { totalPendingCount: () => 5, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })), reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })) }],
     ]);
     const factory: EmbeddingRuntimeFactory = (_db, dbPath) => ({
       vectorStore: { close() {} } as never,
@@ -448,10 +449,12 @@ describe('embedding-reconcile power job', () => {
     expect(jobHoldsDeepSleep(job)).toBe(false);
   });
 
-  it('reconcile body invokes the per-Grove embedding manager', async () => {
+  it('reconcile body invokes reconcileSlice on the per-Grove embedding manager', async () => {
     registerPowerJobs(pm as never, buildDeps(fx));
-    await pm.find('embedding-reconcile').fn();
-    expect(fx.embeddingMock.reconcile).toHaveBeenCalledTimes(1);
+    const ctx = { signal: new AbortController().signal, sliceBudget: { maxItems: 50, softDeadlineMs: 2000 }, drainState: new Map() };
+    await pm.find('embedding-reconcile').fn(ctx);
+    expect(fx.embeddingMock.reconcileSlice).toHaveBeenCalledTimes(1);
+    expect(fx.embeddingMock.reconcileSlice).toHaveBeenCalledWith({ maxItems: 50, softDeadlineMs: 2000 });
   });
 });
 

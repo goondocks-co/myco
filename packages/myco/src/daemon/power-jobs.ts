@@ -345,17 +345,21 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       pending: () =>
         liveConfig.current.embedding.run_in_deep_sleep === false ? 0 : totalPendingProbe(),
     },
-    fn: async () => {
+    fn: async (ctx) => {
       if (reconcileRunning) return;
       reconcileRunning = true;
+      let processed = 0, remaining = 0;
       try {
         await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
           const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
-          await manager.reconcile(EMBEDDING_BATCH_SIZE);
+          const out = await manager.reconcileSlice(ctx.sliceBudget);
+          processed += out.processed;
+          remaining += out.remaining;
         })();
       } finally {
         reconcileRunning = false;
       }
+      return { processed, remaining };
     },
   });
 
