@@ -15,12 +15,12 @@ import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import { epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { ReleaseProvenanceRuntimeConfig } from './config.js';
-import { mergeBase, patchIdForCommit, patchIdForRange, runGit } from './git-cmd.js';
+import { mergeBaseAsync, patchIdForCommitAsync, patchIdForRangeAsync, runGitAsync } from './git-cmd.js';
 import type { PatchKind } from './git-snapshot.js';
 import { findDerivedRecords } from './record-lineage.js';
 import { filterRefsByPackagePatterns, tagPatternsForChangedPaths } from './package-map.js';
 import { findSquashMergeForCommit, readGithubToken } from './github.js';
-import { resolveConfiguredRefs } from './refs.js';
+import { resolveConfiguredRefsAsync } from './refs.js';
 
 export interface ReleaseStateChange {
   namespace: ReleaseNamespace;
@@ -111,10 +111,10 @@ export interface ReconcileReleaseProvenanceResult {
 class PatchIdCache {
   private readonly commitToPatchId = new Map<string, string | null>();
 
-  patchIdForCommit(projectRoot: string, commitSha: string): string | null {
+  async patchIdForCommit(projectRoot: string, commitSha: string): Promise<string | null> {
     const cached = this.commitToPatchId.get(commitSha);
     if (cached !== undefined) return cached;
-    const value = patchIdForCommit(projectRoot, commitSha);
+    const value = await patchIdForCommitAsync(projectRoot, commitSha);
     this.commitToPatchId.set(commitSha, value);
     return value;
   }
@@ -138,8 +138,7 @@ function targetFor(row: GitProvenanceRow): ReleaseTarget | null {
 async function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): Promise<RefCheck[]> {
   const results: RefCheck[] = [];
   for (const ref of refs) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const result = runGit(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
+    const result = await runGitAsync(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
     results.push({
       ref,
       ok: result.ok,
@@ -181,10 +180,9 @@ async function capturedPatchCandidates(
 
   if (row.head_sha) {
     for (const ref of refs) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const baseSha = mergeBase(projectRoot, row.head_sha, ref);
+      const baseSha = await mergeBaseAsync(projectRoot, row.head_sha, ref);
       if (!baseSha) continue;
-      const patchId = patchIdForRange(projectRoot, baseSha, row.head_sha);
+      const patchId = await patchIdForRangeAsync(projectRoot, baseSha, row.head_sha);
       if (!patchId) continue;
       const kind: PatchKind = 'dynamic_range';
       byKey.set(`${kind}:${patchId}`, {
@@ -217,20 +215,14 @@ async function findPatchMatch(
   const errors: RefCheck[] = [];
 
   for (const ref of refs) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const revList = runGit(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
+    const revList = await runGitAsync(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
     if (!revList.ok) {
       errors.push({ ref, ok: false, error: revList.error });
       continue;
     }
-    let commitsSinceYield = 0;
     for (const commitSha of revList.stdout.split('\n')) {
       if (!commitSha) continue;
-      if (++commitsSinceYield >= 32) {
-        commitsSinceYield = 0;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      const patchId = cache.patchIdForCommit(projectRoot, commitSha);
+      const patchId = await cache.patchIdForCommit(projectRoot, commitSha);
       if (!patchId) continue;
       const captured = wanted.get(patchId);
       if (!captured) continue;
@@ -471,8 +463,8 @@ export async function reconcileReleaseProvenance(
     ...input,
     config: {
       ...input.config,
-      production_refs: resolveConfiguredRefs(input.projectRoot, input.config.production_refs),
-      integration_refs: resolveConfiguredRefs(input.projectRoot, input.config.integration_refs),
+      production_refs: await resolveConfiguredRefsAsync(input.projectRoot, input.config.production_refs),
+      integration_refs: await resolveConfiguredRefsAsync(input.projectRoot, input.config.integration_refs),
     },
   };
   const now = input.now ?? epochSeconds();
