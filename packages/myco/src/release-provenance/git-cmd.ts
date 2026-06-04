@@ -10,6 +10,15 @@ import { execFileSync, spawn } from 'node:child_process';
 
 export const GIT_TIMEOUT_MS = 5_000;
 
+// execFileSync caps stdout at 1 MiB by default and throws ENOBUFS past it,
+// silently turning large `git show`/`git log -p` output into ok:false. The
+// spawn-based runGitAsync has no such cap, so the sync path must match or the
+// two diverge on big diffs (a PR merge commit's patch, a large/generated-file
+// commit). Capture-time patch-id runs through the sync path, so a silent cap
+// drops provenance for large commits. 256 MiB mirrors the async path's
+// effectively-unbounded read while staying under V8's max string length.
+export const GIT_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
+
 export interface GitCommandResult {
   ok: boolean;
   stdout: string;
@@ -23,6 +32,7 @@ export function runGit(projectRoot: string, args: string[], input?: string): Git
     const stdout = execFileSync('git', ['-C', projectRoot, ...args], {
       encoding: 'utf-8',
       timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER_BYTES,
       stdio: ['pipe', 'pipe', 'pipe'],
       input,
     });
