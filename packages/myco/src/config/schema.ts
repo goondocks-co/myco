@@ -50,6 +50,10 @@ const CaptureSchema = z.object({
   ignore_plan_dirs_in_git: z.boolean().default(false),
   artifact_extensions: z.array(z.string()).default(['.md']),
   buffer_max_events: z.number().int().positive().default(500),
+  ignore: z.object({
+    paths: z.array(z.string()).default([]),
+    patterns: z.array(z.string()).default([]),
+  }).default(() => ({ paths: [], patterns: [] })),
 });
 
 /**
