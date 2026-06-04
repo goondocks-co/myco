@@ -5,9 +5,11 @@ import {
   fetchLocalConfig,
   writeScopedConfig,
   clearLocalConfigKeys,
+  putJson,
 } from '../lib/api';
 import { getAtPath, setAtPath } from '@myco/utils/dot-path';
 import type { MycoConfig } from './use-config';
+import type { MachineConfig } from '@myco/config/schema';
 import type { ConfigPath } from '../lib/config-paths';
 import { useUpdateGroveConfig } from './use-grove-config';
 import { useUpdateMachineConfig, type MachineConfigPatch } from './use-machine-config';
@@ -169,6 +171,58 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
     [],
   );
 
+  /**
+   * Add a value to a list-valued config field. For machine scope, uses the
+   * server-side addToList op (race-free read-modify-write). For other scopes,
+   * falls back to a full-array setField after reading current effective value
+   * — clients should prefer machine scope for the critical paths.
+   */
+  const addToConfigList = useCallback(
+    async (path: ConfigPath, value: string, scope: Scope): Promise<void> => {
+      if (scope === 'machine') {
+        const config = await putJson<MachineConfig>('/machine-config', {
+          addToList: [{ path, values: [value] }],
+        });
+        qc.setQueryData(['machine-config'], { config });
+        void qc.invalidateQueries({ queryKey: ['config', 'merged'] });
+        return;
+      }
+      // Fallback: read current array from merged config and append.
+      const current = getAtPath((mergedRef.current ?? {}) as Record<string, unknown>, path);
+      const arr = Array.isArray(current) ? current as string[] : [];
+      if (!arr.includes(value)) {
+        await setField(path, [...arr, value] as unknown as string, scope);
+      }
+    },
+    // putJson is a stable module-level import; not needed in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [qc, setField],
+  );
+
+  /**
+   * Remove a value from a list-valued config field. For machine scope, uses
+   * the server-side removeFromList op (race-free). Fallback for other scopes
+   * reads current effective array and filters.
+   */
+  const removeFromConfigList = useCallback(
+    async (path: ConfigPath, value: string, scope: Scope): Promise<void> => {
+      if (scope === 'machine') {
+        const config = await putJson<MachineConfig>('/machine-config', {
+          removeFromList: [{ path, values: [value] }],
+        });
+        qc.setQueryData(['machine-config'], { config });
+        void qc.invalidateQueries({ queryKey: ['config', 'merged'] });
+        return;
+      }
+      const current = getAtPath((mergedRef.current ?? {}) as Record<string, unknown>, path);
+      const arr = Array.isArray(current) ? current as string[] : [];
+      await setField(path, arr.filter((v) => v !== value) as unknown as string, scope);
+    },
+    // putJson is a stable module-level import; not needed in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [qc, setField],
+  );
+
   return {
     effective: merged.data as MycoConfig | undefined,
     local: (local.data ?? {}) as Partial<MycoConfig>,
@@ -179,6 +233,8 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
     resetField,
     resetFields,
     promoteField,
+    addToConfigList,
+    removeFromConfigList,
   };
 }
 

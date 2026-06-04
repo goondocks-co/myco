@@ -177,6 +177,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
     mutateAsync: vi.fn().mockResolvedValue(undefined),
     isPending: false,
   }),
+  useAddToMachineConfigList: () => ({ mutate: () => {} }),
+  useRemoveFromMachineConfigList: () => ({ mutate: () => {} }),
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({

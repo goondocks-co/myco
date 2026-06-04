@@ -35,7 +35,7 @@ import { MoveProjectModal } from '../components/groves/MoveProjectModal';
 import { DeleteProjectModal } from '../components/groves/DeleteProjectModal';
 import { CapabilityPanel } from '../components/groves/CapabilityPanel';
 import { showToast } from '../components/groves/toast';
-import { useMachineConfig, useUpdateMachineConfig } from '../hooks/use-machine-config';
+import { useMachineConfig, useAddToMachineConfigList } from '../hooks/use-machine-config';
 
 interface MoveTarget {
   grove: GroveSummary;
@@ -51,7 +51,7 @@ export default function Groves() {
   const archiveProject = useArchiveProject();
   const unarchiveProject = useUnarchiveProject();
   const machineConfig = useMachineConfig();
-  const updateMachineConfig = useUpdateMachineConfig();
+  const addToMachineConfigList = useAddToMachineConfigList();
 
   const [newOpen, setNewOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<GroveSummary | null>(null);
@@ -147,10 +147,8 @@ export default function Groves() {
   function handleIgnore(grove: GroveSummary, project: GroveProjectSummary) {
     const existing = machineConfig.data?.config.capture.ignore?.paths ?? [];
     if (existing.includes(project.root)) { handleArchive(grove, project); return; }
-    const paths = [...existing, project.root];
-    updateMachineConfig.mutate(
-      // Server deep-merges the patch; sending only `paths` preserves `patterns`.
-      { capture: { ignore: { paths } } } as Parameters<typeof updateMachineConfig.mutate>[0],
+    addToMachineConfigList.mutate(
+      { path: 'capture.ignore.paths', value: project.root },
       {
         onSuccess: () => handleArchive(grove, project),
         onError: (err) => showToast({ level: 'error', title: 'Ignore failed', detail: err.message }),

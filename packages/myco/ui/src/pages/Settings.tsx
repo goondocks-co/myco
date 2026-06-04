@@ -40,6 +40,7 @@ import { useDaemon } from '../hooks/use-daemon';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
+import { useAddToMachineConfigList, useRemoveFromMachineConfigList } from '../hooks/use-machine-config';
 import { cn } from '../lib/cn';
 import { SettingsFilterBar, type ScopeFilter } from './settings/SettingsFilterBar';
 
@@ -605,6 +606,17 @@ function FieldRow({ field, hasProject, unified }: FieldRowProps) {
     [unified, field],
   );
 
+  // Machine-tier list fields use per-item list-delta ops (race-free).
+  const addToMachineList = useAddToMachineConfigList();
+  const removeFromMachineList = useRemoveFromMachineConfigList();
+  const isMachineList = field.scope === 'machine' && field.kind === 'list';
+  const onAdd = isMachineList
+    ? (entry: string) => addToMachineList.mutate({ path: field.key, value: entry })
+    : undefined;
+  const onRemove = isMachineList
+    ? (entry: string) => removeFromMachineList.mutate({ path: field.key, value: entry })
+    : undefined;
+
   return (
     <div
       id={focusAnchorId}
@@ -629,6 +641,8 @@ function FieldRow({ field, hasProject, unified }: FieldRowProps) {
           value={value}
           onChange={onChange}
           disabled={disabled}
+          onAdd={onAdd}
+          onRemove={onRemove}
         />
       </div>
     </div>
@@ -641,9 +655,13 @@ interface FieldControlProps {
   value: unknown;
   onChange: (next: unknown) => void;
   disabled?: boolean;
+  /** Per-item add override for list fields — uses the race-free server primitive. */
+  onAdd?: (entry: string) => void;
+  /** Per-item remove override for list fields — uses the race-free server primitive. */
+  onRemove?: (entry: string) => void;
 }
 
-function FieldControl({ inputId, field, value, onChange, disabled }: FieldControlProps) {
+function FieldControl({ inputId, field, value, onChange, disabled, onAdd, onRemove }: FieldControlProps) {
   const Control = CONTROL_BY_KIND[field.kind];
   if (!Control) return null;
 
@@ -718,6 +736,8 @@ function FieldControl({ inputId, field, value, onChange, disabled }: FieldContro
           onChange={(next) => onChange(next)}
           disabled={disabled}
           readonly={field.readonly}
+          onAdd={onAdd}
+          onRemove={onRemove}
         />
       );
     case 'secret':

@@ -70,6 +70,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-grove-mutations', () => ({
 mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
   useMachineConfig: () => ({ data: { config: { capture: { ignore: { paths: [] } } } } }),
   useUpdateMachineConfig: () => ({ mutate: () => {} }),
+  useAddToMachineConfigList: () => ({ mutate: () => {} }),
+  useRemoveFromMachineConfigList: () => ({ mutate: () => {} }),
 }));
 
 // CapabilityPanel reads merged + local config via fetchJson; a never-resolving
