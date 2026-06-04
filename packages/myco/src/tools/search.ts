@@ -13,6 +13,7 @@ import type {
 } from '@myco/db/queries/release-provenance.js';
 import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
 import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { ToolError, extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,15 @@ export async function handleMycoSearch(
   const result = requestContext
     ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
     : await client.get(endpoint);
-  if (!result.ok || !result.data?.results) return [];
+  // Fail loud on a daemon error (tenancy rejection, 5xx, timeout). Disguising
+  // it as an empty result set is how a tenancy/connectivity failure looked
+  // like "no search results". A genuine empty match set still returns [].
+  if (!result.ok) {
+    throw new ToolError(
+      'tool_call_failed',
+      extractErrorMessage(result.data, 'Search request failed'),
+    );
+  }
 
-  return normalizeSearchResults(result.data.results);
+  return normalizeSearchResults(result.data?.results ?? []);
 }

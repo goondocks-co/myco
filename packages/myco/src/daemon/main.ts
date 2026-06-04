@@ -1952,12 +1952,21 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({
+  // Tenant-scoped read: an unresolved/synthesized (daemon-anchor) context is
+  // rejected with a typed 400 tenancy-violation rather than silently scoped to
+  // GLOBAL_SCOPE and returning an empty result set — the failure shape that
+  // looked like "no search results". The UI always carries caller tenancy
+  // (grove+project headers from the active selection); only genuinely
+  // context-less callers (e.g. a cwd=/ CLI launch) are rejected, which is the
+  // intended fail-loud. Reuses the same `tenantRoute` seam as every other
+  // tenant-scoped route.
+  const searchHandler = createSearchHandler({
     embeddingManager,
     resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     machineId,
-  }));
+  });
+  server.registerRoute('GET', '/api/search', tenantRoute({ machineId, logger }, (req) => searchHandler(req)));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   const embeddingStatusHandler = createEmbeddingStatusHandler({
     resolveRequestRuntime: getRequestEmbeddingRuntime,
