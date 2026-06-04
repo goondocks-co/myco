@@ -60,6 +60,7 @@ describe('registerScheduledTasks', () => {
       logger: logger as never,
       cache: new GroveRuntimeCache(),
       mycoHome: vaultDir,
+      daemonStateDir: path.join(vaultDir, 'service'),
       machineId: 'test-machine',
       projectStateTracker: new ProjectPowerStateTracker({
         idleThresholdMs: 60_000,

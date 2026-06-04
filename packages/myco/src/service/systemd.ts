@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
+import { spawnCombinedOutput } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
@@ -30,13 +30,7 @@ export class RealSystemctlRunner implements SystemctlRunner {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
       return { stdout: `[sandbox] skipped systemctl ${args.join(' ')}`, exitCode: 0 };
     }
-    return new Promise((resolve) => {
-      const child = spawn('systemctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = '';
-      child.stdout.on('data', (b) => { stdout += b.toString(); });
-      child.stderr.on('data', (b) => { stdout += b.toString(); });
-      child.on('close', (code) => resolve({ stdout, exitCode: code ?? 0 }));
-    });
+    return spawnCombinedOutput('systemctl', args);
   }
 }
 

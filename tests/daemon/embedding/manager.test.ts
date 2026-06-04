@@ -26,6 +26,10 @@ function createMockVectorStore(): VectorStore & {
   stats: ReturnType<typeof vi.fn>;
   getStaleIds: ReturnType<typeof vi.fn>;
   getEmbeddedIds: ReturnType<typeof vi.fn>;
+  computeHubnessStats: ReturnType<typeof vi.fn>;
+  upsertHubnessStats: ReturnType<typeof vi.fn>;
+  pairwiseSimilarity: ReturnType<typeof vi.fn>;
+  patchDomainMetadata: ReturnType<typeof vi.fn>;
 } {
   return {
     upsert: vi.fn(),
@@ -39,6 +43,10 @@ function createMockVectorStore(): VectorStore & {
     } satisfies VectorStoreStats),
     getStaleIds: vi.fn().mockReturnValue([]),
     getEmbeddedIds: vi.fn().mockReturnValue([]),
+    computeHubnessStats: vi.fn().mockResolvedValue([]),
+    upsertHubnessStats: vi.fn(),
+    pairwiseSimilarity: vi.fn().mockReturnValue([]),
+    patchDomainMetadata: vi.fn().mockReturnValue(false),
   };
 }
 
@@ -458,6 +466,99 @@ describe('EmbeddingManager', () => {
       // No info log when no work done
       expect(logger.info).not.toHaveBeenCalled();
     });
+
+    // -------------------------------------------------------------------------
+    // Round-robin cursor
+    // -------------------------------------------------------------------------
+
+    it('round-robin under deadline: cursor advances so late namespaces are not starved', async () => {
+      // Hermetic: control time via a mocked Date.now so the deadline break is
+      // exact regardless of machine speed. Each embed advances the clock by a
+      // fixed step. With deadlineMs = currentNow + 1, the i=0 check passes,
+      // namespace[0] processes, its embed advances the clock past the deadline,
+      // and the i=1 check breaks — exactly 1 namespace per call, every time.
+      const NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'];
+      const N = NAMESPACES.length;
+      const CLOCK_STEP = 10;
+
+      let currentNow = 1_000_000;
+      const realNow = Date.now;
+      Date.now = () => currentNow;
+
+      try {
+        // Each embed advances the clock so the next deadline check trips.
+        provider.embed.mockImplementation(async () => {
+          currentNow += CLOCK_STEP;
+          return MOCK_EMBEDDING;
+        });
+
+        recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
+          { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
+        ]);
+        vectorStore.getStaleIds.mockReturnValue([]);
+        vectorStore.getEmbeddedIds.mockReturnValue([]);
+        recordSource.getActiveRecordIds.mockReturnValue([]);
+
+        const allVisited = new Set<string>();
+        vectorStore.upsert.mockImplementation((ns: string) => { allVisited.add(ns as string); });
+
+        // N calls, each servicing exactly one namespace; assert the cursor walks
+        // 1 → 2 → 3 → 4 → 5 → 0 deterministically (proves no late namespace is
+        // skipped) and that every namespace is serviced over the N calls.
+        const expectedCursorAfter = [1, 2, 3, 4, 5, 0];
+        for (let call = 0; call < N; call++) {
+          // deadline = currentNow + 1: namespace[startIdx] processes, its embed
+          // pushes the clock to currentNow + CLOCK_STEP, then the next check breaks.
+          await manager.reconcile(BATCH_SIZE, currentNow + 1);
+          expect(manager['nextNamespaceIndex']).toBe(expectedCursorAfter[call]);
+        }
+
+        // Every namespace was serviced across the N calls — the last namespace
+        // ('canopy_entries') is not starved.
+        for (const ns of NAMESPACES) {
+          expect(allVisited).toContain(ns);
+        }
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    it('round-robin: no-deadline call processes all namespaces and cursor returns to start', async () => {
+      // Two consecutive no-deadline calls must both process all N namespaces and
+      // produce the same visit order (cursor is idempotent after a full pass).
+      const NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'];
+
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => [
+        { id: `${ns}-row`, text: `text for ${ns}`, metadata: {} },
+      ]);
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+
+      const visitOrder1: string[] = [];
+      const visitOrder2: string[] = [];
+
+      vectorStore.upsert.mockImplementation((ns: string) => { visitOrder1.push(ns as string); });
+      const result1 = await manager.reconcile(BATCH_SIZE);
+
+      vectorStore.upsert.mockImplementation((ns: string) => { visitOrder2.push(ns as string); });
+      const result2 = await manager.reconcile(BATCH_SIZE);
+
+      // Both calls must have processed all 6 namespaces.
+      expect(result1.embedded).toBe(NAMESPACES.length);
+      expect(result2.embedded).toBe(NAMESPACES.length);
+
+      // Both calls must cover every namespace.
+      for (const ns of NAMESPACES) {
+        expect(visitOrder1).toContain(ns);
+        expect(visitOrder2).toContain(ns);
+      }
+
+      // Both calls start at the same namespace (cursor returns to startIdx after full pass).
+      expect(visitOrder1[0]).toBe(visitOrder2[0]);
+      // The full visit order is identical.
+      expect(visitOrder1).toEqual(visitOrder2);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -587,6 +688,89 @@ describe('EmbeddingManager', () => {
 
       expect(result.reembedded).toBe(3);
       expect(maxInFlight).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // reconcileSlice
+  // -------------------------------------------------------------------------
+
+  describe('reconcileSlice', () => {
+    it('returns processed count bounded by maxItems and remaining from totalPendingCount', async () => {
+      // sessions namespace has 3 pending rows
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return [
+            { id: 's1', text: 'text 1', metadata: {} },
+            { id: 's2', text: 'text 2', metadata: {} },
+            { id: 's3', text: 'text 3', metadata: {} },
+          ];
+        }
+        return [];
+      });
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+      // After reconcile, pending drops to 0
+      recordSource.getPendingCount.mockReturnValue(0);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 2000 });
+
+      // processed = embedded + stale_reembedded; 3 rows embedded in sessions
+      expect(out.processed).toBe(3);
+      // remaining = totalPendingCount() after reconcile
+      expect(out.remaining).toBe(0);
+      // processed + remaining <= maxItems * namespaces
+      expect(out.processed).toBeLessThanOrEqual(10 * 6);
+    });
+
+    it('processed + remaining is consistent with starting pending count for single-namespace fixture', async () => {
+      const PENDING = 4;
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return Array.from({ length: PENDING }, (_, i) => ({
+            id: `s${i}`,
+            text: `text ${i}`,
+            metadata: {},
+          }));
+        }
+        return [];
+      });
+      vectorStore.getStaleIds.mockReturnValue([]);
+      vectorStore.getEmbeddedIds.mockReturnValue([]);
+      recordSource.getActiveRecordIds.mockReturnValue([]);
+      recordSource.getPendingCount.mockReturnValue(0);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 2000 });
+
+      expect(out.processed).toBe(PENDING);
+      expect(out.remaining).toBe(0);
+      expect(out.processed + out.remaining).toBe(PENDING);
+    });
+
+    it('breaks early when softDeadlineMs is 0 (deadline already expired) — processed is 0', async () => {
+      // With softDeadlineMs: 0, deadlineMs = Date.now() + 0; the check at
+      // the top of the namespace loop fires immediately for the first namespace.
+      recordSource.getEmbeddableRows.mockImplementation((ns: string) => {
+        if (ns === 'sessions') {
+          return [
+            { id: 's1', text: 'text 1', metadata: {} },
+            { id: 's2', text: 'text 2', metadata: {} },
+          ];
+        }
+        return [];
+      });
+      // totalPendingCount() sums getPendingCount across all 6 EMBEDDABLE_NAMESPACES.
+      // Return 2 per namespace → total remaining = 12.
+      recordSource.getPendingCount.mockReturnValue(2);
+
+      const out = await manager.reconcileSlice({ maxItems: 10, softDeadlineMs: 0 });
+
+      // Deadline fires on the first namespace check → no embedding work done
+      expect(out.processed).toBe(0);
+      // remaining = totalPendingCount() = 2 per namespace × 6 namespaces
+      expect(out.remaining).toBe(12);
+      expect(provider.embed).not.toHaveBeenCalled();
     });
   });
 

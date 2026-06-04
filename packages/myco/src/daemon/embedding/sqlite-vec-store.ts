@@ -495,7 +495,7 @@ export class SqliteVecVectorStore implements VectorStore {
     return pairs;
   }
 
-  computeHubnessStats(namespace: string): HubnessStat[] {
+  async computeHubnessStats(namespace: string): Promise<HubnessStat[]> {
     this.validateNamespace(namespace);
     const ns = namespace as EmbeddableNamespace;
 
@@ -507,7 +507,13 @@ export class SqliteVecVectorStore implements VectorStore {
 
     const searchStmt = this.searchStmts.get(ns)!;
     const stats: HubnessStat[] = [];
-    for (const row of allRows) {
+    // Process KNN queries in chunks, yielding between chunks to bound event-loop lag.
+    // Each chunk is ~32 synchronous sqlite-vec queries; at 870 spores that is
+    // ~28 yields, keeping per-chunk wall time well under 200 ms.
+    const CHUNK = 32;
+    for (let i = 0; i < allRows.length; i++) {
+      if (i > 0 && i % CHUNK === 0) await new Promise<void>((r) => setImmediate(r));
+      const row = allRows[i];
       // KNN against the whole namespace; the row's distance to itself (~0) is
       // dropped so the distribution reflects only the rest of the corpus.
       const results = searchStmt.all(row.embedding, allRows.length) as Array<{

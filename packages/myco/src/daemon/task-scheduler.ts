@@ -1,7 +1,7 @@
 /**
- * Dynamic PowerManager job registration from task schedule definitions.
+ * Dynamic JobRunner job registration from task schedule definitions.
  *
- * Builds ONE PowerJob whose tick visits each (grove, project) tuple a
+ * Builds ONE RunnerJob whose tick visits each (grove, project) tuple a
  * single time and applies every schedulable task inside that loop. Each
  * task still keeps its own `runIn`, interval, accelerator, preCondition,
  * running flag, and last-run clock — the collapse is purely about not
@@ -11,7 +11,7 @@
 import type { AgentTask, AcceleratorConfig, TaskSchedule } from '@myco/agent/types.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { RegisteredProjectScope } from './scope-iteration.js';
-import type { PowerJob } from './power.js';
+import type { RunnerJob } from './job-runner.js';
 import type { PowerState } from './power.js';
 
 /** Resolve effective schedule: YAML defaults + myco.yaml overrides. */
@@ -106,6 +106,12 @@ export interface ScheduledJobContext {
    * completed before the daemon came up.
    */
   seedMissingLastRuns?: (scope: RegisteredProjectScope) => Map<string, number>;
+  /**
+   * Global probe for pending canopy-describe work across all served Groves.
+   * Called on every PowerManager tick to gate deep_sleep transitions.
+   * When omitted the hold defaults to 0 (never holds).
+   */
+  canopyPendingProbe?: () => number;
 }
 
 /**
@@ -124,7 +130,7 @@ export interface ScheduledJobKicker {
 }
 
 export interface ScheduledJobBuildResult {
-  jobs: PowerJob[];
+  jobs: RunnerJob[];
   kicker: ScheduledJobKicker;
 }
 
@@ -151,8 +157,8 @@ interface CompiledTask {
 }
 
 /**
- * Build PowerManager jobs from task definitions. Returns one collapsed
- * PowerJob plus a kicker; tenant-scoped config is resolved per project tick.
+ * Build JobRunner jobs from task definitions. Returns one collapsed
+ * RunnerJob plus a kicker; tenant-scoped config is resolved per project tick.
  */
 export function buildScheduledJobs(
   tasks: AgentTask[],
@@ -190,7 +196,7 @@ export function buildScheduledJobs(
     compiled.push({ task, yamlEffective });
   }
 
-  // No scheduled-capable tasks → no PowerJob to register.
+  // No scheduled-capable tasks → no RunnerJob to register.
   if (compiled.length === 0) {
     return { jobs: [], kicker };
   }
@@ -200,9 +206,11 @@ export function buildScheduledJobs(
   // power state inside the loop.
   const allRunIn: PowerState[] = ['active', 'idle', 'sleep'];
 
-  const job: PowerJob = {
+  const job: RunnerJob = {
     name: COLLAPSED_JOB_NAME,
     runIn: allRunIn,
+    kind: 'scheduler',
+    hold: { pending: () => context.canopyPendingProbe?.() ?? 0 },
     fn: async () => {
       // Snapshot broadcasts at tick entry so a kick mid-tick lands on the next pass.
       const broadcastSnapshot = new Set(broadcastKicks);
