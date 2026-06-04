@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { DaemonLogger } from './logger.js';
+import type { Logger } from './logger.js';
 import type { PowerState } from './power.js';
 
 export type JobKind = 'housekeeping' | 'drain' | 'scheduler';
@@ -50,7 +50,7 @@ export interface RunnerJob {
 
 export interface JobRunnerOptions {
   concurrency: number;
-  logger: DaemonLogger;
+  logger: Logger;
   clock?: () => number;
   onError?: (jobName: string, err: unknown) => void;
 }

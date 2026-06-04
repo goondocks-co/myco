@@ -16,6 +16,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { JobRunner, type RunnerJob } from '@myco/daemon/job-runner.js';
+import type { Logger } from '@myco/daemon/logger.js';
 
 function noopJob(name: string, overrides: Partial<RunnerJob> = {}): RunnerJob {
   return {
@@ -29,13 +30,13 @@ describe('JobRunner registration', () => {
     const r = new JobRunner({ concurrency: 3, logger: silentLogger(), clock: () => 0 });
     r.register(noopJob('a'));
     r.replaceGroup('scheduled:', [noopJob('scheduled:tasks')]);
-    r.register(noopJob('scheduled:legacy', { name: 'scheduled:legacy' }));
+    r.register(noopJob('scheduled:legacy'));
     r.replaceGroup('scheduled:', [noopJob('scheduled:tasks')]); // drops scheduled:legacy
     expect(r.jobNames().sort()).toEqual(['a', 'scheduled:tasks']);
   });
 });
 
-function silentLogger() {
+function silentLogger(): Logger {
   const noop = () => {};
-  return { debug: noop, info: noop, warn: noop, error: noop } as any;
+  return { debug: noop, info: noop, warn: noop, error: noop };
 }
