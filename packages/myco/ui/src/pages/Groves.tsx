@@ -32,6 +32,7 @@ import { DeleteGroveModal } from '../components/groves/DeleteGroveModal';
 import { MoveProjectModal } from '../components/groves/MoveProjectModal';
 import { DeleteProjectModal } from '../components/groves/DeleteProjectModal';
 import { showToast } from '../components/groves/toast';
+import { useMachineConfig, useUpdateMachineConfig } from '../hooks/use-machine-config';
 
 interface MoveTarget {
   grove: GroveSummary;
@@ -44,6 +45,8 @@ export default function Groves() {
   const setDefaultGrove = useSetDefaultGrove();
   const archiveProject = useArchiveProject();
   const unarchiveProject = useUnarchiveProject();
+  const machineConfig = useMachineConfig();
+  const updateMachineConfig = useUpdateMachineConfig();
 
   const [newOpen, setNewOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<GroveSummary | null>(null);
@@ -131,6 +134,20 @@ export default function Groves() {
           showToast({ level: 'error', title: 'Backup failed', detail: err.message });
         },
         onSettled: () => setPendingBackupId(null),
+      },
+    );
+  }
+
+  function handleIgnore(grove: GroveSummary, project: GroveProjectSummary) {
+    const existing = machineConfig.data?.config.capture.ignore?.paths ?? [];
+    if (existing.includes(project.root)) { handleArchive(grove, project); return; }
+    const paths = [...existing, project.root];
+    updateMachineConfig.mutate(
+      // Server deep-merges the patch; sending only `paths` preserves `patterns`.
+      { capture: { ignore: { paths } } } as Parameters<typeof updateMachineConfig.mutate>[0],
+      {
+        onSuccess: () => handleArchive(grove, project),
+        onError: (err) => showToast({ level: 'error', title: 'Ignore failed', detail: err.message }),
       },
     );
   }
@@ -245,6 +262,7 @@ export default function Groves() {
                             onOpen={() => navigate(projectPath({ grove, project }))}
                             onMove={() => setMoveTarget({ grove, project })}
                             onBackup={() => handleBackup(project)}
+                            onIgnore={() => handleIgnore(grove, project)}
                             onArchive={() => handleArchive(grove, project)}
                             onUnarchive={() => handleUnarchive(grove, project)}
                             onDelete={() => setDeleteProjectTarget({ grove, project })}

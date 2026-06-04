@@ -9,6 +9,7 @@ interface ProjectActionMenuProps {
   onArchive: () => void;
   onUnarchive: () => void;
   onDelete: () => void;
+  onIgnore: () => void;
   backupPending?: boolean;
 }
 
@@ -21,6 +22,7 @@ export function ProjectActionMenu({
   onArchive,
   onUnarchive,
   onDelete,
+  onIgnore,
   backupPending,
 }: ProjectActionMenuProps) {
   const items: MenuItem[] = [
@@ -32,6 +34,7 @@ export function ProjectActionMenu({
       onSelect: onBackup,
       disabled: backupPending,
     },
+    { key: 'ignore', label: 'Ignore project…', onSelect: onIgnore, disabled: archived },
     archived
       ? { key: 'unarchive', label: 'Unarchive project', onSelect: onUnarchive }
       : { key: 'archive', label: 'Archive project', onSelect: onArchive },
