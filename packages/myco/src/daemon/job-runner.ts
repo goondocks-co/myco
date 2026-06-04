@@ -121,7 +121,7 @@ export class JobRunner {
   private run(job: RunnerJob): void {
     this.inFlight.add(job.name);
     this.lastDispatched.set(job.name, this.now());
-    // Source of ctx.signal for cooperative cancellation; no aborter wired in Spec A (future: watchdog/burst).
+    // AbortSignal for cooperative cancellation; no abort source wired yet.
     const controller = new AbortController();
     const ctx: JobRunContext = {
       signal: controller.signal,

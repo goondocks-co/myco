@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { PowerManager, type PowerState } from '@myco/daemon/power.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 describe('PowerManager', () => {
   let pm: PowerManager;
@@ -22,7 +23,7 @@ describe('PowerManager', () => {
       sleepIntervalMs: 5_000,
       logger: mockLogger,
       onTick: () => {},
-      shouldHoldDeepSleep: () => false,
+      deepSleepHolder: () => null,
     });
   });
 
@@ -84,7 +85,7 @@ describe('PowerManager', () => {
       sleepIntervalMs: 5_000,
       logger: mockLogger,
       onTick: (s) => states.push(s),
-      shouldHoldDeepSleep: () => false,
+      deepSleepHolder: () => null,
     });
     onTickPm.start();
     onTickPm.tickOnceForTest();
@@ -92,7 +93,7 @@ describe('PowerManager', () => {
     onTickPm.stop();
   });
 
-  it('holds at sleep instead of deep_sleep when shouldHoldDeepSleep is true', () => {
+  it('holds at sleep instead of deep_sleep when deepSleepHolder returns a name', () => {
     let hold = true;
     const holdPm = new PowerManager({
       idleThresholdMs: 0,
@@ -102,15 +103,34 @@ describe('PowerManager', () => {
       sleepIntervalMs: 1,
       logger: mockLogger,
       onTick: () => {},
-      shouldHoldDeepSleep: () => hold,
+      deepSleepHolder: () => (hold ? 'embedding-reconcile' : null),
     });
     expect(holdPm.evaluateStateForTest()).toBe('sleep');
     hold = false;
     expect(holdPm.evaluateStateForTest()).toBe('deep_sleep');
   });
 
-  it('transitions to deep_sleep once shouldHoldDeepSleep returns false', () => {
-    let pending = true;
+  it('logs the holder name when deep sleep is held', () => {
+    const holdPm = new PowerManager({
+      idleThresholdMs: 0,
+      sleepThresholdMs: 0,
+      deepSleepThresholdMs: 0,
+      activeIntervalMs: 1,
+      sleepIntervalMs: 1,
+      logger: mockLogger,
+      onTick: () => {},
+      deepSleepHolder: () => 'team-sync-flush',
+    });
+    expect(holdPm.evaluateStateForTest()).toBe('sleep');
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      LOG_KINDS.POWER_STATE,
+      'Deep sleep held',
+      { by: 'team-sync-flush' },
+    );
+  });
+
+  it('transitions to deep_sleep once deepSleepHolder returns null', () => {
+    let holder: string | null = 'embedding-reconcile';
     const holdPm = new PowerManager({
       idleThresholdMs: 5_000,
       sleepThresholdMs: 30_000,
@@ -119,14 +139,14 @@ describe('PowerManager', () => {
       sleepIntervalMs: 5_000,
       logger: mockLogger,
       onTick: () => {},
-      shouldHoldDeepSleep: () => pending,
+      deepSleepHolder: () => holder,
     });
 
     holdPm.start();
     vi.advanceTimersByTime(91_000);
     expect(holdPm.getState()).toBe('sleep');
 
-    pending = false;
+    holder = null;
     vi.advanceTimersByTime(5_100);
     expect(holdPm.getState()).toBe('deep_sleep');
     holdPm.stop();

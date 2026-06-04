@@ -1061,7 +1061,7 @@ export async function main(): Promise<void> {
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
     onTick: (state) => jobRunner.dispatch(state),
-    shouldHoldDeepSleep: () => jobRunner.providesHold() !== null,
+    deepSleepHolder: () => jobRunner.providesHold(),
   });
 
   // Per-project power state. Pre-Grove, each project ran in its own
@@ -2347,7 +2347,7 @@ export async function main(): Promise<void> {
     // Drain pending team-sync outbox rows across every Grove before
     // closing DBs. Without this, SIGTERM/suspend leaves rows queued
     // locally with no trigger to retry until the next daemon boot. The
-    // PowerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
+    // RunnerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
     try {
       const aggregate = await teamSync.flushAllGroves(runtimeCache);
       if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {

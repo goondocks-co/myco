@@ -101,7 +101,7 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
       sleepIntervalMs: 60_000,
       logger,
       onTick: () => {},
-      shouldHoldDeepSleep: () => false,
+      deepSleepHolder: () => null,
     });
     const dispatcher = createEventDispatcher({
       registry,

@@ -1,7 +1,7 @@
 /**
- * Dynamic PowerManager job registration from task schedule definitions.
+ * Dynamic JobRunner job registration from task schedule definitions.
  *
- * Builds ONE PowerJob whose tick visits each (grove, project) tuple a
+ * Builds ONE RunnerJob whose tick visits each (grove, project) tuple a
  * single time and applies every schedulable task inside that loop. Each
  * task still keeps its own `runIn`, interval, accelerator, preCondition,
  * running flag, and last-run clock — the collapse is purely about not
@@ -151,8 +151,8 @@ interface CompiledTask {
 }
 
 /**
- * Build PowerManager jobs from task definitions. Returns one collapsed
- * PowerJob plus a kicker; tenant-scoped config is resolved per project tick.
+ * Build JobRunner jobs from task definitions. Returns one collapsed
+ * RunnerJob plus a kicker; tenant-scoped config is resolved per project tick.
  */
 export function buildScheduledJobs(
   tasks: AgentTask[],
@@ -190,7 +190,7 @@ export function buildScheduledJobs(
     compiled.push({ task, yamlEffective });
   }
 
-  // No scheduled-capable tasks → no PowerJob to register.
+  // No scheduled-capable tasks → no RunnerJob to register.
   if (compiled.length === 0) {
     return { jobs: [], kicker };
   }

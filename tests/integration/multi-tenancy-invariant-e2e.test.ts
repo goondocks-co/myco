@@ -61,7 +61,7 @@ function makeDispatcher() {
     sleepIntervalMs: 60_000,
     logger,
     onTick: () => {},
-    shouldHoldDeepSleep: () => false,
+    deepSleepHolder: () => null,
   });
 
   const handler = createEventDispatcher({

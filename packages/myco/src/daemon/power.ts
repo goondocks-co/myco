@@ -12,8 +12,8 @@ export interface PowerManagerConfig {
   logger: DaemonLogger;
   /** Called once per tick with the resolved state. The runner dispatches; PowerManager never runs jobs. */
   onTick: (state: PowerState) => void;
-  /** True keeps the daemon at `sleep` instead of dropping to `deep_sleep`. Supplied by the runner. */
-  shouldHoldDeepSleep: () => boolean;
+  /** Returns the name of the job holding deep-sleep, or null if none. */
+  deepSleepHolder: () => string | null;
 }
 
 export class PowerManager {
@@ -68,11 +68,12 @@ export class PowerManager {
     let target: PowerState;
 
     if (idleMs >= this.config.deepSleepThresholdMs) {
-      if (this.config.shouldHoldDeepSleep()) {
+      const holder = this.config.deepSleepHolder();
+      if (holder !== null) {
         target = 'sleep';
         if (!this.deepSleepHeld) {
           this.deepSleepHeld = true;
-          this.logger.info(LOG_KINDS.POWER_STATE, 'Deep sleep held', { by: 'runner' });
+          this.logger.info(LOG_KINDS.POWER_STATE, 'Deep sleep held', { by: holder });
         }
       } else {
         target = 'deep_sleep';
@@ -124,12 +125,18 @@ export class PowerManager {
     this.scheduleNextTick();
   }
 
-  /** Drive exactly one tick. Test-only — avoids start()'s real timer. */
+  /**
+   * @internal test seam
+   * Drive exactly one tick. Test-only — avoids start()'s real timer.
+   */
   tickOnceForTest(): void {
     void this.tick();
   }
 
-  /** Re-evaluate and return the resolved state. Test-only. */
+  /**
+   * @internal test seam
+   * Re-evaluate and return the resolved state. Test-only.
+   */
   evaluateStateForTest(): PowerState {
     this.evaluateState();
     return this.state;
