@@ -110,7 +110,7 @@ export interface VectorStore {
    * namespace (the hubness baseline). Returns [] for namespaces with < 2
    * vectors. O(n^2) — call from the periodic reconcile loop, not per request.
    */
-  computeHubnessStats(namespace: string): HubnessStat[];
+  computeHubnessStats(namespace: string): Promise<HubnessStat[]>;
   /** Persist hubness stats so search results carry neighbor distribution metadata. */
   upsertHubnessStats(namespace: string, stats: HubnessStat[]): void;
   /**

@@ -1,4 +1,4 @@
-import { runGit } from './git-cmd.js';
+import { runGit, runGitAsync } from './git-cmd.js';
 
 const GLOB_CHARS = /[*?[]/;
 
@@ -56,4 +56,29 @@ function listAllRefs(projectRoot: string): string[] {
 export function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
   return new RegExp(`^${escaped}$`);
+}
+
+async function listAllRefsAsync(projectRoot: string): Promise<string[]> {
+  const result = await runGitAsync(projectRoot, [
+    'for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
+  ]);
+  if (!result.ok) return [];
+  return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+export async function resolveConfiguredRefsAsync(projectRoot: string, refs: readonly string[]): Promise<string[]> {
+  const allRefsCache: { value?: string[] } = {};
+  const resolved: string[] = [];
+  for (const ref of refs) {
+    const trimmed = ref.trim();
+    if (!trimmed) continue;
+    if (!GLOB_CHARS.test(trimmed)) { resolved.push(trimmed); continue; }
+    const allRefs = allRefsCache.value ?? (await listAllRefsAsync(projectRoot));
+    allRefsCache.value = allRefs;
+    const matcher = globToRegex(trimmed);
+    for (const candidate of allRefs) {
+      if (refAliases(candidate).some((alias) => matcher.test(alias))) resolved.push(candidate);
+    }
+  }
+  return [...new Set(resolved)];
 }

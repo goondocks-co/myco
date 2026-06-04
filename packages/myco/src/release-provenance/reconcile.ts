@@ -15,12 +15,12 @@ import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import { epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { ReleaseProvenanceRuntimeConfig } from './config.js';
-import { mergeBase, patchIdForCommit, patchIdForRange, runGit } from './git-cmd.js';
+import { mergeBaseAsync, patchIdForCommitAsync, patchIdForRangeAsync, runGitAsync } from './git-cmd.js';
 import type { PatchKind } from './git-snapshot.js';
 import { findDerivedRecords } from './record-lineage.js';
 import { filterRefsByPackagePatterns, tagPatternsForChangedPaths } from './package-map.js';
 import { findSquashMergeForCommit, readGithubToken } from './github.js';
-import { resolveConfiguredRefs } from './refs.js';
+import { resolveConfiguredRefsAsync } from './refs.js';
 
 export interface ReleaseStateChange {
   namespace: ReleaseNamespace;
@@ -91,6 +91,13 @@ export interface ReconcileReleaseProvenanceInput {
    * so semantic-search filters stay current.
    */
   onReleaseStateChanged?: (changes: ReleaseStateChange[]) => void;
+  /**
+   * Fingerprint of resolved production+integration ref SHAs from the previous
+   * pass. When it matches the current fingerprint, already-classified+synced
+   * rows skip the expensive classify. undefined (first pass / daemon restart)
+   * forces a full scan.
+   */
+  lastRefsFingerprint?: string;
 }
 
 export interface ReconcileReleaseProvenanceResult {
@@ -100,6 +107,7 @@ export interface ReconcileReleaseProvenanceResult {
   unchanged: number;
   failed: number;
   disabled: boolean;
+  refsFingerprint?: string;
 }
 
 /**
@@ -111,10 +119,10 @@ export interface ReconcileReleaseProvenanceResult {
 class PatchIdCache {
   private readonly commitToPatchId = new Map<string, string | null>();
 
-  patchIdForCommit(projectRoot: string, commitSha: string): string | null {
+  async patchIdForCommit(projectRoot: string, commitSha: string): Promise<string | null> {
     const cached = this.commitToPatchId.get(commitSha);
     if (cached !== undefined) return cached;
-    const value = patchIdForCommit(projectRoot, commitSha);
+    const value = await patchIdForCommitAsync(projectRoot, commitSha);
     this.commitToPatchId.set(commitSha, value);
     return value;
   }
@@ -138,8 +146,7 @@ function targetFor(row: GitProvenanceRow): ReleaseTarget | null {
 async function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): Promise<RefCheck[]> {
   const results: RefCheck[] = [];
   for (const ref of refs) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const result = runGit(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
+    const result = await runGitAsync(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
     results.push({
       ref,
       ok: result.ok,
@@ -181,10 +188,9 @@ async function capturedPatchCandidates(
 
   if (row.head_sha) {
     for (const ref of refs) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      const baseSha = mergeBase(projectRoot, row.head_sha, ref);
+      const baseSha = await mergeBaseAsync(projectRoot, row.head_sha, ref);
       if (!baseSha) continue;
-      const patchId = patchIdForRange(projectRoot, baseSha, row.head_sha);
+      const patchId = await patchIdForRangeAsync(projectRoot, baseSha, row.head_sha);
       if (!patchId) continue;
       const kind: PatchKind = 'dynamic_range';
       byKey.set(`${kind}:${patchId}`, {
@@ -217,20 +223,14 @@ async function findPatchMatch(
   const errors: RefCheck[] = [];
 
   for (const ref of refs) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const revList = runGit(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
+    const revList = await runGitAsync(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
     if (!revList.ok) {
       errors.push({ ref, ok: false, error: revList.error });
       continue;
     }
-    let commitsSinceYield = 0;
     for (const commitSha of revList.stdout.split('\n')) {
       if (!commitSha) continue;
-      if (++commitsSinceYield >= 32) {
-        commitsSinceYield = 0;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      const patchId = cache.patchIdForCommit(projectRoot, commitSha);
+      const patchId = await cache.patchIdForCommit(projectRoot, commitSha);
       if (!patchId) continue;
       const captured = wanted.get(patchId);
       if (!captured) continue;
@@ -460,6 +460,69 @@ async function resolvePullRequestSquash(
   return pr ? { number: pr.number, merge_commit_sha: pr.merge_commit_sha } : null;
 }
 
+/**
+ * Fingerprint the resolved release refs by name+SHA so a reconcile pass can
+ * detect whether any production/integration ref moved, appeared, or vanished
+ * since last time. Classification is a pure function of (immutable provenance
+ * row, ref SHAs); an unchanged fingerprint means no row's classification can
+ * change.
+ *
+ * Resolution is delegated to `git rev-parse` — the SAME resolver
+ * `merge-base --is-ancestor <head> <ref>` uses in classify — so the
+ * fingerprinted SHA can never diverge from the ref classify actually checks.
+ * In particular, an ambiguous bare name that names both a tag and a branch
+ * (e.g. `release`) resolves to the TAG here exactly as it does in classify,
+ * via git's own revision precedence (tags before heads before remotes). A
+ * for-each-ref alias map would instead record the branch SHA and silently
+ * miss a tag-only move — the false-skip this avoids.
+ *
+ * A missing / not-yet-created ref becomes a stable `missing` marker so the
+ * fingerprint flips when the ref later appears. Returns null only when git
+ * itself can't execute (no exit status) — callers MUST treat null as
+ * "changed" and force a full scan rather than trust a fabricated fingerprint
+ * (a missed scan is worse than a wasted one). Local-only: never fetches.
+ */
+async function computeRefsFingerprint(
+  projectRoot: string,
+  resolvedRefs: readonly string[],
+): Promise<string | null> {
+  const refs = [...new Set(resolvedRefs)].sort();
+  if (refs.length === 0) return 'no-refs';
+  const isSha = (s: string) => /^[0-9a-f]{40,64}$/.test(s);
+
+  // Fast path: one `git rev-parse` resolves every ref with git's own
+  // precedence (tags before heads before remotes for bare names), so an
+  // ambiguous short name like `release` fingerprints the SAME SHA that
+  // `merge-base --is-ancestor <head> release` checks in classify. Exits 0
+  // only when every ref resolved (one full SHA per line, in arg order).
+  const batched = await runGitAsync(projectRoot, ['rev-parse', ...refs]);
+  if (batched.ok) {
+    const lines = batched.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length === refs.length && lines.every(isSha)) {
+      return refs.map((ref, i) => `${ref}:${lines[i]}`).join('\n');
+    }
+  }
+
+  // Fallback: resolve refs individually so a single missing / not-yet-created
+  // ref doesn't poison the whole fingerprint. A missing ref becomes a stable
+  // `missing` marker (flips the fingerprint when the ref later appears).
+  // Returns null only when git itself can't execute (no exit status) so the
+  // caller force-scans rather than trusting a fabricated fingerprint.
+  const parts: string[] = [];
+  for (const ref of refs) {
+    const r = await runGitAsync(projectRoot, ['rev-parse', '--verify', '--quiet', ref]);
+    const sha = r.stdout.trim();
+    if (r.ok && isSha(sha)) {
+      parts.push(`${ref}:${sha}`);
+    } else if (!r.ok && r.status === undefined) {
+      return null; // git failed to run at all -> fail-safe to a full scan
+    } else {
+      parts.push(`${ref}:missing`);
+    }
+  }
+  return parts.join('\n');
+}
+
 export async function reconcileReleaseProvenance(
   input: ReconcileReleaseProvenanceInput,
 ): Promise<ReconcileReleaseProvenanceResult> {
@@ -471,10 +534,23 @@ export async function reconcileReleaseProvenance(
     ...input,
     config: {
       ...input.config,
-      production_refs: resolveConfiguredRefs(input.projectRoot, input.config.production_refs),
-      integration_refs: resolveConfiguredRefs(input.projectRoot, input.config.integration_refs),
+      production_refs: await resolveConfiguredRefsAsync(input.projectRoot, input.config.production_refs),
+      integration_refs: await resolveConfiguredRefsAsync(input.projectRoot, input.config.integration_refs),
     },
   };
+
+  const resolvedRefs = [
+    ...reconcilerInput.config.production_refs,
+    ...reconcilerInput.config.integration_refs,
+  ];
+  const refsFingerprint = await computeRefsFingerprint(input.projectRoot, resolvedRefs);
+  // Fail-safe: null fingerprint (couldn't read refs) or no prior fingerprint
+  // (first pass / daemon restart) forces a full scan.
+  const refsChanged =
+    refsFingerprint === null ||
+    input.lastRefsFingerprint === undefined ||
+    input.lastRefsFingerprint !== refsFingerprint;
+
   const now = input.now ?? epochSeconds();
   const rows = listGitProvenance({ scope: input.scope, limit: input.limit ?? 500 });
   const seen = new Set<string>();
@@ -500,8 +576,6 @@ export async function reconcileReleaseProvenance(
     seen.add(key);
 
     try {
-      const prSquash = await resolvePullRequestSquash(row, reconcilerInput, githubBudget);
-      const result = await classify(row, reconcilerInput, cache, prSquash);
       const projectId = input.projectId ?? row.project_id;
       const identityKey = buildReleaseStateIdentityKey({
         project_id: projectId,
@@ -509,6 +583,21 @@ export async function reconcileReleaseProvenance(
         record_id: target.recordId,
       });
       const existing = getReleaseStateByIdentityKey(identityKey);
+
+      // Ref-movement gate: if no configured ref moved since last pass and this
+      // row already has a synced classification, its classification cannot have
+      // changed — skip the expensive classify/patch-scan. We still require
+      // synced_at to be set so unsynced orphans keep going through the full
+      // upsert path (mirrors the classificationUnchanged synced_at guard, which
+      // re-enqueues pre-sync rows for the outbox).
+      if (existing && existing.synced_at !== null && !refsChanged) {
+        touchReleaseStateCheckedAt(identityKey, now);
+        unchanged++;
+        continue;
+      }
+
+      const prSquash = await resolvePullRequestSquash(row, reconcilerInput, githubBudget);
+      const result = await classify(row, reconcilerInput, cache, prSquash);
       if (classificationUnchanged(existing, result)) {
         touchReleaseStateCheckedAt(identityKey, now);
         unchanged++;
@@ -602,5 +691,5 @@ export async function reconcileReleaseProvenance(
     project_id: input.projectId ?? null,
   });
 
-  return { scanned: rows.length, reconciled, skipped, unchanged, failed, disabled: false };
+  return { scanned: rows.length, reconciled, skipped, unchanged, failed, disabled: false, refsFingerprint: refsFingerprint ?? undefined };
 }
