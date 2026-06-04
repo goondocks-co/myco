@@ -98,6 +98,9 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpVault, '.myco'), { recursive: true });
   const manifest = ensureProjectManifest(path.join(tmpVault, '.myco'), { projectName: 'canopy-inject' });
   tmpProjectId = manifest.project.id;
+  // Minimal myco.yaml required by loadMergedConfig (fail-closed gate reads
+  // the project config rather than falling back to liveConfig.current).
+  fs.writeFileSync(path.join(tmpVault, '.myco', 'myco.yaml'), 'version: 3\n', 'utf-8');
   initDatabase(path.join(tmpVault, '.myco', SQLITE_DB_FILE));
   createSchema(getDatabase(), 'local');
 });
@@ -148,10 +151,38 @@ describe('POST /canopy/inject — handler', () => {
     expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
   });
 
-  it('returns disabled when cortex.canopy.inject_on_pre_tool_use is false', async () => {
-    const cfg = makeConfig({ inject_on_pre_tool_use: false });
+  it('returns capability_off when cortex.canopy.inject_on_pre_tool_use is false (migrates to enabled: false via v10)', async () => {
+    // inject_on_pre_tool_use: false in local.yaml is migrated by v10 to
+    // enabled: false (value-relocation), so capabilityEnabled returns false
+    // and the handler returns capability_off rather than the sub-toggle
+    // `disabled` reason. This is the correct post-P1/P3 behavior.
+    fs.writeFileSync(
+      path.join(tmpVault, '.myco', 'local.yaml'),
+      'cortex:\n  canopy:\n    inject_on_pre_tool_use: false\n',
+      'utf-8',
+    );
     const handler = createCanopyInjectHandler({
-      liveConfig: { current: cfg },
+      liveConfig: { current: makeConfig() },
+      getDatabase,
+    });
+    const res = await handler({
+      requestContext: ctx(),
+      body: { sessionId: 's1', agent: 'claude-code', toolInput: { file_path: 'foo.ts' } },
+    });
+    expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
+  });
+
+  it('returns disabled when inject_on_pre_tool_use is false and enabled is explicitly true', async () => {
+    // When `enabled: true` is set alongside `inject_on_pre_tool_use: false`, the
+    // capability gate passes (enabled=true) but the injection sub-toggle is off →
+    // reason is `disabled`, not `capability_off`.
+    fs.writeFileSync(
+      path.join(tmpVault, '.myco', 'local.yaml'),
+      'cortex:\n  canopy:\n    enabled: true\n    inject_on_pre_tool_use: false\n',
+      'utf-8',
+    );
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
       getDatabase,
     });
     const res = await handler({

@@ -52,6 +52,9 @@ beforeEach(async () => {
   tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-e2e-'));
   fs.mkdirSync(path.join(tmpVault, '.myco'), { recursive: true });
   tmpProjectId = ensureProjectManifest(path.join(tmpVault, '.myco'), { projectName: 'canopy-e2e' }).project.id;
+  // Minimal myco.yaml required by loadMergedConfig (fail-closed gate reads
+  // the project config rather than falling back to liveConfig.current).
+  fs.writeFileSync(path.join(tmpVault, '.myco', 'myco.yaml'), 'version: 3\n', 'utf-8');
   initDatabase(path.join(tmpVault, '.myco', SQLITE_DB_FILE));
   createSchema(getDatabase(), 'local');
 
