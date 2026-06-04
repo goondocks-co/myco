@@ -97,3 +97,25 @@ describe('JobRunner fairness', () => {
     expect(r.lastDispatchedAt('second')).toBe(2);
   });
 });
+
+describe('JobRunner backoff', () => {
+  it('skips a job during its backoff window after a failure, then retries', async () => {
+    let now = 0;
+    const errors: string[] = [];
+    const r = new JobRunner({
+      concurrency: 2, logger: silentLogger(), clock: () => now,
+      onError: (name) => errors.push(name),
+    });
+    r.register({ name: 'flaky', runIn: ['sleep'], kind: 'housekeeping',
+      fn: async () => { throw new Error('boom'); } });
+
+    r.dispatch('sleep'); await Promise.resolve(); await Promise.resolve();
+    expect(errors).toEqual(['flaky']);            // ran once, failed
+
+    now = 1000; r.dispatch('sleep'); await Promise.resolve();
+    expect(errors.length).toBe(1);                // still in backoff window, skipped
+
+    now = 60_000; r.dispatch('sleep'); await Promise.resolve(); await Promise.resolve();
+    expect(errors.length).toBe(2);                // backoff (30s) elapsed → retried
+  });
+});

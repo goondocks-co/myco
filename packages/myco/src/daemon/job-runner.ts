@@ -61,6 +61,14 @@ export class JobRunner {
   private readonly inFlight = new Set<string>();
   private readonly lastDispatched = new Map<string, number>();
   private readonly drainStates = new Map<string, Map<string, unknown>>();
+  private readonly failures = new Map<string, number>();
+  private readonly nextEligibleAt = new Map<string, number>();
+  private static readonly BACKOFF_BASE_MS = 30_000;
+  private static readonly BACKOFF_MAX_MS = 15 * 60_000;
+
+  private backedOff(name: string): boolean {
+    return this.now() < (this.nextEligibleAt.get(name) ?? 0);
+  }
 
   constructor(private readonly opts: JobRunnerOptions) {
     this.now = opts.clock ?? Date.now;
@@ -83,7 +91,7 @@ export class JobRunner {
 
   dispatch(state: PowerState): void {
     const eligible = this.jobs
-      .filter((j) => j.runIn.includes(state) && !this.inFlight.has(j.name))
+      .filter((j) => j.runIn.includes(state) && !this.inFlight.has(j.name) && !this.backedOff(j.name))
       .sort((a, b) =>
         (this.lastDispatched.get(a.name) ?? -Infinity) -
         (this.lastDispatched.get(b.name) ?? -Infinity),
@@ -120,7 +128,19 @@ export class JobRunner {
     };
     const cleanup = (err?: unknown) => {
       this.inFlight.delete(job.name);
-      if (err !== undefined) this.opts.onError?.(job.name, err);
+      if (err === undefined) {
+        this.failures.delete(job.name);
+        this.nextEligibleAt.delete(job.name);
+        return;
+      }
+      const n = (this.failures.get(job.name) ?? 0) + 1;
+      this.failures.set(job.name, n);
+      const delay = Math.min(
+        JobRunner.BACKOFF_BASE_MS * 2 ** (n - 1),
+        JobRunner.BACKOFF_MAX_MS,
+      );
+      this.nextEligibleAt.set(job.name, this.now() + delay);
+      this.opts.onError?.(job.name, err);
     };
     void job.fn(ctx).then(() => cleanup(), (err) => cleanup(err));
   }
