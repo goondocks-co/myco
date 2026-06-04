@@ -21,6 +21,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   shouldInjectCortex,
 } from '@myco/context/cortex-brief.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { composeCortexInstructionInjection } from '@myco/context/cortex-injection-context.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
@@ -102,6 +103,13 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
+      // Coarse master gate at the handler boundary — mirrors the subagent-start
+      // pattern at :237. Suppresses all session-start injections when the
+      // cortex capability is off, regardless of sub-toggle state.
+      if (!capabilityEnabled(config, 'cortex')) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled (cortex capability off)', { session_id });
+        return { body: { text: '' } };
+      }
       const cortexEnabled = shouldInjectCortex(config.cortex);
       const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
       if (!cortexEnabled && !digestEnabled) {
@@ -425,6 +433,13 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const scope = projectScopeFromRequestContext(req.requestContext);
+
+    // Coarse master gate at the handler boundary. Suppresses spore search and
+    // plan-intent nudge when the cortex capability is off.
+    if (!capabilityEnabled(config, 'cortex')) {
+      logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt context disabled (cortex capability off)', { session_id });
+      return { body: { text: '' } };
+    }
 
     // Plan-intent nudge — an independent injection contributor (plan-intent.ts)
     // owns the toggle, intent heuristic, per-session dedup, and best-effort
