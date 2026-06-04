@@ -110,7 +110,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled (cortex capability off)', { session_id });
         return { body: { text: '' } };
       }
-      const cortexEnabled = shouldInjectCortex(config.cortex);
+      const cortexEnabled = shouldInjectCortex(config);
       const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
       if (!cortexEnabled && !digestEnabled) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
@@ -242,7 +242,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
 
     try {
       if (!session_id) return { body: { text: '' } };
-      if (!config.cortex.enabled || !config.cortex.instructions.inject_on_subagent_start) {
+      if (!capabilityEnabled(config, 'cortex') || !config.cortex.instructions.inject_on_subagent_start) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Subagent context disabled', { session_id, agent });
         return { body: { text: '' } };
       }

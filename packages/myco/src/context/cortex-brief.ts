@@ -12,6 +12,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import {
   CONTENT_HASH_ALGORITHM,
   DEFAULT_AGENT_ID,
@@ -146,14 +147,15 @@ export async function resolveCortexCapabilities(
 
 /**
  * Whether Cortex should inject session-start instructions for this
- * config. Combines the Cortex master-kill with the per-event toggle.
+ * config. Combines the Cortex capability master gate (via the single
+ * `capabilityEnabled` predicate) with the per-event toggle.
  */
-export function shouldInjectCortex(cortex: MycoConfig['cortex']): boolean {
-  return cortex.enabled && cortex.instructions.inject_on_session_start;
+export function shouldInjectCortex(config: MycoConfig): boolean {
+  return capabilityEnabled(config, 'cortex') && config.cortex.instructions.inject_on_session_start;
 }
 
 export function resolveInstructionDelivery(
-  cortex: MycoConfig['cortex'],
+  config: MycoConfig,
   symbiont: {
     supportsSessionStartInjection: boolean;
   } | null,
@@ -161,7 +163,7 @@ export function resolveInstructionDelivery(
   if (!symbiont) {
     return { inlineInstructions: true, reason: 'missing-symbiont' };
   }
-  if (!shouldInjectCortex(cortex)) {
+  if (!shouldInjectCortex(config)) {
     return { inlineInstructions: true, reason: 'session-start-disabled' };
   }
   if (symbiont.supportsSessionStartInjection) {
@@ -418,7 +420,7 @@ export async function buildCortexInstructionsInput(
     '- When you mention recent plans, label the section "Recent plans" or "Recent workstreams" (NOT "Current workstreams" — that implies the new session is going to work on them). Treat them as background: prior or in-flight work the agent should be aware of when its actual task happens to overlap, not a directive to engage.',
   ];
 
-  if (shouldInjectCortex(config.cortex) && hasCanopyMap) {
+  if (shouldInjectCortex(config) && hasCanopyMap) {
     // Emitted only when a non-empty Canopy Map exists for this project.
     // That gate makes the directive trustworthy unconditionally — there
     // is no empty-state caveat to hedge with — so the generated downstream
@@ -472,7 +474,7 @@ export async function buildScheduledCortexInstruction(
   getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload | undefined> {
-  if (!config.cortex.enabled) return undefined;
+  if (!capabilityEnabled(config, 'cortex')) return undefined;
   const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
   const existing = getCortexInstructions(DEFAULT_AGENT_ID, projectScopeFromRequestContext(requestContext));
   if (existing?.input_hash === built.inputHash) {

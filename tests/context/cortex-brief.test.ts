@@ -142,39 +142,47 @@ describe('RETRIEVAL_GUIDANCE', () => {
 });
 
 describe('resolveInstructionDelivery', () => {
-  const enabledCortex = MycoConfigSchema.parse({ version: 3 }).cortex;
-  const disabledCortex = MycoConfigSchema.parse({
+  const enabledConfig = MycoConfigSchema.parse({ version: 3 });
+  const disabledConfig = MycoConfigSchema.parse({
     version: 3,
     cortex: { instructions: { inject_on_session_start: false } },
-  }).cortex;
+  });
+  // Cortex capability master gate off → delivery falls back to inline.
+  const masterOffConfig = MycoConfigSchema.parse({ version: 3, cortex: { enabled: false } });
 
   const cases: Array<{
     label: string;
-    cortex: typeof enabledCortex;
+    config: typeof enabledConfig;
     symbiont: { supportsSessionStartInjection: boolean } | null;
     expected: ReturnType<typeof resolveInstructionDelivery>;
   }> = [
     {
       label: 'null symbiont → inline with missing-symbiont reason',
-      cortex: enabledCortex,
+      config: enabledConfig,
       symbiont: null,
       expected: { inlineInstructions: true, reason: 'missing-symbiont' },
     },
     {
       label: 'cortex disabled → inline regardless of symbiont support',
-      cortex: disabledCortex,
+      config: disabledConfig,
+      symbiont: { supportsSessionStartInjection: true },
+      expected: { inlineInstructions: true, reason: 'session-start-disabled' },
+    },
+    {
+      label: 'cortex capability master gate off → inline regardless of symbiont support',
+      config: masterOffConfig,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: true, reason: 'session-start-disabled' },
     },
     {
       label: 'symbiont supports injection → NOT inline',
-      cortex: enabledCortex,
+      config: enabledConfig,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: false, reason: 'session-start-supported' },
     },
     {
       label: 'symbiont lacks injection support → inline with no-session-start',
-      cortex: enabledCortex,
+      config: enabledConfig,
       symbiont: { supportsSessionStartInjection: false },
       expected: { inlineInstructions: true, reason: 'no-session-start' },
     },
@@ -182,7 +190,7 @@ describe('resolveInstructionDelivery', () => {
 
   for (const testCase of cases) {
     it(testCase.label, () => {
-      expect(resolveInstructionDelivery(testCase.cortex, testCase.symbiont))
+      expect(resolveInstructionDelivery(testCase.config, testCase.symbiont))
         .toEqual(testCase.expected);
     });
   }

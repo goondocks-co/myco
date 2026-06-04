@@ -732,9 +732,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
             const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
             if (!capabilityEnabled(projectConfig, 'canopy')) return;
           } catch {
-            // Project not yet initialized — capabilityEnabled with null config
-            // would return false (fail-closed), but we allow uninitialized
-            // projects to proceed so the canopy scan can bootstrap them.
+            // Unreadable config → skip the scan (fail-closed), consistent with
+            // canopy-inject. Registered projects always have a vault, so this
+            // only fires on a transient read error.
+            return;
           }
           const runner = canopyRegistry.ensureRunner({
             databasePath,

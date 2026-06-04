@@ -192,10 +192,12 @@ export async function registerScheduledTasks(
     taskAgentMap.set(task.name, task.agent);
   }
 
-  // Per-tick single-resolve memo: the scheduler loop calls getTaskConfig and
+  // Per-project-visit memo: the scheduler loop calls getTaskConfig and
   // getCapabilityEnabled for each task in the same per-project iteration.
   // Memoizing the last-resolved scope avoids redundant loadMergedConfig calls
-  // within a single project's task fan-out.
+  // within a single project's task fan-out. The slot persists across ticks —
+  // one tick of stale config across a tick boundary is benign at minute-scale
+  // intervals.
   let lastResolvedKey = '';
   let lastResolvedConfig: MycoConfig | null = null;
 

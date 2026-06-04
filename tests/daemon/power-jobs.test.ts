@@ -691,6 +691,10 @@ describe('canopy-background-scan power job', () => {
     const projectRootB = path.join(fx.workDir, 'projects', 'b');
     fs.mkdirSync(resolveProjectVaultDir(projectRootA), { recursive: true });
     fs.mkdirSync(resolveProjectVaultDir(projectRootB), { recursive: true });
+    // Minimal myco.yaml so loadMergedConfig succeeds — the canopy scan is
+    // fail-closed (skips on unreadable config), like canopy-inject.
+    fs.writeFileSync(path.join(resolveProjectVaultDir(projectRootA), 'myco.yaml'), 'version: 3\n');
+    fs.writeFileSync(path.join(resolveProjectVaultDir(projectRootB), 'myco.yaml'), 'version: 3\n');
     fs.writeFileSync(path.join(projectRootA, 'a.ts'), 'export const a = 1;\n');
     fs.writeFileSync(path.join(projectRootB, 'b.ts'), 'export const b = 1;\n');
     registerProjectInGrove(fx.grove.id, {

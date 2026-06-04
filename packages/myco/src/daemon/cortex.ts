@@ -22,6 +22,7 @@ import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { resolveTenantConfig } from './request-config.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -190,7 +191,7 @@ function resolveCortexTenantConfig(
 // ---------------------------------------------------------------------------
 
 export function getCortexInstructionsSnapshot(
-  config: Pick<MycoConfig, 'cortex'>,
+  config: MycoConfig,
   scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
 ): CortexInstructionsSnapshot {
   const row = getCortexInstructions(DEFAULT_AGENT_ID, scope);
@@ -199,7 +200,7 @@ export function getCortexInstructionsSnapshot(
     content: row?.content ?? '',
     generatedAt: row?.generated_at ?? null,
     sourceRunId: row?.source_run_id ?? null,
-    enabled: config.cortex.enabled && config.cortex.instructions.inject_on_session_start,
+    enabled: capabilityEnabled(config, 'cortex') && config.cortex.instructions.inject_on_session_start,
     stored: Boolean(row),
   };
 }
@@ -228,7 +229,7 @@ export async function buildCortexPrompt(
   // the wrong grove's delivery contract. The seam resolves from the request
   // vault + grove (same as the run) and is loud on a present-tenant load failure.
   const config = resolveCortexTenantConfig(vaultDir, requestContext, deps.logger);
-  const delivery = resolveInstructionDelivery(config.cortex, targetSymbiont);
+  const delivery = resolveInstructionDelivery(config, targetSymbiont);
   const scope: import('@myco/grove/ids.js').ProjectScope = {
     kind: 'project',
     id: requestContext.projectId,
