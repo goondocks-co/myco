@@ -41,10 +41,14 @@ export function isProjectRootIgnored(
     if (isUnderPrefix(projectRoot, prefix)) return true;
   }
   if (ignore.patterns.length > 0) {
+    // Expand `~` first so a home-relative glob (e.g. `~/forks/*`) becomes an
+    // absolute path-glob that can match the absolute project root — otherwise
+    // it compiles to a regex anchored on a literal `~` and never fires.
+    const expandedPatterns = ignore.patterns.map((p) => (p.startsWith('~') ? expandHome(p) : p));
     // Normalize patterns: `**/seg/**` → `seg` so the segment matcher in
     // createExcludeMatcher fires against path segments of the absolute root.
     // Patterns not matching that shape are passed through for path-glob matching.
-    const normalizedPatterns = ignore.patterns.map((p) => {
+    const normalizedPatterns = expandedPatterns.map((p) => {
       const m = /^\*\*\/([^*?/]+)\/\*\*$/.exec(p);
       return m ? m[1] : p;
     });

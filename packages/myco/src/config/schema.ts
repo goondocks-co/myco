@@ -52,6 +52,7 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
   ignore: z.object({
     paths: z.array(z.string()).default([]),
+    /** Globs matched against the absolute project root; `~` is expanded. */
     patterns: z.array(z.string()).default([]),
   }).default(() => ({ paths: [], patterns: [] })),
 });
