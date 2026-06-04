@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search, Settings2 } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
 import { useProjectsActivity } from '../hooks/use-maintenance-summary';
@@ -18,7 +18,7 @@ import {
   type GroveProjectSummary,
 } from '../lib/selection';
 import { buildCapabilityBadges } from '../lib/capability-badges';
-import { CapabilityChip } from '../components/symbionts/CapabilityChip';
+import { StatusDot } from '../components/ui/status-dot';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { Panel } from '../components/ui/panel';
@@ -255,32 +255,36 @@ export default function Groves() {
                               <span className="block truncate text-[11px] text-on-surface-variant">
                                 {lastActivity ? `last active ${formatTimeAgo(lastActivity)}` : 'no activity yet'}
                               </span>
-                              {project.capabilities && (
-                                <span className="mt-1.5 flex flex-wrap gap-1">
-                                  {buildCapabilityBadges(project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>).map((chip) => (
-                                    <CapabilityChip
-                                      key={chip.id}
-                                      chip={chip}
-                                      href={chip.to ? `${projectPath({ grove, project })}${chip.to}` : '#'}
-                                    />
-                                  ))}
-                                </span>
-                              )}
                             </span>
                             {project.manifest_state !== 'present' && (
                               <Badge variant="outline">{project.manifest_state}</Badge>
                             )}
                             {project.status === 'archived' && <Badge variant="outline">archived</Badge>}
                           </NavLink>
-                          <button
-                            type="button"
-                            onClick={() => setCapabilityTarget({ grove, project })}
-                            aria-label={`Configure ${project.name} capabilities`}
-                            title="Configure capabilities"
-                            className="shrink-0 rounded-md p-1.5 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
-                          >
-                            <Settings2 className="h-4 w-4" />
-                          </button>
+                          {project.capabilities && (
+                            <button
+                              type="button"
+                              onClick={() => setCapabilityTarget({ grove, project })}
+                              aria-label={`Configure ${project.name} capabilities`}
+                              title="Configure capabilities"
+                              data-testid="capability-badge-strip"
+                              className="shrink-0 flex flex-wrap items-center gap-1 rounded-md p-1 hover:bg-surface-container-high transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
+                            >
+                              {buildCapabilityBadges(
+                                project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>,
+                              ).map((chip) => (
+                                <span
+                                  key={chip.id}
+                                  data-capability={chip.id}
+                                  title={chip.title}
+                                  className="inline-flex items-center gap-1.5 rounded-full border border-outline-variant/30 bg-surface-container px-2.5 py-1 text-[11px] font-medium text-on-surface"
+                                >
+                                  <StatusDot tone={chip.tone} sizePx={5} />
+                                  <span>{chip.label}</span>
+                                </span>
+                              ))}
+                            </button>
+                          )}
                           <ProjectActionMenu
                             projectName={project.name}
                             archived={project.status === 'archived'}
