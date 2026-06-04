@@ -212,6 +212,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
   const lastReleaseReconcileAt = new Map<string, number>();
+  const lastRefsFingerprintByProject = new Map<string, string>();
   const lastManagedReconcileAt = new Map<string, number>();
 
   // Daemon-scope notification (project_id = NULL) so failures surface in
@@ -569,6 +570,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
             scope: projectScopeValue,
             config,
             logger,
+            lastRefsFingerprint: lastRefsFingerprintByProject.get(key),
             onReleaseStateChanged: vectorStore
               ? (changes) => {
                   for (const change of changes) {
@@ -590,6 +592,9 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
               : undefined,
           }).then((result) => {
             lastReleaseReconcileAt.set(key, now);
+            if (result.refsFingerprint !== undefined) {
+              lastRefsFingerprintByProject.set(key, result.refsFingerprint);
+            }
             if (result.reconciled > 0) {
               logger.info(
                 LOG_KINDS.RELEASE_PROVENANCE_RECONCILE,
@@ -610,10 +615,13 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
           ),
         },
       );
-      // Drop throttle entries for projects no longer registered so the map
+      // Drop throttle entries for projects no longer registered so the maps
       // can't grow unbounded across long-running daemons.
       for (const key of lastReleaseReconcileAt.keys()) {
         if (!visited.has(key)) lastReleaseReconcileAt.delete(key);
+      }
+      for (const key of lastRefsFingerprintByProject.keys()) {
+        if (!visited.has(key)) lastRefsFingerprintByProject.delete(key);
       }
     },
   });
