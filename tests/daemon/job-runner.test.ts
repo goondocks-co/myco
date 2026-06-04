@@ -62,3 +62,38 @@ describe('JobRunner dispatch', () => {
     expect(r.inFlightNames().sort()).toEqual(['b', 'c']);
   });
 });
+
+describe('JobRunner fairness', () => {
+  it('reserves a slot for drain/scheduler work so housekeeping cannot starve it', () => {
+    const r = new JobRunner({ concurrency: 2, logger: silentLogger(), clock: () => 0 });
+    const hang = (name: string, kind: 'housekeeping' | 'drain'): RunnerJob => ({
+      name, runIn: ['sleep'], kind,
+      drain: kind === 'drain' ? { slice: 10 } : undefined,
+      fn: () => new Promise<void>(() => {}), // never resolves
+    });
+    r.register(hang('release-provenance', 'housekeeping'));
+    r.register(hang('backup', 'housekeeping'));
+    r.register(hang('embedding', 'drain'));
+
+    r.dispatch('sleep');
+    const inFlight = r.inFlightNames();
+    expect(inFlight).toContain('embedding');                          // the drain got a slot
+    expect(inFlight.length).toBe(2);                                  // cap respected
+    expect(inFlight.filter((n) => n !== 'embedding').length).toBe(1); // only ONE housekeeping
+  });
+
+  it('dispatches least-recently-dispatched first, not registration order', async () => {
+    let now = 0;
+    const r = new JobRunner({ concurrency: 1, logger: silentLogger(), clock: () => now });
+    const quick = (name: string): RunnerJob => ({
+      name, runIn: ['sleep'], kind: 'housekeeping', fn: async () => {},
+    });
+    r.register(quick('first')); r.register(quick('second'));
+    now = 1; r.dispatch('sleep');
+    await Promise.resolve(); await Promise.resolve();   // let 'first' clear inFlight
+    now = 2; r.dispatch('sleep');
+    await Promise.resolve(); await Promise.resolve();
+    expect(r.lastDispatchedAt('first')).toBe(1);
+    expect(r.lastDispatchedAt('second')).toBe(2);
+  });
+});

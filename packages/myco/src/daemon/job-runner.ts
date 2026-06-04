@@ -77,6 +77,10 @@ export class JobRunner {
 
   inFlightNames(): string[] { return [...this.inFlight]; }
 
+  lastDispatchedAt(name: string): number | undefined {
+    return this.lastDispatched.get(name);
+  }
+
   dispatch(state: PowerState): void {
     const eligible = this.jobs
       .filter((j) => j.runIn.includes(state) && !this.inFlight.has(j.name))
@@ -84,9 +88,20 @@ export class JobRunner {
         (this.lastDispatched.get(a.name) ?? -Infinity) -
         (this.lastDispatched.get(b.name) ?? -Infinity),
       );
+    // Reserve slots for eligible drain/scheduler work so a long housekeeping
+    // run can't starve it. A housekeeping job runs only when free slots exceed
+    // the number of non-housekeeping jobs still waiting to dispatch this pass.
+    let remainingNonHousekeeping = eligible.filter((j) => j.kind !== 'housekeeping').length;
     for (const job of eligible) {
-      if (this.inFlight.size >= this.opts.concurrency) break;
-      this.run(job);
+      const free = this.opts.concurrency - this.inFlight.size;
+      if (free <= 0) break;
+      if (job.kind === 'housekeeping') {
+        if (free <= remainingNonHousekeeping) continue;
+        this.run(job);
+      } else {
+        this.run(job);
+        remainingNonHousekeeping--;
+      }
     }
   }
 
