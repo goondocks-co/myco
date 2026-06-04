@@ -57,7 +57,7 @@ describe('JobRunner dispatch', () => {
     expect(r.inFlightNames().sort()).toEqual(['a', 'b']); // c blocked by cap, active-only ineligible
 
     release.shift()!();                 // a resolves
-    await Promise.resolve();            // let .finally run
+    await Promise.resolve();            // let the .then cleanup drain the microtask queue
     r.dispatch('sleep');
     expect(r.inFlightNames().sort()).toEqual(['b', 'c']);
   });
