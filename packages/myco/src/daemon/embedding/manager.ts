@@ -313,7 +313,7 @@ export class EmbeddingManager {
     // backfill has settled and the corpus size changed. This is what lets
     // per-prompt injection demote central "hub" spores. O(n^2), so it is
     // gated on a settled, size-changed corpus rather than run every cycle.
-    this.maybeRecomputeHubness('spores');
+    await this.maybeRecomputeHubness('spores');
 
     const duration_ms = Date.now() - start;
 
@@ -352,8 +352,8 @@ export class EmbeddingManager {
    * for a namespace. Exposed for tests and ops; the reconcile loop calls it
    * via {@link maybeRecomputeHubness}.
    */
-  recomputeHubness(namespace: string): { records: number } {
-    const stats = this.vectorStore.computeHubnessStats(namespace);
+  async recomputeHubness(namespace: string): Promise<{ records: number }> {
+    const stats = await this.vectorStore.computeHubnessStats(namespace);
     if (stats.length > 0) this.vectorStore.upsertHubnessStats(namespace, stats);
     this.logger.debug(
       LOG_KINDS.EMBEDDING_RECONCILE,
@@ -368,12 +368,12 @@ export class EmbeddingManager {
    * and its vector count changed since the last recompute. Content-only
    * re-embeds at a stable count are skipped — the hubness prior drifts slowly.
    */
-  private maybeRecomputeHubness(namespace: string): void {
+  private async maybeRecomputeHubness(namespace: string): Promise<void> {
     if (this.recordSource.getPendingCount(namespace) > 0) return;
     const count = this.vectorStore.getEmbeddedIds(namespace).length;
     if (count < 2) return;
     if (this.lastHubnessCount.get(namespace) === count) return;
-    this.recomputeHubness(namespace);
+    await this.recomputeHubness(namespace);
     this.lastHubnessCount.set(namespace, count);
   }
 

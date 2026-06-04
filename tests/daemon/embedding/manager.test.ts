@@ -26,6 +26,10 @@ function createMockVectorStore(): VectorStore & {
   stats: ReturnType<typeof vi.fn>;
   getStaleIds: ReturnType<typeof vi.fn>;
   getEmbeddedIds: ReturnType<typeof vi.fn>;
+  computeHubnessStats: ReturnType<typeof vi.fn>;
+  upsertHubnessStats: ReturnType<typeof vi.fn>;
+  pairwiseSimilarity: ReturnType<typeof vi.fn>;
+  patchDomainMetadata: ReturnType<typeof vi.fn>;
 } {
   return {
     upsert: vi.fn(),
@@ -39,6 +43,10 @@ function createMockVectorStore(): VectorStore & {
     } satisfies VectorStoreStats),
     getStaleIds: vi.fn().mockReturnValue([]),
     getEmbeddedIds: vi.fn().mockReturnValue([]),
+    computeHubnessStats: vi.fn().mockResolvedValue([]),
+    upsertHubnessStats: vi.fn(),
+    pairwiseSimilarity: vi.fn().mockReturnValue([]),
+    patchDomainMetadata: vi.fn().mockReturnValue(false),
   };
 }
 
