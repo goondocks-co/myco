@@ -5,11 +5,19 @@ import { enumerateLeafPaths } from './leaf-paths.js';
 export type Tier = 'machine' | 'grove' | 'project' | 'local';
 export const TIER_PRECEDENCE: readonly Tier[] = ['machine', 'grove', 'project', 'local'];
 
+/** The opt-in per-project capabilities. A capability is a master config gate
+ *  plus the settings it governs (declared in `capabilities.ts`). */
+export const CAPABILITY_IDS = ['cortex', 'canopy', 'skills', 'vault_evolution'] as const;
+export type CapabilityId = (typeof CAPABILITY_IDS)[number];
+
 export interface ScopeEntry {
   /** Canonical tier — where the default lives; shown as the UI default badge. */
   home: Tier;
   /** More-specific tiers that may override it (subset of tiers > home). */
   overridableBy: Tier[];
+  /** Capability this setting belongs to, if any. Used by the capability
+   *  toggles + the sync test; absent for settings outside any capability. */
+  gate?: CapabilityId;
 }
 
 /**
