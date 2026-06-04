@@ -34,11 +34,14 @@ export interface LogEntryInsert {
   data: string | null;
   session_id: string | null;
   /**
-   * Branded Grove project id this log line belongs to. Required so the
-   * row joins correctly under Grove's per-project scope; passing a bare
-   * `string` here is a type error by design.
+   * Branded Grove project id this log line belongs to, or NULL for a
+   * daemon-owned row (the `project_id IS NULL` / `GLOBAL_SCOPE` partition —
+   * startup/maintenance logs from the groveless daemon anchor). A real
+   * project id only rides in when the entry carries an explicit one or the
+   * daemon is grove-bound. Passing a bare `string` is still a type error by
+   * design; the phantom bootstrap id must never be stamped here.
    */
-  project_id: GroveProjectId;
+  project_id: GroveProjectId | null;
 }
 
 /** Row shape returned from log_entries queries (all columns). */

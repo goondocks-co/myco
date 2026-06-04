@@ -159,6 +159,7 @@ import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
+import { logEntryToInsert } from './log-entry-insert.js';
 import { markRunningRunsInterrupted } from '../db/queries/runs.js';
 import {
   POWER_IDLE_THRESHOLD_MS,
@@ -194,7 +195,7 @@ import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
-import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
+import { type GroveProjectId } from '../grove/ids.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
@@ -474,7 +475,7 @@ async function waitForExit(
 // Main
 // ---------------------------------------------------------------------------
 
-function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
+function loggerForProject(logger: Logger, projectId: GroveProjectId | null): Logger {
   const addProject = (data?: Record<string, unknown>) => ({
     ...data,
     project_id: typeof data?.project_id === 'string' ? data.project_id : projectId,
@@ -874,26 +875,15 @@ export async function main(): Promise<void> {
   // --- Team context ---
   initTeamContext(machineId);
 
-  // Wire logger to SQLite persistence. Every log row is scoped to the
-  // daemon's resolved Grove project id — there is no NULL fallback.
-  const daemonProjectId = dataPaths.requestContext.projectId;
+  // Wire logger to SQLite persistence. Daemon-owned log rows belong to the
+  // NULL / GLOBAL_SCOPE partition: the groveless daemon anchor resolves to
+  // NULL here (never the phantom `_unbound-bootstrap` project id). A real
+  // project id only rides in when an entry carries an explicit one or the
+  // daemon is grove-bound. `logEntryToInsert` is the single seam both this
+  // live path and the buffer-replay path resolve project_id through.
+  const daemonLogProjectId = rowProjectIdFromRequestContext(dataPaths.requestContext) ?? null;
   logger.setPersistFn((entry) => {
-    const { timestamp, level, kind, component, message, ...rest } = entry;
-    const {
-      project_id: entryProjectId,
-      session_id: entrySessionId,
-      ...data
-    } = rest;
-    insertLogEntry({
-      timestamp,
-      level,
-      kind,
-      component,
-      message,
-      data: Object.keys(data).length > 0 ? JSON.stringify(data) : null,
-      session_id: (entrySessionId as string | undefined) ?? null,
-      project_id: typeof entryProjectId === 'string' ? assertGroveProjectId(entryProjectId) : daemonProjectId,
-    });
+    insertLogEntry(logEntryToInsert(entry, daemonLogProjectId));
   });
 
   // Reconcile log entries missed while daemon was down
@@ -903,7 +893,7 @@ export async function main(): Promise<void> {
       requestContext: dataPaths.requestContext,
       env: process.env,
     });
-    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonProjectId);
+    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonLogProjectId);
     if (replayedCount > 0) {
       logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
     }
@@ -920,7 +910,7 @@ export async function main(): Promise<void> {
   const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
     req.requestContext?.databasePath ?? dataPaths.databasePath,
     req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
-    loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
+    loggerForProject(logger, rowProjectIdFromRequestContext(req.requestContext) ?? daemonLogProjectId),
   );
   const runtimeCache = new GroveRuntimeCache();
   const databaseHandlers = createDatabaseMaintenanceHandlers({
