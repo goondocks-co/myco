@@ -499,6 +499,21 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 10,
+    name: 'seed-canopy-enabled-from-inject-on-pre-tool-use',
+    appliesToLocal: false,
+    migrate(doc: Record<string, unknown>): void {
+      const cortex = doc.cortex as Record<string, unknown> | undefined;
+      if (!cortex) return;
+      const canopy = cortex.canopy as Record<string, unknown> | undefined;
+      if (!canopy) return;
+      if ('enabled' in canopy) return;
+      if ('inject_on_pre_tool_use' in canopy) {
+        canopy.enabled = canopy.inject_on_pre_tool_use;
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
