@@ -451,7 +451,7 @@ describe('embedding-reconcile power job', () => {
 
   it('reconcile body invokes reconcileSlice on the per-Grove embedding manager', async () => {
     registerPowerJobs(pm as never, buildDeps(fx));
-    const ctx = { signal: new AbortController().signal, sliceBudget: { maxItems: 50, softDeadlineMs: 2000 }, drainState: new Map() };
+    const ctx = { sliceBudget: { maxItems: 50, softDeadlineMs: 2000 } };
     await pm.find('embedding-reconcile').fn(ctx);
     expect(fx.embeddingMock.reconcileSlice).toHaveBeenCalledTimes(1);
     expect(fx.embeddingMock.reconcileSlice).toHaveBeenCalledWith({ maxItems: 50, softDeadlineMs: 2000 });
