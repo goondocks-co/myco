@@ -33,7 +33,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     masterGate: 'cortex.enabled',
     memberGates: [],
     scheduledTasks: ['cortex-instructions'],
-    advancedSettingsLink: '/settings#cortex',
+    advancedSettingsLink: '/settings#scheduled-tasks',
   },
   canopy: {
     id: 'canopy',
@@ -41,7 +41,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     masterGate: 'cortex.canopy.enabled',
     memberGates: [],
     scheduledTasks: ['canopy-map', 'canopy-describe'],
-    advancedSettingsLink: '/settings#canopy',
+    advancedSettingsLink: '/settings#scheduled-tasks',
   },
   skills: {
     id: 'skills',
@@ -57,7 +57,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityDef> = {
     masterGate: 'vault_evolution.enabled',
     memberGates: [],
     scheduledTasks: ['vault-evolve'],
-    advancedSettingsLink: '/settings#vault_evolution',
+    advancedSettingsLink: '/settings#scheduled-tasks',
   },
 };
 
