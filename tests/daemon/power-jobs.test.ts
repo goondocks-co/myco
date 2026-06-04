@@ -764,6 +764,44 @@ describe('canopy-background-scan power job', () => {
     );
     expect(count.n).toBe(0);
   });
+
+  it('skips per-project scan when project cortex.canopy.enabled is false', async () => {
+    const projectRoot = path.join(fx.workDir, 'projects', 'a');
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(
+      path.join(vaultDir, 'myco.yaml'),
+      'version: 3\ncortex:\n  canopy:\n    enabled: false\n',
+    );
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'aaaa111122223333aaaa111122223333',
+      projectName: 'a',
+      projectRoot,
+    }, fx.mycoHome);
+
+    const deps = buildDeps(fx);
+    deps.liveConfig.current = {
+      ...deps.liveConfig.current,
+      cortex: {
+        ...(deps.liveConfig.current as { cortex: Record<string, unknown> }).cortex,
+        canopy: {
+          refresh: { background_enabled: true, background_period_minutes: 1 },
+          exclude: { default_patterns: [], patterns: [] },
+        },
+      },
+    };
+    registerPowerJobs(pm as never, deps);
+
+    await pm.find('canopy-background-scan').fn();
+
+    const count = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      getDatabase().prepare(
+        `SELECT COUNT(*) AS n FROM canopy_entries`,
+      ).get() as { n: number },
+    );
+    expect(count.n).toBe(0);
+  });
 });
 
 describe('session-maintenance power job', () => {

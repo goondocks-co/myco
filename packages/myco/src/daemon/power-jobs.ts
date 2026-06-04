@@ -726,7 +726,14 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       forEachRegisteredProject(
         cache,
         logger,
-        async ({ databasePath, projectId, projectRoot, grove }: RegisteredProjectScope) => {
+        async ({ databasePath, projectId, projectRoot, projectVaultDir, grove }: RegisteredProjectScope) => {
+          try {
+            const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
+            if (!projectConfig.cortex.canopy.enabled) return;
+          } catch {
+            // Project not yet initialized — proceed with scan; the gate
+            // only applies when the project's config explicitly disables canopy.
+          }
           const runner = canopyRegistry.ensureRunner({
             databasePath,
             projectId,
