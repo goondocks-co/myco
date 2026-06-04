@@ -33,6 +33,8 @@ Myco captures project memory in a local vault and serves it back through context
 ## Non-Negotiable Rules
 
 - Think before coding. Surface assumptions and ambiguities instead of guessing.
+- Verify before asserting state. Before claiming which project/grove/daemon/database something belongs to — or that two of them share state — run the command that proves it and report only what the output shows. A URL slug, an injected memory, or a helper run in isolation is a hypothesis, not proof; label it as such until checked.
+- Never build a claim on an unverified claim. If a step was a guess, verify it before it becomes the premise for the next conclusion.
 - Prefer extending existing patterns over one-off patches.
 - Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.

@@ -416,9 +416,38 @@ function timingSafeStringEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
+export interface EnvRequestContextOptions {
+  /**
+   * Treat a REGISTRY-VALIDATED manifest resolved from `fallbackVaultDir` as
+   * caller-determined tenancy (`tenancySource: 'caller'`) instead of the
+   * default `'synthesized'`, when the environment carries no explicit
+   * project/grove identity.
+   *
+   * Set this ONLY from launch-context entry points whose `fallbackVaultDir` is
+   * the caller's OWN cwd-resolved project vault — the `myco` CLI tool runtime
+   * and direct-DB CLI reads, which resolve the vault by walking up from
+   * `process.cwd()` to the git/`.myco` root. Running `myco` inside a
+   * registered, Grove-bound project IS the caller asserting "act on THIS
+   * project" — the same assertion `tenancySourceFromExplicit` already honors
+   * for a caller-supplied projectRoot/projectId/groveId. The agent and the user
+   * supply nothing; the launch directory is the signal.
+   *
+   * It is NOT a synthesis from the daemon's bootstrap-anchor vault: resolution
+   * still runs through `findRegisteredProject` (a Grove-registry lookup), so an
+   * unregistered or unbound launch context resolves nothing and stays the
+   * `'synthesized'` fallback (→ rejected by the tenancy guard). The anchor can
+   * never masquerade as caller tenancy.
+   *
+   * The daemon's bootstrap-anchor path derivation (`resolveDaemonDataPaths`)
+   * MUST NOT set this — it passes the anchor vault and consumes only paths.
+   */
+  launchContextTenancy?: boolean;
+}
+
 export function requestContextFromEnvironment(
   env: Record<string, string | undefined>,
   fallbackVaultDir: string,
+  options: EnvRequestContextOptions = {},
 ): MycoRequestContext {
   const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
   const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
@@ -431,7 +460,8 @@ export function requestContextFromEnvironment(
   ].some((key) => readEnv(env, key) !== undefined);
 
   if (!hasExplicitProjectContext) {
-    return resolveManifestRequestContext(fallback, 'explicit', manifest) ?? fallback;
+    const manifestTenancy: TenancySource = options.launchContextTenancy ? 'caller' : 'synthesized';
+    return resolveManifestRequestContext(fallback, 'explicit', manifest, manifestTenancy) ?? fallback;
   }
 
   const explicit: ExplicitContextInput = {
@@ -630,6 +660,16 @@ function resolveManifestRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
   cachedManifest?: ProjectManifest | null,
+  // Provenance to stamp on a successfully registry-validated manifest
+  // resolution. Defaults to 'synthesized': for the daemon's no-header /
+  // bootstrap-anchor fallback paths, a manifest resolved from the SERVER's
+  // own vault is the daemon's assertion, not the caller's. Launch-context
+  // entry points (the `myco` CLI, which resolves its vault by walking up from
+  // the caller's cwd) pass 'caller' so a project the caller is physically
+  // inside is honored as caller-supplied tenancy. Resolution still runs through
+  // `findRegisteredProject` either way, so an unregistered/unbound vault never
+  // reaches this stamp — the anchor cannot masquerade as caller tenancy.
+  tenancySource: TenancySource = 'synthesized',
 ): MycoRequestContext | null {
   const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
   if (!manifest?.grove?.binding_id) return null;
@@ -642,9 +682,7 @@ function resolveManifestRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
-    // Resolved from the daemon's anchor-vault manifest, not from
-    // caller-supplied project/grove identity — tenancy stays synthesized.
-    tenancySource: 'synthesized',
+    tenancySource,
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(registered.project.project_id),
     groveId: registered.grove.id,

@@ -574,6 +574,51 @@ describe('tool request context', () => {
       });
     });
 
+    // Launch-context tenancy: a `myco` CLI invocation resolves its vault by
+    // walking up from cwd to the project's `.myco`. When that vault is a
+    // REGISTERED, Grove-bound project, the launch context IS the caller
+    // asserting "act on THIS project" — opted-in callers (cli/tool, cli/search)
+    // get 'caller', so the in-process tenancy guard accepts the call without
+    // the agent or the user supplying any env. This is NOT anchor synthesis:
+    // resolution still validates against the Grove registry.
+    it('tags env context as caller from a registered launch context when opted in (no explicit env)', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        const resolved = requestContextFromEnvironment({}, vaultDir, { launchContextTenancy: true });
+
+        expect(resolved.projectId).toBe(projectId);
+        expect(resolved.groveId).toBe(groveId);
+        expect(resolved.tenancySource).toBe('caller');
+      });
+    });
+
+    // The anti-anchor guarantee: opting in does NOT let an unregistered /
+    // unbound launch context (or the daemon's bootstrap anchor) masquerade as
+    // caller tenancy. With no registry row + no Grove binding, the manifest
+    // resolves nothing and the context stays the 'synthesized' fallback —
+    // which the tenancy guard then rejects.
+    it('stays synthesized for launch-context opt-in when the project is NOT registered (no anchor masquerade)', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unregistered-launch-'));
+      const previousHome = process.env.MYCO_HOME;
+      try {
+        process.env.MYCO_HOME = path.join(tmp, 'home');
+        const vaultDir = path.join(tmp, 'project', '.myco');
+        fs.mkdirSync(vaultDir, { recursive: true });
+        // A project id but NO Grove binding and NO registry row.
+        saveProjectManifest(vaultDir, {
+          project: { id: assertGroveProjectId(createProjectId()), name: 'Unregistered' },
+        });
+
+        const resolved = requestContextFromEnvironment({}, vaultDir, { launchContextTenancy: true });
+
+        expect(resolved.groveId).toBeNull();
+        expect(resolved.tenancySource).toBe('synthesized');
+      } finally {
+        if (previousHome === undefined) delete process.env.MYCO_HOME;
+        else process.env.MYCO_HOME = previousHome;
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
     it('survives transport: a caller context re-parsed from its headers stays caller', () => {
       withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
         const explicit = resolveLegacyRequestContext(vaultDir, {
