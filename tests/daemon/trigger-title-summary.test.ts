@@ -32,6 +32,9 @@ describe('triggerTitleSummary live-config gating', () => {
       resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
       liveConfig,
       logger: makeLogger() as never,
+      // Grove-bound caller context so the trigger proceeds past the gate
+      // instead of refusing on unresolved tenancy.
+      requestContext: { projectId: 'proj_x', groveId: 'grove_x' } as never,
     };
 
     // Disabled state: trigger returns immediately without touching the
@@ -76,5 +79,37 @@ describe('triggerTitleSummary live-config gating', () => {
       logger: logger as never,
     })).resolves.toBeUndefined();
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('refuses to dispatch (never records a NULL-project run) when the context has no grove', async () => {
+    // RC-4: a groveless context resolves rowProjectIdFromRequestContext to
+    // NULL, which previously recorded the title-summary agent run under
+    // project_id NULL. The trigger must refuse and log rather than dispatch a
+    // run it cannot attribute to a real project.
+    const logger = makeLogger();
+    let resolverCalled = false;
+    await triggerTitleSummary('sess-1', {
+      vaultDir: '/tmp/ignored',
+      resolveEmbeddingManager: () => { resolverCalled = true; return makeEmbeddingManagerStub() as never; },
+      liveConfig: { current: makeConfig({ event_tasks_enabled: true, summary_batch_interval: 5 }) },
+      logger: logger as never,
+      // groveId null -> rowProjectIdFromRequestContext === null (the leak shape).
+      requestContext: { projectId: 'proj_x', groveId: null } as never,
+    } as never);
+    expect(resolverCalled).toBe(false); // never reached the dispatch path
+    expect(logger.warn).toHaveBeenCalled(); // refusal is logged, not silent
+  });
+
+  it('also refuses when no request context is supplied at all', async () => {
+    const logger = makeLogger();
+    let resolverCalled = false;
+    await triggerTitleSummary('sess-1', {
+      vaultDir: '/tmp/ignored',
+      resolveEmbeddingManager: () => { resolverCalled = true; return makeEmbeddingManagerStub() as never; },
+      liveConfig: { current: makeConfig({ event_tasks_enabled: true, summary_batch_interval: 5 }) },
+      logger: logger as never,
+    });
+    expect(resolverCalled).toBe(false);
+    expect(logger.warn).toHaveBeenCalled();
   });
 });

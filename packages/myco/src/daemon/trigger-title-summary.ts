@@ -12,7 +12,7 @@ import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
-  tryResolveRequestContextForVault,
+  rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import { resolveTenantConfig } from './request-config.js';
@@ -74,20 +74,14 @@ export async function triggerTitleSummary(
   // `summary_batch_interval` / `event_tasks_enabled` are grove-tier (PR #394),
   // so gating on liveConfig would gate a tenant op on the wrong grove.
   //
-  // runAgent calls projectScopeFromRequestContext, which throws when no
-  // context is supplied. The Stop pipeline used to pass no context here
-  // and every title-summary task failed with that exact error. Supply the
-  // caller's context if we got one; otherwise resolve from vaultDir with
-  // the sessionId as an override so the task gets project-scoped reads.
-  let requestContext = deps.requestContext;
-  if (!requestContext) {
-    const resolved = tryResolveRequestContextForVault(vaultDir, { sessionId });
-    if (resolved.kind === 'grove') {
-      requestContext = resolved.context;
-    }
-    // Legacy non-Grove vaults fall through with requestContext undefined;
-    // runAgent will surface the underlying error via its own try/catch.
-  }
+  // The caller (Stop pipeline, /events boundary, manual Complete-Session)
+  // threads its own grove-bound request context. We deliberately do NOT fall
+  // back to deriving a context from `vaultDir` here: the daemon's vaultDir is
+  // the bootstrap anchor, whose phantom `project.toml` yields a GROVELESS
+  // context (rowProjectIdFromRequestContext === null). Dispatching under it
+  // recorded the title-summary agent run with project_id NULL (RC-4) — a
+  // project-owned run mis-attributed to no project. We refuse such runs below.
+  const requestContext = deps.requestContext;
 
   // Legacy non-Grove vaults (requestContext undefined) fall back to liveConfig;
   // resolveTenantConfig returns the fallback when no tenant context resolves.
@@ -100,6 +94,19 @@ export async function triggerTitleSummary(
     if (trigger.promptOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) return;
     const humanCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
     if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
+  }
+
+  // Refuse to record a project-owned run we cannot attribute to a real
+  // project. A title-summary run is inherently project-scoped; recording it
+  // under project_id NULL (the groveless/anchor shape) corrupts per-project
+  // run history and cost accounting. Resolve a real project or skip loudly —
+  // never write NULL. (rowProjectIdFromRequestContext is null/undefined for an
+  // absent or groveless context, the real project id for a grove-bound one.)
+  if (rowProjectIdFromRequestContext(requestContext) == null) {
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping title-summary: unresolved project tenancy for session', {
+      session_id: sessionId,
+    });
+    return;
   }
 
   try {

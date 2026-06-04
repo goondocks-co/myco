@@ -137,7 +137,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   handleStopRoute: RouteHandler;
   clearSession: (sessionId: string) => void;
   getActiveProcessing: () => Promise<void> | null;
-  triggerTitleSummary: (sessionId: string) => Promise<void>;
+  triggerTitleSummary: (
+    sessionId: string,
+    requestContext: MycoRequestContext | undefined,
+    trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
+  ) => Promise<void>;
 } {
   const {
     registry,
@@ -187,9 +191,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
   const triggerTitleSummary = (
     sessionId: string,
+    requestContext: MycoRequestContext | undefined,
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger }, trigger);
+    sharedTriggerTitleSummary(
+      sessionId,
+      { vaultDir, resolveEmbeddingManager, liveConfig, logger, requestContext },
+      trigger,
+    );
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);
@@ -229,6 +238,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     requestFilesystemRoot: string,
     requestMachineId: string,
     requestProductionRef: string | null,
+    requestContext: MycoRequestContext | undefined,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
     phases: readonly ('response' | 'transcript')[] = ['response', 'transcript'],
@@ -570,7 +580,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Trigger title/summary if the session still needs one. Runs on
     // response phase for early visibility; idempotent if called again.
     if (runResponsePhase && !hasTitle) {
-      triggerTitleSummary(sessionId);
+      triggerTitleSummary(sessionId, requestContext);
     }
 
     // Write images to attachments — decoupled from transcript turn indices.
@@ -774,6 +784,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       requestFilesystemRoot,
       requestMachineId,
       requestProductionRef,
+      req.requestContext,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
       phases,
