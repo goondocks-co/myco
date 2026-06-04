@@ -82,22 +82,32 @@ export function readOptionalRef(projectRoot: string, ref: string): string | null
 export function runGitAsync(projectRoot: string, args: string[], input?: string): Promise<GitCommandResult> {
   return new Promise((resolve) => {
     const child = spawn('git', ['-C', projectRoot, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', settled = false;
+    // Accumulate raw bytes and decode the COMPLETE stream once at the end.
+    // `string += chunk` decodes each chunk as UTF-8 independently, which mangles
+    // any multi-byte sequence split across a chunk boundary into U+FFFD — so
+    // async output silently diverged from runGit on diffs containing non-ASCII
+    // (corrupting patch-ids in the reconcile path). Buffer.concat + decode
+    // matches execFileSync's whole-output decode.
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let settled = false;
+    const decodeOut = () => Buffer.concat(stdoutChunks).toString('utf8').trimEnd();
+    const decodeErr = () => Buffer.concat(stderrChunks).toString('utf8').trimEnd();
     const finish = (r: GitCommandResult) => { if (!settled) { settled = true; resolve(r); } };
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish({ ok: false, stdout: stdout.trimEnd(), stderr: `git timed out after ${GIT_TIMEOUT_MS}ms`, error: 'ETIMEDOUT' });
+      finish({ ok: false, stdout: decodeOut(), stderr: `git timed out after ${GIT_TIMEOUT_MS}ms`, error: 'ETIMEDOUT' });
     }, GIT_TIMEOUT_MS);
 
-    child.stdout.on('data', (d: Buffer) => { stdout += d; });
-    child.stderr.on('data', (d: Buffer) => { stderr += d; });
+    child.stdout.on('data', (d: Buffer) => { stdoutChunks.push(d); });
+    child.stderr.on('data', (d: Buffer) => { stderrChunks.push(d); });
     child.on('error', (err: Error) => { clearTimeout(timer); finish({ ok: false, stdout: '', stderr: String(err.message), error: err.message }); });
     child.on('close', (code: number | null) => {
       clearTimeout(timer);
       finish(code === 0
-        ? { ok: true, stdout: stdout.trimEnd(), stderr: '' }
-        : { ok: false, stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), error: `git exited ${code}`, status: code ?? undefined });
+        ? { ok: true, stdout: decodeOut(), stderr: '' }
+        : { ok: false, stdout: decodeOut(), stderr: decodeErr(), error: `git exited ${code}`, status: code ?? undefined });
     });
 
     child.stdin.on('error', () => { /* ignore stdin EPIPE when child exits/killed mid-write */ });

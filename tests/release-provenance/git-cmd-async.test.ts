@@ -77,4 +77,44 @@ describe('runGitAsync parity', () => {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  // Regression: runGitAsync accumulated stdout via `string += chunk`, decoding
+  // each Buffer chunk as UTF-8 independently. A multi-byte sequence split across
+  // a chunk boundary became U+FFFD, so async `git show`/`git diff` output
+  // silently diverged from runGit on any diff containing non-ASCII — and the
+  // resulting patch-ids diverged, corrupting release-provenance classification.
+  // (This surfaced as a CI-only failure: a PR merge commit's diff includes real
+  // source files with non-ASCII characters.)
+  it('runGitAsync output matches runGit byte-for-byte for non-ASCII diffs (no UTF-8 chunk corruption)', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-gitcmd-utf8-'));
+    try {
+      const git = (args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8' });
+      git(['init', '-q']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'user.name', 'Test User']);
+      // Dense multi-byte content spanning many 64 KiB read boundaries so a
+      // split sequence is guaranteed (em-dash, accented Latin, CJK).
+      const line = '— café résumé 日本語 naïve — ';
+      const big = Array.from({ length: 12_000 }, (_, i) => `${i} ${line}`).join('\n');
+      fs.writeFileSync(path.join(repo, 'u.txt'), `${big}\n`, 'utf-8');
+      git(['add', 'u.txt']);
+      git(['commit', '-qm', 'utf8 commit']);
+      const head = git(['rev-parse', 'HEAD']).trim();
+
+      const sync = runGit(repo, ['show', '--format=', '--patch', head]);
+      const asyncRes = await runGitAsync(repo, ['show', '--format=', '--patch', head]);
+      expect(sync.ok).toBe(true);
+      expect(sync.stdout.length).toBeGreaterThan(64 * 1024);
+      expect(asyncRes.stdout).toBe(sync.stdout);
+      expect(asyncRes.stdout).not.toContain('�');
+
+      // …and the derived patch-id stays at parity.
+      const syncId = patchIdForCommit(repo, head);
+      const asyncId = await patchIdForCommitAsync(repo, head);
+      expect(syncId).not.toBeNull();
+      expect(asyncId).toBe(syncId);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
