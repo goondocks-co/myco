@@ -12,7 +12,7 @@ import type { ConfigPath } from '../lib/config-paths';
 import { useUpdateGroveConfig } from './use-grove-config';
 import { useUpdateMachineConfig, type MachineConfigPatch } from './use-machine-config';
 import { useActiveProjectSelection } from './use-project-selection';
-import { requestContextHeadersForSelection, selectionKey } from '../lib/selection';
+import { requestContextHeadersForSelection, selectionKey, type ProjectSelection } from '../lib/selection';
 
 export type Scope = 'project' | 'local' | 'grove' | 'machine';
 
@@ -21,7 +21,11 @@ const LOCAL_KEY = ['config', 'local'] as const;
 const NOTIFICATIONS_KEY = ['notifications'] as const;
 
 /**
- * Scoped config hook for field-level settings writes.
+ * Scoped config hook for field-level settings writes targeting an explicit
+ * project selection. The public `useScopedConfig()` is implemented as
+ * `useScopedConfigForSelection(useActiveProjectSelection())` so that the
+ * Groves capability panel can target an arbitrary project without
+ * duplicating the query/write logic.
  *
  * - `effective` is the merged view used for display.
  * - `local` is the raw local overlay; a key present here means that path is
@@ -36,15 +40,17 @@ const NOTIFICATIONS_KEY = ['notifications'] as const;
  * Returned callbacks are stable across re-renders (data is read through refs)
  * so consumers don't have their `useCallback` deps thrash on every refetch.
  */
-export function useScopedConfig() {
+export function useScopedConfigForSelection(selection: ProjectSelection | null) {
   const qc = useQueryClient();
   const updateGroveConfig = useUpdateGroveConfig();
   const updateMachineConfig = useUpdateMachineConfig();
-  const activeSelection = useActiveProjectSelection();
-  const activeSelectionKey = activeSelection ? selectionKey(activeSelection) : 'none';
+  const activeSelectionKey = selection ? selectionKey(selection) : 'none';
   const contextHeaders = useMemo(
-    () => requestContextHeadersForSelection(activeSelection),
-    [activeSelection],
+    () => requestContextHeadersForSelection(selection),
+    // Stable on grove + project identity; avoids thrash when the selection
+    // object reference changes but the underlying ids stay the same.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selection?.grove.id, selection?.project.project_id],
   );
 
   const merged = useQuery({
@@ -174,4 +180,9 @@ export function useScopedConfig() {
     resetFields,
     promoteField,
   };
+}
+
+/** Scoped config hook for the active route selection (the common case). */
+export function useScopedConfig() {
+  return useScopedConfigForSelection(useActiveProjectSelection());
 }
