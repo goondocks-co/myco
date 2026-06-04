@@ -32,6 +32,10 @@ import {
   resolveSentinelPath,
   type GlobalInstallMigrationSentinel,
 } from '../grove/global-install-migration.js';
+import { CAPABILITIES } from '../config/capabilities.js';
+import { saveLocalConfig } from '../config/loader.js';
+import { setAtPath } from '../utils/dot-path.js';
+import type { MycoConfig } from '../config/schema.js';
 
 const MINIMAL_MYCO_YAML = 'version: 3\n';
 
@@ -119,6 +123,15 @@ export function ensureProjectVault(
   const sentinelPath = resolveSentinelPath(projectRoot);
   fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
   fs.writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + '\n', 'utf-8');
+
+  // New vaults start capture-only: write local.yaml off-overrides for every
+  // capability master gate so intelligence features only activate when the
+  // user explicitly promotes the project.
+  const captureOnlyPatch: Record<string, unknown> = {};
+  for (const cap of Object.values(CAPABILITIES)) {
+    setAtPath(captureOnlyPatch, cap.masterGate, false);
+  }
+  saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
 
   return { vaultDir, created: true, projectId: manifest.project.id };
 }
