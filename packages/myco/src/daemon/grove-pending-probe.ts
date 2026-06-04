@@ -33,8 +33,8 @@ import { errorMessage } from '@myco/utils/error-message.js';
 
 // The hold only needs ">0"; a stale value within this window is safe and
 // stops the per-tick re-walk (SQLite COUNTs across every Grove). Caching
-// BOTH zero and non-zero is the whole point — see #7: caching only zero
-// meant a draining backlog re-walked every Grove on every tick.
+// BOTH zero and non-zero is the whole point — caching only zero meant a
+// draining backlog re-walked every Grove on every tick.
 export const GROVE_PENDING_PROBE_TTL_MS = 30_000;
 
 // Rate-limit window for per-Grove probe failures. The probe fires on every

@@ -93,6 +93,8 @@ export const STDIN_TIMEOUT_MS = 100;
  * scheduler reserves ≥1 slot per lane, so this must be ≥2.
  */
 export const JOB_RUNNER_CONCURRENCY = 3;
+
+// --- Provider detection ---
 /** Provider detection timeout for detect-providers CLI command (ms). */
 export const PROVIDER_DETECT_TIMEOUT_MS = 3000;
 

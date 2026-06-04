@@ -90,6 +90,7 @@ export function runGitAsync(projectRoot: string, args: string[], input?: string)
         : { ok: false, stdout: stdout.trimEnd(), stderr: stderr.trimEnd(), error: `git exited ${code}`, status: code ?? undefined });
     });
 
+    child.stdin.on('error', () => { /* ignore stdin EPIPE when child exits/killed mid-write */ });
     if (input !== undefined) child.stdin.end(input); else child.stdin.end();
   });
 }
