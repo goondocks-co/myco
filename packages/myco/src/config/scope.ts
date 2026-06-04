@@ -57,7 +57,10 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // over the `agent` block.
   'agent.scheduled_tasks_enabled': { home: 'grove', overridableBy: [] },
   'agent.event_tasks_enabled': { home: 'grove', overridableBy: [] },
-  'skills': { home: 'grove', overridableBy: ['local'] },
+  'skills': { home: 'grove', overridableBy: ['local'], gate: 'skills' },
+  // Vault-Evolution capability master gate. Grove-tier home, per-project
+  // Personal override so a project can be promoted/demoted on this machine.
+  'vault_evolution': { home: 'grove', overridableBy: ['local'], gate: 'vault_evolution' },
   'maintenance': { home: 'grove', overridableBy: ['local'] },
   // backup is a Grove-level resource: the Grove is a DB boundary and one
   // project sets the backup for the ENTIRE Grove, so a per-project/per-machine
@@ -69,7 +72,10 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // reconcile-interval leaf is the one exception below.
   'release_provenance': { home: 'project', overridableBy: [] },
   'release_provenance.reconcile_interval_minutes': { home: 'grove', overridableBy: ['project', 'local'] },
-  'cortex': { home: 'project', overridableBy: ['local'] },
+  'cortex': { home: 'project', overridableBy: ['local'], gate: 'cortex' },
+  // Canopy splits out of the cortex block via a longer prefix (longest-prefix
+  // match wins, same pattern as agent.scheduled_tasks_enabled over `agent`).
+  'cortex.canopy': { home: 'project', overridableBy: ['local'], gate: 'canopy' },
   'symbionts': { home: 'project', overridableBy: ['local'] },
   // internal
   'version': { home: 'project', overridableBy: [] },
