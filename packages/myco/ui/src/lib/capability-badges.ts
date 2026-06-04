@@ -2,9 +2,10 @@
  * Per-project capability badge descriptors.
  *
  * Pure function: maps resolved gate booleans to `CapabilityChipDescriptor`
- * values that the Groves page renders via `CapabilityChip`. Mirrors the
- * shape of `capability-map.ts:buildCapabilityChips` so the same chip
- * component and tone vocabulary applies.
+ * values that the Groves page renders via `CapabilityChipVisual` inside the
+ * badge-strip button. Mirrors the shape of
+ * `capability-map.ts:buildCapabilityChips` so the same visual component and
+ * tone vocabulary applies.
  *
  * When every opt-in capability is off a single "Capture-only" badge is
  * returned; otherwise one sage badge per enabled capability.

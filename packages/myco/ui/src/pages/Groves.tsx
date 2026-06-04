@@ -18,7 +18,7 @@ import {
   type GroveProjectSummary,
 } from '../lib/selection';
 import { buildCapabilityBadges } from '../lib/capability-badges';
-import { StatusDot } from '../components/ui/status-dot';
+import { CapabilityChipVisual } from '../components/symbionts/CapabilityChip';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { Panel } from '../components/ui/panel';
@@ -271,15 +271,7 @@ export default function Groves() {
                               {buildCapabilityBadges(
                                 project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>,
                               ).map((chip) => (
-                                <span
-                                  key={chip.id}
-                                  data-capability={chip.id}
-                                  title={chip.title}
-                                  className="inline-flex items-center gap-1.5 rounded-full border border-outline-variant/30 bg-surface-container px-2.5 py-1 text-[11px] font-medium text-on-surface"
-                                >
-                                  <StatusDot tone={chip.tone} sizePx={5} />
-                                  <span>{chip.label}</span>
-                                </span>
+                                <CapabilityChipVisual key={chip.id} chip={chip} />
                               ))}
                             </button>
                           )}
