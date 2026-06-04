@@ -34,6 +34,7 @@ Myco captures project memory in a local vault and serves it back through context
 
 - Think before coding. Surface assumptions and ambiguities instead of guessing.
 - Prefer extending existing patterns over one-off patches.
+- Plans are guideposts, not scripts: reconcile a plan's code against the current code before writing, and when a step would duplicate an existing surface or fight an existing pattern, follow the plan's intent and the existing pattern — surface the deviation, do not transcribe literally into a violation. Reviewers MUST check pattern-fit and duplication, not just fidelity to the plan.
 - Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
 - Preserve clear domain ownership. Do not blur module boundaries without a reason. Callout and fix when you see this happening.
