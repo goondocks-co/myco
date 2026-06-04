@@ -78,6 +78,19 @@ describe('machine config addToList / removeFromList', () => {
     expect(paths).toContain('/tmp/c');
   });
 
+  it('removeFromList of an absent value is a harmless no-op', async () => {
+    await handlePutMachineConfig({
+      addToList: [{ path: 'capture.ignore.paths', values: ['/tmp/a', '/tmp/b'] }],
+    });
+    const res = await handlePutMachineConfig({
+      removeFromList: [{ path: 'capture.ignore.paths', values: ['/tmp/not-present'] }],
+    });
+    expect(res.response.status).toBeUndefined();
+    const cfg = await handleGetMachineConfig();
+    const paths = (cfg.body as any).config.capture.ignore.paths as string[];
+    expect(paths).toEqual(['/tmp/a', '/tmp/b']);
+  });
+
   it('addToList and patch can be combined in one request', async () => {
     const res = await handlePutMachineConfig({
       addToList: [{ path: 'capture.plan_dirs', values: ['/home/me/plans'] }],
@@ -114,5 +127,17 @@ describe('machine config addToList / removeFromList', () => {
     // MachineConfigSchema requires string[] — Zod should reject non-string entries
     expect(res.response.status).toBe(400);
     expect((res.response.body as any).error).toBe('validation_failed');
+  });
+
+  it('drops a list-delta targeting grove.* (same guard as the patch strip)', async () => {
+    // grove.* is registry-owned, stripped from machine patches. A list-delta
+    // targeting it must pass through the same path guard — dropped, not
+    // written. With only the dropped op present, nothing remains to write.
+    const res = await handlePutMachineConfig({
+      addToList: [{ path: 'grove.default_grove_id', values: ['grove_x'] }],
+    });
+    expect(res.response.status).toBe(400);
+    const cfg = await handleGetMachineConfig();
+    expect((cfg.body as any).config.grove?.default_grove_id).toBeUndefined();
   });
 });

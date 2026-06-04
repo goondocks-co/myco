@@ -140,9 +140,14 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   if (overlap.length > 0) {
     return { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } };
   }
+  // List-delta ops write config paths too, so they pass through the same
+  // path-based scope guards as patch/clear — a list-delta targeting
+  // appearance.* gets the specific 400 below, not a generic validation_failed.
+  const listOpPaths = [...addOpsOrError, ...removeOpsOrError].map((op) => op.path);
   const appearancePaths = [
     ...patchLeaves.filter((leaf) => pathsOverlap(leaf, 'appearance')),
     ...clearList.filter((clearPath) => pathsOverlap(clearPath, 'appearance')),
+    ...listOpPaths.filter((opPath) => pathsOverlap(opPath, 'appearance')),
   ];
   if (appearancePaths.length > 0) {
     return {
@@ -301,6 +306,13 @@ interface TierPutOptions<TConfig> {
   validate: (merged: unknown) => TConfig;
   /** Optional patch sanitizer — strip fields the user can't write to this tier. */
   sanitizePatch?: (patch: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * Optional predicate marking a path as not user-writable via this surface.
+   * List-delta ops targeting such a path are dropped, mirroring how
+   * `sanitizePatch` strips the same field from `patch` — so list-delta and
+   * patch writes pass through the same path-based scope guard.
+   */
+  isProtectedPath?: (path: string) => boolean;
 }
 
 /**
@@ -329,14 +341,22 @@ async function handlePutTierConfig<TConfig>(
     };
   }
 
-  const addOpsOrError = validateListDeltaOps(payload.addToList);
-  if (!Array.isArray(addOpsOrError)) return { response: addOpsOrError, touchedPaths: [] };
-  const removeOpsOrError = validateListDeltaOps(payload.removeFromList);
-  if (!Array.isArray(removeOpsOrError)) return { response: removeOpsOrError, touchedPaths: [] };
+  const addOpsRaw = validateListDeltaOps(payload.addToList);
+  if (!Array.isArray(addOpsRaw)) return { response: addOpsRaw, touchedPaths: [] };
+  const removeOpsRaw = validateListDeltaOps(payload.removeFromList);
+  if (!Array.isArray(removeOpsRaw)) return { response: removeOpsRaw, touchedPaths: [] };
 
   const patch = options.sanitizePatch
     ? options.sanitizePatch(incoming as Record<string, unknown>)
     : (incoming as Record<string, unknown>);
+  // Drop list-delta ops targeting protected paths, mirroring how
+  // `sanitizePatch` strips the same field from `patch`.
+  const addOpsOrError = options.isProtectedPath
+    ? addOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
+    : addOpsRaw;
+  const removeOpsOrError = options.isProtectedPath
+    ? removeOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
+    : removeOpsRaw;
   const patchLeaves = enumerateLeafPaths(patch);
   const hasListOps = addOpsOrError.length > 0 || removeOpsOrError.length > 0;
 
@@ -416,6 +436,8 @@ export async function handlePutMachineConfig(
       const { grove: _grove, ...rest } = patch;
       return rest;
     },
+    // List-delta ops targeting grove.* are dropped, same as the patch strip.
+    isProtectedPath: (path) => path === 'grove' || path.startsWith('grove.'),
   });
 }
 
