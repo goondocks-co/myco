@@ -145,6 +145,67 @@ export function isPlanWriteEvent(
 }
 
 /**
+ * The subset of a recorded activity needed to decide plan authorship.
+ * Structurally compatible with `ActivityRow` from the activities query module.
+ */
+export interface PlanWriteActivity {
+  tool_name: string;
+  file_path: string | null;
+  prompt_batch_id: number | null;
+  timestamp: number;
+}
+
+/** A plan file a session authored, with the batch of its latest authoring write. */
+export interface AuthoredPlanWrite {
+  /**
+   * Plan file path exactly as recorded on the authoring activity. The form
+   * (absolute / relative / `./`-prefixed) is whatever the symbiont emitted;
+   * downstream `capturePlan` canonicalizes it via `normalizePlanSourcePath`.
+   */
+  filePath: string;
+  /** Prompt batch of the most-recent authoring write, for attribution. */
+  promptBatchId: number | null;
+}
+
+/**
+ * Select the plan files a session authored, from its recorded file activities.
+ *
+ * This is the retroactive half of the plan-capture authorship pattern: the live
+ * `event-dispatch` path captures a plan when a write *event* fires; this reuses
+ * the SAME `isPlanWriteEvent` predicate against already-recorded activities so a
+ * stop-time reconcile can recover authored plans the live path missed — WITHOUT
+ * the old mtime-window heuristic that claimed files a session never wrote.
+ *
+ * Authorship, not temporal proximity, is the association signal. A file is only
+ * returned when this session has a plan-dir write activity for it. Per file, the
+ * latest write wins (its `prompt_batch_id` is the attribution), so repeated
+ * edits collapse to one capture. Symbiont-agnostic by construction — tool-name
+ * and path-key variance is handled inside `isPlanWriteEvent`.
+ */
+export function selectAuthoredPlanWrites(
+  activities: readonly PlanWriteActivity[],
+  config: PlanWatchConfig,
+): AuthoredPlanWrite[] {
+  const latestByFile = new Map<string, { write: AuthoredPlanWrite; timestamp: number }>();
+  for (const activity of activities) {
+    const planFile = isPlanWriteEvent(
+      activity.tool_name,
+      { file_path: activity.file_path ?? undefined },
+      config,
+    );
+    if (!planFile) continue;
+    const existing = latestByFile.get(planFile);
+    if (!existing || activity.timestamp >= existing.timestamp) {
+      latestByFile.set(planFile, {
+        write: { filePath: planFile, promptBatchId: activity.prompt_batch_id },
+        timestamp: activity.timestamp,
+      });
+    }
+  }
+  return Array.from(latestByFile.values(), (entry) => entry.write);
+}
+
+/**
  * Extract a plan title from markdown content.
  *
  * Looks for the first top-level heading (# Title). If none is found,

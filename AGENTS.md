@@ -45,6 +45,7 @@ Myco captures project memory in a local vault and serves it back through context
 - Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.
 - Prefer explicit configuration and user choice over heuristic detection when both are viable.
 - When in doubt, ask whether the rule belongs here or should live in Myco context instead.
+- Test critical paths, not edge cases, tests to prevent regressions, not to verify correctness.
 
 ## Quality Gates
 
