@@ -97,6 +97,8 @@ export interface ScheduledJobContext {
     taskName: string,
     windowSeconds: number,
   ) => number;
+  /** True unless the task's capability master gate is explicitly off for this project. */
+  getCapabilityEnabled?: (scope: RegisteredProjectScope, taskName: string) => boolean;
   /** Detached-run error sink so the PowerManager tick stays responsive. */
   onTaskError?: (taskName: string, groveId: string, projectId: GroveProjectId, err: unknown) => void;
   /**
@@ -229,6 +231,7 @@ export function buildScheduledJobs(
             ? resolveSchedule(task.schedule, taskConfig)
             : yamlEffective;
           if (!effective.enabled) continue;
+          if (context.getCapabilityEnabled && !context.getCapabilityEnabled(projectScope, task.name)) continue;
 
           if (context.isTaskRunning(groveId, projectId, task.name)) continue;
 

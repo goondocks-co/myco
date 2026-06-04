@@ -29,6 +29,8 @@ import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import { getAtPath } from '@myco/utils/dot-path.js';
+import { CAPABILITIES, capabilityForTask } from '@myco/config/capabilities.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
@@ -429,6 +431,13 @@ export async function registerScheduledTasks(
       const config = resolveProjectConfig(scope);
       if (!config) return { schedule: { enabled: false } };
       return config.agent.tasks?.[taskName];
+    },
+    getCapabilityEnabled: (scope, taskName) => {
+      const capId = capabilityForTask(taskName);
+      if (!capId) return true;
+      const config = resolveProjectConfig(scope);
+      if (!config) return false;
+      return getAtPath(config, CAPABILITIES[capId].masterGate) !== false;
     },
     isTaskRunning: (groveId, projectId, name) =>
       runningTasks.has(runningKey(groveId, projectId, name)),
