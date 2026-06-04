@@ -472,6 +472,7 @@ export async function buildScheduledCortexInstruction(
   getTeamClient?: () => CortexTeamStatusPort | null,
   requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload | undefined> {
+  if (!config.cortex.enabled) return undefined;
   const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
   const existing = getCortexInstructions(DEFAULT_AGENT_ID, projectScopeFromRequestContext(requestContext));
   if (existing?.input_hash === built.inputHash) {
