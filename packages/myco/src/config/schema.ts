@@ -279,6 +279,8 @@ export const TeamSchema = z.object({
 });
 
 const SkillsSchema = z.object({
+  /** Master gate for the Skills capability (survey/generate/evolve tasks). */
+  enabled: z.boolean().default(true),
   /** Auto-generate candidates above this confidence score. */
   confidence_threshold: z.number().min(0).max(1).default(0.7),
   /** Flag unused skills after this many days. */
@@ -403,6 +405,10 @@ const CortexPlansSchema = z.object({
 });
 
 const CortexCanopySchema = z.object({
+  /** Master gate for the Canopy capability (map/describe tasks, background
+   *  scan, PreToolUse injection). Migrated from `inject_on_pre_tool_use` —
+   *  see the gate-honoring plan for the one-time compat default. */
+  enabled: z.boolean().default(true),
   /** When/how the Canopy index is rebuilt (data plane). */
   refresh: CanopyRefreshSchema.default(() => CanopyRefreshSchema.parse({})),
   /** What the scanner skips (data plane). */
@@ -473,6 +479,12 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
  * MCP children all converge on the same value without per-machine config
  * lookup. See `daemon/port.ts`.
  */
+const VaultEvolutionSchema = z.object({
+  /** Master gate for the Vault-Evolution capability (the `vault-evolve`
+   *  scheduled task). Grove-tier home; per-project Personal override. */
+  enabled: z.boolean().default(true),
+});
+
 const MachineDaemonSchema = z.object({
   /** Log verbosity for the daemon process (stdout/stderr). */
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -586,6 +598,8 @@ export const GroveConfigSchema = z.object({
    * the rest of `agent.*` does.
    */
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
+  /** Vault-Evolution capability master gate (Grove-tier home). */
+  vault_evolution: VaultEvolutionSchema.default(() => VaultEvolutionSchema.parse({})),
 }).strict();
 
 /**
@@ -686,6 +700,7 @@ export const MycoConfigSchema = z.preprocess(
     update: UpdateSchema.default(() => UpdateSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
+    vault_evolution: VaultEvolutionSchema.default(() => VaultEvolutionSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
     cortex: CortexSchema.default(() => CortexSchema.parse({})),
     appearance: AppearanceConfigSchema,
@@ -703,6 +718,7 @@ export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
+export type VaultEvolutionConfig = z.infer<typeof VaultEvolutionSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
 // CanopyConfig removed in config_version 8 — Canopy now lives under
 // `cortex.canopy`. Use `MycoConfig['cortex']['canopy']` for the slice.
