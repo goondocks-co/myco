@@ -436,6 +436,9 @@ export async function registerScheduledTasks(
       const capId = capabilityForTask(taskName);
       if (!capId) return true;
       const config = resolveProjectConfig(scope);
+      // resolveProjectConfig logs on failure and getTaskConfig already
+      // disables the task on the same error; returning false here is
+      // defense-in-depth so a config-less project never runs the capability.
       if (!config) return false;
       return getAtPath(config, CAPABILITIES[capId].masterGate) !== false;
     },

@@ -109,9 +109,9 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
     const projectId = ctx.projectId;
-    let projectConfig;
+    let projectConfig: MycoConfig;
     try {
-      projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? undefined });
+      projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? null });
     } catch {
       // Project not yet initialized — fall back to the bootstrap config so
       // partially-initialized projects don't break injection.

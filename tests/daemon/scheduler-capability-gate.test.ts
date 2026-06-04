@@ -1,3 +1,6 @@
+// Exercises the gate *decision contract* in isolation via a mirrored helper —
+// not the scheduler wiring. The live wiring (getCapabilityEnabled feeding the
+// scheduler loop) is covered by the canopy-inject + power-jobs tests.
 import { describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
 import { CAPABILITIES, capabilityForTask } from '../../packages/myco/src/config/capabilities';
