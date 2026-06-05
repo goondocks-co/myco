@@ -72,9 +72,7 @@ export async function handleMycoSearch(
   const result = requestContext
     ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
     : await client.get(endpoint);
-  // Fail loud on a daemon error (tenancy rejection, 5xx, timeout). Disguising
-  // it as an empty result set is how a tenancy/connectivity failure looked
-  // like "no search results". A genuine empty match set still returns [].
+  // Throw on a daemon error; a genuine empty match set returns [].
   if (!result.ok) {
     throw new ToolError(
       'tool_call_failed',

@@ -62,9 +62,6 @@ describe('myco_search', () => {
   });
 
   it('throws on daemon failure instead of silently returning empty', async () => {
-    // A daemon error (tenancy rejection, 500, timeout) must NOT be disguised
-    // as "no results" — that is how a tenancy/connectivity failure looked like
-    // an empty search and burned hours of debugging.
     const client = mockClient(null, false);
     await expect(handleMycoSearch({ query: 'test' }, client)).rejects.toThrow();
   });

@@ -35,11 +35,7 @@ export interface LogEntryInsert {
   session_id: string | null;
   /**
    * Branded Grove project id this log line belongs to, or NULL for a
-   * daemon-owned row (the `project_id IS NULL` / `GLOBAL_SCOPE` partition —
-   * startup/maintenance logs from the groveless daemon anchor). A real
-   * project id only rides in when the entry carries an explicit one or the
-   * daemon is grove-bound. Passing a bare `string` is still a type error by
-   * design; the phantom bootstrap id must never be stamped here.
+   * daemon-owned row. Passing a bare `string` is a type error.
    */
   project_id: GroveProjectId | null;
 }

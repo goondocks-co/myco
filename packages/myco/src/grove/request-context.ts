@@ -163,15 +163,7 @@ export interface MycoRequestContext {
    * registration) stay on `projectRoot`.
    */
   callerRoot: string | null;
-  /**
-   * The bound Grove project id, or NULL for the daemon-global anchor — the
-   * global multi-tenant daemon has no "current project" (it serves every
-   * tenant per-request), so its own context carries no project. Every
-   * caller/registered context has a real id; only the daemon's startup anchor
-   * is null. Readers that need row tenancy go through
-   * `rowProjectIdFromRequestContext` (null for the anchor); direct readers
-   * must handle the null anchor explicitly rather than stamping a value.
-   */
+  /** The bound Grove project id, or NULL for the project-less daemon anchor. */
   projectId: GroveProjectId | null;
   groveId: string | null;
   machineId: string;
@@ -275,10 +267,7 @@ export function requestContextFromHttpHeaders(
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
   const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
-  // Daemon path: tolerate the project-less anchor vault (no manifest) by
-  // resolving the daemon-global context rather than throwing — context-less
-  // requests (notification banner) must succeed at GLOBAL_SCOPE. Caller
-  // headers below still override to a real project.
+  // Base context; caller headers below override to a real project.
   const { context: fallback, manifest } = buildVaultFallbackOrGlobal(fallbackVaultDir, { callerRoot });
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
@@ -333,8 +322,7 @@ export function requestContextFromTenancyIds(
   },
 ): MycoRequestContext {
   enforceUrlTenancyAuth(options.headers, options.expectedAuthToken);
-  // Daemon path: tolerate the project-less anchor vault; the URL (Grove,
-  // project) ids below override to the real project.
+  // Base context; the URL (Grove, project) ids below override to the project.
   const { context: fallback } = buildVaultFallbackOrGlobal(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     groveId: ids.groveId,
@@ -574,14 +562,10 @@ function buildVaultFallback(
 }
 
 /**
- * Daemon per-request variant of `buildVaultFallback`: when the fallback vault
- * is the project-less `_unbound-bootstrap` anchor (no manifest), return the
- * daemon-global context instead of throwing. The global daemon's own vault has
- * no project, so a context-less request (e.g. the notification banner) must
- * resolve to GLOBAL_SCOPE, not 500. Real project vaults still resolve to their
- * project. Used only by the daemon transport paths (header / URL-param); the
- * CLI/env path keeps the throwing `buildVaultFallback` so an unregistered
- * project still gets the friendly "commit Myco config" error.
+ * Like `buildVaultFallback` but returns the daemon-global context instead of
+ * throwing when the vault has no manifest. Resolves a real project vault to its
+ * project and the project-less anchor vault to the daemon-global context. Used
+ * by the daemon transport paths (header / URL-param).
  */
 function buildVaultFallbackOrGlobal(
   vaultDir: string,
@@ -640,15 +624,10 @@ function tryBuildVaultFallback(
 }
 
 /**
- * Build the daemon-global request context for the global multi-tenant daemon's
- * startup anchor. The daemon has no "current project" — it serves every tenant
- * per request — so its own context carries NO project tenancy: `projectId` and
- * `groveId` are both null. `rowProjectIdFromRequestContext` resolves this to
- * NULL (daemon-owned) and `projectScopeFromRequestContext` to GLOBAL_SCOPE.
- *
- * This replaces the old phantom `_unbound-bootstrap` `project.toml` id, which
- * fabricated a real-looking `proj_<hex>` that could masquerade as a tenant in
- * the data plane. There is no fabricated project id anymore.
+ * Builds the project-less request context for the global daemon's startup
+ * anchor: `projectId` and `groveId` are both null, so
+ * `rowProjectIdFromRequestContext` resolves to NULL and
+ * `projectScopeFromRequestContext` to GLOBAL_SCOPE.
  */
 export function daemonGlobalRequestContext(
   vaultDir: string,
@@ -669,11 +648,9 @@ export function daemonGlobalRequestContext(
 }
 
 /**
- * Assert that a context carries a real Grove project id and return it. Use at
- * sites only ever reached by caller/registered (grove-bound) contexts — an
- * agent run, a tenant-route handler — where a null project means the
- * daemon-global anchor leaked somewhere it must not. Throws rather than
- * silently stamping a wrong or absent project.
+ * Returns the context's Grove project id, or throws when it is null. Use at
+ * sites reached only by caller/registered (grove-bound) contexts — an agent
+ * run, a tenant-route handler.
  */
 export function requireProjectId(
   context: MycoRequestContext,

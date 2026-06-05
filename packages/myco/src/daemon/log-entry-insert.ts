@@ -1,16 +1,9 @@
 /**
- * The single seam that maps a logger `LogEntry` (or a parsed JSONL buffer
- * line) to a `LogEntryInsert`. Both the live persist path (the daemon
- * logger's persistFn) and the buffer-replay path (`reconcileLogBuffer`)
- * resolve a log row's `project_id` here, so there is exactly one rule for it.
- *
- * The rule: a daemon log row carries the entry's own explicit `project_id`
- * when it has one, else the daemon's resolved fallback. The fallback is NULL
- * for the groveless daemon anchor — daemon-owned rows belong to the
- * `project_id IS NULL` (`GLOBAL_SCOPE`) partition, NEVER the phantom
- * `_unbound-bootstrap` project id. Callers compute the fallback via
- * `rowProjectIdFromRequestContext(...)`, which yields NULL for a groveless
- * context, so the phantom id can never reach the data plane through logging.
+ * Maps a logger `LogEntry` (or a parsed JSONL buffer line) to a
+ * `LogEntryInsert`. The live persist path and the buffer-replay path
+ * (`reconcileLogBuffer`) both resolve a log row's `project_id` here: the
+ * entry's own explicit `project_id` when present, else the caller-supplied
+ * fallback (NULL for a groveless context).
  */
 
 import type { LogEntryInsert } from '@myco/db/queries/logs.js';

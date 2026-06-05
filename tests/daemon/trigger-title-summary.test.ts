@@ -82,10 +82,8 @@ describe('triggerTitleSummary live-config gating', () => {
   });
 
   it('refuses to dispatch (never records a NULL-project run) when the context has no grove', async () => {
-    // RC-4: a groveless context resolves rowProjectIdFromRequestContext to
-    // NULL, which previously recorded the title-summary agent run under
-    // project_id NULL. The trigger must refuse and log rather than dispatch a
-    // run it cannot attribute to a real project.
+    // A groveless context resolves rowProjectIdFromRequestContext to NULL; the
+    // trigger refuses and logs rather than dispatch.
     const logger = makeLogger();
     let resolverCalled = false;
     await triggerTitleSummary('sess-1', {

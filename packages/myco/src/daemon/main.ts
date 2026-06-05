@@ -606,8 +606,7 @@ export async function main(): Promise<void> {
       ...process.env,
       MYCO_MACHINE_ID: machineId,
     },
-    // Phantom boot = the global daemon's project-less anchor. Use the
-    // daemon-global context (projectId null), never a fabricated project id.
+    // Phantom boot uses the project-less daemon-global context (projectId null).
     { daemonGlobal: bootstrapIsPhantom },
   );
 
@@ -881,12 +880,10 @@ export async function main(): Promise<void> {
   // --- Team context ---
   initTeamContext(machineId);
 
-  // Wire logger to SQLite persistence. Daemon-owned log rows belong to the
-  // NULL / GLOBAL_SCOPE partition: the groveless daemon anchor resolves to
-  // NULL here (never the phantom `_unbound-bootstrap` project id). A real
-  // project id only rides in when an entry carries an explicit one or the
-  // daemon is grove-bound. `logEntryToInsert` is the single seam both this
-  // live path and the buffer-replay path resolve project_id through.
+  // Wire logger to SQLite persistence. Log rows take the entry's explicit
+  // project_id when present, else this daemon fallback (NULL for a groveless
+  // anchor). logEntryToInsert maps a log entry to a row for both this live
+  // path and buffer replay.
   const daemonLogProjectId = rowProjectIdFromRequestContext(dataPaths.requestContext) ?? null;
   logger.setPersistFn((entry) => {
     insertLogEntry(logEntryToInsert(entry, daemonLogProjectId));
@@ -1535,9 +1532,7 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    // No project context (e.g. a global-page request) → empty string, which
-    // matches no project row and yields the empty-canopy envelope. Never the
-    // daemon anchor (which has no project anyway).
+    // Empty string when no project context; matches no project row.
     resolveProjectId: (req) => req.requestContext?.projectId ?? '',
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
@@ -1562,10 +1557,7 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const requestContext = dataPaths.requestContext;
-      // Canopy regenerate is project-owned. The global daemon's anchor has no
-      // project (projectId null); dispatching under it would record a
-      // NULL-project agent run (RC-4). Refuse rather than mis-scope. A
-      // variant-less ad-hoc daemon bound to a real project still proceeds.
+      // Skip when the daemon context has no resolved project.
       if (rowProjectIdFromRequestContext(requestContext) == null) {
         return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
       }
@@ -1614,8 +1606,7 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const requestContext = dataPaths.requestContext;
-      // Project-owned run; refuse under the project-less daemon anchor rather
-      // than record a NULL-project run (RC-4).
+      // Fail when the daemon context has no resolved project.
       if (rowProjectIdFromRequestContext(requestContext) == null) {
         throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
       }
@@ -1975,14 +1966,8 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  // Tenant-scoped read: an unresolved/synthesized (daemon-anchor) context is
-  // rejected with a typed 400 tenancy-violation rather than silently scoped to
-  // GLOBAL_SCOPE and returning an empty result set — the failure shape that
-  // looked like "no search results". The UI always carries caller tenancy
-  // (grove+project headers from the active selection); only genuinely
-  // context-less callers (e.g. a cwd=/ CLI launch) are rejected, which is the
-  // intended fail-loud. Reuses the same `tenantRoute` seam as every other
-  // tenant-scoped route.
+  // tenantRoute rejects an unresolved/synthesized context with a 400
+  // tenancy-violation; only caller-supplied tenancy reaches the handler.
   const searchHandler = createSearchHandler({
     embeddingManager,
     resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,

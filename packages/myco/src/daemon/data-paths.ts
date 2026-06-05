@@ -53,10 +53,8 @@ export function resolveDaemonDataPaths(
   env: Record<string, string | undefined> = process.env,
   options: { daemonGlobal?: boolean } = {},
 ): DaemonDataPaths {
-  // The global multi-tenant daemon's anchor has NO project (it serves every
-  // tenant per request). Its context is the daemon-global shape (projectId
-  // null) — never a fabricated phantom project id. A variant-less ad-hoc
-  // `myco daemon` bound to a real project vault still resolves that project.
+  // daemonGlobal uses the project-less anchor context; otherwise resolve the
+  // vault's project from env.
   const requestContext = options.daemonGlobal
     ? daemonGlobalRequestContext(vaultDir)
     : requestContextFromEnvironment(env, vaultDir);

@@ -128,32 +128,24 @@ export function resolveBootstrapVaultDirOrPhantom(cwd: string = process.cwd()): 
   if (resolved) return { vaultDir: resolved, isPhantom: false };
   const phantom = resolvePhantomBootstrapVaultDir();
   fs.mkdirSync(phantom, { recursive: true });
-  // The phantom dir is pure filesystem scaffolding (machine id, secrets, log
-  // dir, a config-empty myco.yaml). We deliberately do NOT mint a `[project]
-  // id` — the daemon's anchor is the project-less daemon-global context
-  // (`resolveDaemonDataPaths({ daemonGlobal: true })`). Fabricating a
-  // real-looking `proj_<hex>` here was the phantom-tenancy bug: an id that
-  // masqueraded as a tenant in the data plane. Also remove any stale manifest
-  // an older daemon build left behind so no fabricated id survives an upgrade.
+  // The phantom dir holds machine id, secrets, log dir, and a config-empty
+  // myco.yaml — no `[project] id`. Remove any stale manifest an older build
+  // left behind.
   removeStalePhantomProjectManifest(phantom);
   ensurePhantomMycoYaml(phantom);
   return { vaultDir: phantom, isPhantom: true };
 }
 
 /**
- * Remove any stale `project.toml` a previous daemon build minted in the
- * phantom vault. The global daemon no longer fabricates a project id for its
- * anchor — it uses the project-less daemon-global context — so a leftover
- * `_unbound-bootstrap/project.toml` carrying a `proj_<hex>` id (which could be
- * read as tenancy) is deleted on boot. Best-effort: absence is the goal, and
- * the daemon-global anchor ignores the manifest regardless.
+ * Delete any `project.toml` a previous daemon build wrote into the phantom
+ * vault. Best-effort.
  */
 function removeStalePhantomProjectManifest(phantomVaultDir: string): void {
   const manifestPath = path.join(phantomVaultDir, PROJECT_MANIFEST_FILENAME);
   try {
     fs.rmSync(manifestPath, { force: true });
   } catch {
-    // Non-fatal — the daemon-global anchor does not read this manifest.
+    // Best-effort.
   }
 }
 

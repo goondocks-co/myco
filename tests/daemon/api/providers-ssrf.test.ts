@@ -14,8 +14,8 @@ import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.
 const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;
-// Restore the real global.fetch at file end so this module-scope override does
-// not leak into sibling test files sharing the process (NO_ISOLATE groups).
+// Restore global.fetch at file end so this override does not leak into sibling
+// test files sharing the process.
 afterAll(() => { global.fetch = originalFetch; });
 
 mock.module('@myco/intelligence/ollama.js', () => ({

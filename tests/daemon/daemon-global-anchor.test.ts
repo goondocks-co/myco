@@ -35,11 +35,8 @@ describe('daemon-global anchor context', () => {
   });
 
   it('a context-less daemon request against the project-less anchor resolves daemon-global, not throw', () => {
-    // Regression: the daemon synthesizes a per-request fallback from its own
-    // (now manifest-less) `_unbound-bootstrap` vault. With no caller headers it
-    // must produce the daemon-global context (GLOBAL_SCOPE) rather than throw
-    // "No Grove project id available" — e.g. the notification banner polls
-    // every page with no project context.
+    // A manifest-less vault with no caller headers resolves to the
+    // daemon-global context (GLOBAL_SCOPE), not a throw.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-anchor-vault-'));
     try {
       const ctx = requestContextFromHttpHeaders({}, dir);

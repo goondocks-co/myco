@@ -6,9 +6,8 @@ import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;
-// Restore the real global.fetch at file end so this module-scope override does
-// not leak into sibling test files sharing the process (NO_ISOLATE groups) —
-// a mock'd fetch returning undefined was silently failing pause-enforcement.
+// Restore global.fetch at file end so this override does not leak into sibling
+// test files sharing the process.
 afterAll(() => { global.fetch = originalFetch; });
 
 describe('handleGetModels', () => {

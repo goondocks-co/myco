@@ -77,11 +77,8 @@ export interface StopProcessorDeps {
   liveConfig: { current: MycoConfig };
   vaultDir: string;
   /**
-   * Daemon-resolved Grove project id used as the fallback when a stop event
-   * carries no caller project. NULL for the global daemon's project-less
-   * anchor (real stop events always carry a grove-bound context, so this
-   * fallback is a dead-in-practice safety net — and NULL is safer than the
-   * old phantom id it replaced).
+   * Fallback Grove project id used when a stop event carries no caller
+   * project. NULL for the global daemon's project-less anchor.
    */
   projectId: GroveProjectId | null;
   machineId?: string;

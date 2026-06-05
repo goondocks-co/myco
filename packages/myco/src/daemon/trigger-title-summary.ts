@@ -69,22 +69,10 @@ export async function triggerTitleSummary(
 ): Promise<void> {
   const { vaultDir, resolveEmbeddingManager, liveConfig, logger } = deps;
 
-  // Resolve the request context BEFORE the config gates so the gates read the
-  // REQUEST grove's merged config — not the daemon's bootstrap-home liveConfig.
-  // `summary_batch_interval` / `event_tasks_enabled` are grove-tier (PR #394),
-  // so gating on liveConfig would gate a tenant op on the wrong grove.
-  //
-  // The caller (Stop pipeline, /events boundary, manual Complete-Session)
-  // threads its own grove-bound request context. We deliberately do NOT fall
-  // back to deriving a context from `vaultDir` here: the daemon's vaultDir is
-  // the bootstrap anchor, whose phantom `project.toml` yields a GROVELESS
-  // context (rowProjectIdFromRequestContext === null). Dispatching under it
-  // recorded the title-summary agent run with project_id NULL (RC-4) — a
-  // project-owned run mis-attributed to no project. We refuse such runs below.
+  // Config gates are grove-tier, so resolve config from the caller's
+  // grove-bound context. resolveTenantConfig falls back to liveConfig when no
+  // tenant context resolves.
   const requestContext = deps.requestContext;
-
-  // Legacy non-Grove vaults (requestContext undefined) fall back to liveConfig;
-  // resolveTenantConfig returns the fallback when no tenant context resolves.
   const config = resolveTenantConfig(requestContext, liveConfig.current, { logger });
 
   if (config.agent.summary_batch_interval <= 0) return;
@@ -96,12 +84,9 @@ export async function triggerTitleSummary(
     if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
   }
 
-  // Refuse to record a project-owned run we cannot attribute to a real
-  // project. A title-summary run is inherently project-scoped; recording it
-  // under project_id NULL (the groveless/anchor shape) corrupts per-project
-  // run history and cost accounting. Resolve a real project or skip loudly —
-  // never write NULL. (rowProjectIdFromRequestContext is null/undefined for an
-  // absent or groveless context, the real project id for a grove-bound one.)
+  // Skip when the context has no resolved project. rowProjectIdFromRequestContext
+  // is null/undefined for an absent or groveless context, the project id for a
+  // grove-bound one.
   if (rowProjectIdFromRequestContext(requestContext) == null) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping title-summary: unresolved project tenancy for session', {
       session_id: sessionId,
