@@ -45,6 +45,12 @@ export interface EnsureProjectVaultOptions {
    * Symbiont metadata may pass a richer label when one is available.
    */
   projectName?: string;
+  /**
+   * Existing vaults normally return without mutating config. `force` re-applies
+   * the capture-only gate overrides for re-admission paths that intentionally
+   * treat a leftover vault as fresh.
+   */
+  force?: boolean;
 }
 
 export interface EnsureProjectVaultResult {
@@ -77,6 +83,7 @@ export function ensureProjectVault(
   if (fs.existsSync(mycoYamlPath)) {
     const projectName = options.projectName ?? path.basename(projectRoot);
     const manifest = ensureProjectManifest(vaultDir, { projectName });
+    if (options.force) reseedCaptureOnly(vaultDir);
     return { vaultDir, created: false, projectId: manifest.project.id };
   }
 
@@ -122,11 +129,7 @@ export function ensureProjectVault(
   // New vaults start capture-only: write local.yaml off-overrides for every
   // capability master gate so intelligence features only activate when the
   // user explicitly promotes the project.
-  const captureOnlyPatch: Record<string, unknown> = {};
-  for (const cap of Object.values(CAPABILITIES)) {
-    setAtPath(captureOnlyPatch, cap.masterGate, false);
-  }
-  saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
+  reseedCaptureOnly(vaultDir);
 
   // myco.yaml is written LAST — it is the hot-path existence sentinel (the
   // check at the top of this function). Writing it last means a mid-provision
@@ -135,6 +138,14 @@ export function ensureProjectVault(
   fs.writeFileSync(mycoYamlPath, MINIMAL_MYCO_YAML, 'utf-8');
 
   return { vaultDir, created: true, projectId: manifest.project.id };
+}
+
+export function reseedCaptureOnly(vaultDir: string): void {
+  const captureOnlyPatch: Record<string, unknown> = {};
+  for (const cap of Object.values(CAPABILITIES)) {
+    setAtPath(captureOnlyPatch, cap.masterGate, false);
+  }
+  saveLocalConfig(vaultDir, captureOnlyPatch as Partial<MycoConfig>);
 }
 
 function bornGlobalPassId(): string {

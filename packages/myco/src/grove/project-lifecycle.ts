@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Database } from 'bun:sqlite';
@@ -12,6 +13,7 @@ import {
   resolveGroveDir,
   resolveGroveDbPath,
   resolveMycoHome,
+  resolveProjectVaultDir,
 } from './paths.js';
 import {
   archiveProjectInGrove,
@@ -21,6 +23,7 @@ import {
   unarchiveProjectInGrove,
   type RegisteredProject,
 } from './registry.js';
+import { ensureProjectVault } from '../vault/provision.js';
 
 export interface ProjectLifecycleResult {
   grove_id: string;
@@ -44,6 +47,7 @@ export function archiveProject(
   mycoHome = resolveMycoHome(),
 ): ProjectLifecycleResult {
   const project = archiveProjectInGrove(groveId, projectId, mycoHome);
+  tryRemoveProjectVault(project.root, 'archive', project.project_id);
   return lifecycleResult(groveId, project);
 }
 
@@ -53,6 +57,13 @@ export function unarchiveProject(
   mycoHome = resolveMycoHome(),
 ): ProjectLifecycleResult {
   const project = unarchiveProjectInGrove(groveId, projectId, mycoHome);
+  try {
+    ensureProjectVault(project.root, { projectName: project.name, force: true });
+  } catch (err) {
+    process.stderr.write(
+      `[myco] project unarchive could not re-provision project vault project_id=${project.project_id}: ${(err as Error).message}\n`,
+    );
+  }
   return lifecycleResult(groveId, project);
 }
 
@@ -92,6 +103,7 @@ export function deleteProjectPermanently(
     // tombstone enqueue is needed (it would double-journal).
     deleteProjectRows(db, project.project_id);
     deregisterProjectInGrove(groveId, project.project_id, mycoHome);
+    tryRemoveProjectVault(project.root, 'delete', project.project_id);
     return {
       grove_id: groveId,
       project_id: project.project_id,
@@ -101,6 +113,20 @@ export function deleteProjectPermanently(
     };
   } finally {
     db.close();
+  }
+}
+
+export function removeProjectVault(projectRoot: string): void {
+  fs.rmSync(resolveProjectVaultDir(projectRoot), { recursive: true, force: true });
+}
+
+function tryRemoveProjectVault(projectRoot: string, action: 'archive' | 'delete', projectId: string): void {
+  try {
+    removeProjectVault(projectRoot);
+  } catch (err) {
+    process.stderr.write(
+      `[myco] project ${action} could not remove project vault project_id=${projectId}: ${(err as Error).message}\n`,
+    );
   }
 }
 
