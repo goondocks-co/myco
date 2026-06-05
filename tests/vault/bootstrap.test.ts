@@ -354,3 +354,46 @@ describe('resolveBootstrapVaultDir', () => {
     }
   });
 });
+
+describe('resolvePhantomBootstrapVaultDir — per-variant isolation', () => {
+  let savedVariant: string | undefined;
+
+  beforeEach(() => {
+    setUpTmpHome();
+    savedVariant = process.env.MYCO_SERVICE_VARIANT;
+  });
+
+  afterEach(() => {
+    tearDownTmpHome();
+    if (savedVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+    else process.env.MYCO_SERVICE_VARIANT = savedVariant;
+  });
+
+  test('prod variant anchors to _unbound-bootstrap', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'service';
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
+  });
+
+  test('dev variant anchors to a separate _unbound-bootstrap-dev', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
+  });
+
+  test('dev alias resolves to the same dev anchor', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
+  });
+
+  test('variant-less daemon uses the prod anchor', () => {
+    delete process.env.MYCO_SERVICE_VARIANT;
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
+  });
+
+  test('dev and prod anchors never collide', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'service';
+    const prod = resolvePhantomBootstrapVaultDir(tmpHome);
+    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
+    const dev = resolvePhantomBootstrapVaultDir(tmpHome);
+    expect(prod).not.toBe(dev);
+  });
+});
