@@ -19,6 +19,7 @@ import {
 } from './tools/read-projections.js';
 import {
   projectScopeFromRequestContext,
+  requireProjectId,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
@@ -71,7 +72,7 @@ export async function executeContextQueries(
   }
 
   const scope = projectScopeFromRequestContext(requestContext);
-  const projectId = requestContext!.projectId;
+  const projectId = requireProjectId(requestContext!, 'agent context query');
 
   // Execute all queries in parallel — they hit independent DB tables.
   const settled = await Promise.allSettled(

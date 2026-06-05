@@ -4,7 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
-import { isCallerTenancy, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { isCallerTenancy, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import {
   readPivot,
   resolveCallContext,
@@ -423,7 +423,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     // see plan session:3216054f...:key:myco-tool-call-tracking-per-session.
     try {
       return await runWithRequestDatabase(context, async () => {
-        const projectId = context.projectId;
+        const projectId = requireProjectId(context, 'cortex canopy map');
         const machineId = context.machineId;
         const sessionId = context.sessionId;
         const result = await handleCortexCanopyMap({ projectId, machineId });

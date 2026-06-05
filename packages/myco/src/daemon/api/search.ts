@@ -120,6 +120,11 @@ async function handleSearchWithDatabase(
     // the canopy_entries row instead of vector metadata. Local-only — canopy
     // is per-machine and not synced to team, so no team-client merge here.
     if (type === 'canopy') {
+      // Canopy is project-scoped: with no resolved project there is nothing to
+      // search, so return empty.
+      if (typeof projectId !== 'string') {
+        return { body: { mode: 'semantic', results: [] } };
+      }
       const canopyResults = await searchCanopy(embeddingManager, {
         query,
         limit,

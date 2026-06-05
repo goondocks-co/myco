@@ -18,7 +18,7 @@ import { setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
+import { projectScopeFromRequestContext, requireProjectId, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -325,7 +325,7 @@ export async function runAgent(
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
-  const vaultContext = buildVaultContext(agentId, options!.requestContext!.projectId);
+  const vaultContext = buildVaultContext(agentId, requireProjectId(options!.requestContext!, 'agent run'));
 
   // Resolve Ollama context variants across task + phase scopes. Applies
   // DEFAULT_OLLAMA_CONTEXT_LENGTH when no value is set, and reconciles
@@ -806,7 +806,7 @@ function finalizeCanopyMap(args: {
   if (!args.requestContext) {
     throw new Error('canopy-map writer requires a Grove request context — none supplied');
   }
-  const projectId = args.requestContext.projectId;
+  const projectId = requireProjectId(args.requestContext, 'canopy-map writer');
   const machineId = args.requestContext.machineId;
   writeCanopyMap({
     project_id: projectId,

@@ -327,10 +327,11 @@ export class DaemonServer {
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
         // project is paused (reason)".
-        if (isWriteMethod(req.method) && requestContext.groveId) {
-          const paused = isProjectPaused(requestContext.projectId);
+        if (isWriteMethod(req.method) && requestContext.groveId && requestContext.projectId) {
+          const projectId = requestContext.projectId;
+          const paused = isProjectPaused(projectId);
           if (paused.paused) {
-            const response = pausedErrorResponse(requestContext.projectId, paused);
+            const response = pausedErrorResponse(projectId, paused);
             res.writeHead(response.status, { 'Content-Type': 'application/json', ...versionHeader });
             res.end(JSON.stringify(response.body));
             return;

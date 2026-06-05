@@ -98,12 +98,12 @@ describe('resolveBootstrapVaultDir', () => {
     // Dir is created so callers (machine-id, logger) can write into it
     // immediately.
     expect(fs.existsSync(result.vaultDir)).toBe(true);
-    // Manifest is materialized so loadProjectManifest / request-context
-    // resolution don't blow up against a vault-less dir.
+    // No project.toml is minted: the daemon's anchor is the project-less
+    // daemon-global context, never a fabricated `proj_<hex>` id. (Regression
+    // for the phantom-tenancy elimination — see daemon-global-anchor.test.ts.)
     const manifestPath = path.join(result.vaultDir, 'project.toml');
-    expect(fs.existsSync(manifestPath)).toBe(true);
-    expect(fs.readFileSync(manifestPath, 'utf-8')).toMatch(/^\[project\]\nid = "proj_[0-9a-f]{32}"/);
-    // myco.yaml is materialized so loadConfigInternal doesn't throw
+    expect(fs.existsSync(manifestPath)).toBe(false);
+    // myco.yaml is still materialized so loadConfigInternal doesn't throw
     // "myco.yaml not found" on the first loadMergedConfig call —
     // greenfield smoke caught this gap before the fix-up.
     const configPath = path.join(result.vaultDir, 'myco.yaml');
@@ -111,12 +111,12 @@ describe('resolveBootstrapVaultDir', () => {
     expect(fs.readFileSync(configPath, 'utf-8')).toBe('version: 3\n');
   });
 
-  test('phantom helper is idempotent — manifest id persists across calls', () => {
+  test('phantom helper never materializes a project id (no proj_ in the scratch dir)', () => {
     const first = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-    const firstBody = fs.readFileSync(path.join(first.vaultDir, 'project.toml'), 'utf-8');
+    expect(fs.existsSync(path.join(first.vaultDir, 'project.toml'))).toBe(false);
+    // Idempotent: a second call still leaves no project.toml.
     const second = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-    const secondBody = fs.readFileSync(path.join(second.vaultDir, 'project.toml'), 'utf-8');
-    expect(secondBody).toBe(firstBody);
+    expect(fs.existsSync(path.join(second.vaultDir, 'project.toml'))).toBe(false);
   });
 
   test('phantom helper passes through real vault when one resolves', () => {

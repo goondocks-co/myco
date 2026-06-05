@@ -12,7 +12,7 @@ import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import {
-  tryResolveRequestContextForVault,
+  rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import { resolveTenantConfig } from './request-config.js';
@@ -69,28 +69,10 @@ export async function triggerTitleSummary(
 ): Promise<void> {
   const { vaultDir, resolveEmbeddingManager, liveConfig, logger } = deps;
 
-  // Resolve the request context BEFORE the config gates so the gates read the
-  // REQUEST grove's merged config — not the daemon's bootstrap-home liveConfig.
-  // `summary_batch_interval` / `event_tasks_enabled` are grove-tier (PR #394),
-  // so gating on liveConfig would gate a tenant op on the wrong grove.
-  //
-  // runAgent calls projectScopeFromRequestContext, which throws when no
-  // context is supplied. The Stop pipeline used to pass no context here
-  // and every title-summary task failed with that exact error. Supply the
-  // caller's context if we got one; otherwise resolve from vaultDir with
-  // the sessionId as an override so the task gets project-scoped reads.
-  let requestContext = deps.requestContext;
-  if (!requestContext) {
-    const resolved = tryResolveRequestContextForVault(vaultDir, { sessionId });
-    if (resolved.kind === 'grove') {
-      requestContext = resolved.context;
-    }
-    // Legacy non-Grove vaults fall through with requestContext undefined;
-    // runAgent will surface the underlying error via its own try/catch.
-  }
-
-  // Legacy non-Grove vaults (requestContext undefined) fall back to liveConfig;
-  // resolveTenantConfig returns the fallback when no tenant context resolves.
+  // Config gates are grove-tier, so resolve config from the caller's
+  // grove-bound context. resolveTenantConfig falls back to liveConfig when no
+  // tenant context resolves.
+  const requestContext = deps.requestContext;
   const config = resolveTenantConfig(requestContext, liveConfig.current, { logger });
 
   if (config.agent.summary_batch_interval <= 0) return;
@@ -100,6 +82,16 @@ export async function triggerTitleSummary(
     if (trigger.promptOrigin !== PROMPT_BATCH_ORIGIN.HUMAN) return;
     const humanCount = countBatchesBySession(sessionId, { origins: [PROMPT_BATCH_ORIGIN.HUMAN] });
     if (humanCount <= 0 || humanCount % config.agent.summary_batch_interval !== 0) return;
+  }
+
+  // Skip when the context has no resolved project. rowProjectIdFromRequestContext
+  // is null/undefined for an absent or groveless context, the project id for a
+  // grove-bound one.
+  if (rowProjectIdFromRequestContext(requestContext) == null) {
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping title-summary: unresolved project tenancy for session', {
+      session_id: sessionId,
+    });
+    return;
   }
 
   try {

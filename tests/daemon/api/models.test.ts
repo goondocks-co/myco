@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleGetModels } from '@myco/daemon/api/models.js';
 import { OPENAI_API_KEY_ENV } from '@myco/providers/env.js';
 
+const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;
+// Restore global.fetch at file end so this override does not leak into sibling
+// test files sharing the process.
+afterAll(() => { global.fetch = originalFetch; });
 
 describe('handleGetModels', () => {
   afterEach(() => {

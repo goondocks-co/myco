@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { insertLogEntry } from '@myco/db/queries/logs.js';
-import { kindToComponent } from '@myco/constants/log-kinds.js';
+import { logEntryToInsert } from './log-entry-insert.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 
 /**
@@ -11,7 +11,7 @@ import type { GroveProjectId } from '@myco/grove/ids.js';
 export function reconcileLogBuffer(
   logDir: string,
   sinceTimestamp: string,
-  projectId: GroveProjectId,
+  fallbackProjectId: GroveProjectId | null,
 ): number {
   let replayed = 0;
 
@@ -31,17 +31,7 @@ export function reconcileLogBuffer(
       try {
         const entry = JSON.parse(line);
         if (entry.timestamp > sinceTimestamp) {
-          const { timestamp, level, kind, component, message, ...rest } = entry;
-          insertLogEntry({
-            timestamp,
-            level,
-            kind: kind ?? `${component ?? 'unknown'}.unknown`,
-            component: component ?? kindToComponent(kind ?? 'unknown'),
-            message,
-            data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
-            session_id: rest.session_id ?? null,
-            project_id: projectId,
-          });
+          insertLogEntry(logEntryToInsert(entry, fallbackProjectId));
           replayed++;
         }
       } catch {

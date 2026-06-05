@@ -39,6 +39,7 @@ import {
   filesystemRootFromRequestContext,
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
+  type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -88,6 +89,7 @@ export interface EventDispatchDeps {
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
   triggerTitleSummary: (
     sessionId: string,
+    requestContext: MycoRequestContext | undefined,
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) => Promise<void>;
   /**
@@ -501,7 +503,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
         // Boundary policy (origin filter + N-th human-batch crossing) lives
         // inside the trigger; the dispatcher just hands it the event's origin.
-        triggerTitleSummary(event.session_id, { evaluateBoundary: true, promptOrigin });
+        triggerTitleSummary(event.session_id, req.requestContext, { evaluateBoundary: true, promptOrigin });
 
         // A new human prompt is a turn boundary: the PRIOR turn definitively
         // ended, and its response is now complete in the transcript. Converge

@@ -36,6 +36,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { searchCanopy } from '@myco/canopy/search.js';
+import { requireProjectId } from '@myco/grove/request-context.js';
 import { projectScopeFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
@@ -509,7 +510,7 @@ export function createReadTools(deps: VaultToolDeps) {
     'Get all state key-value pairs for the current agent.',
     {},
     async () => {
-      const states = getStatesForAgent(agentId, requestContext!.projectId);
+      const states = getStatesForAgent(agentId, requireProjectId(requestContext!, 'agent state read'));
       return textResult(states);
     },
     { annotations: { readOnlyHint: true } },

@@ -26,6 +26,7 @@ import { getMachineId } from '@myco/machine-id.js';
 import type { AgentTeamStatusPort } from '@myco/agent/runtime/ports.js';
 import {
   projectScopeFromRequestContext,
+  requireProjectId,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
@@ -896,7 +897,7 @@ export async function gatherCanopyMapContext(
   config?: MycoConfig,
 ): Promise<CanopyMapGatherContext | CanopyMapGatherSkip> {
   const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
-  const projectId = resolveRequestContextForVault(vaultDir).projectId;
+  const projectId = requireProjectId(resolveRequestContextForVault(vaultDir), 'canopy map instruction');
 
   // Gate 1: canopy injection master switch. The schedule fires whenever the
   // task is enabled, so the gate must absorb the disabled-canopy case here.

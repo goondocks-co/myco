@@ -216,20 +216,16 @@ describe('no phantom leak after rebind', () => {
     }
   });
 
-  test('phantom dir still exists on disk post-rebind (intentional) but is not surfaced by the resolver', () => {
-    // This locks in the design choice from bootstrap.ts:130-141:
-    // "Persisted across boots so the phantom id stays stable; the
-    // daemon restarts to a real vault as soon as the first project
-    // registers." We do NOT delete the phantom dir after rebind — but
-    // the resolver must stop returning it.
+  test('phantom dir still exists on disk post-rebind (intentional) but carries no project id', () => {
+    // The phantom scratch dir persists (machine id, secrets, myco.yaml) but
+    // NEVER carries a fabricated project id — the daemon's anchor is the
+    // project-less daemon-global context. The resolver must also stop
+    // surfacing the phantom dir once a real project registers.
     const phantomPath = resolvePhantomBootstrapVaultDir(tmpHome);
     // Force materialization of the phantom dir.
     resolveBootstrapVaultDirOrPhantom(tmpCwd);
     expect(fs.existsSync(phantomPath)).toBe(true);
-    const phantomManifestBefore = fs.readFileSync(
-      path.join(phantomPath, 'project.toml'),
-      'utf-8',
-    );
+    expect(fs.existsSync(path.join(phantomPath, 'project.toml'))).toBe(false);
 
     // Rebind.
     const groveId = 'grove_44444444444444444444444444444444';
@@ -242,16 +238,10 @@ describe('no phantom leak after rebind', () => {
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
       expect(after.vaultDir).not.toBe(phantomPath);
 
-      // Phantom artifacts still exist on disk — the rebind does NOT
-      // clean them. The next greenfield daemon (e.g. after `myco
-      // remove` strips all projects) would reuse the same synthetic
-      // project id, which is the documented design.
+      // Phantom scratch dir still exists on disk (the rebind does NOT clean
+      // it) but still carries no project id — no fabricated tenancy survives.
       expect(fs.existsSync(phantomPath)).toBe(true);
-      const phantomManifestAfter = fs.readFileSync(
-        path.join(phantomPath, 'project.toml'),
-        'utf-8',
-      );
-      expect(phantomManifestAfter).toBe(phantomManifestBefore);
+      expect(fs.existsSync(path.join(phantomPath, 'project.toml'))).toBe(false);
     } finally {
       fs.rmSync(projRoot, { recursive: true, force: true });
     }
@@ -462,14 +452,19 @@ describe('global daemon phantom bootstrap resolves home-scoped service/log/data 
       // The would-be anchor project root is never the boot vault.
       expect(boot.vaultDir).not.toBe(path.join(projRoot, '.myco'));
 
-      // The boot DB resolves under the phantom home — not the project.
-      const dataPaths = resolveDaemonDataPaths(boot.vaultDir, {
-        MYCO_HOME: tmpHome,
-        MYCO_MACHINE_ID: 'machine-test',
-      });
+      // The boot DB resolves under the phantom home — not the project. The
+      // daemon passes { daemonGlobal: isPhantom } so the anchor context is the
+      // project-less daemon-global shape (mirrors daemon/main.ts).
+      const dataPaths = resolveDaemonDataPaths(
+        boot.vaultDir,
+        { MYCO_HOME: tmpHome, MYCO_MACHINE_ID: 'machine-test' },
+        { daemonGlobal: boot.isPhantom },
+      );
       expect(dataPaths.databasePath.startsWith(boot.vaultDir)).toBe(true);
       expect(dataPaths.databasePath.startsWith(projRoot)).toBe(false);
-      // Phantom manifest carries a project id but no Grove binding.
+      // The daemon-global anchor carries NO project and NO Grove binding —
+      // no fabricated phantom project id.
+      expect(dataPaths.requestContext.projectId).toBeNull();
       expect(dataPaths.requestContext.groveId).toBeNull();
     } finally {
       delete process.env.MYCO_SERVICE_VARIANT;
