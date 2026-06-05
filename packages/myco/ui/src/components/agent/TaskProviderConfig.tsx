@@ -191,13 +191,20 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     defaults?.timeoutSeconds,
   ]);
 
-  // Draft schedule values: user override merged over YAML defaults.
+  // Server effective state is authoritative; only layer an unsaved local
+  // toggle draft over it while the user is editing.
   const draftScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  const savedScheduleEnabled = savedTaskSnapshot.scheduleOverride.enabled;
+  const hasScheduleEnabledDraft = scheduleOverride.enabled !== savedScheduleEnabled;
   const scheduleCapabilityDisabled = taskConfigData?.capability != null
     && taskConfigData.capabilityEnabled === false;
   const effectiveScheduleEnabled = scheduleCapabilityDisabled
     ? false
-    : draftScheduleEnabled;
+    : (
+      hasScheduleEnabledDraft
+        ? draftScheduleEnabled
+        : (taskConfigData?.effectiveScheduleEnabled ?? draftScheduleEnabled)
+    );
   const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
   function handleProviderChange(type: string) {
     handleDraftProviderChange(type);

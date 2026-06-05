@@ -19,6 +19,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import { render, screen } from '@testing-library/react';
 
 let capabilityEnabled = false;
+let serverEffectiveScheduleEnabled = false;
 
 const taskConfig = { schedule: { enabled: true } };
 const providerDraft = {
@@ -42,7 +43,7 @@ const taskConfigResponse = {
     return capabilityEnabled;
   },
   get effectiveScheduleEnabled() {
-    return capabilityEnabled;
+    return serverEffectiveScheduleEnabled;
   },
 };
 const taskConfigQueryResult = { data: taskConfigResponse };
@@ -114,6 +115,7 @@ function renderScheduledTask() {
 describe('TaskProviderConfig capability governance', () => {
   it('disables schedule controls when the governing capability is off', () => {
     capabilityEnabled = false;
+    serverEffectiveScheduleEnabled = false;
 
     renderScheduledTask();
 
@@ -125,11 +127,23 @@ describe('TaskProviderConfig capability governance', () => {
 
   it('keeps schedule controls editable when the governing capability is on', () => {
     capabilityEnabled = true;
+    serverEffectiveScheduleEnabled = true;
 
     renderScheduledTask();
 
     expect(screen.getByText('active')).toBeInTheDocument();
     expect(screen.getByRole('switch')).not.toBeDisabled();
     expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('uses the API effective schedule state when no local draft is pending', () => {
+    capabilityEnabled = true;
+    serverEffectiveScheduleEnabled = false;
+
+    renderScheduledTask();
+
+    expect(screen.getByText('off')).toBeInTheDocument();
+    expect(screen.getByRole('switch')).not.toBeDisabled();
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
   });
 });
