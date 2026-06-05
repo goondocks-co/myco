@@ -22,7 +22,7 @@ MycoRequestContext separates project identity from caller locality through dual 
 - Understanding of MycoRequestContext structure and flow
 - Familiarity with Grove registration and project identity concepts
 - Knowledge of worktree patterns and potential bleed scenarios
-- Access to `packages/myco/src/tools/request-context.ts` and related request handling code
+- Access to `packages/myco/src/grove/request-context.ts` and related request handling code
 - Understand that context-switching headers require daemon authentication tokens
 
 ## Procedure A: Implement callerRoot vs projectRoot Separation
@@ -35,9 +35,17 @@ When designing or modifying request context handling:
      projectRoot: string;      // Canonical, registered project identity
      callerRoot: string | null; // Caller's actual cwd, preserved untouched
      projectId: string;        // Sole identity for DB operations
+     tenancySource: TenancySource; // How this context was established
      // ... other fields
    }
    ```
+
+   **TenancySource tri-value model** (defined in `packages/myco/src/grove/request-context.ts`):
+   - `'caller'` — context established by an authenticated caller (e.g., `launchContextTenancy: true` in CLI launch options, or explicit context-switching headers)
+   - `'synthesized'` — context built internally by the daemon without caller authentication
+   - `'daemon'` — context resolved from the Grove registry by the daemon itself
+
+   Use `isCallerTenancy(context)` to check if the context originated from an authenticated caller request.
 
 2. **Populate callerRoot from headers/environment**:
    - Read from `x-myco-caller-root` header or `MYCO_CALLER_ROOT` environment variable
@@ -66,6 +74,10 @@ For each filesystem operation, determine the correct root using this decision tr
    - Persistent session rows and team-sync keys
    - Background scans and daemon maintenance
    - **Always use**: `context.projectRoot`
+
+   **Dual-helper pattern for DB project ID**:
+   - `rowProjectIdFromRequestContext(context)` — returns `null` when no project is bound; safe for optional project scoping (e.g., observability tools where project context is optional)
+   - `requireProjectId(context, label)` — throws with a descriptive label if no project is bound; use when a project is mandatory for the operation (e.g., saving plans, cortex lookups)
 
 2. **Caller-local operations** (must follow user's actual cwd):
    - Plan watch directories and file monitoring operations
@@ -129,7 +141,7 @@ export function requestContextFromHttpHeaders(
 ): TryRequestContextResult {
   const authHeader = headers['authorization'];
   const daemonToken = authHeader?.replace(/^Bearer\s+/, '');
-  
+
   if (!daemonToken) {
     return {
       ok: false,
@@ -139,17 +151,8 @@ export function requestContextFromHttpHeaders(
     };
   }
 
-  // Verify token against daemon.json
-  const isValid = verifyDaemonAuthToken(daemonToken);
-  if (!isValid) {
-    return {
-      ok: false,
-      error: new UnauthorizedRequestContextError('Invalid or expired authentication token')
-    };
-  }
-
-  // Token valid; proceed with context parsing
-  return tryParseContextHeaders(headers);
+  // Token present; packages/myco/src/grove/request-context.ts validates
+  // it against daemon.json and extracts context from remaining headers.
 }
 ```
 
@@ -187,21 +190,7 @@ const headers = {
 const response = await fetch('/api/vault', { headers });
 ```
 
-**Token Rotation**: Daemon auth tokens rotate on each daemon restart. Clients reading tokens from disk must refresh on 401 responses:
-
-```typescript
-async function withAuthRefresh(request: () => Promise<Response>) {
-  let response = await request();
-  
-  if (response.status === 401) {
-    // Token may be stale; refresh and retry
-    const newToken = readDaemonAuthTokenFromDisk();
-    // Update headers and retry...
-  }
-  
-  return response;
-}
-```
+**Token Rotation**: Daemon auth tokens rotate on each daemon restart. On 401 responses, refresh the token by re-reading `~/.myco/daemon.json` and retry the request. Daemon tokens rotate on each restart so stale tokens are expected in long-running clients.
 
 ### Authorization Boundaries
 
@@ -266,3 +255,7 @@ When adding new filesystem operations:
 **No silent 401 buffering**: In Pi extensions and MCP clients, catching 401 responses and buffering them to disk for later retry is a debugging nightmare. Instead, fail fast with explicit error messages. Store tokens correctly at startup and refresh on daemon restart.
 
 **Machine-scoped tokens cannot be shared**: Daemon auth tokens in `~/.myco/daemon.json` are tied to the machine's daemon process. Do not bake them into CI/CD configs or shared environments. Each machine needs its own daemon and token lifecycle.
+
+**`buildVaultFallbackOrGlobal` is the internal fallback builder**: When explicit context headers are absent, `buildVaultFallbackOrGlobal` in `packages/myco/src/grove/request-context.ts` constructs a synthesized context from a vault directory. It is an internal function — do not call it from tool handlers or external code; use the exported `requestContextFromHttpHeaders` or CLI launch options instead.
+
+**`rowProjectIdFromRequestContext` vs `requireProjectId` — choose deliberately**: Use `rowProjectIdFromRequestContext` only when project context is genuinely optional (e.g., a telemetry call that degrades gracefully with no project). Use `requireProjectId` everywhere a missing project would produce corrupt or misrouted data. The label argument appears in error messages, so make it descriptive.
