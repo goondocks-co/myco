@@ -154,6 +154,13 @@ Optimize task cadence and resource allocation patterns across grove boundaries.
    - Add session state validation before expensive operations with grove coordination
    - Validate grove coordination state before cross-grove operations
 
+5. **Understand JobRunner drain bounded-slice contracts**:
+   - Background jobs migrated from PowerManager to `JobRunner` (`packages/myco/src/daemon/job-runner.ts`)
+   - Each `RunnerJob` declares an optional `DrainSpec` with a `slice` count (base items per tick) and `softDeadlineMs` (default 2000ms) to bound work per tick
+   - **Serial tick starvation**: Long-running jobs (e.g., release-provenance reconciler averaging 348s) block all subsequent jobs in the serial tick loop — do not schedule expensive jobs at short intervals without bounded drain specs
+   - **Per-job dispatch tracking**: `JobRunner` maintains a `lastDispatched` map keyed by job name; each job tracks its own cadence independently rather than sharing a global state
+   - **Deep-sleep hold from `HoldSpec`**: Jobs with a `HoldSpec` use a `pending()` function to signal non-empty queues; non-zero `pending()` prevents the daemon from entering deep sleep (`allowDeepSleepHold` defaults true)
+
 ## Procedure D: SDK Execution Telemetry & Monitoring
 
 Implement comprehensive cost and performance tracking with grove attribution and improved accuracy.
@@ -199,6 +206,12 @@ Implement comprehensive cost and performance tracking with grove attribution and
    - **Tool consolidation effectiveness measurement**: Track performance improvements from tool usage optimization
    - **System batch origin filtering**: Exclude system-generated batches (~11% telemetry noise) from cost attribution
    - **Origin filtering implementation**: Check batch origin field before counting in cost models
+
+6. **Monitor embedding provider health accurately**:
+   - `isAvailable()` on local providers (Ollama, LM Studio) can return false-positive `true` when a brew stub is installed but the service is not actually running
+   - Multiple search consumers (`packages/myco/src/intelligence/embed-query.ts` and semantic search routes) behave inconsistently when the provider is down: some retry, some silently skip, some return empty results
+   - Embedding status endpoints may report available regardless of actual provider connectivity — always verify via an explicit provider health probe before trusting the status field
+   - **Observability gap**: Treat `isAvailable()` as a necessary-but-not-sufficient check; supplement with an actual embedding probe for health dashboards
 
 ## Procedure E: Agent Harness Cost Control Patterns
 
@@ -352,7 +365,7 @@ Optimize test execution and build performance to reduce development cycle costs 
    # Group related test files into domain-scoped Bun processes
    ./scripts/run-bun-tests.mjs --domain agent-harness
    ./scripts/run-bun-tests.mjs --domain daemon-core
-   
+
    # Avoid expensive per-file isolation for related tests
    # Balance: test independence vs execution speed
    ```
@@ -419,3 +432,5 @@ Optimize test execution and build performance to reduce development cycle costs 
 - **Test isolation boundaries are performance-critical** — Measured-isolation provides 20% performance improvement over naive per-file isolation; domain-scoped processes balance safety and speed
 - **Build profile selection impacts development velocity** — Performance profiles exclude flaky tests for speed; comprehensive profiles include everything for thorough validation
 - **Tool call telemetry accuracy matters** — Undercounting tool calls leads to incorrect budget allocation; ensure telemetry captures all tool emissions accurately
+- **JobRunner drain starvation is real** — A single slow job (e.g., release-provenance reconciler averaging 348s) blocks all other jobs in the serial tick loop; always declare a `DrainSpec` with bounded `slice` and `softDeadlineMs` on expensive jobs to limit per-tick work
+- **`isAvailable()` on local embedding providers is not reliable alone** — Brew-stub installations return `true` without a running service; probe actual connectivity before treating the embedding provider as up
