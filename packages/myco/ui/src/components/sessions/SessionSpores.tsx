@@ -36,7 +36,7 @@ const STATUS_TONE: Record<string, 'default' | 'outline'> = {
   active: 'default',
   superseded: 'outline',
   consolidated: 'outline',
-  archived: 'outline',
+  obsolete: 'outline',
 };
 
 /* ---------- Types ---------- */
@@ -61,6 +61,9 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
   const [open, setOpen] = useState(false);
   const kindTone = KIND_TONE[spore.observation_type] ?? 'secondary';
   const statusTone = STATUS_TONE[spore.status] ?? 'outline';
+  // Any non-active status is retired (superseded / consolidated / obsolete) —
+  // de-emphasize uniformly so the set never drifts as statuses are added.
+  const isInactive = spore.status !== 'active';
 
   // Use the first non-empty line as the summary preview, stripping markdown headings.
   const preview =
@@ -74,7 +77,7 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
       level="low"
       className={cn(
         'rounded-md border border-outline-variant/20 transition-colors',
-        spore.status === 'superseded' && 'opacity-70',
+        isInactive && 'opacity-70',
       )}
       role="listitem"
     >
@@ -99,7 +102,7 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
             <p
               className={cn(
                 'font-sans text-sm text-on-surface truncate',
-                spore.status === 'superseded' && 'line-through',
+                isInactive && 'line-through',
               )}
             >
               {preview}

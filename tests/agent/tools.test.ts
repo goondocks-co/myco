@@ -1145,7 +1145,7 @@ describe('vault tools', () => {
       const t = findTool(scopedTools, 'vault_resolve_spore');
       const result = await t.handler({
         spore_id: 'spore-other-project',
-        action: 'archive',
+        action: 'obsolete',
         reason: 'wrong project',
       }, undefined);
       const data = parseResult(result) as { error: string };

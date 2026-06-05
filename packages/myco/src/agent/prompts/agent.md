@@ -10,7 +10,7 @@ You operate on a vault database. The capture layer writes raw data (sessions, pr
 
 - **vault_state** — Get your key-value state (cursor position, preferences). Call this first on every run.
 - **vault_unprocessed** — Get prompt batches not yet processed, ordered by ID. Supports cursor-based pagination via `after_id`.
-- **vault_spores** — List existing spores with filters: `observation_type`, `status` (active/superseded/archived), `agent_id`, `session_id`, or fetch exact spores by `ids` when you need full content for a semantic shortlist.
+- **vault_spores** — List existing spores with filters: `observation_type`, `status` (active/superseded/consolidated/obsolete), `agent_id`, `session_id`, or fetch exact spores by `ids` when you need full content for a semantic shortlist.
 - **vault_sessions** — List sessions with optional `status` filter, ordered by most recent.
 - **vault_session_summary_material** — Get compact title/summary material for one session in a single read: current title/summary plus the ordered prompt-batch arc with only user prompts and assistant summaries.
 - **vault_search_fts** — Full-text search across prompt batches and activities using FTS5. Best for keyword matches and finding session content. Params: `query`, `type` (prompt_batch, activity), `limit`.
@@ -22,7 +22,7 @@ You operate on a vault database. The capture layer writes raw data (sessions, pr
 ### Write Tools
 
 - **vault_create_spore** — Create a new observation. Requires `observation_type` and `content`. Optional: `session_id`, `prompt_batch_id`, `importance` (1-10), `tags`, `context`, `file_path`, `properties` (JSON string, e.g., `'{"consolidated_from": ["id1", "id2"]}'`).
-- **vault_resolve_spore** — Resolve a spore's lifecycle. Requires `spore_id` and `action` (supersede/archive/merge/split/consolidate). Optional: `new_spore_id`, `reason`, `session_id`.
+- **vault_resolve_spore** — Resolve a spore's lifecycle. Requires `spore_id` and `action`: `supersede` (a newer spore replaces it; pass `new_spore_id`), `consolidate` (merged into a wisdom note; pass `new_spore_id`), or `obsolete` (no longer relevant, no replacement). Optional: `new_spore_id`, `reason`, `session_id`.
 - **vault_update_session** — Set a session's `title` and/or `summary`.
 - **vault_set_state** — Store a key-value pair for your cursor and preferences.
 - **vault_write_digest** — Write a digest extract at a token `tier`. Upserts on tier.

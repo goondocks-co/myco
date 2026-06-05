@@ -20,7 +20,9 @@ const CONTENT_PREVIEW_CHARS = 120;
 const MS_PER_SECOND = 1_000;
 
 const OBSERVATION_TYPES = [FILTER_ALL, 'gotcha', 'decision', 'discovery', 'trade_off', 'bug_fix'] as const;
-const STATUS_OPTIONS = [FILTER_ALL, 'active', 'superseded', 'consolidated'] as const;
+// Mirrors SPORE_STATUSES in packages/myco/src/constants/spore-status.ts
+// (separate workspace — cannot import). Keep in sync.
+const STATUS_OPTIONS = [FILTER_ALL, 'active', 'superseded', 'consolidated', 'obsolete'] as const;
 
 const SPORE_FILTERS: FilterDefinition[] = [
   {

@@ -119,6 +119,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 54, migrate: (db) => migrateV53ToV54(db) },
   { version: 55, migrate: (db) => migrateV54ToV55(db) },
   { version: 56, migrate: (db, machineId) => migrateV55ToV56(db, machineId) },
+  { version: 57, migrate: (db) => migrateV56ToV57(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3493,6 +3494,32 @@ function migrateV55ToV56(db: Database, machineId: string): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(56, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v56 -> v57: Unify the spore retirement lifecycle on `obsolete`.
+ *
+ * The agent's vault_resolve_spore previously wrote a separate `archived`
+ * status (with resolution action `archive`) for replacement-free retirement.
+ * That concept is now the canonical `obsolete` status, reachable by both the
+ * agent and the symbiont through one shared path. Rename the existing rows so
+ * there is a single terminal "no longer relevant" status. (`merged`/`split`
+ * were never written, so there is nothing to migrate for them.)
+ */
+function migrateV56ToV57(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(`UPDATE spores SET status = 'obsolete' WHERE status = 'archived'`).run();
+    db.prepare(`UPDATE resolution_events SET action = 'obsolete' WHERE action = 'archive'`).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(57, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

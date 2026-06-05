@@ -99,9 +99,13 @@ phases:
       Required structure (emit sections in EXACTLY this order — the
       ordering is load-bearing, last-section primacy is intentional):
 
-      1. `## Myco-Enabled Project` heading, then one sentence
-         explaining that Myco provides project memory, prior decisions,
-         plans, and retrieval tools for this repository.
+      1. `## Myco-Enabled Project` heading, then one sentence framing
+         Myco as this repository's project-intelligence layer: the
+         decisions and rationale behind the code (the *why*), how prior
+         work was done (the *how*), and the gotchas the code itself
+         can't show — captured as durable memory and retrievable on
+         demand through the tools below. Keep it to one concrete
+         sentence; do not pitch or use marketing language.
 
       2. A skill-reference sentence telling the agent to use the `myco`
          skill as the fuller workflow reference for design decisions,
@@ -154,7 +158,16 @@ phases:
          changes; recommend tier 5000 by default and tier 10000 only when
          the agent has budget and needs deeper historical background. Say
          not to pull the digest for narrow edits. Do not say "before
-         implementing anything."
+         implementing anything." Close the same paragraph with one
+         conditional handoff clause: when a session's work has drifted
+         clearly out of scope, or context is heavy and the work will
+         continue in a separate session, the agent should prepare a
+         handoff with the `myco-handoff` skill so the next session
+         resumes cleanly. Keep this to a single sentence framed strictly
+         as a boundary trigger ("when work falls out of scope, or context
+         is heavy and you'll continue elsewhere") — never a routine step,
+         not something to reach for during ordinary in-scope work, and
+         without its own heading.
 
       5. A delegation sentence telling the agent that when composing a
          child-agent, subagent, teammate, worker session, or other spawned
@@ -170,7 +183,11 @@ phases:
 
       6. A `### Recent workstreams` section that MUST cite at least
          one active plan or recent session BY TITLE from the research
-         brief. Frame these as background context — work the project
+         brief. Keep each cited item to a single line — its title plus
+         one short clause on why it matters to an incoming agent; do
+         not inline file paths, dated decisions, or multi-clause detail,
+         which go stale fastest and belong behind the tools. Frame these
+         as background context — work the project
          has on file, not a task list for the incoming session. The
          new agent is launching to do something else; this section
          helps it avoid duplicating effort or contradicting in-flight
@@ -184,19 +201,28 @@ phases:
          worth flagging right now." verbatim — do not invent, recycle,
          or pad with stale items.
 
-      7. A closing paragraph on `myco_spores` op `"save"` for saving
-         discoveries during this session. Name 2-3 concrete moments
-         that trigger a save — for example, after fixing a non-obvious
-         bug, after making a design decision with non-obvious reasoning,
-         after discovering a gotcha, or after learning something
-         surprising about how a component actually behaves. Mirror the
-         workflow-trigger framing of the plan-persistence paragraph
-         ("when you do X, call op:save") rather than a passive "as you
-         work, capture what you discover." This is the call-to-action —
-         it lands last on purpose so the freshest impression is a
-         directive to save, not the background plan list. Remind the
-         agent to prefer specific over vague: name the file, function,
-         or component, and explain the *why*.
+      7. A closing paragraph on `myco_spores` for capturing and curating
+         durable knowledge this session — the call-to-action, last on
+         purpose. Name 2-3 concrete moments that trigger op `"save"`:
+         after fixing a non-obvious bug, making a design decision with
+         non-obvious reasoning, discovering a gotcha, or learning
+         something surprising about how a component actually behaves; use
+         workflow-trigger framing ("when you do X, call op:save") rather
+         than a passive "as you work, capture what you discover." Draw the
+         boundary plainly: spores are durable knowledge, not task state —
+         a bug still to fix, a deferred TODO, or "continue X later"
+         belongs in a plan, not a spore. Say that the agent shares
+         responsibility for spore health (not only the Myco agent): when
+         knowledge it relied on turns out stale or wrong, it should retire
+         it rather than leave it — op `"supersede"` when a newer spore
+         replaces it, op `"consolidate"` to merge several into one wisdom
+         note, or op `"obsolete"` (with a reason) when it is simply no
+         longer relevant with no replacement. Remind the agent to prefer
+         specific over vague: name the file, function, or component and
+         explain the *why*, and keep any illustrative example
+         self-contained (a gotcha naming the function and its surprising
+         behavior) — do not pull a specific in-flight decision or dated
+         deferral into it.
 
       Keep the output compact and ready for direct injection. Do not
       restate AGENTS.md. Do not mention `myco_skills`. Do not reorder

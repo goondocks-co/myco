@@ -7,13 +7,13 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { saveSpore, supersedeSpore, consolidateSpores } from '@myco/spores/write.js';
+import { saveSpore, supersedeSpore, consolidateSpores, obsoleteSpore } from '@myco/spores/write.js';
 import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 export interface SporesInput {
-  op?: 'list' | 'get' | 'save' | 'supersede' | 'consolidate';
+  op?: 'list' | 'get' | 'save' | 'supersede' | 'consolidate' | 'obsolete';
   id?: string;
   content?: string;
   type?: string;
@@ -63,6 +63,12 @@ export async function handleMycoSpores(
       reason: input.reason,
       requestContext,
     });
+  }
+
+  if (op === 'obsolete') {
+    if (!input.id) return { ok: false, error: 'id is required for op: obsolete' };
+    if (!input.reason) return { ok: false, error: 'reason is required for op: obsolete' };
+    return obsoleteSpore({ spore_id: input.id, reason: input.reason, requestContext });
   }
 
   if (op === 'consolidate') {

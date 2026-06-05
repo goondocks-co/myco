@@ -255,8 +255,8 @@ phases:
          the current extract phase and other likely consolidation targets.
       2. For any candidate you need to inspect in full, call `vault_spores`
          with `ids: [...]` — never bulk-read an entire high-volume type.
-      3. Skip spores with status "consolidated" or "superseded" to prevent
-         cycles.
+      3. Skip spores with status "consolidated", "superseded", or "obsolete"
+         to prevent cycles (only active spores are consolidation candidates).
 
       ## Step 2: Emit a STRUCTURED shortlist (budget: 2 turns)
 
