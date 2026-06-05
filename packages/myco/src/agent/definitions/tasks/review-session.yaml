@@ -62,7 +62,8 @@ prompt: |
   Scan active spores for newly introduced redundancy:
   1. Call `vault_spores` with status "active" to see the current set
   2. For any spores that are now outdated or contradicted by the newly created
-     ones, call `vault_resolve_spore` with action "supersede" or "archive"
+     ones, call `vault_resolve_spore` with action "supersede" (when a newer
+     spore replaces it) or "obsolete" (when it is simply no longer relevant)
   3. Only supersede when the new information genuinely replaces the old;
      when in doubt, keep both
 
