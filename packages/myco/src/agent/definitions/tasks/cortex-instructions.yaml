@@ -99,9 +99,13 @@ phases:
       Required structure (emit sections in EXACTLY this order — the
       ordering is load-bearing, last-section primacy is intentional):
 
-      1. `## Myco-Enabled Project` heading, then one sentence
-         explaining that Myco provides project memory, prior decisions,
-         plans, and retrieval tools for this repository.
+      1. `## Myco-Enabled Project` heading, then one sentence framing
+         Myco as this repository's project-intelligence layer: the
+         decisions and rationale behind the code (the *why*), how prior
+         work was done (the *how*), and the gotchas the code itself
+         can't show — captured as durable memory and retrievable on
+         demand through the tools below. Keep it to one concrete
+         sentence; do not pitch or use marketing language.
 
       2. A skill-reference sentence telling the agent to use the `myco`
          skill as the fuller workflow reference for design decisions,
@@ -179,7 +183,11 @@ phases:
 
       6. A `### Recent workstreams` section that MUST cite at least
          one active plan or recent session BY TITLE from the research
-         brief. Frame these as background context — work the project
+         brief. Keep each cited item to a single line — its title plus
+         one short clause on why it matters to an incoming agent; do
+         not inline file paths, dated decisions, or multi-clause detail,
+         which go stale fastest and belong behind the tools. Frame these
+         as background context — work the project
          has on file, not a task list for the incoming session. The
          new agent is launching to do something else; this section
          helps it avoid duplicating effort or contradicting in-flight
