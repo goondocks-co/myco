@@ -124,7 +124,7 @@ export function createWriteTools(deps: VaultToolDeps) {
         agent_id: agentId,
         machine_id: machineId,
       });
-      if ('ok' in result) {
+      if (!result.ok) {
         return textResult({ error: result.error });
       }
 

@@ -89,7 +89,7 @@ export interface SupersedeSporeInput {
 export interface SupersedeSporeResult {
   old_spore: string;
   new_spore: string;
-  status: 'superseded';
+  status: SporeStatus;
 }
 
 export interface SporeWriteFailure {
@@ -111,6 +111,7 @@ export interface ApplySporeResolutionInput {
 }
 
 export interface ApplySporeResolutionResult {
+  ok: true;
   spore: SporeRow;
   status: SporeStatus;
   resolution_event_id: string;
@@ -149,7 +150,7 @@ export function applySporeResolution(
     created_at: now,
   });
 
-  return { spore: updated, status, resolution_event_id: resolutionEventId };
+  return { ok: true, spore: updated, status, resolution_event_id: resolutionEventId };
 }
 
 export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult | SporeWriteFailure {
@@ -176,12 +177,12 @@ export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult
     agent_id: USER_AGENT_ID,
     now,
   });
-  if ('ok' in result) return result;
+  if (!result.ok) return result;
 
   return {
     old_spore: input.old_spore_id,
     new_spore: input.new_spore_id,
-    status: 'superseded',
+    status: result.status,
   };
 }
 
@@ -193,7 +194,7 @@ export interface ObsoleteSporeInput {
 
 export interface ObsoleteSporeResult {
   spore: string;
-  status: 'obsolete';
+  status: SporeStatus;
 }
 
 /**
@@ -221,9 +222,9 @@ export function obsoleteSpore(input: ObsoleteSporeInput): ObsoleteSporeResult | 
     agent_id: USER_AGENT_ID,
     now,
   });
-  if ('ok' in result) return result;
+  if (!result.ok) return result;
 
-  return { spore: input.spore_id, status: 'obsolete' };
+  return { spore: input.spore_id, status: result.status };
 }
 
 export interface ConsolidateSporesInput {
@@ -237,7 +238,7 @@ export interface ConsolidateSporesInput {
 
 export interface ConsolidateSporesResult {
   new_spore_id: string;
-  sources_superseded: string[];
+  sources_consolidated: string[];
   status: 'consolidated';
   created_at: number;
 }
@@ -256,7 +257,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
   registerMcpUserAgent(now);
 
   const db = getDatabase();
-  const sourcesSuperseded = db.transaction(() => {
+  const sourcesConsolidated = db.transaction(() => {
     insertSpore({
       id: newSporeId,
       project_id: projectId,
@@ -279,7 +280,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
         agent_id: USER_AGENT_ID,
         now,
       });
-      if ('ok' in result) throw new Error(`source_spore_id not found: ${sourceId}`);
+      if (!result.ok) throw new Error(`source_spore_id not found: ${sourceId}`);
       resolved.push(sourceId);
     }
     return resolved;
@@ -287,7 +288,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
 
   return {
     new_spore_id: newSporeId,
-    sources_superseded: sourcesSuperseded,
+    sources_consolidated: sourcesConsolidated,
     status: 'consolidated',
     created_at: now,
   };

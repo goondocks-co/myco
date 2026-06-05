@@ -89,6 +89,26 @@ describe('myco_spores op: obsolete (in-process)', () => {
     expect(row.status).toBe('obsolete');
   });
 
+  it('excludes the obsoleted spore from active reads (the gate every retrieval path uses)', async () => {
+    seedAgent();
+    seedSpore('dead-spore');
+
+    await handleMycoSpores({
+      op: 'obsolete',
+      id: 'dead-spore',
+      reason: 'no longer relevant',
+    }, mockClient(), TEST_REQUEST_CONTEXT);
+
+    // Retrieval, search, embedding, feed, and the context-injection allowlist
+    // all gate on status = 'active'. Pin that an obsoleted spore drops out of
+    // that set so retirement actually removes it from every retrieval path.
+    const db = getDatabase();
+    const activeMatch = db.prepare(
+      `SELECT COUNT(*) AS n FROM spores WHERE id = ? AND status = 'active'`,
+    ).get('dead-spore') as { n: number };
+    expect(activeMatch.n).toBe(0);
+  });
+
   it('records a resolution event with the obsolete action and no replacement', async () => {
     seedAgent();
     seedSpore('dead-spore');

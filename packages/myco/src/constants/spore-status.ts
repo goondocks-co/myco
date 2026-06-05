@@ -9,8 +9,10 @@
  *   - obsolete:     no longer relevant, with no replacement — e.g. a dropped
  *                   feature (op: obsolete)
  *
- * Every retrieval/search/embedding/feed path gates on `active`, so any of the
- * three terminal states removes a spore from injection automatically.
+ * Every retrieval/search/embedding/feed path gates on `active` (an allowlist),
+ * so any of the three terminal states removes a spore from injection
+ * automatically — there is deliberately no "excluded statuses" denylist to keep
+ * in sync as statuses are added.
  *
  * This module is the single source of truth for the wire encoding shared by
  * the symbiont MCP tool (`myco_spores`), the agent harness tool
@@ -34,16 +36,6 @@ export const SPORE_STATUSES = [
   SPORE_STATUS.CONSOLIDATED,
   SPORE_STATUS.OBSOLETE,
 ] as const;
-
-/** Terminal (non-active) statuses — excluded from retrieval and context injection. */
-export const INACTIVE_SPORE_STATUSES = [
-  SPORE_STATUS.SUPERSEDED,
-  SPORE_STATUS.CONSOLIDATED,
-  SPORE_STATUS.OBSOLETE,
-] as const;
-
-/** Set form of {@link INACTIVE_SPORE_STATUSES} for fast membership checks. */
-export const EXCLUDED_SPORE_STATUSES: ReadonlySet<string> = new Set(INACTIVE_SPORE_STATUSES);
 
 /**
  * Resolution actions that retire or transition a spore, and the terminal

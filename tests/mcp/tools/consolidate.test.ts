@@ -52,7 +52,7 @@ function requestContext(projectId: string) {
 
 interface ConsolidateResult {
   new_spore_id: string;
-  sources_superseded: string[];
+  sources_consolidated: string[];
   status: string;
   created_at: number;
 }
@@ -79,7 +79,9 @@ describe('myco_spores op: consolidate (in-process)', () => {
 
     expect(result.status).toBe('consolidated');
     expect(result.new_spore_id).toMatch(/^gotcha-[0-9a-f]+$/);
-    expect(result.sources_superseded).toEqual(['g-1', 'g-2', 'g-3']);
+    // Field renamed from sources_superseded: sources are flipped to
+    // 'consolidated', so the field name now matches the resulting status.
+    expect(result.sources_consolidated).toEqual(['g-1', 'g-2', 'g-3']);
 
     const db = getDatabase();
     const wisdom = db.prepare('SELECT content, tags FROM spores WHERE id = ?').get(result.new_spore_id) as {

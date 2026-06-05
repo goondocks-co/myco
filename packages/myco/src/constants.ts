@@ -218,14 +218,6 @@ export const PROMPT_CONTEXT_MIN_LENGTH = 10;
  */
 export const PROMPT_VECTOR_POOL_SIZE = 50;
 
-// --- Spore status filtering ---
-/**
- * Spore statuses excluded from search results and context injection.
- * Canonical set lives in constants/spore-status.ts (all terminal statuses);
- * re-exported here for existing importers.
- */
-export { EXCLUDED_SPORE_STATUSES } from './constants/spore-status.js';
-
 // --- Agent identity ---
 /** Default agent ID for the built-in intelligence agent. */
 export const DEFAULT_AGENT_ID = 'myco-agent';
