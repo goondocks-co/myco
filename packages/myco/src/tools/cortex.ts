@@ -194,7 +194,7 @@ function resolveCanopyEntry(
   if (requestContext && input.id) {
     const parsed = parseCanopyRecordId(input.id);
     if (!parsed) return null;
-    if (parsed.projectId !== requestContext.projectId) {
+    if (parsed.projectId !== requireProjectId(requestContext, 'cortex tool')) {
       return { error: 'Canopy entry is outside the current project context' };
     }
     return parsed;

@@ -69,7 +69,7 @@ beforeEach(async () => {
     projectRoot: tmpVault,
     callerRoot: null,
     projectId: assertGroveProjectId(tmpProjectId),
-    groveId: null,
+    groveId: 'grove_test',
     machineId: 'local',
     sessionId: null,
     projectVaultDir: path.join(tmpVault, '.myco'),

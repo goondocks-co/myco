@@ -80,7 +80,7 @@ function ctx(overrides: Partial<MycoRequestContext> = {}): MycoRequestContext {
     projectRoot: tmpVault,
     callerRoot: null,
     projectId: assertGroveProjectId(tmpProjectId),
-    groveId: null,
+    groveId: 'grove_test',
     machineId: 'local',
     sessionId: null,
     projectVaultDir: path.join(tmpVault, '.myco'),
@@ -280,7 +280,7 @@ describe('POST /canopy/inject — handler', () => {
         projectRoot: tmpVault,
         callerRoot: worktreeRoot,
         projectId: assertGroveProjectId(tmpProjectId),
-        groveId: null,
+        groveId: 'grove_test',
         machineId: 'local',
         sessionId: 's-worktree',
         projectVaultDir: path.join(tmpVault, '.myco'),
@@ -407,5 +407,18 @@ describe('POST /canopy/inject — handler', () => {
     const body = res.body as { blob: string };
     expect(body.blob).toContain('summary: "A test file used for integration coverage."');
     expect(body.blob).toContain('File summary from Myco');
+  });
+
+  it('degrades to no-injection for a request that resolves no project', async () => {
+    seed(tmpProjectId, [{ path: 'src/big.ts', size: 4096, exports: ['foo'] }]);
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
+      getDatabase,
+    });
+    const res = await handler({
+      requestContext: ctx({ groveId: null }),
+      body: { sessionId: 's-no-project', agent: 'claude-code', toolInput: { file_path: 'src/big.ts' } },
+    });
+    expect(res.body).toEqual({ inject: false, reason: 'unknown_file' });
   });
 });

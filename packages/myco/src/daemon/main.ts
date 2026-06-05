@@ -1532,8 +1532,11 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    // Empty string when no project context; matches no project row.
-    resolveProjectId: (req) => req.requestContext?.projectId ?? '',
+    resolveProjectId: (req) => {
+      const ctx = req.requestContext;
+      if (!ctx) throw new Error('canopy read requires a resolved request context');
+      return requireProjectId(ctx, 'canopy read');
+    },
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
