@@ -1,5 +1,5 @@
 version: 3
-config_version: 9
+config_version: 10
 release_provenance:
   enabled: true
   production_refs:
@@ -68,3 +68,4 @@ cortex:
       patterns: []
     inject_on_pre_tool_use: true
     min_file_bytes: 800
+    enabled: true
