@@ -191,8 +191,13 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     defaults?.timeoutSeconds,
   ]);
 
-  // Effective schedule values: user override merged over YAML defaults
-  const effectiveScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  // Draft schedule values: user override merged over YAML defaults.
+  const draftScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  const scheduleCapabilityDisabled = taskConfigData?.capability != null
+    && taskConfigData.capabilityEnabled === false;
+  const effectiveScheduleEnabled = scheduleCapabilityDisabled
+    ? false
+    : draftScheduleEnabled;
   const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
   function handleProviderChange(type: string) {
     handleDraftProviderChange(type);
@@ -484,7 +489,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               variant={effectiveScheduleEnabled ? 'secondary' : 'outline'}
               className="text-[10px] px-1.5 py-0"
             >
-              {effectiveScheduleEnabled ? 'active' : 'off'}
+              {scheduleCapabilityDisabled
+                ? 'governed off'
+                : (effectiveScheduleEnabled ? 'active' : 'off')}
             </Badge>
           </div>
 
@@ -498,6 +505,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             </div>
             <Switch
               checked={effectiveScheduleEnabled}
+              disabled={scheduleCapabilityDisabled}
               onCheckedChange={(checked) => {
                 setScheduleOverride((prev) => ({ ...prev, enabled: checked }));
               }}
