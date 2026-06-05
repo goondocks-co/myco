@@ -214,6 +214,20 @@ export class ProjectVault {
     });
   }
 
+  /**
+   * Remove every project-local file this capability owns. Used by project
+   * archive/delete lifecycle paths so ghost readmission cannot leave a
+   * launcher behind that recreates `.myco/` outside the admission flow.
+   */
+  removeManagedProjectFiles(): void {
+    removeProjectLaunchers(this.projectRoot, {
+      legacy: true,
+      active: true,
+      runtimeCommand: true,
+    });
+    fs.rmSync(this.vaultDir, { recursive: true, force: true });
+  }
+
   // -------------------------------------------------------------------
   // Lower-level operations (used by the registry / activation / move /
   // claim paths that already construct a manifest in flight)

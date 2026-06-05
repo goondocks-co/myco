@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { Database } from 'bun:sqlite';
@@ -13,7 +12,6 @@ import {
   resolveGroveDir,
   resolveGroveDbPath,
   resolveMycoHome,
-  resolveProjectVaultDir,
 } from './paths.js';
 import {
   archiveProjectInGrove,
@@ -24,6 +22,7 @@ import {
   type RegisteredProject,
 } from './registry.js';
 import { ensureProjectVault } from '../vault/provision.js';
+import { ProjectVault } from '../vault/project-vault.js';
 
 export interface ProjectLifecycleResult {
   grove_id: string;
@@ -117,7 +116,7 @@ export function deleteProjectPermanently(
 }
 
 export function removeProjectVault(projectRoot: string): void {
-  fs.rmSync(resolveProjectVaultDir(projectRoot), { recursive: true, force: true });
+  ProjectVault.atRoot(projectRoot).removeManagedProjectFiles();
 }
 
 function tryRemoveProjectVault(projectRoot: string, action: 'archive' | 'delete', projectId: string): void {

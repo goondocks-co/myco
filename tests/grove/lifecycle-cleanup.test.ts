@@ -72,6 +72,25 @@ describe('removeProjectVault', () => {
     expect(fs.existsSync(vault)).toBe(false);
   });
 
+  it('removes project-local launchers and runtime pin through the vault capability', () => {
+    const vault = resolveProjectVaultDir(projectRoot);
+    const agentsDir = path.join(projectRoot, '.agents');
+    fs.mkdirSync(vault, { recursive: true });
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(vault, 'myco.yaml'), 'version: 3\n');
+    fs.writeFileSync(path.join(vault, 'runtime.command'), '/tmp/myco-dev\n');
+    fs.writeFileSync(path.join(agentsDir, 'myco-run.cjs'), '// launcher\n');
+    fs.writeFileSync(path.join(agentsDir, 'myco-cli.cjs'), '// cli\n');
+    fs.writeFileSync(path.join(agentsDir, 'myco-hook.cjs'), '// legacy\n');
+
+    removeProjectVault(projectRoot);
+
+    expect(fs.existsSync(vault)).toBe(false);
+    expect(fs.existsSync(path.join(agentsDir, 'myco-run.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(agentsDir, 'myco-cli.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(agentsDir, 'myco-hook.cjs'))).toBe(false);
+  });
+
   it('is a no-op when .myco is already absent', () => {
     expect(() => removeProjectVault(projectRoot)).not.toThrow();
   });
