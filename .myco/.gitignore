@@ -5,6 +5,11 @@ local.yaml
 # never committed.
 runtime.command
 
+# Per-machine ephemera; canonical copies live in ~/.myco/
+buffer/
+logs/
+machine_id
+
 # Per-project migration state — global-install sentinel and any future
 # migration markers. Sentinel is per-machine because migration is a
 # per-machine operation; teammates cloning the repo run their own.
