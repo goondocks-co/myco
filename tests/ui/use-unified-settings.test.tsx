@@ -86,6 +86,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
   useUpdateMachineConfig: () => ({
     mutateAsync: (...args: unknown[]) => updateMachineMutateMock(...args),
   }),
+  useAddToMachineConfigList: () => ({ mutate: () => {} }),
+  useRemoveFromMachineConfigList: () => ({ mutate: () => {} }),
 }));
 
 // Import the hook AFTER the mocks so module-level imports resolve to stubs.

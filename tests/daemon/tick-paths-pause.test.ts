@@ -162,6 +162,10 @@ function setupTwoProjects(fx: Fixture): { vaultPaused: string; vaultLive: string
   const vaultLive = resolveProjectVaultDir(rootLive);
   fs.mkdirSync(vaultPaused, { recursive: true });
   fs.mkdirSync(vaultLive, { recursive: true });
+  // Minimal myco.yaml so loadMergedConfig succeeds — the canopy scan is
+  // fail-closed (skips on unreadable config), like canopy-inject.
+  fs.writeFileSync(path.join(vaultPaused, 'myco.yaml'), 'version: 3\n');
+  fs.writeFileSync(path.join(vaultLive, 'myco.yaml'), 'version: 3\n');
   fs.writeFileSync(path.join(rootPaused, 'p.ts'), 'export const p = 1;\n');
   fs.writeFileSync(path.join(rootLive, 'l.ts'), 'export const l = 1;\n');
   registerProjectInGrove(fx.grove.id, {

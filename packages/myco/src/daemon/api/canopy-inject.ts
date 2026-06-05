@@ -24,6 +24,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
+import { loadMergedConfig } from '../../config/loader.js';
+import { capabilityEnabled } from '../../config/capabilities.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -106,7 +108,20 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
       return { body };
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
-    const config = deps.liveConfig.current.cortex.canopy;
+    let projectConfig: MycoConfig | null = null;
+    try {
+      projectConfig = loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId ?? null });
+    } catch {
+      // Project not yet initialized — treat as capability_off (fail-closed)
+      // rather than falling back to the bootstrap config, which could leak
+      // cross-tenant config or silently inject for projects whose config
+      // is temporarily unreadable.
+    }
+    if (!capabilityEnabled(projectConfig, 'canopy')) {
+      const body: InjectResponseBody = { inject: false, reason: 'capability_off' };
+      return { body };
+    }
+    const config = projectConfig!.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
 

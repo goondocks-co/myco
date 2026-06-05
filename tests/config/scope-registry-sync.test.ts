@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '../../packages/myco/src/config/schema';
-import { scopePolicyForPath } from '../../packages/myco/src/config/scope';
+import { scopePolicyForPath, SCOPE_REGISTRY, CAPABILITY_IDS } from '../../packages/myco/src/config/scope';
 import { enumerateLeafPaths } from '../../packages/myco/src/config/leaf-paths';
 import { SETTINGS_GROUPS } from '../../packages/myco/ui/src/settings/manifest';
+import { CAPABILITIES } from '../../packages/myco/src/config/capabilities';
 
 // Dynamic records/arrays are covered by their block-prefix entry; their dynamic
 // children are not enumerable from a defaulted schema, so they are skipped here.
@@ -26,5 +27,22 @@ describe('scope registry sync', () => {
       if (f.scope !== policy.home) errors.push(`${f.key}: manifest scope '${f.scope}' != registry home '${policy.home}'`);
     }
     if (errors.length) throw new Error(`Manifest/registry drift:\n  ${errors.join('\n  ')}`);
+  });
+
+  it('every registry gate is a valid capability id', () => {
+    const valid = new Set<string>(CAPABILITY_IDS);
+    const bad = Object.entries(SCOPE_REGISTRY)
+      .filter(([, e]) => e.gate !== undefined && !valid.has(e.gate))
+      .map(([k, e]) => `${k}: gate '${e.gate}'`);
+    if (bad.length) throw new Error(`Registry rows with invalid gate:\n  ${bad.join('\n  ')}`);
+  });
+
+  it('every capability master gate resolves to a row with its own gate', () => {
+    const errors: string[] = [];
+    for (const cap of Object.values(CAPABILITIES)) {
+      let policy; try { policy = scopePolicyForPath(cap.masterGate); } catch { errors.push(`${cap.id}: master '${cap.masterGate}' has no registry entry`); continue; }
+      if (policy.gate !== cap.id) errors.push(`${cap.id}: master '${cap.masterGate}' gate is '${policy.gate}'`);
+    }
+    if (errors.length) throw new Error(`Capability/registry drift:\n  ${errors.join('\n  ')}`);
   });
 });

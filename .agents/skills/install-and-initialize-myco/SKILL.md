@@ -1,6 +1,6 @@
 ---
 name: myco:install-and-initialize-myco
-description: "Use this skill when installing Myco for the first time, initializing Myco in a new project, or troubleshooting a broken installation. Activate even if the user just asks \"how do I get started with Myco\" or \"how do I add Myco to my project\" without explicitly saying \"install.\" Covers the full lifecycle: bootstrapping the CLI via the install script, running `myco init`, verifying health with `myco doctor`, and managing updates and removal."
+description: "Use this skill when installing Myco for the first time, initializing Myco in a new project, or troubleshooting a broken installation. Activate even if the user just asks \"how do I get started with Myco\" or \"how do I add Myco to my project\" without explicitly saying \"install.\" Covers the full lifecycle: bootstrapping the CLI via the install script, verifying health with `myco doctor`, and managing updates and removal."
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Bash, Grep, Glob
@@ -58,7 +58,7 @@ The daemon starts automatically on first session capture if not already running.
 myco stats  # Starts daemon if not running, shows current status
 ```
 
-**Project Root Safety**: The daemon includes safety guards to prevent initialization in dangerous locations like `$HOME`. Choose a proper project directory (e.g., `/Users/yourname/projects/myapp`) for session capture.
+**Project Root Safety**: The daemon includes safety guards to prevent initialization in dangerous locations like `$HOME`. Choose a proper project directory for session capture.
 
 **What initialization accomplishes:**
 
@@ -101,6 +101,10 @@ myco doctor
 - Vault database is accessible
 - No configuration drift between `.myco/myco.yaml` and the active symbiont set
 - **Global detection status** — Validates that the manifest-driven symbiont detection system is functioning properly and can identify installed agents
+- **Capture flow** — `checkCaptureFlow()` validates that the hook-to-daemon event pipeline is delivering events correctly, detecting silent capture failures before they affect session history
+- **Migration status** — `checkMigrationStatus()` verifies pending config migrations have been applied; flags unapplied project → Grove tier migrations
+- **Symbiont edge cases** — `checkSymbiontEdgeCases()` detects known edge-case configurations that cause missed activations or duplicate registrations
+- **Global symbiont registration** — `isSymbiontRegisteredGlobally()` distinguishes per-project from global symbiont registrations for accurate status reporting
 
 Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the project but whose MCP entry is missing or stale. It does NOT flag agents that are installed globally but have no config directory here — binary presence without a project config directory is not a problem.
 
@@ -310,9 +314,7 @@ This is the canonical way to invoke Cortex or any Myco MCP tool from a script or
 
 **Myco Agent pipeline won't run after daemon startup without configuration.** The daemon starts with `scheduled_tasks_enabled: false` and `event_tasks_enabled: false` explicitly in `.myco/myco.yaml`. If the agent pipeline isn't running after setup, check the **Myco Agent** section in the daemon UI — LLM provider, embedding provider, and per-task scheduling all require explicit opt-in.
 
-**CLI flags are ignored on re-init of an existing vault.** Provider flags like `--embedding-provider` and `--agent-provider` are scoped exclusively to new vault creation. Running `myco init --agent-provider anthropic` on a project that already has a `.myco/` vault has no effect on provider settings — the existing configuration is preserved. To change providers on an existing vault, use the Settings UI in the daemon.
-
-**CLI help shows before config processing.** Commands like `myco init --help` and `myco update --help` display usage information immediately without reading or validating configuration files. This means help is available even in projects with broken or missing `.myco/myco.yaml` files.
+**CLI help shows before config processing.** Commands like `myco update --help` display usage information immediately without reading or validating configuration files. This means help is available even in projects with broken or missing `.myco/myco.yaml` files.
 
 **Attempting to init in unsafe locations.** Daemon operations include safety guards that prevent vault creation in dangerous project roots like `$HOME` or other system directories. Always navigate to a proper project directory before initializing Myco.
 

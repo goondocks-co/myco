@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { fetchJson } from '../../lib/api';
+import { useAddToMachineConfigList, useRemoveFromMachineConfigList } from '../../hooks/use-machine-config';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Input } from '../ui/input';
@@ -26,6 +27,8 @@ export function PlanCaptureCard() {
   const [symbiont, setSymbiont] = useState<Record<string, string[]>>({});
   const [newDir, setNewDir] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const addToList = useAddToMachineConfigList();
+  const removeFromList = useRemoveFromMachineConfigList();
 
   // Symbiont-managed plan dirs come from a separate read-only endpoint
   // (manifest-derived, not from myco.yaml).
@@ -96,7 +99,7 @@ export function PlanCaptureCard() {
             label="Custom Directories"
             hint="extra paths to watch for plan files"
           >
-            {({ value, onChange }) => {
+            {({ value }) => {
               const dirs = value ?? [];
               return (
                 <div className="space-y-2">
@@ -110,7 +113,7 @@ export function PlanCaptureCard() {
                           <span className="flex-1 font-mono text-xs text-on-surface">{dir}</span>
                           <button
                             type="button"
-                            onClick={() => onChange(dirs.filter((d) => d !== dir))}
+                            onClick={() => removeFromList.mutate({ path: 'capture.plan_dirs', value: dir })}
                             className="font-sans text-xs text-on-surface-variant hover:text-tertiary transition-colors leading-none"
                             aria-label={`Remove ${dir}`}
                           >
@@ -130,7 +133,7 @@ export function PlanCaptureCard() {
                         if (e.key !== 'Enter') return;
                         const trimmed = newDir.trim();
                         if (!trimmed || dirs.includes(trimmed)) return;
-                        onChange([...dirs, trimmed]);
+                        addToList.mutate({ path: 'capture.plan_dirs', value: trimmed });
                         setNewDir('');
                       }}
                       className="flex-1 font-mono text-xs"
@@ -141,7 +144,7 @@ export function PlanCaptureCard() {
                       onClick={() => {
                         const trimmed = newDir.trim();
                         if (!trimmed || dirs.includes(trimmed)) return;
-                        onChange([...dirs, trimmed]);
+                        addToList.mutate({ path: 'capture.plan_dirs', value: trimmed });
                         setNewDir('');
                       }}
                       disabled={!newDir.trim()}

@@ -137,8 +137,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
   }),
 }));
 
-mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
-  useScopedConfig: () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => {
+  const scopedConfigStub = () => ({
     effective: projectEffective,
     local: {},
     isLoading: false,
@@ -146,9 +146,14 @@ mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
     setField: vi.fn().mockResolvedValue(undefined),
     setFields: vi.fn().mockResolvedValue(undefined),
     resetField: vi.fn().mockResolvedValue(undefined),
+    resetFields: vi.fn().mockResolvedValue(undefined),
     promoteField: vi.fn().mockResolvedValue(undefined),
-  }),
-}));
+  });
+  return {
+    useScopedConfig: scopedConfigStub,
+    useScopedConfigForSelection: scopedConfigStub,
+  };
+});
 
 mock.module('../../packages/myco/ui/src/hooks/use-grove-config', () => ({
   useGroveConfig: () => ({
@@ -172,6 +177,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
     mutateAsync: vi.fn().mockResolvedValue(undefined),
     isPending: false,
   }),
+  useAddToMachineConfigList: () => ({ mutate: () => {} }),
+  useRemoveFromMachineConfigList: () => ({ mutate: () => {} }),
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-providers', () => ({

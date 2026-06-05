@@ -42,7 +42,7 @@ export function composeSessionStartContext(
   cortexContent: string,
   scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
 ): ComposedSessionStartContext {
-  const cortexEnabled = shouldInjectCortex(config.cortex);
+  const cortexEnabled = shouldInjectCortex(config);
   const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
   const parts: SessionStartContextPart[] = [];
 
