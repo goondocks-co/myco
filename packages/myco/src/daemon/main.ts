@@ -1966,15 +1966,16 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  // tenantRoute rejects an unresolved/synthesized context with a 400
-  // tenancy-violation; only caller-supplied tenancy reaches the handler.
+  // Dual-mode read: a caller-supplied context scopes to its project; a
+  // context-less request scopes to GLOBAL_SCOPE and returns no project rows.
+  // Fail-loud on unresolved tenancy is enforced in the tools layer, not here.
   const searchHandler = createSearchHandler({
     embeddingManager,
     resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     machineId,
   });
-  server.registerRoute('GET', '/api/search', tenantRoute({ machineId, logger }, (req) => searchHandler(req)));
+  server.registerRoute('GET', '/api/search', searchHandler);
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   const embeddingStatusHandler = createEmbeddingStatusHandler({
     resolveRequestRuntime: getRequestEmbeddingRuntime,
