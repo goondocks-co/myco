@@ -16,6 +16,7 @@ import {
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { pruneToTier } from './scope.js';
+import { stripDefaultSections } from './sparse.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -611,7 +612,12 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   }
 
   fs.mkdirSync(vaultDir, { recursive: true });
-  atomicWriteFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
+  // Keep project config sparse. Capability gates are fail-open on unset, so
+  // stripping a wholly-default `cortex` section is behaviorally identical to
+  // leaving its default `enabled: true` materialized; revisit if that contract
+  // ever becomes fail-closed.
+  const sparseProject = stripDefaultSections(projectOnly, defaults, ['version', 'config_version']);
+  atomicWriteFileSync(configPath, YAML.stringify(sparseProject), 'utf-8');
   invalidateMergedConfigCache(vaultDir);
 }
 
