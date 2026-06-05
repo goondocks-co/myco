@@ -107,8 +107,17 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | 
  * the registry watcher then triggers a daemon restart so the next
  * boot finds the project through `firstProjectVaultFromRegistry()`.
  */
+const PHANTOM_BOOTSTRAP_DIRNAME = '_unbound-bootstrap';
+
 export function resolvePhantomBootstrapVaultDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, '_unbound-bootstrap');
+  // Per-variant scratch vault: the dev daemon (service-dev) and the prod
+  // daemon (service) anchor to separate dirs, so one daemon's boot-time
+  // manifest cleanup never mutates the vault the other is running against.
+  const variant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
+  const dirname = variant === SERVICE_DEV_DIRNAME
+    ? `${PHANTOM_BOOTSTRAP_DIRNAME}-dev`
+    : PHANTOM_BOOTSTRAP_DIRNAME;
+  return path.join(mycoHome, dirname);
 }
 
 /**
