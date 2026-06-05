@@ -134,6 +134,42 @@ describe('myco_plans op: save (in-process)', () => {
     expect(row?.logical_key).toBe(existing.logical_key);
   });
 
+  it('preserves an existing title on status-only updates by id', async () => {
+    seedSession('sess-1');
+    const existing = upsertPlan({
+      id: 'handoff-plan',
+      logical_key: 'session:sess-1:key:handoff',
+      title: 'Handoff: myco-handoff skill',
+      content: [
+        '<!-- myco-handoff:start -->',
+        '## Handoff - 2026-06-05',
+        '',
+        '### Digest',
+        'Resume context.',
+        '<!-- myco-handoff:end -->',
+      ].join('\n'),
+      tags: 'handoff',
+      status: 'active',
+      session_id: 'sess-1',
+      created_at: 1700000000,
+      machine_id: 'local',
+    });
+
+    const result = await handleMycoPlans({
+      op: 'save',
+      id: existing.id,
+      status: 'in_progress',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('in_progress');
+    expect(result.title).toBe('Handoff: myco-handoff skill');
+
+    const row = getPlan(existing.id, ALL_PROJECTS_SCOPE);
+    expect(row?.status).toBe('in_progress');
+    expect(row?.title).toBe('Handoff: myco-handoff skill');
+  });
+
   it('returns Plan not found when updating an unknown id', async () => {
     const result = await handleMycoPlans({
       op: 'save',

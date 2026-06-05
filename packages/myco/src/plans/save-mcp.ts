@@ -77,7 +77,7 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
       logicalKey: existingPlan.logical_key,
       sourcePath: existingPlan.source_path,
       promptBatchId: openBatch?.id ?? existingPlan.prompt_batch_id,
-      title: input.title,
+      title: input.title ?? (input.content === undefined ? existingPlan.title : undefined),
       status: input.status,
       tags: input.tags,
     });
