@@ -154,7 +154,16 @@ phases:
          changes; recommend tier 5000 by default and tier 10000 only when
          the agent has budget and needs deeper historical background. Say
          not to pull the digest for narrow edits. Do not say "before
-         implementing anything."
+         implementing anything." Close the same paragraph with one
+         conditional handoff clause: when a session's work has drifted
+         clearly out of scope, or context is heavy and the work will
+         continue in a separate session, the agent should prepare a
+         handoff with the `myco-handoff` skill so the next session
+         resumes cleanly. Keep this to a single sentence framed strictly
+         as a boundary trigger ("when work falls out of scope, or context
+         is heavy and you'll continue elsewhere") — never a routine step,
+         not something to reach for during ordinary in-scope work, and
+         without its own heading.
 
       5. A delegation sentence telling the agent that when composing a
          child-agent, subagent, teammate, worker session, or other spawned
