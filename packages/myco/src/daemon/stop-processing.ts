@@ -235,8 +235,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     user: string | undefined,
     sessionMeta: RegisteredSession | undefined,
-    requestProjectId: GroveProjectId | null,
-    requestRowProjectId: string | null,
+    requestRowProjectId: GroveProjectId | null,
     requestProjectRoot: string,
     requestFilesystemRoot: string,
     requestMachineId: string,
@@ -458,8 +457,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
             .join('\n');
         }
-        if (transcriptText && requestProjectId) {
-          detectSkillUsage(sessionId, transcriptText, requestProjectId);
+        if (transcriptText && requestRowProjectId) {
+          detectSkillUsage(sessionId, transcriptText, requestRowProjectId);
         }
       } catch {
         // Best-effort — don't block reconciliation
@@ -616,14 +615,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch { /* fallback to index-based */ }
       }
 
-      if (requestProjectId) {
+      if (requestRowProjectId) {
         captureBatchImages({
           sessionId,
           promptBatchId: resolvedBatchId,
           promptNumber: resolvedPromptNumber,
           images: turn.images,
           logger,
-          projectId: requestProjectId,
+          projectId: requestRowProjectId,
         });
       }
     }
@@ -672,9 +671,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const phases = explicitPhases && explicitPhases.length > 0
       ? explicitPhases
       : (['response', 'transcript'] as const);
-    const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
+    // Single project scope for the whole stop cycle: a context-less event
+    // (no grove) falls back to the daemon default; otherwise the Grove-gated
+    // row scope drives session, batch, and capture writes alike.
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
-    const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
+    const requestRowProjectId = requestScope === undefined ? defaultProjectId : requestScope;
     const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestFilesystemRoot = req.requestContext
       ? filesystemRootFromRequestContext(req.requestContext)
@@ -783,7 +784,6 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionId,
       user,
       sessionMeta,
-      requestProjectId,
       requestRowProjectId,
       requestProjectRoot,
       requestFilesystemRoot,
