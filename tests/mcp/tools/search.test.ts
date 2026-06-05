@@ -61,9 +61,22 @@ describe('myco_search', () => {
     }]);
   });
 
-  it('returns empty on daemon failure', async () => {
+  it('throws on daemon failure instead of silently returning empty', async () => {
     const client = mockClient(null, false);
-    const results = await handleMycoSearch({ query: 'test' }, client);
+    await expect(handleMycoSearch({ query: 'test' }, client)).rejects.toThrow();
+  });
+
+  it('surfaces the daemon error message on a tenancy violation', async () => {
+    const client = mockClient(
+      { error: { code: 'tenancy-violation', message: 'Rejected request with invalid tenancy' } },
+      false,
+    );
+    await expect(handleMycoSearch({ query: 'test' }, client)).rejects.toThrow(/tenancy/i);
+  });
+
+  it('still returns [] for a genuine empty result set (ok, no matches)', async () => {
+    const client = mockClient({ mode: 'semantic', results: [] }, true);
+    const results = await handleMycoSearch({ query: 'no-such-thing' }, client);
     expect(results).toEqual([]);
   });
 });

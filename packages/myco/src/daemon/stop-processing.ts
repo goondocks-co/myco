@@ -76,8 +76,11 @@ export interface StopProcessorDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   vaultDir: string;
-  /** Daemon-resolved Grove project id used for every per-session insert. */
-  projectId: GroveProjectId;
+  /**
+   * Fallback Grove project id used when a stop event carries no caller
+   * project. NULL for the global daemon's project-less anchor.
+   */
+  projectId: GroveProjectId | null;
   machineId?: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
@@ -137,7 +140,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   handleStopRoute: RouteHandler;
   clearSession: (sessionId: string) => void;
   getActiveProcessing: () => Promise<void> | null;
-  triggerTitleSummary: (sessionId: string) => Promise<void>;
+  triggerTitleSummary: (
+    sessionId: string,
+    requestContext: MycoRequestContext | undefined,
+    trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
+  ) => Promise<void>;
 } {
   const {
     registry,
@@ -187,9 +194,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
   const triggerTitleSummary = (
     sessionId: string,
+    requestContext: MycoRequestContext | undefined,
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger }, trigger);
+    sharedTriggerTitleSummary(
+      sessionId,
+      { vaultDir, resolveEmbeddingManager, liveConfig, logger, requestContext },
+      trigger,
+    );
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);
@@ -223,12 +235,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     user: string | undefined,
     sessionMeta: RegisteredSession | undefined,
-    requestProjectId: GroveProjectId,
-    requestRowProjectId: string | null,
+    requestRowProjectId: GroveProjectId | null,
     requestProjectRoot: string,
     requestFilesystemRoot: string,
     requestMachineId: string,
     requestProductionRef: string | null,
+    requestContext: MycoRequestContext | undefined,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
     phases: readonly ('response' | 'transcript')[] = ['response', 'transcript'],
@@ -445,8 +457,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
             .join('\n');
         }
-        if (transcriptText) {
-          detectSkillUsage(sessionId, transcriptText, requestProjectId);
+        if (transcriptText && requestRowProjectId) {
+          detectSkillUsage(sessionId, transcriptText, requestRowProjectId);
         }
       } catch {
         // Best-effort — don't block reconciliation
@@ -570,7 +582,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Trigger title/summary if the session still needs one. Runs on
     // response phase for early visibility; idempotent if called again.
     if (runResponsePhase && !hasTitle) {
-      triggerTitleSummary(sessionId);
+      triggerTitleSummary(sessionId, requestContext);
     }
 
     // Write images to attachments — decoupled from transcript turn indices.
@@ -603,14 +615,16 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch { /* fallback to index-based */ }
       }
 
-      captureBatchImages({
-        sessionId,
-        promptBatchId: resolvedBatchId,
-        promptNumber: resolvedPromptNumber,
-        images: turn.images,
-        logger,
-        projectId: requestProjectId,
-      });
+      if (requestRowProjectId) {
+        captureBatchImages({
+          sessionId,
+          promptBatchId: resolvedBatchId,
+          promptNumber: resolvedPromptNumber,
+          images: turn.images,
+          logger,
+          projectId: requestRowProjectId,
+        });
+      }
     }
 
     // Final-state markers run on transcript phase only. For single-phase
@@ -657,9 +671,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const phases = explicitPhases && explicitPhases.length > 0
       ? explicitPhases
       : (['response', 'transcript'] as const);
-    const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
+    // Single project scope for the whole stop cycle: a context-less event
+    // (no grove) falls back to the daemon default; otherwise the Grove-gated
+    // row scope drives session, batch, and capture writes alike.
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
-    const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
+    const requestRowProjectId = requestScope === undefined ? defaultProjectId : requestScope;
     const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestFilesystemRoot = req.requestContext
       ? filesystemRootFromRequestContext(req.requestContext)
@@ -768,12 +784,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionId,
       user,
       sessionMeta,
-      requestProjectId,
       requestRowProjectId,
       requestProjectRoot,
       requestFilesystemRoot,
       requestMachineId,
       requestProductionRef,
+      req.requestContext,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
       phases,

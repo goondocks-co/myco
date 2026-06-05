@@ -8,7 +8,6 @@ import {
   SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord } from '../grove/registry.js';
-import { createProjectId } from '../grove/ids.js';
 
 /**
  * Resolve the bootstrap vault directory for daemon startup.
@@ -129,29 +128,25 @@ export function resolveBootstrapVaultDirOrPhantom(cwd: string = process.cwd()): 
   if (resolved) return { vaultDir: resolved, isPhantom: false };
   const phantom = resolvePhantomBootstrapVaultDir();
   fs.mkdirSync(phantom, { recursive: true });
-  ensurePhantomProjectManifest(phantom);
+  // The phantom dir holds machine id, secrets, log dir, and a config-empty
+  // myco.yaml — no `[project] id`. Remove any stale manifest an older build
+  // left behind.
+  removeStalePhantomProjectManifest(phantom);
   ensurePhantomMycoYaml(phantom);
   return { vaultDir: phantom, isPhantom: true };
 }
 
 /**
- * Write a minimal `project.toml` into the phantom vault so the daemon's
- * manifest-aware paths (`loadProjectManifest`, `requestContextFromEnvironment`)
- * have a non-null shape to work against. The id is a real Grove-era
- * project id (`proj_<32hex>`) so it satisfies `assertGroveProjectId`, but
- * the manifest has no `grove` block — the daemon's `assertGroveBound`
- * path is skipped in phantom mode, so the unbound state is intentional.
- *
- * Persisted across boots so the phantom id stays stable; the daemon
- * restarts to a real vault as soon as the first project registers via
- * the hook-driven auto-Grove-create flow.
+ * Delete any `project.toml` a previous daemon build wrote into the phantom
+ * vault. Best-effort.
  */
-function ensurePhantomProjectManifest(phantomVaultDir: string): void {
+function removeStalePhantomProjectManifest(phantomVaultDir: string): void {
   const manifestPath = path.join(phantomVaultDir, PROJECT_MANIFEST_FILENAME);
-  if (fs.existsSync(manifestPath)) return;
-  const projectId = createProjectId();
-  const body = `[project]\nid = "${projectId}"\nname = "myco-bootstrap"\n`;
-  fs.writeFileSync(manifestPath, body, { mode: 0o600 });
+  try {
+    fs.rmSync(manifestPath, { force: true });
+  } catch {
+    // Best-effort.
+  }
 }
 
 /**

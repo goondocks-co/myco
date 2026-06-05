@@ -6,7 +6,7 @@ import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import { readCanopyEntry } from '@myco/canopy/read-service.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
-import { requestContextHeaders, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { requestContextHeaders, requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { buildEndpoint } from './shared.js';
 import type { ToolFailure } from './error.js';
 
@@ -189,12 +189,12 @@ function resolveCanopyEntry(
   requestContext?: MycoRequestContext,
 ): ResolvedCanopyEntry | { error: string } | null {
   if (requestContext && input.path) {
-    return { projectId: requestContext.projectId, path: input.path };
+    return { projectId: requireProjectId(requestContext, 'cortex tool'), path: input.path };
   }
   if (requestContext && input.id) {
     const parsed = parseCanopyRecordId(input.id);
     if (!parsed) return null;
-    if (parsed.projectId !== requestContext.projectId) {
+    if (parsed.projectId !== requireProjectId(requestContext, 'cortex tool')) {
       return { error: 'Canopy entry is outside the current project context' };
     }
     return parsed;

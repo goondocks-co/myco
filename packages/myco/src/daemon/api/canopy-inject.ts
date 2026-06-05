@@ -22,7 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
+import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
@@ -96,18 +96,16 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const { sessionId, agent, toolInput } = parsed.data;
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
 
-    // Tenancy comes from the caller's request context — never from the
-    // daemon's bootstrap-anchor vault. A request without a resolved context
-    // has no project to look canopy rows up against; degrade to the same
-    // safe no-injection response the rest of the handler uses rather than
-    // synthesizing tenancy from the anchor (the cross-tenant leak class).
+    // Canopy lookups are scoped to the caller's resolved project. With no
+    // request context or no resolved project, degrade to the same safe
+    // no-injection response the rest of the handler returns.
     const ctx = req.requestContext;
-    if (!ctx) {
+    const projectId = ctx ? rowProjectIdFromRequestContext(ctx) : undefined;
+    if (!ctx || typeof projectId !== 'string') {
       const body: InjectResponseBody = { inject: false, reason: 'unknown_file' };
       return { body };
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
-    const projectId = ctx.projectId;
     const config = deps.liveConfig.current.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
