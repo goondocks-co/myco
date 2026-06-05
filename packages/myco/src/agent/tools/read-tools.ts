@@ -18,6 +18,7 @@ import {
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
+import { SPORE_STATUSES } from '@myco/constants/spore-status.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
@@ -202,7 +203,7 @@ export function createReadTools(deps: VaultToolDeps) {
       ids: z.array(z.string()).optional().describe('Fetch exact spores by id in the given order; bypasses active-session gating'),
       agent_id: z.string().optional().describe('Filter by agent ID'),
       observation_type: z.string().optional().describe('Filter by observation type (e.g., gotcha, decision)'),
-      status: z.enum(['active', 'superseded', 'archived']).optional().describe('Filter by status'),
+      status: z.enum(SPORE_STATUSES).optional().describe('Filter by status'),
       session_id: z.string().optional().describe('Filter by session ID (bypasses active-session gating)'),
       limit: z.number().optional().describe('Maximum number of spores to return'),
       include_active: z.boolean().optional().describe('Include spores from sessions still in active status (default: false)'),

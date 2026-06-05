@@ -20,6 +20,7 @@ export function statusClass(status: string): string {
     case 'active':       return 'bg-primary/15 text-primary';
     case 'consolidated': return 'bg-surface-container-high text-on-surface-variant';
     case 'superseded':   return 'bg-tertiary/10 text-tertiary/70';
+    case 'obsolete':     return 'bg-surface-container text-on-surface-variant/60';
     default:             return 'bg-surface-container text-on-surface-variant';
   }
 }

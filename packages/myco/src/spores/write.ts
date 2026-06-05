@@ -14,6 +14,13 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getSpore, insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
+import { type ProjectScope } from '@myco/db/queries/project-scope.js';
+import {
+  RESOLUTION_ACTION,
+  RESOLUTION_ACTION_TO_STATUS,
+  type SporeStatus,
+  type ResolutionAction,
+} from '@myco/constants/spore-status.js';
 import {
   projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
@@ -90,6 +97,61 @@ export interface SporeWriteFailure {
   error: string;
 }
 
+export interface ApplySporeResolutionInput {
+  spore_id: string;
+  action: ResolutionAction;
+  new_spore_id?: string | null;
+  reason?: string | null;
+  session_id?: string | null;
+  scope: ProjectScope;
+  project_id?: string | null;
+  agent_id: string;
+  machine_id?: string;
+  now?: number;
+}
+
+export interface ApplySporeResolutionResult {
+  spore: SporeRow;
+  status: SporeStatus;
+  resolution_event_id: string;
+}
+
+/**
+ * Shared core for every spore status transition: flip the spore's status
+ * (derived from the action via RESOLUTION_ACTION_TO_STATUS) and record a
+ * resolution event. Both the symbiont write helpers below and the agent
+ * harness `vault_resolve_spore` tool route through this, so the two paths
+ * never drift on status semantics.
+ *
+ * Callers own existence validation and any domain-specific error messages;
+ * this returns a generic failure only if the target row vanished.
+ */
+export function applySporeResolution(
+  input: ApplySporeResolutionInput,
+): ApplySporeResolutionResult | SporeWriteFailure {
+  const now = input.now ?? epochSeconds();
+  const status = RESOLUTION_ACTION_TO_STATUS[input.action];
+
+  const updated = updateSporeStatus(input.spore_id, status, now, input.scope);
+  if (!updated) return { ok: false, error: `spore not found: ${input.spore_id}` };
+
+  const resolutionEventId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
+  insertResolutionEvent({
+    id: resolutionEventId,
+    project_id: input.project_id ?? null,
+    agent_id: input.agent_id,
+    machine_id: input.machine_id,
+    spore_id: input.spore_id,
+    action: input.action,
+    new_spore_id: input.new_spore_id ?? null,
+    reason: input.reason ?? null,
+    session_id: input.session_id ?? null,
+    created_at: now,
+  });
+
+  return { spore: updated, status, resolution_event_id: resolutionEventId };
+}
+
 export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult | SporeWriteFailure {
   const now = epochSeconds();
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
@@ -102,27 +164,66 @@ export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult
     return { ok: false, error: 'new_spore_id not found' };
   }
 
-  const updated = updateSporeStatus(input.old_spore_id, 'superseded', now, scope);
-  if (!updated) return { ok: false, error: 'old_spore_id not found' };
-
   registerMcpUserAgent(now);
 
-  insertResolutionEvent({
-    id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
+  const result = applySporeResolution({
+    spore_id: input.old_spore_id,
+    action: RESOLUTION_ACTION.SUPERSEDE,
+    new_spore_id: input.new_spore_id,
+    reason: input.reason,
+    scope,
     project_id: projectId,
     agent_id: USER_AGENT_ID,
-    spore_id: input.old_spore_id,
-    action: 'supersede',
-    new_spore_id: input.new_spore_id,
-    reason: input.reason ?? null,
-    created_at: now,
+    now,
   });
+  if ('ok' in result) return result;
 
   return {
     old_spore: input.old_spore_id,
     new_spore: input.new_spore_id,
     status: 'superseded',
   };
+}
+
+export interface ObsoleteSporeInput {
+  spore_id: string;
+  reason: string;
+  requestContext?: MycoRequestContext;
+}
+
+export interface ObsoleteSporeResult {
+  spore: string;
+  status: 'obsolete';
+}
+
+/**
+ * Retire a spore with no replacement — e.g. a dropped feature, or knowledge
+ * that is simply no longer relevant. The replacement-free counterpart to
+ * supersede/consolidate.
+ */
+export function obsoleteSpore(input: ObsoleteSporeInput): ObsoleteSporeResult | SporeWriteFailure {
+  const now = epochSeconds();
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
+  const scope = projectScopeFromRequestContext(input.requestContext);
+
+  if (!getSpore(input.spore_id, scope)) {
+    return { ok: false, error: 'spore_id not found' };
+  }
+
+  registerMcpUserAgent(now);
+
+  const result = applySporeResolution({
+    spore_id: input.spore_id,
+    action: RESOLUTION_ACTION.OBSOLETE,
+    reason: input.reason,
+    scope,
+    project_id: projectId,
+    agent_id: USER_AGENT_ID,
+    now,
+  });
+  if ('ok' in result) return result;
+
+  return { spore: input.spore_id, status: 'obsolete' };
 }
 
 export interface ConsolidateSporesInput {
@@ -166,23 +267,22 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
       created_at: now,
     });
 
-    const superseded: string[] = [];
+    const resolved: string[] = [];
     for (const sourceId of input.source_spore_ids) {
-      const updated = updateSporeStatus(sourceId, 'superseded', now, scope);
-      if (!updated) throw new Error(`source_spore_id not found: ${sourceId}`);
-      insertResolutionEvent({
-        id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
+      const result = applySporeResolution({
+        spore_id: sourceId,
+        action: RESOLUTION_ACTION.CONSOLIDATE,
+        new_spore_id: newSporeId,
+        reason: input.reason,
+        scope,
         project_id: projectId,
         agent_id: USER_AGENT_ID,
-        spore_id: sourceId,
-        action: 'consolidate',
-        new_spore_id: newSporeId,
-        reason: input.reason ?? null,
-        created_at: now,
+        now,
       });
-      superseded.push(sourceId);
+      if ('ok' in result) throw new Error(`source_spore_id not found: ${sourceId}`);
+      resolved.push(sourceId);
     }
-    return superseded;
+    return resolved;
   })();
 
   return {

@@ -154,7 +154,7 @@ describe('migration v55 -> v56: authorship-gated plan cleanup', () => {
     const version = db.prepare(`SELECT MAX(version) AS version FROM schema_version`).get() as {
       version: number;
     };
-    expect(version.version).toBe(56);
+    expect(version.version).toBe(57);
     db.close();
   });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SPORE_STATUSES, type SporeStatus } from '@myco/constants/spore-status.js';
 
 export const SessionFrontmatterSchema = z.object({
   type: z.literal('session'),
@@ -54,8 +55,10 @@ export const OBSERVATION_TYPES = [
   'architecture',
 ] as const;
 
-export const SPORE_STATUSES = ['active', 'superseded', 'archived'] as const;
-export type SporeStatus = (typeof SPORE_STATUSES)[number];
+// Canonical spore status set lives in constants/spore-status.ts; re-exported
+// here for the many call sites that import it from vault/types.
+export { SPORE_STATUSES };
+export type { SporeStatus };
 
 export const SporeFrontmatterSchema = z.object({
   type: z.literal('spore'),

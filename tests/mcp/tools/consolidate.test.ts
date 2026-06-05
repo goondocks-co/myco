@@ -2,7 +2,7 @@
  * Tests for myco_spores op:consolidate.
  *
  * Calls the in-process service `consolidateSpores` (no HTTP). Verifies the new
- * wisdom spore is created, all sources are flipped to 'superseded' inside one
+ * wisdom spore is created, all sources are flipped to 'consolidated' inside one
  * transaction, and a resolution_events row is recorded for each source.
  */
 
@@ -90,7 +90,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
     expect(wisdom.tags).toBe('sqlite');
 
     const sourceStatuses = db.prepare("SELECT id, status FROM spores WHERE id IN ('g-1', 'g-2', 'g-3') ORDER BY id").all() as Array<{ id: string; status: string }>;
-    expect(sourceStatuses.map((r) => r.status)).toEqual(['superseded', 'superseded', 'superseded']);
+    expect(sourceStatuses.map((r) => r.status)).toEqual(['consolidated', 'consolidated', 'consolidated']);
   });
 
   it('records a resolution_events row per source', async () => {

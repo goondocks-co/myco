@@ -223,7 +223,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_SPORES,
-    description: 'Manage durable knowledge spores. op: "list" returns spores by status/type/search. op: "get" retrieves one spore by id. op: "save" records a new decision, gotcha, bug fix, discovery, or trade-off. op: "supersede" marks an old spore as replaced by a newer one. op: "consolidate" merges related spores into one comprehensive wisdom note.',
+    description: 'Manage durable knowledge spores. op: "list" returns spores by status/type/search. op: "get" retrieves one spore by id. op: "save" records a new decision, gotcha, bug fix, discovery, or trade-off. op: "supersede" marks an old spore as replaced by a newer one. op: "consolidate" merges related spores into one comprehensive wisdom note. op: "obsolete" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -231,14 +231,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "save" to capture durable decisions, gotchas, discoveries, or bug fixes. Use op: "get" for full spore content returned by search. Use op: "supersede" or "consolidate" when existing knowledge should be retired or merged.',
+      guidance: 'Use op: "save" to capture durable decisions, gotchas, discoveries, or bug fixes. Use op: "get" for full spore content returned by search. Retire stale knowledge yourself rather than leaving it for the Myco agent: op: "supersede" when a newer spore replaces it, op: "consolidate" to merge several into one wisdom note, and op: "obsolete" (with a reason) when it is simply no longer relevant and has no replacement.',
       priority: 90,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['list', 'get', 'save', 'supersede', 'consolidate'], description: 'Operation (default: "list")' },
-        id: { type: 'string', description: 'Spore id for op: "get"' },
+        op: { type: 'string', enum: ['list', 'get', 'save', 'supersede', 'consolidate', 'obsolete'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Spore id for op: "get", or the spore to retire for op: "obsolete"' },
         content: { type: 'string', description: 'Observation content for op: "save"' },
         type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type for op: "save": ${OBSERVATION_TYPES.join(', ')}` },
         observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type filter for op: "list" or consolidated note type for op: "consolidate": ${OBSERVATION_TYPES.join(', ')}` },
@@ -251,7 +251,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         new_spore_id: { type: 'string', description: 'ID of the replacement spore for op: "supersede"' },
         source_spore_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the spores to merge for op: "consolidate" (minimum 2)' },
         consolidated_content: { type: 'string', description: 'Merged content for op: "consolidate" — synthesize, do not just concatenate' },
-        reason: { type: 'string', description: 'Reason for op: "supersede" or op: "consolidate"' },
+        reason: { type: 'string', description: 'Reason for op: "supersede", "consolidate", or "obsolete" (required for "obsolete")' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
