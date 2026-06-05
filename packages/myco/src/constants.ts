@@ -218,10 +218,6 @@ export const PROMPT_CONTEXT_MIN_LENGTH = 10;
  */
 export const PROMPT_VECTOR_POOL_SIZE = 50;
 
-// --- Spore status filtering ---
-/** Spore statuses excluded from search results and context injection. */
-export const EXCLUDED_SPORE_STATUSES = new Set(['superseded', 'archived']);
-
 // --- Agent identity ---
 /** Default agent ID for the built-in intelligence agent. */
 export const DEFAULT_AGENT_ID = 'myco-agent';

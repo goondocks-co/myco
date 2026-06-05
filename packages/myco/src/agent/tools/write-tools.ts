@@ -9,15 +9,16 @@ import crypto from 'node:crypto';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, DIGEST_TIERS } from '@myco/constants.js';
-import { getSpore, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
+import { getSpore, insertSpore, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { OBSERVATION_TYPES } from '../../vault/types.js';
+import { RESOLUTION_ACTIONS, SPORE_STATUS } from '@myco/constants/spore-status.js';
+import { applySporeResolution } from '@myco/spores/write.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { requireProjectId } from '@myco/grove/request-context.js';
-import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 
@@ -95,56 +96,43 @@ export function createWriteTools(deps: VaultToolDeps) {
     'Resolve a spore by updating its status and recording a resolution event.',
     {
       spore_id: z.string().describe('ID of the spore to resolve'),
-      action: z.enum(['supersede', 'archive', 'merge', 'split', 'consolidate']).describe('Resolution action'),
-      new_spore_id: z.string().optional().describe('ID of the replacement spore (for supersede/merge)'),
+      action: z
+        .enum(RESOLUTION_ACTIONS)
+        .describe(
+          'Resolution action: supersede (replaced by a newer spore), consolidate (merged into a wisdom note), or obsolete (no longer relevant, no replacement)',
+        ),
+      new_spore_id: z.string().optional().describe('ID of the replacement spore (required for supersede)'),
       reason: z.string().optional().describe('Explanation for the resolution'),
       session_id: z.string().optional().describe('Session where this resolution occurred'),
     },
     async (args) => {
-      const now = epochSeconds();
-
-      // Update spore status
-      const statusMap: Record<string, string> = {
-        supersede: 'superseded',
-        archive: 'archived',
-        merge: 'merged',
-        split: 'split',
-        consolidate: 'consolidated',
-      };
-      const newStatus = statusMap[args.action] ?? args.action;
-      const existingSpore = getSpore(args.spore_id, scope);
-      if (!existingSpore) {
+      if (!getSpore(args.spore_id, scope)) {
         return textResult({ error: `Spore not found: ${args.spore_id}` });
       }
       if (args.new_spore_id && !getSpore(args.new_spore_id, scope)) {
         return textResult({ error: `Replacement spore not found: ${args.new_spore_id}` });
       }
 
-      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now, scope);
-      if (!updatedSpore) {
-        return textResult({ error: `Spore not found: ${args.spore_id}` });
-      }
-
-      // Record resolution event
-      const eventId = crypto.randomUUID();
-      insertResolutionEvent({
-        id: eventId,
-        project_id: projectId,
-        agent_id: agentId,
-        machine_id: machineId,
+      const result = applySporeResolution({
         spore_id: args.spore_id,
         action: args.action,
         new_spore_id: args.new_spore_id ?? null,
         reason: args.reason ?? null,
         session_id: args.session_id ?? null,
-        created_at: now,
+        scope,
+        project_id: projectId,
+        agent_id: agentId,
+        machine_id: machineId,
       });
-
-      if (newStatus !== 'active') {
-        try { embeddingManager?.onStatusChanged('spores', args.spore_id, newStatus); } catch { /* best-effort */ }
+      if (!result.ok) {
+        return textResult({ error: result.error });
       }
 
-      return textResult({ spore: updatedSpore, resolution_event_id: eventId });
+      if (result.status !== SPORE_STATUS.ACTIVE) {
+        try { embeddingManager?.onStatusChanged('spores', args.spore_id, result.status); } catch { /* best-effort */ }
+      }
+
+      return textResult({ spore: result.spore, resolution_event_id: result.resolution_event_id });
     },
     { annotations: { destructiveHint: true } },
   );

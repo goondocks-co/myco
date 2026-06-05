@@ -8,8 +8,8 @@ import { z } from 'zod';
 import { hydrateSearchResults } from '@myco/db/queries/search.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { ensureSessionRowExists, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
+import { SPORE_STATUS } from '@myco/constants/spore-status.js';
 import {
-  EXCLUDED_SPORE_STATUSES,
   PROMPT_CONTEXT_MIN_LENGTH,
   PROMPT_CONTEXT_MAX_TOKENS,
   PROMPT_VECTOR_POOL_SIZE,
@@ -502,8 +502,12 @@ export function createPromptContextHandler(deps: ContextDeps) {
 
     if (vectorResults.length === 0) return respond('');
 
+    // Allowlist, not denylist: only `active` spores are retrievable, so any
+    // terminal status (superseded / consolidated / obsolete / future) is
+    // excluded automatically — no status list to keep in sync. (The vector
+    // search above already filters status:'active'; this is defense in depth.)
     const eligible = vectorResults.filter(
-      (r) => !EXCLUDED_SPORE_STATUSES.has(r.metadata.status as string),
+      (r) => r.metadata.status === SPORE_STATUS.ACTIVE,
     );
 
     if (eligible.length === 0) {

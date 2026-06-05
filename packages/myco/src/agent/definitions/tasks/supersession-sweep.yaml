@@ -2,14 +2,14 @@
 # Built-in Task: Supersession Sweep
 # =============================================================================
 # Scan active spores for duplicates, contradictions, and outdated
-# observations. Resolve or archive as appropriate.
+# observations. Supersede, consolidate, or obsolete as appropriate.
 # =============================================================================
 
 name: supersession-sweep
 displayName: Supersession Sweep
 description: >
   Scan active spores for duplicates, contradictions, and outdated
-  observations. Supersede, resolve, or archive spores as appropriate.
+  observations. Supersede, consolidate, or obsolete spores as appropriate.
   Records resolution events for audit trail.
 agent: myco-agent
 isDefault: false
@@ -62,12 +62,13 @@ prompt: |
      - new_spore_id: the kept spore's ID
      - reason: specific explanation (not just "duplicate")
 
-  **For truly outdated spores (no longer accurate):**
-  - Call `vault_resolve_spore` with action "archive"
-  - reason: explain what changed
+  **For truly outdated spores (no longer relevant, with no replacement —
+  e.g. a dropped feature):**
+  - Call `vault_resolve_spore` with action "obsolete"
+  - reason: explain what changed (required)
 
   Only supersede or consolidate when the new information genuinely replaces
-  the old. Release state is supporting evidence only: do not archive or
+  the old. Release state is supporting evidence only: do not obsolete or
   supersede solely because a spore is unreleased, unknown, or unreconciled.
   When in doubt, keep both.
 
@@ -76,7 +77,7 @@ prompt: |
   Call `vault_report` with action "supersession":
   - Spores reviewed: N
   - Superseded: N (with reasons summary)
-  - Archived: N (with reasons summary)
+  - Obsoleted: N (with reasons summary)
   - Kept (no action): N
 
 toolOverrides:

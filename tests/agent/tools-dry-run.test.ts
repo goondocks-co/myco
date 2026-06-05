@@ -230,7 +230,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
       const resolve = findTool(tools, 'vault_resolve_spore');
       const resolveResult = await resolve.handler({
         spore_id: stubSporeId,
-        action: 'archive',
+        action: 'obsolete',
         reason: 'cleanup',
       }, undefined);
 
@@ -253,7 +253,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
       const resolve = findTool(tools, 'vault_resolve_spore');
       const result = await resolve.handler({
         spore_id: 'not-a-stub-and-not-live',
-        action: 'archive',
+        action: 'obsolete',
       }, undefined);
 
       // No throw. Generic ack shape.
