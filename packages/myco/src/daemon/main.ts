@@ -884,7 +884,7 @@ export async function main(): Promise<void> {
   // project_id when present, else this daemon fallback (NULL for a groveless
   // anchor). logEntryToInsert maps a log entry to a row for both this live
   // path and buffer replay.
-  const daemonLogProjectId = rowProjectIdFromRequestContext(dataPaths.requestContext) ?? null;
+  const daemonLogProjectId = rowProjectIdFromRequestContext(dataPaths.requestContext);
   logger.setPersistFn((entry) => {
     insertLogEntry(logEntryToInsert(entry, daemonLogProjectId));
   });
@@ -1177,7 +1177,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     vaultDir: bootstrapVaultDir,
-    projectId: rowProjectIdFromRequestContext(dataPaths.requestContext) ?? null,
+    projectId: rowProjectIdFromRequestContext(dataPaths.requestContext),
     machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
@@ -1560,11 +1560,10 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const requestContext = dataPaths.requestContext;
-      // Skip when the daemon context has no resolved project.
-      if (rowProjectIdFromRequestContext(requestContext) == null) {
+      const projectId = rowProjectIdFromRequestContext(requestContext);
+      if (projectId == null) {
         return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
       }
-      const projectId = requireProjectId(requestContext, 'canopy-map regenerate');
       const projectRoot = requestContext.projectRoot;
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
@@ -1609,11 +1608,10 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const requestContext = dataPaths.requestContext;
-      // Fail when the daemon context has no resolved project.
-      if (rowProjectIdFromRequestContext(requestContext) == null) {
+      const projectId = rowProjectIdFromRequestContext(requestContext);
+      if (projectId == null) {
         throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
       }
-      const projectId = requireProjectId(requestContext, 'canopy-describe regenerate');
       const projectRoot = requestContext.projectRoot;
       const built = await buildTaskInstruction(
         task,

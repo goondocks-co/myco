@@ -583,6 +583,32 @@ function buildVaultFallbackOrGlobal(
 }
 
 /**
+ * Build a request context synthesized from a daemon-owned vault directory
+ * (not caller-supplied tenancy). `projectId` is the vault's manifest project
+ * for a Grove-bound vault, or null for the global daemon's project-less
+ * startup anchor. Explicit-header/env branches override `tenancySource` to
+ * 'caller'.
+ */
+function synthesizedVaultContext(
+  vaultDir: string,
+  projectId: GroveProjectId | null,
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
+): MycoRequestContext {
+  return {
+    projectRoot: resolveProjectRoot(vaultDir),
+    callerRoot: overrides.callerRoot ?? null,
+    projectId,
+    groveId: null,
+    machineId: overrides.machineId ?? getMachineId(),
+    sessionId: overrides.sessionId ?? null,
+    projectVaultDir: vaultDir,
+    databasePath: vaultDbPath(vaultDir),
+    source: 'legacy-vault',
+    tenancySource: 'synthesized',
+  };
+}
+
+/**
  * Internal: soft-fail variant of `buildVaultFallback`. Returns a
  * discriminated union so call sites can branch on legacy state
  * instead of catching exceptions. `kind: 'grove'` carries the
@@ -602,23 +628,9 @@ function tryBuildVaultFallback(
       reason: `No Grove project id available for vault ${vaultDir}. Open the dashboard and commit Myco config to this project from the Symbionts page.`,
     };
   }
-  const projectRoot = resolveProjectRoot(vaultDir);
   return {
     kind: 'grove',
-    context: {
-      projectRoot,
-      callerRoot: overrides.callerRoot ?? null,
-      projectId: assertGroveProjectId(manifest.project.id),
-      groveId: null,
-      machineId: overrides.machineId ?? getMachineId(),
-      sessionId: overrides.sessionId ?? null,
-      projectVaultDir: vaultDir,
-      databasePath: vaultDbPath(vaultDir),
-      source: 'legacy-vault',
-      // Built from the daemon's fallback vault, not caller-supplied
-      // tenancy. Explicit-header/env branches override this to 'caller'.
-      tenancySource: 'synthesized',
-    },
+    context: synthesizedVaultContext(vaultDir, assertGroveProjectId(manifest.project.id), overrides),
     manifest,
   };
 }
@@ -633,18 +645,7 @@ export function daemonGlobalRequestContext(
   vaultDir: string,
   overrides: { machineId?: string; sessionId?: string | null } = {},
 ): MycoRequestContext {
-  return {
-    projectRoot: resolveProjectRoot(vaultDir),
-    callerRoot: null,
-    projectId: null,
-    groveId: null,
-    machineId: overrides.machineId ?? getMachineId(),
-    sessionId: overrides.sessionId ?? null,
-    projectVaultDir: vaultDir,
-    databasePath: vaultDbPath(vaultDir),
-    source: 'legacy-vault',
-    tenancySource: 'synthesized',
-  };
+  return synthesizedVaultContext(vaultDir, null, overrides);
 }
 
 /**
@@ -674,6 +675,12 @@ export function requireProjectId(
  * NULL rows because pre-Grove vault data has no project_id. Once a Grove id
  * is present, the resolved project id becomes mandatory row scope.
  */
+export function rowProjectIdFromRequestContext(
+  context: MycoRequestContext,
+): GroveProjectId | null;
+export function rowProjectIdFromRequestContext(
+  context: MycoRequestContext | undefined,
+): GroveProjectId | null | undefined;
 export function rowProjectIdFromRequestContext(
   context?: MycoRequestContext,
 ): GroveProjectId | null | undefined {
