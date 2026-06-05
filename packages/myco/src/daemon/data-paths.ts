@@ -1,5 +1,9 @@
 import path from 'node:path';
-import { type MycoRequestContext, requestContextFromEnvironment } from '@myco/grove/request-context.js';
+import {
+  type MycoRequestContext,
+  requestContextFromEnvironment,
+  daemonGlobalRequestContext,
+} from '@myco/grove/request-context.js';
 import {
   GROVE_VECTORS_FILENAME,
   resolveGroveVectorsPath,
@@ -47,8 +51,15 @@ export function resolveVectorsPathForRequestContext(requestContext: MycoRequestC
 export function resolveDaemonDataPaths(
   vaultDir: string,
   env: Record<string, string | undefined> = process.env,
+  options: { daemonGlobal?: boolean } = {},
 ): DaemonDataPaths {
-  const requestContext = requestContextFromEnvironment(env, vaultDir);
+  // The global multi-tenant daemon's anchor has NO project (it serves every
+  // tenant per request). Its context is the daemon-global shape (projectId
+  // null) — never a fabricated phantom project id. A variant-less ad-hoc
+  // `myco daemon` bound to a real project vault still resolves that project.
+  const requestContext = options.daemonGlobal
+    ? daemonGlobalRequestContext(vaultDir)
+    : requestContextFromEnvironment(env, vaultDir);
   return {
     requestContext,
     databasePath: requestContext.databasePath,

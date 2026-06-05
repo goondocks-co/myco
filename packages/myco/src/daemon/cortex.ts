@@ -33,7 +33,7 @@ import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
-import type { MycoRequestContext } from '@myco/grove/request-context.js';
+import { requireProjectId, type MycoRequestContext } from '@myco/grove/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
@@ -231,7 +231,7 @@ export async function buildCortexPrompt(
   const delivery = resolveInstructionDelivery(config.cortex, targetSymbiont);
   const scope: import('@myco/grove/ids.js').ProjectScope = {
     kind: 'project',
-    id: requestContext.projectId,
+    id: requireProjectId(requestContext, 'cortex instructions'),
   };
   const instructions = delivery.inlineInstructions
     ? getCortexInstructions(DEFAULT_AGENT_ID, scope)
@@ -380,7 +380,7 @@ export async function triggerCortexInstructions(
       embeddingManager,
       requestContext,
     });
-    const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK, { kind: 'project', id: requestContext.projectId });
+    const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK, { kind: 'project', id: requireProjectId(requestContext, 'cortex instructions') });
 
     const tracked = resultPromise.catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Cortex instructions task failed', {

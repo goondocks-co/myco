@@ -22,7 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { filesystemRootFromRequestContext } from '../../grove/request-context.js';
+import { filesystemRootFromRequestContext, requireProjectId } from '../../grove/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
@@ -107,7 +107,7 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
       return { body };
     }
     const projectRoot = filesystemRootFromRequestContext(ctx);
-    const projectId = ctx.projectId;
+    const projectId = requireProjectId(ctx, 'canopy inject');
     const config = deps.liveConfig.current.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');

@@ -5,14 +5,18 @@
  * daemon's stored bearer key is never sent to an attacker-controlled host.
  * `openai-compatible` / `ollama` / `lmstudio` remain user-configurable.
  */
-import { describe, it, expect, afterEach, mock } from 'bun:test';
+import { describe, it, expect, afterAll, afterEach, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleTestProvider } from '@myco/daemon/api/providers';
 import { handleGetModels } from '@myco/daemon/api/models';
 import { OPENAI_API_KEY_ENV, OPENROUTER_API_KEY_ENV } from '@myco/providers/env.js';
 
+const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;
+// Restore the real global.fetch at file end so this module-scope override does
+// not leak into sibling test files sharing the process (NO_ISOLATE groups).
+afterAll(() => { global.fetch = originalFetch; });
 
 mock.module('@myco/intelligence/ollama.js', () => ({
   OllamaBackend: class {

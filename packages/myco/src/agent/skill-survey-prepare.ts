@@ -9,6 +9,7 @@ import { countSpores, listSpores } from '@myco/db/queries/spores.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
 import {
   projectScopeFromRequestContext,
+  requireProjectId,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import {
@@ -330,7 +331,7 @@ export function getSkillSurveyEligibility(
   options: { ignoreWatermark?: boolean } = {},
 ): SkillSurveyEligibility {
   const scope = projectScopeFromRequestContext(requestContext);
-  const projectId = requestContext!.projectId;
+  const projectId = requireProjectId(requestContext!, 'skill survey');
   const queueWork = listSurveyQueueReconciliationCandidates(scope, {
     includeDeferred: options.ignoreWatermark === true,
     onlyUnreconciled: false,
@@ -390,7 +391,7 @@ export function buildSkillSurveyPreparation(
   options: { ignoreWatermark?: boolean } = {},
 ): SkillSurveyPreparation {
   const scope = projectScopeFromRequestContext(requestContext);
-  const projectId = requestContext!.projectId;
+  const projectId = requireProjectId(requestContext!, 'skill survey');
   const ignoreWatermark = options.ignoreWatermark === true;
   const eligibility = getSkillSurveyEligibility(agentId, requestContext, options);
 

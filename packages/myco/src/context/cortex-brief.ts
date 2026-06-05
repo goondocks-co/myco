@@ -27,6 +27,7 @@ import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/machine-id.js';
 import {
   projectScopeFromRequestContext,
+  requireProjectId,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
@@ -344,7 +345,7 @@ export async function buildCortexInstructionsInput(
   if (!requestContext) {
     throw new Error('buildCortexInstructionsInput requires a Grove request context — none supplied');
   }
-  const projectId = requestContext.projectId;
+  const projectId = requireProjectId(requestContext, 'cortex brief');
   const scope = projectScopeFromRequestContext(requestContext);
   // Request context carries the machine id when the caller knows it
   // (tests, /sessions/register paths, MCP requests). Fall back to the

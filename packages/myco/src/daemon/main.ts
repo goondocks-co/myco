@@ -196,7 +196,7 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { type GroveProjectId } from '../grove/ids.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
+import { rowProjectIdFromRequestContext, requireProjectId, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
@@ -600,10 +600,16 @@ export async function main(): Promise<void> {
     // no Groves yet), fall through to fresh derivation via getMachineId.
   }
   const machineId = getMachineId();
-  const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
-    ...process.env,
-    MYCO_MACHINE_ID: machineId,
-  });
+  const dataPaths = resolveDaemonDataPaths(
+    bootstrapVaultDir,
+    {
+      ...process.env,
+      MYCO_MACHINE_ID: machineId,
+    },
+    // Phantom boot = the global daemon's project-less anchor. Use the
+    // daemon-global context (projectId null), never a fabricated project id.
+    { daemonGlobal: bootstrapIsPhantom },
+  );
 
   // Relocate any legacy project-vault `secrets.env` into machine secrets
   // BEFORE loading. The provider-secrets dashboard no longer reads the
@@ -1174,7 +1180,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     vaultDir: bootstrapVaultDir,
-    projectId: dataPaths.requestContext.projectId,
+    projectId: rowProjectIdFromRequestContext(dataPaths.requestContext) ?? null,
     machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
@@ -1529,7 +1535,10 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
+    // No project context (e.g. a global-page request) → empty string, which
+    // matches no project row and yields the empty-canopy envelope. Never the
+    // daemon anchor (which has no project anyway).
+    resolveProjectId: (req) => req.requestContext?.projectId ?? '',
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
@@ -1552,8 +1561,16 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = dataPaths.requestContext.projectRoot;
       const requestContext = dataPaths.requestContext;
+      // Canopy regenerate is project-owned. The global daemon's anchor has no
+      // project (projectId null); dispatching under it would record a
+      // NULL-project agent run (RC-4). Refuse rather than mis-scope. A
+      // variant-less ad-hoc daemon bound to a real project still proceeds.
+      if (rowProjectIdFromRequestContext(requestContext) == null) {
+        return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
+      }
+      const projectId = requireProjectId(requestContext, 'canopy-map regenerate');
+      const projectRoot = requestContext.projectRoot;
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -1573,7 +1590,7 @@ export async function main(): Promise<void> {
 
       // runAgent inserts the agent_runs row synchronously before its first
       // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
@@ -1596,8 +1613,14 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = dataPaths.requestContext.projectRoot;
       const requestContext = dataPaths.requestContext;
+      // Project-owned run; refuse under the project-less daemon anchor rather
+      // than record a NULL-project run (RC-4).
+      if (rowProjectIdFromRequestContext(requestContext) == null) {
+        throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
+      }
+      const projectId = requireProjectId(requestContext, 'canopy-describe regenerate');
+      const projectRoot = requestContext.projectRoot;
       const built = await buildTaskInstruction(
         task,
         params,
@@ -1620,7 +1643,7 @@ export async function main(): Promise<void> {
         logger,
       });
 
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {

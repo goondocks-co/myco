@@ -28,6 +28,7 @@ import path from 'node:path';
 import { ToolError } from './error.js';
 import {
   REQUEST_CONTEXT_HEADERS,
+  requireProjectId,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import {
@@ -136,7 +137,7 @@ export function resolveCallContext(
     // If that project isn't registered in the target Grove, we still
     // pivot the database — row-scope filters will simply return zero
     // matches, which is the honest answer.
-    resolvedProjectId = baseContext.projectId;
+    resolvedProjectId = requireProjectId(baseContext, 'caller tenancy');
     resolvedProjectRoot = baseContext.projectRoot;
   }
 

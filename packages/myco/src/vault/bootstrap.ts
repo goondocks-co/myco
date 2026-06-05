@@ -8,7 +8,6 @@ import {
   SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord } from '../grove/registry.js';
-import { createProjectId } from '../grove/ids.js';
 
 /**
  * Resolve the bootstrap vault directory for daemon startup.
@@ -129,29 +128,33 @@ export function resolveBootstrapVaultDirOrPhantom(cwd: string = process.cwd()): 
   if (resolved) return { vaultDir: resolved, isPhantom: false };
   const phantom = resolvePhantomBootstrapVaultDir();
   fs.mkdirSync(phantom, { recursive: true });
-  ensurePhantomProjectManifest(phantom);
+  // The phantom dir is pure filesystem scaffolding (machine id, secrets, log
+  // dir, a config-empty myco.yaml). We deliberately do NOT mint a `[project]
+  // id` — the daemon's anchor is the project-less daemon-global context
+  // (`resolveDaemonDataPaths({ daemonGlobal: true })`). Fabricating a
+  // real-looking `proj_<hex>` here was the phantom-tenancy bug: an id that
+  // masqueraded as a tenant in the data plane. Also remove any stale manifest
+  // an older daemon build left behind so no fabricated id survives an upgrade.
+  removeStalePhantomProjectManifest(phantom);
   ensurePhantomMycoYaml(phantom);
   return { vaultDir: phantom, isPhantom: true };
 }
 
 /**
- * Write a minimal `project.toml` into the phantom vault so the daemon's
- * manifest-aware paths (`loadProjectManifest`, `requestContextFromEnvironment`)
- * have a non-null shape to work against. The id is a real Grove-era
- * project id (`proj_<32hex>`) so it satisfies `assertGroveProjectId`, but
- * the manifest has no `grove` block — the daemon's `assertGroveBound`
- * path is skipped in phantom mode, so the unbound state is intentional.
- *
- * Persisted across boots so the phantom id stays stable; the daemon
- * restarts to a real vault as soon as the first project registers via
- * the hook-driven auto-Grove-create flow.
+ * Remove any stale `project.toml` a previous daemon build minted in the
+ * phantom vault. The global daemon no longer fabricates a project id for its
+ * anchor — it uses the project-less daemon-global context — so a leftover
+ * `_unbound-bootstrap/project.toml` carrying a `proj_<hex>` id (which could be
+ * read as tenancy) is deleted on boot. Best-effort: absence is the goal, and
+ * the daemon-global anchor ignores the manifest regardless.
  */
-function ensurePhantomProjectManifest(phantomVaultDir: string): void {
+function removeStalePhantomProjectManifest(phantomVaultDir: string): void {
   const manifestPath = path.join(phantomVaultDir, PROJECT_MANIFEST_FILENAME);
-  if (fs.existsSync(manifestPath)) return;
-  const projectId = createProjectId();
-  const body = `[project]\nid = "${projectId}"\nname = "myco-bootstrap"\n`;
-  fs.writeFileSync(manifestPath, body, { mode: 0o600 });
+  try {
+    fs.rmSync(manifestPath, { force: true });
+  } catch {
+    // Non-fatal — the daemon-global anchor does not read this manifest.
+  }
 }
 
 /**

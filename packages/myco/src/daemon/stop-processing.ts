@@ -76,8 +76,14 @@ export interface StopProcessorDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   vaultDir: string;
-  /** Daemon-resolved Grove project id used for every per-session insert. */
-  projectId: GroveProjectId;
+  /**
+   * Daemon-resolved Grove project id used as the fallback when a stop event
+   * carries no caller project. NULL for the global daemon's project-less
+   * anchor (real stop events always carry a grove-bound context, so this
+   * fallback is a dead-in-practice safety net — and NULL is safer than the
+   * old phantom id it replaced).
+   */
+  projectId: GroveProjectId | null;
   machineId?: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
@@ -232,7 +238,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     user: string | undefined,
     sessionMeta: RegisteredSession | undefined,
-    requestProjectId: GroveProjectId,
+    requestProjectId: GroveProjectId | null,
     requestRowProjectId: string | null,
     requestProjectRoot: string,
     requestFilesystemRoot: string,
@@ -455,7 +461,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
             .join('\n');
         }
-        if (transcriptText) {
+        if (transcriptText && requestProjectId) {
           detectSkillUsage(sessionId, transcriptText, requestProjectId);
         }
       } catch {
@@ -613,14 +619,16 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch { /* fallback to index-based */ }
       }
 
-      captureBatchImages({
-        sessionId,
-        promptBatchId: resolvedBatchId,
-        promptNumber: resolvedPromptNumber,
-        images: turn.images,
-        logger,
-        projectId: requestProjectId,
-      });
+      if (requestProjectId) {
+        captureBatchImages({
+          sessionId,
+          promptBatchId: resolvedBatchId,
+          promptNumber: resolvedPromptNumber,
+          images: turn.images,
+          logger,
+          projectId: requestProjectId,
+        });
+      }
     }
 
     // Final-state markers run on transcript phase only. For single-phase
