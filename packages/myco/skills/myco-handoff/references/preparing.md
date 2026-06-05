@@ -68,10 +68,16 @@ Assemble the block:
 
 ### 4b. Create a new dedicated handoff plan
 
+A new, non-file-backed plan **requires `plan_key`** (its stable identity; pass
+`plan_key` OR `source_path`, never both). Use a `plan_key` like
+`handoff-<short-slug>` — re-running `prepare` with the same `session_id` +
+`plan_key` then updates the same plan (idempotent) instead of creating a second.
+
 ```json
 myco_plans({
   "op":"save",
   "session_id":"<this session id>",
+  "plan_key":"handoff-<short-slug>",
   "title":"Handoff: <short topic>",
   "status":"active",
   "tags":["handoff"],
