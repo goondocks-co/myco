@@ -275,7 +275,11 @@ export function requestContextFromHttpHeaders(
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
   const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
-  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { callerRoot });
+  // Daemon path: tolerate the project-less anchor vault (no manifest) by
+  // resolving the daemon-global context rather than throwing — context-less
+  // requests (notification banner) must succeed at GLOBAL_SCOPE. Caller
+  // headers below still override to a real project.
+  const { context: fallback, manifest } = buildVaultFallbackOrGlobal(fallbackVaultDir, { callerRoot });
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
     projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
@@ -329,7 +333,9 @@ export function requestContextFromTenancyIds(
   },
 ): MycoRequestContext {
   enforceUrlTenancyAuth(options.headers, options.expectedAuthToken);
-  const { context: fallback } = buildVaultFallback(fallbackVaultDir);
+  // Daemon path: tolerate the project-less anchor vault; the URL (Grove,
+  // project) ids below override to the real project.
+  const { context: fallback } = buildVaultFallbackOrGlobal(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     groveId: ids.groveId,
     projectId: ids.projectId,
@@ -565,6 +571,31 @@ function buildVaultFallback(
     throw new Error(result.reason);
   }
   return { context: result.context, manifest: result.manifest };
+}
+
+/**
+ * Daemon per-request variant of `buildVaultFallback`: when the fallback vault
+ * is the project-less `_unbound-bootstrap` anchor (no manifest), return the
+ * daemon-global context instead of throwing. The global daemon's own vault has
+ * no project, so a context-less request (e.g. the notification banner) must
+ * resolve to GLOBAL_SCOPE, not 500. Real project vaults still resolve to their
+ * project. Used only by the daemon transport paths (header / URL-param); the
+ * CLI/env path keeps the throwing `buildVaultFallback` so an unregistered
+ * project still gets the friendly "commit Myco config" error.
+ */
+function buildVaultFallbackOrGlobal(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
+): { context: MycoRequestContext; manifest: ProjectManifest | null } {
+  const result = tryBuildVaultFallback(vaultDir, overrides);
+  if (result.kind === 'grove') {
+    return { context: result.context, manifest: result.manifest };
+  }
+  const context = daemonGlobalRequestContext(vaultDir, {
+    machineId: overrides.machineId,
+    sessionId: overrides.sessionId,
+  });
+  return { context: { ...context, callerRoot: overrides.callerRoot ?? null }, manifest: null };
 }
 
 /**

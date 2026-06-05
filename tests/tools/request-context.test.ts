@@ -246,12 +246,17 @@ describe('tool request context', () => {
     });
   }, 15000);
 
-  it('throws when neither headers nor a Grove manifest provide a project id', () => {
+  it('resolves the daemon-global context (no project) when neither headers nor a manifest provide one', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-no-grove-'));
     try {
       const vaultDir = path.join(tmp, '.myco');
       fs.mkdirSync(vaultDir, { recursive: true });
-      expect(() => requestContextFromHttpHeaders({}, vaultDir)).toThrow(/No Grove project id available/);
+      // The daemon's per-request fallback must NOT throw for the project-less
+      // anchor — a context-less request resolves to the daemon-global context
+      // (GLOBAL_SCOPE), not 500. (The notification banner polls every page.)
+      const resolved = requestContextFromHttpHeaders({}, vaultDir);
+      expect(resolved.projectId).toBeNull();
+      expect(resolved.groveId).toBeNull();
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

@@ -14,6 +14,7 @@ import {
   daemonGlobalRequestContext,
   rowProjectIdFromRequestContext,
   projectScopeFromRequestContext,
+  requestContextFromHttpHeaders,
 } from '@myco/grove/request-context.js';
 import {
   resolveBootstrapVaultDirOrPhantom,
@@ -31,6 +32,23 @@ describe('daemon-global anchor context', () => {
     const ctx = daemonGlobalRequestContext('/tmp/_unbound-bootstrap');
     expect(rowProjectIdFromRequestContext(ctx)).toBeNull();
     expect(projectScopeFromRequestContext(ctx)).toEqual({ kind: 'global' });
+  });
+
+  it('a context-less daemon request against the project-less anchor resolves daemon-global, not throw', () => {
+    // Regression: the daemon synthesizes a per-request fallback from its own
+    // (now manifest-less) `_unbound-bootstrap` vault. With no caller headers it
+    // must produce the daemon-global context (GLOBAL_SCOPE) rather than throw
+    // "No Grove project id available" — e.g. the notification banner polls
+    // every page with no project context.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-anchor-vault-'));
+    try {
+      const ctx = requestContextFromHttpHeaders({}, dir);
+      expect(ctx.projectId).toBeNull();
+      expect(ctx.groveId).toBeNull();
+      expect(projectScopeFromRequestContext(ctx)).toEqual({ kind: 'global' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
