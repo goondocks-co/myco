@@ -16,6 +16,7 @@ import { OBSERVATION_TYPES } from '../../vault/types.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
+import { requireProjectId } from '@myco/grove/request-context.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
@@ -187,7 +188,7 @@ export function createWriteTools(deps: VaultToolDeps) {
     },
     async (args) => {
       const now = epochSeconds();
-      const state = setState(agentId, requestContext!.projectId, args.key, args.value, now);
+      const state = setState(agentId, requireProjectId(requestContext!, 'agent state write'), args.key, args.value, now);
 
       return textResult(state);
     },

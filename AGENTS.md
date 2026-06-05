@@ -33,15 +33,20 @@ Myco captures project memory in a local vault and serves it back through context
 ## Non-Negotiable Rules
 
 - Think before coding. Surface assumptions and ambiguities instead of guessing.
+- Verify before asserting state. Before claiming which project/grove/daemon/database something belongs to — or that two of them share state — run the command that proves it and report only what the output shows. A URL slug, an injected memory, or a helper run in isolation is a hypothesis, not proof; label it as such until checked.
+- Never build a claim on an unverified claim. If a step was a guess, verify it before it becomes the premise for the next conclusion.
 - Prefer extending existing patterns over one-off patches.
 - Plans are guideposts, not scripts: reconcile a plan's code against the current code before writing, and when a step would duplicate an existing surface or fight an existing pattern, follow the plan's intent and the existing pattern — surface the deviation, do not transcribe literally into a violation. Reviewers MUST check pattern-fit and duplication, not just fidelity to the plan.
 - Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
+- One implementation per operation across surfaces. UI, MCP/symbiont tools, and CLI MUST share the same underlying code path for the same operation; a user and a symbiont doing the same thing MUST get the same result. Divergent implementations for one operation are a bug.
+- Never swallow errors. Do not turn a failure into an empty or default result (e.g. `return []` when a call fails); propagate or surface it. Silent failure hides real problems — cross-tenant rejections, auth failures, lost connectivity — behind "no data".
 - Preserve clear domain ownership. Do not blur module boundaries without a reason. Callout and fix when you see this happening.
 - Avoid magic literals for meaningful values. Use named constants or an existing shared pattern.
 - Keep comments lean. Add comments only when they clarify non-obvious code; DO NOT use comments to preserve task history, decisions, PR context, or conversational state.
 - Prefer explicit configuration and user choice over heuristic detection when both are viable.
 - When in doubt, ask whether the rule belongs here or should live in Myco context instead.
+- Test critical paths, not edge cases, tests to prevent regressions, not to verify correctness.
 
 ## Quality Gates
 

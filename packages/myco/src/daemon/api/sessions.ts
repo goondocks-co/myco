@@ -257,7 +257,13 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       }, scope);
     }
 
-    await triggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger });
+    await triggerTitleSummary(sessionId, {
+      vaultDir,
+      resolveEmbeddingManager,
+      liveConfig,
+      logger,
+      requestContext: req.requestContext,
+    });
 
     logger.info(LOG_KINDS.API_SESSION_COMPLETE, 'Session manually completed', {
       session_id: sessionId,

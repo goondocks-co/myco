@@ -94,7 +94,7 @@ export interface ForEachGroveOptions {
    * The intended use is cold-Grove avoidance: the cheapest signal a
    * caller can supply is a stat of the Grove DB mtime against an
    * activity threshold, or a Grove-level activity hint maintained
-   * elsewhere. Skipping a cold Grove on a frequent-tick PowerJob
+   * elsewhere. Skipping a cold Grove on a frequent-tick RunnerJob
    * avoids opening its SQLite handle and warming the
    * GroveRuntimeCache for no work.
    *

@@ -33,7 +33,7 @@
 
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { PowerManager } from './power.js';
+import type { JobRunner } from './job-runner.js';
 import { TeamSyncClient, type VersionCompat } from './team-sync.js';
 import {
   listPending,
@@ -107,7 +107,7 @@ export interface TeamSyncResult {
    * flag write (no push, no client) so all Groves start the session in lockstep.
    */
   reconcileAllGroveFlags: (cache: GroveRuntimeCache) => Promise<void>;
-  registerFlushJob: (powerManager: PowerManager, cache: GroveRuntimeCache) => void;
+  registerFlushJob: (runner: JobRunner, cache: GroveRuntimeCache) => void;
 }
 
 export interface TeamFlushResult {
@@ -831,30 +831,25 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     rebuildFromLocal,
     flushAllGroves,
     reconcileAllGroveFlags,
-    registerFlushJob: (powerManager, cache) => {
+    registerFlushJob: (runner, cache) => {
       // Registered unconditionally; registry participation is checked at run
       // time so Team selection changes take effect without a daemon restart.
       // The job fans out across every registered Grove so non-boot Groves'
       // outboxes drain on the same cadence as the boot Grove.
-      let running = false;
-      powerManager.register({
+      runner.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
-        preventsDeepSleep: () => {
+        kind: 'housekeeping',
+        hold: {
           // Best-effort: the boot/legacy outbox guarded the deep-sleep
           // gate previously. With multi-Grove fan-out we'd need to scope
           // countPending() per Grove; keep the cheap boot-context probe
           // and rely on the regular tick to drain non-boot Groves.
-          return groveParticipates(defaultRequestContext?.groveId ?? null) && countPending() > 0;
+          pending: () =>
+            groveParticipates(defaultRequestContext?.groveId ?? null) ? countPending() : 0,
         },
         fn: async () => {
-          if (running) return;
-          running = true;
-          try {
-            await flushAllGroves(cache);
-          } finally {
-            running = false;
-          }
+          await flushAllGroves(cache);
         },
       });
     },

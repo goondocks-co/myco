@@ -1,7 +1,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import type { PowerManager } from './power.js';
+import type { JobRunner } from './job-runner.js';
 import type {
   ProjectTaskLastRunMap,
   ScheduledJobContext,
@@ -35,7 +35,9 @@ import {
   forEachRegisteredProject,
   isProjectActive,
 } from './scope-iteration.js';
-import { isProjectPausedInGrove } from '@myco/grove/registry.js';
+import { isProjectPausedInGrove, listRegisteredProjects } from '@myco/grove/registry.js';
+import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
@@ -43,6 +45,52 @@ import type { EmbeddingManager } from './embedding/manager.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
+
+// ---------------------------------------------------------------------------
+// Canopy-pending hold probe
+// ---------------------------------------------------------------------------
+
+// Accelerator cap used to bound the per-project COUNT. The hold only needs
+// ">0"; stopping at the accelerated threshold avoids an unbounded COUNT on
+// large canopy_entries tables.
+const CANOPY_PROBE_COUNT_CAP = 50;
+
+export interface CanopyPendingProbeDeps {
+  cache: GroveRuntimeCache;
+  logger: DaemonLogger;
+  mycoHome?: string;
+  daemonStateDir: string;
+}
+
+// Holds the daemon awake only when canopy-describe will actually drain the
+// pending rows. canopy-describe defaults to `schedule.enabled: false` while
+// canopy-background-scan ALWAYS populates pending rows — so an ungated hold
+// would pin a default install awake for work a disabled task never runs.
+// Count pending rows ONLY for projects where canopy-describe is enabled.
+export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () => number {
+  return makeGrovePendingProbe({
+    cache: deps.cache,
+    logger: deps.logger,
+    daemonStateDir: deps.daemonStateDir,
+    mycoHome: deps.mycoHome,
+    logKind: LOG_KINDS.CANOPY_ERROR,
+    // Runs inside the helper's `withDatabase(groveDb)`, so the ambient db
+    // for `countPendingCanopyDescribe` is this Grove's DB.
+    countForGrove: ({ grove, mycoHome }) => {
+      let grovePending = 0;
+      for (const project of listRegisteredProjects(grove.id, mycoHome)) {
+        const config = loadMergedConfig(resolveProjectVaultDir(project.root), {
+          groveId: grove.id,
+          mycoHome,
+        });
+        if (config.agent.tasks?.['canopy-describe']?.schedule?.enabled !== true) continue;
+        grovePending += countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP);
+        if (grovePending > 0) break;
+      }
+      return grovePending;
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Cold-project gate
@@ -150,7 +198,7 @@ async function seedInitialLastRuns(
 // ---------------------------------------------------------------------------
 
 export async function registerScheduledTasks(
-  powerManager: PowerManager,
+  runner: JobRunner,
   deps: TaskSchedulingDeps,
 ): Promise<ScheduledJobKicker> {
   const {
@@ -512,6 +560,7 @@ export async function registerScheduledTasks(
       for (const row of rows) out.set(row.task, row.last_completed_seconds * 1000);
       return out;
     },
+    canopyPendingProbe: makeTotalCanopyPendingProbe({ cache, logger, mycoHome, daemonStateDir }),
   };
 
   const { jobs, kicker } = buildScheduledJobs(
@@ -519,7 +568,7 @@ export async function registerScheduledTasks(
     scheduledContext,
     initialLastRuns,
   );
-  powerManager.replaceGroup(SCHEDULED_JOB_PREFIX, jobs);
+  runner.replaceGroup(SCHEDULED_JOB_PREFIX, jobs);
   logger.info(LOG_KINDS.DAEMON_START, `Synced ${jobs.length} scheduled task(s)`, {
     tasks: jobs.map((j) => j.name),
   });

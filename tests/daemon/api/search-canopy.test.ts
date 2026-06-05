@@ -17,8 +17,14 @@ import { createSearchHandler } from '@myco/daemon/api/search.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import { makeTestRequestContext } from '../../helpers/request-context';
+import type { MycoRequestContext } from '@myco/grove/request-context.js';
 const epochNow = () => Math.floor(Date.now() / 1000);
+
+// Canopy is project-scoped: a real MCP/CLI caller searches its own Grove. A
+// Grove-bound context resolves a non-null row project id, so the handler runs
+// the canopy search.
+const GROVE_BOUND_CONTEXT = makeTestRequestContext({ groveId: 'grove_test' });
 
 function seedCanopyRow(opts: {
   project_id: string;
@@ -41,11 +47,14 @@ function seedCanopyRow(opts: {
   });
 }
 
-function makeRequest(query: Record<string, string>): RouteRequest {
+function makeRequest(
+  query: Record<string, string>,
+  context: MycoRequestContext = GROVE_BOUND_CONTEXT,
+): RouteRequest {
   // Search handler opens a per-request DB from requestContext.databasePath.
   // The test relies on the singleton via setupTestDb(); blank the path so
   // openRequestDatabase falls back to getDatabase().
-  const ctx = { ...TEST_REQUEST_CONTEXT, databasePath: '' };
+  const ctx = { ...context, databasePath: '' };
   return { body: {}, query, params: {}, pathname: '/api/search', requestContext: ctx } as RouteRequest;
 }
 
@@ -142,5 +151,24 @@ describe('GET /api/search type=canopy', () => {
     const res = await handler(makeRequest({ q: 'x', type: 'canopy' }));
     expect(res.body?.results).toEqual([]);
     expect(res.body?.provider_unavailable).toBe(true);
+  });
+
+  it('returns empty without touching the vector store for a request that resolves no project', async () => {
+    seedCanopyRow({ project_id: 'p', path: 'auth/login.ts', description: 'login flow handler' });
+
+    let searchVectorsCalled = false;
+    const embeddingManager = fakeEmbeddingManager({
+      searchVectors: ((..._args: unknown[]) => {
+        searchVectorsCalled = true;
+        return [];
+      }) as EmbeddingManager['searchVectors'],
+    });
+
+    const handler = createSearchHandler({ embeddingManager });
+    const groveless = makeTestRequestContext({ groveId: null, tenancySource: 'synthesized' });
+    const res = await handler(makeRequest({ q: 'auth', type: 'canopy' }, groveless));
+
+    expect(res.body?.results).toEqual([]);
+    expect(searchVectorsCalled).toBe(false);
   });
 });

@@ -159,6 +159,7 @@ import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
 import { reconcileLogBuffer } from './log-reconcile.js';
+import { logEntryToInsert } from './log-entry-insert.js';
 import { markRunningRunsInterrupted } from '../db/queries/runs.js';
 import {
   POWER_IDLE_THRESHOLD_MS,
@@ -167,12 +168,14 @@ import {
   POWER_ACTIVE_INTERVAL_MS,
   POWER_SLEEP_INTERVAL_MS,
   RESTART_RESPONSE_FLUSH_MS,
+  JOB_RUNNER_CONCURRENCY,
   epochSeconds,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
+import { JobRunner } from './job-runner.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
@@ -192,8 +195,8 @@ import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
-import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../grove/request-context.js';
+import { type GroveProjectId } from '../grove/ids.js';
+import { rowProjectIdFromRequestContext, requireProjectId, type MycoRequestContext } from '../grove/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
@@ -472,7 +475,7 @@ async function waitForExit(
 // Main
 // ---------------------------------------------------------------------------
 
-function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
+function loggerForProject(logger: Logger, projectId: GroveProjectId | null): Logger {
   const addProject = (data?: Record<string, unknown>) => ({
     ...data,
     project_id: typeof data?.project_id === 'string' ? data.project_id : projectId,
@@ -597,10 +600,15 @@ export async function main(): Promise<void> {
     // no Groves yet), fall through to fresh derivation via getMachineId.
   }
   const machineId = getMachineId();
-  const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
-    ...process.env,
-    MYCO_MACHINE_ID: machineId,
-  });
+  const dataPaths = resolveDaemonDataPaths(
+    bootstrapVaultDir,
+    {
+      ...process.env,
+      MYCO_MACHINE_ID: machineId,
+    },
+    // Phantom boot uses the project-less daemon-global context (projectId null).
+    { daemonGlobal: bootstrapIsPhantom },
+  );
 
   // Relocate any legacy project-vault `secrets.env` into machine secrets
   // BEFORE loading. The provider-secrets dashboard no longer reads the
@@ -872,26 +880,13 @@ export async function main(): Promise<void> {
   // --- Team context ---
   initTeamContext(machineId);
 
-  // Wire logger to SQLite persistence. Every log row is scoped to the
-  // daemon's resolved Grove project id — there is no NULL fallback.
-  const daemonProjectId = dataPaths.requestContext.projectId;
+  // Wire logger to SQLite persistence. Log rows take the entry's explicit
+  // project_id when present, else this daemon fallback (NULL for a groveless
+  // anchor). logEntryToInsert maps a log entry to a row for both this live
+  // path and buffer replay.
+  const daemonLogProjectId = rowProjectIdFromRequestContext(dataPaths.requestContext);
   logger.setPersistFn((entry) => {
-    const { timestamp, level, kind, component, message, ...rest } = entry;
-    const {
-      project_id: entryProjectId,
-      session_id: entrySessionId,
-      ...data
-    } = rest;
-    insertLogEntry({
-      timestamp,
-      level,
-      kind,
-      component,
-      message,
-      data: Object.keys(data).length > 0 ? JSON.stringify(data) : null,
-      session_id: (entrySessionId as string | undefined) ?? null,
-      project_id: typeof entryProjectId === 'string' ? assertGroveProjectId(entryProjectId) : daemonProjectId,
-    });
+    insertLogEntry(logEntryToInsert(entry, daemonLogProjectId));
   });
 
   // Reconcile log entries missed while daemon was down
@@ -901,7 +896,7 @@ export async function main(): Promise<void> {
       requestContext: dataPaths.requestContext,
       env: process.env,
     });
-    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonProjectId);
+    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonLogProjectId);
     if (replayedCount > 0) {
       logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
     }
@@ -918,7 +913,7 @@ export async function main(): Promise<void> {
   const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
     req.requestContext?.databasePath ?? dataPaths.databasePath,
     req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
-    loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
+    loggerForProject(logger, rowProjectIdFromRequestContext(req.requestContext) ?? daemonLogProjectId),
   );
   const runtimeCache = new GroveRuntimeCache();
   const databaseHandlers = createDatabaseMaintenanceHandlers({
@@ -1045,6 +1040,13 @@ export async function main(): Promise<void> {
   // it in for per-job lag attribution.
   const eventLoopLagProbe = new EventLoopLagProbe(logger);
 
+  const jobRunner = new JobRunner({
+    concurrency: JOB_RUNNER_CONCURRENCY,
+    logger,
+    lagProbe: eventLoopLagProbe,
+    onError: (jobName, err) =>
+      logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${jobName}" failed`, { error: errorMessage(err) }),
+  });
   const powerManager = new PowerManager({
     idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
     sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
@@ -1052,7 +1054,8 @@ export async function main(): Promise<void> {
     activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
-    lagProbe: eventLoopLagProbe,
+    onTick: (state) => jobRunner.dispatch(state),
+    deepSleepHolder: () => jobRunner.providesHold(),
   });
 
   // Per-project power state. Pre-Grove, each project ran in its own
@@ -1174,7 +1177,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     vaultDir: bootstrapVaultDir,
-    projectId: dataPaths.requestContext.projectId,
+    projectId: rowProjectIdFromRequestContext(dataPaths.requestContext),
     machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
@@ -1340,7 +1343,7 @@ export async function main(): Promise<void> {
   };
 
   async function syncScheduledTasks() {
-    scheduledTaskKicker = await registerScheduledTasks(powerManager, {
+    scheduledTaskKicker = await registerScheduledTasks(jobRunner, {
       definitionsDir,
       vaultDir: bootstrapVaultDir,
       // Per-run grove resolution — the agent's vector/canopy search tools must
@@ -1529,7 +1532,11 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
+    resolveProjectId: (req) => {
+      const ctx = req.requestContext;
+      if (!ctx) throw new Error('canopy read requires a resolved request context');
+      return requireProjectId(ctx, 'canopy read');
+    },
     resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
@@ -1552,8 +1559,12 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = dataPaths.requestContext.projectRoot;
       const requestContext = dataPaths.requestContext;
+      const projectId = rowProjectIdFromRequestContext(requestContext);
+      if (projectId == null) {
+        return { skipped: true, reason: 'canopy-map regenerate requires a project-scoped daemon context' };
+      }
+      const projectRoot = requestContext.projectRoot;
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -1573,7 +1584,7 @@ export async function main(): Promise<void> {
 
       // runAgent inserts the agent_runs row synchronously before its first
       // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
@@ -1596,8 +1607,12 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = dataPaths.requestContext.projectRoot;
       const requestContext = dataPaths.requestContext;
+      const projectId = rowProjectIdFromRequestContext(requestContext);
+      if (projectId == null) {
+        throw new Error('canopy-describe regenerate requires a project-scoped daemon context');
+      }
+      const projectRoot = requestContext.projectRoot;
       const built = await buildTaskInstruction(
         task,
         params,
@@ -1620,7 +1635,7 @@ export async function main(): Promise<void> {
         logger,
       });
 
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: projectId });
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
@@ -1952,12 +1967,16 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({
+  // Dual-mode read: a caller-supplied context scopes to its project; a
+  // context-less request scopes to GLOBAL_SCOPE and returns no project rows.
+  // Fail-loud on unresolved tenancy is enforced in the tools layer, not here.
+  const searchHandler = createSearchHandler({
     embeddingManager,
     resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     machineId,
-  }));
+  });
+  server.registerRoute('GET', '/api/search', searchHandler);
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   const embeddingStatusHandler = createEmbeddingStatusHandler({
     resolveRequestRuntime: getRequestEmbeddingRuntime,
@@ -2146,7 +2165,7 @@ export async function main(): Promise<void> {
   // The canopy mass-add callback feeds the scheduler kicker so a fresh
   // populate or recovery scan drains immediately on the next compatible
   // tick instead of waiting one full canopy-describe interval.
-  const powerJobs = registerPowerJobs(powerManager, {
+  const powerJobs = registerPowerJobs(jobRunner, {
     registry,
     logger,
     liveConfig,
@@ -2166,7 +2185,7 @@ export async function main(): Promise<void> {
     projectRoot,
     scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
-  teamSync.registerFlushJob(powerManager, runtimeCache);
+  teamSync.registerFlushJob(jobRunner, runtimeCache);
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner
@@ -2338,7 +2357,7 @@ export async function main(): Promise<void> {
     // Drain pending team-sync outbox rows across every Grove before
     // closing DBs. Without this, SIGTERM/suspend leaves rows queued
     // locally with no trigger to retry until the next daemon boot. The
-    // PowerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
+    // RunnerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
     try {
       const aggregate = await teamSync.flushAllGroves(runtimeCache);
       if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {

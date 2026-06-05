@@ -163,7 +163,8 @@ export interface MycoRequestContext {
    * registration) stay on `projectRoot`.
    */
   callerRoot: string | null;
-  projectId: GroveProjectId;
+  /** The bound Grove project id, or NULL for the project-less daemon anchor. */
+  projectId: GroveProjectId | null;
   groveId: string | null;
   machineId: string;
   sessionId: string | null;
@@ -266,7 +267,8 @@ export function requestContextFromHttpHeaders(
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
   const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
-  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { callerRoot });
+  // Base context; caller headers below override to a real project.
+  const { context: fallback, manifest } = buildVaultFallbackOrGlobal(fallbackVaultDir, { callerRoot });
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
     projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
@@ -320,7 +322,8 @@ export function requestContextFromTenancyIds(
   },
 ): MycoRequestContext {
   enforceUrlTenancyAuth(options.headers, options.expectedAuthToken);
-  const { context: fallback } = buildVaultFallback(fallbackVaultDir);
+  // Base context; the URL (Grove, project) ids below override to the project.
+  const { context: fallback } = buildVaultFallbackOrGlobal(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     groveId: ids.groveId,
     projectId: ids.projectId,
@@ -416,9 +419,38 @@ function timingSafeStringEqual(a: string, b: string): boolean {
   return mismatch === 0;
 }
 
+export interface EnvRequestContextOptions {
+  /**
+   * Treat a REGISTRY-VALIDATED manifest resolved from `fallbackVaultDir` as
+   * caller-determined tenancy (`tenancySource: 'caller'`) instead of the
+   * default `'synthesized'`, when the environment carries no explicit
+   * project/grove identity.
+   *
+   * Set this ONLY from launch-context entry points whose `fallbackVaultDir` is
+   * the caller's OWN cwd-resolved project vault — the `myco` CLI tool runtime
+   * and direct-DB CLI reads, which resolve the vault by walking up from
+   * `process.cwd()` to the git/`.myco` root. Running `myco` inside a
+   * registered, Grove-bound project IS the caller asserting "act on THIS
+   * project" — the same assertion `tenancySourceFromExplicit` already honors
+   * for a caller-supplied projectRoot/projectId/groveId. The agent and the user
+   * supply nothing; the launch directory is the signal.
+   *
+   * It is NOT a synthesis from the daemon's bootstrap-anchor vault: resolution
+   * still runs through `findRegisteredProject` (a Grove-registry lookup), so an
+   * unregistered or unbound launch context resolves nothing and stays the
+   * `'synthesized'` fallback (→ rejected by the tenancy guard). The anchor can
+   * never masquerade as caller tenancy.
+   *
+   * The daemon's bootstrap-anchor path derivation (`resolveDaemonDataPaths`)
+   * MUST NOT set this — it passes the anchor vault and consumes only paths.
+   */
+  launchContextTenancy?: boolean;
+}
+
 export function requestContextFromEnvironment(
   env: Record<string, string | undefined>,
   fallbackVaultDir: string,
+  options: EnvRequestContextOptions = {},
 ): MycoRequestContext {
   const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
   const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
@@ -431,7 +463,8 @@ export function requestContextFromEnvironment(
   ].some((key) => readEnv(env, key) !== undefined);
 
   if (!hasExplicitProjectContext) {
-    return resolveManifestRequestContext(fallback, 'explicit', manifest) ?? fallback;
+    const manifestTenancy: TenancySource = options.launchContextTenancy ? 'caller' : 'synthesized';
+    return resolveManifestRequestContext(fallback, 'explicit', manifest, manifestTenancy) ?? fallback;
   }
 
   const explicit: ExplicitContextInput = {
@@ -529,6 +562,53 @@ function buildVaultFallback(
 }
 
 /**
+ * Like `buildVaultFallback` but returns the daemon-global context instead of
+ * throwing when the vault has no manifest. Resolves a real project vault to its
+ * project and the project-less anchor vault to the daemon-global context. Used
+ * by the daemon transport paths (header / URL-param).
+ */
+function buildVaultFallbackOrGlobal(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
+): { context: MycoRequestContext; manifest: ProjectManifest | null } {
+  const result = tryBuildVaultFallback(vaultDir, overrides);
+  if (result.kind === 'grove') {
+    return { context: result.context, manifest: result.manifest };
+  }
+  const context = daemonGlobalRequestContext(vaultDir, {
+    machineId: overrides.machineId,
+    sessionId: overrides.sessionId,
+  });
+  return { context: { ...context, callerRoot: overrides.callerRoot ?? null }, manifest: null };
+}
+
+/**
+ * Build a request context synthesized from a daemon-owned vault directory
+ * (not caller-supplied tenancy). `projectId` is the vault's manifest project
+ * for a Grove-bound vault, or null for the global daemon's project-less
+ * startup anchor. Explicit-header/env branches override `tenancySource` to
+ * 'caller'.
+ */
+function synthesizedVaultContext(
+  vaultDir: string,
+  projectId: GroveProjectId | null,
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
+): MycoRequestContext {
+  return {
+    projectRoot: resolveProjectRoot(vaultDir),
+    callerRoot: overrides.callerRoot ?? null,
+    projectId,
+    groveId: null,
+    machineId: overrides.machineId ?? getMachineId(),
+    sessionId: overrides.sessionId ?? null,
+    projectVaultDir: vaultDir,
+    databasePath: vaultDbPath(vaultDir),
+    source: 'legacy-vault',
+    tenancySource: 'synthesized',
+  };
+}
+
+/**
  * Internal: soft-fail variant of `buildVaultFallback`. Returns a
  * discriminated union so call sites can branch on legacy state
  * instead of catching exceptions. `kind: 'grove'` carries the
@@ -548,25 +628,42 @@ function tryBuildVaultFallback(
       reason: `No Grove project id available for vault ${vaultDir}. Open the dashboard and commit Myco config to this project from the Symbionts page.`,
     };
   }
-  const projectRoot = resolveProjectRoot(vaultDir);
   return {
     kind: 'grove',
-    context: {
-      projectRoot,
-      callerRoot: overrides.callerRoot ?? null,
-      projectId: assertGroveProjectId(manifest.project.id),
-      groveId: null,
-      machineId: overrides.machineId ?? getMachineId(),
-      sessionId: overrides.sessionId ?? null,
-      projectVaultDir: vaultDir,
-      databasePath: vaultDbPath(vaultDir),
-      source: 'legacy-vault',
-      // Built from the daemon's fallback vault, not caller-supplied
-      // tenancy. Explicit-header/env branches override this to 'caller'.
-      tenancySource: 'synthesized',
-    },
+    context: synthesizedVaultContext(vaultDir, assertGroveProjectId(manifest.project.id), overrides),
     manifest,
   };
+}
+
+/**
+ * Builds the project-less request context for the global daemon's startup
+ * anchor: `projectId` and `groveId` are both null, so
+ * `rowProjectIdFromRequestContext` resolves to NULL and
+ * `projectScopeFromRequestContext` to GLOBAL_SCOPE.
+ */
+export function daemonGlobalRequestContext(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null } = {},
+): MycoRequestContext {
+  return synthesizedVaultContext(vaultDir, null, overrides);
+}
+
+/**
+ * Returns the context's Grove project id, or throws when it is null. Use at
+ * sites reached only by caller/registered (grove-bound) contexts — an agent
+ * run, a tenant-route handler.
+ */
+export function requireProjectId(
+  context: MycoRequestContext,
+  what = 'operation',
+): GroveProjectId {
+  if (context.projectId == null) {
+    throw new Error(
+      `${what} requires a resolved Grove project, but the request context has none `
+      + '(the daemon-global anchor must not reach this path).',
+    );
+  }
+  return context.projectId;
 }
 
 /**
@@ -578,6 +675,12 @@ function tryBuildVaultFallback(
  * NULL rows because pre-Grove vault data has no project_id. Once a Grove id
  * is present, the resolved project id becomes mandatory row scope.
  */
+export function rowProjectIdFromRequestContext(
+  context: MycoRequestContext,
+): GroveProjectId | null;
+export function rowProjectIdFromRequestContext(
+  context: MycoRequestContext | undefined,
+): GroveProjectId | null | undefined;
 export function rowProjectIdFromRequestContext(
   context?: MycoRequestContext,
 ): GroveProjectId | null | undefined {
@@ -612,7 +715,7 @@ export function projectScopeFromRequestContext(
   // rows to an unauthorized request. Only a caller-asserted, Grove-bound
   // context may bind to a specific project scope; everything else resolves to
   // GLOBAL_SCOPE (`project_id IS NULL`), which returns zero cross-project rows.
-  return isProjectScopedTenancy(context) && context.groveId
+  return isProjectScopedTenancy(context) && context.groveId && context.projectId
     ? projectScope(context.projectId)
     : GLOBAL_SCOPE;
 }
@@ -630,6 +733,16 @@ function resolveManifestRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
   cachedManifest?: ProjectManifest | null,
+  // Provenance to stamp on a successfully registry-validated manifest
+  // resolution. Defaults to 'synthesized': for the daemon's no-header /
+  // bootstrap-anchor fallback paths, a manifest resolved from the SERVER's
+  // own vault is the daemon's assertion, not the caller's. Launch-context
+  // entry points (the `myco` CLI, which resolves its vault by walking up from
+  // the caller's cwd) pass 'caller' so a project the caller is physically
+  // inside is honored as caller-supplied tenancy. Resolution still runs through
+  // `findRegisteredProject` either way, so an unregistered/unbound vault never
+  // reaches this stamp — the anchor cannot masquerade as caller tenancy.
+  tenancySource: TenancySource = 'synthesized',
 ): MycoRequestContext | null {
   const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
   if (!manifest?.grove?.binding_id) return null;
@@ -642,9 +755,7 @@ function resolveManifestRequestContext(
   return buildRegisteredRequestContext({
     fallback,
     source,
-    // Resolved from the daemon's anchor-vault manifest, not from
-    // caller-supplied project/grove identity — tenancy stays synthesized.
-    tenancySource: 'synthesized',
+    tenancySource,
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(registered.project.project_id),
     groveId: registered.grove.id,

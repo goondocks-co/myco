@@ -19,7 +19,7 @@ import {
   extractTaggedPlans,
   capturePlan,
   captureTaggedPlan,
-  resolvePlanWatchDir,
+  selectAuthoredPlanWrites,
 } from './plan-capture.js';
 import {
   getLatestBatch,
@@ -35,6 +35,7 @@ import {
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
+import { listSessionFileActivities } from '@myco/db/queries/activities.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
@@ -75,64 +76,17 @@ export interface StopProcessorDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   vaultDir: string;
-  /** Daemon-resolved Grove project id used for every per-session insert. */
-  projectId: GroveProjectId;
+  /**
+   * Fallback Grove project id used when a stop event carries no caller
+   * project. NULL for the global daemon's project-less anchor.
+   */
+  projectId: GroveProjectId | null;
   machineId?: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
   planWatchConfig: PlanWatchConfig;
 }
 
-const MILLISECONDS_PER_SECOND = 1000;
-
-function isEligiblePlanExtension(filePath: string, extensions?: string[]): boolean {
-  if (!extensions || extensions.length === 0) return true;
-  const extension = path.extname(filePath).toLowerCase();
-  return extensions.includes(extension);
-}
-
-function collectPlanFiles(rootDir: string, extensions?: string[]): string[] {
-  const files: string[] = [];
-  const stack = [rootDir];
-
-  while (stack.length > 0) {
-    const currentDir = stack.pop();
-    if (!currentDir) continue;
-
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const entry of entries) {
-      const absolutePath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(absolutePath);
-        continue;
-      }
-      if (entry.isFile() && isEligiblePlanExtension(absolutePath, extensions)) {
-        files.push(absolutePath);
-      }
-    }
-  }
-
-  return files;
-}
-
-function resolvePromptBatchIdForPlanWrite(
-  batches: BatchRow[],
-  modifiedAtSeconds: number,
-): number | undefined {
-  for (let index = batches.length - 1; index >= 0; index--) {
-    const startedAt = batches[index].started_at;
-    if (startedAt !== null && startedAt <= modifiedAtSeconds) {
-      return batches[index].id;
-    }
-  }
-  return undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Exported pure utility
@@ -186,7 +140,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   handleStopRoute: RouteHandler;
   clearSession: (sessionId: string) => void;
   getActiveProcessing: () => Promise<void> | null;
-  triggerTitleSummary: (sessionId: string) => Promise<void>;
+  triggerTitleSummary: (
+    sessionId: string,
+    requestContext: MycoRequestContext | undefined,
+    trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
+  ) => Promise<void>;
 } {
   const {
     registry,
@@ -236,9 +194,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
 
   const triggerTitleSummary = (
     sessionId: string,
+    requestContext: MycoRequestContext | undefined,
     trigger?: { evaluateBoundary: true; promptOrigin: PromptBatchOrigin },
   ) =>
-    sharedTriggerTitleSummary(sessionId, { vaultDir, resolveEmbeddingManager, liveConfig, logger }, trigger);
+    sharedTriggerTitleSummary(
+      sessionId,
+      { vaultDir, resolveEmbeddingManager, liveConfig, logger, requestContext },
+      trigger,
+    );
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);
@@ -272,12 +235,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     user: string | undefined,
     sessionMeta: RegisteredSession | undefined,
-    requestProjectId: GroveProjectId,
-    requestRowProjectId: string | null,
+    requestRowProjectId: GroveProjectId | null,
     requestProjectRoot: string,
     requestFilesystemRoot: string,
     requestMachineId: string,
     requestProductionRef: string | null,
+    requestContext: MycoRequestContext | undefined,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
     phases: readonly ('response' | 'transcript')[] = ['response', 'transcript'],
@@ -463,7 +426,6 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // actual row counts the readers care about). If transcript-mining
     // detects missing batches, the right response is to INSERT those
     // batches via reenrich, which bumps the cache as a side effect.
-    const currentSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
     const updateFields: Record<string, unknown> = {};
     // Only stamp transcript_path when this event actually carries one.
     // Multi-phase symbionts (Windsurf) fire the response phase with no
@@ -495,8 +457,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .map((t) => [t.prompt ?? '', t.aiResponse ?? ''].join(' '))
             .join('\n');
         }
-        if (transcriptText) {
-          detectSkillUsage(sessionId, transcriptText, requestProjectId);
+        if (transcriptText && requestRowProjectId) {
+          detectSkillUsage(sessionId, transcriptText, requestRowProjectId);
         }
       } catch {
         // Best-effort — don't block reconciliation
@@ -562,58 +524,53 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       }
     }
 
-    const sessionStartedAt = currentSession?.started_at
-      ?? (sessionMeta?.started_at
-        ? Math.floor(new Date(sessionMeta.started_at).getTime() / MILLISECONDS_PER_SECOND)
-        : epochSeconds());
-    // File mtime on APFS has sub-millisecond precision but Date.now() rounds
-    // to whole ms. A plan file written in the same ms as the Stop event can
-    // end up with mtimeMs > Date.now() by a fraction. Quantize mtime to
-    // integer ms so the boundary check is stable across filesystems.
-    const sessionStopMs = Date.now();
-    const sessionBatches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
-
     const planCaptureRoot = requestFilesystemRoot;
-    // Plan-file reconciliation gated on transcript phase so two-phase
-    // symbionts don't double-scan the watch dirs per turn.
-    if (runTranscriptPhase) for (const watchDir of planWatchConfig.watchDirs) {
-      const absoluteWatchDir = resolvePlanWatchDir(watchDir, planCaptureRoot);
-      if (!fs.existsSync(absoluteWatchDir)) continue;
-
-      const planFiles = collectPlanFiles(absoluteWatchDir, planWatchConfig.extensions);
-      for (const planFile of planFiles) {
-        let stats: fs.Stats;
+    // Plan reconciliation backstop — AUTHORSHIP-DRIVEN, gated on transcript
+    // phase so two-phase symbionts don't double-scan per turn.
+    //
+    // Association is by authorship, never by file mtime. We capture only the
+    // plans THIS session actually wrote, recovered from its own recorded write
+    // activities via the same `isPlanWriteEvent` predicate the live path uses
+    // (see `selectAuthoredPlanWrites`). This still recovers plans the live
+    // capture missed (e.g. a global-daemon projectRoot mismatch) but WITHOUT
+    // the old mtime-window scan, which claimed every plan file merely *touched*
+    // during the session's lifetime regardless of author — duplicating a plan
+    // into every concurrently-open session and letting the stale copies diverge.
+    if (runTranscriptPhase) {
+      const captureWatchConfig: PlanWatchConfig = {
+        watchDirs: planWatchConfig.watchDirs,
+        projectRoot: planCaptureRoot,
+        extensions: planWatchConfig.extensions,
+      };
+      const fileActivities = listSessionFileActivities(sessionId, ALL_PROJECTS_SCOPE);
+      for (const authored of selectAuthoredPlanWrites(fileActivities, captureWatchConfig)) {
+        const planFile = path.isAbsolute(authored.filePath)
+          ? authored.filePath
+          : path.resolve(planCaptureRoot, authored.filePath);
+        let content: string;
         try {
-          stats = fs.statSync(planFile);
+          content = fs.readFileSync(planFile, 'utf-8');
         } catch {
+          // The authored plan file was removed or moved after the write —
+          // nothing on disk to reconcile.
           continue;
         }
-        const mtimeMs = Math.floor(stats.mtimeMs);
-        if (mtimeMs < sessionStartedAt * MILLISECONDS_PER_SECOND || mtimeMs > sessionStopMs) {
-          continue;
-        }
-
         try {
-          const content = fs.readFileSync(planFile, 'utf-8');
-          const promptBatchId = resolvePromptBatchIdForPlanWrite(
-            sessionBatches,
-            Math.floor(stats.mtimeMs / MILLISECONDS_PER_SECOND),
-          );
           capturePlan({
             sourcePath: planFile,
             projectRoot: planCaptureRoot,
             projectId: requestRowProjectId,
             content,
             sessionId,
-            promptBatchId,
+            promptBatchId: authored.promptBatchId,
             logger,
           });
-          logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan reconciled from configured plan dir', {
+          logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan reconciled from authoring activity', {
             session_id: sessionId,
             source_path: planFile,
           });
         } catch (err) {
-          logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to reconcile plan from configured plan dir', {
+          logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Failed to reconcile authored plan', {
             session_id: sessionId,
             source_path: planFile,
             error: (err as Error).message,
@@ -625,7 +582,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Trigger title/summary if the session still needs one. Runs on
     // response phase for early visibility; idempotent if called again.
     if (runResponsePhase && !hasTitle) {
-      triggerTitleSummary(sessionId);
+      triggerTitleSummary(sessionId, requestContext);
     }
 
     // Write images to attachments — decoupled from transcript turn indices.
@@ -658,14 +615,16 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         } catch { /* fallback to index-based */ }
       }
 
-      captureBatchImages({
-        sessionId,
-        promptBatchId: resolvedBatchId,
-        promptNumber: resolvedPromptNumber,
-        images: turn.images,
-        logger,
-        projectId: requestProjectId,
-      });
+      if (requestRowProjectId) {
+        captureBatchImages({
+          sessionId,
+          promptBatchId: resolvedBatchId,
+          promptNumber: resolvedPromptNumber,
+          images: turn.images,
+          logger,
+          projectId: requestRowProjectId,
+        });
+      }
     }
 
     // Final-state markers run on transcript phase only. For single-phase
@@ -712,9 +671,11 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const phases = explicitPhases && explicitPhases.length > 0
       ? explicitPhases
       : (['response', 'transcript'] as const);
-    const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
+    // Single project scope for the whole stop cycle: a context-less event
+    // (no grove) falls back to the daemon default; otherwise the Grove-gated
+    // row scope drives session, batch, and capture writes alike.
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
-    const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
+    const requestRowProjectId = requestScope === undefined ? defaultProjectId : requestScope;
     const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestFilesystemRoot = req.requestContext
       ? filesystemRootFromRequestContext(req.requestContext)
@@ -823,12 +784,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionId,
       user,
       sessionMeta,
-      requestProjectId,
       requestRowProjectId,
       requestProjectRoot,
       requestFilesystemRoot,
       requestMachineId,
       requestProductionRef,
+      req.requestContext,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
       phases,

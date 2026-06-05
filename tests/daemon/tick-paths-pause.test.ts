@@ -93,14 +93,21 @@ function setupFixture(): Fixture {
   };
 }
 
-class FakePowerManager {
+class FakeJobRunner {
   jobs: Array<{
     name: string;
     runIn: string[];
-    fn: () => Promise<void>;
-    preventsDeepSleep?: () => boolean;
+    kind?: string;
+    hold?: { pending: () => number; allowDeepSleepHold?: boolean };
+    fn: (ctx?: unknown) => Promise<unknown>;
   }> = [];
-  register(job: { name: string; runIn: string[]; fn: () => Promise<void>; preventsDeepSleep?: () => boolean }) {
+  register(job: {
+    name: string;
+    runIn: string[];
+    kind?: string;
+    hold?: { pending: () => number; allowDeepSleepHold?: boolean };
+    fn: (ctx?: unknown) => Promise<unknown>;
+  }) {
     this.jobs.push(job);
   }
   find(name: string) {
@@ -180,9 +187,9 @@ function setupTwoProjects(fx: Fixture): { vaultPaused: string; vaultLive: string
 
 describe('STAGING_GC honors the project pause primitive', () => {
   let fx: Fixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
-  beforeEach(() => { fx = setupFixture(); pm = new FakePowerManager(); });
+  beforeEach(() => { fx = setupFixture(); pm = new FakeJobRunner(); });
   afterEach(() => fx.cleanup());
 
   it('skips a paused project and processes the unpaused one', async () => {
@@ -227,9 +234,9 @@ describe('STAGING_GC honors the project pause primitive', () => {
 
 describe('canopy-background-scan honors the project pause primitive', () => {
   let fx: Fixture;
-  let pm: FakePowerManager;
+  let pm: FakeJobRunner;
 
-  beforeEach(() => { fx = setupFixture(); pm = new FakePowerManager(); });
+  beforeEach(() => { fx = setupFixture(); pm = new FakeJobRunner(); });
   afterEach(() => fx.cleanup());
 
   function countCanopyEntriesByProject(): Map<string, number> {

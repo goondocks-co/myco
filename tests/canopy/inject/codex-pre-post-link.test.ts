@@ -58,7 +58,7 @@ function ctx(): MycoRequestContext {
     projectRoot: tmpVault,
     callerRoot: null,
     projectId: assertGroveProjectId(tmpProjectId),
-    groveId: null,
+    groveId: 'grove_00000000000000000000000000000000',
     machineId: 'local',
     sessionId: null,
     projectVaultDir: path.join(tmpVault, '.myco'),

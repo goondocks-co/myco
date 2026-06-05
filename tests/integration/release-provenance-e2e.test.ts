@@ -375,4 +375,385 @@ describe('release provenance E2E', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Ref-movement gate tests (A/B/C/D)
+  // ---------------------------------------------------------------------------
+
+  describe('ref-movement gate', () => {
+    // Minimal repo setup shared across gate tests: one session, one batch, one
+    // provenance row.
+    async function setupGateRepo(repo: string) {
+      const NOW_GATE = 1_900_000_000;
+      const SESSION_G = 'session-gate';
+
+      registerAgent({ id: 'claude-code', name: 'Claude Code', created_at: NOW_GATE });
+      upsertSession({
+        id: SESSION_G,
+        agent: 'claude-code',
+        status: 'completed',
+        started_at: NOW_GATE,
+        ended_at: NOW_GATE + 60,
+        title: 'Gate test',
+        summary: 'Gate test session.',
+        created_at: NOW_GATE,
+        machine_id: 'test-machine',
+      });
+      const batch = insertBatch({
+        session_id: SESSION_G,
+        prompt_number: 1,
+        user_prompt: 'gate',
+        response_summary: 'gate',
+        started_at: NOW_GATE,
+        ended_at: NOW_GATE + 30,
+        created_at: NOW_GATE,
+        machine_id: 'test-machine',
+      });
+      captureGitProvenance({
+        projectRoot: repo,
+        sessionId: SESSION_G,
+        promptBatchId: batch.id,
+        capturePoint: 'prompt_batch_stop',
+        capturedAt: NOW_GATE,
+      });
+      return { batch, NOW_GATE };
+    }
+
+    it('Test A — gate returns a fingerprint and skips when refs unchanged', async () => {
+      const { repo, releasedSha: _sha } = makeRepoWithRelease();
+      try {
+        const { batch, NOW_GATE } = await setupGateRepo(repo);
+
+        // First pass: no lastRefsFingerprint.
+        const result = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 100,
+        });
+        expect(result.reconciled).toBeGreaterThan(0);
+        expect(result.failed).toBe(0);
+        const fp1 = result.refsFingerprint;
+        expect(fp1).toBeTruthy();
+        expect(typeof fp1).toBe('string');
+
+        // Mark all rows synced.
+        const { getDatabase } = await import('@myco/db/client');
+        getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW_GATE + 150);
+
+        // Second pass: refs unmoved, fingerprint matches.
+        const result2 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 200,
+          lastRefsFingerprint: fp1,
+        });
+        expect(result2.refsFingerprint).toBe(fp1);
+        expect(result2.unchanged).toBeGreaterThan(0);
+        expect(result2.reconciled).toBe(0);
+        expect(result2.failed).toBe(0);
+
+        // Verify batch state is still correct.
+        const batchState = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(batchState?.state).toBe('released');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('Test B — no missed transition when ref moves (merged_unreleased → released)', async () => {
+      // Build a repo where HEAD is ahead of the production tag but the
+      // integration branch includes HEAD, so first classify = merged_unreleased.
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rp-gate-b-'));
+      try {
+        git(repo, ['init', '-q']);
+        git(repo, ['config', 'user.email', 'test@example.com']);
+        git(repo, ['config', 'user.name', 'Test User']);
+
+        // Commit 1: prod tag placed here.
+        fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n', 'utf-8');
+        git(repo, ['add', 'base.txt']);
+        git(repo, ['commit', '-qm', 'base commit']);
+        git(repo, ['tag', 'prod-v1']);
+
+        // Commit 2: only reachable from integration branch (HEAD is past prod-v1).
+        fs.writeFileSync(path.join(repo, 'new.txt'), 'new\n', 'utf-8');
+        git(repo, ['add', 'new.txt']);
+        git(repo, ['commit', '-qm', 'integration commit']);
+        // HEAD is now ahead of prod-v1; create an integration branch pointing at HEAD.
+        git(repo, ['branch', 'integration']);
+
+        const NOW_B = 1_950_000_000;
+        const SESSION_B = 'session-gate-b';
+        registerAgent({ id: 'claude-code', name: 'Claude Code', created_at: NOW_B });
+        upsertSession({
+          id: SESSION_B,
+          agent: 'claude-code',
+          status: 'completed',
+          started_at: NOW_B,
+          ended_at: NOW_B + 60,
+          title: 'Gate B',
+          summary: 'Gate B.',
+          created_at: NOW_B,
+          machine_id: 'test-machine',
+        });
+        const batch = insertBatch({
+          session_id: SESSION_B,
+          prompt_number: 1,
+          user_prompt: 'gate b',
+          response_summary: 'gate b',
+          started_at: NOW_B,
+          ended_at: NOW_B + 30,
+          created_at: NOW_B,
+          machine_id: 'test-machine',
+        });
+        captureGitProvenance({
+          projectRoot: repo,
+          sessionId: SESSION_B,
+          promptBatchId: batch.id,
+          capturePoint: 'prompt_batch_stop',
+          capturedAt: NOW_B,
+        });
+
+        // First pass: HEAD reachable from integration but not prod-v1 → merged_unreleased.
+        const result1 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: ['integration'],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_B + 100,
+        });
+        expect(result1.reconciled).toBeGreaterThan(0);
+        expect(result1.failed).toBe(0);
+        const fp1 = result1.refsFingerprint;
+        expect(fp1).toBeTruthy();
+
+        // Verify initial state is merged_unreleased.
+        const batchState1 = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(batchState1?.state).toBe('merged_unreleased');
+
+        // Mark rows synced.
+        const { getDatabase } = await import('@myco/db/client');
+        getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW_B + 150);
+
+        // Move prod-v1 to HEAD.
+        git(repo, ['tag', '-f', 'prod-v1', 'HEAD']);
+
+        // Second pass with fp1 as lastRefsFingerprint — prod-v1 moved so
+        // fingerprint should differ and row should re-classify to released.
+        const result2 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: ['integration'],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_B + 200,
+          lastRefsFingerprint: fp1,
+        });
+        expect(result2.refsFingerprint).not.toBe(fp1);
+        expect(result2.reconciled).toBeGreaterThan(0);
+        expect(result2.failed).toBe(0);
+
+        const batchState2 = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(batchState2?.state).toBe('released');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('Test C — undefined lastRefsFingerprint forces full scan (first-run / restart safety)', async () => {
+      const { repo } = makeRepoWithRelease();
+      try {
+        const { batch, NOW_GATE } = await setupGateRepo(repo);
+
+        // First pass (no fingerprint).
+        const result1 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 100,
+        });
+        expect(result1.reconciled).toBeGreaterThan(0);
+
+        // Mark rows synced.
+        const { getDatabase } = await import('@myco/db/client');
+        getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW_GATE + 150);
+
+        // Second pass WITHOUT lastRefsFingerprint (simulates daemon restart).
+        const result2 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 200,
+          // intentionally omit lastRefsFingerprint
+        });
+        // Must go through the normal path (classificationUnchanged fires → unchanged).
+        expect(result2.unchanged).toBeGreaterThan(0);
+        expect(result2.failed).toBe(0);
+        // Must still return a fingerprint.
+        expect(result2.refsFingerprint).toBeTruthy();
+
+        // Sanity: batch state still set correctly.
+        const batchState = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(batchState?.state).toBe('released');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('Test D — unsynced orphan is NOT gate-skipped even when refs unchanged', async () => {
+      const { repo } = makeRepoWithRelease();
+      try {
+        const { batch, NOW_GATE } = await setupGateRepo(repo);
+
+        // First pass.
+        const result1 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 100,
+        });
+        expect(result1.reconciled).toBeGreaterThan(0);
+        const fp1 = result1.refsFingerprint;
+        expect(fp1).toBeTruthy();
+
+        // Mark rows synced, then clear synced_at for the batch row (orphan).
+        const { getDatabase } = await import('@myco/db/client');
+        getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW_GATE + 150);
+        getDatabase()
+          .prepare(
+            "UPDATE knowledge_release_state SET synced_at = NULL WHERE namespace = 'prompt_batches' AND record_id = ?",
+          )
+          .run(String(batch.id));
+
+        // Second pass: refs unchanged, but the batch row is unsynced (orphan).
+        const result2 = await reconcileReleaseProvenance({
+          projectRoot: repo,
+          scope: ALL_PROJECTS_SCOPE,
+          config: {
+            enabled: true,
+            production_refs: ['prod-v1'],
+            integration_refs: [],
+            reconcile_interval_minutes: 15,
+          },
+          now: NOW_GATE + 200,
+          lastRefsFingerprint: fp1,
+        });
+        // The unsynced prompt_batches row must go through the full upsert path.
+        expect(result2.reconciled).toBeGreaterThan(0);
+        expect(result2.failed).toBe(0);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it('Test E — moving a tag that shares a name with a branch is NOT a false skip', async () => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rp-gate-e-'));
+      try {
+        git(repo, ['init', '-q']);
+        git(repo, ['config', 'user.email', 'test@example.com']);
+        git(repo, ['config', 'user.name', 'Test User']);
+        fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n', 'utf-8');
+        git(repo, ['add', 'base.txt']);
+        git(repo, ['commit', '-qm', 'c1']);
+        const c1 = git(repo, ['rev-parse', 'HEAD']);
+        fs.writeFileSync(path.join(repo, 'next.txt'), 'next\n', 'utf-8');
+        git(repo, ['add', 'next.txt']);
+        git(repo, ['commit', '-qm', 'c2']); // HEAD = c2
+
+        // Branch `release` frozen at c1; tag `release` also at c1. Bare config name
+        // `release` resolves (git precedence) to the TAG.
+        git(repo, ['branch', 'release', c1]);
+        git(repo, ['tag', 'release', c1]);
+
+        const NOW_E = 1_970_000_000;
+        const SESSION_E = 'session-gate-e';
+        registerAgent({ id: 'claude-code', name: 'Claude Code', created_at: NOW_E });
+        upsertSession({
+          id: SESSION_E, agent: 'claude-code', status: 'completed',
+          started_at: NOW_E, ended_at: NOW_E + 60, title: 'Gate E', summary: 'Gate E.',
+          created_at: NOW_E, machine_id: 'test-machine',
+        });
+        const batch = insertBatch({
+          session_id: SESSION_E, prompt_number: 1, user_prompt: 'gate e',
+          response_summary: 'gate e', started_at: NOW_E, ended_at: NOW_E + 30,
+          created_at: NOW_E, machine_id: 'test-machine',
+        });
+        captureGitProvenance({
+          projectRoot: repo, sessionId: SESSION_E, promptBatchId: batch.id,
+          capturePoint: 'prompt_batch_stop', capturedAt: NOW_E,
+        });
+
+        const cfg = {
+          enabled: true,
+          production_refs: ['release'],
+          integration_refs: [],
+          reconcile_interval_minutes: 15,
+        };
+
+        // Pass 1: HEAD (c2) is not contained in tag release (c1) -> not released.
+        const r1 = await reconcileReleaseProvenance({
+          projectRoot: repo, scope: ALL_PROJECTS_SCOPE, config: cfg, now: NOW_E + 100,
+        });
+        expect(r1.failed).toBe(0);
+        const fp1 = r1.refsFingerprint;
+        expect(fp1).toBeTruthy();
+        const state1 = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(state1?.state).not.toBe('released');
+
+        const { getDatabase } = await import('@myco/db/client');
+        getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW_E + 150);
+
+        // Move ONLY the tag to HEAD (c2). The branch `release` stays at c1.
+        git(repo, ['tag', '-f', 'release', 'HEAD']);
+
+        // Pass 2 with fp1: the tag moved, so the fingerprint MUST change and the
+        // row MUST re-classify to released. The old for-each-ref+alias map tracked
+        // the (unmoved) branch SHA and would wrongly skip here.
+        const r2 = await reconcileReleaseProvenance({
+          projectRoot: repo, scope: ALL_PROJECTS_SCOPE, config: cfg,
+          now: NOW_E + 200, lastRefsFingerprint: fp1,
+        });
+        expect(r2.refsFingerprint).not.toBe(fp1);
+        expect(r2.failed).toBe(0);
+        const state2 = getReleaseState('prompt_batches', String(batch.id), ALL_PROJECTS_SCOPE);
+        expect(state2?.state).toBe('released');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+  });
 });

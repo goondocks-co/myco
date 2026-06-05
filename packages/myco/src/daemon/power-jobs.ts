@@ -1,5 +1,5 @@
 import type { DaemonLogger, Logger } from './logger.js';
-import type { PowerManager } from './power.js';
+import type { JobRunner } from './job-runner.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -33,16 +33,14 @@ import {
 import {
   resolveMycoHome,
   resolveProjectVaultDir,
-  resolveGroveDbPath,
-  resolveServiceDirName,
 } from '@myco/grove/paths.js';
 import {
   pauseAwareShouldVisit,
-  listGroves,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { withDatabase } from '@myco/db/client.js';
+import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
@@ -51,17 +49,6 @@ import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-me
 import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-// Cached results for `totalPendingAcrossGroves`. The predicate fires on
-// every PowerManager tick to gate sleep transitions; once the queue
-// drains we don't need to re-walk every Grove for ZERO_PENDING_TTL_MS.
-const ZERO_PENDING_TTL_MS = 30_000;
-
-// Rate-limit window for per-Grove embedding-probe failures. The probe
-// fires on every PowerManager tick; without throttling, a Grove with
-// a persistent embedding error would log on every tick. One warn per
-// hour per Grove is enough to expose the failure without flooding.
-const PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,67 +145,29 @@ function getGroveEmbeddingManager(
   return entry.embeddingManager;
 }
 
-interface PendingProbeCache {
-  total: number;
-  expiresAt: number;
-}
-
-// Sum of pending embedding work across every Grove. Caches the
-// last-known zero state for ZERO_PENDING_TTL_MS so the deep-sleep
-// predicate doesn't walk every Grove on every tick when fully drained.
+// Sum of pending embedding work across every Grove via the shared
+// multi-Grove probe. The per-Grove count resolves this Grove's
+// EmbeddingManager from the cache (runs inside the helper's
+// `withDatabase`, so `totalPendingCount()` hits the right Grove DB).
 function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
-  let cache: PendingProbeCache | null = null;
-  // Per-Grove last-warn timestamps so a persistently-broken Grove
-  // surfaces in logs without flooding on every tick.
-  const lastWarnAt = new Map<string, number>();
-  return () => {
-    if (cache && Date.now() < cache.expiresAt) return cache.total;
-    const mycoHome = deps.mycoHome ?? resolveMycoHome();
-    const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
-    let total = 0;
-    for (const grove of listGroves(mycoHome, { servedBy })) {
-      try {
-        const databasePath = resolveGroveDbPath(grove.id, mycoHome);
-        const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);
-        const manager = entry.embeddingManager;
-        if (!manager) continue;
-        // withDatabase is sync (AsyncLocalStorage.run returns fn's value).
-        total += withDatabase(entry.db, () => manager.totalPendingCount());
-        if (total > 0) {
-          cache = null;
-          return total;
-        }
-      } catch (err) {
-        // Swallow per-Grove failure — better to risk an early sleep than
-        // hold the whole machine awake on a transiently-broken signal.
-        // But surface the failure at warn level (rate-limited per Grove)
-        // so persistent breakage is visible in the daemon log.
-        const now = Date.now();
-        const last = lastWarnAt.get(grove.id) ?? 0;
-        if (now - last >= PROBE_FAILURE_WARN_INTERVAL_MS) {
-          lastWarnAt.set(grove.id, now);
-          deps.logger.warn(
-            LOG_KINDS.EMBEDDING_RECONCILE,
-            'Embedding pending-probe failed for Grove',
-            {
-              grove_id: grove.id,
-              grove_slug: grove.slug,
-              error: errorMessage(err),
-            },
-          );
-        }
-      }
-    }
-    cache = { total: 0, expiresAt: Date.now() + ZERO_PENDING_TTL_MS };
-    return total;
-  };
+  return makeGrovePendingProbe({
+    cache: deps.cache,
+    logger: deps.logger,
+    daemonStateDir: deps.daemonStateDir,
+    mycoHome: deps.mycoHome,
+    logKind: LOG_KINDS.EMBEDDING_RECONCILE,
+    countForGrove: ({ databasePath }) => {
+      const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);
+      return entry.embeddingManager ? entry.embeddingManager.totalPendingCount() : 0;
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
+export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJobsResult {
   const {
     registry,
     logger,
@@ -265,6 +214,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
   const lastReleaseReconcileAt = new Map<string, number>();
+  const lastRefsFingerprintByProject = new Map<string, string>();
   const lastManagedReconcileAt = new Map<string, number>();
 
   // Daemon-scope notification (project_id = NULL) so failures surface in
@@ -333,35 +283,34 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
-  let reconcileRunning = false;
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.EMBEDDING_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
-    preventsDeepSleep: () => {
-      if (liveConfig.current.embedding.run_in_deep_sleep === false) return false;
-      try {
-        return totalPendingProbe() > 0;
-      } catch {
-        return false;
-      }
+    kind: 'drain',
+    drain: { slice: EMBEDDING_BATCH_SIZE },
+    hold: {
+      // Read the toggle live each tick — `liveConfig.current` is reassigned
+      // on config save. Equivalent to the old preventsDeepSleep gate:
+      // toggle off → 0 → no hold; else hold iff there is pending work.
+      pending: () =>
+        liveConfig.current.embedding.run_in_deep_sleep === false ? 0 : totalPendingProbe(),
     },
-    fn: async () => {
-      if (reconcileRunning) return;
-      reconcileRunning = true;
-      try {
-        await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
-          const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
-          await manager.reconcile(EMBEDDING_BATCH_SIZE);
-        })();
-      } finally {
-        reconcileRunning = false;
-      }
+    fn: async (ctx) => {
+      let processed = 0, remaining = 0;
+      await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
+        const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
+        const out = await manager.reconcileSlice(ctx.sliceBudget);
+        processed += out.processed;
+        remaining += out.remaining;
+      })();
+      return { processed, remaining };
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.SESSION_MAINTENANCE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.SESSION_MAINTENANCE, async (scope) => {
       const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
       await runSessionMaintenance({
@@ -374,9 +323,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.LOG_RETENTION,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.LOG_RETENTION, async (scope) => {
       const retentionDays = liveConfig.current.daemon.log_retention_days;
       const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
@@ -396,9 +346,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.AUTO_BACKUP,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.AUTO_BACKUP, async (scope) => {
       try {
         const backupDir = resolveGroveBackupDir(liveConfig.current, scope.grove, scope.groveHome);
@@ -435,9 +386,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.DATABASE_OPTIMIZE,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_OPTIMIZE, async (scope) => {
       const config = liveConfig.current;
       if (!config.maintenance?.auto_optimize) return;
@@ -453,10 +405,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     }),
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK,
     // Heavier than optimize; only run when the user is away.
     runIn: ['sleep'],
+    kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK, async (scope) => {
       const config = liveConfig.current;
       if (!config.maintenance?.auto_integrity_check) return;
@@ -508,9 +461,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   // state.
   let lastSymbiontDetectionAt = 0;
   const SYMBIONT_DETECTION_INTERVAL_MS = 60 * 60 * 1000;
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.SYMBIONT_DETECTION,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       const now = Date.now();
       if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
@@ -547,9 +501,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.STAGING_GC,
     runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       await forEachRegisteredProject(
         cache,
@@ -587,9 +542,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.RELEASE_PROVENANCE_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       const now = Date.now();
       const visited = new Set<string>();
@@ -616,6 +572,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
             scope: projectScopeValue,
             config,
             logger,
+            lastRefsFingerprint: lastRefsFingerprintByProject.get(key),
             onReleaseStateChanged: vectorStore
               ? (changes) => {
                   for (const change of changes) {
@@ -637,6 +594,9 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
               : undefined,
           }).then((result) => {
             lastReleaseReconcileAt.set(key, now);
+            if (result.refsFingerprint !== undefined) {
+              lastRefsFingerprintByProject.set(key, result.refsFingerprint);
+            }
             if (result.reconciled > 0) {
               logger.info(
                 LOG_KINDS.RELEASE_PROVENANCE_RECONCILE,
@@ -657,10 +617,13 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           ),
         },
       );
-      // Drop throttle entries for projects no longer registered so the map
+      // Drop throttle entries for projects no longer registered so the maps
       // can't grow unbounded across long-running daemons.
       for (const key of lastReleaseReconcileAt.keys()) {
         if (!visited.has(key)) lastReleaseReconcileAt.delete(key);
+      }
+      for (const key of lastRefsFingerprintByProject.keys()) {
+        if (!visited.has(key)) lastRefsFingerprintByProject.delete(key);
       }
     },
   });
@@ -673,9 +636,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   // trigger. The sweep walks all registered projects through the same
   // single-writer reconciler and is idempotent — a project already in sync is
   // a no-op.
-  powerManager.register({
+  runner.register({
     name: POWER_JOB_NAMES.MANAGED_FILES_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
+    kind: 'housekeeping',
     fn: async () => {
       const now = Date.now();
       const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
@@ -717,7 +681,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  const canopy = registerCanopyJobs(powerManager, {
+  const canopy = registerCanopyJobs(runner, {
     logger,
     machineId,
     liveConfig,

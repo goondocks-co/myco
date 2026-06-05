@@ -34,11 +34,10 @@ export interface LogEntryInsert {
   data: string | null;
   session_id: string | null;
   /**
-   * Branded Grove project id this log line belongs to. Required so the
-   * row joins correctly under Grove's per-project scope; passing a bare
-   * `string` here is a type error by design.
+   * Branded Grove project id this log line belongs to, or NULL for a
+   * daemon-owned row. Passing a bare `string` is a type error.
    */
-  project_id: GroveProjectId;
+  project_id: GroveProjectId | null;
 }
 
 /** Row shape returned from log_entries queries (all columns). */
