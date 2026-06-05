@@ -27,6 +27,8 @@ import {
   hasGlobalInstallMigrationCompleted,
   migrateProjectToGlobalInstall,
 } from '../grove/global-install-migration.js';
+import { isProjectRootIgnored, agentHomeIgnorePaths } from '../vault/capture-ignore.js';
+import { loadMachineConfig } from '../config/loader.js';
 
 /**
  * Resolve the project's vault dir, provisioning it if absent. Returns:
@@ -78,6 +80,19 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
       process.stderr.write(`[myco] capture skipped (non-git-or-unsafe-root) root=${projectRoot}\n`);
     }
     return null;
+  }
+
+  try {
+    const machine = loadMachineConfig();
+    if (isProjectRootIgnored(projectRoot, machine.capture.ignore, agentHomeIgnorePaths())) {
+      if (process.env.MYCO_AGENT_DEBUG) {
+        process.stderr.write(`[myco] capture skipped (ignored-root) root=${projectRoot}\n`);
+      }
+      return null;
+    }
+  } catch {
+    // If machine config can't be read, fall through to agent-home seed only.
+    if (isProjectRootIgnored(projectRoot, { paths: [], patterns: [] }, agentHomeIgnorePaths())) return null;
   }
 
   try {

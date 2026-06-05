@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { invalidateMergedConfigCache } from '@myco/config/loader.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from '@myco/daemon/api/groves.js';
+import type { GroveProjectSummary } from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 
@@ -117,6 +119,45 @@ describe('Grove discovery API', () => {
     const body = response.body as { projects: Array<{ project_id: string }> };
 
     expect(body.projects.map((project) => project.project_id)).toEqual(['proj_a']);
+  });
+
+  it('returns capability gates per project; cortex=false when local.yaml disables it', async () => {
+    const grove = createGrove('Capability Test Grove');
+    const projectRoot = path.join(testDir, 'captest');
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+
+    // Minimal myco.yaml required by loadMergedConfig.
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n', 'utf-8');
+    // local.yaml disables the cortex master gate.
+    fs.writeFileSync(path.join(vaultDir, 'local.yaml'), 'cortex:\n  enabled: false\n', 'utf-8');
+    invalidateMergedConfigCache(vaultDir);
+
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_cap', name: 'Cap Test' },
+      grove: { binding_id: 'gbind_cap', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_cap',
+      projectName: 'Cap Test',
+      projectRoot,
+      bindingId: 'gbind_cap',
+    });
+
+    const response = await createListGrovesHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: {},
+      params: {},
+      pathname: '/api/groves',
+    });
+    const body = response.body as { groves: Array<{ projects: GroveProjectSummary[] }> };
+    const project = body.groves.flatMap((g) => g.projects).find((p) => p.project_id === 'proj_cap');
+
+    expect(project).toBeDefined();
+    expect(project!.capabilities.cortex).toBe(false);
+    expect(project!.capabilities.canopy).toBe(true);
+    expect(project!.capabilities.skills).toBe(true);
+    expect(project!.capabilities.vault_evolution).toBe(true);
   });
 });
 

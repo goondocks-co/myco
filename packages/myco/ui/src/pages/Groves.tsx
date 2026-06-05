@@ -17,6 +17,8 @@ import {
   type GroveSummary,
   type GroveProjectSummary,
 } from '../lib/selection';
+import { buildCapabilityBadges } from '../lib/capability-badges';
+import { CapabilityChipVisual } from '../components/symbionts/CapabilityChip';
 import { PageLoading } from '../components/ui/page-loading';
 import { PageContainer } from '../components/ui/page-container';
 import { Panel } from '../components/ui/panel';
@@ -31,12 +33,16 @@ import { RenameGroveModal } from '../components/groves/RenameGroveModal';
 import { DeleteGroveModal } from '../components/groves/DeleteGroveModal';
 import { MoveProjectModal } from '../components/groves/MoveProjectModal';
 import { DeleteProjectModal } from '../components/groves/DeleteProjectModal';
+import { CapabilityPanel } from '../components/groves/CapabilityPanel';
 import { showToast } from '../components/groves/toast';
+import { useMachineConfig, useAddToMachineConfigList } from '../hooks/use-machine-config';
 
 interface MoveTarget {
   grove: GroveSummary;
   project: GroveProjectSummary;
 }
+
+type CapabilityTarget = MoveTarget;
 
 export default function Groves() {
   const navigate = useNavigate();
@@ -44,6 +50,8 @@ export default function Groves() {
   const setDefaultGrove = useSetDefaultGrove();
   const archiveProject = useArchiveProject();
   const unarchiveProject = useUnarchiveProject();
+  const machineConfig = useMachineConfig();
+  const addToMachineConfigList = useAddToMachineConfigList();
 
   const [newOpen, setNewOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<GroveSummary | null>(null);
@@ -53,6 +61,7 @@ export default function Groves() {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [capabilityTarget, setCapabilityTarget] = useState<CapabilityTarget | null>(null);
 
   const archiveAwareQuery = useGroves({ includeArchived });
   const groves = archiveAwareQuery.data?.groves ?? [];
@@ -131,6 +140,18 @@ export default function Groves() {
           showToast({ level: 'error', title: 'Backup failed', detail: err.message });
         },
         onSettled: () => setPendingBackupId(null),
+      },
+    );
+  }
+
+  function handleIgnore(grove: GroveSummary, project: GroveProjectSummary) {
+    const existing = machineConfig.data?.config.capture.ignore?.paths ?? [];
+    if (existing.includes(project.root)) { handleArchive(grove, project); return; }
+    addToMachineConfigList.mutate(
+      { path: 'capture.ignore.paths', value: project.root },
+      {
+        onSuccess: () => handleArchive(grove, project),
+        onError: (err) => showToast({ level: 'error', title: 'Ignore failed', detail: err.message }),
       },
     );
   }
@@ -238,6 +259,22 @@ export default function Groves() {
                             )}
                             {project.status === 'archived' && <Badge variant="outline">archived</Badge>}
                           </NavLink>
+                          {project.capabilities && (
+                            <button
+                              type="button"
+                              onClick={() => setCapabilityTarget({ grove, project })}
+                              aria-label={`Configure ${project.name} capabilities`}
+                              title="Configure capabilities"
+                              data-testid="capability-badge-strip"
+                              className="shrink-0 flex flex-wrap items-center gap-1 rounded-md p-1 hover:bg-surface-container-high transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
+                            >
+                              {buildCapabilityBadges(
+                                project.capabilities as Record<'cortex' | 'canopy' | 'skills' | 'vault_evolution', boolean>,
+                              ).map((chip) => (
+                                <CapabilityChipVisual key={chip.id} chip={chip} />
+                              ))}
+                            </button>
+                          )}
                           <ProjectActionMenu
                             projectName={project.name}
                             archived={project.status === 'archived'}
@@ -245,6 +282,7 @@ export default function Groves() {
                             onOpen={() => navigate(projectPath({ grove, project }))}
                             onMove={() => setMoveTarget({ grove, project })}
                             onBackup={() => handleBackup(project)}
+                            onIgnore={() => handleIgnore(grove, project)}
                             onArchive={() => handleArchive(grove, project)}
                             onUnarchive={() => handleUnarchive(grove, project)}
                             onDelete={() => setDeleteProjectTarget({ grove, project })}
@@ -301,6 +339,14 @@ export default function Groves() {
           groveId={deleteProjectTarget.grove.id}
           projectId={deleteProjectTarget.project.project_id}
           projectName={deleteProjectTarget.project.name}
+        />
+      )}
+
+      {capabilityTarget && (
+        <CapabilityPanel
+          target={capabilityTarget}
+          open
+          onClose={() => setCapabilityTarget(null)}
         />
       )}
     </PageLoading>

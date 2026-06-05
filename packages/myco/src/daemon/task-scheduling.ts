@@ -29,6 +29,7 @@ import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import { capabilityEnabled, capabilityForTask } from '@myco/config/capabilities.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
@@ -239,8 +240,18 @@ export async function registerScheduledTasks(
     taskAgentMap.set(task.name, task.agent);
   }
 
+  // Per-project-visit memo: the scheduler loop calls getTaskConfig and
+  // getCapabilityEnabled for each task in the same per-project iteration.
+  // Memoizing the last-resolved scope avoids redundant loadMergedConfig calls
+  // within a single project's task fan-out. The slot persists across ticks —
+  // one tick of stale config across a tick boundary is benign at minute-scale
+  // intervals.
+  let lastResolvedKey = '';
+  let lastResolvedConfig: MycoConfig | null = null;
+
   function resolveProjectConfig(scope: RegisteredProjectScope): MycoConfig | null {
     const key = `${scope.grove.id}:${scope.projectId}`;
+    if (key === lastResolvedKey) return lastResolvedConfig;
     try {
       const config = loadMergedConfig(scope.projectVaultDir, {
         groveId: scope.grove.id,
@@ -253,6 +264,8 @@ export async function registerScheduledTasks(
         });
         lastConfigErrorByProject.delete(key);
       }
+      lastResolvedKey = key;
+      lastResolvedConfig = config;
       return config;
     } catch (err) {
       const message = errorMessage(err);
@@ -264,6 +277,8 @@ export async function registerScheduledTasks(
         });
         lastConfigErrorByProject.set(key, message);
       }
+      lastResolvedKey = key;
+      lastResolvedConfig = null;
       return null;
     }
   }
@@ -477,6 +492,13 @@ export async function registerScheduledTasks(
       const config = resolveProjectConfig(scope);
       if (!config) return { schedule: { enabled: false } };
       return config.agent.tasks?.[taskName];
+    },
+    getCapabilityEnabled: (scope, taskName) => {
+      const capId = capabilityForTask(taskName);
+      if (!capId) return true;
+      // resolveProjectConfig logs on failure; null → capabilityEnabled returns
+      // false (fail-closed) so a config-less project never runs the capability.
+      return capabilityEnabled(resolveProjectConfig(scope), capId);
     },
     isTaskRunning: (groveId, projectId, name) =>
       runningTasks.has(runningKey(groveId, projectId, name)),

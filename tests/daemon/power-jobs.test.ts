@@ -721,6 +721,10 @@ describe('canopy-background-scan power job', () => {
     const projectRootB = path.join(fx.workDir, 'projects', 'b');
     fs.mkdirSync(resolveProjectVaultDir(projectRootA), { recursive: true });
     fs.mkdirSync(resolveProjectVaultDir(projectRootB), { recursive: true });
+    // Minimal myco.yaml so loadMergedConfig succeeds — the canopy scan is
+    // fail-closed (skips on unreadable config), like canopy-inject.
+    fs.writeFileSync(path.join(resolveProjectVaultDir(projectRootA), 'myco.yaml'), 'version: 3\n');
+    fs.writeFileSync(path.join(resolveProjectVaultDir(projectRootB), 'myco.yaml'), 'version: 3\n');
     fs.writeFileSync(path.join(projectRootA, 'a.ts'), 'export const a = 1;\n');
     fs.writeFileSync(path.join(projectRootB, 'b.ts'), 'export const b = 1;\n');
     registerProjectInGrove(fx.grove.id, {
@@ -779,6 +783,44 @@ describe('canopy-background-scan power job', () => {
         ...(deps.liveConfig.current as { cortex: Record<string, unknown> }).cortex,
         canopy: {
           refresh: { background_enabled: false, background_period_minutes: 60 },
+          exclude: { default_patterns: [], patterns: [] },
+        },
+      },
+    };
+    registerPowerJobs(pm as never, deps);
+
+    await pm.find('canopy-background-scan').fn();
+
+    const count = withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      getDatabase().prepare(
+        `SELECT COUNT(*) AS n FROM canopy_entries`,
+      ).get() as { n: number },
+    );
+    expect(count.n).toBe(0);
+  });
+
+  it('skips per-project scan when project cortex.canopy.enabled is false', async () => {
+    const projectRoot = path.join(fx.workDir, 'projects', 'a');
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(
+      path.join(vaultDir, 'myco.yaml'),
+      'version: 3\ncortex:\n  canopy:\n    enabled: false\n',
+    );
+    registerProjectInGrove(fx.grove.id, {
+      projectId: 'proj_' + 'aaaa111122223333aaaa111122223333',
+      projectName: 'a',
+      projectRoot,
+    }, fx.mycoHome);
+
+    const deps = buildDeps(fx);
+    deps.liveConfig.current = {
+      ...deps.liveConfig.current,
+      cortex: {
+        ...(deps.liveConfig.current as { cortex: Record<string, unknown> }).cortex,
+        canopy: {
+          refresh: { background_enabled: true, background_period_minutes: 1 },
           exclude: { default_patterns: [], patterns: [] },
         },
       },

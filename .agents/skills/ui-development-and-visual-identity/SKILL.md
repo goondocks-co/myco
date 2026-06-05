@@ -95,42 +95,6 @@ export function TabSwitcher({ tabs, activeTab, onTabChange, layout = 'horizontal
     </div>
   );
 }
-
-function TeamSurface() {
-  const [activeTab, setActiveTab] = useState('overview');
-  const { queueStatus } = useTeamQueueStatus();
-  
-  const tabs = [
-    { id: 'overview', label: 'Overview', icon: <BarChart3 /> },
-    { 
-      id: 'queue', 
-      label: 'Queue', 
-      icon: <Clock />, 
-      count: queueStatus.pending,
-      badge: queueStatus.hasErrors ? 'error' : queueStatus.hasActive ? 'active' : undefined
-    },
-    { id: 'members', label: 'Members', icon: <Users /> },
-    { id: 'projects', label: 'Projects', icon: <FolderOpen />, disabled: !hasProjectAccess }
-  ];
-  
-  // Auto-switch to queue tab on critical errors
-  useEffect(() => {
-    if (queueStatus.hasErrors && activeTab !== 'queue') {
-      setActiveTab('queue');
-      navigate(`${location.pathname}?tab=queue`);
-    }
-  }, [queueStatus.hasErrors]);
-  
-  return (
-    <div className="team-surface">
-      <TabSwitcher tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
-      <div className="tab-content">
-        {activeTab === 'queue' && <TeamQueueManager queueStatus={queueStatus} />}
-        {/* other tab content */}
-      </div>
-    </div>
-  );
-}
 ```
 
 ### URL State Management with React Router
@@ -162,26 +126,23 @@ function useUrlState() {
   
   return { readUrlState, updateUrlState };
 }
-
-function SettingsPage() {
-  const { readUrlState, updateUrlState } = useUrlState();
-  const currentTab = readUrlState().params.tab || 'general';
-  
-  const handleTabChange = (tabId: string) => {
-    updateUrlState({ tab: tabId });
-  };
-  
-  return (
-    <div className="settings-page">
-      <TabSwitcher 
-        tabs={settingsTabs} 
-        activeTab={currentTab} 
-        onTabChange={handleTabChange} 
-      />
-    </div>
-  );
-}
 ```
+
+### Auth-Gated Attachment Rendering
+
+Attachment bytes are served by a bearer-token-gated daemon route (`/api/g/:groveId/p/:projectId/attachments/:file`). A bare `<img src>` cannot send the `x-myco-auth` header — always use `AttachmentImage` or `useAttachmentObjectUrls` from `packages/myco/ui/src/components/ui/attachment-image.tsx`:
+
+```typescript
+import { AttachmentImage, useAttachmentObjectUrls } from '../ui/attachment-image';
+
+// Single image (preferred for all attachment display)
+<AttachmentImage filePath={attachment.file_path} alt="attachment" />
+
+// Multiple images — for lightbox or raw URL access
+const objectUrls = useAttachmentObjectUrls(attachments.map(a => a.file_path));
+```
+
+`AttachmentImage` fetches with the `x-myco-auth` bearer token and renders a blob object URL. The (Grove, project) scope is resolved from the current project selection automatically. Never use `<img src={attachment.file_path}>` directly.
 
 ## Procedure B: Theme System
 
@@ -235,32 +196,8 @@ function init_grove_worktree_enhanced() {
   
   npm run build:ui || { echo "❌ UI build failed"; return 1; }
   
-  # Generate worktree config
-  cat > ".myco/worktree.yaml" << EOF
-worktree:
-  branch: $branch_name
-  ui_workspaces_verified: true
-development:
-  hot_reload: true
-  theme_dev_mode: true
-EOF
-  
   echo "✅ Grove worktree ready"
 }
-```
-
-### Vite Configuration for Grove
-
-```typescript
-export default defineConfig({
-  server: {
-    fs: { allow: ['..', '../..', '../../..'] }, // Worktree compatibility
-    watch: {
-      include: ['src/**/*', '../../../shared/**/*'],
-      exclude: ['node_modules/**', '.worktrees/**']
-    }
-  }
-});
 ```
 
 ## Procedure D: Enhanced Cloudflare Worker Constraints
@@ -285,56 +222,6 @@ function CloudflareWorkerCompatibleUpload() {
     }
     return { valid: true };
   }
-  
-  function useWorkerApiClient() {
-    return useMutation({
-      mutationFn: async (data: ApiRequest) => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), EXECUTION_TIMEOUT);
-        
-        try {
-          const response = await fetch('/api/worker-endpoint', {
-            method: 'POST',
-            body: JSON.stringify(data),
-            signal: controller.signal,
-            headers: { 'X-Worker-Timeout': EXECUTION_TIMEOUT.toString() }
-          });
-          
-          clearTimeout(timeoutId);
-          if (!response.ok) throw new Error(`Worker request failed: ${response.status}`);
-          return response.json();
-          
-        } catch (error) {
-          clearTimeout(timeoutId);
-          if (error.name === 'AbortError') {
-            throw new Error('Worker timeout - try reducing file size');
-          }
-          throw error;
-        }
-      }
-    });
-  }
-}
-
-// Worker-aware form with constraint validation
-function WorkerConstraintForm() {
-  const [file, setFile] = useState<File | null>(null);
-  const validation = file ? validateFileForWorker(file) : { valid: false };
-  
-  return (
-    <form>
-      <input 
-        type="file" 
-        onChange={(e) => setFile(e.target.files?.[0] || null)}
-        accept="image/jpeg,image/png,image/webp"
-      />
-      <Badge variant={validation.valid ? 'success' : 'warning'}>
-        Max 1MB • Cloudflare limits apply
-      </Badge>
-      {!validation.valid && validation.error && <p className="error">{validation.error}</p>}
-      <Button disabled={!validation.valid}>Upload</Button>
-    </form>
-  );
 }
 ```
 
@@ -358,7 +245,6 @@ export function MasterDetailSplit({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [showDetail, onCloseDetail]);
 
-  // Layout primitive owns all spacing decisions
   const spacingClass = {
     'compact': 'spacing-compact',
     'default': 'spacing-default',
@@ -375,19 +261,6 @@ export function MasterDetailSplit({
         </div>
       )}
     </div>
-  );
-}
-
-// Usage: Let primitive control spacing, not leaf pages
-function ProjectListPage() {
-  return (
-    <MasterDetailSplit
-      spacing="comfortable" // Primitive decision, not page decision
-      masterContent={<ProjectList />}
-      detailContent={showDetail && <ProjectDetail projectId={selectedProject} />}
-      showDetail={!!selectedProject}
-      onCloseDetail={() => setSelectedProject(null)}
-    />
   );
 }
 ```
@@ -455,12 +328,11 @@ function RuntimeStatusBadge() {
 **Critical update**: Wait for explicit go-ahead signals before merging PRs:
 
 ```typescript
-// PR merge readiness checks
 interface PRMergeChecks {
   reviewsComplete: boolean;
   ciPassing: boolean;
   conflictsResolved: boolean;
-  goAheadReceived: boolean; // New requirement
+  goAheadReceived: boolean;
 }
 
 function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChecks }) {
@@ -476,56 +348,14 @@ function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChec
         label="Explicit go-ahead received"
         critical
       />
-      
       <Button 
         disabled={!canMerge}
-        variant={canMerge ? 'default' : 'ghost'}
         onClick={() => mergePR(prId)}
       >
         {canMerge ? 'Merge PR' : 'Waiting for go-ahead signal'}
       </Button>
-      
-      {!checks.goAheadReceived && (
-        <Alert variant="warning">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Go-ahead required</AlertTitle>
-          <AlertDescription>
-            Wait for explicit merge approval signal before proceeding. 
-            Auto-merge disabled until go-ahead confirmation received.
-          </AlertDescription>
-        </Alert>
-      )}
     </div>
   );
-}
-
-// Go-ahead signal patterns for different contexts
-const GoAheadSignals = {
-  // Team review contexts
-  REVIEW_COMPLETE: 'review:complete',
-  DESIGN_APPROVED: 'design:approved', 
-  
-  // CI/deployment contexts  
-  STAGING_VERIFIED: 'staging:verified',
-  PERF_BASELINE_MET: 'perf:baseline-met',
-  
-  // Architecture contexts
-  ARCH_REVIEW_PASSED: 'arch:review-passed',
-  BREAKING_CHANGE_APPROVED: 'breaking:approved'
-};
-
-function useGoAheadPattern(requiredSignals: string[]) {
-  const [receivedSignals, setReceivedSignals] = useState<Set<string>>(new Set());
-  
-  const allSignalsReceived = requiredSignals.every(signal => 
-    receivedSignals.has(signal)
-  );
-  
-  const receiveSignal = (signal: string) => {
-    setReceivedSignals(prev => new Set(prev).add(signal));
-  };
-  
-  return { allSignalsReceived, receiveSignal, receivedSignals };
 }
 ```
 
@@ -540,9 +370,6 @@ function useGoAheadPattern(requiredSignals: string[]) {
 ### TabSwitcher Queue Integration  
 **Queue error states must trigger auto-navigation to queue tab**. Missing queue status monitoring breaks Phase 6 team consolidation workflow.
 
-### Cloudflare Worker Constraints
-**Worker timeout errors need differentiated handling**. Use worker-specific error types and provide actionable constraint guidance to users.
-
 ### Instance Context
 **Components default to daemon behavior without proper InstanceContext**. Ensure context provider wraps the app tree.
 
@@ -552,14 +379,14 @@ function useGoAheadPattern(requiredSignals: string[]) {
 ### Project Context Leaks
 **Grove multi-tenant data can leak without proper headers**. Always inject `X-Grove-Slug` and `X-Project-Slug` headers.
 
-### UI Workspace Verification
-**Missing type checks after worktree creation cause build failures**. The enhanced setup includes automatic verification steps.
-
 ### React Router vs Window Location
-**Using window.location directly breaks MemoryRouter compatibility**. Always use React Router hooks (useLocation, useNavigate, useSearchParams) for URL state management. Direct window access fails in testing environments and Electron contexts that use MemoryRouter.
+**Using window.location directly breaks MemoryRouter compatibility**. Always use React Router hooks (useLocation, useNavigate, useSearchParams) for URL state management.
 
 ### Layout Primitive Spacing Authority
-**Leaf pages must not override layout primitive spacing decisions**. MasterDetailSplit and similar primitives own spacing through props - leaf components should not apply conflicting margin/padding styles. This prevents layout inconsistencies and ensures visual design system coherence.
+**Leaf pages must not override layout primitive spacing decisions**. MasterDetailSplit and similar primitives own spacing through props — leaf components should not apply conflicting margin/padding styles.
 
 ### PR Merge Go-Ahead Discipline  
-**Auto-merge without explicit go-ahead signals creates integration risks**. Always implement go-ahead confirmation patterns for non-trivial PRs. Missing explicit approval gates cause premature merges that bypass critical review checkpoints.
+**Auto-merge without explicit go-ahead signals creates integration risks**. Always implement go-ahead confirmation patterns for non-trivial PRs.
+
+### Attachment Routes Are Auth-Gated
+**Never render attachment images with bare `<img src>`**. Attachment routes (`/api/g/:groveId/p/:projectId/attachments/:file`) require the `x-myco-auth` bearer token, which a standard `<img>` element cannot send. Use `AttachmentImage` from `packages/myco/ui/src/components/ui/attachment-image.tsx` for all attachment display. Use `useAttachmentObjectUrls` when raw blob URLs are needed (e.g. lightboxes). Using a bare image tag silently renders a broken image or an auth error response as binary garbage.

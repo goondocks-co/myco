@@ -11,6 +11,18 @@ export interface ListFieldProps extends BaseFieldControlProps {
   placeholder?: string;
   /** Allow duplicate entries. Defaults to false. */
   allowDuplicates?: boolean;
+  /**
+   * When provided, called with a single entry instead of the whole next
+   * array — used to route through the server-side list-delta primitive
+   * (race-free add). `onChange` is NOT called when this is set.
+   */
+  onAdd?: (entry: string) => void;
+  /**
+   * When provided, called with the removed entry instead of the whole
+   * next array — used to route through the server-side list-delta
+   * primitive (race-free remove). `onChange` is NOT called when this is set.
+   */
+  onRemove?: (entry: string) => void;
 }
 
 /** Split a pasted block on newlines and commas, trim, drop empties. */
@@ -43,11 +55,23 @@ export function ListField({
   readonly,
   placeholder,
   allowDuplicates = false,
+  onAdd,
+  onRemove,
 }: ListFieldProps) {
   const [draft, setDraft] = useState<string>('');
 
   function appendEntries(entries: string[]) {
     if (entries.length === 0) return;
+    if (onAdd) {
+      // Per-item path: each new entry goes through the race-free primitive.
+      const seen = new Set(allowDuplicates ? [] : value);
+      for (const entry of entries) {
+        if (!allowDuplicates && seen.has(entry)) continue;
+        seen.add(entry);
+        onAdd(entry);
+      }
+      return;
+    }
     const seen = new Set(allowDuplicates ? [] : value);
     const next = value.slice();
     for (const entry of entries) {
@@ -64,6 +88,10 @@ export function ListField({
   }
 
   function removeEntry(index: number) {
+    if (onRemove) {
+      onRemove(value[index]!);
+      return;
+    }
     const next = value.slice();
     next.splice(index, 1);
     onChange(next);

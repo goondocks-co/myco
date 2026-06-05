@@ -102,6 +102,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-machine-config', () => ({
     mutateAsync: (...args: unknown[]) => updateMachineMock(...args),
     isPending: false,
   }),
+  useAddToMachineConfigList: () => ({ mutate: () => {} }),
+  useRemoveFromMachineConfigList: () => ({ mutate: () => {} }),
 }));
 
 // The Agent provider card depends on these hooks; stub them so the test

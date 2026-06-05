@@ -32,6 +32,14 @@ const ALLOWLIST: readonly string[] = [
   // Canonical owner is Grove; the project copy exists so personal/project
   // overlays can override per-project. UI exposes only the Grove entry.
   'release_provenance.reconcile_interval_minutes',
+  // Capability master gates surface in the capability panel (UI plan), not the
+  // settings manifest. vault_evolution is a new top-level block; skills.enabled
+  // is added here alongside the existing skills.* threshold fields.
+  'vault_evolution.',
+  'skills.enabled',
+  // Admission ignore list — managed via the Groves "Ignore" action and the
+  // machine settings page, not a per-field settings card.
+  'capture.ignore.',
 ];
 
 function isAllowlisted(key: string): boolean {

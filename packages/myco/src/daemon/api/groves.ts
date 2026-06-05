@@ -1,4 +1,7 @@
+import { CAPABILITIES, capabilityEnabled } from '@myco/config/capabilities.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import type { CapabilityId } from '@myco/config/scope.js';
 import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
 import {
   createGrove,
@@ -40,6 +43,7 @@ export interface GroveProjectSummary {
   created_at: string;
   updated_at: string;
   manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
+  capabilities: Record<CapabilityId, boolean>;
 }
 
 export interface GroveSummary {
@@ -101,7 +105,7 @@ export function listGroveSummaries(
     const projects = listRegisteredProjects(grove.id, undefined, {
       includeArchived: options.includeArchived,
     })
-      .map((project) => serializeProject(project));
+      .map((project) => serializeProject(project, grove.id));
     return {
       id: grove.id,
       name: grove.name,
@@ -116,7 +120,27 @@ export function listGroveSummaries(
   return { groves };
 }
 
-function serializeProject(project: RegisteredProject): GroveProjectSummary {
+/**
+ * Resolve per-capability master-gate booleans for a project. Uses
+ * `capabilityEnabled` as the single gate predicate — fail-closed: a
+ * broken or unloadable vault yields capture-only (all false) rather than
+ * all-true, so badges reflect the fail-closed runtime behavior.
+ */
+function resolveCapabilities(projectRoot: string, groveId: string): Record<CapabilityId, boolean> {
+  const capIds = Object.keys(CAPABILITIES) as CapabilityId[];
+  let config = null;
+  try {
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    config = loadMergedConfig(vaultDir, { groveId });
+  } catch {
+    // Unloadable config → capabilityEnabled(null, …) returns false (fail-closed).
+  }
+  return Object.fromEntries(
+    capIds.map((id) => [id, capabilityEnabled(config, id)]),
+  ) as Record<CapabilityId, boolean>;
+}
+
+function serializeProject(project: RegisteredProject, groveId: string): GroveProjectSummary {
   return {
     project_id: project.project_id,
     name: project.name,
@@ -128,6 +152,7 @@ function serializeProject(project: RegisteredProject): GroveProjectSummary {
     created_at: project.created_at,
     updated_at: project.updated_at,
     manifest_state: manifestState(project),
+    capabilities: resolveCapabilities(project.root, groveId),
   };
 }
 

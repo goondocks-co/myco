@@ -54,3 +54,50 @@ export function useUpdateMachineConfig() {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Race-free list-mutation helpers for machine-tier array fields
+// ---------------------------------------------------------------------------
+
+/**
+ * Add a value to a machine-config list path (e.g. `capture.ignore.paths`).
+ * The server does the read-modify-write so concurrent callers don't overwrite
+ * each other — no stale client-array read required.
+ */
+export function useAddToMachineConfigList() {
+  const queryClient = useQueryClient();
+  return useMutation<MachineConfig, Error, { path: string; value: string }>({
+    mutationFn: ({ path, value }) =>
+      putJson<MachineConfig>('/machine-config', {
+        addToList: [{ path, values: [value] }],
+      }),
+    onSuccess: (config) => {
+      queryClient.setQueryData<MachineConfigResponse>(
+        [...MACHINE_CONFIG_QUERY_KEY],
+        { config },
+      );
+      queryClient.invalidateQueries({ queryKey: ['config', 'merged'] });
+    },
+  });
+}
+
+/**
+ * Remove a value from a machine-config list path (e.g. `capture.ignore.paths`).
+ * Server-side read-modify-write — no stale client-array read required.
+ */
+export function useRemoveFromMachineConfigList() {
+  const queryClient = useQueryClient();
+  return useMutation<MachineConfig, Error, { path: string; value: string }>({
+    mutationFn: ({ path, value }) =>
+      putJson<MachineConfig>('/machine-config', {
+        removeFromList: [{ path, values: [value] }],
+      }),
+    onSuccess: (config) => {
+      queryClient.setQueryData<MachineConfigResponse>(
+        [...MACHINE_CONFIG_QUERY_KEY],
+        { config },
+      );
+      queryClient.invalidateQueries({ queryKey: ['config', 'merged'] });
+    },
+  });
+}

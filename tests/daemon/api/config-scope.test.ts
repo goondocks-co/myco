@@ -84,6 +84,24 @@ describe('scoped config HTTP handlers', () => {
     expect((project.body as any).error).toBe('appearance_is_grove_scoped');
   });
 
+  it('PUT /scoped list-delta targeting appearance.* gets the same Grove-scoped 400', async () => {
+    // A list-delta is a new way to write config paths; it must pass through
+    // the same path-based scope guard as patch/clear — so an op targeting
+    // appearance.* returns the specific error, not a generic validation_failed.
+    const add = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      addToList: [{ path: 'appearance.accents', values: ['moss'] }],
+    });
+    const remove = await handlePutScopedConfig(tmpDir, {
+      scope: 'project',
+      removeFromList: [{ path: 'appearance.accents', values: ['moss'] }],
+    });
+    expect(add.status).toBe(400);
+    expect((add.body as any).error).toBe('appearance_is_grove_scoped');
+    expect(remove.status).toBe(400);
+    expect((remove.body as any).error).toBe('appearance_is_grove_scoped');
+  });
+
   it('PUT /grove-config writes appearance for the current Grove', async () => {
     const res = await handlePutGroveConfig(groveId, {
       patch: { appearance: { theme: 'plum', density: 'compact' } },

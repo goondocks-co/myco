@@ -38,6 +38,8 @@ import {
   pauseAwareShouldVisit,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
+import { capabilityEnabled } from '@myco/config/capabilities.js';
+import { withDatabase } from '@myco/db/client.js';
 import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
@@ -689,7 +691,16 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       forEachRegisteredProject(
         cache,
         logger,
-        async ({ databasePath, projectId, projectRoot, grove }: RegisteredProjectScope) => {
+        async ({ databasePath, projectId, projectRoot, projectVaultDir, grove }: RegisteredProjectScope) => {
+          try {
+            const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
+            if (!capabilityEnabled(projectConfig, 'canopy')) return;
+          } catch {
+            // Unreadable config → skip the scan (fail-closed), consistent with
+            // canopy-inject. Registered projects always have a vault, so this
+            // only fires on a transient read error.
+            return;
+          }
           const runner = canopyRegistry.ensureRunner({
             databasePath,
             projectId,

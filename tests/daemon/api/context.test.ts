@@ -143,6 +143,17 @@ describe('createSessionContextHandler', () => {
     expect((result.body as { text: string }).text).toBe('');
   });
 
+  it('returns empty when cortex.enabled master gate is false (even with digest sub-toggle on)', async () => {
+    // cortex.enabled=false must suppress session-start entirely, even if
+    // digest injection sub-toggle is on — master gate wins.
+    const cfg = MycoConfigSchema.parse({ version: 3, cortex: { digest: { inject_on_session_start: true } } });
+    cfg.cortex.enabled = false;
+    const handler = createSessionContextHandler(makeDeps({ config: cfg }));
+    const result = await handler(makeReq({ session_id: 'sess-cortex-master-off' }));
+
+    expect((result.body as { text: string }).text).toBe('');
+  });
+
   it('appends the preferred digest when digest injection is enabled', async () => {
     registerAgent({
       id: DEFAULT_AGENT_ID,
@@ -440,6 +451,17 @@ describe('createPromptContextHandler', () => {
     const handler = createPromptContextHandler(makeDeps({ config: makeConfig({ prompt_search: false }) }));
     const result = await handler(makeReq({ prompt: 'write a spec for X', session_id: 'sess-nudge-3' }));
     expect((result.body as { text: string }).text).toContain('Myco is where plans live');
+  });
+
+  it('returns empty when cortex.enabled master gate is false (suppresses spores and nudge)', async () => {
+    // cortex.enabled=false must suppress both spore search and the plan-intent
+    // nudge — the coarse boundary gate fires before either sub-toggle.
+    const cfg = MycoConfigSchema.parse({ version: 3 });
+    cfg.cortex.enabled = false;
+    const handler = createPromptContextHandler(makeDeps({ config: cfg }));
+    const result = await handler(makeReq({ prompt: 'please plan the migration', session_id: 'sess-cortex-master-off-prompt' }));
+
+    expect((result.body as { text: string }).text).toBe('');
   });
 
   it('injects the nudge at most once per session', async () => {
