@@ -26,6 +26,11 @@ import {
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
 import { loadMergedConfig, updateConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
+import {
+  capabilityEnabled,
+  effectiveTaskScheduleEnabled,
+  governingCapability,
+} from '../../config/capabilities.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -305,9 +310,31 @@ export async function handleGetTaskConfig(
   vaultDir: string,
 ): Promise<RouteResponse> {
   const taskId = req.params.id;
+  const definitionsDir = resolveDefinitionsDir();
+  const allTasks = loadAllTasks(definitionsDir, vaultDir);
+  const task = allTasks.get(taskId);
+  if (!task) {
+    return { status: HTTP_NOT_FOUND, body: { error: 'task_not_found', name: taskId } };
+  }
+
   const config = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
   const taskConfig = config.agent.tasks?.[taskId] ?? null;
-  return { status: HTTP_OK, body: { taskId, config: taskConfig } };
+  const capability = governingCapability(taskId);
+  const yamlScheduleEnabled = task.schedule?.enabled ?? false;
+  return {
+    status: HTTP_OK,
+    body: {
+      taskId,
+      config: taskConfig,
+      capability,
+      capabilityEnabled: capability ? capabilityEnabled(config, capability) : true,
+      effectiveScheduleEnabled: effectiveTaskScheduleEnabled(
+        config,
+        taskId,
+        yamlScheduleEnabled,
+      ),
+    },
+  };
 }
 
 /**

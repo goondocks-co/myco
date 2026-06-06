@@ -20,18 +20,34 @@ import {
   handleCreateTask,
   handleCopyTask,
   handleDeleteTask,
+  handleGetTaskConfig,
 } from '@myco/daemon/api/agent-tasks.js';
+import { invalidateMergedConfigCache } from '@myco/config/loader.js';
+import { createGrove, clearGroveRegistryCaches } from '@myco/grove/registry.js';
+import { resolveGroveConfigPath } from '@myco/grove/paths.js';
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
 let vaultDir: string;
+let mycoHome: string;
+let previousMycoHome: string | undefined;
 
 beforeEach(() => {
   vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-api-tasks-'));
+  mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-api-tasks-home-'));
+  previousMycoHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = mycoHome;
+  clearGroveRegistryCaches();
+  invalidateMergedConfigCache();
 });
 
 afterEach(() => {
+  if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+  else process.env.MYCO_HOME = previousMycoHome;
+  clearGroveRegistryCaches();
+  invalidateMergedConfigCache();
   fs.rmSync(vaultDir, { recursive: true, force: true });
+  fs.rmSync(mycoHome, { recursive: true, force: true });
 });
 
 function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
@@ -157,5 +173,47 @@ describe('handleDeleteTask', () => {
     );
     expect(res.status).toBe(404);
     expect((res.body as { error: string }).error).toBe('task_not_found');
+  });
+});
+
+describe('handleGetTaskConfig', () => {
+  it('reports capability governance and effective schedule enablement', async () => {
+    const grove = createGrove('Agent Tasks', mycoHome);
+    const groveConfigPath = resolveGroveConfigPath(grove.id, mycoHome);
+    fs.mkdirSync(path.dirname(groveConfigPath), { recursive: true });
+    fs.writeFileSync(
+      groveConfigPath,
+      [
+        'version: 3',
+        'vault_evolution:',
+        '  enabled: false',
+        'agent:',
+        '  tasks:',
+        '    vault-evolve:',
+        '      schedule:',
+        '        enabled: true',
+        '',
+      ].join('\n'),
+    );
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n');
+    invalidateMergedConfigCache();
+
+    const res = await handleGetTaskConfig(
+      makeReq({
+        params: { id: 'vault-evolve' },
+        requestContext: { ...TEST_REQUEST_CONTEXT, groveId: grove.id },
+      }),
+      vaultDir,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      taskId: 'vault-evolve',
+      capability: 'vault_evolution',
+      capabilityEnabled: false,
+      effectiveScheduleEnabled: false,
+      config: { schedule: { enabled: true } },
+    });
   });
 });

@@ -124,6 +124,8 @@ Agents can still use their own memory and tools. Myco adds shared project contex
 
 A local web dashboard provides configuration and operations management. Manage Groves and projects, configure providers, approve skill candidates, trigger intelligence and digest cycles, monitor service health, and view live logs.
 
+Use the [Grove Management guide](docs/groves.md) to decide when to create additional Groves, move or archive projects, and toggle per-project capabilities such as Cortex, Canopy, Skills, and Vault Evolution.
+
 <p align="center">
   <img src="packages/myco/assets/myco-dashboard.png" alt="Myco Dashboard" width="100%">
 </p>

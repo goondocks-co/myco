@@ -122,10 +122,10 @@ describe('myco config', () => {
 
     it('creates intermediate objects along dot-path', async () => {
       writeConfig(tmpDir);
-      await run(['set', 'release_provenance.github.max_lookups_per_run', '20'], tmpDir);
+      await run(['set', 'release_provenance.github.max_lookups_per_run', '21'], tmpDir);
       const config = readConfig(tmpDir);
       const rp = config.release_provenance as Record<string, unknown>;
-      expect((rp.github as Record<string, unknown>).max_lookups_per_run).toBe(20);
+      expect((rp.github as Record<string, unknown>).max_lookups_per_run).toBe(21);
     });
 
     it('exits 1 on Zod validation failure', async () => {

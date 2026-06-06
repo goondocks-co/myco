@@ -678,6 +678,15 @@ export function findProjectByRoot(
   return null;
 }
 
+export function projectLifecycleForRoot(
+  projectRoot: string,
+  mycoHome = resolveMycoHome(),
+): 'active' | 'archived' | 'unregistered' {
+  const found = findProjectByRoot(projectRoot, mycoHome, { includeArchived: true });
+  if (!found) return 'unregistered';
+  return found.project.status === 'archived' ? 'archived' : 'active';
+}
+
 export function findRegisteredProjectByBinding(
   bindingId: string,
   mycoHome = resolveMycoHome(),

@@ -17,6 +17,7 @@ The supported path for the current release is macOS. Linux and Windows packages 
 - [Skills](https://myco.sh/skills.md): How accumulated project knowledge becomes reviewed workflows that connected agents can follow.
 - [Symbionts](https://myco.sh/symbionts.md): How Myco connects to supported coding agents while preserving each agent's native workflow.
 - [Canopy](https://myco.sh/canopy.md): Codebase awareness that helps agents understand files and architecture before they read deeply.
+- [Grove management](https://myco.sh/groves.md): How users organize projects into Groves, move/archive projects, and control per-project capabilities.
 - [Agent tools](https://myco.sh/agent-tools.md): MCP tools and slash-command skills available to connected agents.
 - [Agent harness](https://myco.sh/agent-harness.md): Background intelligence work that extracts spores, summaries, digests, and evolving skills.
 

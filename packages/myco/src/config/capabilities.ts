@@ -71,6 +71,10 @@ export function capabilityForTask(taskName: string): CapabilityId | null {
   return null;
 }
 
+export function governingCapability(taskName: string): CapabilityId | null {
+  return capabilityForTask(taskName);
+}
+
 /**
  * Single authoritative capability gate. Fail-closed: a null/unloadable
  * config disables the capability. A master gate defaults on (only `false`
@@ -79,6 +83,25 @@ export function capabilityForTask(taskName: string): CapabilityId | null {
 export function capabilityEnabled(config: MycoConfig | null | undefined, capId: CapabilityId): boolean {
   if (!config) return false;
   return getAtPath(config, CAPABILITIES[capId].masterGate) !== false;
+}
+
+/**
+ * Single authority for scheduled-task effective enablement: a task runs only
+ * when its governing capability is on and its schedule resolves enabled via
+ * the same override-nullish-coalescing semantics as the scheduler
+ * (`override ?? YAML default`). Callers pass the task definition's YAML
+ * default so this module stays independent of task loading.
+ */
+export function effectiveTaskScheduleEnabled(
+  config: MycoConfig | null | undefined,
+  taskName: string,
+  yamlScheduleEnabled: boolean,
+): boolean {
+  if (!config) return false;
+  const capId = capabilityForTask(taskName);
+  if (capId && !capabilityEnabled(config, capId)) return false;
+  const override = config.agent.tasks?.[taskName]?.schedule?.enabled;
+  return override ?? yamlScheduleEnabled;
 }
 
 /** All opt-in capabilities off → the project is capture-only. */
