@@ -116,22 +116,6 @@ const config = await loadMergedConfig(projectPath, { groveId });
 const config = await loadMergedConfig(projectPath);
 ```
 
-Internal implementation:
-```typescript
-// packages/myco/src/config/loader.ts
-export async function loadMergedConfig(projectPath: string, options?: LoadMergedConfigOptions) {
-  // Auto-resolve Grove from project manifest
-  const projectConfig = await readProjectConfig(projectPath);
-  const groveId = await resolveGroveIdFromBinding(projectConfig.grove.binding_id);
-
-  const machineConfig = await loadMachineConfig();
-  const groveConfig = await loadGroveConfig(groveId);
-  const projectConfig = await loadLocalConfig(projectPath);
-
-  return deepMergeConfig(machineConfig, groveConfig, projectConfig);
-}
-```
-
 **Three call-site rethreading** impact:
 - CLI bootstrap in `packages/myco/src/cli/tool.ts` — removed explicit Grove resolution
 - Config API handler in `packages/myco/src/daemon/api/config.ts` — simplified Grove discovery
@@ -140,48 +124,9 @@ export async function loadMergedConfig(projectPath: string, options?: LoadMerged
 
 ### Embedding and Agent Configuration Fields Now Grove-Scoped
 
-**Critical scope boundary change**: The following configuration fields have been promoted from project-scoped to Grove-scoped to enable consistent behavior across all projects in a Grove:
+**Critical scope boundary change**: Embedding and agent configuration fields have been promoted from project-scoped to Grove-scoped. These settings control system-wide behavior uniform across all projects in a Grove; individual project overrides are no longer supported.
 
-```yaml
-# These fields are NOW GROVE-SCOPED (read from .myco/grove-config.yaml)
-# Previous project location: .myco/config.yaml (project tier)
-
-grove:
-  embedding:
-    provider: "ollama"
-    model: "all-minilm-l6-v2"
-    run_in_deep_sleep: true
-    concurrency: 4
-
-  agent:
-    provider: "claude"
-    model: "claude-3-5-sonnet-20241022"
-    timeout_ms: 30000
-    scheduled_tasks_active_window_days: 7
-```
-
-**Why Grove-scoped**: These settings control system-wide behavior that should be uniform across projects in a Grove. Individual project overrides are no longer supported for these fields — they inherit from Grove configuration.
-
-**Legacy migration**: If you have existing projects with project-level `embedding.*` or `agent.*` configuration:
-
-```yaml
-# OLD (project-scoped, no longer used)
-project:
-  embedding:
-    provider: "ollama"
-  agent:
-    model: "claude-3-5-sonnet-20241022"
-```
-
-**Automatic migration**: Running `myco update` automatically lifts these fields to Grove tier:
-```bash
-$ myco update --all-projects
-Migrating embedding.run_in_deep_sleep from project to grove config
-Migrating agent.scheduled_tasks_active_window_days from project to grove config
-Successfully migrated 2 project settings to grove tier
-```
-
-After migration, these settings are read from Grove config and will apply uniformly to all projects in the Grove. If you need per-project overrides for these fields, coordinate through Grove configuration.
+**Automatic migration**: Running `myco update` automatically lifts these fields to Grove tier. After migration, settings are read from Grove config and apply uniformly to all projects. If you need per-project overrides, coordinate through Grove configuration.
 
 ## Procedure C: Multi-Tenant Database Schema Design
 
@@ -266,6 +211,15 @@ async function createSpore(data: SporeData, requestContext: MycoRequestContext) 
 }
 ```
 
+### Graceful-Empty vs Fail-Loud Helper Pattern
+
+Choose the right project-ID helper based on whether the route requires a bound project:
+
+- **`rowProjectIdFromRequestContext(context)`** — returns `null` when no project is bound; safe for dual-mode endpoints where project context is optional (e.g., observability tools that degrade gracefully without a project).
+- **`requireProjectId(context, label)`** — throws with a descriptive label if no project is bound; use when a missing project would produce corrupt or misrouted data (e.g., saving plans, cortex lookups, strict tenant CRUD).
+
+The label argument appears in error messages, so make it descriptive. Never use `rowProjectIdFromRequestContext` on strict tenant CRUD — a null project_id silently writes daemon-anchor rows instead of failing loudly.
+
 ## Procedure E: MCP Transport Unification and Parity
 
 Implement unified MCP architecture with global daemon and CLI fallback.
@@ -320,19 +274,6 @@ const daemonStatePath = resolveServiceDaemonStatePath();
 const runtimeDir = resolveMachineRuntimeDir(groveHome);
 ```
 
-### Development Service Mode Management
-
-Use development service mode primitives:
-```typescript
-import { SERVICE_DEV_DIRNAME, isDevServiceMode, setDevServiceMode } from '../grove/paths.js';
-
-// Switch to development mode (service-dev/, port 19344)
-function enableDevMode() {
-  setDevServiceMode(true);
-  console.log(`Switched to development service mode (${SERVICE_DEV_DIRNAME})`);
-}
-```
-
 ### Grove Registry Structure
 
 Registry structure in `registry.yaml` (GROVE_REGISTRY_FILENAME):
@@ -349,39 +290,11 @@ groves:
 
 ### Grove-Ownership and Migration Walker Safety
 
-When implementing project migration, bulk deletion, or Grove-wide operations, be aware of scope filtering requirements in `packages/myco/src/grove/migration-walker.ts`. The migration walker traverses ALL Groves by default unless explicitly filtered by `currentDaemonVariant` served_by constraints.
-
-**Critical safeguard**: Always filter migrations by the current daemon variant's served Grove(s):
-```typescript
-async function safeMigrateProjects(filter: { groveId?: string, projectId?: string }) {
-  const currentVariant = getCurrentDaemonVariant();
-  const targetGrove = filter.groveId ?? currentVariant.servedBy;
-
-  // Only migrate projects in the current daemon's served Grove
-  const projects = await db.all(`
-    SELECT * FROM registered_projects
-    WHERE grove_id = ?
-  `, [targetGrove]);
-
-  // ... perform migration ...
-}
-```
+When implementing project migration, bulk deletion, or Grove-wide operations, be aware of scope filtering requirements in `packages/myco/src/grove/migration-walker.ts`. The migration walker traverses ALL Groves by default unless explicitly filtered by `currentDaemonVariant` served_by constraints. Always validate the daemon's served_by scope before executing walkers.
 
 ### myco remove --purge Blast Radius
 
-The `myco remove --purge` command performs a registered-project walk that affects ALL projects in the Grove registry unless explicitly scoped. This can remove unintended projects if the registry has been polluted.
-
-**Safety**: Always use `--scope grove-id` or `--scope project-id` to limit the purge scope:
-```bash
-# DANGEROUS: affects all projects in registry
-myco remove --purge
-
-# SAFE: limits to specific Grove
-myco remove --purge --scope grove_abc123
-
-# SAFE: limits to specific project
-myco remove --purge --scope proj_xyz789
-```
+The `myco remove --purge` command performs a registered-project walk that affects ALL projects in the Grove registry unless explicitly scoped. Always use `--scope grove-id` or `--scope project-id` to limit purge operations.
 
 ## Procedure G: Security and Authorization Patterns
 
@@ -411,125 +324,21 @@ async function getGroveProjectData(groveId, projectId, resourceId) {
 }
 ```
 
-### Timing-Safe Authentication Comparisons
-
-```javascript
-async function validateGroveBearerToken(providedToken, groveId, projectId) {
-  const expectedToken = await getGroveProjectToken(groveId, projectId);
-  const isValid = crypto.timingSafeEqual(
-    Buffer.from(providedToken || '', 'utf8'),
-    Buffer.from(expectedToken, 'utf8')
-  );
-  await new Promise(resolve => setTimeout(resolve, 10)); // Consistent delay
-  return isValid;
-}
-```
-
 ## Procedure H: D1 Drift Reconciler Architecture and Daemon-Side Intelligence
 
-**Critical update**: Implement daemon-side intelligence vs worker passive receiver principles:
+**Critical update**: Implement daemon-side intelligence vs worker passive receiver principles.
 
 ### Daemon-Side Intelligence Principle
 
-The daemon performs all intelligence operations while the worker acts as a passive data receiver:
-
-```typescript
-// Daemon-side drift detection and reconciliation logic
-async function detectAndReconcileDrift(projectId: string, groveId: string) {
-  const localVault = await loadLocalVault(projectId);
-  const remoteState = await queryD1State(groveId, projectId);
-  const driftAnalysis = analyzeDrift(localVault, remoteState);
-
-  if (driftAnalysis.hasDrift) {
-    const reconciliationPlan = createReconciliationPlan(driftAnalysis);
-    await sendToWorker(groveId, {
-      action: 'reconcile_drift',
-      plan: reconciliationPlan,
-      intelligence_metadata: { drift_type: driftAnalysis.type, confidence_score: driftAnalysis.confidence }
-    });
-  }
-}
-
-// Worker receives and applies reconciliation passively
-async function workerReceiveDriftReconciliation(payload: DriftReconciliationPayload) {
-  const { plan, intelligence_metadata } = payload;
-  await applyReconciliationPlan(plan); // Passive application only
-  console.log(`Applied drift reconciliation: ${intelligence_metadata.drift_type}`);
-}
-```
+The daemon performs all intelligence operations (drift detection, reconciliation planning) while the worker acts as a passive data receiver that applies plans. Implementing analysis or decision-making in the worker violates this principle and creates architectural inconsistencies.
 
 ### Session-Scoped Tool Call Aggregation
 
-**Critical update**: Implement session-scoped metrics with team-sync exclusion patterns:
-
-```typescript
-async function aggregateToolCallsForSession(sessionId: string, requestContext: MycoRequestContext) {
-  const session = await db.get('SELECT project_id FROM sessions WHERE id = ?', [sessionId]);
-  if (session.project_id !== requestContext.projectId) {
-    throw new Error('Cross-project tool call aggregation denied');
-  }
-
-  const toolCalls = await db.all(`
-    SELECT tool_name, COUNT(*) as call_count
-    FROM tool_usage_log
-    WHERE session_id = ? AND project_id = ?
-    GROUP BY tool_name
-  `, [sessionId, requestContext.projectId]);
-
-  const metrics = {
-    sessionId,
-    projectId: requestContext.projectId,
-    toolCallCounts: Object.fromEntries(toolCalls.map(tc => [tc.tool_name, tc.call_count])),
-    excludeFromTeamSync: true // Always exclude sensitive metrics
-  };
-
-  await db.run(`
-    INSERT INTO session_metrics (session_id, project_id, metrics_data, exclude_team_sync)
-    VALUES (?, ?, ?, 1)
-  `, [sessionId, requestContext.projectId, JSON.stringify(metrics), 1]);
-
-  return metrics;
-}
-```
+Session-scoped tool call aggregation metrics contain sensitive usage patterns and must be excluded from team sync. Always set `exclude_team_sync: true` for tool usage metrics to prevent cross-project data leakage.
 
 ### Process Identity Check Before Schema Mutations
 
-**Critical update**: Enforce daemon startup ordering with process identity validation:
-
-```typescript
-async function validateProcessIdentityBeforeMutation(operation: string) {
-  const daemonStatePath = resolveServiceDaemonStatePath();
-  if (!fs.existsSync(daemonStatePath)) {
-    throw new Error(`Cannot perform ${operation}: daemon identity not established`);
-  }
-
-  const daemonState = JSON.parse(fs.readFileSync(daemonStatePath, 'utf8'));
-
-  // Verify process is still running
-  try {
-    process.kill(daemonState.pid, 0);
-  } catch (error) {
-    throw new Error(`Daemon process ${daemonState.pid} not running - cannot perform schema mutations`);
-  }
-
-  // Verify startup ordering: minimum uptime required
-  const uptimeMs = Date.now() - daemonState.startedAt;
-  if (uptimeMs < 5000) {
-    throw new Error(`Daemon startup incomplete (uptime: ${uptimeMs}ms) - deferring schema mutations`);
-  }
-
-  const currentSchemaVersion = await getCurrentSchemaVersion();
-  if (daemonState.schemaVersion !== currentSchemaVersion) {
-    throw new Error(`Schema version mismatch: daemon=${daemonState.schemaVersion}, current=${currentSchemaVersion}`);
-  }
-}
-
-// Apply to all schema mutation operations
-async function createTable(ddl: string) {
-  await validateProcessIdentityBeforeMutation('CREATE TABLE');
-  return db.run(ddl);
-}
-```
+Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER TABLE, or DROP TABLE operations. Performing schema mutations without process identity validation creates race conditions during daemon startup.
 
 ## Cross-Cutting Gotchas
 
@@ -551,22 +360,22 @@ async function createTable(ddl: string) {
 
 **Development Service Mode Isolation**: Development mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution.
 
-**Grove Secret File Permissions Reset**: File permissions on Grove-scoped `.myco/secrets.env` can be reset by git operations. Always verify permissions after deployment.
-
 **Cross-Grove Session Pollution**: Session storage can leak data between Groves if session keys don't include Grove and Project IDs. Always prefix session keys with both identifiers.
 
 **D1 Worker Intelligence Violation**: The worker must remain a passive receiver for all D1 operations. Implementing analysis or decision-making in the worker violates the daemon-side intelligence principle and creates architectural inconsistencies.
 
-**Tool Call Metrics Team Sync Leakage**: Session-scoped tool call aggregation metrics contain sensitive usage patterns and must be excluded from team sync. Always set `exclude_team_sync: true` for tool usage metrics to prevent cross-project data leakage.
-
-**Schema Mutation Without Process Identity**: Performing database schema mutations without daemon process identity validation creates race conditions. Always validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER TABLE, or DROP TABLE operations.
-
 **loadMergedConfig Grove Auto-Resolution**: After commit 17e3e923, `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
 
-**Embedding and Agent Configuration Inheritance**: After the scope boundary change, embedding and agent settings are read-only at the project level — they inherit from Grove configuration. If you need to customize these for a specific project, request Grove configuration changes or implement project-level environment variable overrides at the application level, not through config files.
+**Migration Walker Grove Filtering**: The migration walker in `packages/myco/src/grove/migration-walker.ts` traverses ALL Groves unless explicitly scoped by `currentDaemonVariant` served_by constraints. Always validate the daemon's served_by scope before executing walkers.
 
-**Migration Walker Grove Filtering**: The migration walker in `packages/myco/src/grove/migration-walker.ts` traverses ALL Groves unless explicitly scoped by `currentDaemonVariant` served_by constraints. This creates cross-Grove mutation hazards if a daemon is configured to serve multiple Groves or if filtering is omitted. Always validate the daemon's served_by scope before executing walkers.
+**Capture ignore list is machine-scoped only**: The machine-scoped capture ignore list (checked by `isProjectRootIgnored` in `packages/myco/src/hooks/vault-gate.ts`) silently bypasses projects at the vault gate — no error, no telemetry. There is no per-project or per-Grove override; the machine config setting applies globally.
 
-**myco remove --purge Registry Blast**: The `myco remove --purge` command without scope modifiers affects all projects in the registered project inventory. Corrupted or overstocked registries can cause widespread project deletion. Always use `--scope grove-id` or `--scope project-id` to limit purge operations to the intended subset.
+**Capability architecture uses a single fail-closed predicate**: `capabilityEnabled(config, capId)` in `packages/myco/src/config/capabilities.ts` is the sole gate for all capability checks — do NOT add per-subsystem runtime gate-checks in handlers. Unloadable config returns `false` (fail-closed). The `CAPABILITIES` map owns which config leaf controls each capability and which scheduled tasks are governed. Add new capabilities there, not inline in handlers.
 
-**Global Uninstall .gitignore Strip Regression**: When globally uninstalling Myco via `myco uninstall --global`, the `.gitignore` file handling can regress in project repositories. Specifically, Myco-managed entries (typically `/node_modules/.myco`, `.myco/temp`, etc.) may fail to be properly restored or may be incorrectly retained after uninstallation, leading to project repository state corruption. **Mitigation**: Before uninstalling, explicitly clean up Myco-managed directories with `myco clean --all-groves`, and verify `.gitignore` contains no Myco-specific patterns before running the global uninstall. Consider a manual review and restoration of `.gitignore` after uninstall.
+**Capture-only mode has hidden active subsystems**: Disabling most capabilities still leaves title-summary, embedding-reconcile, and canopy-inject running in the background. These subsystems consume LLM credits and CPU even when the project appears to be in passive capture-only mode. Budget accordingly and audit which capabilities are truly gated before assuming quiet operation.
+
+**Phantom project_id at daemon bootstrap**: The daemon bootstraps with a phantom vault before any project is registered (`packages/myco/src/daemon/main.ts` greenfield mode). Rows with `project_id IS NULL` belong to this daemon anchor exclusively — they are NOT legacy rows. `buildVaultFallbackOrGlobal` in `packages/myco/src/grove/request-context.ts` returns the daemon-global context when no project is bound; the strict `buildVaultFallback` variant throws. Use the global variant only in routes where an unbound daemon context is explicitly valid.
+
+**Machine-level routes use action-scope, not tenantRoute**: Routes that operate across all Groves (backup, database vacuum, global dispatch) use `actionScopeKey` from `packages/myco/src/daemon/api/action-scope.ts` for deduplication, not `tenantRoute`. Using `tenantRoute` on machine-level routes fails with missing-project errors on callers that legitimately have no project context. The scoped-dispatch module (`packages/myco/src/daemon/api/scoped-dispatch.ts`) enforces the all-groves confirmation gate automatically.
+
+**v1.0.8 capture-only bug — saveConfig materializes defaults into committed tier**: A v1.0.8 bug caused `saveConfig` to write machine-scoped defaults into the committed project config tier when called from capture-only mode; the vault-gate hot path also bypassed the archived-project refusal check. If a project stuck in capture-only mode shows unexpected config entries, check for materialized defaults from this regression. Fix: call `saveConfig` only after verifying the project is not in archived/capture-only state.

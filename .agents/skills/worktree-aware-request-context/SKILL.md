@@ -42,10 +42,10 @@ When designing or modifying request context handling:
 
    **TenancySource tri-value model** (defined in `packages/myco/src/grove/request-context.ts`):
    - `'caller'` — context established by an authenticated caller (e.g., `launchContextTenancy: true` in CLI launch options, or explicit context-switching headers)
-   - `'synthesized'` — context built internally by the daemon without caller authentication
-   - `'daemon'` — context resolved from the Grove registry by the daemon itself
+   - `'synthesized'` — context built internally by the daemon without a specific project binding (e.g., daemon-global or machine-scoped background work that must NOT be Grove-bound)
+   - `'daemon'` — context resolved from the Grove registry by the daemon for project-scoped background work (e.g., `canopy-describe`, `canopy-map` scheduled tasks). Use `'daemon'` instead of `'synthesized'` for tasks that must operate within a specific project's Grove context. When scheduled tasks ran as `'synthesized'`, they resolved to `GLOBAL_SCOPE` and returned zero Grove-bound rows — this silently broke `canopy-of-cortex` before `'daemon'` was introduced as the project-scoped background source.
 
-   Use `isCallerTenancy(context)` to check if the context originated from an authenticated caller request.
+   Use `isCallerTenancy(context)` to check if the context originated from an authenticated caller request. Note: `isCallerTenancy` returns `true` for both `'caller'` and `'daemon'` — both are considered project-bound tenancy sources.
 
 2. **Populate callerRoot from headers/environment**:
    - Read from `x-myco-caller-root` header or `MYCO_CALLER_ROOT` environment variable
@@ -174,23 +174,7 @@ if (!authToken) {
 
 ### Token Storage and Lifecycle
 
-Daemon auth tokens are stored in `~/.myco/daemon.json` (machine-scoped). When clients need to send context-switching headers:
-
-```typescript
-// Pi extension runtime example
-import { readDaemonAuthTokenFromDisk } from '@myco/daemon/auth';
-
-const token = readDaemonAuthTokenFromDisk();
-const headers = {
-  'Authorization': `Bearer ${token}`,
-  'x-myco-project-root': userProjectRoot,
-  'x-myco-project-id': projectId
-};
-
-const response = await fetch('/api/vault', { headers });
-```
-
-**Token Rotation**: Daemon auth tokens rotate on each daemon restart. On 401 responses, refresh the token by re-reading `~/.myco/daemon.json` and retry the request. Daemon tokens rotate on each restart so stale tokens are expected in long-running clients.
+Daemon auth tokens are stored in `~/.myco/daemon.json` (machine-scoped). **Token Rotation**: Daemon auth tokens rotate on each daemon restart. On 401 responses, refresh the token by re-reading `~/.myco/daemon.json` and retry the request.
 
 ### Authorization Boundaries
 
@@ -263,3 +247,9 @@ When adding new filesystem operations:
 **`tenantRoute` is the enforcement seam for all project-scoped routes**: New daemon routes that need project scope MUST be wrapped in `tenantRoute` (from `packages/myco/src/daemon/api/route-helpers.ts`). It resolves the principal and authorizes BEFORE the handler sees the request, then fails closed+loud on any violation — 400 response plus a visible `tenancy.violation` warning. A handler that bypasses `tenantRoute` silently receives the daemon's synthesized anchor context (which exists on every request by design), creating a cross-tenant leak instead of a visible auth failure.
 
 **`launchContextTenancy: true` is required for CLI commands that need caller tenancy**: CLI entry points (e.g., `packages/myco/src/cli/search.ts`, `packages/myco/src/cli/tool.ts`) MUST pass `launchContextTenancy: true` in their launch options. Without it, TenancySource is set to `'synthesized'` instead of `'caller'`, and the context will fail the `resolvePrincipal`/`authorize` checks inside `tenantRoute`, producing 400 errors on routes that require proper tenancy.
+
+**`projectScopeFromRequestContext` stays lenient by design**: This function returns `GLOBAL_SCOPE` when no project context is found and never throws. A previous attempt to make it fail at the seam level broke 399 tests and ~40 consumers that legitimately call it from optionally-scoped contexts. Enforcement is opt-in at the route level via `tenantRoute` — only routes that explicitly require project context are wrapped. Never make the seam-level function fail-closed.
+
+**`use-git-identity` hook missing tenancy headers produces 404, not 400**: The `use-git-identity` hook doesn't attach tenancy headers, so `resolveScopedRoot` silently falls back to the non-git root. This produces a 404 (resource not found at fallback root) instead of the expected 400 (missing tenancy). Unexplained 404s from git-identity flows are a fingerprint of this tenancy-invariant violation — check tenancy header population in the hook invocation.
+
+**`make dev-link-worktree` must not be run in isolated programmatic scenarios**: The `dev-link-worktree` Makefile target writes `.myco/runtime.command` and shares the same vault as the main checkout. Running it in programmatic or CI scenarios causes the shared vault's schema migrations to be driven by the worktree's binary version, which may be ahead of the main checkout. This can permanently migrate the shared vault to a schema version the main checkout cannot read. Use only in manual developer worktree setups where vault sharing is intentional and understood.
