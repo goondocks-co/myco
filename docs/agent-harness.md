@@ -136,7 +136,7 @@ agent:
         intervalSeconds: 600         # Every 10 min when candidates might exist
 ```
 
-For capture-only projects, leave the project capability toggles off. Myco still captures sessions, keeps search available, and maintains session titles, while heavier intelligence work such as Vault Evolution, Canopy mapping, and skill lifecycle tasks stays off. Canopy context injection follows the Canopy capability for each project.
+For capture-only projects, leave the project capability toggles off. Myco still captures sessions and keeps search available, while heavier intelligence work such as Vault Evolution, Canopy mapping, and skill lifecycle tasks stays off. Canopy context injection follows the Canopy capability for each project. See [Grove Management](groves.md) for the user-facing guide to project capabilities.
 
 Tasks only run when Myco is active or recently active. Background work pauses when the developer has stepped away.
 
