@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, runChecks } from '@myco/cli/doctor';
 import { loadManifests } from '@myco/symbionts/detect';
+import { manifestToolTransport } from '@myco/symbionts/capabilities';
 import { expandHome } from '@myco/grove/paths';
 import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
@@ -361,6 +362,65 @@ describe('isSymbiontRegistered', () => {
     }
   });
 
+  it('treats a cli-transport symbiont (codex) as registered via hooks, ignoring its (absent) MCP server', () => {
+    const manifest = findManifest('codex');
+    expect(manifestToolTransport(manifest)).toBe('cli');
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-codex-'));
+    try {
+      // Install codex's hooks but write NO `[mcp_servers.myco]` into its
+      // config.toml — the post-feature steady state for a cli-transport
+      // symbiont. Registration must be decided by hooks, not MCP.
+      const hooksPath = path.join(projectRoot, manifest.registration!.hooksTarget!);
+      fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+      fs.writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          Stop: [
+            { command: 'node .agents/myco-run.cjs hook stop --symbiont codex' },
+          ],
+        },
+      }), 'utf-8');
+      const mcpPath = path.join(projectRoot, manifest.registration!.mcpTarget!);
+      fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+      fs.writeFileSync(mcpPath, 'model = "gpt-5"\n', 'utf-8'); // TOML, no [mcp_servers.myco]
+
+      expect(isSymbiontRegistered({
+        manifest,
+        binaryFound: false,
+        configDirFound: true,
+      }, projectRoot)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves an mcp-transport symbiont (claude-code) deciding on its MCP server', () => {
+    const manifest = findManifest('claude-code');
+    expect(manifestToolTransport(manifest)).toBe('mcp');
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-claude-'));
+    try {
+      // Hooks installed, but no MCP server: an mcp-transport symbiont keys
+      // registration off the MCP target, so this stays unregistered —
+      // unchanged by the cli-transport gate.
+      const hooksPath = path.join(projectRoot, manifest.registration!.hooksTarget!);
+      fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+      fs.writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          Stop: [
+            { hooks: [{ command: 'node .agents/myco-run.cjs hook stop --symbiont claude-code' }] },
+          ],
+        },
+      }), 'utf-8');
+
+      expect(isSymbiontRegistered({
+        manifest,
+        binaryFound: false,
+        configDirFound: true,
+      }, projectRoot)).toBe(false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it('treats Windsurf hook JSON as a valid registration surface', () => {
     const manifest = findManifest('windsurf');
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-windsurf-'));
@@ -410,6 +470,29 @@ describe('isSymbiontRegisteredGlobally', () => {
       binaryFound: false,
       configDirFound: true,
     })).toBe(false);
+  });
+
+  it('treats a cli-transport symbiont (codex) as globally registered via hooks, not MCP', () => {
+    const manifest = findManifest('codex');
+    expect(manifestToolTransport(manifest)).toBe('cli');
+    const target = manifest.registration!.globalHooksTarget;
+    expect(target, 'codex should declare a globalHooksTarget').toBeTruthy();
+    const file = expandHome(target!);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      hooks: {
+        Stop: [
+          { command: 'node /Users/test/.myco/launcher.cjs hook stop --symbiont codex' },
+        ],
+      },
+    }), 'utf-8');
+    // No global config.toml MCP server written — the cli-transport steady
+    // state. Global registration is decided by hooks.
+    expect(isSymbiontRegisteredGlobally({
+      manifest,
+      binaryFound: false,
+      configDirFound: true,
+    })).toBe(true);
   });
 
   it('returns true when the global hooks file carries a Myco hook group', () => {
