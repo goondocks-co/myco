@@ -18,7 +18,6 @@ import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
-import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import {
   CANONICAL_SKILLS_DIR,
@@ -1684,7 +1683,7 @@ export class SymbiontInstaller {
     const targets = this.resolveAbsoluteMcpTargets();
     if (targets.length === 0) return false;
 
-    const template = this.buildMcpTemplate(this.loadTemplate('mcp'));
+    const template = this.loadTemplate('mcp');
     if (!template) return false;
 
     let anyWritten = false;
@@ -1695,41 +1694,6 @@ export class SymbiontInstaller {
       if (written) anyWritten = true;
     }
     return anyWritten;
-  }
-
-  private buildMcpTemplate(
-    template: Record<string, unknown> | null,
-  ): Record<string, unknown> | null {
-    if (!template) return null;
-
-    const daemonPort = this.resolveDaemonPort();
-
-    return Object.fromEntries(
-      Object.entries(template).map(([name, def]) => {
-        if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        const next = this.interpolateMcpTemplate({ ...(def as Record<string, unknown>) }, daemonPort);
-        return [name, next];
-      }),
-    );
-  }
-
-  private interpolateMcpTemplate(
-    server: Record<string, unknown>,
-    daemonPort: number,
-  ): Record<string, unknown> {
-    return Object.fromEntries(
-      Object.entries(server).map(([key, value]) => [
-        key,
-        typeof value === 'string'
-          ? value.replace(/\{\{daemonPort\}\}/g, String(daemonPort))
-          : value,
-      ]),
-    );
-  }
-
-  private resolveDaemonPort(): number {
-    const vaultDir = path.join(this.projectRoot, '.myco');
-    return resolveDaemonServiceState(vaultDir, { env: process.env }).canonicalPort;
   }
 
   /**
