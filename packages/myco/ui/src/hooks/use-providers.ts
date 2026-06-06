@@ -268,6 +268,9 @@ export function draftToProviderConfig(draft: ProviderDraft): ProviderConfig | un
 export interface TaskConfigResponse {
   taskId: string;
   config: TaskConfigOverride | null;
+  capability: string | null;
+  capabilityEnabled: boolean;
+  effectiveScheduleEnabled: boolean;
 }
 
 export interface TestProviderResponse {

@@ -191,8 +191,20 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     defaults?.timeoutSeconds,
   ]);
 
-  // Effective schedule values: user override merged over YAML defaults
-  const effectiveScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  // Server effective state is authoritative; only layer an unsaved local
+  // toggle draft over it while the user is editing.
+  const draftScheduleEnabled = scheduleOverride.enabled ?? schedule?.enabled ?? false;
+  const savedScheduleEnabled = savedTaskSnapshot.scheduleOverride.enabled;
+  const hasScheduleEnabledDraft = scheduleOverride.enabled !== savedScheduleEnabled;
+  const scheduleCapabilityDisabled = taskConfigData?.capability != null
+    && taskConfigData.capabilityEnabled === false;
+  const effectiveScheduleEnabled = scheduleCapabilityDisabled
+    ? false
+    : (
+      hasScheduleEnabledDraft
+        ? draftScheduleEnabled
+        : (taskConfigData?.effectiveScheduleEnabled ?? draftScheduleEnabled)
+    );
   const effectiveRunIn = scheduleOverride.runIn ?? schedule?.runIn ?? [];
   function handleProviderChange(type: string) {
     handleDraftProviderChange(type);
@@ -484,7 +496,9 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               variant={effectiveScheduleEnabled ? 'secondary' : 'outline'}
               className="text-[10px] px-1.5 py-0"
             >
-              {effectiveScheduleEnabled ? 'active' : 'off'}
+              {scheduleCapabilityDisabled
+                ? 'governed off'
+                : (effectiveScheduleEnabled ? 'active' : 'off')}
             </Badge>
           </div>
 
@@ -498,6 +512,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
             </div>
             <Switch
               checked={effectiveScheduleEnabled}
+              disabled={scheduleCapabilityDisabled}
               onCheckedChange={(checked) => {
                 setScheduleOverride((prev) => ({ ...prev, enabled: checked }));
               }}

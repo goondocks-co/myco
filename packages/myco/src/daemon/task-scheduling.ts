@@ -29,7 +29,7 @@ import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { capabilityEnabled, capabilityForTask } from '@myco/config/capabilities.js';
+import { effectiveTaskScheduleEnabled } from '@myco/config/capabilities.js';
 import {
   forEachGrove,
   forEachRegisteredProject,
@@ -83,7 +83,7 @@ export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () =>
           groveId: grove.id,
           mycoHome,
         });
-        if (config.agent.tasks?.['canopy-describe']?.schedule?.enabled !== true) continue;
+        if (!effectiveTaskScheduleEnabled(config, 'canopy-describe', false)) continue;
         grovePending += countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP);
         if (grovePending > 0) break;
       }
@@ -241,7 +241,7 @@ export async function registerScheduledTasks(
   }
 
   // Per-project-visit memo: the scheduler loop calls getTaskConfig and
-  // getCapabilityEnabled for each task in the same per-project iteration.
+  // getTaskScheduleEnabled for each task in the same per-project iteration.
   // Memoizing the last-resolved scope avoids redundant loadMergedConfig calls
   // within a single project's task fan-out. The slot persists across ticks —
   // one tick of stale config across a tick boundary is benign at minute-scale
@@ -493,13 +493,8 @@ export async function registerScheduledTasks(
       if (!config) return { schedule: { enabled: false } };
       return config.agent.tasks?.[taskName];
     },
-    getCapabilityEnabled: (scope, taskName) => {
-      const capId = capabilityForTask(taskName);
-      if (!capId) return true;
-      // resolveProjectConfig logs on failure; null → capabilityEnabled returns
-      // false (fail-closed) so a config-less project never runs the capability.
-      return capabilityEnabled(resolveProjectConfig(scope), capId);
-    },
+    getTaskScheduleEnabled: (scope, taskName, yamlScheduleEnabled) =>
+      effectiveTaskScheduleEnabled(resolveProjectConfig(scope), taskName, yamlScheduleEnabled),
     isTaskRunning: (groveId, projectId, name) =>
       runningTasks.has(runningKey(groveId, projectId, name)),
     setTaskRunning: (groveId, projectId, name, running) => {

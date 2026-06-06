@@ -54,6 +54,7 @@ interface FakeContextOptions {
   getProjectPowerState?: ScheduledJobContext['getProjectPowerState'];
   getRecentTaskRunCount?: ScheduledJobContext['getRecentTaskRunCount'];
   getTaskConfig?: ScheduledJobContext['getTaskConfig'];
+  getTaskScheduleEnabled?: ScheduledJobContext['getTaskScheduleEnabled'];
 }
 
 function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
@@ -73,6 +74,7 @@ function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
     getProjectPowerState: opts.getProjectPowerState ?? (() => 'idle'),
     getRecentTaskRunCount: opts.getRecentTaskRunCount,
     getTaskConfig: opts.getTaskConfig ?? (() => undefined),
+    getTaskScheduleEnabled: opts.getTaskScheduleEnabled,
   };
 }
 
@@ -163,6 +165,24 @@ describe('buildScheduledJobs (collapsed fan-out)', () => {
     const ctx = makeContext({
       projects: [fakeScope(PROJECT_A)],
       getTaskConfig: () => undefined,
+      runTask,
+    });
+    const { jobs } = buildScheduledJobs(tasks, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('routes the dispatch enablement decision through the effective schedule seam', async () => {
+    const tasks = [
+      makeTask('vault-evolve', { enabled: true, intervalSeconds: 120, runIn: ['idle'] }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      getTaskConfig: () => ({ schedule: { enabled: true } }),
+      getTaskScheduleEnabled: () => false,
       runTask,
     });
     const { jobs } = buildScheduledJobs(tasks, ctx);

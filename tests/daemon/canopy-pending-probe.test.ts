@@ -198,6 +198,23 @@ describe('makeTotalCanopyPendingProbe', () => {
     expect(makeProbe(fx)()).toBe(0);
   });
 
+  it('returns 0 when canopy capability is off even if canopy-describe is enabled', () => {
+    fx.setCanopyDescribeEnabled(true);
+    fs.writeFileSync(
+      path.join(resolveProjectVaultDir(fx.projectRoot), 'myco.yaml'),
+      'version: 3\ncortex:\n  canopy:\n    enabled: false\n',
+      'utf-8',
+    );
+    invalidateMergedConfigCache();
+    insertPendingEntry(fx);
+    expect(makeProbe(fx)()).toBe(0);
+  });
+
+  it('returns 0 when capability is on but canopy-describe override is unset', () => {
+    insertPendingEntry(fx);
+    expect(makeProbe(fx)()).toBe(0);
+  });
+
   it('returns 0 after pending entries are removed and the cache expires', () => {
     fx.setCanopyDescribeEnabled(true);
     insertPendingEntry(fx);

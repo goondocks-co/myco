@@ -80,6 +80,11 @@ export interface ScheduledJobContext {
     scope: RegisteredProjectScope,
     taskName: string,
   ) => { schedule?: Partial<TaskSchedule> } | undefined;
+  getTaskScheduleEnabled?: (
+    scope: RegisteredProjectScope,
+    taskName: string,
+    yamlScheduleEnabled: boolean,
+  ) => boolean;
   /** Pre-condition checks scoped to a project. */
   preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
   /** Backlog count functions keyed by accelerator name. */
@@ -97,8 +102,6 @@ export interface ScheduledJobContext {
     taskName: string,
     windowSeconds: number,
   ) => number;
-  /** True unless the task's capability master gate is explicitly off for this project. */
-  getCapabilityEnabled?: (scope: RegisteredProjectScope, taskName: string) => boolean;
   /** Detached-run error sink so the PowerManager tick stays responsive. */
   onTaskError?: (taskName: string, groveId: string, projectId: GroveProjectId, err: unknown) => void;
   /**
@@ -238,8 +241,10 @@ export function buildScheduledJobs(
           const effective = task.schedule
             ? resolveSchedule(task.schedule, taskConfig)
             : yamlEffective;
-          if (!effective.enabled) continue;
-          if (context.getCapabilityEnabled && !context.getCapabilityEnabled(projectScope, task.name)) continue;
+          const enabled = context.getTaskScheduleEnabled
+            ? context.getTaskScheduleEnabled(projectScope, task.name, yamlEffective.enabled)
+            : effective.enabled;
+          if (!enabled) continue;
 
           if (context.isTaskRunning(groveId, projectId, task.name)) continue;
 

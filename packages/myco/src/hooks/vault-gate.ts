@@ -27,8 +27,44 @@ import {
   hasGlobalInstallMigrationCompleted,
   migrateProjectToGlobalInstall,
 } from '../grove/global-install-migration.js';
+import { projectLifecycleForRoot } from '../grove/registry.js';
 import { isProjectRootIgnored, agentHomeIgnorePaths } from '../vault/capture-ignore.js';
 import { loadMachineConfig } from '../config/loader.js';
+
+const lifecycleMemo = new Map<string, 'active' | 'archived' | 'unregistered'>();
+
+function lifecycleForRootMemo(projectRoot: string): 'active' | 'archived' | 'unregistered' {
+  const key = path.resolve(projectRoot);
+  const cached = lifecycleMemo.get(key);
+  if (cached) return cached;
+  // Hook processes are short-lived, so process-lifetime memoization avoids
+  // duplicate Grove registry reads without creating meaningful stale state.
+  const lifecycle = projectLifecycleForRoot(projectRoot);
+  lifecycleMemo.set(key, lifecycle);
+  return lifecycle;
+}
+
+function isCaptureGateClosed(projectRoot: string): boolean {
+  try {
+    const machine = loadMachineConfig();
+    if (isProjectRootIgnored(projectRoot, machine.capture.ignore, agentHomeIgnorePaths())) {
+      if (process.env.MYCO_AGENT_DEBUG) {
+        process.stderr.write(`[myco] capture skipped (ignored-root) root=${projectRoot}\n`);
+      }
+      return true;
+    }
+  } catch {
+    if (isProjectRootIgnored(projectRoot, { paths: [], patterns: [] }, agentHomeIgnorePaths())) return true;
+  }
+
+  if (lifecycleForRootMemo(projectRoot) === 'archived') {
+    if (process.env.MYCO_AGENT_DEBUG) {
+      process.stderr.write(`[myco] capture skipped (archived-root) root=${projectRoot}\n`);
+    }
+    return true;
+  }
+  return false;
+}
 
 /**
  * Resolve the project's vault dir, provisioning it if absent. Returns:
@@ -53,6 +89,15 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
   const projectRoot = resolveProjectRoot(vaultDir);
 
   if (fs.existsSync(mycoYamlPath)) {
+    if (isCaptureGateClosed(projectRoot)) return null;
+    if (lifecycleForRootMemo(projectRoot) === 'unregistered') {
+      try { ensureProjectVault(projectRoot, { force: true }); }
+      catch {
+        // Re-seeding is best-effort on the hot path; capture can still proceed
+        // with the existing vault and the provisioning-failed trace remains
+        // reserved for cold-path creation failures.
+      }
+    }
     // Vault exists. Check the global-install sentinel; if absent, this
     // project is legacy — its `.myco/` predates the global-install
     // model and still carries project-scope hook installs that need to
@@ -82,18 +127,7 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
     return null;
   }
 
-  try {
-    const machine = loadMachineConfig();
-    if (isProjectRootIgnored(projectRoot, machine.capture.ignore, agentHomeIgnorePaths())) {
-      if (process.env.MYCO_AGENT_DEBUG) {
-        process.stderr.write(`[myco] capture skipped (ignored-root) root=${projectRoot}\n`);
-      }
-      return null;
-    }
-  } catch {
-    // If machine config can't be read, fall through to agent-home seed only.
-    if (isProjectRootIgnored(projectRoot, { paths: [], patterns: [] }, agentHomeIgnorePaths())) return null;
-  }
+  if (isCaptureGateClosed(projectRoot)) return null;
 
   try {
     ensureProjectVault(projectRoot);

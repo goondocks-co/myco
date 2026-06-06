@@ -114,12 +114,14 @@ You can also open the dashboard directly at [http://localhost:20915/](http://loc
 The dashboard lets you:
 
 - **Configure** intelligence providers, per-task model assignments, and embedding settings
-- **Manage** Groves, projects, archive/unarchive, and destructive delete with confirmation
+- **Manage** Groves, projects, archive/unarchive, project capability toggles, and destructive delete with confirmation
 - **Run operations** like intelligence agent runs, index rebuilds, and manual digest cycles
 - **Monitor** service health, background activity, and system stats
 - **View logs** in real-time with level filtering
 
 The Settings page shows where each setting applies. Changes take effect automatically, and the dashboard prompts for a restart only when one is required.
+
+See [Grove Management](groves.md) for the guide to Groves, project movement, capture-only projects, and capability toggles.
 
 ## MCP tools
 
