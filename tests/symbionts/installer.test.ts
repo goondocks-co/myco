@@ -1290,6 +1290,66 @@ describe('installMcp (TOML)', () => {
 });
 
 // =====================
+// installMcp — per-symbiont tool transport
+// =====================
+
+describe('installMcp tool transport', () => {
+  it('cli-transport symbiont: installMcp writes nothing and sweeps the existing block (project scope)', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-tr-'));
+    const cliCodex = {
+      ...CODEX_MANIFEST,
+      capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
+    };
+    const installer = new SymbiontInstaller(cliCodex, projectRoot, packageRoot); // default 'project' scope
+    const cfg = path.join(projectRoot, '.codex', 'config.toml'); // codex mcpTarget
+    fs.mkdirSync(path.dirname(cfg), { recursive: true });
+    fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
+    expect(installer.installMcp()).toBe(false);
+    const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
+    expect(after).not.toContain('[mcp_servers.myco]');
+  });
+
+  it('cli-transport symbiont: installMcp sweeps the GLOBAL config (production path)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const origHome = process.env.HOME;
+    const origSandbox = process.env.MYCO_SANDBOX_ROOT;
+    process.env.HOME = home;
+    process.env.MYCO_SANDBOX_ROOT = home; // satisfy assertSandboxedHome — HOME must resolve inside the sandbox root
+    try {
+      const cliCodex = {
+        ...CODEX_MANIFEST,
+        // Global scope reads reg.globalMcpTarget; the production codex manifest
+        // declares ~/.codex/config.toml. The test fixture omits it, so add the
+        // normalized array shape the installer iterates.
+        registration: {
+          ...CODEX_MANIFEST.registration,
+          globalMcpTarget: [{ path: '~/.codex/config.toml' }],
+        },
+        capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
+      };
+      // installScope 'global' is the 7th constructor arg (see bootstrap.ts:92-93).
+      const installer = new SymbiontInstaller(cliCodex, '/', packageRoot, false, undefined, null, 'global');
+      const cfg = path.join(home, '.codex', 'config.toml'); // codex globalMcpTarget = ~/.codex/config.toml
+      fs.mkdirSync(path.dirname(cfg), { recursive: true });
+      fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
+      expect(installer.installMcp()).toBe(false);
+      const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
+      expect(after).not.toContain('[mcp_servers.myco]');
+    } finally {
+      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+      if (origSandbox === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = origSandbox;
+    }
+  });
+
+  it('mcp-transport symbiont: installMcp still writes the server', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-tr-'));
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot); // mcp by default
+    expect(installer.installMcp()).toBe(true);
+    expect(fs.readFileSync(path.join(projectRoot, '.cursor', 'mcp.json'), 'utf-8')).toContain('myco');
+  });
+});
+
+// =====================
 // installMcp — runtime command isolation
 // =====================
 

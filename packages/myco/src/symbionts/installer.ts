@@ -14,6 +14,7 @@ import {
   removeAuditedSettings,
   type JsonSettingsAudit,
 } from './settings-merge.js';
+import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
@@ -1648,6 +1649,16 @@ export class SymbiontInstaller {
   installMcp(): boolean {
     const reg = this.manifest.registration;
     if (!reg) return false;
+
+    // cli-transport symbionts call Myco tools via `myco tool call` on their
+    // shell (which carries tenancy from cwd), so they get NO MCP server. Sweep
+    // any pre-existing [mcp_servers.myco] under the active scope so a `myco
+    // update` (which runs at GLOBAL scope) removes the broken legacy_vault
+    // surface from ~/.codex/config.toml left by older installs.
+    if (manifestToolTransport(this.manifest) === 'cli') {
+      this.uninstallMcp();
+      return false;
+    }
 
     const targets = this.resolveAbsoluteMcpTargets();
     if (targets.length === 0) return false;
