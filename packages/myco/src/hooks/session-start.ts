@@ -105,7 +105,7 @@ export async function main() {
         latestAntigravityPrompt = prompts[prompts.length - 1];
       }
     }
-    const contextResult = await client.post('/context', { session_id: sessionId, branch });
+    const contextResult = await client.post('/context', { session_id: sessionId, branch, agent: symbiont });
 
     // Spore injection for AGY: call /context/prompt with the latest prompt so
     // semantic spores attach to the just-recorded batch. Other symbionts run
