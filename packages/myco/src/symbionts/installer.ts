@@ -883,7 +883,7 @@ export class SymbiontInstaller {
     // shape migration (mcpServersKey rename) doesn't leave behind a
     // duplicate `myco` registration under the old key.
     const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
-    if (mcpTemplate) {
+    if (mcpTemplate && this.shouldProvisionMcpServer()) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
       for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
         if (candidateKey === serversKey) continue;
@@ -900,6 +900,20 @@ export class SymbiontInstaller {
       }
       data[serversKey] = servers;
       mcp = true;
+    } else if (mcpTemplate) {
+      // cli-transport symbionts get NO MCP server here. Sweep any existing
+      // `myco` entry across every known server-list key (mirrors the
+      // installMcp → uninstallMcp sweep) so a JSON-colocated cli symbiont
+      // doesn't silently retain an MCP registration. `mcp` stays false.
+      const serversKey = reg.mcpServersKey ?? 'mcpServers';
+      for (const candidateKey of new Set([serversKey, ...KNOWN_MCP_SERVERS_KEYS])) {
+        const candidate = data[candidateKey];
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+        const bag = candidate as Record<string, unknown>;
+        if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+        delete bag[MYCO_MCP_SERVER_NAME];
+        if (Object.keys(bag).length === 0) delete data[candidateKey];
+      }
     }
 
     // Apply settings transform with audit-tracking. Same discipline as
@@ -1646,6 +1660,12 @@ export class SymbiontInstaller {
    * preserves the historical boolean contract used by callers like
    * `runFullInstall()` and `isConfigured()`.
    */
+  /** Whether this symbiont should have a Myco MCP server provisioned. cli-transport
+   *  symbionts call tools via `myco tool call` on their shell and get none. */
+  private shouldProvisionMcpServer(): boolean {
+    return manifestToolTransport(this.manifest) !== 'cli';
+  }
+
   installMcp(): boolean {
     const reg = this.manifest.registration;
     if (!reg) return false;
@@ -1655,7 +1675,7 @@ export class SymbiontInstaller {
     // any pre-existing [mcp_servers.myco] under the active scope so a `myco
     // update` (which runs at GLOBAL scope) removes the broken legacy_vault
     // surface from ~/.codex/config.toml left by older installs.
-    if (manifestToolTransport(this.manifest) === 'cli') {
+    if (!this.shouldProvisionMcpServer()) {
       this.uninstallMcp();
       return false;
     }

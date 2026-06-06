@@ -78,6 +78,33 @@ const CODEX_MANIFEST: SymbiontManifest = {
   },
 };
 
+/**
+ * Synthetic cli-transport symbiont whose hooks, MCP, and settings all resolve
+ * to one shared JSON file (`mcpFormat: 'json'`) — the `shouldBatchJsonTargets`
+ * condition. Exercises the batched-JSON write path's transport gate: a future
+ * JSON-colocated cli symbiont must NOT get an MCP server written, and any
+ * pre-existing `myco` entry must be swept.
+ */
+const CLI_BATCHED_MANIFEST: SymbiontManifest = {
+  name: 'cli-batched',
+  displayName: 'CLI Batched',
+  binary: 'clibatched',
+  configDir: '.clibatched',
+  pluginRootEnvVar: 'CLIBATCHED_PLUGIN_ROOT',
+  settingsPath: '.clibatched/config.json',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.clibatched/config.json',
+    mcpTarget: '.clibatched/config.json',
+    mcpFormat: 'json',
+    settingsTarget: '.clibatched/config.json',
+    skillsTarget: '.agents/skills',
+  },
+  capabilities: {
+    toolTransport: 'cli',
+  },
+};
+
 const GEMINI_MANIFEST: SymbiontManifest = {
   name: 'gemini',
   displayName: 'Gemini CLI',
@@ -677,6 +704,47 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers['other-tool']).toBeDefined();
     expect(servers.myco).toBeDefined();
+  });
+});
+
+describe('installBatchedJson transport gate', () => {
+  /** Plant the cli-batched templates the batched-JSON path reads. */
+  function setupCliBatchedTemplates(): void {
+    const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont cli-batched', timeout: 30 }] }],
+    });
+    writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
+    writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
+  }
+
+  it('omits the MCP server for a cli-transport symbiont and sweeps any existing myco entry', () => {
+    setupCliBatchedTemplates();
+    const sharedFile = path.join(projectRoot, '.clibatched/config.json');
+    // Pre-existing state: a stale myco MCP server alongside a user's own.
+    writeJson(sharedFile, {
+      mcpServers: {
+        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
+        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    // Batched path reports no MCP write for the cli-transport symbiont.
+    expect(result.mcp).toBe(false);
+    // Hooks still installed (shared file) — the symbiont remains captured.
+    expect(result.hooks).toBe(true);
+
+    const config = readJson(sharedFile);
+    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    // The stale myco entry is swept; the user's own server is preserved.
+    expect(servers?.myco).toBeUndefined();
+    expect(servers?.['other-tool']).toBeDefined();
+    // Hooks block landed in the same file.
+    expect(config.hooks).toBeDefined();
   });
 });
 
