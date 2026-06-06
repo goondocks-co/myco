@@ -3,13 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Regression guard: symbiont MCP templates must use a portable transport
- * shape — either an HTTP URL pointing at the local daemon, or a stdio
- * launcher invocation with no absolute paths and no `myco-dev` shim.
+ * Regression guard: every symbiont MCP template must be a stdio launcher.
  *
- * Shape variants allowed:
- *   - HTTP URL:    `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
- *                  Codex's MCP surface and any other URL-transport agent.
+ * No symbiont ships a bare-HTTP-URL MCP template — those can't carry
+ * per-project tenancy to the global daemon (the URL has no notion of the
+ * workspace cwd, so every project would collapse onto one tenant). The
+ * stdio launcher `myco-run mcp` spawns at the workspace cwd, so the bridge
+ * resolves the project tenancy. cli-transport symbionts (codex, cursor,
+ * windsurf, antigravity) therefore have NO mcp template at all and reach
+ * Myco through the CLI instead; only mcp-transport symbionts ship one.
+ *
+ * Shape variants allowed (both stdio):
  *   - Stdio bin:   `{ command: "myco-run", args: ["mcp"] }`
  *                  Claude Code, Copilot — the stdio bridge `myco-run mcp`
  *                  spawns at the workspace cwd, so the bridge resolves the
@@ -17,9 +21,10 @@ import path from 'node:path';
  *   - Local array: `{ type: "local", command: ["myco-run", "mcp"] }`
  *                  OpenCode's local-MCP schema (command is an ARRAY).
  *
- * The launcher is `myco-run` (PATH binary). The retired
- * `["node", ".agents/myco-cli.cjs", "mcp"]` project-launcher shape and the
- * raw `myco`/`myco-dev` binaries are hard-rejected below.
+ * The launcher is `myco-run` (PATH binary). Any `url`/`serverUrl`-shaped
+ * template is hard-rejected (guards the #355 stdio→HTTP regression). The
+ * retired `["node", ".agents/myco-cli.cjs", "mcp"]` project-launcher shape
+ * and the raw `myco`/`myco-dev` binaries are hard-rejected below.
  */
 
 const TEMPLATES_ROOT = path.resolve('packages/myco/src/symbionts/templates');
@@ -38,6 +43,7 @@ interface Server {
   command?: string | string[];
   args?: string[];
   url?: string;
+  serverUrl?: string;
 }
 
 function extractLauncherInvocation(server: Server): { command: string; args: string[] } {
@@ -67,18 +73,12 @@ describe('symbiont MCP templates', () => {
         expect(mycoServer).toBeDefined();
       });
 
-      it('uses the expected transport shape', () => {
-        // URL transport: every URL must point at the local daemon via the
-        // `{{daemonPort}}` placeholder. Windsurf uses `serverUrl` (its
-        // MCP config key), every other URL-transport agent uses `url`.
-        const url = (mycoServer as { url?: string; serverUrl?: string }).url
-          ?? (mycoServer as { url?: string; serverUrl?: string }).serverUrl;
-        if (url) {
-          expect(url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
-          expect(mycoServer.command).toBeUndefined();
-          expect(mycoServer.args).toBeUndefined();
-          return;
-        }
+      it('uses a stdio launcher shape — never a bare HTTP URL', () => {
+        // A bare HTTP/URL transport can't carry per-project tenancy to the
+        // global daemon; every shipped MCP template must be a stdio
+        // launcher. Reject any `url`/`serverUrl` shape outright.
+        expect(mycoServer.url).toBeUndefined();
+        expect(mycoServer.serverUrl).toBeUndefined();
 
         // Stdio transport: launcher invocation must use a portable
         // command (no absolute paths, no host-specific shims). Both the

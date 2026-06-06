@@ -882,8 +882,9 @@ export class SymbiontInstaller {
     // server-list keys before writing under the current one, so a
     // shape migration (mcpServersKey rename) doesn't leave behind a
     // duplicate `myco` registration under the old key.
-    const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
-    if (mcpTemplate && this.shouldProvisionMcpServer()) {
+    const provision = this.shouldProvisionMcpServer();
+    const mcpTemplate = reg.mcpTarget && provision ? this.loadTemplate('mcp') : null;
+    if (mcpTemplate) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
       for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
         if (candidateKey === serversKey) continue;
@@ -900,7 +901,7 @@ export class SymbiontInstaller {
       }
       data[serversKey] = servers;
       mcp = true;
-    } else if (mcpTemplate) {
+    } else if (reg.mcpTarget && !provision) {
       // cli-transport symbionts get NO MCP server here. Sweep any existing
       // `myco` entry across every known server-list key (mirrors the
       // installMcp → uninstallMcp sweep) so a JSON-colocated cli symbiont

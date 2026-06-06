@@ -1282,17 +1282,6 @@ describe('gitignore management', () => {
 // =====================
 
 describe('installMcp (TOML)', () => {
-  it('real Codex MCP template uses daemon HTTP URL transport', () => {
-    const realTemplate = JSON.parse(fs.readFileSync(
-      path.resolve('packages/myco/src/symbionts/templates/codex/mcp.json'),
-      'utf-8',
-    )) as { myco: Record<string, unknown> };
-
-    expect(realTemplate.myco.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
-    expect(realTemplate.myco.command).toBeUndefined();
-    expect(realTemplate.myco.args).toBeUndefined();
-  });
-
   it('writes MCP server entry to TOML config', () => {
     // Sandbox MYCO_HOME so the per-process sandbox can't carry a
     // daemon.port value from earlier tests' machine-config writes.
