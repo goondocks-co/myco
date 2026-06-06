@@ -9,15 +9,17 @@ import path from 'node:path';
  *
  * Shape variants allowed:
  *   - HTTP URL:    `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
- *                  Cursor, Codex, Windsurf, Opencode, Copilot, Antigravity.
- *   - Stdio node:  `{ command: ["node", ".agents/myco-cli.cjs", "mcp"] }`
- *                  Legacy project-launcher shape — still tolerated for
- *                  manifests that haven't migrated to URL transport.
+ *                  Codex's MCP surface and any other URL-transport agent.
  *   - Stdio bin:   `{ command: "myco-run", args: ["mcp"] }`
- *                  Legacy PATH-binary shape — same.
+ *                  Claude Code, Copilot — the stdio bridge `myco-run mcp`
+ *                  spawns at the workspace cwd, so the bridge resolves the
+ *                  project tenancy.
+ *   - Local array: `{ type: "local", command: ["myco-run", "mcp"] }`
+ *                  OpenCode's local-MCP schema (command is an ARRAY).
  *
- * The convergence direction is URL transport (one daemon, one port,
- * no PATH dependency). New manifests should land there by default.
+ * The launcher is `myco-run` (PATH binary). The retired
+ * `["node", ".agents/myco-cli.cjs", "mcp"]` project-launcher shape and the
+ * raw `myco`/`myco-dev` binaries are hard-rejected below.
  */
 
 const TEMPLATES_ROOT = path.resolve('packages/myco/src/symbionts/templates');
@@ -79,23 +81,23 @@ describe('symbiont MCP templates', () => {
         }
 
         // Stdio transport: launcher invocation must use a portable
-        // command (no absolute paths, no host-specific shims).
+        // command (no absolute paths, no host-specific shims). Both the
+        // bin shape (`command: "myco-run"`, args `["mcp"]`) and OpenCode's
+        // local-array shape (`command: ["myco-run", "mcp"]`) normalize to
+        // the same launcher + first-arg here.
         const { command, args } = extractLauncherInvocation(mycoServer);
+        expect(command).toBe('myco-run');
+        expect(args[0]).toBe('mcp');
 
-        if (name === 'opencode') {
-          expect(command).toBe('node');
-          expect(args).toEqual(['.agents/myco-cli.cjs', 'mcp']);
-        } else {
-          expect(command).toBe('myco-run');
-          expect(args[0]).toBe('mcp');
-        }
-
-        // Hard guards against the failure modes we've already seen.
+        // Hard guards against the failure modes we've already seen,
+        // including the retired `.agents/myco-cli.cjs` project launcher.
         for (const token of [command, ...args]) {
           expect(token).not.toMatch(/^\//);
           expect(token).not.toContain('/Users/');
           expect(token).not.toBe('myco-dev');
+          expect(token).not.toContain('myco-cli.cjs');
         }
+        expect(command).not.toBe('node');
         expect(command).not.toBe('myco');
       });
     });

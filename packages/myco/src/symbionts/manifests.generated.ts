@@ -57,7 +57,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "toolTransport": "cli",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -880,7 +880,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "toolTransport": "cli",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -1043,7 +1043,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": false,
       "subagentStartInjection": false,
-      "toolTransport": "mcp",
+      "toolTransport": "cli",
       "canopyReadTools": [],
       "pathBearingTools": []
     },

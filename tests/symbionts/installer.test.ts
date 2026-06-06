@@ -45,6 +45,18 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   },
 };
 
+/**
+ * Cursor's real-world transport: `cli`. Its MCP child spawns at a
+ * non-workspace cwd with no project-dir env and no usable roots, so the
+ * stdio bridge can't carry tenancy — `installMcp()` must skip the server
+ * and sweep any stale `myco` entry. Kept distinct from CURSOR_MANIFEST so
+ * the mcp-path tests above still exercise a generic mcp-transport agent.
+ */
+const CURSOR_CLI_MANIFEST: SymbiontManifest = {
+  ...CURSOR_MANIFEST,
+  capabilities: { toolTransport: 'cli' },
+};
+
 /** Minimal manifest with no hooks — used to test skip-guard behavior. */
 const NO_HOOKS_MANIFEST: SymbiontManifest = {
   name: 'no-hooks-agent',
@@ -313,7 +325,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['node', '.agents/myco-cli.cjs', 'mcp'] },
+    myco: { type: 'local', command: ['myco-run', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -704,6 +716,68 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers['other-tool']).toBeDefined();
     expect(servers.myco).toBeDefined();
+  });
+
+  it('skips the MCP server for a cli-transport symbiont (cursor) and writes nothing', () => {
+    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    // cli transport: the stdio bridge can't carry tenancy, so no server.
+    expect(result).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor/mcp.json'))).toBe(false);
+  });
+
+  it('sweeps a stale myco MCP server for a cli-transport symbiont (cursor)', () => {
+    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
+    // Pre-existing state: a stale myco entry from a prior mcp-transport era,
+    // alongside a user's own server.
+    writeJson(mcpPath, {
+      mcpServers: {
+        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
+        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
+      },
+    });
+
+    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(false);
+    const config = readJson(mcpPath);
+    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    // Stale myco entry swept; the user's own server preserved.
+    expect(servers?.myco).toBeUndefined();
+    expect(servers?.['other-tool']).toBeDefined();
+  });
+
+  it('writes the stdio bridge for mcp-transport Copilot (myco-run, no url)', () => {
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(true);
+    const config = readJson(path.join(projectRoot, '.vscode/mcp.json'));
+    // The test COPILOT_MANIFEST sets no project-local mcpServersKey, so the
+    // installer defaults to `mcpServers`.
+    const servers = config.mcpServers as Record<string, unknown>;
+    const myco = servers.myco as Record<string, unknown>;
+    expect(myco).toBeDefined();
+    expect(myco.command).toBe('myco-run');
+    expect(myco.args).toEqual(['mcp']);
+    expect(myco.url).toBeUndefined();
+  });
+
+  it('writes the local-array stdio bridge for mcp-transport OpenCode (myco-run, no url)', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(true);
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    // opencode hosts MCP under the non-standard `mcp` key.
+    const servers = config.mcp as Record<string, unknown>;
+    const myco = servers.myco as Record<string, unknown>;
+    expect(myco).toBeDefined();
+    expect(myco.type).toBe('local');
+    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.url).toBeUndefined();
   });
 });
 
@@ -1436,7 +1510,7 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
     expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
@@ -1719,15 +1793,15 @@ describe('uninstallSettings (TOML)', () => {
     // Regression: an earlier version of stripLegacyFromJson walked into
     // every array and filtered out legacy tokens. That
     // would corrupt opencode.json which stores its MCP server command
-    // as `command: ["node", ".agents/myco-cli.cjs", "mcp"]`. The
-    // cleanup must now recognize `command` / `args` as exec argv arrays
+    // as a `type: "local"` exec argv array (`command: ["myco-run", "mcp"]`).
+    // The cleanup must recognize `command` / `args` as exec argv arrays
     // and skip them.
     const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
     writeJson(openCodeJsonPath, {
       mcp: {
         myco: {
           type: 'local',
-          command: ['node', '.agents/myco-cli.cjs', 'mcp'],
+          command: ['myco-run', 'mcp'],
         },
       },
       permission: {
@@ -1742,9 +1816,9 @@ describe('uninstallSettings (TOML)', () => {
     installer.install();
 
     const result = readJson(openCodeJsonPath);
-    // Exec argv array preserved verbatim.
+    // Exec argv array preserved verbatim (not filtered token-by-token).
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+      .toEqual(['myco-run', 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -2680,9 +2754,9 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["node", ".agents/myco-cli.cjs", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(myco.command).toEqual(['myco-run', 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
