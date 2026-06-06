@@ -26,6 +26,14 @@ registration:
   globalSkillsTarget: ~/.pi/agent/skills
   # No instructionsFile — pi reads AGENTS.md natively via context files
 capabilities:
+  # Tool transport: neither `mcp` nor the session-start `cli` directive. Pi's
+  # Myco tools are registered natively in the extension via pi.registerTool()
+  # and dispatched in-process to the Myco CLI (`myco tool call`) with the
+  # project cwd carrying tenancy. Pi therefore intentionally leaves
+  # `toolTransport` unset: the default (`mcp`) injects no CLI directive, which
+  # is correct here — the agent uses the natively registered tools and the
+  # extension handles dispatch. (No mcpTarget/globalMcpTarget, so the
+  # installer's MCP gate is a no-op regardless.)
   sessionStartInjection: true
   # Pi can inject at before_agent_start, but spawned-subagent lifecycle needs
   # runtime proof before enabling direct child injection.
