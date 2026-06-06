@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
+import { symbiontToolTransport } from '@myco/symbionts/capabilities.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -485,5 +486,15 @@ describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
       pathField: 'command',
       extract: 'shell-arg',
     });
+  });
+});
+
+describe('symbiont tool transport', () => {
+  it('codex declares cli transport; others default to mcp', () => {
+    expect(symbiontToolTransport('codex')).toBe('cli');
+    expect(symbiontToolTransport('claude-code')).toBe('mcp');
+    expect(symbiontToolTransport('cursor')).toBe('mcp');
+    expect(symbiontToolTransport('does-not-exist')).toBe('mcp');
+    expect(symbiontToolTransport(undefined)).toBe('mcp');
   });
 });

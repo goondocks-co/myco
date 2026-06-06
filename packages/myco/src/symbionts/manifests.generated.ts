@@ -57,6 +57,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
+      "toolTransport": "mcp",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -282,6 +283,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
+      "toolTransport": "mcp",
       "canopyReadTools": [
         {
           "tool": "Read",
@@ -513,6 +515,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
+      "toolTransport": "cli",
       "canopyReadTools": [
         {
           "tool": "Bash",
@@ -618,6 +621,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
+      "toolTransport": "mcp",
       "canopyReadTools": [
         {
           "tool": "read_file",
@@ -876,6 +880,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
+      "toolTransport": "mcp",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -927,6 +932,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
+      "toolTransport": "mcp",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -987,6 +993,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": false,
+      "toolTransport": "mcp",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
@@ -1036,6 +1043,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": false,
       "subagentStartInjection": false,
+      "toolTransport": "mcp",
       "canopyReadTools": [],
       "pathBearingTools": []
     },
