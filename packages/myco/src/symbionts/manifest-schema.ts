@@ -337,6 +337,17 @@ const CapabilitiesSchema = z.object({
    */
   subagentStartInjection: z.boolean().default(false),
   /**
+   * The transport on which this symbiont can make FULL-TENANCY Myco tool calls.
+   *  - 'mcp' (default): the daemon's MCP endpoint, with project tenancy injected
+   *    by the stdio bridge (claude-code) — the Myco-controlled default.
+   *  - 'cli': the `myco tool call` CLI on the symbiont's shell. Used by hosts
+   *    whose HTTP MCP cannot carry per-project tenancy (Codex: global config, no
+   *    per-request project signal, MCP child cwd=/). Their shell runs in the
+   *    workspace, so `myco tool call` resolves tenancy from cwd. The installer
+   *    writes no MCP server for these; session-start adds a CLI directive.
+   */
+  toolTransport: z.enum(['mcp', 'cli']).default('mcp'),
+  /**
    * Declarations of tool calls that Canopy should treat as file reads. The
    * PreToolUse resolver consults this list to decide whether to inject context
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
@@ -358,6 +369,7 @@ const CapabilitiesSchema = z.object({
   preToolUseInjection: false,
   sessionStartInjection: false,
   subagentStartInjection: false,
+  toolTransport: 'mcp' as const,
   canopyReadTools: [],
   pathBearingTools: [],
 }));

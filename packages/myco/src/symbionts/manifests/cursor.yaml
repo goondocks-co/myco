@@ -39,6 +39,10 @@ registration:
   # finding C9.
   globalSettingsTarget: ~/.cursor/hooks.json
 capabilities:
+  # MCP stdio spawns at cwd=/ (not workspace) and `${workspaceFolder}` only
+  # resolves in project-local config (which Myco does not use); roots are
+  # advertised but `roots/list` returns method-not-found. Shell carries tenancy.
+  toolTransport: cli
   sessionStartInjection: true
   preToolUseInjection: false
   # Cursor currently exposes subagentStart for lifecycle allow/deny, not

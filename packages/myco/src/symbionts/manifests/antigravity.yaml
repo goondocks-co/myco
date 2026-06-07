@@ -107,6 +107,10 @@ registration:
   # No standalone settings file — Antigravity wires settings through the
   # plugin bundle's plugin.json.
 capabilities:
+  # MCP stdio spawns at $HOME (not workspace), `${workspaceFolder}` does not
+  # expand, no roots, and its workspace-on-stdin hook path collides with MCP
+  # stdio's protocol stdin. Shell carries tenancy.
+  toolTransport: cli
   sessionStartInjection: true
   subagentStartInjection: false
   preToolUseInjection: false

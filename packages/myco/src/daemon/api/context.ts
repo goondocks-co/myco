@@ -26,7 +26,7 @@ import { composeCortexInstructionInjection } from '@myco/context/cortex-injectio
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
-import { symbiontHasCapability } from '@myco/symbionts/capabilities.js';
+import { symbiontHasCapability, symbiontToolTransport } from '@myco/symbionts/capabilities.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { recordInjectionAndShouldSuppress, getSessionInjectedSporeIds } from '../injection-records.js';
@@ -67,6 +67,7 @@ export interface ContextDeps {
 const SessionContextBody = z.object({
   session_id: z.string().optional(),
   branch: z.string().optional(),
+  agent: z.string().optional(),
 });
 
 const ResumeContextBody = z.object({
@@ -96,7 +97,7 @@ const SubagentContextBody = z.object({
  */
 export function createSessionContextHandler(deps: ContextDeps) {
   return async function handleSessionContext(req: RouteRequest): Promise<RouteResponse> {
-    const { session_id, branch } = SessionContextBody.parse(req.body);
+    const { session_id, branch, agent } = SessionContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
     const config = resolveTenantConfig(req.requestContext, liveConfig.current, { logger });
 
@@ -135,7 +136,8 @@ export function createSessionContextHandler(deps: ContextDeps) {
         }
       }
 
-      const composed = composeSessionStartContext(config, cortexContent, requestScope);
+      const cliToolTransport = symbiontToolTransport(agent) === 'cli';
+      const composed = composeSessionStartContext(config, cortexContent, requestScope, { cliToolTransport });
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
         p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,
@@ -259,7 +261,9 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         ? { kind: 'project', id: requestProjectId }
         : { kind: 'global' };
       const snapshot = getCortexInstructionsSnapshot(config, requestScope);
-      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start');
+      const composed = composeCortexInstructionInjection(snapshot.content, 'subagent-start', {
+        cliToolTransport: symbiontToolTransport(agent) === 'cli',
+      });
       if (!composed) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for subagent start', {
           session_id,

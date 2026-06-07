@@ -48,6 +48,9 @@ registration:
   # (a future, separate concern).
   globalSettingsTarget: null
 capabilities:
+  # Global-only MCP config, one shared server set, non-workspace spawn cwd,
+  # no project-dir env, no roots. Shell carries tenancy.
+  toolTransport: cli
   # Windsurf's bundled hook template does not currently register a
   # session-start hook. Cortex falls back to inline delivery via
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.

@@ -260,18 +260,20 @@ async function getJson(
 }
 
 // ---------------------------------------------------------------------------
-// CLI tool dispatch — invokes `myco-run tool call <name> --json --input <json>`
-// via the project-local launcher (.agents/myco-run.cjs).
+// CLI tool dispatch — dispatches `tool call <name> --json --input <json>` by
+// running `node ~/.myco/launcher.cjs` (the global launcher, resolved at
+// runtime via `resolveMycoHome()`); `cwd: directory` carries per-project
+// tenancy.
 //
-// Pi has no native MCP transport, so the standard pattern for non-MCP
-// symbionts is to invoke the Myco CLI for tool calls — same binary as the
-// hook config. Capture/lifecycle/context HTTP (postEventWithBuffer, postJson)
-// is a separate concern and stays unchanged: those endpoints are universal
-// symbiont infrastructure feeding the daemon's EventBuffer.
+// Pi has no native MCP transport, so Myco tools are dispatched through the
+// CLI. Capture/
+// lifecycle/context HTTP (postEventWithBuffer, postJson) is a separate concern
+// and stays unchanged: those endpoints are universal symbiont infrastructure
+// feeding the daemon's EventBuffer.
 //
-// Degraded mode: when Myco isn't installed locally, the launcher emits a
-// `runtime_unavailable` envelope and exits non-zero; collapsing every
-// failure mode to `{ ok: false }` lets the LLM see "tool unavailable"
+// Degraded mode: when Myco isn't installed locally the launcher is absent
+// (ENOENT) or the tool runtime is unavailable (non-zero exit); collapsing
+// every failure mode to `{ ok: false }` lets the LLM see "tool unavailable"
 // instead of an extension crash.
 // ---------------------------------------------------------------------------
 
@@ -289,7 +291,7 @@ async function execMycoTool(
   toolName: string,
   input: unknown,
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const launcher = join(directory, ".agents", "myco-run.cjs");
+  const launcher = join(resolveMycoHome(), "launcher.cjs");
   const inputJson = JSON.stringify(input ?? {});
 
   try {
@@ -306,7 +308,7 @@ async function execMycoTool(
     if (!envelope.ok) return { ok: false };
     return { ok: true, data: envelope.result };
   } catch {
-    // ENOENT (myco-run not on PATH / no local launcher), non-zero exit
+    // ENOENT (global launcher absent — Myco not installed), non-zero exit
     // (tool error or runtime unavailable), JSON parse failure, timeout —
     // all collapse to the existing degraded-mode signal.
     return { ok: false };

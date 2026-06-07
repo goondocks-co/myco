@@ -27,3 +27,15 @@ export function symbiontHasCapability(
 ): boolean {
   return manifestHasCapability(getManifestByName(name), capability);
 }
+
+/** Read the tenancy-capable tool transport off a manifest. Absent → 'mcp'. */
+export function manifestToolTransport(
+  manifest: SymbiontManifest | undefined,
+): 'mcp' | 'cli' {
+  return manifest?.capabilities?.toolTransport ?? 'mcp';
+}
+
+/** Resolve the tool transport for a symbiont by name. Unknown → 'mcp'. */
+export function symbiontToolTransport(name: string | undefined): 'mcp' | 'cli' {
+  return manifestToolTransport(getManifestByName(name));
+}

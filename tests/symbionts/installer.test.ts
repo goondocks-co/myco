@@ -2,9 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { derivePort } from '@myco/daemon/port.js';
-import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
-import { saveProjectManifest } from '@myco/config/project-manifest.js';
-import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -45,6 +42,18 @@ const CURSOR_MANIFEST: SymbiontManifest = {
   },
 };
 
+/**
+ * Cursor's real-world transport: `cli`. Its MCP child spawns at a
+ * non-workspace cwd with no project-dir env and no usable roots, so the
+ * stdio bridge can't carry tenancy — `installMcp()` must skip the server
+ * and sweep any stale `myco` entry. Kept distinct from CURSOR_MANIFEST so
+ * the mcp-path tests above still exercise a generic mcp-transport agent.
+ */
+const CURSOR_CLI_MANIFEST: SymbiontManifest = {
+  ...CURSOR_MANIFEST,
+  capabilities: { toolTransport: 'cli' },
+};
+
 /** Minimal manifest with no hooks — used to test skip-guard behavior. */
 const NO_HOOKS_MANIFEST: SymbiontManifest = {
   name: 'no-hooks-agent',
@@ -75,6 +84,33 @@ const CODEX_MANIFEST: SymbiontManifest = {
     skillsTarget: '.agents/skills',
     settingsTarget: '.codex/config.toml',
     settingsFormat: 'toml',
+  },
+};
+
+/**
+ * Synthetic cli-transport symbiont whose hooks, MCP, and settings all resolve
+ * to one shared JSON file (`mcpFormat: 'json'`) — the `shouldBatchJsonTargets`
+ * condition. Exercises the batched-JSON write path's transport gate: a future
+ * JSON-colocated cli symbiont must NOT get an MCP server written, and any
+ * pre-existing `myco` entry must be swept.
+ */
+const CLI_BATCHED_MANIFEST: SymbiontManifest = {
+  name: 'cli-batched',
+  displayName: 'CLI Batched',
+  binary: 'clibatched',
+  configDir: '.clibatched',
+  pluginRootEnvVar: 'CLIBATCHED_PLUGIN_ROOT',
+  settingsPath: '.clibatched/config.json',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.clibatched/config.json',
+    mcpTarget: '.clibatched/config.json',
+    mcpFormat: 'json',
+    settingsTarget: '.clibatched/config.json',
+    skillsTarget: '.agents/skills',
+  },
+  capabilities: {
+    toolTransport: 'cli',
   },
 };
 
@@ -247,7 +283,7 @@ function setupPackageRoot(): void {
     Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
-    myco: { url: 'http://127.0.0.1:{{daemonPort}}/mcp' },
+    myco: { command: 'myco-run', args: ['mcp'] },
   });
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { hooks: true },
@@ -286,7 +322,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['node', '.agents/myco-cli.cjs', 'mcp'] },
+    myco: { type: 'local', command: ['myco-run', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -677,6 +713,109 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers['other-tool']).toBeDefined();
     expect(servers.myco).toBeDefined();
+  });
+
+  it('skips the MCP server for a cli-transport symbiont (cursor) and writes nothing', () => {
+    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    // cli transport: the stdio bridge can't carry tenancy, so no server.
+    expect(result).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor/mcp.json'))).toBe(false);
+  });
+
+  it('sweeps a stale myco MCP server for a cli-transport symbiont (cursor)', () => {
+    const mcpPath = path.join(projectRoot, '.cursor/mcp.json');
+    // Pre-existing state: a stale myco entry from a prior mcp-transport era,
+    // alongside a user's own server.
+    writeJson(mcpPath, {
+      mcpServers: {
+        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
+        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
+      },
+    });
+
+    const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(false);
+    const config = readJson(mcpPath);
+    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    // Stale myco entry swept; the user's own server preserved.
+    expect(servers?.myco).toBeUndefined();
+    expect(servers?.['other-tool']).toBeDefined();
+  });
+
+  it('writes the stdio bridge for mcp-transport Copilot (myco-run, no url)', () => {
+    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(true);
+    const config = readJson(path.join(projectRoot, '.vscode/mcp.json'));
+    // The test COPILOT_MANIFEST sets no project-local mcpServersKey, so the
+    // installer defaults to `mcpServers`.
+    const servers = config.mcpServers as Record<string, unknown>;
+    const myco = servers.myco as Record<string, unknown>;
+    expect(myco).toBeDefined();
+    expect(myco.command).toBe('myco-run');
+    expect(myco.args).toEqual(['mcp']);
+    expect(myco.url).toBeUndefined();
+  });
+
+  it('writes the local-array stdio bridge for mcp-transport OpenCode (myco-run, no url)', () => {
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installMcp();
+
+    expect(result).toBe(true);
+    const config = readJson(path.join(projectRoot, 'opencode.json'));
+    // opencode hosts MCP under the non-standard `mcp` key.
+    const servers = config.mcp as Record<string, unknown>;
+    const myco = servers.myco as Record<string, unknown>;
+    expect(myco).toBeDefined();
+    expect(myco.type).toBe('local');
+    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.url).toBeUndefined();
+  });
+});
+
+describe('installBatchedJson transport gate', () => {
+  /** Plant the cli-batched templates the batched-JSON path reads. */
+  function setupCliBatchedTemplates(): void {
+    const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont cli-batched', timeout: 30 }] }],
+    });
+    writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
+    writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
+  }
+
+  it('omits the MCP server for a cli-transport symbiont and sweeps any existing myco entry', () => {
+    setupCliBatchedTemplates();
+    const sharedFile = path.join(projectRoot, '.clibatched/config.json');
+    // Pre-existing state: a stale myco MCP server alongside a user's own.
+    writeJson(sharedFile, {
+      mcpServers: {
+        myco: { type: 'stdio', command: 'myco-run', args: ['mcp'] },
+        'other-tool': { type: 'stdio', command: 'other-tool', args: ['serve'] },
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
+    const result = installer.install();
+
+    // Batched path reports no MCP write for the cli-transport symbiont.
+    expect(result.mcp).toBe(false);
+    // Hooks still installed (shared file) — the symbiont remains captured.
+    expect(result.hooks).toBe(true);
+
+    const config = readJson(sharedFile);
+    const servers = config.mcpServers as Record<string, unknown> | undefined;
+    // The stale myco entry is swept; the user's own server is preserved.
+    expect(servers?.myco).toBeUndefined();
+    expect(servers?.['other-tool']).toBeDefined();
+    // Hooks block landed in the same file.
+    expect(config.hooks).toBeDefined();
   });
 });
 
@@ -1140,22 +1279,7 @@ describe('gitignore management', () => {
 // =====================
 
 describe('installMcp (TOML)', () => {
-  it('real Codex MCP template uses daemon HTTP URL transport', () => {
-    const realTemplate = JSON.parse(fs.readFileSync(
-      path.resolve('packages/myco/src/symbionts/templates/codex/mcp.json'),
-      'utf-8',
-    )) as { myco: Record<string, unknown> };
-
-    expect(realTemplate.myco.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
-    expect(realTemplate.myco.command).toBeUndefined();
-    expect(realTemplate.myco.args).toBeUndefined();
-  });
-
-  it('writes MCP server entry to TOML config', () => {
-    // Sandbox MYCO_HOME so the per-process sandbox can't carry a
-    // daemon.port value from earlier tests' machine-config writes.
-    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
-    process.env.MYCO_HOME = mycoHome;
+  it('writes MCP server entry to TOML config verbatim from the template', () => {
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
@@ -1163,92 +1287,10 @@ describe('installMcp (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain(`url = "http://127.0.0.1:${resolveGlobalDaemonPort(mycoHome)}/mcp"`);
-    expect(content).not.toContain('command = "myco-run"');
-    expect(content).not.toContain('args = ["mcp"]');
+    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('args = ["mcp"]');
     expect(content).not.toContain('cwd = "."');
     expect(content).not.toContain('[mcp_servers.myco.env]');
-  });
-
-  it('ignores any stale daemon.port in machine config (canonical port is derived)', () => {
-    // Pre-0.25.3 installs may have a stale `daemon.port` field in
-    // ~/.myco/config.yaml left over from the deprecated machine override.
-    // The installer must ignore it and use the derived canonical port so
-    // launchers, hooks, and the daemon all converge on the same value.
-    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
-    process.env.MYCO_HOME = mycoHome;
-    fs.writeFileSync(path.join(mycoHome, 'config.yaml'), [
-      'daemon:',
-      '  port: 21039',
-      '',
-    ].join('\n'));
-
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
-      'version: 3',
-      'embedding:',
-      '  provider: ollama',
-      '  model: bge-m3',
-      '',
-    ].join('\n'));
-
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    installer.installMcp();
-
-    const expectedPort = resolveGlobalDaemonPort(mycoHome);
-    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-    expect(content).not.toContain('21039');
-  });
-
-  it('uses the global service-dir derived port for Codex MCP URL on a project without an explicit Grove binding', () => {
-    // Post-Grove there is no per-vault daemon fallback; the canonical
-    // port is always derived from the global service dir.
-    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
-    process.env.MYCO_HOME = mycoHome;
-
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
-
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    installer.installMcp();
-
-    const expectedPort = resolveGlobalDaemonPort(mycoHome);
-    const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-  });
-
-  it('uses the global daemon port for Grove-bound project MCP URLs', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
-    process.env.MYCO_HOME = home;
-    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
-    const vaultDir = path.join(projectRoot, '.myco');
-    fs.mkdirSync(vaultDir, { recursive: true });
-    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
-
-    const grove = createGrove('Work', home);
-    saveProjectManifest(vaultDir, {
-      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
-      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
-    });
-    registerProjectInGrove(grove.id, {
-      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      projectName: 'Project A',
-      projectRoot,
-      bindingId: 'gbind-a',
-    }, home);
-
-    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
-    installer.installMcp();
-
-    const expectedPort = resolveGlobalDaemonPort(home);
-    const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    const mycoConfig = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
-    expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-    expect(mycoConfig).not.toContain('port:');
-    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('preserves existing TOML content', () => {
@@ -1274,7 +1316,7 @@ describe('installMcp (TOML)', () => {
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
-    expect(content).toContain('url = "http://127.0.0.1:');
+    expect(content).toContain('command = "myco-run"');
     expect(content).not.toContain('old-command');
   });
 
@@ -1286,6 +1328,66 @@ describe('installMcp (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).not.toContain('cwd = "."');
+  });
+});
+
+// =====================
+// installMcp — per-symbiont tool transport
+// =====================
+
+describe('installMcp tool transport', () => {
+  it('cli-transport symbiont: installMcp writes nothing and sweeps the existing block (project scope)', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-tr-'));
+    const cliCodex = {
+      ...CODEX_MANIFEST,
+      capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
+    };
+    const installer = new SymbiontInstaller(cliCodex, projectRoot, packageRoot); // default 'project' scope
+    const cfg = path.join(projectRoot, '.codex', 'config.toml'); // codex mcpTarget
+    fs.mkdirSync(path.dirname(cfg), { recursive: true });
+    fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
+    expect(installer.installMcp()).toBe(false);
+    const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
+    expect(after).not.toContain('[mcp_servers.myco]');
+  });
+
+  it('cli-transport symbiont: installMcp sweeps the GLOBAL config (production path)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const origHome = process.env.HOME;
+    const origSandbox = process.env.MYCO_SANDBOX_ROOT;
+    process.env.HOME = home;
+    process.env.MYCO_SANDBOX_ROOT = home; // satisfy assertSandboxedHome — HOME must resolve inside the sandbox root
+    try {
+      const cliCodex = {
+        ...CODEX_MANIFEST,
+        // Global scope reads reg.globalMcpTarget; the production codex manifest
+        // declares ~/.codex/config.toml. The test fixture omits it, so add the
+        // normalized array shape the installer iterates.
+        registration: {
+          ...CODEX_MANIFEST.registration,
+          globalMcpTarget: [{ path: '~/.codex/config.toml' }],
+        },
+        capabilities: { ...(CODEX_MANIFEST.capabilities ?? {}), toolTransport: 'cli' as const },
+      };
+      // installScope 'global' is the 7th constructor arg (see bootstrap.ts:92-93).
+      const installer = new SymbiontInstaller(cliCodex, '/', packageRoot, false, undefined, null, 'global');
+      const cfg = path.join(home, '.codex', 'config.toml'); // codex globalMcpTarget = ~/.codex/config.toml
+      fs.mkdirSync(path.dirname(cfg), { recursive: true });
+      fs.writeFileSync(cfg, '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n');
+      expect(installer.installMcp()).toBe(false);
+      const after = fs.existsSync(cfg) ? fs.readFileSync(cfg, 'utf-8') : '';
+      expect(after).not.toContain('[mcp_servers.myco]');
+    } finally {
+      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+      if (origSandbox === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = origSandbox;
+    }
+  });
+
+  it('mcp-transport symbiont: installMcp still writes the server', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-tr-'));
+    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot); // mcp by default
+    expect(installer.installMcp()).toBe(true);
+    expect(fs.readFileSync(path.join(projectRoot, '.cursor', 'mcp.json'), 'utf-8')).toContain('myco');
   });
 });
 
@@ -1308,7 +1410,7 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
     expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
@@ -1402,7 +1504,7 @@ describe('installSettings (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('url = "http://127.0.0.1:');
+    expect(content).toContain('command = "myco-run"');
     expect(content).toContain('[features]');
     expect(content).toContain('hooks = true');
   });
@@ -1591,15 +1693,15 @@ describe('uninstallSettings (TOML)', () => {
     // Regression: an earlier version of stripLegacyFromJson walked into
     // every array and filtered out legacy tokens. That
     // would corrupt opencode.json which stores its MCP server command
-    // as `command: ["node", ".agents/myco-cli.cjs", "mcp"]`. The
-    // cleanup must now recognize `command` / `args` as exec argv arrays
+    // as a `type: "local"` exec argv array (`command: ["myco-run", "mcp"]`).
+    // The cleanup must recognize `command` / `args` as exec argv arrays
     // and skip them.
     const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
     writeJson(openCodeJsonPath, {
       mcp: {
         myco: {
           type: 'local',
-          command: ['node', '.agents/myco-cli.cjs', 'mcp'],
+          command: ['myco-run', 'mcp'],
         },
       },
       permission: {
@@ -1614,9 +1716,9 @@ describe('uninstallSettings (TOML)', () => {
     installer.install();
 
     const result = readJson(openCodeJsonPath);
-    // Exec argv array preserved verbatim.
+    // Exec argv array preserved verbatim (not filtered token-by-token).
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+      .toEqual(['myco-run', 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -2552,9 +2654,9 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["node", ".agents/myco-cli.cjs", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(myco.command).toEqual(['myco-run', 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
