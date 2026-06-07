@@ -55,7 +55,7 @@ process-level mock registrations — the only cure is process isolation.
 **Known occurrence in Myco:**
 - Offending file: `tests/agent/runtime-claude.test.ts`
 - Mocked modules: `@myco/agent/provider.js`, `@myco/agent/harness/claude-code-executable.js`
-- Poisoned files when bundled: `provider.test.ts`, `claude-code-executable.test.ts`
+- Poisoned files when bundled: `tests/agent/provider.test.ts`, `tests/agent/claude-code-executable.test.ts`
 - Symptom: 12 failures + 3 errors on CI; passes locally (different execution order)
 - Current fix: `tests/agent/runtime-claude.test.ts` is intentionally omitted from
   the `tests-agent-stable` group in `scripts/run-bun-tests.mjs` so it runs in
@@ -219,14 +219,14 @@ first assertion.
 2. **Apply the lazy initialization pattern.** Two variants depending on module
    structure:
 
-   *Module-level (standalone functions):*
+   *Module-level (standalone functions) — illustrative names, adapt to your module:*
    ```ts
    // BEFORE: eager — fails at module load in Bun test env
    const client = new Anthropic({
      apiKey: process.env.ANTHROPIC_API_KEY,
    });
 
-   export function callAPI() {
+   export function sendRequest() {
      return client.messages.create(...);
    }
 
@@ -243,7 +243,7 @@ first assertion.
      return client;
    }
 
-   export function callAPI() {
+   export function sendRequest() {
      return getClient().messages.create(...);
    }
    ```
@@ -267,16 +267,22 @@ first assertion.
 3. **Update all call sites.** Replace direct `client.xxx()` references with
    `getClient().xxx()` throughout the module.
 
-4. **Expose a test injection setter (optional but recommended).** This lets
-   tests inject a mock client without triggering real construction:
+4. **Expose a test injection setter (add this to your module if tests need
+   mock injection).** This lets tests supply a mock client without triggering
+   real construction:
    ```ts
-   export function _setClientForTest(mock: Anthropic): void {
-     client = mock;
+   // Add to the module under test:
+   let _testClient: Anthropic | undefined;
+   export function _setClientForTest(mock: Anthropic | undefined): void {
+     _testClient = mock;
+   }
+   function getClient(): Anthropic {
+     return _testClient ?? (realClient ??= new Anthropic({ dangerouslyAllowBrowser: true }));
    }
 
-   // In test afterEach:
+   // In test afterEach — reset between runs:
    afterEach(() => {
-     _setClientForTest(null as any); // reset singleton between test runs
+     _setClientForTest(undefined);
    });
    ```
 
@@ -311,7 +317,7 @@ passed. The symptom — "all tests green, job failed" — is the diagnostic sign
 **The lazy initialization singleton persists for the Bun process lifetime.**
 A `let client = null` or `private client?: Anthropic` pattern resets between
 test *files* only if the module is re-required. Within a shared process run,
-the singleton carries over. Use the `_setClientForTest` setter (Procedure C,
+the singleton carries over. Use the test injection setter pattern (Procedure C,
 step 4) to reset between tests when clean state is required.
 
 **`scripts/run-bun-tests.mjs` is the authoritative runner.** Direct `bun test`
