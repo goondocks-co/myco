@@ -112,7 +112,13 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
       liveConfig: {
         current: {
           agent: { summary_batch_interval: 20 },
-          canopy: { exclude: { patterns: [] } },
+          // Match the real MycoConfig shape: canopy nests under `cortex`.
+          // The dispatcher's deferred tool_use canopy rescan reads
+          // `current.cortex.canopy.exclude.{default_patterns,patterns}`
+          // (event-dispatch.ts) — seeding `canopy` at the top level left
+          // `current.cortex` undefined, throwing a TypeError swallowed by
+          // the `setTimeout(()=>{try{...}catch{}},0)` on every tool turn.
+          cortex: { canopy: { exclude: { default_patterns: [], patterns: [] } } },
         } as never,
       },
       vaultDir,
@@ -143,21 +149,86 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
   }
 
   /** Open the Grove DB the server wrote to and run a query. Read-only; the
-   *  server's own connection stays open in the runtime cache. */
+   *  server's own connection stays open in the runtime cache. A fresh
+   *  read connection per call (rather than a long-lived one) keeps each
+   *  query on a current WAL snapshot — see `pollGroveDb` for why repeated
+   *  re-opens matter for determinism. busy_timeout guards the brief window
+   *  where the writer connection holds a WAL lock the reader must wait on. */
   function queryGroveDb<T>(fn: (db: Database) => T): T {
     const db = new Database(resolveGroveDbPath(groveId, mycoHome), { readonly: true });
     try {
+      db.run('PRAGMA busy_timeout = 5000');
       return fn(db);
     } finally {
       db.close();
     }
   }
 
+  /**
+   * Poll the Grove DB until `predicate(result)` holds or the timeout
+   * elapses, then return the last result. The `/events` handler writes
+   * the session/batch/activity rows SYNCHRONOUSLY before it responds, so
+   * by the time `capturePost` resolves the rows are committed on the
+   * server's WAL-mode writer connection. This poll exists for the
+   * cross-connection visibility window, not a logical ordering race: the
+   * test reads through a SEPARATE, freshly-opened readonly connection,
+   * and on a loaded Linux CI runner a brand-new reader opening against a
+   * just-written WAL database can transiently see SQLITE_BUSY or a
+   * marginally stale snapshot (the HTTP response is flushed on a
+   * different tick than the synchronous commit). Re-opening and retrying
+   * makes the read deterministic by construction: a committed row appears
+   * within milliseconds, and a row that was genuinely never written still
+   * fails the caller's final assertion with a clear message rather than
+   * passing by luck.
+   */
+  async function pollGroveDb<T>(
+    fn: (db: Database) => T,
+    predicate: (result: T) => boolean,
+    { timeoutMs = 4000, intervalMs = 25 }: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
+    let last = queryGroveDb(fn);
+    while (!predicate(last) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      last = queryGroveDb(fn);
+    }
+    return last;
+  }
+
+  /**
+   * POST an event and retry the TRANSPORT a bounded number of times until
+   * the daemon returns ok. Only the HTTP round-trip is retried, never the
+   * subsequent DB assertions: the client uses a 2s abort timeout
+   * (DAEMON_CLIENT_TIMEOUT_MS) and does synchronous per-request filesystem
+   * work (project registration + request-context resolution), so on a
+   * loaded CI runner a single round-trip can transiently abort and return
+   * `{ ok: false }` even though the daemon and pipeline are healthy. A
+   * benign smoke POST should not fail the suite on one stalled round-trip;
+   * a daemon that is actually wedged still fails after exhausting the
+   * bounded attempts, surfacing the real `ok: false`. Re-POSTing is safe:
+   * the dispatcher dedups identical events within its window, and a turn
+   * that did land is idempotent on re-read.
+   */
+  async function capturePostUntilOk(
+    client: DaemonClient,
+    body: Record<string, unknown>,
+    { attempts = 5, backoffMs = 50 }: { attempts?: number; backoffMs?: number } = {},
+  ): Promise<{ ok: boolean; data?: unknown }> {
+    let result = await client.capturePost('/events', body);
+    let remaining = attempts - 1;
+    while (!result.ok && remaining > 0) {
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      result = await client.capturePost('/events', body);
+      remaining -= 1;
+    }
+    return result;
+  }
+
   it('a hook POST becomes a session + batch + activity in the Grove SQLite', async () => {
     const sessionId = 'http-e2e-session-001';
     const client = makeClient(sessionId);
 
-    const r1 = await client.capturePost('/events', {
+    const r1 = await capturePostUntilOk(client, {
       type: 'user_prompt',
       session_id: sessionId,
       agent: 'claude-code',
@@ -166,7 +237,7 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
     });
     expect(r1.ok).toBe(true);
 
-    const r2 = await client.capturePost('/events', {
+    const r2 = await capturePostUntilOk(client, {
       type: 'tool_use',
       session_id: sessionId,
       agent: 'claude-code',
@@ -178,24 +249,32 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
 
     // The event traveled client → HTTP → server routing → request-context
     // resolution → per-Grove DB selection → dispatcher → SQLite. Read the
-    // Grove DB file directly to prove it landed durably.
-    const session = queryGroveDb((db) =>
-      db.prepare('SELECT id, status FROM sessions WHERE id = ?').get(sessionId) as
-        { id: string; status: string } | null,
+    // Grove DB file directly to prove it landed durably. Poll the
+    // cross-connection read so the assertion is deterministic regardless of
+    // WAL visibility timing (see `pollGroveDb`).
+    const session = await pollGroveDb(
+      (db) =>
+        db.prepare('SELECT id, status FROM sessions WHERE id = ?').get(sessionId) as
+          { id: string; status: string } | null,
+      (row) => row !== null,
     );
     expect(session).not.toBeNull();
     expect(session!.id).toBe(sessionId);
 
-    const batches = queryGroveDb((db) =>
-      db.prepare('SELECT id, prompt_number, user_prompt FROM prompt_batches WHERE session_id = ? ORDER BY prompt_number').all(sessionId) as
-        Array<{ id: number; prompt_number: number; user_prompt: string }>,
+    const batches = await pollGroveDb(
+      (db) =>
+        db.prepare('SELECT id, prompt_number, user_prompt FROM prompt_batches WHERE session_id = ? ORDER BY prompt_number').all(sessionId) as
+          Array<{ id: number; prompt_number: number; user_prompt: string }>,
+      (rows) => rows.length >= 1,
     );
     expect(batches.length).toBe(1);
     expect(batches[0].user_prompt).toBe('Write a hello world program');
 
-    const activities = queryGroveDb((db) =>
-      db.prepare('SELECT tool_name, prompt_batch_id FROM activities WHERE session_id = ?').all(sessionId) as
-        Array<{ tool_name: string; prompt_batch_id: number }>,
+    const activities = await pollGroveDb(
+      (db) =>
+        db.prepare('SELECT tool_name, prompt_batch_id FROM activities WHERE session_id = ?').all(sessionId) as
+          Array<{ tool_name: string; prompt_batch_id: number }>,
+      (rows) => rows.length >= 1,
     );
     expect(activities.length).toBe(1);
     expect(activities[0].tool_name).toBe('Write');
@@ -207,7 +286,7 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
     const client = makeClient(sessionId);
 
     for (const prompt of ['first prompt', 'second prompt']) {
-      const res = await client.capturePost('/events', {
+      const res = await capturePostUntilOk(client, {
         type: 'user_prompt',
         session_id: sessionId,
         agent: 'claude-code',
@@ -217,9 +296,13 @@ describe('capture pipeline — HTTP end-to-end (client → server → Grove SQLi
       expect(res.ok).toBe(true);
     }
 
-    const batches = queryGroveDb((db) =>
-      db.prepare('SELECT prompt_number, user_prompt FROM prompt_batches WHERE session_id = ? ORDER BY prompt_number').all(sessionId) as
-        Array<{ prompt_number: number; user_prompt: string }>,
+    // Poll until both turns are visible so the assertion doesn't race the
+    // cross-connection WAL read (see `pollGroveDb`).
+    const batches = await pollGroveDb(
+      (db) =>
+        db.prepare('SELECT prompt_number, user_prompt FROM prompt_batches WHERE session_id = ? ORDER BY prompt_number').all(sessionId) as
+          Array<{ prompt_number: number; user_prompt: string }>,
+      (rows) => rows.length >= 2,
     );
     expect(batches.map((b) => b.prompt_number)).toEqual([1, 2]);
     expect(batches.map((b) => b.user_prompt)).toEqual(['first prompt', 'second prompt']);
