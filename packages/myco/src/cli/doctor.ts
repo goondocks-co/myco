@@ -19,6 +19,7 @@ import { loadProjectManifest } from '../config/project-manifest.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
+import { manifestToolTransport } from '../symbionts/capabilities.js';
 import { expandHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
 
@@ -277,6 +278,18 @@ export function isSymbiontRegistered(
   const registration = d.manifest.registration;
   if (!registration) return false;
 
+  // cli-transport symbionts intentionally have no MCP server; their hook
+  // registration is the source of truth (same as Pi/Windsurf, which omit
+  // mcpTarget). Without this, doctor falsely reports "enabled but not
+  // registered" and the suggested `myco update` can't fix it (it correctly
+  // writes no MCP server).
+  if (manifestToolTransport(d.manifest) === 'cli') {
+    if (registration.hooksTarget) {
+      return isHooksRegisteredAt(d, path.join(projectRoot, registration.hooksTarget));
+    }
+    return false;
+  }
+
   // Most symbionts have native MCP registration. For agents like Pi and
   // Windsurf that intentionally omit mcpTarget, treat their hook/plugin
   // registration as the source of truth instead of forcing a false warning.
@@ -303,6 +316,17 @@ export function isSymbiontRegisteredGlobally(
 ): boolean {
   const registration = d.manifest.registration;
   if (!registration) return false;
+  // cli-transport symbionts have no global MCP server either; their global
+  // hook registration is the source of truth. Mirrors the project-scope gate
+  // in isSymbiontRegistered so the global suppression path doesn't fall
+  // through to globalMcpTarget and miss the (correctly absent) MCP server.
+  if (manifestToolTransport(d.manifest) === 'cli') {
+    if (registration.globalHooksTarget
+      && isHooksRegisteredAt(d, expandHome(registration.globalHooksTarget))) {
+      return true;
+    }
+    return false;
+  }
   // globalMcpTarget can be a string or an array of string/object entries;
   // only the simple-string shape is checked here. The global hooks target is
   // the reliable cross-agent signal, so an exotic MCP shape just falls

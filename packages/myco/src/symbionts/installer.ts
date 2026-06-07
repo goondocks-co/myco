@@ -14,10 +14,10 @@ import {
   removeAuditedSettings,
   type JsonSettingsAudit,
 } from './settings-merge.js';
+import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
-import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import {
   CANONICAL_SKILLS_DIR,
@@ -881,7 +881,8 @@ export class SymbiontInstaller {
     // server-list keys before writing under the current one, so a
     // shape migration (mcpServersKey rename) doesn't leave behind a
     // duplicate `myco` registration under the old key.
-    const mcpTemplate = reg.mcpTarget ? this.loadTemplate('mcp') : null;
+    const provision = this.shouldProvisionMcpServer();
+    const mcpTemplate = reg.mcpTarget && provision ? this.loadTemplate('mcp') : null;
     if (mcpTemplate) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
       for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
@@ -899,6 +900,20 @@ export class SymbiontInstaller {
       }
       data[serversKey] = servers;
       mcp = true;
+    } else if (reg.mcpTarget && !provision) {
+      // cli-transport symbionts get NO MCP server here. Sweep any existing
+      // `myco` entry across every known server-list key (mirrors the
+      // installMcp → uninstallMcp sweep) so a JSON-colocated cli symbiont
+      // doesn't silently retain an MCP registration. `mcp` stays false.
+      const serversKey = reg.mcpServersKey ?? 'mcpServers';
+      for (const candidateKey of new Set([serversKey, ...KNOWN_MCP_SERVERS_KEYS])) {
+        const candidate = data[candidateKey];
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+        const bag = candidate as Record<string, unknown>;
+        if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
+        delete bag[MYCO_MCP_SERVER_NAME];
+        if (Object.keys(bag).length === 0) delete data[candidateKey];
+      }
     }
 
     // Apply settings transform with audit-tracking. Same discipline as
@@ -1645,14 +1660,30 @@ export class SymbiontInstaller {
    * preserves the historical boolean contract used by callers like
    * `runFullInstall()` and `isConfigured()`.
    */
+  /** Whether this symbiont should have a Myco MCP server provisioned. cli-transport
+   *  symbionts call tools via `myco tool call` on their shell and get none. */
+  private shouldProvisionMcpServer(): boolean {
+    return manifestToolTransport(this.manifest) !== 'cli';
+  }
+
   installMcp(): boolean {
     const reg = this.manifest.registration;
     if (!reg) return false;
 
+    // cli-transport symbionts call Myco tools via `myco tool call` on their
+    // shell (which carries tenancy from cwd), so they get NO MCP server. Sweep
+    // any pre-existing [mcp_servers.myco] under the active scope so a `myco
+    // update` (which runs at GLOBAL scope) removes the broken legacy_vault
+    // surface from ~/.codex/config.toml left by older installs.
+    if (!this.shouldProvisionMcpServer()) {
+      this.uninstallMcp();
+      return false;
+    }
+
     const targets = this.resolveAbsoluteMcpTargets();
     if (targets.length === 0) return false;
 
-    const template = this.buildMcpTemplate(this.loadTemplate('mcp'));
+    const template = this.loadTemplate('mcp');
     if (!template) return false;
 
     let anyWritten = false;
@@ -1663,41 +1694,6 @@ export class SymbiontInstaller {
       if (written) anyWritten = true;
     }
     return anyWritten;
-  }
-
-  private buildMcpTemplate(
-    template: Record<string, unknown> | null,
-  ): Record<string, unknown> | null {
-    if (!template) return null;
-
-    const daemonPort = this.resolveDaemonPort();
-
-    return Object.fromEntries(
-      Object.entries(template).map(([name, def]) => {
-        if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        const next = this.interpolateMcpTemplate({ ...(def as Record<string, unknown>) }, daemonPort);
-        return [name, next];
-      }),
-    );
-  }
-
-  private interpolateMcpTemplate(
-    server: Record<string, unknown>,
-    daemonPort: number,
-  ): Record<string, unknown> {
-    return Object.fromEntries(
-      Object.entries(server).map(([key, value]) => [
-        key,
-        typeof value === 'string'
-          ? value.replace(/\{\{daemonPort\}\}/g, String(daemonPort))
-          : value,
-      ]),
-    );
-  }
-
-  private resolveDaemonPort(): number {
-    const vaultDir = path.join(this.projectRoot, '.myco');
-    return resolveDaemonServiceState(vaultDir, { env: process.env }).canonicalPort;
   }
 
   /**

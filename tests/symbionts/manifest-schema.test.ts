@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
+import { symbiontToolTransport } from '@myco/symbionts/capabilities.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -485,5 +486,28 @@ describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
       pathField: 'command',
       extract: 'shell-arg',
     });
+  });
+});
+
+describe('symbiont tool transport', () => {
+  it('cli-transport symbionts cannot carry tenancy over MCP', () => {
+    // These agents' MCP child spawns at a non-workspace cwd with no
+    // project-dir env and no usable roots — the shell carries tenancy
+    // via `myco tool call` instead.
+    expect(symbiontToolTransport('codex')).toBe('cli');
+    expect(symbiontToolTransport('cursor')).toBe('cli');
+    expect(symbiontToolTransport('windsurf')).toBe('cli');
+    expect(symbiontToolTransport('antigravity')).toBe('cli');
+  });
+
+  it('mcp-transport symbionts resolve the project from the stdio bridge cwd', () => {
+    expect(symbiontToolTransport('claude-code')).toBe('mcp');
+    expect(symbiontToolTransport('copilot')).toBe('mcp');
+    expect(symbiontToolTransport('opencode')).toBe('mcp');
+  });
+
+  it('unknown / undefined names default to mcp', () => {
+    expect(symbiontToolTransport('does-not-exist')).toBe('mcp');
+    expect(symbiontToolTransport(undefined)).toBe('mcp');
   });
 });

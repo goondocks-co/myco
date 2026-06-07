@@ -126,11 +126,12 @@ describe('Pi plugin', () => {
     expect(source).not.toContain('name: "myco_observe"');
   });
 
-  it('routes all tool calls through the myco-run CLI; capture/lifecycle stays on HTTP', () => {
+  it('routes all tool calls through the global Myco launcher; capture/lifecycle stays on HTTP', () => {
     const source = pluginSource();
-    // Tool calls (myco_cortex, myco_spores, etc.) shell out to `myco-run`
-    // — this is the standard non-MCP-symbiont pattern after the
-    // /api/mcp/* retirement. Each tool wrapper delegates via execMycoTool.
+    // Tool calls (myco_cortex, myco_spores, etc.) run the global launcher
+    // (`node ~/.myco/launcher.cjs tool call …`) — this is the standard
+    // non-MCP-symbiont pattern after the /api/mcp/* retirement. Each tool
+    // wrapper delegates via execMycoTool.
     expect(source).toContain('execMycoTool(directory, "myco_cortex"');
     expect(source).toContain('execMycoTool(directory, "myco_spores"');
     expect(source).toContain('execMycoTool(directory, "myco_plans"');
@@ -143,6 +144,21 @@ describe('Pi plugin', () => {
     expect(source).toContain('postJson(directory, "/context/resume", {');
     expect(source).toContain('postJson(directory, "/sessions/register"');
     expect(source).toContain('postJson(directory, "/events"');
+  });
+
+  it('dispatches Myco tools via the global launcher, never the retired project-local one', () => {
+    // Regression guard for the #355 global-install migration: the project-local
+    // launcher `<project>/.agents/myco-run.cjs` was retired and no longer
+    // exists, so every tool call ENOENTed and silently returned { ok: false }
+    // ("tool unavailable"). execMycoTool must resolve the GLOBAL launcher
+    // (`~/.myco/launcher.cjs`) through resolveMycoHome(), with `cwd: directory`
+    // carrying per-project tenancy.
+    const source = pluginSource();
+    // The retired project-local launcher path must not reappear.
+    expect(source).not.toContain('.agents/myco-run.cjs');
+    expect(source).not.toContain('.agents", "myco-run.cjs');
+    // The launcher must resolve through resolveMycoHome() + launcher.cjs.
+    expect(source).toMatch(/const launcher = join\(resolveMycoHome\(\), "launcher\.cjs"\)/);
   });
 
   it('does not call any /api/mcp/* endpoint (those routes were deleted)', () => {

@@ -225,6 +225,13 @@ capabilities:
   # SubagentStart can inject additionalContext as extra developer context for
   # the child agent.
   subagentStartInjection: true
+  # HTTP MCP cannot carry per-project tenancy for Codex: its MCP config is global
+  # (one entry, many projects), it sends no tenancy headers and no MCP `roots`,
+  # and its MCP child runs at cwd=/ on Desktop — zero per-request project signal.
+  # Its SHELL tool DOES run in the workspace, so `myco tool call` resolves full
+  # tenancy from cwd. Declare the shell/CLI as Codex's tenancy-capable transport;
+  # the installer writes no MCP server and session-start injects a CLI directive.
+  toolTransport: cli
   # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
   # the agent's context.
   preToolUseInjection: true

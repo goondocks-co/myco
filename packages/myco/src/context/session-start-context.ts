@@ -41,13 +41,16 @@ export function composeSessionStartContext(
   config: MycoConfig,
   cortexContent: string,
   scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
+  options: { cliToolTransport?: boolean } = {},
 ): ComposedSessionStartContext {
   const cortexEnabled = shouldInjectCortex(config);
   const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
   const parts: SessionStartContextPart[] = [];
 
   if (cortexEnabled && cortexContent) {
-    const cortex = composeCortexInstructionInjection(cortexContent, 'session-start');
+    const cortex = composeCortexInstructionInjection(cortexContent, 'session-start', {
+      cliToolTransport: options.cliToolTransport,
+    });
     if (cortex) parts.push({ kind: 'cortex', text: cortex.text });
   }
   if (digestEnabled) {

@@ -13,6 +13,14 @@ export const SUBAGENT_CORTEX_GUIDANCE = [
   'Apply them to your assigned task, and defer broad orchestration decisions back to the parent agent.',
 ].join('\n');
 
+export const CLI_TOOL_TRANSPORT_DIRECTIVE = [
+  '**Myco tool transport (this host):** No Myco MCP server is installed here.',
+  'Call every Myco tool — including any `myco_*` tool named below or in any skill —',
+  "via your shell: `myco tool call <tool> --json --input '<json-args>'`,",
+  'run from the project working directory (this resolves project tenancy automatically).',
+  'Example: `myco tool call myco_cortex --json --input \'{"op":"instructions"}\'`.',
+].join('\n');
+
 export type CortexInjectionSurface = 'session-start' | 'subagent-start';
 
 export interface CortexInjectionContext {
@@ -23,16 +31,19 @@ export interface CortexInjectionContext {
 export function composeCortexInstructionInjection(
   cortexContent: string,
   surface: CortexInjectionSurface,
+  options: { cliToolTransport?: boolean } = {},
 ): CortexInjectionContext | null {
   const trimmed = cortexContent.trim();
   if (!trimmed) return null;
 
+  const directive = options.cliToolTransport ? `${CLI_TOOL_TRANSPORT_DIRECTIVE}\n\n` : '';
+
   if (surface === 'subagent-start') {
     return {
       surface,
-      text: `${SUBAGENT_CORTEX_GUIDANCE}\n\n${trimmed}`,
+      text: `${directive}${SUBAGENT_CORTEX_GUIDANCE}\n\n${trimmed}`,
     };
   }
 
-  return { surface, text: trimmed };
+  return { surface, text: `${directive}${trimmed}` };
 }
