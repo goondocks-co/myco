@@ -100,692 +100,195 @@ Rules:
 
 ### Column renames (legacy considerations)
 
-For historical context, some columns have been renamed over time (e.g., `agent_runs.runtime` → `agent_runs.harness` in v29). When working with legacy databases, SQLite requires full table rebuild for column rename. Always update query functions and TypeScript interfaces when column names change to maintain consistency across the codebase.
+SQLite requires full table rebuild for column rename. For historical context, `agent_runs.runtime` was renamed to `agent_runs.harness` in v29. Always update query functions and TypeScript interfaces when column names change.
 
 ### What never to do
 
-- `DROP COLUMN` — SQLite requires a full table rebuild; it will corrupt existing vaults that have been opened with the old schema.
+- `DROP COLUMN` — SQLite requires a full table rebuild; it will corrupt existing vaults opened with the old schema.
 - `RENAME COLUMN` — same constraint.
-- Two unrelated `ALTER TABLE` statements in one migration — if one fails, the retry will attempt both again, and the first may now throw "duplicate column."
+- Two unrelated `ALTER TABLE` statements in one migration — if one fails, the retry will attempt both again and the first may throw "duplicate column."
 
 ## Procedure C: D1/Cloud Schema Alignment
 
-Cloudflare D1 mirrors the local SQLite schema for team sync. Its critical behavioural difference: **D1 migrations apply lazily on the first request after deploy, not at deploy time.** A table added in a Workers deployment does not exist on D1 until that first request triggers migration.
-
-### Maintaining the D1 migration file
-
-Keep a parallel migration file in the Workers project using the same version number as the local migration. Apply via: `wrangler d1 migrations apply <db-name> --env staging`
+Cloudflare D1 mirrors the local SQLite schema for team sync. Critical behavioural difference: **D1 migrations apply lazily on the first request after deploy, not at deploy time.**
 
 ### Mitigating the lazy-migration gotcha
 
-Because the table doesn't exist until the first request, a cloud handler that assumes the table is present can throw on the very first post-deploy request. Three mitigations:
-
 1. **Explicit migration endpoint** — expose `POST /migrate` that runs all pending DDL. Call it from your deploy script immediately after `wrangler deploy`.
-2. **Defensive `IF NOT EXISTS` everywhere** — this is already required; never use bare `CREATE TABLE` on D1.
-3. **Dead-letter row pattern** — for high-value writes where silent loss is unacceptable, catch the "no such table" error and store the payload in a `dead_letter` table for replay once the schema is ready.
+2. **Defensive `IF NOT EXISTS` everywhere** — never use bare `CREATE TABLE` on D1.
+3. **Dead-letter row pattern** — for high-value writes where silent loss is unacceptable, catch the "no such table" error and store the payload for replay.
 
-### ALTER TABLE on D1
-
-`ALTER TABLE` on D1 is safe: it applies on the next request with no table lock and no downtime. The column simply doesn't exist on D1 until that request fires. Plan reads against the new column accordingly — guard with `IS NOT NULL` or a fallback until you know migration has run.
+`ALTER TABLE` on D1 is safe: it applies on the next request with no table lock. Guard reads against new columns until you know migration has run.
 
 ## Procedure D: FTS5 Index Creation and Maintenance
 
-Tables that the intelligence agent keyword-searches need FTS5 virtual tables with auto-sync triggers.
+Tables that the intelligence agent keyword-searches need FTS5 virtual tables with auto-sync triggers. Add both in the same migration entry as the source table. `CREATE TRIGGER IF NOT EXISTS` is mandatory — without it, re-opening the DB after a partial migration creates duplicate triggers and corrupts the FTS index.
 
-### Creating the FTS5 virtual table and triggers
-
-Add both in the same migration entry as the source table. `CREATE TRIGGER IF NOT EXISTS` is mandatory — without it, re-opening the DB after a partial migration creates duplicate triggers and corrupts the FTS index.
-
-### FTS5 search query pattern
-
-Always JOIN the source table — FTS virtual tables only expose the indexed text columns plus `rowid`:
+Always JOIN the source table in FTS queries — FTS virtual tables only expose indexed text columns plus `rowid`:
 
 ```typescript
-export function searchMyNewTable(
-  db: Database,
-  query: string,
-  limit = 20
-): MyNewTableRow[] {
+export function searchMyNewTable(db: Database, query: string, limit = 20): MyNewTableRow[] {
   return db.prepare(`
-    SELECT t.*
-    FROM my_new_table t
+    SELECT t.* FROM my_new_table t
     JOIN my_new_table_fts fts ON t.rowid = fts.rowid
-    WHERE my_new_table_fts MATCH ?
-    ORDER BY rank
-    LIMIT ?
+    WHERE my_new_table_fts MATCH ? ORDER BY rank LIMIT ?
   `).all(query, limit) as MyNewTableRow[];
 }
 ```
 
-### Backfilling existing rows into a new FTS index
-
-If FTS is added to a table that already has rows, populate the index in the migration.
-
 ## Procedure E: Migration Testing and Conflict Resolution
 
-For complex migrations involving data transformations or potential conflicts, implement test-driven migration patterns.
-
-### Migration Test Patterns
-
-Include test functions in the migration module for complex data transformations. Always design migrations to be re-runnable safely using `PRAGMA table_info` checks for column existence.
-
-### Idempotent Migration Guards
-
-Always design migrations to be re-runnable safely:
+Always design migrations to be re-runnable safely using `PRAGMA table_info` checks for column existence:
 
 ```typescript
-{
-  version: 23,
-  name: 'add_column_with_check',
-  description: 'Add new_column to my_table with safety check',
-  up: (db: Database) => {
-    const columnExists = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM pragma_table_info('my_table')
-      WHERE name = 'new_column'
-    `).get() as {count: number};
-
-    if (columnExists.count === 0) {
-      db.exec(`ALTER TABLE my_table ADD COLUMN new_column TEXT;`);
-    }
-  }
+const columnExists = db.prepare(`
+  SELECT COUNT(*) as count FROM pragma_table_info('my_table') WHERE name = 'new_column'
+`).get() as {count: number};
+if (columnExists.count === 0) {
+  db.exec(`ALTER TABLE my_table ADD COLUMN new_column TEXT;`);
 }
 ```
 
 ## Procedure F: Query Pattern Selection and Optimization
 
-Choose the right pattern upfront — post-filter in JS is a performance trap that compounds as the table grows. The Myco vault is accessed by both the daemon and MCP tool handlers, which can be called in tight loops by agent pipelines. Small query inefficiencies compound quickly.
-
-### Core Optimization Patterns
-
 | Situation | Pattern | Reason |
 |---|---|---|
 | `WHERE id IN (dynamic list)` | `json_each(json(?))` | Stable, cacheable query shape |
-| JavaScript `.filter()` on DB results | Push condition into SQL | SQLite query planner uses indexes |
+| JS `.filter()` on DB results | Push condition into SQL | SQLite uses indexes |
 | New table creation | Add `(agent_id, status)` index immediately | Avoid full table scan later |
-| Pagination endpoint | `listWithCount` combined query | Never two round-trips |
+| Pagination | keyset cursor | Never OFFSET |
 | `db.prepare()` inside function | Move to module scope | Compiled once at load |
 
-### Pattern 1: Use `json_each` for Variable-Length List Filters
-
+**`json_each` for Variable-Length List Filters:**
 ```typescript
-// ❌ Different statement shape for each call — not cacheable
-const placeholders = ids.map(() => '?').join(',');
-db.prepare(`SELECT * FROM spores WHERE id IN (${placeholders})`).all(...ids);
-
 // ✅ Single stable shape — compiled and cached once
 db.prepare(`
-  SELECT s.*
-  FROM spores s
+  SELECT s.* FROM spores s
   JOIN json_each(json(?)) je ON s.id = je.value
   WHERE s.agent_id = ?
 `).all(JSON.stringify(ids), agentId);
 ```
 
-### Pattern 2: Add Indexes at Schema Definition Time
-
-Add covering indexes for all primary query shapes in the same `CREATE TABLE` migration:
-
-```sql
--- For any table with agent-scoped queries:
-CREATE INDEX IF NOT EXISTS idx_my_table_agent_status
-  ON my_table (agent_id, status);
-
--- For join/lookup columns (e.g., outbox FK queries):
-CREATE INDEX IF NOT EXISTS idx_team_outbox_table_row
-  ON team_outbox (table_name, row_id);
-```
-
-**Index gaps to watch**: SQLite does not auto-index foreign keys; explicitly add indexes for all FK columns, `WHERE`/`ORDER BY` columns, and `created_at` if filtered/sorted by time.
-
-### Pattern 3: NOT EXISTS for Zero-Injection Queries
-
-When checking for the absence of injection records in a session, use NOT EXISTS rather than GROUP BY for clarity and performance:
-
+**NOT EXISTS for zero-injection session detection:**
 ```typescript
-// Check for sessions with no injection activity
 db.prepare(`
-  SELECT s.id, s.project_id
-  FROM sessions s
-  WHERE s.status = 'active'
+  SELECT s.id FROM sessions s WHERE s.status = 'active'
     AND NOT EXISTS (
-      SELECT 1 FROM activities
-      WHERE session_id = s.id
-        AND json_extract(content, '$.tool_name') IN 
+      SELECT 1 FROM activities WHERE session_id = s.id
+        AND json_extract(content, '$.tool_name') IN
             ('myco:inject_cortex', 'myco:inject_spores', 'myco:inject_canopy')
-    )
-  LIMIT 100
+    ) LIMIT 100
 `).all();
 ```
 
 ## Procedure G: Grove Project-Scoped Schema Architecture
 
-Grove's global daemon architecture introduces project-scoped row management patterns requiring specialized schema design considerations.
-
-### Project-Scoped Row Management
-
-Grove migration (v31-v32) adds `project_id` columns across 24+ tables for proper project-scoped access. When querying in Grove context, always scope by project_id to maintain proper isolation.
-
-### Migration Import Journal Pattern
-
-Grove migration introduces `migration_import_journal` tables for tracking data imports from legacy project vaults.
-
-### Grove Migration Contract Requirements
-
-**CRITICAL**: Grove activation must not import directly from legacy DBs with older schema versions. The migration contract requires a three-step normalization process:
-
-```bash
-# Step 1: Serialize the legacy DB (preserves exact state)
-sqlite3 legacy_vault.db ".backup legacy_serialized.db"
-
-# Step 2: Run current schema migrations on a copy
-cp legacy_serialized.db normalized_import.db
-myco-cli migrate --vault normalized_import.db  # Brings to current schema
-
-# Step 3: Import from normalized copy (matching schema)
-grove-importer import --source normalized_import.db --target grove_db.db
-```
-
-**Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema. Direct import from mismatched schema causes activation failures.
+Grove migration (v31-v32) adds `project_id` columns across 24+ tables. Always scope queries by `project_id` in Grove context. **Grove activation must not import directly from legacy DBs with older schemas** — serialize the legacy DB, run current migrations on a copy, then import from the schema-aligned source.
 
 ## Procedure H: Git Reconciler Schema Design for Release Provenance
 
-The Git reconciler feature introduces schema tables to distinguish between work that has shipped to production and work still in development. This enables agents to make informed decisions about knowledge relevance and maturity.
-
-### Schema Design: Two-Table Architecture
-
-Implement release provenance as two tables that follow Grove + project scoping requirements:
-
-#### knowledge_git_provenance (Raw Git Evidence)
-
-Captures factual git state at session lifecycle points (session_start, batch_start, batch_stop, session_end).
-
-#### knowledge_release_state (Derived Release Classification)
-
-Computes release state from git provenance with reconciliation logic:
-- Session spans main/master branch → likely shipped
-- Session on feature branch that later merged to main → shipped  
-- Session entirely on feature branch with no main merge → development
-- Mixed signals → development (conservative classification)
-
-### Critical Design Requirements
-
-**Grove + Project Scoping**: Both tables include `project_id` for project isolation and `grove_id` for cross-project coordination. This enables session-level release status for local intelligence and organizational patterns about shipping velocity across projects.
-
-**Capture Points**: Git provenance captures at four lifecycle points to detect mid-session commits, branch switches, and merge events that change release classification.
+Two tables for release provenance tracking (both include `project_id` and `grove_id`):
+- **knowledge_git_provenance** — Raw Git evidence at session lifecycle points
+- **knowledge_release_state** — Derived release classification with reconciliation logic
 
 ## Procedure I: Migration Chain Validation
 
-Test the complete migration path from v1 to current version, not just individual migrations.
-
-### Steps
-
-1. **Run Existing Migration Tests**: Execute specific migration version tests that exist in the codebase
-   ```bash
-   npm test -- tests/db/migrate-v40.test.ts
-   npm test -- tests/db/migrate-v43-activity-not-null.test.ts
-   npm test -- tests/db/project-id-cleanup-migration.test.ts
-   ```
-
-2. **Verify Schema Invariants**: Test that all expected tables, columns, and indexes exist
-   ```javascript
-   // Assert invariants, not version constants
-   import { SCHEMA_VERSION } from '@myco/db/schema.js';
-   expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(42);
-   
-   // Verify actual schema structure
-   const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-   expect(tables.map(t => t.name)).toContain('skill_candidates');
-   ```
-
-3. **Test Migration Idempotency**: Ensure migrations can be run multiple times safely
-   ```bash
-   # Apply migrations twice - second run should be no-op  
-   npm run build && npm run db:migrate
-   npm run build && npm run db:migrate  # Should not fail or change anything
-   ```
-
-**Key Pattern**: Always test the real migration chain rather than constructing specific versions manually. Follow the pattern from existing tests like `tests/db/migrate-v40.test.ts`.
+Test the complete migration path, not just individual migrations. Follow patterns from existing tests (`tests/db/migrate-v40.test.ts`). Assert invariants, not version constants:
+```javascript
+expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(42);
+```
 
 ## Procedure J: Fresh Install vs Migration Equivalence Testing
 
-Verify that fresh installs and migrated databases produce functionally equivalent schemas.
-
-### Steps
-
-1. **Create Two Database Instances**: Database A (fresh install from DDL), Database B (migrate from earlier version)
-
-2. **Compare Schema Structure by Column Names**: Use the pattern from existing tests
-   ```javascript
-   function getColumnNames(db: Database, tableName: string): string[] {
-     const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
-     return rows.map(r => r.name);
-   }
-   
-   // Verify expected columns exist and are addressable
-   const freshColumns = getColumnNames(freshDb, 'skill_candidates');
-   const migratedColumns = getColumnNames(migratedDb, 'skill_candidates');
-   
-   expect(freshColumns).toContain('quality_score');
-   expect(migratedColumns).toContain('quality_score');
-   // Don't assert column order - fresh vs migrated differ
-   ```
-
-3. **Test Functional Equivalence**: Run identical queries against both databases
-
-**Gotcha**: Fresh installs follow CREATE TABLE column order; migrated databases append ALTER TABLE columns at the end. Test column addressability, not ordinal position.
+Fresh installs follow CREATE TABLE column order; migrated databases append ALTER TABLE columns at the end. Test column addressability by name, not ordinal position. Use `PRAGMA table_info(table_name)` to check column existence.
 
 ## Procedure K: Migration Test Hardening
 
-Write tests that survive schema evolution and don't break on version advances.
-
-### Steps
-
-1. **Avoid Version Pinning**: Don't assert exact `SCHEMA_VERSION` values
-   ```javascript
-   // BAD - breaks after every migration
-   expect(SCHEMA_VERSION).toBe(41);
-   
-   // GOOD - tests compatibility
-   expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(41);
-   ```
-
-2. **Test Schema Invariants**: Assert actual database structure, not version numbers
-   ```javascript
-   const tableInfo = await db.prepare("PRAGMA table_info(skill_candidates)").all();
-   const hasQualityScore = tableInfo.some(col => col.name === 'quality_score');
-   expect(hasQualityScore).toBe(true);
-   ```
-
-3. **Use Current Schema**: Test against the current state, not historical snapshots
-
-**Pattern**: Tests should check invariants (\"this feature works\") rather than absolute values (\"version is exactly X\"). Follow the patterns from `tests/db/migrate-v40.test.ts` and `tests/db/schema.test.ts`.
+```javascript
+// BAD — breaks after every migration
+expect(SCHEMA_VERSION).toBe(41);
+// GOOD — tests compatibility
+expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(41);
+// Test actual schema structure instead of version numbers
+const tableInfo = await db.prepare("PRAGMA table_info(skill_candidates)").all();
+expect(tableInfo.some(col => col.name === 'quality_score')).toBe(true);
+```
 
 ## Procedure L: D1 Schema Parity Management
 
-Ensure SQLite schema changes are propagated to D1 deployment schema.
-
-### Steps
-
-1. **Identify Sync Tables**: Determine which tables sync to D1 via team CLI
-   ```bash
-   grep -r "skill_candidates" packages/myco-team/ --include="*.ts" | grep -i sync
-   ```
-
-2. **Update D1 Schema Files**: Add new columns to D1 schema configuration following patterns from team deployment
-
-3. **Create Idempotent D1 Migrations**: Add `ALTER TABLE` statements for existing D1 databases
-
-4. **Test D1 compatibility**: Run schema validation tests
-   ```bash
-   npm test -- tests/worker/schema.test.ts
-   ```
-
-**Critical Rule**: Treat D1 schema updates as a required paired step with any SQLite schema change that syncs to team. Add checklist verification for D1 column parity.
+Treat D1 schema updates as a required paired step with any SQLite schema change that syncs to team. Run `npm test -- tests/worker/schema.test.ts` to validate D1 compatibility.
 
 ## Procedure M: Session Lifecycle Batch Management and Tool Call Aggregation
 
-Modern schema versions (v44-v45) introduce specialized patterns for session lifecycle batch management and tool call aggregation tables that require specific migration techniques.
+Tool call counts are materialized at session Stop boundary via `aggregateSessionMycoToolCalls()`:
+- Flat table design: `(session_id, tool_name, op, count)` — no denormalized JSON
+- Stop boundary timing: aggregation at session completion, not per-call
+- Team sync exclusion: tool usage data remains local-only
+- Idempotent: uses UPSERT patterns
 
-### ensureOpenBatch Migration Pattern
-
-When implementing session lifecycle management, use the `ensureOpenBatch` pattern for migrations that must guarantee an active prompt batch exists before proceeding:
-
-```typescript
-{
-  version: 44,
-  name: 'add_session_tool_call_aggregation',
-  description: 'Add session_myco_tool_calls table for tool usage analytics',
-  up: (db: Database) => {
-    // Critical: Ensure session has open batch before tool call tracking
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS session_myco_tool_calls (
-        id              TEXT PRIMARY KEY,
-        session_id      TEXT NOT NULL,
-        batch_id        TEXT,
-        tool_name       TEXT NOT NULL,
-        call_count      INTEGER NOT NULL DEFAULT 0,
-        last_called_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-        FOREIGN KEY (session_id) REFERENCES sessions(id),
-        FOREIGN KEY (batch_id) REFERENCES prompt_batches(id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_session_tool_calls_session
-        ON session_myco_tool_calls(session_id, tool_name);
-      CREATE INDEX IF NOT EXISTS idx_session_tool_calls_batch  
-        ON session_myco_tool_calls(batch_id);
-    `);
-  }
-}
-```
-
-### Tool Call Aggregation Architecture
-
-When creating aggregation tables for tool usage analytics:
-
-1. **Session-Scoped Aggregation**: Always link to both session_id and batch_id for proper lifecycle tracking
-2. **Tool Name Canonicalization**: Store canonical tool names, not raw MCP tool identifiers that may drift
-3. **Temporal Tracking**: Include both count and last_called_at for usage pattern analysis
-
-### Stop Boundary Materialization Pattern
-
-**Critical Implementation**: Tool call counts are materialized at session Stop boundary via `aggregateSessionMycoToolCalls()` — a pure function that computes session-scoped tool usage from the activities table and persists to `session_myco_tool_calls`.
-
-Key characteristics:
-- **Flat Table Design**: Store `(session_id, tool_name, op, count)` rather than denormalized JSON
-- **Stop Boundary Timing**: Aggregation happens at session completion, not per-call
-- **Team Sync Exclusion**: Tool usage data remains local-only and does not sync to team D1 databases
-- **Idempotent Aggregation**: `aggregateSessionMycoToolCalls()` can be re-run safely; uses UPSERT patterns
-
-Implementation pattern:
-```typescript
-export function aggregateSessionMycoToolCalls(
-  db: Database, 
-  sessionId: string
-): void {
-  // Compute counts from activities table
-  const toolCounts = db.prepare(`
-    SELECT 
-      json_extract(content, '$.tool_name') as tool_name,
-      json_extract(content, '$.op') as op,
-      COUNT(*) as count
-    FROM activities 
-    WHERE session_id = ? 
-      AND json_extract(content, '$.tool_name') IS NOT NULL
-    GROUP BY tool_name, op
-  `).all(sessionId);
-  
-  // Materialize to aggregation table (UPSERT)
-  for (const {tool_name, op, count} of toolCounts) {
-    db.prepare(`
-      INSERT INTO session_myco_tool_calls (session_id, tool_name, op, call_count)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(session_id, tool_name, op) 
-      DO UPDATE SET call_count = excluded.call_count
-    `).run(sessionId, tool_name, op, count);
-  }
-}
-```
-
-### Phantom Batch Detection and Recovery
-
-Schema v44 introduces phantom batch detection patterns for sessions that have orphaned batch references:
-
+**Phantom Batch Detection**: Schema v44 requires checking for orphaned session references before adding FK constraints:
 ```sql
--- Query pattern for phantom batch detection
-SELECT s.id as session_id, pb.id as batch_id
-FROM sessions s  
+SELECT s.id, pb.id FROM sessions s
 LEFT JOIN prompt_batches pb ON s.id = pb.session_id
 WHERE s.status = 'active' AND pb.id IS NULL;
 ```
 
-Migration design must account for phantom batch cleanup:
-
-```typescript
-{
-  version: 45,
-  name: 'fix_phantom_batch_references', 
-  description: 'Clean up orphaned session batch references',
-  up: (db: Database) => {
-    // Identify and fix phantom batch states
-    db.exec(`
-      UPDATE sessions 
-      SET status = 'completed'
-      WHERE status = 'active' 
-        AND id NOT IN (SELECT DISTINCT session_id FROM prompt_batches);
-    `);
-  }
-}
-```
-
-**Critical Pattern**: Always check for phantom states before adding constraints that assume referential integrity.
-
 ## Procedure N: D1 Drift Reconciliation Architecture
 
-D1 drift reconciliation introduces specialized migration patterns for handling cloud-local schema synchronization issues that emerge in team deployment scenarios.
-
-### Drift Detection Schema
-
-Implement drift reconciliation with dedicated tracking tables:
-
-```sql
-CREATE TABLE IF NOT EXISTS d1_drift_journal (
-  id               TEXT PRIMARY KEY,
-  drift_type       TEXT NOT NULL, -- 'schema_version', 'table_missing', 'column_missing'
-  local_state      TEXT,          -- JSON snapshot of local state
-  d1_state         TEXT,          -- JSON snapshot of D1 state  
-  reconcile_action TEXT,          -- 'migrate_d1', 'backfill_local', 'manual_review'
-  detected_at      INTEGER NOT NULL DEFAULT (unixepoch()),
-  resolved_at      INTEGER,
-  resolution_notes TEXT
-);
-```
-
-### D1 Reconciliation Query Patterns
-
-When building drift reconciliation, use defensive query patterns that handle schema mismatches:
-
-```typescript
-// Defensive column checking before INSERT
-const hasColumn = db.prepare(`
-  SELECT COUNT(*) as count 
-  FROM pragma_table_info('my_table') 
-  WHERE name = 'new_column'
-`).get() as {count: number};
-
-if (hasColumn.count > 0) {
-  // Safe to insert with new column
-  insertWithNewColumn(data);
-} else {
-  // Fall back to legacy insert pattern
-  insertLegacyPattern(data);
-}
-```
-
-### Team Sync Reconciliation Flow
-
-D1 drift reconciliation must handle the case where team sync deployments introduce schema versions that local clients haven't migrated to yet:
-
-1. **Schema Version Check**: Always query D1 schema version before attempting sync operations
-2. **Graceful Degradation**: If D1 is ahead, use compatible subset of operations
-3. **Reconciliation Backlog**: Queue drift fixes for background processing
+Team sync scenarios can create schema version mismatches. Always query D1 schema version before sync operations and implement graceful degradation. Use defensive column-checking before INSERT in reconciliation code.
 
 ## Procedure O: Tool Name Canonicalization and Injection Dedup for Activities
 
-Activities table processing in modern schema versions requires tool name canonicalization to handle MCP tool identifier evolution and prevent data fragmentation. For injection-based tool operations, implement synthetic tool name patterns to prevent duplicate processing.
+- **MCP Prefix Stripping**: Raw tool names include `mcp__myco-vault__` prefixes — strip for analytics
+- **Injection dedup scope**: Per `(project_id, content_hash)` — prevents duplicate processing across worktrees while allowing same injection in different projects
+- **Synthetic injection tool names**: `myco:inject_cortex`, `myco:inject_spores`, `myco:inject_canopy`
+- **Retroactive application**: Apply canonicalization to existing activities during migration, not just new ones
 
-### Canonicalization Migration Pattern
+## Procedure P: Vec0 Virtual Table Schema Management
 
-```typescript
-{
-  version: 46,
-  name: 'canonicalize_activity_tool_names',
-  description: 'Standardize tool names in activities for consistent analytics',
-  up: (db: Database) => {
-    // Create mapping table for tool name normalization
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS tool_name_canonical_map (
-        raw_name        TEXT NOT NULL,
-        canonical_name  TEXT NOT NULL,
-        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
-        PRIMARY KEY (raw_name)
-      );
-    `);
-    
-    // Populate with known tool name mappings
-    db.exec(`
-      INSERT OR IGNORE INTO tool_name_canonical_map (raw_name, canonical_name) VALUES
-      ('vault_search_fts', 'vault_search'),
-      ('vault_search_semantic', 'vault_search'),
-      ('vault_unprocessed_batches', 'vault_read'),
-      ('vault_sessions_list', 'vault_read');
-    `);
-    
-    // Update activities to use canonical names
-    db.exec(`
-      UPDATE activities 
-      SET content = json_set(
-        content,
-        '$.tool_name',
-        COALESCE(
-          (SELECT canonical_name FROM tool_name_canonical_map 
-           WHERE raw_name = json_extract(activities.content, '$.tool_name')),
-          json_extract(activities.content, '$.tool_name')
-        )
-      )
-      WHERE json_extract(content, '$.tool_name') IS NOT NULL;
-    `);
-  }
-}
-```
+The sqlite-vec extension powers semantic search via `vec0` virtual tables (one per embeddable namespace). Critical constraint: **vec0 has no `ALTER TABLE`**. Adding partition keys or metadata columns requires a full table rebuild.
 
-### Canonicalization Query Helpers
+### Filterable-Key Registry (SSoT)
 
-Create query helpers that automatically apply canonicalization:
+All filterable key definitions live in `packages/myco/src/semantic-search-filters.ts` as `FILTERABLE_KEY_REGISTRY`. The vec0 store derives its column layout, upsert projection, and KNN query routing from this single registry. **Never hardcode vec0 column lists** — always derive from the registry.
 
-```typescript
-export function getCanonicalToolName(rawName: string, db: Database): string {
-  const result = db.prepare(`
-    SELECT canonical_name 
-    FROM tool_name_canonical_map 
-    WHERE raw_name = ?
-  `).get(rawName) as {canonical_name: string} | undefined;
-  
-  return result?.canonical_name ?? rawName;
-}
-```
+Three strategies per key:
+- `'partition'` — vec0 partition key (equality-only; tenancy scope)
+- `'column'` — in-KNN metadata column (TEXT, equality, must be short <12 chars, and **embed-stable**: never patched after insert)
+- `'postKnn'` — filtered post-KNN via `json_extract` on `embedding_metadata.domain_metadata`
 
-### Synthetic Tool Name Injection Dedup Pattern
+### Vec0 Migration Pattern
 
-For injection-based operations (cortex, spores, canopy), use synthetic tool names with content-hash based dedup to prevent duplicate processing:
+When the vec0 schema changes (new partition key or metadata column), increment `VEC_STORE_SCHEMA_VERSION` (tracked via `PRAGMA user_version` on the vectors database). Migration steps:
 
-```typescript
-// Create synthetic injection tool names for dedup tracking
-const SYNTHETIC_TOOL_NAMES = {
-  CORTEX_INJECT: 'myco:inject_cortex',
-  SPORES_INJECT: 'myco:inject_spores',
-  CANOPY_INJECT: 'myco:inject_canopy'
-};
+1. Create a temp table: `CREATE VIRTUAL TABLE vec_<ns>__migrating USING vec0(...)` with the new layout
+2. Backfill with a pure in-engine `INSERT … SELECT` joining the old vec table to `embedding_metadata` to project values from `domain_metadata` JSON — no JS round-trip, no re-embedding
+3. Drop the old table and rename the migration table
+4. Repeat for each embeddable namespace
 
-// Content hash format for injection dedup:
-// - Cortex: myco:inject:cortex:<sessionId>
-// - Spores: myco:inject:spores:<sessionId>:<promptHash>
-// - Canopy: myco:inject:canopy:<sessionId>:<filePath>
+See `packages/myco/src/daemon/embedding/sqlite-vec-store.ts` for the reference implementation (`vecMigratingTable`, `vecBackfillSelect`).
 
-// Migration to establish injection tracking table
-{
-  version: 47,
-  name: 'add_injection_dedup_tracking',
-  description: 'Add injection_dedup_log for tracking processed injections',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS injection_dedup_log (
-        id              TEXT PRIMARY KEY,
-        session_id      TEXT NOT NULL,
-        project_id      TEXT NOT NULL,
-        injection_type  TEXT NOT NULL, -- 'cortex', 'spores', 'canopy'
-        content_hash    TEXT NOT NULL,
-        processed_at    INTEGER NOT NULL DEFAULT (unixepoch()),
-        UNIQUE(project_id, content_hash),
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_injection_dedup_session
-        ON injection_dedup_log(session_id);
-      CREATE INDEX IF NOT EXISTS idx_injection_dedup_processed
-        ON injection_dedup_log(processed_at DESC);
-    `);
-  }
-}
-```
+### Team Sync Protocol Versioning
 
-### Injection Dedup Query Patterns
-
-Check for already-processed injections using INSERT-or-ignore:
-
-```typescript
-// INSERT-or-ignore pattern for injection dedup
-export function recordInjectionProcessing(
-  db: Database,
-  sessionId: string,
-  projectId: string,
-  injectionType: 'cortex' | 'spores' | 'canopy',
-  contentHash: string
-): boolean {
-  try {
-    db.prepare(`
-      INSERT INTO injection_dedup_log 
-      (id, session_id, project_id, injection_type, content_hash)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      crypto.randomUUID(),
-      sessionId,
-      projectId,
-      injectionType,
-      contentHash
-    );
-    return true; // First time processing this injection
-  } catch (e) {
-    if ((e as any).message?.includes('UNIQUE')) {
-      return false; // Already processed
-    }
-    throw e;
-  }
-}
-
-// Detection of zero-injection sessions
-export function findZeroInjectionSessions(
-  db: Database,
-  projectId: string,
-  limit = 100
-): string[] {
-  return db.prepare(`
-    SELECT DISTINCT s.id
-    FROM sessions s
-    WHERE s.project_id = ?
-      AND s.status = 'active'
-      AND NOT EXISTS (
-        SELECT 1 FROM activities a
-        WHERE a.session_id = s.id
-          AND json_extract(a.content, '$.tool_name') IN (
-            'myco:inject_cortex',
-            'myco:inject_spores', 
-            'myco:inject_canopy'
-          )
-      )
-    LIMIT ?
-  `).all(projectId, limit) as Array<{id: string}>;
-}
-```
-
-### Activities Processing Gotchas
-
-- **MCP Prefix Stripping**: Raw tool names often include `mcp__myco-vault__` prefixes that should be stripped for analytics
-- **Version-Specific Mappings**: Tool names evolve across MCP schema versions; maintain mapping for each version
-- **Retroactive Application**: Apply canonicalization to existing activities during migration, not just new ones
-- **Injection Dedup Scope**: Dedup is per `(project_id, content_hash)` to prevent duplicate processing across worktrees while allowing same injection in different projects
-
-**Critical Rule**: Always canonicalize tool names during activities processing to prevent analytics fragmentation across schema versions. Use synthetic injection tool names and content-hash dedup to prevent duplicate injection processing.
+Any breaking team sync schema change must assess `SYNC_PROTOCOL_VERSION` in `packages/myco/src/constants.ts`. Bump it if the change breaks wire compatibility with older clients.
 
 ## Cross-Cutting Gotchas
 
-- **`IF NOT EXISTS` is mandatory everywhere** — on both `CREATE TABLE` and `CREATE TRIGGER`. Migrations run at every startup; a bare `CREATE TABLE` throws on the second run.
-- **Each migration is atomic** — the migration runner applies all migrations up to the highest version or rolls back entirely on failure.
-- **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request triggers migration. Guard reads against new columns until you know migration has run.
+- **`IF NOT EXISTS` is mandatory everywhere** — migrations run at every startup; a bare `CREATE TABLE` throws on the second run.
+- **Each migration is atomic** — all migrations up to the highest version succeed or the runner rolls back entirely.
+- **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request. Guard reads against new columns until migration has run.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
-- **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
-- **All SQL lives in the appropriate query modules** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
-- **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing a registration in `TABLE_DDLS` or `FTS_TABLES` silently limits the feature surface.
-- **Grove project_id is mandatory in v31+** — all new project-scoped tables must include a project_id column and all project-scoped queries must scope by project_id.
-- **Grove migration contract enforcement** — never import directly from legacy DBs with older schemas. Always serialize legacy DB, run current migrations on normalized copy, then import from schema-aligned source.
-- **Historical column renames** — be aware of column renames like `agent_runs.runtime` → `agent_runs.harness` (v29) when working with legacy database imports or when updating query functions. Always use current column names in new code.
-- **Column Order Drift** — Fresh installs and migrated databases have different column orders. Always test column addressability by name using `PRAGMA table_info`, never by position. Use the `getColumnNames()` helper pattern from `packages/myco/src/db/migrations.ts`.
-- **Version Pinning Fragility** — Tests asserting `SCHEMA_VERSION === N` break immediately when the schema advances. Test schema capabilities and invariants instead of exact version numbers. Import `SCHEMA_VERSION` from `packages/myco/src/db/schema.ts` and use relative comparisons.
-- **D1 Parity Gaps** — Adding columns to SQLite without updating D1 schema causes silent sync failures. The team CLI at `packages/myco-team/src/cli.ts` manages D1 deployment - treat D1 updates as mandatory paired steps.
-- **Test Chain Assumptions** — Hand-building specific schema versions in tests misses migration chain interactions. Follow patterns from existing migration tests like `tests/db/migrate-v40.test.ts` that test real migration sequences.
-- **ensureOpenBatch Dependencies** — Schema v44+ migrations that create tool call aggregation tables must account for sessions that may not have active batches. Check batch existence before creating batch-dependent records.
-- **Phantom Batch States** — Always check for orphaned session references before adding FK constraints. Use phantom batch detection queries to identify cleanup requirements.
-- **D1 Drift Reconciliation** — Team sync scenarios can create schema version mismatches between local and D1. Always query D1 schema version before sync operations and implement graceful degradation for version skew.
-- **Tool Name Canonicalization** — MCP tool identifiers evolve across schema versions. Store canonical tool names in analytics tables and maintain mapping tables for retroactive normalization.
-- **Injection Dedup Scope** — Synthetic tool names and content hashes prevent duplicate processing per project. Always scope dedup by project_id to allow same injection content in different projects.
-- **Migration Ordering for Tool Aggregation** — Tool call aggregation tables must be created before tool name canonicalization migrations to avoid FK constraint violations during data normalization.
-- **Stop Boundary Materialization** — Tool usage analytics use Stop boundary aggregation rather than real-time updates. Run `aggregateSessionMycoToolCalls()` at session completion, not per tool invocation.
-- **Team Sync Exclusion for Analytics** — Tool usage data (session_myco_tool_calls) remains local-only and should not sync to team D1 databases to avoid analytics data pollution.
+- **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, keyset cursors for pagination.
+- **All SQL lives in query modules** — no inline SQL in MCP handlers or business logic.
+- **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing `TABLE_DDLS` or `FTS_TABLES` registration silently limits feature surface.
+- **Grove `project_id` is mandatory in v31+** — all new project-scoped tables must include `project_id` and all queries must scope by it.
+- **Column Order Drift** — Fresh installs and migrated databases have different column orders. Test column addressability by name using `PRAGMA table_info`, never by position.
+- **Version Pinning Fragility** — Tests asserting `SCHEMA_VERSION === N` break immediately when the schema advances. Test schema capabilities and invariants instead.
+- **D1 Parity Gaps** — Adding columns to SQLite without updating D1 schema causes silent sync failures. Treat D1 updates as mandatory paired steps.
+- **ensureOpenBatch Dependencies** — Schema v44+ migrations that create tool call aggregation tables must account for sessions that may not have active batches.
+- **Phantom Batch States** — Always check for orphaned session references before adding FK constraints.
+- **Tool usage data is local-only** — `session_myco_tool_calls` does not sync to team D1 databases.
+- **Vec0 has no ALTER TABLE** — any change to partition keys or metadata columns requires a full table rebuild using the temp-table + `INSERT…SELECT` migration pattern.
+- **`patchDomainMetadata` updates the JSON blob only** — it writes to `embedding_metadata.domain_metadata` but does NOT update vec0 partition or metadata columns. Keys patched in-place after embedding (e.g., `release_state`, `release_confidence`) MUST use the `'postKnn'` strategy in `FILTERABLE_KEY_REGISTRY`; promoting them to `'column'` causes stale in-KNN filter values that silently exclude matching rows.
+- **`SYNC_PROTOCOL_VERSION` must be assessed on breaking team sync schema changes** — bump it in `packages/myco/src/constants.ts` if the wire format breaks compatibility with older clients.
+- **Vec0 missing-value sentinel is `''` (empty string), not NULL** — sqlite-vec rejects NULL binds on partition/column values. Records missing a filtered field use `''`, which correctly excludes them from equality filters but is wrong for range comparisons — which is why range keys stay `postKnn`.
