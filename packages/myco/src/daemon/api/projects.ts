@@ -22,7 +22,7 @@ import {
   findRegisteredProject,
   isProjectPaused,
 } from '@myco/grove/registry.js';
-import { createBackup, readSnapshotHeader, restoreBackup } from '../backup.js';
+import { createBackup, readSnapshotHeader, restoreBackup } from '@myco/backup/engine.js';
 import { getMachineId } from '@myco/machine-id.js';
 import type { RouteHandler } from '../router.js';
 import { errorBody, pausedErrorResponse } from './error-envelope.js';

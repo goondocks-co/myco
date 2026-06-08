@@ -39,7 +39,7 @@ import { createUpdateHandlers } from './api/update.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
-import { sweepLegacyBackupRoot } from './backup.js';
+import { sweepLegacyBackupRoot } from '@myco/backup/engine.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createTeamSelectionHandlers } from './api/team-selection.js';
 import { createListTeamMembersHandler } from './api/team-members.js';

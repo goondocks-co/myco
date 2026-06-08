@@ -11,7 +11,7 @@ import {
   type CanopyJobsRegistration,
   type CanopyJobsRegistry,
 } from './jobs/canopy-scan.js';
-import { createBackup, listBackups, pruneBackups } from './backup.js';
+import { createBackup, listBackups, pruneBackups } from '@myco/backup/engine.js';
 import { resolveGroveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';

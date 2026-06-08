@@ -19,7 +19,7 @@ import {
   pruneBackups,
   restorePreview,
   restoreBackup,
-} from '../backup.js';
+} from '@myco/backup/engine.js';
 import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
 import { GroveConfigSchema } from '../../config/schema.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';

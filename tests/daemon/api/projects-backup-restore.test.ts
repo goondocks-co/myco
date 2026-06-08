@@ -241,7 +241,7 @@ describe('POST /api/projects/:projectId/restore', () => {
     const { grove, projectId } = seededProject();
 
     // Manually craft an all-projects snapshot via createBackup with default scope.
-    const { createBackup } = await import('@myco/daemon/backup.js');
+    const { createBackup } = await import('@myco/backup/engine.js');
     const dbPath = resolveGroveDbPath(grove.id, mycoHome);
     const db = openDatabase(dbPath);
     let snapshotPath: string;

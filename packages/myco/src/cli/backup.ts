@@ -6,7 +6,7 @@ import {
   projectScope,
   readSnapshotHeader,
   restoreBackup,
-} from '@myco/daemon/backup.js';
+} from '@myco/backup/engine.js';
 import { getMachineId } from '@myco/machine-id.js';
 import {
   resolveBackupsRoot,

@@ -18,7 +18,7 @@ import {
   listBackups,
   restorePreview,
   restoreBackup,
-} from '@myco/daemon/backup.js';
+} from '@myco/backup/engine.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);

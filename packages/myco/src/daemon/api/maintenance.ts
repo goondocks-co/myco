@@ -29,7 +29,7 @@ import {
 } from '@myco/db/queries/database.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveGroveBackupDir } from './backup.js';
-import { listBackups } from '../backup.js';
+import { listBackups } from '@myco/backup/engine.js';
 import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';

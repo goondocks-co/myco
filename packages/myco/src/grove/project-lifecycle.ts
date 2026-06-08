@@ -3,7 +3,7 @@ import os from 'node:os';
 import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
-import { createBackup, pruneBackups } from '@myco/daemon/backup.js';
+import { createBackup, pruneBackups } from '@myco/backup/engine.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
