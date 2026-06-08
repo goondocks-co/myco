@@ -10,6 +10,7 @@
  * service never opens or owns a connection.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import {
@@ -22,7 +23,7 @@ import {
   type RestoreResult,
   type TableCounts,
 } from './engine.js';
-import { resolveGroveBackupDir, legacyGroveBackupLocations } from './location.js';
+import { resolveGroveBackupDir, legacyGroveBackupLocations, migrationMarkerPath } from './location.js';
 import { loadGroveConfig } from '../config/loader.js';
 import { resolveMycoHome } from '../grove/paths.js';
 
@@ -91,14 +92,39 @@ export function createGroveBackup(params: {
   const cfg = backupConfig(params.groveId, mycoHome);
   const dir = resolveGroveBackupDir(params.groveId, { mycoHome });
   const filePath = createBackup(params.db, dir, params.machineId);
-  const prune = pruneBackups(dir, cfg.retention);
+
+  // Suppress prune for one cycle right after a migration consolidated legacy
+  // backups into this dir — see migrationMarkerPath. Consuming the marker
+  // here means the suppression lasts exactly one create (manual or auto).
+  let pruned = 0;
+  let kept: number;
+  if (consumeMigrationMarker(dir)) {
+    kept = listBackups(dir).length;
+  } else {
+    const prune = pruneBackups(dir, cfg.retention);
+    pruned = prune.removed.length;
+    kept = prune.kept;
+  }
+
   const created = listBackups(dir).find((b) => b.file_name === path.basename(filePath));
   return {
     file_path: filePath,
     size_bytes: created?.size_bytes ?? 0,
-    pruned: prune.removed.length,
-    kept: prune.kept,
+    pruned,
+    kept,
   };
+}
+
+/** Consume the post-migration prune-suppression marker. Returns true once. */
+function consumeMigrationMarker(dir: string): boolean {
+  const marker = migrationMarkerPath(dir);
+  if (!fs.existsSync(marker)) return false;
+  try {
+    fs.unlinkSync(marker);
+  } catch {
+    // If the unlink races another writer, treat as already consumed.
+  }
+  return true;
 }
 
 /**

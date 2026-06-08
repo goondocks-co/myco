@@ -39,7 +39,7 @@ import { createUpdateHandlers } from './api/update.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
-import { sweepLegacyBackupRoot } from '@myco/backup/engine.js';
+import { migrateLegacyBackups } from '@myco/backup/migrate.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createTeamSelectionHandlers } from './api/team-selection.js';
 import { createListTeamMembersHandler } from './api/team-members.js';
@@ -1756,29 +1756,22 @@ export async function main(): Promise<void> {
   }));
 
   // --- Backup routes ---
-  // One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
-  // files out of the configured backup root into `.legacy/`. Per-
-  // Grove backups now live under `<root>/<groveSlug>/`; the top-
-  // level files are leftovers from the pre-Grove era.
+  // One-shot migration: relocate each served Grove's whole-Grove backups
+  // into its canonical dir (honoring backup.dir), so list/restore find them
+  // where new backups land. Idempotent; never deletes; suppresses the first
+  // prune after a consolidation so retention can't drop just-moved backups.
   try {
-    const configuredDir = liveConfig.current.backup.dir;
-    if (configuredDir) {
-      const expanded = path.resolve(
-        configuredDir.startsWith('~/')
-          ? path.join(os.homedir(), configuredDir.slice(2))
-          : configuredDir,
-      );
-      const sweepResult = sweepLegacyBackupRoot(expanded);
-      if (sweepResult.moved.length > 0) {
+    for (const m of migrateLegacyBackups()) {
+      if (m.moved > 0 || m.quarantined > 0 || m.deduped > 0) {
         logger.info(
-          'backup.legacy.sweep',
-          `Moved ${sweepResult.moved.length} pre-Grove orphan(s) into .legacy/`,
-          { moved: sweepResult.moved, legacy_dir: sweepResult.legacyDir },
+          'backup.migrate',
+          `Relocated ${m.moved} backup(s) into the canonical dir for ${m.grove_slug}`,
+          { grove_id: m.grove_id, moved: m.moved, quarantined: m.quarantined, deduped: m.deduped },
         );
       }
     }
   } catch (err) {
-    logger.warn('backup.legacy.sweep_failed', errorMessage(err));
+    logger.warn('backup.migrate_failed', errorMessage(err));
   }
 
   const backupHandlers = createBackupHandlers({

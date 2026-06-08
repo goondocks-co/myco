@@ -9,3 +9,4 @@
 export * from './engine.js';
 export * from './location.js';
 export * from './service.js';
+export * from './migrate.js';

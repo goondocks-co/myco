@@ -61,3 +61,14 @@ export function legacyGroveBackupLocations(groveId: string, opts: BackupLocation
   const candidates = [defaultGroveBackupDir(groveId, mycoHome)];
   return candidates.filter((dir) => path.resolve(dir) !== canonical);
 }
+
+/**
+ * Marker the migration drops in a Grove's canonical dir after relocating
+ * legacy backups into it. The next `createGroveBackup` consumes the marker
+ * and skips its prune that one cycle, so consolidating two directories'
+ * worth of dumps into one can't immediately trip retention into deleting
+ * backups that were safe in their own directory.
+ */
+export function migrationMarkerPath(backupDir: string): string {
+  return path.join(backupDir, '.myco-migration-pending');
+}
