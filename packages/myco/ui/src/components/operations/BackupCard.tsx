@@ -57,11 +57,26 @@ interface RestorePreviewResponse {
   total_in_db: number;
 }
 
-interface RestoreResponse {
-  machine_id: string;
+interface RestoreResult {
   tables: TableCounts[];
   total_restored: number;
   total_skipped: number;
+}
+
+interface RestoreStartResponse {
+  job_id: string;
+  status: string;
+  file_name: string;
+}
+
+interface RestoreJobResponse {
+  job_id: string;
+  status: 'running' | 'done' | 'error';
+  file_name: string;
+  started_at: number;
+  finished_at: number | null;
+  result: RestoreResult | null;
+  error: string | null;
 }
 
 interface BackupAllResponse {
@@ -126,6 +141,7 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
   // Backup operates on a per-Grove SQLite file — there's no
   // project-narrowed dump path. Pill defaults to Grove and excludes
   // the project option.
@@ -216,22 +232,47 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     }
   }
 
+  async function pollRestore(jobId: string): Promise<RestoreJobResponse> {
+    const deadlineMs = Date.now() + 30 * 60_000; // give a large restore plenty of room
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const job = await fetchJson<RestoreJobResponse>(
+        `/restore/status?job_id=${encodeURIComponent(jobId)}`,
+        { headers: ctxHeaders },
+      );
+      if (job.status !== 'running') return job;
+      if (Date.now() > deadlineMs) {
+        return { ...job, status: 'error', error: 'Restore is taking unusually long; check the server logs.' };
+      }
+    }
+  }
+
   async function handleRestore(fileName: string) {
     setMessage(null);
     setPreview(null);
+    setRestoring(fileName);
     try {
-      const res = await fetchJson<RestoreResponse>('/restore', {
+      // Restore runs as a background job (it can take minutes on a large
+      // backup); kick it off, then poll for completion.
+      const start = await fetchJson<RestoreStartResponse>('/restore', {
         method: 'POST',
         headers: ctxHeaders,
         body: JSON.stringify({ file_name: fileName }),
       });
-      setMessage({
-        type: 'success',
-        text: `Restored ${res.total_restored} records, skipped ${res.total_skipped} duplicates`,
-      });
-      await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
+      const job = await pollRestore(start.job_id);
+      if (job.status === 'done' && job.result) {
+        setMessage({
+          type: 'success',
+          text: `Restored ${job.result.total_restored} records, skipped ${job.result.total_skipped} duplicates`,
+        });
+        await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
+      } else {
+        setMessage({ type: 'error', text: `Restore failed: ${job.error ?? 'unknown error'}` });
+      }
     } catch (err) {
       setMessage({ type: 'error', text: `Restore failed: ${errorMessage(err)}` });
+    } finally {
+      setRestoring(null);
     }
   }
 
@@ -357,16 +398,22 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
                     </span>
                   </div>
                   <div className="flex gap-2 shrink-0 ml-3">
-                    <Button variant="ghost" size="sm" onClick={() => handlePreview(b.file_name)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handlePreview(b.file_name)}
+                      disabled={previewLoading !== null || restoring !== null}
+                    >
                       Preview
                     </Button>
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={() => handleRestore(b.file_name)}
+                      disabled={restoring !== null}
                     >
                       <Upload className="mr-1.5 h-3.5 w-3.5" />
-                      Restore
+                      {restoring === b.file_name ? 'Restoring…' : 'Restore'}
                     </Button>
                   </div>
                 </div>
@@ -384,6 +431,12 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
           returns in a second or two even on a large dump. */}
       {previewLoading && !preview && (
         <p className="font-sans text-sm text-on-surface-variant">Reading backup contents…</p>
+      )}
+
+      {restoring && (
+        <p className="font-sans text-sm text-primary">
+          Restoring {restoring}… this can take a minute on a large backup; it runs in the background, so the dashboard stays responsive.
+        </p>
       )}
 
       {/* Restore preview — what the backup holds per table vs the live DB.

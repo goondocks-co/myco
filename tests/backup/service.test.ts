@@ -13,7 +13,7 @@ import { createSchema } from '@myco/db/schema.js';
 import {
   createGroveBackup,
   listGroveBackups,
-  restoreGroveBackup,
+  findGroveBackup,
   previewGroveRestore,
 } from '@myco/backup/service.js';
 import { resolveGroveBackupDir } from '@myco/backup/location.js';
@@ -124,11 +124,11 @@ describe('backup service — read/write resolve the same Grove', () => {
       const preview = await previewGroveRestore({ groveId: grove.id, db, fileName, mycoHome: env.mycoHome });
       expect(preview?.ref.file_name).toBe(fileName);
 
-      const outcome = restoreGroveBackup({ groveId: grove.id, db, fileName, mycoHome: env.mycoHome });
-      expect(outcome?.ref.file_name).toBe(fileName);
-
-      // Unknown file → null (handler turns this into 404).
-      expect(restoreGroveBackup({ groveId: grove.id, db, fileName: 'nope__1.sql', mycoHome: env.mycoHome })).toBeNull();
+      // Restore resolves the backup by name (execution itself runs out of
+      // process via restore-runner); the handler turns a miss into a 404.
+      const ref = findGroveBackup(grove.id, fileName, { mycoHome: env.mycoHome });
+      expect(ref?.file_name).toBe(fileName);
+      expect(findGroveBackup(grove.id, 'nope__1.sql', { mycoHome: env.mycoHome })).toBeUndefined();
     } finally {
       db.close();
     }

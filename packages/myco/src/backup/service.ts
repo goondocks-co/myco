@@ -18,9 +18,7 @@ import {
   listBackups,
   pruneBackups,
   previewRestoreContents,
-  restoreBackup,
   type BackupMeta,
-  type RestoreResult,
   type TableContentCounts,
 } from './engine.js';
 import { resolveGroveBackupDir, legacyGroveBackupLocations, migrationMarkerPath } from './location.js';
@@ -187,20 +185,16 @@ export async function previewGroveRestore(params: {
   };
 }
 
-export interface GroveRestoreOutcome {
-  ref: GroveBackupRef;
-  result: RestoreResult;
-}
-
-/** Execute a restore. Returns null when the named backup is not found. */
-export function restoreGroveBackup(params: {
-  groveId: string;
-  db: Database;
-  fileName: string;
-  mycoHome?: string;
-}): GroveRestoreOutcome | null {
-  const mycoHome = params.mycoHome ?? resolveMycoHome();
-  const ref = resolveBackupFile(params.groveId, params.fileName, mycoHome);
-  if (!ref) return null;
-  return { ref, result: restoreBackup(params.db, ref.path) };
+/**
+ * Resolve a Grove backup by file name across canonical + legacy locations.
+ * Restore execution itself runs out-of-process (backup/restore-runner.ts):
+ * the handler resolves the ref here, then hands its absolute path to the
+ * child process. Returns undefined when not found.
+ */
+export function findGroveBackup(
+  groveId: string,
+  fileName: string,
+  opts: BackupServiceOptions = {},
+): GroveBackupRef | undefined {
+  return resolveBackupFile(groveId, fileName, opts.mycoHome ?? resolveMycoHome());
 }

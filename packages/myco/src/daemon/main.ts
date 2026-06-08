@@ -1782,6 +1782,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
+  server.registerRoute('GET', '/api/restore/status', backupHandlers.handleRestoreStatus);
 
   const backupConfigHandlers = createBackupConfigHandlers({
     bootstrapVaultDir,

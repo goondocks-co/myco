@@ -21,9 +21,12 @@ import {
   createGroveBackup,
   listGroveBackups,
   previewGroveRestore,
-  restoreGroveBackup,
+  findGroveBackup,
   type GroveBackupRef,
 } from '@myco/backup/service.js';
+import { restoreViaChild } from '@myco/backup/restore-runner.js';
+import { RestoreJobRegistry } from '@myco/backup/restore-jobs.js';
+import type { RestoreResult } from '@myco/backup/engine.js';
 import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
 import { GroveConfigSchema } from '../../config/schema.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
@@ -43,12 +46,20 @@ import { errorMessage } from '@myco/utils/error-message.js';
 // Types
 // ---------------------------------------------------------------------------
 
+export type RestoreRunner = (params: { dbPath: string; backupPath: string }) => Promise<RestoreResult>;
+
 export interface BackupDeps {
   /** Per-Grove runtime cache — source of every Grove's DB handle. */
   cache: GroveRuntimeCache;
   machineId: string;
   /** Override Myco home (tests); production resolves via env/HOME. */
   mycoHome?: string;
+  /**
+   * How a restore is executed. Defaults to an out-of-process run via the
+   * daemon's own binary (so a heavy restore never blocks the event loop).
+   * Tests inject an in-process runner.
+   */
+  restoreRunner?: RestoreRunner;
 }
 
 interface PerGroveBackupResult {
@@ -75,6 +86,9 @@ const GROVE_REQUIRED: RouteResponse = {
 export function createBackupHandlers(deps: BackupDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const inflight = new ActionInflightRegistry();
+  const restoreRunner: RestoreRunner =
+    deps.restoreRunner ?? ((p) => restoreViaChild({ ...p, binaryPath: process.execPath }));
+  const restoreJobs = new RestoreJobRegistry(restoreRunner);
 
   function databaseForGrove(groveId: string) {
     return deps.cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
@@ -222,7 +236,12 @@ export function createBackupHandlers(deps: BackupDeps) {
     };
   }
 
-  /** POST /api/restore — execute a restore from one backup file. */
+  /**
+   * POST /api/restore — start a restore. A restore of a large backup takes
+   * minutes (it executes the whole dump out-of-process), so this returns a
+   * job id immediately and the client polls GET /api/restore/status. Re-uses
+   * the in-flight job when one is already running for the Grove.
+   */
   async function handleRestore(req: RouteRequest): Promise<RouteResponse> {
     const groveId = req.requestContext?.groveId;
     if (!groveId) return GROVE_REQUIRED;
@@ -230,18 +249,40 @@ export function createBackupHandlers(deps: BackupDeps) {
     const fileName = resolveTargetFileName(groveId, body);
     if (!fileName) return { status: 400, body: { error: 'missing_machine_id' } };
 
-    const outcome = restoreGroveBackup({
+    const ref = findGroveBackup(groveId, fileName, { mycoHome });
+    if (!ref) return { status: 404, body: { error: 'backup_not_found' } };
+
+    const job = restoreJobs.start({
       groveId,
-      db: databaseForGrove(groveId),
-      fileName,
-      mycoHome,
+      fileName: ref.file_name,
+      dbPath: resolveGroveDbPath(groveId, mycoHome),
+      backupPath: ref.path,
     });
-    if (!outcome) return { status: 404, body: { error: 'backup_not_found' } };
+    return { status: 202, body: { job_id: job.id, status: job.status, file_name: ref.file_name } };
+  }
+
+  /** GET /api/restore/status?job_id=… — poll a restore job's progress. */
+  async function handleRestoreStatus(req: RouteRequest): Promise<RouteResponse> {
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+    const jobId = typeof req.query?.job_id === 'string' ? req.query.job_id : undefined;
+    if (!jobId) return { status: 400, body: { error: 'missing_job_id' } };
+
+    const job = restoreJobs.get(jobId);
+    // Scope the job to the requesting Grove so a job id can't be read across
+    // Grove contexts.
+    if (!job || job.grove_id !== groveId) {
+      return { status: 404, body: { error: 'restore_job_not_found' } };
+    }
     return {
       body: {
-        machine_id: outcome.ref.machine_id,
-        file_name: outcome.ref.file_name,
-        ...outcome.result,
+        job_id: job.id,
+        status: job.status,
+        file_name: job.file_name,
+        started_at: job.started_at,
+        finished_at: job.finished_at ?? null,
+        result: job.result ?? null,
+        error: job.error ?? null,
       },
     };
   }
@@ -250,6 +291,7 @@ export function createBackupHandlers(deps: BackupDeps) {
     handleCreateBackup,
     handleListBackups,
     handleRestorePreview,
+    handleRestoreStatus,
     handleRestore,
   };
 }

@@ -114,4 +114,43 @@ describe('backup handlers — explicit Grove, fail-loud', () => {
     const res = await handlers.handleListBackups(req({ requestContext: ctx(other.id) }));
     expect((res.body as { backups: unknown[] }).backups).toHaveLength(0);
   });
+
+  it('restore starts a background job and status reports completion', async () => {
+    const db = openDatabase(resolveGroveDbPath(env.grove.id, env.mycoHome));
+    let fileName: string;
+    try {
+      const created = createGroveBackup({ groveId: env.grove.id, db, machineId: MACHINE, mycoHome: env.mycoHome });
+      fileName = path.basename(created.file_path);
+    } finally {
+      db.close();
+    }
+    const handlers = createBackupHandlers({
+      cache: env.cache,
+      machineId: MACHINE,
+      mycoHome: env.mycoHome,
+      restoreRunner: async () => ({ tables: [], total_restored: 3, total_skipped: 1 }),
+    });
+
+    const started = await handlers.handleRestore(req({ requestContext: ctx(env.grove.id), body: { file_name: fileName } }));
+    expect(started.status).toBe(202);
+    const jobId = (started.body as { job_id: string }).job_id;
+    expect(jobId).toBeTruthy();
+
+    let status: { status: string; result?: { total_restored: number } | null } = { status: 'running' };
+    for (let i = 0; i < 50 && status.status === 'running'; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      const res = await handlers.handleRestoreStatus(req({ requestContext: ctx(env.grove.id), query: { job_id: jobId } }));
+      status = res.body as typeof status;
+    }
+    expect(status.status).toBe('done');
+    expect(status.result?.total_restored).toBe(3);
+  });
+
+  it('restore status fails loud without a Grove and 404s an unknown job', async () => {
+    const handlers = createBackupHandlers({ cache: env.cache, machineId: MACHINE, mycoHome: env.mycoHome });
+    const noGrove = await handlers.handleRestoreStatus(req({ requestContext: undefined, query: { job_id: 'x' } }));
+    expect(noGrove.status).toBe(400);
+    const unknown = await handlers.handleRestoreStatus(req({ requestContext: ctx(env.grove.id), query: { job_id: 'nope' } }));
+    expect(unknown.status).toBe(404);
+  });
 });

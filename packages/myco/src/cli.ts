@@ -94,6 +94,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
+  // Internal: spawned by the daemon to run a heavy restore out-of-process
+  // (see backup/restore-runner.ts). Intentionally absent from the help text.
+  if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');
