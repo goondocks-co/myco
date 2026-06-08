@@ -455,6 +455,8 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` when groveId is provided. When groveId is not provided, it auto-resolves from `loadProjectManifest(vaultDir)` to detect the project's grove association. If groveId is undefined and the project manifest contains no grove association, grove-tier settings are skipped.
 
+**Scoped-clear pruneEmptyParents omission:** When writing `unsetAtPath()` calls in a scoped-clear loop (e.g., `for (const key of clearList) unsetAtPath(working, key)`), always pass `{ pruneEmptyParents: true }`. Without it, deleting the last leaf under a parent key leaves an empty-map object as residue in the persisted YAML instead of removing the parent entirely. Both clear loops in `handlePutScopedConfig` (`packages/myco/src/daemon/api/config.ts` lines ~168 and ~201) currently omit this option — include it when implementing any new scoped-clear logic.
+
 ---
 
 ## Checklist Before Submitting a Config Change
@@ -472,4 +474,5 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Three-tier merge precedence understood and documented
 - [ ] Config tier migration compatibility verified for grove coordination features
 - [ ] Legacy field handling: use `PROJECT_TIER_LEGACY_FIELDS` in schema.ts for fields that need physical removal from project YAML; `pruneToTier` auto-enforces scope for everything else
+- [ ] Scoped-clear operations pass `{ pruneEmptyParents: true }` to `unsetAtPath()` to avoid empty-map residue
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss
