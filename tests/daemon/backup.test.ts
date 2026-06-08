@@ -16,7 +16,6 @@ import {
   BACKUP_TABLES,
   createBackup,
   listBackups,
-  restorePreview,
   previewRestoreContents,
   restoreBackup,
 } from '@myco/backup/engine.js';
@@ -259,53 +258,6 @@ describe('backup engine', () => {
       const backups = listBackups(tmpDir);
       expect(backups).toHaveLength(1);
       expect(backups[0].file_name).toBe(expectedName);
-    });
-  });
-
-  describe('restorePreview()', () => {
-    it('shows all records as new when DB is empty', () => {
-      // Create backup with data, then clean DB
-      seedAgent();
-      seedSession('sess-010', LOCAL_MACHINE);
-      seedSpore('spore-010', 'sess-010', LOCAL_MACHINE);
-      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-      cleanTestDb();
-
-      const tables = restorePreview(getDatabase(), backupPath);
-
-      const sessionTable = tables.find((t) => t.table === 'sessions');
-      expect(sessionTable).toBeDefined();
-      expect(sessionTable!.new).toBe(1);
-      expect(sessionTable!.existing).toBe(0);
-    });
-
-    it('shows records as existing when they already exist', () => {
-      seedAgent();
-      seedSession('sess-011', LOCAL_MACHINE);
-      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-
-      // Data still in DB — preview should show existing
-      const tables = restorePreview(getDatabase(), backupPath);
-
-      const sessionTable = tables.find((t) => t.table === 'sessions');
-      expect(sessionTable).toBeDefined();
-      expect(sessionTable!.existing).toBe(1);
-      expect(sessionTable!.new).toBe(0);
-    });
-
-    it('does not modify the database', () => {
-      seedAgent();
-      seedSession('sess-012', LOCAL_MACHINE);
-      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-      cleanTestDb();
-
-      const db = getDatabase();
-
-      restorePreview(db, backupPath);
-
-      // DB should still be empty after preview
-      const count = db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number };
-      expect(count.c).toBe(0);
     });
   });
 

@@ -598,57 +598,6 @@ function hasSqlStatements(content: string): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Restore preview
-// ---------------------------------------------------------------------------
-
-/**
- * Preview what a restore would do without making changes.
- *
- * Runs the whole dump inside a savepoint, counts rows before and after,
- * then rolls back. The diff per table is the `new` count; the difference
- * between the dump's INSERT count and `new` is `existing` (rows that
- * already existed and were skipped by INSERT OR IGNORE).
- */
-export function restorePreview(
-  db: Database,
-  backupPath: string,
-): TableCounts[] {
-  const content = fs.readFileSync(backupPath, 'utf-8');
-  const tableNames = extractTableNames(content);
-  const before = new Map<string, number>();
-  for (const table of tableNames) before.set(table, countRows(db, table));
-
-  // Defer FK checks — backup may reference rows in non-synced tables
-  db.run('PRAGMA foreign_keys = OFF');
-  db.exec('SAVEPOINT restore_preview');
-  const after = new Map<string, number>();
-  try {
-    if (hasSqlStatements(content)) {
-      // SQLite's own parser handles multi-line string literals correctly,
-      // so feed it the entire dump as one multi-statement script. This
-      // closes the line-based-parser bug class that silently dropped
-      // every INSERT whose value contained an unescaped newline.
-      db.exec(content);
-    }
-    for (const table of tableNames) after.set(table, countRows(db, table));
-  } finally {
-    db.exec('ROLLBACK TO restore_preview');
-    db.exec('RELEASE restore_preview');
-    db.run('PRAGMA foreign_keys = ON');
-  }
-
-  const result: TableCounts[] = [];
-  for (const table of tableNames) {
-    const beforeN = before.get(table) ?? 0;
-    const afterN = after.get(table) ?? 0;
-    const newRows = Math.max(0, afterN - beforeN);
-    const claimedInserts = countTableInserts(content, table);
-    const existing = Math.max(0, claimedInserts - newRows);
-    result.push({ table, new: newRows, existing });
-  }
-  return result;
-}
 
 /**
  * Count INSERT statements in `content` that target `table`. Naive

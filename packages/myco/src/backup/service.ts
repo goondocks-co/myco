@@ -104,10 +104,9 @@ export function createGroveBackup(params: {
     kept = prune.kept;
   }
 
-  const created = listBackups(dir).find((b) => b.file_name === path.basename(filePath));
   return {
     file_path: filePath,
-    size_bytes: created?.size_bytes ?? 0,
+    size_bytes: fs.statSync(filePath).size,
     pruned,
     kept,
   };

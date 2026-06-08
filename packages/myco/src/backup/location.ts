@@ -14,19 +14,14 @@
  * in `<groveHome>/backups` regardless of configuration.
  */
 
-import os from 'node:os';
 import path from 'node:path';
 import { loadGroveConfig } from '../config/loader.js';
 import { loadGroveRecord } from '../grove/registry.js';
-import { resolveGroveDir, resolveMycoHome } from '../grove/paths.js';
+import { expandHome, resolveGroveDir, resolveMycoHome } from '../grove/paths.js';
 
 export interface BackupLocationOptions {
   /** Override Myco home (tests); production resolves via env/HOME. */
   mycoHome?: string;
-}
-
-function expandHome(rawDir: string): string {
-  return rawDir.startsWith('~/') ? path.join(os.homedir(), rawDir.slice(2)) : rawDir;
 }
 
 /** Grove-home default backup dir — used when `backup.dir` is unset. */

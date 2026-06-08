@@ -37,6 +37,9 @@ export interface StartRestoreParams {
   backupPath: string;
 }
 
+/** Finished jobs are retained this long so the UI can poll the final result. */
+const FINISHED_JOB_RETENTION_MS = 30 * 60_000;
+
 export class RestoreJobRegistry {
   private readonly jobs = new Map<string, RestoreJob>();
   private seq = 0;
@@ -54,6 +57,16 @@ export class RestoreJobRegistry {
     return undefined;
   }
 
+  /** Drop finished jobs past their retention window so the map stays bounded. */
+  private evictFinished(): void {
+    const cutoff = this.now() - FINISHED_JOB_RETENTION_MS;
+    for (const [id, job] of this.jobs) {
+      if (job.status !== 'running' && (job.finished_at ?? job.started_at) < cutoff) {
+        this.jobs.delete(id);
+      }
+    }
+  }
+
   /**
    * Start a restore. Returns immediately with a `running` job; the heavy work
    * proceeds in the background and flips the job to `done`/`error` on
@@ -61,6 +74,7 @@ export class RestoreJobRegistry {
    * Grove, so a double-click doesn't launch two restores into one DB.
    */
   start(params: StartRestoreParams): RestoreJob {
+    this.evictFinished();
     const existing = this.runningForGrove(params.groveId);
     if (existing) return existing;
 

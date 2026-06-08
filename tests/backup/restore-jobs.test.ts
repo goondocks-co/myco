@@ -55,4 +55,17 @@ describe('RestoreJobRegistry', () => {
     const second = reg.start(ARGS);
     expect(second.id).not.toBe(first.id);
   });
+
+  it('evicts finished jobs past the retention window so the map stays bounded', async () => {
+    let clock = 1000;
+    const reg = new RestoreJobRegistry(async () => RESULT, () => clock);
+    const first = reg.start({ ...ARGS, groveId: 'g1' });
+    await tick();
+    expect(reg.get(first.id)?.status).toBe('done');
+
+    // Advance past the 30-minute retention, then start another job.
+    clock = 1000 + 31 * 60_000;
+    reg.start({ ...ARGS, groveId: 'g2' });
+    expect(reg.get(first.id)).toBeUndefined();
+  });
 });

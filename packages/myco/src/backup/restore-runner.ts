@@ -29,9 +29,14 @@ export interface RestoreChildParams {
   binaryPath: string;
 }
 
+// Distinguishes concurrent restores (different Groves can restore at once)
+// so two children spawned in the same millisecond never share an output path.
+let restoreSeq = 0;
+
 export function restoreViaChild(params: RestoreChildParams): Promise<RestoreResult> {
   return new Promise((resolve, reject) => {
-    const outPath = path.join(os.tmpdir(), `myco-restore-${process.pid}-${Date.now()}.json`);
+    restoreSeq += 1;
+    const outPath = path.join(os.tmpdir(), `myco-restore-${process.pid}-${Date.now()}-${restoreSeq}.json`);
     const child = spawn(
       params.binaryPath,
       ['__restore-backup', params.dbPath, params.backupPath, outPath],
