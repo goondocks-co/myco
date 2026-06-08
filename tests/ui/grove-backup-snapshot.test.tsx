@@ -36,6 +36,16 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
   ApiError: class extends Error {},
 }));
 
+// The snapshot now resolves its Grove from the active selection and only
+// fetches once a Grove is known (enabled: !!groveId). Provide a fixed
+// selection so the query runs in tests.
+mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
+  useActiveProjectSelection: () => ({
+    grove: { id: 'grove_test', slug: 'test' },
+    project: { project_id: 'proj_test', slug: 'p' },
+  }),
+}));
+
 import { GroveBackupSnapshot } from '../../packages/myco/ui/src/components/grove/GroveBackupSnapshot';
 
 function wrap() {
