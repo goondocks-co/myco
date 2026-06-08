@@ -1,0 +1,128 @@
+/* docs.css — rendered documentation pages (layout B: left sidebar + prose) */
+
+.docs-body { background: var(--surface); color: var(--on-surface); }
+
+.docs-shell {
+  display: flex;
+  gap: 40px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 24px 96px;
+  align-items: flex-start;
+}
+
+/* Sidebar */
+.docs-sidebar {
+  position: sticky;
+  top: 88px;
+  flex: 0 0 232px;
+  max-height: calc(100vh - 110px);
+  overflow-y: auto;
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+.ds-home {
+  display: inline-block;
+  color: var(--outline);
+  text-decoration: none;
+  margin-bottom: 18px;
+  font-size: 12px;
+}
+.ds-home:hover { color: var(--sage); }
+.ds-group { margin-bottom: 18px; }
+.ds-group-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  color: var(--outline);
+  margin-bottom: 8px;
+}
+.ds-link {
+  display: block;
+  padding: 5px 10px;
+  margin: 1px 0;
+  border-radius: var(--radius);
+  color: var(--on-surface-variant);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.ds-link:hover { color: var(--on-surface); background: var(--surface-container-low); }
+.ds-link.active {
+  color: var(--sage);
+  background: var(--surface-container-low);
+  border-left-color: var(--sage);
+}
+
+/* Main column */
+.docs-main { flex: 1 1 auto; min-width: 0; max-width: 760px; }
+.docs-crumb { font-family: var(--font-ui); font-size: 12px; color: var(--outline); margin-bottom: 18px; }
+.docs-crumb a { color: var(--outline); text-decoration: none; }
+.docs-crumb a:hover { color: var(--sage); }
+
+/* Prose */
+.docs-prose { font-family: var(--font-ui); font-size: 15px; line-height: 1.7; color: var(--on-surface-variant); }
+.docs-prose h1 { font-family: var(--font-heading); font-size: 36px; line-height: 1.15; color: var(--on-surface); margin: 0 0 16px; }
+.docs-prose h2 { font-family: var(--font-heading); font-size: 26px; color: var(--on-surface); margin: 40px 0 12px; padding-top: 8px; }
+.docs-prose h3 { font-family: var(--font-heading); font-size: 20px; color: var(--on-surface); margin: 28px 0 10px; }
+.docs-prose h2 a, .docs-prose h3 a, .docs-prose h1 a { color: inherit; text-decoration: none; }
+.docs-prose p { margin: 0 0 16px; }
+.docs-prose a { color: var(--sage); text-decoration: none; border-bottom: 1px solid var(--outline-variant); }
+.docs-prose a:hover { border-bottom-color: var(--sage); }
+.docs-prose ul, .docs-prose ol { margin: 0 0 16px; padding-left: 22px; }
+.docs-prose li { margin: 4px 0; }
+.docs-prose strong { color: var(--on-surface); }
+.docs-prose blockquote {
+  margin: 0 0 16px;
+  padding: 8px 16px;
+  border-left: 3px solid var(--ochre);
+  background: var(--surface-container-lowest);
+  color: var(--on-surface-variant);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.docs-prose code {
+  font-family: var(--font-data);
+  font-size: 0.88em;
+  background: var(--surface-container);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+.docs-prose pre {
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 18px;
+  font-size: 13px;
+}
+.docs-prose pre code { background: none; padding: 0; font-size: inherit; }
+.docs-prose table { border-collapse: collapse; width: 100%; margin: 0 0 18px; font-size: 14px; }
+.docs-prose th, .docs-prose td { border: 1px solid var(--outline-variant); padding: 8px 12px; text-align: left; }
+.docs-prose th { background: var(--surface-container-low); color: var(--on-surface); }
+
+/* Page footer links */
+.docs-page-foot {
+  display: flex;
+  gap: 20px;
+  margin-top: 48px;
+  padding-top: 18px;
+  border-top: 1px solid var(--outline-variant);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+.docs-page-foot a { color: var(--outline); text-decoration: none; }
+.docs-page-foot a:hover { color: var(--sage); }
+
+/* Mobile: sidebar collapses to a scrollable top strip */
+@media (max-width: 880px) {
+  .docs-shell { flex-direction: column; gap: 20px; padding-top: 20px; }
+  .docs-sidebar {
+    position: static;
+    flex-basis: auto;
+    max-height: none;
+    width: 100%;
+    border-bottom: 1px solid var(--outline-variant);
+    padding-bottom: 12px;
+  }
+  .docs-main { max-width: 100%; }
+}
