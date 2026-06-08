@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
-import { postJson, fetchJson } from '../../lib/api';
+import { fetchJson } from '../../lib/api';
 import { errorMessage } from '../../lib/error';
 import { formatBytes } from '../../lib/format';
 import { Surface } from '../ui/surface';
@@ -14,7 +15,8 @@ import { OperationsScopePill, type OperationsScope } from './OperationsScopePill
 
 const BACKUP_SCOPE_AVAILABLE: ReadonlyArray<OperationsScope> = ['grove', 'all-groves'];
 import { buildActionScope } from './scope-helpers';
-import { useProjectSelection } from '../../hooks/use-project-selection';
+import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { requestContextHeadersForSelection } from '../../lib/selection';
 import { ActionConfirmDialog, actionRequiresConfirmation } from './ActionConfirmDialog';
 
 /* ---------- Types ---------- */
@@ -54,6 +56,12 @@ interface RestoreResponse {
   tables: TableCounts[];
   total_restored: number;
   total_skipped: number;
+}
+
+interface BackupAllResponse {
+  scope: { kind: string };
+  results: Array<{ grove_id: string; grove_slug: string; ok: boolean; size_bytes?: number; error?: string }>;
+  summary: { ok: number; failed: number };
 }
 
 /* ---------- Helpers ---------- */
@@ -96,12 +104,6 @@ function dayLabel(isoDay: string): string {
 
 /* ---------- BackupCard ---------- */
 
-interface BackupAllResponse {
-  scope: { kind: string };
-  results: Array<{ grove_id: string; grove_slug: string; ok: boolean; size_bytes?: number; error?: string }>;
-  summary: { ok: number; failed: number };
-}
-
 export interface BackupCardProps {
   /**
    * When true, hide the Surface wrapper, the section header,
@@ -115,9 +117,6 @@ export interface BackupCardProps {
 }
 
 export function BackupCard({ embedded = false }: BackupCardProps = {}) {
-  const [backups, setBackups] = useState<BackupMeta[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
   // Backup operates on a per-Grove SQLite file — there's no
@@ -126,22 +125,31 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const selection = useProjectSelection();
 
-  const refreshBackups = useCallback(async () => {
-    try {
-      const res = await fetchJson<BackupListResponse>('/backups');
-      setBackups(res.backups);
-      setLoaded(true);
-    } catch (err) {
-      setMessage({ type: 'error', text: `Failed to load backups: ${errorMessage(err)}` });
-    }
-  }, []);
+  // Read AND write resolve the target Grove from the SAME selection, sent
+  // explicitly on every request. Previously the list relied on ambient
+  // request-context headers (a module-global that lagged or pointed at a
+  // different Grove than create's body scope), so a successful backup could
+  // be followed by an empty "No backups yet" list. Keying the query on
+  // groveId also defers the first fetch until a Grove is resolved.
+  const selection = useActiveProjectSelection();
+  const groveId = selection?.grove.id ?? null;
+  const ctxHeaders = useMemo(
+    () => (selection ? requestContextHeadersForSelection(selection) : undefined),
+    [selection],
+  );
+  const queryClient = useQueryClient();
 
-  // Load backup list on first render
-  if (!loaded && !loading) {
-    setLoading(true);
-    refreshBackups().finally(() => setLoading(false));
+  const backupsQuery = useQuery({
+    queryKey: ['backups', groveId],
+    queryFn: () => fetchJson<BackupListResponse>('/backups', { headers: ctxHeaders }),
+    enabled: !!groveId,
+  });
+  const backups = backupsQuery.data?.backups ?? [];
+  const loaded = !!groveId && (backupsQuery.isSuccess || backupsQuery.isError);
+
+  function refreshBackups() {
+    void backupsQuery.refetch();
   }
 
   async function doCreateBackup() {
@@ -150,10 +158,11 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     setPreview(null);
     try {
       const wireScope = buildActionScope(pillScope, selection);
-      const res = await postJson<BackupCreateResponse & Partial<BackupAllResponse>>(
-        '/backup',
-        { scope: wireScope },
-      );
+      const res = await fetchJson<BackupCreateResponse & Partial<BackupAllResponse>>('/backup', {
+        method: 'POST',
+        headers: ctxHeaders,
+        body: JSON.stringify({ scope: wireScope }),
+      });
       if (res.summary) {
         setMessage({
           type: res.summary.failed > 0 ? 'error' : 'success',
@@ -165,7 +174,7 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
           text: `Backup created: ${res.machine_id} (${formatBytes(res.size_bytes)})`,
         });
       }
-      await refreshBackups();
+      await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
     } catch (err) {
       setMessage({ type: 'error', text: `Backup failed: ${errorMessage(err)}` });
     } finally {
@@ -186,7 +195,11 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     setMessage(null);
     setPreview(null);
     try {
-      const res = await postJson<RestorePreviewResponse>('/restore/preview', { file_name: fileName });
+      const res = await fetchJson<RestorePreviewResponse>('/restore/preview', {
+        method: 'POST',
+        headers: ctxHeaders,
+        body: JSON.stringify({ file_name: fileName }),
+      });
       setPreview(res);
     } catch (err) {
       setMessage({ type: 'error', text: `Preview failed: ${errorMessage(err)}` });
@@ -197,15 +210,24 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     setMessage(null);
     setPreview(null);
     try {
-      const res = await postJson<RestoreResponse>('/restore', { file_name: fileName });
+      const res = await fetchJson<RestoreResponse>('/restore', {
+        method: 'POST',
+        headers: ctxHeaders,
+        body: JSON.stringify({ file_name: fileName }),
+      });
       setMessage({
         type: 'success',
         text: `Restored ${res.total_restored} records, skipped ${res.total_skipped} duplicates`,
       });
+      await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
     } catch (err) {
       setMessage({ type: 'error', text: `Restore failed: ${errorMessage(err)}` });
     }
   }
+
+  const listError = backupsQuery.isError
+    ? `Failed to load backups: ${errorMessage(backupsQuery.error)}`
+    : null;
 
   const body = (
     <>
@@ -285,14 +307,14 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
       )}
 
       {/* Message */}
-      {message && (
+      {(message || listError) && (
         <p
           className={cn(
             'font-sans text-sm',
-            message.type === 'success' ? 'text-primary' : 'text-tertiary',
+            message?.type === 'success' ? 'text-primary' : 'text-tertiary',
           )}
         >
-          {message.text}
+          {message?.text ?? listError}
         </p>
       )}
 
@@ -342,7 +364,7 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
             </div>
           ))}
         </div>
-      ) : loaded ? (
+      ) : loaded && !listError ? (
         <p className="font-sans text-sm text-on-surface-variant">
           No backups yet. Click &quot;Backup Now&quot; to create one.
         </p>

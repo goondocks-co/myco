@@ -1788,12 +1788,8 @@ export async function main(): Promise<void> {
   }
 
   const backupHandlers = createBackupHandlers({
-    bootDb: db,
-    bootVaultDir: bootstrapVaultDir,
-    bootGroveId: dataPaths.requestContext.groveId ?? null,
     cache: runtimeCache,
     machineId,
-    liveConfig,
   });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
