@@ -86,6 +86,7 @@ const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_S
 // bundle file, while unlisted groups keep per-file isolation.
 const SAFE_NODE_BUNDLE_GROUPS = new Set([
   'tests/agent/tasks',
+  'tests/backup',
   'tests/canopy',
   'tests/canopy/aggregate',
   'tests/canopy/describe',
