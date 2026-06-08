@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
 import { fetchJson } from '../../lib/api';
@@ -18,15 +18,10 @@ import { buildActionScope } from './scope-helpers';
 import { useActiveProjectSelection } from '../../hooks/use-project-selection';
 import { requestContextHeadersForSelection } from '../../lib/selection';
 import { ActionConfirmDialog, actionRequiresConfirmation } from './ActionConfirmDialog';
+import { RestoreBackupDialog } from './RestoreBackupDialog';
+import { type BackupMeta, formatBackupDate } from './backup-format';
 
 /* ---------- Types ---------- */
-
-interface BackupMeta {
-  machine_id: string;
-  file_name: string;
-  size_bytes: number;
-  modified_at: string;
-}
 
 interface BackupListResponse {
   backups: BackupMeta[];
@@ -38,130 +33,40 @@ interface BackupCreateResponse {
   size_bytes: number;
 }
 
-interface TableCounts {
-  table: string;
-  new: number;
-  existing: number;
-}
-
-interface TableContentCounts {
-  table: string;
-  in_backup: number;
-  in_db: number;
-}
-
-interface RestorePreviewResponse {
-  machine_id: string;
-  tables: TableContentCounts[];
-  total_in_backup: number;
-  total_in_db: number;
-}
-
-interface RestoreResult {
-  tables: TableCounts[];
-  total_restored: number;
-  total_skipped: number;
-}
-
-interface RestoreStartResponse {
-  job_id: string;
-  status: string;
-  file_name: string;
-}
-
-interface RestoreJobResponse {
-  job_id: string;
-  status: 'running' | 'done' | 'error';
-  file_name: string;
-  started_at: number;
-  finished_at: number | null;
-  result: RestoreResult | null;
-  error: string | null;
-}
-
 interface BackupAllResponse {
   scope: { kind: string };
   results: Array<{ grove_id: string; grove_slug: string; ok: boolean; size_bytes?: number; error?: string }>;
   summary: { ok: number; failed: number };
 }
 
-/* ---------- Helpers ---------- */
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-/**
- * Group backup history by ISO date so the user sees a Files-style
- * "today / yesterday / older" sectioning rather than a flat list of
- * 14+ daily entries followed by 8 weeklies. Sorting + ordering done
- * server-side; this just buckets for visual scanning.
- */
-function groupByDay(backups: BackupMeta[]): Map<string, BackupMeta[]> {
-  const out = new Map<string, BackupMeta[]>();
-  for (const b of backups) {
-    const day = new Date(b.modified_at).toISOString().slice(0, 10);
-    const arr = out.get(day) ?? [];
-    arr.push(b);
-    out.set(day, arr);
-  }
-  return out;
-}
-
-function dayLabel(isoDay: string): string {
-  const today = new Date().toISOString().slice(0, 10);
-  const d = new Date(isoDay);
-  const yesterday = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
-  if (isoDay === today) return 'Today';
-  if (isoDay === yesterday) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-}
-
 /* ---------- BackupCard ---------- */
 
 export interface BackupCardProps {
   /**
-   * When true, hide the Surface wrapper, the section header,
-   * the scope pill, and the duplicate `backup.dir` ScopedField —
-   * those duplicates the embedding parent already provides. The
-   * Settings page passes `embedded` so its Backups Surface owns
-   * the header + dir field, and BackupCard contributes only the
-   * action buttons + list + preview/restore.
+   * When true, hide the Surface wrapper, the section header, the scope pill,
+   * and the duplicate `backup.dir` ScopedField — the embedding Settings
+   * Surface already provides those.
    */
   embedded?: boolean;
 }
 
+const RECENT_SHOWN = 3;
+
 export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
-  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
-  const [restoring, setRestoring] = useState<string | null>(null);
-  // Backup operates on a per-Grove SQLite file — there's no
-  // project-narrowed dump path. Pill defaults to Grove and excludes
-  // the project option.
+  // Backup operates on a per-Grove SQLite file — no project-narrowed dump
+  // path — so the pill defaults to Grove and excludes the project option.
   const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Read AND write resolve the target Grove from the SAME selection, sent
-  // explicitly on every request. Previously the list relied on ambient
-  // request-context headers (a module-global that lagged or pointed at a
-  // different Grove than create's body scope), so a successful backup could
-  // be followed by an empty "No backups yet" list. Keying the query on
-  // groveId also defers the first fetch until a Grove is resolved.
+  // Read AND write resolve the target Grove from one selection, sent
+  // explicitly on every request (keyed query also defers the first fetch
+  // until a Grove is resolved).
   const selection = useActiveProjectSelection();
   const groveId = selection?.grove.id ?? null;
-  const ctxHeaders = useMemo(
-    () => (selection ? requestContextHeadersForSelection(selection) : undefined),
-    [selection],
-  );
-  const queryClient = useQueryClient();
+  const ctxHeaders = selection ? requestContextHeadersForSelection(selection) : undefined;
 
   const backupsQuery = useQuery({
     queryKey: ['backups', groveId],
@@ -170,15 +75,12 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   });
   const backups = backupsQuery.data?.backups ?? [];
   const loaded = !!groveId && (backupsQuery.isSuccess || backupsQuery.isError);
-
-  function refreshBackups() {
-    void backupsQuery.refetch();
-  }
+  const recent = backups.slice(0, RECENT_SHOWN);
+  const oldest = backups.length > 0 ? backups[backups.length - 1] : null;
 
   async function doCreateBackup() {
     setBusy(true);
     setMessage(null);
-    setPreview(null);
     try {
       const wireScope = buildActionScope(pillScope, selection);
       const res = await fetchJson<BackupCreateResponse & Partial<BackupAllResponse>>('/backup', {
@@ -192,12 +94,9 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
           text: `Backed up ${res.summary.ok} Grove(s); ${res.summary.failed} failed`,
         });
       } else {
-        setMessage({
-          type: 'success',
-          text: `Backup created: ${res.machine_id} (${formatBytes(res.size_bytes)})`,
-        });
+        setMessage({ type: 'success', text: `Backup created (${formatBytes(res.size_bytes)})` });
       }
-      await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
+      await backupsQuery.refetch();
     } catch (err) {
       setMessage({ type: 'error', text: `Backup failed: ${errorMessage(err)}` });
     } finally {
@@ -214,108 +113,45 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     void doCreateBackup();
   }
 
-  async function handlePreview(fileName: string) {
-    setMessage(null);
-    setPreview(null);
-    setPreviewLoading(fileName);
-    try {
-      const res = await fetchJson<RestorePreviewResponse>('/restore/preview', {
-        method: 'POST',
-        headers: ctxHeaders,
-        body: JSON.stringify({ file_name: fileName }),
-      });
-      setPreview(res);
-    } catch (err) {
-      setMessage({ type: 'error', text: `Preview failed: ${errorMessage(err)}` });
-    } finally {
-      setPreviewLoading(null);
-    }
-  }
+  const listError = backupsQuery.isError ? `Failed to load backups: ${errorMessage(backupsQuery.error)}` : null;
 
-  async function pollRestore(jobId: string): Promise<RestoreJobResponse> {
-    const deadlineMs = Date.now() + 30 * 60_000; // give a large restore plenty of room
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      const job = await fetchJson<RestoreJobResponse>(
-        `/restore/status?job_id=${encodeURIComponent(jobId)}`,
-        { headers: ctxHeaders },
-      );
-      if (job.status !== 'running') return job;
-      if (Date.now() > deadlineMs) {
-        return { ...job, status: 'error', error: 'Restore is taking unusually long; check the server logs.' };
-      }
-    }
-  }
-
-  async function handleRestore(fileName: string) {
-    setMessage(null);
-    setPreview(null);
-    setRestoring(fileName);
-    try {
-      // Restore runs as a background job (it can take minutes on a large
-      // backup); kick it off, then poll for completion.
-      const start = await fetchJson<RestoreStartResponse>('/restore', {
-        method: 'POST',
-        headers: ctxHeaders,
-        body: JSON.stringify({ file_name: fileName }),
-      });
-      const job = await pollRestore(start.job_id);
-      if (job.status === 'done' && job.result) {
-        setMessage({
-          type: 'success',
-          text: `Restored ${job.result.total_restored} records, skipped ${job.result.total_skipped} duplicates`,
-        });
-        await queryClient.invalidateQueries({ queryKey: ['backups', groveId] });
-      } else {
-        setMessage({ type: 'error', text: `Restore failed: ${job.error ?? 'unknown error'}` });
-      }
-    } catch (err) {
-      setMessage({ type: 'error', text: `Restore failed: ${errorMessage(err)}` });
-    } finally {
-      setRestoring(null);
-    }
-  }
-
-  const listError = backupsQuery.isError
-    ? `Failed to load backups: ${errorMessage(backupsQuery.error)}`
-    : null;
+  const actions = (
+    <div className="flex gap-2">
+      <Button variant="ghost" size="sm" onClick={() => backupsQuery.refetch()}>
+        <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+        Refresh
+      </Button>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => setRestoreOpen(true)}
+        disabled={backups.length === 0}
+      >
+        <Upload className="mr-1.5 h-3.5 w-3.5" />
+        Restore…
+      </Button>
+      <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={busy}>
+        <Download className="mr-1.5 h-3.5 w-3.5" />
+        Backup Now
+      </Button>
+    </div>
+  );
 
   const body = (
     <>
-      {!embedded && (
+      {!embedded ? (
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <HardDrive className="h-4 w-4 text-primary" />
             <SectionHeader>Backup &amp; Restore</SectionHeader>
             <OperationsScopePill value={pillScope} onChange={setPillScope} available={BACKUP_SCOPE_AVAILABLE} />
           </div>
-          <div className="flex gap-2">
-            <Button variant="ghost" size="sm" onClick={refreshBackups}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              Refresh
-            </Button>
-            <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={busy}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Backup Now
-            </Button>
-          </div>
+          {actions}
         </div>
+      ) : (
+        <div className="flex items-center justify-end">{actions}</div>
       )}
-      {embedded && (
-        // Embedded mode shows the action row without the section
-        // header — the parent Surface owns the header + the
-        // backup.dir editor.
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={refreshBackups}>
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-            Refresh
-          </Button>
-          <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={busy}>
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Backup Now
-          </Button>
-        </div>
-      )}
+
       <ActionConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
@@ -328,11 +164,15 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         }}
       />
 
+      <RestoreBackupDialog
+        open={restoreOpen}
+        onOpenChange={setRestoreOpen}
+        backups={backups}
+        groveId={groveId}
+        headers={ctxHeaders}
+      />
 
       {!embedded && (
-        // Standalone mode keeps the legacy backup.dir editor for
-        // back-compat. Settings (`embedded`) provides its own
-        // Grove-tier directory editor + retention fields.
         <ScopedField
           path="backup.dir"
           label="Backup Directory"
@@ -357,132 +197,47 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         </ScopedField>
       )}
 
-      {/* Message */}
       {(message || listError) && (
-        <p
-          className={cn(
-            'font-sans text-sm',
-            message?.type === 'success' ? 'text-primary' : 'text-tertiary',
-          )}
-        >
+        <p className={cn('font-sans text-sm', message?.type === 'success' ? 'text-primary' : 'text-tertiary')}>
           {message?.text ?? listError}
         </p>
       )}
 
-      {/* Backup history — full list, grouped by day, newest first.
-          The retention engine keeps up to `keep_daily + keep_weekly`
-          files on disk; we render them all so any can be picked for
-          point-in-time restore. */}
+      {/* Status — prove backups exist without dumping the whole list. The
+          full history lives in the Restore… flow. */}
       {backups.length > 0 ? (
-        <div className="space-y-4">
-          {Array.from(groupByDay(backups).entries()).map(([day, group]) => (
-            <div key={day} className="space-y-2">
-              <p className="font-sans text-[11px] uppercase tracking-wider text-on-surface-variant">
-                {dayLabel(day)}
-              </p>
-              {group.map((b) => (
-                <div
-                  key={b.file_name}
-                  className={cn(
-                    'flex items-center justify-between rounded-md px-4 py-3',
-                    'bg-surface-container-lowest transition-colors',
-                  )}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="font-mono text-sm text-on-surface">
-                      {formatDate(b.modified_at)}
-                    </span>
-                    <Badge variant="secondary">{formatBytes(b.size_bytes)}</Badge>
-                    <span className="font-mono text-xs text-on-surface-variant truncate">
-                      {b.machine_id}
-                    </span>
-                  </div>
-                  <div className="flex gap-2 shrink-0 ml-3">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handlePreview(b.file_name)}
-                      disabled={previewLoading !== null || restoring !== null}
-                    >
-                      Preview
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => handleRestore(b.file_name)}
-                      disabled={restoring !== null}
-                    >
-                      <Upload className="mr-1.5 h-3.5 w-3.5" />
-                      {restoring === b.file_name ? 'Restoring…' : 'Restore'}
-                    </Button>
-                  </div>
-                </div>
-              ))}
+        <div className="space-y-2">
+          {recent.map((b, idx) => (
+            <div
+              key={b.file_name}
+              className="flex items-center justify-between rounded-md bg-surface-container-lowest px-4 py-2.5"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="font-mono text-sm text-on-surface">{formatBackupDate(b.modified_at)}</span>
+                {idx === 0 && <Badge variant="outline">Latest</Badge>}
+                <Badge variant="secondary">{formatBytes(b.size_bytes)}</Badge>
+                <span className="font-mono text-xs text-on-surface-variant truncate">{b.machine_id}</span>
+              </div>
             </div>
           ))}
+          <p className="font-sans text-xs text-on-surface-variant">
+            {backups.length} backup{backups.length === 1 ? '' : 's'} kept
+            {oldest ? ` · oldest ${formatBackupDate(oldest.modified_at)}` : ''}
+            {' · '}
+            <button
+              type="button"
+              onClick={() => setRestoreOpen(true)}
+              className="text-primary hover:underline"
+            >
+              browse &amp; restore
+            </button>
+          </p>
         </div>
       ) : loaded && !listError ? (
         <p className="font-sans text-sm text-on-surface-variant">
           No backups yet. Click &quot;Backup Now&quot; to create one.
         </p>
       ) : null}
-
-      {/* Preview is computed by streaming the backup's recorded counts, so it
-          returns in a second or two even on a large dump. */}
-      {previewLoading && !preview && (
-        <p className="font-sans text-sm text-on-surface-variant">Reading backup contents…</p>
-      )}
-
-      {restoring && (
-        <p className="font-sans text-sm text-primary">
-          Restoring {restoring}… this can take a minute on a large backup; it runs in the background, so the dashboard stays responsive.
-        </p>
-      )}
-
-      {/* Restore preview — what the backup holds per table vs the live DB.
-          Restore is an additive INSERT OR IGNORE merge, so this is a
-          "contents" view, computed from the dump's recorded counts (no
-          execution) so it returns instantly even on a multi-hundred-MB dump. */}
-      {preview && (
-        <Surface level="lowest" className="p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <SectionHeader>Backup Contents</SectionHeader>
-            <Badge variant="outline">{preview.machine_id}</Badge>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full font-mono text-sm" aria-label="Backup contents">
-              <thead>
-                <tr className="text-left text-on-surface-variant">
-                  <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest" scope="col">Table</th>
-                  <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">In backup</th>
-                  <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">In database</th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.tables.map((t, idx) => (
-                  <tr
-                    key={t.table}
-                    className={cn(
-                      'transition-colors hover:bg-surface-container-high/50',
-                      idx % 2 === 1 ? 'bg-surface-container-low/30' : '',
-                    )}
-                  >
-                    <td className="py-2 pr-4">{t.table}</td>
-                    <td className="py-2 pr-4 text-right">
-                      {t.in_backup > 0 ? <span className="text-primary">{t.in_backup}</span> : 0}
-                    </td>
-                    <td className="py-2 text-right text-on-surface-variant">{t.in_db}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex gap-4 font-sans text-sm text-on-surface-variant">
-            <span>In backup: <strong className="text-primary">{preview.total_in_backup}</strong></span>
-            <span>In database: <strong>{preview.total_in_db}</strong></span>
-          </div>
-        </Surface>
-      )}
     </>
   );
 
