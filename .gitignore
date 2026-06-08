@@ -48,4 +48,6 @@ docs/superpowers/plans/
 docs/design/
 docs/plans/
 docs/superpowers/handoffs/
+docs/_site/
+docs/node_modules/
 .wrangler/
