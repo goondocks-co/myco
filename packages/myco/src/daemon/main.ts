@@ -73,10 +73,6 @@ import {
   servedGroveScopeForDaemon,
 } from './api/groves.js';
 import {
-  createProjectBackupHandler,
-  createProjectRestoreHandler,
-} from './api/projects.js';
-import {
   handleListSessions,
   createGetSessionHandler,
   handleGetSessionBatches,
@@ -1471,8 +1467,6 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
   server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);

@@ -12,7 +12,6 @@ const USAGE = `Usage: myco <command> [args]
 
 Commands:
   grove <subcommand>       Manage local Groves
-  backup <subcommand>      Snapshot and restore a project's Grove data
   update                   Update vault files and agent registration
   remove [--remove-vault]    Remove Myco from this project (vault preserved by default)
   remove --symbiont <name>   Unregister a single agent and remove from config
@@ -95,7 +94,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
-  if (cmd === 'backup') return (await import('./cli/backup.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');
