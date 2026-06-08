@@ -513,6 +513,63 @@ function extractTableNames(content: string): string[] {
   return Array.from(tables);
 }
 
+/** Header that records a table's row count: `-- Table: <name> (<N> rows)`. */
+const TABLE_COUNT_REGEX = /-- Table:\s+(\w+)\s+\((\d+)\s+rows?\)/;
+
+/** Per-table comparison for a non-executing restore preview. */
+export interface TableContentCounts {
+  table: string;
+  /** Rows the backup contains for this table (from its `-- Table` header). */
+  in_backup: number;
+  /** Rows currently in the live DB for this table. */
+  in_db: number;
+}
+
+/**
+ * Cheap, non-executing restore preview.
+ *
+ * Restore is an additive `INSERT OR IGNORE` merge, so the useful question
+ * before restoring is "what does this backup hold vs what I have now".
+ * Rather than execute the (potentially multi-hundred-MB) dump in a savepoint
+ * — which blocks the daemon's single thread for minutes — this streams the
+ * file and reads each table's row count straight from the `-- Table: <name>
+ * (<N> rows)` header the dump already records, then counts the live rows.
+ * It scans chunks for the sparse `-- Table:` marker (no per-line work over
+ * millions of INSERTs) and awaits between chunks, so it stays responsive
+ * even on an 800MB dump.
+ */
+export async function previewRestoreContents(
+  db: Database,
+  backupPath: string,
+): Promise<TableContentCounts[]> {
+  const inBackup = new Map<string, number>();
+  const stream = fs.createReadStream(backupPath);
+  let carry = '';
+  for await (const chunk of stream) {
+    const text = carry + (chunk as Buffer).toString('latin1');
+    let idx = 0;
+    for (;;) {
+      const hit = text.indexOf('-- Table:', idx);
+      if (hit === -1) break;
+      const eol = text.indexOf('\n', hit);
+      if (eol === -1) break; // line continues into the next chunk
+      const match = TABLE_COUNT_REGEX.exec(text.slice(hit, eol));
+      if (match) inBackup.set(match[1], Number(match[2]));
+      idx = eol + 1;
+    }
+    // Keep the tail after the last newline so a marker split across the
+    // chunk boundary is re-scanned with the next chunk prepended.
+    const lastNl = text.lastIndexOf('\n');
+    carry = lastNl === -1 ? text : text.slice(lastNl + 1);
+  }
+
+  const result: TableContentCounts[] = [];
+  for (const [table, count] of inBackup) {
+    result.push({ table, in_backup: count, in_db: countRows(db, table) });
+  }
+  return result;
+}
+
 function countRows(db: Database, table: string): number {
   try {
     const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as

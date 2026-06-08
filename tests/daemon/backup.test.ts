@@ -17,6 +17,7 @@ import {
   createBackup,
   listBackups,
   restorePreview,
+  previewRestoreContents,
   restoreBackup,
 } from '@myco/backup/engine.js';
 
@@ -303,6 +304,36 @@ describe('backup engine', () => {
       restorePreview(db, backupPath);
 
       // DB should still be empty after preview
+      const count = db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number };
+      expect(count.c).toBe(0);
+    });
+  });
+
+  describe('previewRestoreContents()', () => {
+    it('reports per-table counts from the dump headers without executing it', async () => {
+      seedAgent();
+      seedSession('sess-013', LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+
+      const tables = await previewRestoreContents(getDatabase(), backupPath);
+      const sessions = tables.find((t) => t.table === 'sessions');
+      expect(sessions).toBeDefined();
+      expect(sessions!.in_backup).toBe(1);
+      expect(sessions!.in_db).toBe(1);
+    });
+
+    it('does not modify the database and reflects live db counts', async () => {
+      seedAgent();
+      seedSession('sess-014', LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      cleanTestDb();
+
+      const db = getDatabase();
+      const tables = await previewRestoreContents(db, backupPath);
+      const sessions = tables.find((t) => t.table === 'sessions');
+      expect(sessions!.in_backup).toBe(1);
+      expect(sessions!.in_db).toBe(0);
+
       const count = db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number };
       expect(count.c).toBe(0);
     });

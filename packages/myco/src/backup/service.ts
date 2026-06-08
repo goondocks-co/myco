@@ -17,11 +17,11 @@ import {
   createBackup,
   listBackups,
   pruneBackups,
-  restorePreview,
+  previewRestoreContents,
   restoreBackup,
   type BackupMeta,
   type RestoreResult,
-  type TableCounts,
+  type TableContentCounts,
 } from './engine.js';
 import { resolveGroveBackupDir, legacyGroveBackupLocations, migrationMarkerPath } from './location.js';
 import { loadGroveConfig } from '../config/loader.js';
@@ -158,27 +158,32 @@ function resolveBackupFile(
 
 export interface GroveRestorePreview {
   ref: GroveBackupRef;
-  tables: TableCounts[];
-  total_new: number;
-  total_existing: number;
+  tables: TableContentCounts[];
+  total_in_backup: number;
+  total_in_db: number;
 }
 
-/** Dry-run restore preview. Returns null when the named backup is not found. */
-export function previewGroveRestore(params: {
+/**
+ * Restore preview: what the backup holds per table vs the live DB. Cheap and
+ * non-blocking — it reads the dump's recorded counts instead of executing it
+ * (an 800MB dump would otherwise wedge the daemon for minutes). Returns null
+ * when the named backup is not found.
+ */
+export async function previewGroveRestore(params: {
   groveId: string;
   db: Database;
   fileName: string;
   mycoHome?: string;
-}): GroveRestorePreview | null {
+}): Promise<GroveRestorePreview | null> {
   const mycoHome = params.mycoHome ?? resolveMycoHome();
   const ref = resolveBackupFile(params.groveId, params.fileName, mycoHome);
   if (!ref) return null;
-  const tables = restorePreview(params.db, ref.path);
+  const tables = await previewRestoreContents(params.db, ref.path);
   return {
     ref,
     tables,
-    total_new: tables.reduce((sum, t) => sum + t.new, 0),
-    total_existing: tables.reduce((sum, t) => sum + t.existing, 0),
+    total_in_backup: tables.reduce((sum, t) => sum + t.in_backup, 0),
+    total_in_db: tables.reduce((sum, t) => sum + t.in_db, 0),
   };
 }
 

@@ -114,14 +114,14 @@ describe('backup service — read/write resolve the same Grove', () => {
     expect(all.every((b) => fs.existsSync(b.path))).toBe(true);
   });
 
-  it('restore + preview resolve a backup by file name across locations', () => {
+  it('restore + preview resolve a backup by file name across locations', async () => {
     const grove = makeGrove(env, 'Delta');
     const db = openGroveDb(env, grove);
     try {
       const created = createGroveBackup({ groveId: grove.id, db, machineId: MACHINE, mycoHome: env.mycoHome });
       const fileName = path.basename(created.file_path);
 
-      const preview = previewGroveRestore({ groveId: grove.id, db, fileName, mycoHome: env.mycoHome });
+      const preview = await previewGroveRestore({ groveId: grove.id, db, fileName, mycoHome: env.mycoHome });
       expect(preview?.ref.file_name).toBe(fileName);
 
       const outcome = restoreGroveBackup({ groveId: grove.id, db, fileName, mycoHome: env.mycoHome });

@@ -204,7 +204,7 @@ export function createBackupHandlers(deps: BackupDeps) {
     const fileName = resolveTargetFileName(groveId, body);
     if (!fileName) return { status: 400, body: { error: 'missing_machine_id' } };
 
-    const preview = previewGroveRestore({
+    const preview = await previewGroveRestore({
       groveId,
       db: databaseForGrove(groveId),
       fileName,
@@ -216,8 +216,8 @@ export function createBackupHandlers(deps: BackupDeps) {
         machine_id: preview.ref.machine_id,
         file_name: preview.ref.file_name,
         tables: preview.tables,
-        total_new: preview.total_new,
-        total_existing: preview.total_existing,
+        total_in_backup: preview.total_in_backup,
+        total_in_db: preview.total_in_db,
       },
     };
   }

@@ -44,11 +44,17 @@ interface TableCounts {
   existing: number;
 }
 
+interface TableContentCounts {
+  table: string;
+  in_backup: number;
+  in_db: number;
+}
+
 interface RestorePreviewResponse {
   machine_id: string;
-  tables: TableCounts[];
-  total_new: number;
-  total_existing: number;
+  tables: TableContentCounts[];
+  total_in_backup: number;
+  total_in_db: number;
 }
 
 interface RestoreResponse {
@@ -119,6 +125,7 @@ export interface BackupCardProps {
 export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   // Backup operates on a per-Grove SQLite file — there's no
   // project-narrowed dump path. Pill defaults to Grove and excludes
   // the project option.
@@ -194,6 +201,7 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   async function handlePreview(fileName: string) {
     setMessage(null);
     setPreview(null);
+    setPreviewLoading(fileName);
     try {
       const res = await fetchJson<RestorePreviewResponse>('/restore/preview', {
         method: 'POST',
@@ -203,6 +211,8 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
       setPreview(res);
     } catch (err) {
       setMessage({ type: 'error', text: `Preview failed: ${errorMessage(err)}` });
+    } finally {
+      setPreviewLoading(null);
     }
   }
 
@@ -370,20 +380,29 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         </p>
       ) : null}
 
-      {/* Restore preview */}
+      {/* Preview is computed by streaming the backup's recorded counts, so it
+          returns in a second or two even on a large dump. */}
+      {previewLoading && !preview && (
+        <p className="font-sans text-sm text-on-surface-variant">Reading backup contents…</p>
+      )}
+
+      {/* Restore preview — what the backup holds per table vs the live DB.
+          Restore is an additive INSERT OR IGNORE merge, so this is a
+          "contents" view, computed from the dump's recorded counts (no
+          execution) so it returns instantly even on a multi-hundred-MB dump. */}
       {preview && (
         <Surface level="lowest" className="p-4 space-y-3">
           <div className="flex items-center gap-2">
-            <SectionHeader>Restore Preview</SectionHeader>
+            <SectionHeader>Backup Contents</SectionHeader>
             <Badge variant="outline">{preview.machine_id}</Badge>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full font-mono text-sm" aria-label="Restore preview">
+            <table className="w-full font-mono text-sm" aria-label="Backup contents">
               <thead>
                 <tr className="text-left text-on-surface-variant">
                   <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest" scope="col">Table</th>
-                  <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">New</th>
-                  <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">Existing</th>
+                  <th className="pb-2 pr-4 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">In backup</th>
+                  <th className="pb-2 font-sans font-medium text-xs uppercase tracking-widest text-right" scope="col">In database</th>
                 </tr>
               </thead>
               <tbody>
@@ -397,17 +416,17 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
                   >
                     <td className="py-2 pr-4">{t.table}</td>
                     <td className="py-2 pr-4 text-right">
-                      {t.new > 0 ? <span className="text-primary">{t.new}</span> : 0}
+                      {t.in_backup > 0 ? <span className="text-primary">{t.in_backup}</span> : 0}
                     </td>
-                    <td className="py-2 text-right text-on-surface-variant">{t.existing}</td>
+                    <td className="py-2 text-right text-on-surface-variant">{t.in_db}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div className="flex gap-4 font-sans text-sm text-on-surface-variant">
-            <span>New: <strong className="text-primary">{preview.total_new}</strong></span>
-            <span>Existing: <strong>{preview.total_existing}</strong></span>
+            <span>In backup: <strong className="text-primary">{preview.total_in_backup}</strong></span>
+            <span>In database: <strong>{preview.total_in_db}</strong></span>
           </div>
         </Surface>
       )}
