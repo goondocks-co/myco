@@ -126,10 +126,6 @@ A local web dashboard provides configuration and operations management. Manage G
 
 Use the [Grove Management guide](docs/groves.md) to decide when to create additional Groves, move or archive projects, and toggle per-project capabilities such as Cortex, Canopy, Skills, and Vault Evolution.
 
-<p align="center">
-  <img src="packages/myco/assets/myco-dashboard.png" alt="Myco Dashboard" width="100%">
-</p>
-
 ### Symbionts
 
 Myco integrates with coding agents through **symbionts**. Each symbiont connects Myco to an agent's native context, tools, skills, and permissions while preserving that agent's own workflow.

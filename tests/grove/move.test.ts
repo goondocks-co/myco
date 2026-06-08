@@ -14,7 +14,7 @@ import {
   pauseProject,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
-import { createBackup } from '@myco/daemon/backup.js';
+import { createBackup } from '@myco/backup/engine.js';
 import {
   assertGroveProjectId,
   createProjectId,

@@ -21,7 +21,7 @@ import {
   ALL_PROJECTS_SCOPE,
   createBackup,
   restoreBackup,
-} from '@myco/daemon/backup.js';
+} from '@myco/backup/engine.js';
 
 const MACHINE = 'multilinetest_aaaa1111';
 const AGENT_ID = 'test-agent';

@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
-import { createBackup, restoreBackup } from '@myco/daemon/backup.js';
+import { createBackup, restoreBackup } from '@myco/backup/engine.js';
 import { assertGroveProjectId, createProjectId, projectScope } from '@myco/grove/ids.js';
 
 const MACHINE_ID = 'testuser_aaaa1111';

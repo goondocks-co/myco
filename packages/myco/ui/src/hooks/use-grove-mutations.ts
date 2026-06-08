@@ -20,12 +20,6 @@ export interface MoveProjectResponse {
   move: Record<string, unknown>;
 }
 
-export interface BackupProjectResponse {
-  ok: boolean;
-  snapshot_path: string;
-  size_bytes: number;
-}
-
 export interface SetDefaultGroveResponse {
   id: string;
   slug: string;
@@ -162,11 +156,3 @@ export function useDeleteProject() {
   });
 }
 
-export function useBackupProject() {
-  return useMutation<BackupProjectResponse, Error, { projectId: string }>({
-    mutationFn: ({ projectId }) =>
-      postJson<BackupProjectResponse>(
-        `/projects/${encodeURIComponent(projectId)}/backup`,
-      ),
-  });
-}

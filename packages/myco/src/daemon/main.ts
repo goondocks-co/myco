@@ -39,7 +39,7 @@ import { createUpdateHandlers } from './api/update.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
-import { sweepLegacyBackupRoot } from './backup.js';
+import { migrateLegacyBackups } from '@myco/backup/migrate.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createTeamSelectionHandlers } from './api/team-selection.js';
 import { createListTeamMembersHandler } from './api/team-members.js';
@@ -72,10 +72,6 @@ import {
   createUnarchiveProjectHandler,
   servedGroveScopeForDaemon,
 } from './api/groves.js';
-import {
-  createProjectBackupHandler,
-  createProjectRestoreHandler,
-} from './api/projects.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -1471,8 +1467,6 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('PATCH', '/api/projects/:projectId/symbionts', createProjectSymbiontsPatchHandler(groveDaemonStateDir));
   server.registerRoute('PUT', '/api/projects/:projectId/symbionts-customization', createProjectSymbiontsCustomizationHandler(groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
@@ -1762,43 +1756,33 @@ export async function main(): Promise<void> {
   }));
 
   // --- Backup routes ---
-  // One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
-  // files out of the configured backup root into `.legacy/`. Per-
-  // Grove backups now live under `<root>/<groveSlug>/`; the top-
-  // level files are leftovers from the pre-Grove era.
+  // One-shot migration: relocate each served Grove's whole-Grove backups
+  // into its canonical dir (honoring backup.dir), so list/restore find them
+  // where new backups land. Idempotent; never deletes; suppresses the first
+  // prune after a consolidation so retention can't drop just-moved backups.
   try {
-    const configuredDir = liveConfig.current.backup.dir;
-    if (configuredDir) {
-      const expanded = path.resolve(
-        configuredDir.startsWith('~/')
-          ? path.join(os.homedir(), configuredDir.slice(2))
-          : configuredDir,
-      );
-      const sweepResult = sweepLegacyBackupRoot(expanded);
-      if (sweepResult.moved.length > 0) {
+    for (const m of migrateLegacyBackups()) {
+      if (m.moved > 0 || m.quarantined > 0 || m.deduped > 0) {
         logger.info(
-          'backup.legacy.sweep',
-          `Moved ${sweepResult.moved.length} pre-Grove orphan(s) into .legacy/`,
-          { moved: sweepResult.moved, legacy_dir: sweepResult.legacyDir },
+          'backup.migrate',
+          `Relocated ${m.moved} backup(s) into the canonical dir for ${m.grove_slug}`,
+          { grove_id: m.grove_id, moved: m.moved, quarantined: m.quarantined, deduped: m.deduped },
         );
       }
     }
   } catch (err) {
-    logger.warn('backup.legacy.sweep_failed', errorMessage(err));
+    logger.warn('backup.migrate_failed', errorMessage(err));
   }
 
   const backupHandlers = createBackupHandlers({
-    bootDb: db,
-    bootVaultDir: bootstrapVaultDir,
-    bootGroveId: dataPaths.requestContext.groveId ?? null,
     cache: runtimeCache,
     machineId,
-    liveConfig,
   });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
+  server.registerRoute('GET', '/api/restore/status', backupHandlers.handleRestoreStatus);
 
   const backupConfigHandlers = createBackupConfigHandlers({
     bootstrapVaultDir,

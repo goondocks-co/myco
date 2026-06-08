@@ -206,7 +206,7 @@ The daemon uses `loadMergedConfig()` which calls `pruneToTier(raw, tier)` for ea
 When adding any new user-configurable behavior, follow these steps to determine which tier it belongs in:
 
 **Step 1: Apply the tier decision rule**
-- **Machine tier**: Global daemon behavior across all groves (port, logging, global auth)
+- **Machine tier**: Global daemon behavior across all groves (port, logging, global auth, capture policy)
 - **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)  
 - **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
@@ -238,6 +238,7 @@ Use these established patterns as representative examples (verify against the li
 - Global daemon port and networking
 - Machine-level authentication
 - Global logging and diagnostics
+- Capture policy (`capture.*`) — strictly machine-scoped, no overrides allowed
 
 **Step 3: Add the field to SCOPE_REGISTRY and the Zod schema**
 New fields must be registered in `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with the correct `home` tier and `overridableBy` array. The scope-registry sync test will fail if a schema leaf is not covered, so ratify against the Zod tier schemas in `packages/myco/src/config/schema.ts`.
@@ -457,6 +458,10 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Scoped-clear pruneEmptyParents omission:** When writing `unsetAtPath()` calls in a scoped-clear loop (e.g., `for (const key of clearList) unsetAtPath(working, key)`), always pass `{ pruneEmptyParents: true }`. Without it, deleting the last leaf under a parent key leaves an empty-map object as residue in the persisted YAML instead of removing the parent entirely. Both clear loops in `handlePutScopedConfig` (`packages/myco/src/daemon/api/config.ts` lines ~168 and ~201) currently omit this option — include it when implementing any new scoped-clear logic.
 
+**capture config is strictly machine-scoped:** The `capture` config section has `home: 'machine', overridableBy: []` in SCOPE_REGISTRY — the entire section, including the `ignore` sub-object (with its `paths` and `patterns` arrays), cannot be overridden by project or grove tiers. When debugging why a project root is excluded from capture, check `~/.myco/config.yaml` (the machine config), not `myco.yaml` or `~/.myco/groves/<id>/grove.yaml`. The `ignore` sub-object's `paths` field lists exact project root paths to exclude; `patterns` lists globs matched against the absolute project root with `~` expansion.
+
+**Capability gating via capabilityEnabled():** Features controlled by a named capability (`'cortex'`, `'canopy'`, `'skills'`, `'vault_evolution'`) must be checked via `capabilityEnabled(config, capId)` from `packages/myco/src/config/capabilities.ts`, not by reading config fields directly. The function is fail-closed — null or undefined config returns false. The `CAPABILITIES` record maps each capability ID to its `masterGate` config path, `memberGates`, and `scheduledTasks`. Adding a new capability-gated feature: (1) add an entry to `CAPABILITIES`; (2) add its ID to `CAPABILITY_IDS` in `packages/myco/src/config/scope.ts`; (3) call `capabilityEnabled()` at every gate-check site. Bypassing it with a direct config field read skips the fail-closed contract.
+
 ---
 
 ## Checklist Before Submitting a Config Change
@@ -475,4 +480,5 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Config tier migration compatibility verified for grove coordination features
 - [ ] Legacy field handling: use `PROJECT_TIER_LEGACY_FIELDS` in schema.ts for fields that need physical removal from project YAML; `pruneToTier` auto-enforces scope for everything else
 - [ ] Scoped-clear operations pass `{ pruneEmptyParents: true }` to `unsetAtPath()` to avoid empty-map residue
+- [ ] Capability-gated features use `capabilityEnabled(config, capId)` from `packages/myco/src/config/capabilities.ts`, not direct config reads
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss

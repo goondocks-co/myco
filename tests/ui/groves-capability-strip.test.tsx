@@ -62,7 +62,6 @@ mock.module('../../packages/myco/ui/src/hooks/use-maintenance-summary', () => ({
 
 mock.module('../../packages/myco/ui/src/hooks/use-grove-mutations', () => ({
   useArchiveProject: () => ({ mutate: () => {} }),
-  useBackupProject: () => ({ mutate: () => {} }),
   useSetDefaultGrove: () => ({ mutate: () => {} }),
   useUnarchiveProject: () => ({ mutate: () => {} }),
 }));
