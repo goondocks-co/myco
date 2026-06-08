@@ -17,3 +17,14 @@ test('highlights fenced code (Shiki emits a styled pre)', async () => {
   const html = await renderMarkdown('```bash\nmyco doctor\n```');
   assert.match(html, /<pre[^>]*class="[^"]*shiki/);
 });
+
+test('does not auto-link bare filenames like CLAUDE.md', async () => {
+  const html = await renderMarkdown('See CLAUDE.md and SKILL.md for the rules.');
+  assert.doesNotMatch(html, /href="http:\/\/CLAUDE\.md"/);
+  assert.doesNotMatch(html, /href="http:\/\/SKILL\.md"/);
+});
+
+test('still auto-links explicit http(s) URLs in prose', async () => {
+  const html = await renderMarkdown('Visit https://example.com for more.');
+  assert.match(html, /<a href="https:\/\/example\.com"/);
+});

@@ -7,6 +7,10 @@ let mdPromise;
 
 async function buildMd() {
   const md = MarkdownIt({ html: true, linkify: true, typographer: true });
+  // Keep linkify: true so explicit https://... URLs stay clickable, but disable
+  // fuzzy/schemeless matching so bare filenames like CLAUDE.md aren't auto-linked
+  // (markdown-it's linkify treats .md, .sh, .ts, .io, etc. as valid TLDs).
+  md.linkify.set({ fuzzyLink: false, fuzzyEmail: false, fuzzyIP: false });
   md.use(anchor, { tabIndex: false });
   // Single dark theme (the site is dark-only) → Shiki emits a self-contained
   // <pre class="shiki <theme>"> with inline colors, no extra theme-switch CSS.
