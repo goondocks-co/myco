@@ -1,15 +1,18 @@
 // docs/lib/template.mjs
 import { NAV } from './nav.mjs';
 
+const escText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escAttr = (s) => escText(s).replace(/"/g, '&quot;');
+
 function sidebar(currentSlug) {
   return NAV.map(
     (group) => `
       <div class="ds-group">
-        <div class="ds-group-label">${group.group}</div>
+        <div class="ds-group-label">${escText(group.group)}</div>
         ${group.items
           .map(
             (item) =>
-              `<a class="ds-link${item.slug === currentSlug ? ' active' : ''}" href="/${item.slug}">${item.title}</a>`,
+              `<a class="ds-link${item.slug === currentSlug ? ' active' : ''}" href="/${item.slug}">${escText(item.title)}</a>`,
           )
           .join('\n        ')}
       </div>`,
@@ -19,25 +22,24 @@ function sidebar(currentSlug) {
 export function renderPage({ slug, title, description, bodyHtml }) {
   const canonical = `https://myco.sh/${slug}`;
   const rawMd = `/${slug}.md`;
-  const esc = (s) => s.replace(/"/g, '&quot;');
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} — Myco</title>
-<meta name="description" content="${esc(description)}">
+<title>${escText(title)} — Myco</title>
+<meta name="description" content="${escAttr(description)}">
 <link rel="canonical" href="${canonical}">
 <link rel="alternate" type="text/markdown" href="${rawMd}" title="Markdown source">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Myco">
-<meta property="og:title" content="${esc(title)} — Myco">
-<meta property="og:description" content="${esc(description)}">
+<meta property="og:title" content="${escAttr(title)} — Myco">
+<meta property="og:description" content="${escAttr(description)}">
 <meta property="og:url" content="${canonical}">
 <meta property="og:image" content="https://myco.sh/assets/myco-hero-wide.jpg">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="${esc(title)} — Myco">
-<meta name="twitter:description" content="${esc(description)}">
+<meta name="twitter:title" content="${escAttr(title)} — Myco">
+<meta name="twitter:description" content="${escAttr(description)}">
 <meta name="twitter:image" content="https://myco.sh/assets/myco-hero-wide.jpg">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon-sage.svg">
 <link rel="stylesheet" href="/colors_and_type.css">
@@ -77,7 +79,7 @@ export function renderPage({ slug, title, description, bodyHtml }) {
     ${sidebar(slug)}
   </aside>
   <main class="docs-main">
-    <nav class="docs-crumb" aria-label="Breadcrumb"><a href="/#docs">Docs</a> / <span>${title}</span></nav>
+    <nav class="docs-crumb" aria-label="Breadcrumb"><a href="/#docs">Docs</a> / <span>${escText(title)}</span></nav>
     <article class="docs-prose">
 ${bodyHtml}
     </article>

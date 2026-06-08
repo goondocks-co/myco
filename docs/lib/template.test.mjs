@@ -35,3 +35,16 @@ test('includes a View raw Markdown link and the body', () => {
   assert.match(page, /href="\/quickstart\.md"[^>]*>View raw Markdown/);
   assert.match(page, /<p>Body\.<\/p>/);
 });
+
+test('escapes HTML special chars in title and sidebar text', () => {
+  const p = renderPage({
+    slug: 'quickstart',
+    title: 'Search & <Recall>',
+    description: 'Find & recall <stuff>.',
+    bodyHtml: '<p>x</p>',
+  });
+  assert.match(p, /<title>Search &amp; &lt;Recall&gt; — Myco<\/title>/);
+  assert.match(p, /<meta name="description" content="Find &amp; recall &lt;stuff&gt;.">/);
+  // breadcrumb element-text
+  assert.match(p, /<span>Search &amp; &lt;Recall&gt;<\/span>/);
+});
