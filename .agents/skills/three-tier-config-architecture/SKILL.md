@@ -20,298 +20,142 @@ Myco's configuration system implements a three-tier hierarchy: Machine (global),
 
 ## Procedure A: Implementing Three-Tier Config Storage Design
 
-### 1. Define the Configuration Schema with Scope Metadata
+### 1. Understand the Flat-Function API
 
-Create type definitions that include scope information for each setting:
+All config I/O flows through flat functions in `packages/myco/src/config/loader.ts`. There are no storage classes — use the exported functions directly:
 
 ```typescript
-// packages/myco/src/config/schema.ts
-interface ConfigSetting<T> {
-  value: T;
-  scope: 'machine' | 'grove' | 'project';
-  defaultValue: T;
-  description: string;
-  validation?: (value: T) => boolean;
-}
+// packages/myco/src/config/loader.ts — read functions
+loadMachineConfig()               // reads ~/.myco/config.yaml
+loadGroveConfig()                 // reads the grove-level config.yaml
+loadLocalConfig(vaultDir)         // reads .myco/local.yaml (personal, not committed)
+loadConfig(filePath)              // reads any config file by absolute path
+loadMergedConfig({ projectPath }) // reads all tiers, returns merged result
 
-interface MycoConfig {
-  agentPipeline: ConfigSetting<{ enabled: boolean; maxTurns: number; }> & { scope: 'grove' };
-  vault: ConfigSetting<{ location: string; }> & { scope: 'project' };
-  telemetry: ConfigSetting<{ enabled: boolean; }> & { scope: 'machine' };
-}
+// packages/myco/src/config/loader.ts — write functions
+updateConfig(filePath, partial)      // deep-merge update of any config file
+updateGroveConfig(partial)           // partial update of grove config
+saveGroveConfig(fullConfig)          // full replacement of grove config
+saveLocalConfig(vaultDir, config)    // full replacement of local config
+
+// Example
+const machineConfig = loadMachineConfig();
+const groveConfig = loadGroveConfig();
+const { config } = await loadMergedConfig({ projectPath });
+await updateGroveConfig({ embedding: { provider: 'openai' } });
 ```
 
-### 2. Implement Storage Layer with Scope-Aware Persistence
+### 2. Scope Enforcement via SCOPE_REGISTRY
 
-Design storage that respects tier boundaries and integrates with portable project identity:
+The `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` is the single source of truth for which tier owns each field. `pruneToTier(raw, tier)` silently drops any fields that tier is not authorized to contribute:
 
 ```typescript
-// packages/myco/src/config/storage.ts
-import { resolveGlobalConfigPath, resolveGroveConfigPath } from '../grove/paths.js';
-import { readProjectConfig } from '../grove/project-config.js';
+// packages/myco/src/config/scope.ts
+scopePolicyForPath('embedding.provider')
+// → { home: 'grove', overridableBy: [] }   (grove-locked)
 
-class ConfigStorage {
-  async readTieredConfig<K extends keyof MycoConfig>(
-    key: K,
-    context: { grove?: string; projectPath?: string }
-  ): Promise<MycoConfig[K]['value']> {
-    const setting = configSchema[key];
-    
-    switch (setting.scope) {
-      case 'machine':
-        return this.readMachineConfig(key);
-      case 'grove':
-        if (!context.grove) throw new Error(`Grove context required for ${key}`);
-        return this.readGroveConfig(key, context.grove);
-      case 'project':
-        if (!context.projectPath) throw new Error(`Project path required for ${key}`);
-        
-        // Resolve portable project identity from project.toml
-        const projectConfig = await readProjectConfig(context.projectPath);
-        return this.readProjectConfig(key, projectConfig.binding_id);
-    }
-  }
-}
+scopePolicyForPath('agent.provider')
+// → { home: 'grove', overridableBy: ['local'] }
+
+tierAllowsPath('project', 'embedding.provider')  // false — grove-scoped
+tierAllowsPath('grove',   'embedding.provider')  // true
+
+// pruneToTier strips fields that don't belong to that tier
+const cleanProject = pruneToTier(rawProjectDoc, 'project');
+// grove-scoped keys in rawProjectDoc are silently removed
 ```
 
-### 3. Project.toml Integration for Portable Configuration
+### 3. Portable Project Identity
 
-Integrate with the new portable project identity system:
+Project-scoped configuration uses the stable identity from `.myco/project.toml`. The `binding_id` in that file persists across machine boundaries and clone operations. Load it via `loadProjectManifest` in `packages/myco/src/config/project-manifest.ts`:
 
 ```typescript
-// packages/myco/src/config/project-integration.ts
-import { readProjectConfig } from '../grove/project-config.js';
-
-interface ProjectConfigContext {
-  projectPath: string;
-  bindingId: string;
-  groveId?: string;
-}
-
-class ProjectConfigManager {
-  async resolveProjectContext(projectPath: string): Promise<ProjectConfigContext> {
-    const projectConfig = await readProjectConfig(projectPath);
-    return {
-      projectPath,
-      bindingId: projectConfig.binding_id,
-      groveId: projectConfig.grove_id
-    };
-  }
-  
-  async migrateProjectConfigToPortable(
-    legacyProjectId: string,
-    projectPath: string
-  ): Promise<void> {
-    const legacyConfig = await this.readLegacyProjectConfig(legacyProjectId);
-    const context = await this.resolveProjectContext(projectPath);
-    
-    // Migrate configuration using binding_id as stable key
-    await this.writeProjectConfigWithBindingId(legacyConfig, context.bindingId, projectPath);
-    await this.removeLegacyProjectConfig(legacyProjectId);
-  }
-}
+// packages/myco/src/config/project-manifest.ts
+const manifest = await loadProjectManifest(projectPath);
+// manifest.binding_id — stable UUID for this project across machines
+// manifest.grove_id  — which Grove this project is bound to
 ```
 
 ## Procedure B: Type-Level Scope Enforcement and Compile-Time Safety
 
-### 1. Design Scope-Aware Type System
+### 1. Use Tier-Specific Zod Schemas
 
-Create TypeScript patterns that enforce scope at compile time with portable project support:
+Each tier has a dedicated Zod schema in `packages/myco/src/config/schema.ts` that only accepts fields valid for that tier. Parse raw YAML through the correct schema to get type safety:
 
 ```typescript
-// packages/myco/src/config/types.ts
-type ScopedConfig<S extends 'machine' | 'grove' | 'project'> = {
-  [K in keyof MycoConfig as MycoConfig[K]['scope'] extends S ? K : never]: MycoConfig[K]['value'];
-};
-
-interface ConfigContext {
-  machine?: boolean;
-  grove?: string;
-  projectPath?: string;
-  bindingId?: string; // Portable project identifier
-}
-
-type ConfigAccessor<C extends ConfigContext> = 
-  C extends { projectPath: string } ? ProjectConfig & GroveConfig & MachineConfig :
-  C extends { grove: string } ? GroveConfig & MachineConfig :
-  MachineConfig;
+// packages/myco/src/config/schema.ts
+MachineConfigSchema.parse(rawMachineDoc)   // typed as MachineConfig
+GroveConfigSchema.parse(rawGroveDoc)       // typed as GroveConfig
+ProjectConfigSchema.parse(rawProjectDoc)   // typed as ProjectConfig
+// Zod throws ZodError if fields from wrong tiers are present
 ```
 
-### 2. Implement Context-Dependent Config API
+### 2. Enforce Scope at Write Call Sites
 
-Build APIs that expose only valid settings based on current context:
+Use `scopePolicyForPath` and `tierAllowsPath` from `packages/myco/src/config/scope.ts` to guard writes before they reach the filesystem:
 
 ```typescript
-// packages/myco/src/config/accessor.ts
-class TypedConfigAccessor<C extends ConfigContext> {
-  private projectContext?: ProjectConfigContext;
-  
-  constructor(private context: C) {}
-  
-  async initialize(): Promise<void> {
-    if (this.context.projectPath) {
-      const projectConfig = await readProjectConfig(this.context.projectPath);
-      this.projectContext = {
-        projectPath: this.context.projectPath,
-        bindingId: projectConfig.binding_id,
-        groveId: projectConfig.grove_id
-      };
-    }
-  }
-  
-  get<K extends keyof ConfigAccessor<C>>(key: K): Promise<ConfigAccessor<C>[K]> {
-    return this.storage.readTieredConfig(key, this.context);
-  }
-  
-  async set<K extends keyof ConfigAccessor<C>>(
-    key: K,
-    value: ConfigAccessor<C>[K]
-  ): Promise<void> {
-    const setting = configSchema[key];
-    if (setting.scope === 'project' && this.projectContext) {
-      return this.writeProjectConfigWithBinding(key, value, this.projectContext);
-    }
-    return updateConfig(this.getConfigPath(setting.scope), { [key]: value });
-  }
+// packages/myco/src/config/scope.ts
+if (!tierAllowsPath('project', fieldPath)) {
+  const policy = scopePolicyForPath(fieldPath);
+  throw new Error(
+    `${fieldPath} belongs to ${policy.home} tier; cannot write to project`
+  );
 }
+```
+
+### 3. Tier Precedence
+
+The canonical tier ordering is exported from `packages/myco/src/config/scope.ts`:
+
+```typescript
+// TIER_PRECEDENCE = ['machine', 'grove', 'project', 'local']
+// Higher index = higher precedence; local wins over all others.
 ```
 
 ## Procedure C: Settings UI Patterns for Multi-Tier Editing
 
-### 1. Build Scope-Aware Form Components
+### 1. Use useScopedConfig and ScopedField
 
-Create UI components that indicate and enforce scope boundaries with portable project support:
+The React settings UI provides two primitives for scope-aware forms, used throughout `packages/myco/ui/src/pages/`:
 
 ```typescript
-// packages/myco/ui/src/components/ScopedSettingField.tsx
-export function ScopedSettingField<K extends keyof MycoConfig>(
-  settingKey,
-  context,
-  value,
-  onChange
-}: ScopedSettingFieldProps<K>) {
-  const setting = configSchema[settingKey];
-  const projectContext = useProjectContext(context.projectPath);
-  const canEdit = isValidInContext(settingKey, context);
-  
-  return (
-    <div className="scoped-setting-field">
-      <div className="setting-header">
-        <label>{setting.description}</label>
-        <ScopeBadge scope={setting.scope} />
-        {projectContext?.bindingId && (
-          <ProjectIdentityBadge bindingId={projectContext.bindingId} />
-        )}
-      </div>
-      
-      <SettingInput
-        value={value}
-        onChange={onChange}
-        disabled={!canEdit}
-        validation={setting.validation}
-      />
-    </div>
-  );
-}
+// packages/myco/ui/src/hooks/use-scoped-config.ts
+const { effective, isLoading } = useScopedConfig();
+// `effective` is the fully merged config value across all tiers
+
+// packages/myco/ui/src/components/config/ScopedField.tsx
+<ScopedField>
+  {/* field inputs that read from `effective`
+      and write via updateGroveConfig() or updateConfig() */}
+</ScopedField>
 ```
+
+See `packages/myco/ui/src/pages/Cortex.tsx` for a worked example of `useScopedConfig` + `ScopedField` used together in a real settings page.
 
 ### 2. Design Inheritance Visualization
 
-Build components that clearly show override relationships with portable project identity:
-
-```typescript
-// packages/myco/ui/src/components/InheritanceVisualization.tsx
-export function InheritanceChain({ settingKey, context }: InheritanceChainProps) {
-  const projectContext = useProjectContext(context.projectPath);
-  const inheritanceChain = buildInheritanceChain(settingKey, context, projectContext);
-  
-  return (
-    <div className="inheritance-chain">
-      {inheritanceChain.map((tier, index) => (
-        <div key={tier.scope} className="inheritance-tier">
-          <div className={`tier-badge ${tier.isActive ? 'active' : 'overridden'}`}>
-            {tier.scope}
-            {tier.scope === 'project' && projectContext?.bindingId && (
-              <div className="binding-id-display">
-                ID: {projectContext.bindingId.slice(0, 8)}...
-              </div>
-            )}
-          </div>
-          <div className="tier-value">{JSON.stringify(tier.value)}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-```
+When building UI that shows override relationships, represent the full tier stack. Each setting has a `home` tier (the default) and optional `overridableBy` tiers. Use `scopePolicyForPath(fieldPath)` to determine the badge shown next to each field. Active overrides — when a higher-precedence tier has a value — should visually indicate which tier is "winning" so users understand why the effective value differs from the home-tier default.
 
 ## Procedure D: Config Merging and Override Resolution
 
-### 1. Implement Hierarchical Merging Algorithm
+### 1. The Four-Stage Merge Pipeline
 
-Create merging logic that respects precedence rules (Project > Grove > Machine) with portable project support:
-
-```typescript
-// packages/myco/src/config/merger.ts
-class ConfigMerger {
-  async resolveConfig<K extends keyof MycoConfig>(
-    key: K,
-    context: ConfigContext
-  ): Promise<MycoConfig[K]['value']> {
-    const setting = configSchema[key];
-    
-    if (setting.scope === 'project' && context.projectPath) {
-      // Use portable project identity for configuration resolution
-      const projectConfig = await readProjectConfig(context.projectPath);
-      const projectContext = {
-        projectPath: context.projectPath,
-        bindingId: projectConfig.binding_id,
-        groveId: projectConfig.grove_id
-      };
-      
-      return this.readProjectValueWithBinding(key, projectContext) ??
-             (context.grove ? this.readGroveValue(key, context.grove) : null) ??
-             this.readMachineValue(key);
-    }
-    
-    // Handle machine and grove scopes as before
-    return setting.defaultValue;
-  }
-}
-```
-
-### 2. Design Conflict Resolution with Portable Project Context
-
-Handle cases where multiple tiers have conflicting values:
+Config merging in `loadMergedConfig()` applies tiers in ascending precedence order. Each stage uses `pruneToTier` to strip unauthorized fields before merging:
 
 ```typescript
-// packages/myco/src/config/conflict-resolution.ts
-class PortableProjectMergeStrategy<T extends Record<string, any>> {
-  resolve(values: { 
-    machine?: T; 
-    grove?: T; 
-    project?: T;
-    projectContext?: ProjectConfigContext;
-  }): T {
-    const baseConfig = deepMergeConfig(values.machine || {} as T, values.grove || {});
-    
-    // Apply project-specific overrides using binding_id context
-    const projectConfig = this.enrichWithProjectContext(values.project || {}, values.projectContext);
-    return deepMergeConfig(baseConfig, projectConfig);
-  }
-  
-  private enrichWithProjectContext<T>(config: T, context?: ProjectConfigContext): T {
-    if (!context) return config;
-    return {
-      ...config,
-      _projectContext: {
-        bindingId: context.bindingId,
-        groveId: context.groveId
-      }
-    };
-  }
-}
+// Actual merge pipeline — packages/myco/src/config/loader.ts
+// machine < grove < project < local (each stage wins over the previous)
+const stage1 = deepMergeConfig(pruneToTier(machineRaw, 'machine'), pruneToTier(groveRaw, 'grove'));
+const stage2 = deepMergeConfig(stage1, pruneToTier(projectRaw, 'project'));
+const merged  = deepMergeConfig(stage2, pruneToTier(localRaw, 'local'));
+// Grove fields in a project yaml are silently dropped by pruneToTier();
+// project fields in a grove yaml are silently dropped; etc.
 ```
+
+### 2. Conflict Resolution
+
+`deepMergeConfig` uses **replace semantics for arrays** (source arrays overwrite target arrays) and deep-merge for objects. There is no conflict-resolution negotiation — the later stage always wins for any key that appears in both. If different projects need different values for the same grove-locked field, the field is not suitable for grove tier; move it to project scope in `SCOPE_REGISTRY`.
 
 ## Procedure E: Migration Patterns for Scope Boundary Changes
 
@@ -321,255 +165,54 @@ Myco uses a **promote-before-strip** two-layer automatic migration model for sco
 
 **Layer 1: PROJECT_TIER_LEGACY_FIELDS Silent Recognition**
 
-Legacy project-tier fields are recognized but not written to. When `loadMergedConfig()` encounters them, they are silently skipped (not exposed to code):
+`PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts` lists the dot-path segments of fields that have been moved out of project tier. The internal `stripLegacyProjectFields` helper in `packages/myco/src/config/loader.ts` reads this list and silently removes those fields when writing project config. When `loadMergedConfig()` encounters them, `pruneToTier(..., 'project')` drops them — they are not included in the merged result:
 
 ```typescript
 // packages/myco/src/config/schema.ts
-const PROJECT_TIER_LEGACY_FIELDS = [
-  'embedding.run_in_deep_sleep',
-  'embedding.provider',
-  'embedding.model',
-  'agent.scheduled_tasks_active_window_days',
-  'agent.provider',
-  'agent.model',
-  'agent.timeout_ms'
+export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
+  // fields moved to grove tier:
+  ['embedding', 'run_in_deep_sleep'],
+  ['agent', 'scheduled_tasks_active_window_days'],
+  ['appearance'],
+  // ... and others
 ];
-
-class ConfigMerger {
-  async mergeWithLegacyHandling(configs: { machine?, grove?, project? }) {
-    const merged = deepMergeConfig(configs.machine, configs.grove);
-    
-    // Recognize legacy fields in project tier but don't use them
-    // They will be migrated during myco update
-    for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
-      if (this.hasNestedValue(configs.project, legacyField)) {
-        // Field exists in legacy location - will be migrated by layer 2
-        console.debug(`Legacy field ${legacyField} recognized for migration`);
-      }
-    }
-    
-    // Return config with grove/machine tiers only (legacy project fields excluded)
-    return merged;
-  }
-}
+// pruneToTier(projectRaw, 'project') drops all of these automatically.
 ```
 
-**Layer 2: Atomic `myco update --all-projects` Lift**
+**Layer 2: Atomic `myco update` Lift**
 
-Running `myco update` performs an atomic, value-preserving migration of legacy project-tier fields to Grove tier across all projects in a single operation:
-
-```typescript
-// packages/myco/src/cli/update.ts
-async function migrateAllProjectConfigToGroveTier() {
-  const projects = await discoverAllProjects();
-  const groveConfig = await loadGroveConfig();
-  const migrations: { project: string; field: string; value: any }[] = [];
-  
-  // Phase 1: Scan all projects for legacy fields
-  for (const project of projects) {
-    const projectConfig = await loadConfig(path.join(project.path, '.myco/myco.yaml'));
-    
-    for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
-      const value = getNestedValue(projectConfig, legacyField);
-      if (value !== undefined) {
-        migrations.push({ project: project.name, field: legacyField, value });
-      }
-    }
-  }
-  
-  if (migrations.length === 0) {
-    console.log('No legacy project-tier config fields found.');
-    return;
-  }
-  
-  // Phase 2: Atomic lift to Grove tier
-  const transactionStart = Date.now();
-  
-  try {
-    // Write all values to Grove config (idempotent - repeated values are no-ops)
-    const uniqueMigrations = new Map<string, any>();
-    for (const { field, value } of migrations) {
-      if (!uniqueMigrations.has(field) || uniqueMigrations.get(field) === value) {
-        uniqueMigrations.set(field, value);
-      } else {
-        console.warn(`Conflicting values for ${field} across projects - using Grove tier value`);
-      }
-    }
-    
-    for (const [field, value] of uniqueMigrations) {
-      setNestedValue(groveConfig, field, value);
-    }
-    
-    await saveGroveConfig(groveConfig);
-    
-    // Phase 3: Remove legacy fields from all project configs
-    for (const project of projects) {
-      const projectConfig = await loadConfig(path.join(project.path, '.myco/myco.yaml'));
-      let hasChanges = false;
-      
-      for (const legacyField of PROJECT_TIER_LEGACY_FIELDS) {
-        if (hasNestedValue(projectConfig, legacyField)) {
-          removeNestedValue(projectConfig, legacyField);
-          hasChanges = true;
-        }
-      }
-      
-      if (hasChanges) {
-        await updateConfig(path.join(project.path, '.myco/myco.yaml'), projectConfig);
-        console.log(`Migrated ${project.name} to Grove-tier embedding/agent config`);
-      }
-    }
-    
-    const transactionDuration = Date.now() - transactionStart;
-    console.log(`Completed atomic migration in ${transactionDuration}ms: ${migrations.length} fields lifted to Grove tier`);
-  } catch (error) {
-    console.error('Migration failed - rolling back Grove config changes');
-    // Rollback: restore previous Grove config
-    throw error;
-  }
-}
-```
+Running `myco update` performs an atomic, value-preserving migration: legacy project-tier fields are lifted to Grove tier via `updateGroveConfig()` / `saveGroveConfig()`, and then the legacy fields are stripped from the project yaml. The exported `migrateLegacyLocalAppearanceToGrove` function in `packages/myco/src/config/loader.ts` is one example of this pattern — it moves appearance settings from local/project config into the Grove tier.
 
 **Key properties of the promote-before-strip model:**
 
 1. **Preservation**: Configuration VALUES are preserved during migration — they move from project to Grove tier, they are never lost or stripped
-2. **Atomicity**: The `myco update --all-projects` operation is atomic at the transaction level — either all projects migrate successfully or none do
+2. **Atomicity**: The `myco update` operation is atomic — either all projects migrate successfully or none do
 3. **Conflict detection**: If different projects have different values for the same field, the Grove tier value takes precedence (with warning logged)
 4. **Legacy recognition**: Existing code using `loadMergedConfig()` automatically skips legacy fields without errors
-5. **Idempotency**: Running `myco update` multiple times is safe — subsequent runs find no legacy fields and exit cleanly
+5. **Idempotency**: Running `myco update` multiple times is safe and idempotent — subsequent runs find no legacy fields and exit cleanly
 
 ### 2. Design Scope Migration Workflows
 
-Create procedures for moving settings between tiers with portable project identity support:
+When moving a field from one tier to another:
 
-```typescript
-// packages/myco/src/config/migration.ts
-interface ProjectMigrationContext {
-  projectPath: string;
-  legacyProjectId?: string;
-  bindingId: string;
-  groveId?: string;
-}
+1. Add the old path to `PROJECT_TIER_LEGACY_FIELDS` (or the equivalent for other tier moves) so the promote-before-strip mechanism recognizes it
+2. Update `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` to assign the new home tier and `overridableBy` list
+3. Add the new path to the appropriate tier Zod schema in `packages/myco/src/config/schema.ts`
+4. Write a migration function that reads legacy values and writes them to the new tier via `updateGroveConfig()` / `updateConfig()` / `saveMachineConfig()`
+5. Call the migration function from the `myco update` CLI path so it runs automatically on upgrade
 
-class ScopeMigrationRunner {
-  async migrateProjectToPortableIdentity(
-    legacyProjectId: string,
-    projectPath: string
-  ): Promise<void> {
-    // Read portable project identity
-    const projectConfig = await readProjectConfig(projectPath);
-    const migrationContext: ProjectMigrationContext = {
-      projectPath,
-      legacyProjectId,
-      bindingId: projectConfig.binding_id,
-      groveId: projectConfig.grove_id
-    };
-    
-    // Migrate all project-scoped settings to use binding_id
-    const projectSettings = Object.keys(configSchema).filter(
-      key => configSchema[key].scope === 'project'
-    );
-    
-    for (const settingKey of projectSettings) {
-      await this.migrateProjectSetting(settingKey, migrationContext);
-    }
-  }
-  
-  private async migrateProjectSetting(
-    settingKey: string,
-    context: ProjectMigrationContext
-  ): Promise<void> {
-    // Read existing configuration with legacy ID
-    const legacyValue = await this.readLegacyProjectValue(settingKey, context.legacyProjectId);
-    
-    if (legacyValue !== undefined) {
-      // Write configuration using portable binding_id
-      await this.writeProjectValueWithBinding(
-        settingKey,
-        legacyValue,
-        context.bindingId,
-        context.projectPath
-      );
-      await this.removeLegacyProjectValue(settingKey, context.legacyProjectId);
-    }
-  }
-}
-```
+### 3. Maintain Backward Compatibility During Migration
 
-### 3. Implement Backward Compatibility During Migration
+During the transition window, code must be able to read from both the old and new locations. Use `loadMergedConfig()` — it reads all tiers and applies precedence — so code that reads from the merged result automatically picks up values from whichever tier they currently live in. Avoid reading individual tier files directly during migration windows; always go through `loadMergedConfig()`.
 
-Maintain compatibility while scope changes are in progress:
+### 4. Migration Validation
 
-```typescript
-// packages/myco/src/config/compatibility.ts
-class BackwardCompatibilityLayer {
-  async readWithCompatibility<K extends keyof MycoConfig>(
-    key: K,
-    context: ConfigContext
-  ): Promise<MycoConfig[K]['value']> {
-    if (context.projectPath) {
-      // Use portable project identity for configuration access
-      const projectConfig = await readProjectConfig(context.projectPath);
-      const enhancedContext = { ...context, bindingId: projectConfig.binding_id };
-      return this.readConfigWithContext(key, enhancedContext);
-    }
-    
-    const config = await loadConfig(this.getConfigPath(context));
-    return config[key];
-  }
-}
-```
+Before running a scope boundary migration in production:
 
-### 4. Build Migration Validation and Rollback
-
-Create safety mechanisms for migration operations with portable project support:
-
-```typescript
-// packages/myco/src/config/migration-validation.ts
-class MigrationValidator {
-  async validateMigration(migration: ScopeMigration): Promise<ValidationResult> {
-    const issues: string[] = [];
-    
-    // Standard validation checks
-    if (!(migration.settingKey in configSchema)) {
-      issues.push(`Setting '${migration.settingKey}' not found in schema`);
-    }
-    
-    // Validate portable project identity consistency
-    if (migration.fromScope === 'project' || migration.toScope === 'project') {
-      const projectConsistency = await this.validateProjectIdentityConsistency();
-      if (!projectConsistency.valid) {
-        issues.push(`Project identity consistency issues: ${projectConsistency.issues.join(', ')}`);
-      }
-    }
-    
-    return { valid: issues.length === 0, issues, warnings: [] };
-  }
-  
-  private async validateProjectIdentityConsistency(): Promise<ValidationResult> {
-    const issues: string[] = [];
-    const projects = await this.listAllProjects();
-    
-    for (const project of projects) {
-      try {
-        const projectConfig = await readProjectConfig(project.path);
-        if (!projectConfig.binding_id || !this.isValidBindingId(projectConfig.binding_id)) {
-          issues.push(`Invalid binding_id in ${project.path}`);
-        }
-      } catch (error) {
-        issues.push(`Cannot read project.toml from ${project.path}`);
-      }
-    }
-    
-    return { valid: issues.length === 0, issues, warnings: [] };
-  }
-  
-  private isValidBindingId(bindingId: string): boolean {
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(bindingId);
-  }
-}
-```
+- Verify all projects in the Grove have consistent values for the field being moved. Manually diff project configs or add a pre-flight check to the migration function.
+- If projects disagree, determine whether the field should remain project-scoped. Grove-tier migration is appropriate only when the value should be consistent across all projects in a Grove.
+- After migration, run `loadMergedConfig()` for each affected project and confirm the effective value matches the pre-migration value.
+- Check `PROJECT_TIER_LEGACY_FIELDS` is updated so the old path is stripped on next write; otherwise stale entries persist.
 
 ## Cross-Cutting Gotchas
 
@@ -577,7 +220,7 @@ class MigrationValidator {
 
 - **Schema evolution**: When adding new settings, choose the scope carefully. Moving settings between scopes later requires complex migration procedures. Start with the narrowest appropriate scope (project) and broaden if needed.
 
-- **Type safety boundaries**: TypeScript compile-time validation only works if you use the typed accessors. Direct JSON manipulation bypasses all scope enforcement. Always use `TypedConfigAccessor` for config operations.
+- **Type safety boundaries**: TypeScript compile-time safety comes from the tier-specific Zod schemas (`MachineConfigSchema`, `GroveConfigSchema`, `ProjectConfigSchema`) in `packages/myco/src/config/schema.ts` and runtime enforcement via `scopePolicyForPath`/`tierAllowsPath` in `packages/myco/src/config/scope.ts`. Direct YAML manipulation bypasses all scope enforcement. Always use `updateConfig`/`updateGroveConfig`/`saveMachineConfig` and parse through the correct schema.
 
 - **UI state synchronization**: Multi-tier settings interfaces can show stale data if not properly synchronized. Use reactive patterns or explicit refresh after scope changes to keep UI consistent with actual config state.
 
@@ -599,7 +242,7 @@ class MigrationValidator {
 
 - **Automatic migration semantics**: The `myco update` command performs a TWO-LAYER automatic migration for scope boundary changes: (1) legacy project-tier fields are silently recognized but not used, (2) the atomic update operation lifts those values to Grove tier. Legacy fields are PRESERVED and MIGRATED, never stripped or lost. Running `myco update` multiple times is safe and idempotent.
 
-- **Legacy field recognition during merge**: When `loadMergedConfig()` encounters legacy project-tier fields like `embedding.run_in_deep_sleep` or `agent.scheduled_tasks_active_window_days`, they are silently skipped and not included in the merged configuration. The system reads from Grove tier instead. This allows old code to continue working without changes while the two-layer migration runs in the background.
+- **Legacy field recognition during merge**: When `loadMergedConfig()` encounters legacy project-tier fields like `embedding.run_in_deep_sleep` or `agent.scheduled_tasks_active_window_days`, they are silently dropped by `pruneToTier(..., 'project')` and not included in the merged configuration. The system reads from Grove tier instead. This allows old code to continue working without changes while the two-layer migration runs in the background.
 
 - **Scope boundary change coordination**: Before moving a configuration field from project to Grove tier, verify that all projects in the Grove will tolerate the same value. Different projects requiring different values for the same field indicates the field should remain project-scoped. Grove-tier migration is appropriate only when field values should be consistent across all projects in a Grove.
 
