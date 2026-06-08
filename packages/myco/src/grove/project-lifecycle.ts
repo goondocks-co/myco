@@ -1,15 +1,12 @@
-import path from 'node:path';
-import os from 'node:os';
 import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
-import { createBackup, pruneBackups } from '@myco/daemon/backup.js';
+import { createGroveBackup } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { ensureGroveDatabase } from './database.js';
 import {
-  resolveGroveDir,
   resolveGroveDbPath,
   resolveMycoHome,
 } from './paths.js';
@@ -79,16 +76,17 @@ export function deleteProjectPermanently(
   ensureGroveDatabase(groveId, mycoHome);
   const dbPath = resolveGroveDbPath(groveId, mycoHome);
   const groveConfig = loadGroveConfig(grove.id, mycoHome);
-  const backupDir = resolveGroveBackupDirForDelete(grove.slug, grove.id, groveConfig.backup.dir, mycoHome);
 
   const db = openDatabase(dbPath);
   try {
-    const snapshotPath = createBackup(
+    // Delete-safety snapshot — a whole-Grove backup into the Grove's
+    // canonical dir, via the same service the manual/auto paths use.
+    const { file_path: snapshotPath } = createGroveBackup({
+      groveId: grove.id,
       db,
-      backupDir,
-      getMachineId(),
-    );
-    pruneBackups(backupDir, groveConfig.backup.retention);
+      machineId: getMachineId(),
+      mycoHome,
+    });
     const tableCounts = countProjectRows(db, project.project_id);
     // Reconcile the per-Grove team_sync_state flag from this Grove's config
     // before deleting rows. Without this, a freshly-opened DB handle (e.g.
@@ -127,19 +125,6 @@ function tryRemoveProjectVault(projectRoot: string, action: 'archive' | 'delete'
       `[myco] project ${action} could not remove project vault project_id=${projectId}: ${(err as Error).message}\n`,
     );
   }
-}
-
-function resolveGroveBackupDirForDelete(
-  groveSlug: string,
-  groveId: string,
-  configuredDir: string | undefined,
-  mycoHome: string,
-): string {
-  if (!configuredDir) return path.resolve(resolveGroveDir(groveId, mycoHome), 'backups');
-  const expanded = configuredDir.startsWith('~/')
-    ? path.join(os.homedir(), configuredDir.slice(2))
-    : configuredDir;
-  return path.join(path.resolve(expanded), groveSlug);
 }
 
 function lifecycleResult(groveId: string, project: RegisteredProject): ProjectLifecycleResult {

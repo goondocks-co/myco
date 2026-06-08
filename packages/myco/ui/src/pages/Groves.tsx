@@ -6,7 +6,6 @@ import { useProjectsActivity } from '../hooks/use-maintenance-summary';
 import { formatTimeAgo } from '../lib/format';
 import {
   useArchiveProject,
-  useBackupProject,
   useSetDefaultGrove,
   useUnarchiveProject,
 } from '../hooks/use-grove-mutations';
@@ -46,7 +45,6 @@ type CapabilityTarget = MoveTarget;
 
 export default function Groves() {
   const navigate = useNavigate();
-  const backupProject = useBackupProject();
   const setDefaultGrove = useSetDefaultGrove();
   const archiveProject = useArchiveProject();
   const unarchiveProject = useUnarchiveProject();
@@ -59,7 +57,6 @@ export default function Groves() {
   const [moveTarget, setMoveTarget] = useState<MoveTarget | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<MoveTarget | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [capabilityTarget, setCapabilityTarget] = useState<CapabilityTarget | null>(null);
 
@@ -120,26 +117,6 @@ export default function Groves() {
         onError: (err) => {
           showToast({ level: 'error', title: 'Failed to set default', detail: err.message });
         },
-      },
-    );
-  }
-
-  function handleBackup(project: GroveProjectSummary) {
-    setPendingBackupId(project.project_id);
-    backupProject.mutate(
-      { projectId: project.project_id },
-      {
-        onSuccess: (data) => {
-          showToast({
-            level: 'success',
-            title: `Backup created for ${project.name}`,
-            detail: data.snapshot_path,
-          });
-        },
-        onError: (err) => {
-          showToast({ level: 'error', title: 'Backup failed', detail: err.message });
-        },
-        onSettled: () => setPendingBackupId(null),
       },
     );
   }
@@ -278,10 +255,8 @@ export default function Groves() {
                           <ProjectActionMenu
                             projectName={project.name}
                             archived={project.status === 'archived'}
-                            backupPending={pendingBackupId === project.project_id}
                             onOpen={() => navigate(projectPath({ grove, project }))}
                             onMove={() => setMoveTarget({ grove, project })}
-                            onBackup={() => handleBackup(project)}
                             onIgnore={() => handleIgnore(grove, project)}
                             onArchive={() => handleArchive(grove, project)}
                             onUnarchive={() => handleUnarchive(grove, project)}

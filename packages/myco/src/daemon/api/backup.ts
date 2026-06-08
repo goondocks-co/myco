@@ -1,31 +1,37 @@
 /**
  * Backup API handlers — create, list, preview, and restore backups.
  *
- * Grove-era layout: each Grove gets its own backup directory under either
- * `<groveHome>/backups/` (default) or `<configured backup.dir>/<groveSlug>/`
- * when the user has set `backup.dir` in their config. Handlers resolve the
- * Grove from the per-request context so a daemon serving multiple Groves
- * keeps each Grove's backups in its own folder. The DB written into the
- * backup is the per-Grove DB, looked up from the request context's
- * `databasePath` via the runtime cache.
+ * Every endpoint resolves the target Grove EXPLICITLY and identically:
+ * create takes the Grove from the request-body `ActionScope`; list, preview,
+ * and restore take it from the bearer-gated `x-myco-grove-id` request
+ * context. There is no silent boot-Grove fallback — a read with no Grove in
+ * context fails loud (400 `grove_required`). This is the contract that keeps
+ * read and write pointed at the same Grove: previously create resolved the
+ * Grove from the body while the reads resolved it from a different source
+ * (header context + boot fallback), so a backup could land in one Grove
+ * while the list showed another and reported "No backups yet".
+ *
+ * All directory/retention/file logic lives in the backup domain
+ * (`@myco/backup`); these handlers only resolve scope, fetch the Grove's
+ * DB handle from the runtime cache, and shape responses.
  */
 
-import type { Database } from 'bun:sqlite';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import type { MycoConfig } from '../../config/schema.js';
 import {
-  createBackup,
-  listBackups,
-  pruneBackups,
-  restorePreview,
-  restoreBackup,
-} from '../backup.js';
+  createGroveBackup,
+  listGroveBackups,
+  previewGroveRestore,
+  findGroveBackup,
+  type GroveBackupRef,
+} from '@myco/backup/service.js';
+import { restoreViaChild } from '@myco/backup/restore-runner.js';
+import { RestoreJobRegistry } from '@myco/backup/restore-jobs.js';
+import type { RestoreResult } from '@myco/backup/engine.js';
 import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
 import { GroveConfigSchema } from '../../config/schema.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
 import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome, currentDaemonVariant } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
-import os from 'node:os';
 import path from 'node:path';
 import {
   resolveActionScope,
@@ -40,138 +46,90 @@ import { errorMessage } from '@myco/utils/error-message.js';
 // Types
 // ---------------------------------------------------------------------------
 
+export type RestoreRunner = (params: { dbPath: string; backupPath: string }) => Promise<RestoreResult>;
+
 export interface BackupDeps {
-  /** Boot-time DB used when a request arrives without a Grove request context. */
-  bootDb: Database;
-  /** Boot-time vault dir, used as the legacy backup root fallback. */
-  bootVaultDir: string;
-  /** Boot-time Grove id, used when request context is absent. */
-  bootGroveId: string | null;
-  /** Per-Grove runtime cache shared with the rest of the daemon. */
+  /** Per-Grove runtime cache — source of every Grove's DB handle. */
   cache: GroveRuntimeCache;
   machineId: string;
-  /** Holder so config (`backup.dir`, retention) is re-read on every request. */
-  liveConfig: { current: MycoConfig };
   /** Override Myco home (tests); production resolves via env/HOME. */
   mycoHome?: string;
+  /**
+   * How a restore is executed. Defaults to an out-of-process run via the
+   * daemon's own binary (so a heavy restore never blocks the event loop).
+   * Tests inject an in-process runner.
+   */
+  restoreRunner?: RestoreRunner;
 }
 
-interface BackupScope {
-  db: Database;
-  backupDir: string;
+interface PerGroveBackupResult {
+  grove_id: string;
+  grove_slug: string;
+  ok: boolean;
+  file_path?: string;
+  size_bytes?: number;
+  error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Path resolution
-// ---------------------------------------------------------------------------
-
-function expandHome(rawDir: string): string {
-  return rawDir.startsWith('~/') ? path.join(os.homedir(), rawDir.slice(2)) : rawDir;
-}
-
-/**
- * Per-Grove backup directory.
- *
- * - When `backup.dir` is unset → `<groveHome>/backups`.
- * - When set → `<expanded backup.dir>/<groveSlug>` so a single user-chosen
- *   root hosts every Grove without colliding `<machineId>.sql` files.
- */
-export function resolveGroveBackupDir(
-  config: MycoConfig,
-  grove: { slug: string },
-  groveHome: string,
-): string {
-  const rawDir = config.backup.dir;
-  if (!rawDir) return path.resolve(groveHome, 'backups');
-  return path.join(path.resolve(expandHome(rawDir)), grove.slug);
-}
-
-// Legacy fallback for the no-Grove-in-context path (pre-Grove tests, boot fallback).
-export function resolveBackupDir(config: MycoConfig, vaultDir: string): string {
-  const rawDir = config.backup.dir;
-  if (!rawDir) return path.resolve(vaultDir, 'backups');
-  return path.resolve(expandHome(rawDir));
-}
+const GROVE_REQUIRED: RouteResponse = {
+  status: 400,
+  body: {
+    error: 'grove_required',
+    message: 'A Grove context is required (x-myco-grove-id). Select a project/Grove first.',
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
 
-/**
- * Create backup API handlers with injected dependencies.
- *
- * Returns an object with named handlers for each backup endpoint.
- */
 export function createBackupHandlers(deps: BackupDeps) {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const inflight = new ActionInflightRegistry();
+  const restoreRunner: RestoreRunner =
+    deps.restoreRunner ?? ((p) => restoreViaChild({ ...p, binaryPath: process.execPath }));
+  const restoreJobs = new RestoreJobRegistry(restoreRunner);
 
-  function resolveScope(req: RouteRequest): BackupScope {
-    const groveId = req.requestContext?.groveId ?? deps.bootGroveId;
-    if (groveId) {
-      const grove = loadGroveRecord(groveId, mycoHome);
-      if (grove) {
-        const groveHome = resolveGroveDir(grove.id, mycoHome);
-        const backupDir = resolveGroveBackupDir(deps.liveConfig.current, grove, groveHome);
-        const databasePath = req.requestContext?.databasePath;
-        const db = databasePath ? deps.cache.getDatabase(databasePath) : deps.bootDb;
-        return { db, backupDir };
-      }
-    }
-    // Legacy fallback — no Grove resolvable for this request.
+  function databaseForGrove(groveId: string) {
+    return deps.cache.getDatabase(resolveGroveDbPath(groveId, mycoHome));
+  }
+
+  function toWire(ref: GroveBackupRef) {
     return {
-      db: deps.bootDb,
-      backupDir: resolveBackupDir(deps.liveConfig.current, deps.bootVaultDir),
+      machine_id: ref.machine_id,
+      file_name: ref.file_name,
+      size_bytes: ref.size_bytes,
+      modified_at: ref.modified_at,
     };
   }
 
-  const inflight = new ActionInflightRegistry();
-
-  function performBackupForGrove(grove: GroveRecord): {
-    grove_id: string;
-    grove_slug: string;
-    ok: boolean;
-    file_path?: string;
-    size_bytes?: number;
-    error?: string;
-  } {
+  function performBackupForGrove(grove: GroveRecord): PerGroveBackupResult {
     try {
-      const groveHome = resolveGroveDir(grove.id, mycoHome);
-      const backupDir = resolveGroveBackupDir(deps.liveConfig.current, grove, groveHome);
-      const databasePath = resolveGroveDbPath(grove.id, mycoHome);
-      const db = deps.cache.getDatabase(databasePath);
-      const filePath = createBackup(db, backupDir, deps.machineId);
-      pruneBackups(backupDir, deps.liveConfig.current.backup.retention);
-      const backups = listBackups(backupDir);
-      const created = backups.find((b) => b.machine_id === deps.machineId);
+      const result = createGroveBackup({
+        groveId: grove.id,
+        db: databaseForGrove(grove.id),
+        machineId: deps.machineId,
+        mycoHome,
+      });
       return {
         grove_id: grove.id,
         grove_slug: grove.slug,
         ok: true,
-        file_path: filePath,
-        size_bytes: created?.size_bytes ?? 0,
+        file_path: result.file_path,
+        size_bytes: result.size_bytes,
       };
     } catch (err) {
-      return {
-        grove_id: grove.id,
-        grove_slug: grove.slug,
-        ok: false,
-        error: errorMessage(err),
-      };
+      return { grove_id: grove.id, grove_slug: grove.slug, ok: false, error: errorMessage(err) };
     }
   }
 
-  /** POST /api/backup — create a new backup of all synced tables. */
+  /** POST /api/backup — create a backup for one Grove (or every served Grove). */
   async function handleCreateBackup(req: RouteRequest): Promise<RouteResponse> {
-    // Try to read explicit scope from body. If absent or malformed and
-    // request context is missing, fall back to legacy single-Grove
-    // resolution so old clients continue to work.
-    let scope: ActionScope | null = null;
+    // Backups are per-Grove, never per-project, so the missing-body default
+    // resolves to `kind:'grove'` from the request context rather than
+    // silently widening a project request to a Grove backup.
+    let scope: ActionScope;
     try {
-      // Backup is per-Grove, never per-project. Default-from-context
-      // therefore resolves to `kind:'grove'` rather than the historical
-      // `kind:'project'`, which avoided silently widening to a Grove
-      // backup when the caller's request context happened to have a
-      // project id. (P2 #36)
       scope = resolveActionScope({
         body: req.body,
         requestContext: req.requestContext,
@@ -180,40 +138,16 @@ export function createBackupHandlers(deps: BackupDeps) {
     } catch (err) {
       if (err instanceof InvalidActionScopeError) {
         const raw = (req.body as { scope?: unknown } | null | undefined)?.scope;
-        if (raw !== undefined) {
-          return { status: 400, body: { error: 'invalid_scope', message: err.message } };
-        }
-        scope = null;
-      } else {
-        throw err;
+        // Malformed body scope → 400 invalid_scope; absent scope with no
+        // resolvable Grove context → 400 grove_required (fail loud, no fallback).
+        return raw !== undefined
+          ? { status: 400, body: { error: 'invalid_scope', message: err.message } }
+          : GROVE_REQUIRED;
       }
+      throw err;
     }
 
-    if (scope && scope.kind === 'all-groves') {
-      const key = `backup:${actionScopeKey(scope)}`;
-      return inflight.run(key, async (): Promise<RouteResponse> => {
-        // "all-groves" backup means all Groves THIS DAEMON serves; the
-        // peer daemon is responsible for its own Groves' backups.
-        const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
-        const results = groves.map((g) => performBackupForGrove(g));
-        const ok = results.filter((r) => r.ok).length;
-        return {
-          body: {
-            scope,
-            results,
-            summary: { ok, failed: results.length - ok },
-          },
-        };
-      });
-    }
-
-    if (scope && scope.kind === 'project') {
-      // Backup files are per-Grove, not per-project — there is no
-      // project-narrowed data plane to honor here. Reject the scope
-      // explicitly rather than silently widening to the Grove backup,
-      // so clients that asked for a project-scoped backup get a
-      // deterministic error and can choose `kind:'grove'` instead.
-      // (P2 #36)
+    if (scope.kind === 'project') {
       return {
         status: 400,
         body: {
@@ -223,109 +157,133 @@ export function createBackupHandlers(deps: BackupDeps) {
       };
     }
 
-    if (scope && scope.kind === 'grove') {
-      const grove = loadGroveRecord(scope.grove_id, mycoHome);
-      if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
+    if (scope.kind === 'all-groves') {
       const key = `backup:${actionScopeKey(scope)}`;
       return inflight.run(key, async (): Promise<RouteResponse> => {
-        const result = performBackupForGrove(grove);
-        if (!result.ok) {
-          return { status: 500, body: { scope, results: [result], summary: { ok: 0, failed: 1 } } };
-        }
-        return {
-          body: {
-            scope,
-            results: [result],
-            summary: { ok: 1, failed: 0 },
-            // Legacy fields for backward compatibility.
-            file_path: result.file_path,
-            machine_id: deps.machineId,
-            size_bytes: result.size_bytes,
-          },
-        };
+        // "all-groves" means every Grove THIS daemon serves; the peer daemon
+        // backs up its own Groves.
+        const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
+        const results = groves.map((g) => performBackupForGrove(g));
+        const ok = results.filter((r) => r.ok).length;
+        return { body: { scope, results, summary: { ok, failed: results.length - ok } } };
       });
     }
 
-    // Legacy fallback path: no scope and no resolvable Grove in context.
-    const { db, backupDir } = resolveScope(req);
-    const filePath = createBackup(db, backupDir, deps.machineId);
-    pruneBackups(backupDir, deps.liveConfig.current.backup.retention);
-    const backups = listBackups(backupDir);
-    const created = backups.find((b) => b.machine_id === deps.machineId);
-
-    return {
-      body: {
-        file_path: filePath,
-        machine_id: deps.machineId,
-        size_bytes: created?.size_bytes ?? 0,
-      },
-    };
+    // scope.kind === 'grove'
+    const grove = loadGroveRecord(scope.grove_id, mycoHome);
+    if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
+    const key = `backup:${actionScopeKey(scope)}`;
+    return inflight.run(key, async (): Promise<RouteResponse> => {
+      const result = performBackupForGrove(grove);
+      if (!result.ok) {
+        return { status: 500, body: { scope, results: [result], summary: { ok: 0, failed: 1 } } };
+      }
+      return {
+        body: {
+          scope,
+          results: [result],
+          summary: { ok: 1, failed: 0 },
+          // Legacy fields for back-compat with single-Grove clients.
+          file_path: result.file_path,
+          machine_id: deps.machineId,
+          size_bytes: result.size_bytes,
+        },
+      };
+    });
   }
 
-  /** GET /api/backups — list all backup files with metadata. */
+  /** GET /api/backups — list the active Grove's backups (canonical + legacy). */
   async function handleListBackups(req: RouteRequest): Promise<RouteResponse> {
-    const { backupDir } = resolveScope(req);
-    return { body: { backups: listBackups(backupDir) } };
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+    return { body: { backups: listGroveBackups(groveId, { mycoHome }).map(toWire) } };
+  }
+
+  /** Resolve the backup file the caller named (file_name) or implied (newest for machine_id). */
+  function resolveTargetFileName(
+    groveId: string,
+    body: { machine_id?: string; file_name?: string },
+  ): string | null {
+    if (body.file_name) return body.file_name;
+    if (!body.machine_id) return null;
+    const newest = listGroveBackups(groveId, { mycoHome }).find((b) => b.machine_id === body.machine_id);
+    return newest?.file_name ?? null;
+  }
+
+  /** POST /api/restore/preview — dry-run restore counts for one backup. */
+  async function handleRestorePreview(req: RouteRequest): Promise<RouteResponse> {
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+    const body = (req.body ?? {}) as { machine_id?: string; file_name?: string };
+    const fileName = resolveTargetFileName(groveId, body);
+    if (!fileName) return { status: 400, body: { error: 'missing_machine_id' } };
+
+    const preview = await previewGroveRestore({
+      groveId,
+      db: databaseForGrove(groveId),
+      fileName,
+      mycoHome,
+    });
+    if (!preview) return { status: 404, body: { error: 'backup_not_found' } };
+    return {
+      body: {
+        machine_id: preview.ref.machine_id,
+        file_name: preview.ref.file_name,
+        tables: preview.tables,
+        total_in_backup: preview.total_in_backup,
+        total_in_db: preview.total_in_db,
+      },
+    };
   }
 
   /**
-   * POST /api/restore/preview — dry-run restore to show new/existing
-   * counts. Accepts `file_name` for point-in-time restore (preferred);
-   * falls back to `machine_id` (newest entry for that machine) for
-   * back-compat with callers that haven't been updated.
+   * POST /api/restore — start a restore. A restore of a large backup takes
+   * minutes (it executes the whole dump out-of-process), so this returns a
+   * job id immediately and the client polls GET /api/restore/status. Re-uses
+   * the in-flight job when one is already running for the Grove.
    */
-  async function handleRestorePreview(req: RouteRequest): Promise<RouteResponse> {
-    const { machine_id, file_name } = req.body as { machine_id?: string; file_name?: string };
-    if (!file_name && !machine_id) {
-      return { status: 400, body: { error: 'missing_machine_id' } };
-    }
+  async function handleRestore(req: RouteRequest): Promise<RouteResponse> {
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+    const body = (req.body ?? {}) as { machine_id?: string; file_name?: string };
+    const fileName = resolveTargetFileName(groveId, body);
+    if (!fileName) return { status: 400, body: { error: 'missing_machine_id' } };
 
-    const { db, backupDir } = resolveScope(req);
-    const backups = listBackups(backupDir);
-    const backup = file_name
-      ? backups.find((b) => b.file_name === file_name)
-      : backups.find((b) => b.machine_id === machine_id);
-    if (!backup) {
-      return { status: 404, body: { error: 'backup_not_found' } };
-    }
+    const ref = findGroveBackup(groveId, fileName, { mycoHome });
+    if (!ref) return { status: 404, body: { error: 'backup_not_found' } };
 
-    const backupPath = `${backupDir}/${backup.file_name}`;
-    const tables = restorePreview(db, backupPath);
-    const total_new = tables.reduce((sum, t) => sum + t.new, 0);
-    const total_existing = tables.reduce((sum, t) => sum + t.existing, 0);
-
-    return {
-      body: {
-        machine_id: backup.machine_id,
-        file_name: backup.file_name,
-        tables,
-        total_new,
-        total_existing,
-      },
-    };
+    const job = restoreJobs.start({
+      groveId,
+      fileName: ref.file_name,
+      dbPath: resolveGroveDbPath(groveId, mycoHome),
+      backupPath: ref.path,
+    });
+    return { status: 202, body: { job_id: job.id, status: job.status, file_name: ref.file_name } };
   }
 
-  /** POST /api/restore — execute restore from a backup file. */
-  async function handleRestore(req: RouteRequest): Promise<RouteResponse> {
-    const { machine_id, file_name } = req.body as { machine_id?: string; file_name?: string };
-    if (!file_name && !machine_id) {
-      return { status: 400, body: { error: 'missing_machine_id' } };
+  /** GET /api/restore/status?job_id=… — poll a restore job's progress. */
+  async function handleRestoreStatus(req: RouteRequest): Promise<RouteResponse> {
+    const groveId = req.requestContext?.groveId;
+    if (!groveId) return GROVE_REQUIRED;
+    const jobId = typeof req.query?.job_id === 'string' ? req.query.job_id : undefined;
+    if (!jobId) return { status: 400, body: { error: 'missing_job_id' } };
+
+    const job = restoreJobs.get(jobId);
+    // Scope the job to the requesting Grove so a job id can't be read across
+    // Grove contexts.
+    if (!job || job.grove_id !== groveId) {
+      return { status: 404, body: { error: 'restore_job_not_found' } };
     }
-
-    const { db, backupDir } = resolveScope(req);
-    const backups = listBackups(backupDir);
-    const backup = file_name
-      ? backups.find((b) => b.file_name === file_name)
-      : backups.find((b) => b.machine_id === machine_id);
-    if (!backup) {
-      return { status: 404, body: { error: 'backup_not_found' } };
-    }
-
-    const backupPath = `${backupDir}/${backup.file_name}`;
-    const result = restoreBackup(db, backupPath);
-
     return {
-      body: { machine_id: backup.machine_id, file_name: backup.file_name, ...result },
+      body: {
+        job_id: job.id,
+        status: job.status,
+        file_name: job.file_name,
+        started_at: job.started_at,
+        finished_at: job.finished_at ?? null,
+        result: job.result ?? null,
+        error: job.error ?? null,
+      },
     };
   }
 
@@ -333,6 +291,7 @@ export function createBackupHandlers(deps: BackupDeps) {
     handleCreateBackup,
     handleListBackups,
     handleRestorePreview,
+    handleRestoreStatus,
     handleRestore,
   };
 }

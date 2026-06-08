@@ -28,8 +28,8 @@ import {
   getLastDatabaseLogTimestamps,
 } from '@myco/db/queries/database.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { resolveGroveBackupDir } from './backup.js';
-import { listBackups } from '../backup.js';
+import { resolveGroveBackupDir } from '@myco/backup/location.js';
+import { listBackups } from '@myco/backup/engine.js';
 import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
@@ -261,12 +261,11 @@ function releaseProvenanceSummary(db: Database): GroveMaintenanceSummary['releas
 // scope) — log-timestamp/log-count helpers go through getDatabase().
 function buildGroveSummary(
   scope: GroveScope,
-  config: MycoConfig,
   cache: GroveRuntimeCache,
   embeddingFactory: EmbeddingRuntimeFactory,
   mycoHome: string,
 ): GroveMaintenanceSummary {
-  const backupDir = resolveGroveBackupDir(config, scope.grove, scope.groveHome);
+  const backupDir = resolveGroveBackupDir(scope.grove.id, { mycoHome });
   const fileStats = getDatabaseFileStats(scope.databasePath);
   const ts = lastRunTimestamps();
   const projects = listRegisteredProjects(scope.grove.id, mycoHome);
@@ -357,7 +356,6 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
           groves.push(
             buildGroveSummary(
               scope,
-              deps.liveConfig.current,
               deps.cache,
               deps.embeddingRuntimeFactory,
               mycoHome,
@@ -397,7 +395,6 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
         withDatabase(db, () =>
           buildGroveSummary(
             { grove, groveHome, databasePath, db },
-            deps.liveConfig.current,
             deps.cache,
             deps.embeddingRuntimeFactory,
             mycoHome,

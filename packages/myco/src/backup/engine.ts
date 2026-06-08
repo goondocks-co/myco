@@ -513,6 +513,63 @@ function extractTableNames(content: string): string[] {
   return Array.from(tables);
 }
 
+/** Header that records a table's row count: `-- Table: <name> (<N> rows)`. */
+const TABLE_COUNT_REGEX = /-- Table:\s+(\w+)\s+\((\d+)\s+rows?\)/;
+
+/** Per-table comparison for a non-executing restore preview. */
+export interface TableContentCounts {
+  table: string;
+  /** Rows the backup contains for this table (from its `-- Table` header). */
+  in_backup: number;
+  /** Rows currently in the live DB for this table. */
+  in_db: number;
+}
+
+/**
+ * Cheap, non-executing restore preview.
+ *
+ * Restore is an additive `INSERT OR IGNORE` merge, so the useful question
+ * before restoring is "what does this backup hold vs what I have now".
+ * Rather than execute the (potentially multi-hundred-MB) dump in a savepoint
+ * — which blocks the daemon's single thread for minutes — this streams the
+ * file and reads each table's row count straight from the `-- Table: <name>
+ * (<N> rows)` header the dump already records, then counts the live rows.
+ * It scans chunks for the sparse `-- Table:` marker (no per-line work over
+ * millions of INSERTs) and awaits between chunks, so it stays responsive
+ * even on an 800MB dump.
+ */
+export async function previewRestoreContents(
+  db: Database,
+  backupPath: string,
+): Promise<TableContentCounts[]> {
+  const inBackup = new Map<string, number>();
+  const stream = fs.createReadStream(backupPath);
+  let carry = '';
+  for await (const chunk of stream) {
+    const text = carry + (chunk as Buffer).toString('latin1');
+    let idx = 0;
+    for (;;) {
+      const hit = text.indexOf('-- Table:', idx);
+      if (hit === -1) break;
+      const eol = text.indexOf('\n', hit);
+      if (eol === -1) break; // line continues into the next chunk
+      const match = TABLE_COUNT_REGEX.exec(text.slice(hit, eol));
+      if (match) inBackup.set(match[1], Number(match[2]));
+      idx = eol + 1;
+    }
+    // Keep the tail after the last newline so a marker split across the
+    // chunk boundary is re-scanned with the next chunk prepended.
+    const lastNl = text.lastIndexOf('\n');
+    carry = lastNl === -1 ? text : text.slice(lastNl + 1);
+  }
+
+  const result: TableContentCounts[] = [];
+  for (const [table, count] of inBackup) {
+    result.push({ table, in_backup: count, in_db: countRows(db, table) });
+  }
+  return result;
+}
+
 function countRows(db: Database, table: string): number {
   try {
     const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as
@@ -541,57 +598,6 @@ function hasSqlStatements(content: string): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Restore preview
-// ---------------------------------------------------------------------------
-
-/**
- * Preview what a restore would do without making changes.
- *
- * Runs the whole dump inside a savepoint, counts rows before and after,
- * then rolls back. The diff per table is the `new` count; the difference
- * between the dump's INSERT count and `new` is `existing` (rows that
- * already existed and were skipped by INSERT OR IGNORE).
- */
-export function restorePreview(
-  db: Database,
-  backupPath: string,
-): TableCounts[] {
-  const content = fs.readFileSync(backupPath, 'utf-8');
-  const tableNames = extractTableNames(content);
-  const before = new Map<string, number>();
-  for (const table of tableNames) before.set(table, countRows(db, table));
-
-  // Defer FK checks — backup may reference rows in non-synced tables
-  db.run('PRAGMA foreign_keys = OFF');
-  db.exec('SAVEPOINT restore_preview');
-  const after = new Map<string, number>();
-  try {
-    if (hasSqlStatements(content)) {
-      // SQLite's own parser handles multi-line string literals correctly,
-      // so feed it the entire dump as one multi-statement script. This
-      // closes the line-based-parser bug class that silently dropped
-      // every INSERT whose value contained an unescaped newline.
-      db.exec(content);
-    }
-    for (const table of tableNames) after.set(table, countRows(db, table));
-  } finally {
-    db.exec('ROLLBACK TO restore_preview');
-    db.exec('RELEASE restore_preview');
-    db.run('PRAGMA foreign_keys = ON');
-  }
-
-  const result: TableCounts[] = [];
-  for (const table of tableNames) {
-    const beforeN = before.get(table) ?? 0;
-    const afterN = after.get(table) ?? 0;
-    const newRows = Math.max(0, afterN - beforeN);
-    const claimedInserts = countTableInserts(content, table);
-    const existing = Math.max(0, claimedInserts - newRows);
-    result.push({ table, new: newRows, existing });
-  }
-  return result;
-}
 
 /**
  * Count INSERT statements in `content` that target `table`. Naive

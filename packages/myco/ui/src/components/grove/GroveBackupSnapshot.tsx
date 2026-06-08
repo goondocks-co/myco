@@ -1,9 +1,12 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Clock, File as FileIcon, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Panel } from '../ui/panel';
 import { fetchJson } from '../../lib/api';
 import { formatBytes, formatTimeAgo } from '../../lib/format';
+import { useActiveProjectSelection } from '../../hooks/use-project-selection';
+import { requestContextHeadersForSelection } from '../../lib/selection';
 
 interface BackupMeta {
   machine_id: string;
@@ -33,9 +36,20 @@ function backupTitle({
 }
 
 export function GroveBackupSnapshot() {
+  // Resolve the Grove from the active selection and send it explicitly, so
+  // the snapshot reads the same Grove the dashboard is scoped to (the list
+  // endpoint now requires an explicit Grove and no longer falls back to the
+  // boot Grove). Keyed on groveId so it shares the cache with BackupCard.
+  const selection = useActiveProjectSelection();
+  const groveId = selection?.grove.id ?? null;
+  const ctxHeaders = useMemo(
+    () => (selection ? requestContextHeadersForSelection(selection) : undefined),
+    [selection],
+  );
   const { data, error, isLoading } = useQuery<BackupListResponse, Error>({
-    queryKey: ['backups'],
-    queryFn: ({ signal }) => fetchJson<BackupListResponse>('/backups', { signal }),
+    queryKey: ['backups', groveId],
+    queryFn: ({ signal }) => fetchJson<BackupListResponse>('/backups', { signal, headers: ctxHeaders }),
+    enabled: !!groveId,
   });
   const backups = data?.backups ?? null;
   const last = backups && backups.length > 0 ? backups[0] : null;
@@ -61,7 +75,7 @@ export function GroveBackupSnapshot() {
         <p className="text-sm text-on-surface-variant m-0">Loading…</p>
       ) : last === null ? (
         <p className="text-sm text-on-surface-variant m-0">
-          Run <code className="font-mono">myco backup</code> to create the first snapshot.
+          Use <span className="text-on-surface">Backup Now</span> in Settings to create the first snapshot.
         </p>
       ) : (
         <div className="flex flex-col gap-3">
