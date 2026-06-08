@@ -18,7 +18,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "class-variance-authority": "^0.7",
     "clsx": "^2.1",
-    "cytoscape": "^3.33.4",
+    "cytoscape": "^3.34.0",
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
