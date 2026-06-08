@@ -14,6 +14,7 @@ import { GroveRuntimeCache, type EmbeddingRuntimeFactory } from '@myco/daemon/gr
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 // ---------------------------------------------------------------------------
@@ -568,12 +569,15 @@ describe('auto-backup power job', () => {
 
   it('writes under <backup.dir>/<groveSlug>/ when backup.dir is set', async () => {
     const customRoot = path.join(fx.workDir, 'custom-backups');
-    const deps = buildDeps(fx);
-    deps.liveConfig.current = {
-      ...deps.liveConfig.current,
-      backup: { dir: customRoot, retention: { keep_daily: 14, keep_weekly: 8 } },
-    };
-    registerPowerJobs(pm as never, deps);
+    // backup.dir is a Grove-tier setting; write it to the Grove's config
+    // (where the backup domain reads it), not the boot-time liveConfig.
+    const cfg = loadGroveConfig(fx.grove.id, fx.mycoHome);
+    saveGroveConfig(
+      fx.grove.id,
+      { ...cfg, backup: { ...cfg.backup, dir: customRoot } },
+      fx.mycoHome,
+    );
+    registerPowerJobs(pm as never, buildDeps(fx));
     await pm.find('auto-backup').fn();
     const dir = path.join(customRoot, fx.grove.slug);
     const files = fs.readdirSync(dir).filter((f) => /^test-machine__[0-9]+\.sql$/.test(f));

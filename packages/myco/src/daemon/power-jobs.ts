@@ -11,8 +11,7 @@ import {
   type CanopyJobsRegistration,
   type CanopyJobsRegistry,
 } from './jobs/canopy-scan.js';
-import { createBackup, listBackups, pruneBackups } from '@myco/backup/engine.js';
-import { resolveGroveBackupDir } from './api/backup.js';
+import { isAutoBackupDue, createGroveBackup } from '@myco/backup/service.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
 import { notify } from '@myco/notifications/notify.js';
@@ -352,33 +351,23 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
     kind: 'housekeeping',
     fn: fanOutGroves(POWER_JOB_NAMES.AUTO_BACKUP, async (scope) => {
       try {
-        const backupDir = resolveGroveBackupDir(liveConfig.current, scope.grove, scope.groveHome);
-
-        // Cadence gate. Without this, the PowerJob fires on every
-        // idle/sleep transition; a laptop cycling through dormant
-        // phases burns through retention slots in hours instead of
-        // spreading them across `keep_daily` days. Skip when the
-        // newest backup for this machine is younger than the
-        // configured interval.
-        const intervalMs = liveConfig.current.backup.auto_interval_hours * MS_PER_HOUR;
-        const recent = listBackups(backupDir).find((b) => b.machine_id === machineId);
-        if (recent) {
-          const ageMs = Date.now() - new Date(recent.modified_at).getTime();
-          if (ageMs < intervalMs) return;
-        }
+        // Cadence gate (per this Grove's own config). Without it the
+        // PowerJob fires on every idle/sleep transition; a laptop cycling
+        // through dormant phases would burn retention slots in hours
+        // instead of spreading them across `keep_daily` days.
+        if (!isAutoBackupDue({ groveId: scope.grove.id, machineId })) return;
 
         logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting', {
           grove_id: scope.grove.id,
           grove_slug: scope.grove.slug,
         });
-        const filePath = createBackup(scope.db, backupDir, machineId);
-        const pruneResult = pruneBackups(backupDir, liveConfig.current.backup.retention);
+        const result = createGroveBackup({ groveId: scope.grove.id, db: scope.db, machineId });
         logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', {
-          file_path: filePath,
+          file_path: result.file_path,
           grove_id: scope.grove.id,
           grove_slug: scope.grove.slug,
-          pruned: pruneResult.removed.length,
-          retained: pruneResult.kept,
+          pruned: result.pruned,
+          retained: result.kept,
         });
       } catch (err) {
         notifyOnFailure(scope, LOG_KINDS.BACKUP_ERROR, 'daemon.backup_failed', 'Backup', err);

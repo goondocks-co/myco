@@ -7,3 +7,5 @@
  * maintenance) import from here so the logic cannot drift across copies.
  */
 export * from './engine.js';
+export * from './location.js';
+export * from './service.js';
