@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import { run } from '@myco/cli/config';
 import { MycoConfigSchema } from '@myco/config/schema';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
+import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 
 const VALID_CONFIG = {
   version: 3,
@@ -35,9 +36,14 @@ describe('myco config', () => {
   let logged: string[];
   let errors: string[];
   let exitCode: number | undefined;
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-config-test-'));
+    // The daemon-restart-notice tests write and unlink a daemon.json via
+    // resolveServiceDaemonStatePath(); the sandbox keeps that away from
+    // the machine's real ~/.myco.
+    sandbox = sandboxMycoHome('myco-config-home-');
     logged = [];
     errors = [];
     exitCode = undefined;
@@ -60,6 +66,7 @@ describe('myco config', () => {
     console.error = originalError;
     process.exit = (globalThis as Record<string, unknown>).__originalExit as typeof process.exit;
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    sandbox.restore();
   });
 
   describe('config get', () => {
