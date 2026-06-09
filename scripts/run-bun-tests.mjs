@@ -5,8 +5,26 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// ---------------------------------------------------------------------------
+// Hermetic MYCO_HOME
+// ---------------------------------------------------------------------------
+// Tests must never touch the real ~/.myco. An unsandboxed write to
+// ~/.myco/service/daemon.json points every capture hook on the machine at a
+// dead port, and the hooks' capture-critical recovery then restarts the
+// production daemon. Every test process spawned by this runner inherits a
+// per-run sandbox home instead. An explicitly-set MYCO_HOME is honored so a
+// debugging run can still target a fixture home.
+if (!process.env.MYCO_HOME) {
+  const sandboxMycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
+  process.env.MYCO_HOME = sandboxMycoHome;
+  process.on('exit', () => {
+    try { fs.rmSync(sandboxMycoHome, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Watchdog diagnostics

@@ -28,6 +28,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { makeTestRequestContext } from '../../helpers/request-context.js';
+import { sandboxMycoHome } from '../../helpers/myco-home-sandbox.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
@@ -271,8 +272,13 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
   let logger: DaemonLogger;
   let client: DaemonClient;
   let now: number;
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
 
   beforeAll(async () => {
+    // The daemon.json fixture below must land in a sandbox home, never the
+    // machine's real ~/.myco where it would point live capture hooks at
+    // this test server's ephemeral port.
+    sandbox = sandboxMycoHome('myco-plans-delete-home-');
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-delete-'));
     ensureProjectManifest(vaultDir, { projectName: 'plans-delete-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
@@ -315,6 +321,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     try { fs.unlinkSync(resolveServiceDaemonStatePath()); } catch { /* gone */ }
     teardownTestDb();
     fs.rmSync(vaultDir, { recursive: true, force: true });
+    sandbox.restore();
   });
 
   beforeEach(() => {
