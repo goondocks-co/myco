@@ -17,6 +17,7 @@ import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/gro
 import { markEmbedded } from '@myco/db/queries/embeddings.js';
 import { gatherStats } from '@myco/services/stats.js';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
+import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 
 const AGENT_ID = 'stats-agent';
 
@@ -33,11 +34,16 @@ function insertArtifact(id: string, content: string | null, createdAt: number): 
 describe('gatherStats', () => {
   let tempDir: string;
   let vaultDir: string;
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stats-'));
     vaultDir = path.join(tempDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    // The daemon-metadata assertions below write a fixture daemon.json via
+    // resolveServiceDaemonStatePath(); the sandbox keeps it out of the
+    // machine's real ~/.myco.
+    sandbox = sandboxMycoHome('myco-stats-home-');
 
     saveConfig(vaultDir, MycoConfigSchema.parse({
       version: 3,
@@ -52,6 +58,7 @@ describe('gatherStats', () => {
   });
 
   afterEach(() => {
+    sandbox.restore();
     closeDatabase();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
