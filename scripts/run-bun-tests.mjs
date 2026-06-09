@@ -152,7 +152,7 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/db',
   // tests/deploy intentionally omitted: shared.test.ts calls mock.module().
   // The bundle path keeps the rest of the directory amortized while
-  // fileHasModuleMock routes shared.test.ts to per-file isolation.
+  // shared.test.ts runs from SOLO_NODE_FILES.
   'tests/embedding',
   'tests/grove',
   'tests/intelligence',
@@ -176,6 +176,27 @@ const NO_ISOLATE_NODE_TARGETS = [
   // tests/hooks intentionally omitted: response-shape tests depend on
   // process-global manifest capability state and have failed under Linux
   // shared Bun after neighboring hook fixtures mutate globals.
+];
+
+// Files that call mock.module() and therefore cannot share a bun process
+// (the mock swaps the process-wide module registry), evicted from the
+// shared groups below. They do NOT go to the --isolate chunks either:
+// these are SQLite/daemon-server-heavy fixtures, the exact churn profile
+// that triggers the bun 1.3.14 --isolate runtime spin (180s phase-kill ×
+// retries). Each runs as its own plain single-file bun process instead —
+// process-level isolation at ordinary startup cost.
+const SOLO_NODE_FILES = [
+  'tests/agent/phase-loop.test.ts',
+  'tests/agent/tools-dry-run.test.ts',
+  'tests/agent/tools-skills.test.ts',
+  'tests/daemon/api/agent-runs-overrides-security.test.ts',
+  'tests/daemon/api/cortex.test.ts',
+  'tests/daemon/api/key-leak-guard.test.ts',
+  'tests/daemon/api/providers-ssrf.test.ts',
+  'tests/daemon/api/restart.test.ts',
+  'tests/daemon/api/stats.test.ts',
+  'tests/daemon/team-sync.test.ts',
+  'tests/deploy/shared.test.ts',
 ];
 
 const NO_ISOLATE_NODE_GROUPS = [
@@ -702,13 +723,22 @@ function buildArgs() {
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file));
     const sharedFiles = nonDomFiles.filter(isCoveredByNoIsolateTarget);
-    const isolatedFiles = nonDomFiles.filter((file) => !isCoveredByNoIsolateTarget(file));
+    const soloFiles = SOLO_NODE_FILES.filter((file) => nonDomFiles.includes(file));
+    const isolatedFiles = nonDomFiles.filter(
+      (file) => !isCoveredByNoIsolateTarget(file) && !soloFiles.includes(file),
+    );
     assertNoModuleMocksInSharedFiles(sharedFiles);
 
     const sharedTargets = findSharedTargets(sharedFiles);
     const sharedGroups = findSharedGroups(sharedFiles);
 
     const isolatedTargets = writeNodeBundleTargets(isolatedFiles);
+
+    if (soloFiles.length > 0) {
+      console.log(
+        `[run-bun-tests] solo node env: ${soloFiles.length} mock.module() files run as single-file processes`,
+      );
+    }
 
     if (sharedTargets.length > 0 || sharedGroups.length > 0) {
       const groupCount = sharedTargets.length + sharedGroups.length;
@@ -721,6 +751,11 @@ function buildArgs() {
     return {
       nonDomPhases: [
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
+        ...soloFiles.map((file) => ({
+          label: `node env solo ${bundleSlug(file.replace(/^tests\//, '').replace(/\.test\.ts$/, ''))}`,
+          args: [...options, file, "--path-ignore-patterns=**/*.test.tsx"],
+          isolate: false,
+        })),
         ...buildIsolatedNodePhases(isolatedTargets, options),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
