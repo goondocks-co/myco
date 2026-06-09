@@ -149,6 +149,27 @@ describe('session query helpers', () => {
       const result = closeSession('nope', epochNow());
       expect(result).toBeNull();
     });
+
+    it('closes the session\'s still-open batches (completion chokepoint invariant)', () => {
+      // A completed session must not retain open turns. Completing the session
+      // is the single point that owns batch-closing, so every completion path
+      // (SessionEnd, manual API, stale sweep) inherits it.
+      const data = makeSession();
+      upsertSession(data);
+      const db = getDatabase();
+      db.prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+         VALUES (?, 1, ?, ?, 'active')`,
+      ).run(data.id, epochNow(), epochNow());
+      const openCount = (): number =>
+        (db.prepare(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND ended_at IS NULL`)
+          .get(data.id) as { n: number }).n;
+      expect(openCount()).toBe(1);
+
+      closeSession(data.id, epochNow());
+
+      expect(openCount()).toBe(0);
+    });
   });
 
   // ---------------------------------------------------------------------------

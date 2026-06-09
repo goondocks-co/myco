@@ -136,6 +136,33 @@ describe('completeStaleActiveSessions', () => {
     expect(session?.ended_at).not.toBeNull();
     expect(session?.ended_at).toBeGreaterThanOrEqual(before);
   });
+
+  const openBatchCount = (sessionId: string): number =>
+    (getDatabase()
+      .prepare(`SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ? AND ended_at IS NULL`)
+      .get(sessionId) as { n: number }).n;
+
+  it('closes the open batch when sweeping a stale session', () => {
+    // A plan-mode→execution run that never returns end_turn leaves its last
+    // turn open forever (no Stop closed it). When the sweep finally completes
+    // the idle session, that batch must close too — otherwise the session
+    // shows a perpetually-open turn.
+    const staleTime = epochNow() - STALE_THRESHOLD_S - 1;
+    seedSession('stale-open-batch', { status: 'active', batchStartedAt: staleTime });
+    expect(openBatchCount('stale-open-batch')).toBe(1);
+
+    completeStaleActiveSessions();
+
+    expect(openBatchCount('stale-open-batch')).toBe(0);
+  });
+
+  it('leaves open batches of a fresh (non-swept) session untouched', () => {
+    seedSession('fresh-open-batch', { status: 'active', batchStartedAt: epochNow() });
+
+    completeStaleActiveSessions();
+
+    expect(openBatchCount('fresh-open-batch')).toBe(1);
+  });
 });
 
 describe('findDeadSessionIds', () => {
