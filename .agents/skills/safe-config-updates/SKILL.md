@@ -254,10 +254,12 @@ When architectural changes move fields between tiers, two mechanisms cooperate:
 
 **Legacy strip — `PROJECT_TIER_LEGACY_FIELDS`**: For fields that historically lived in the wrong tier and need to be actively removed from committed `myco.yaml` files (not just ignored), add them to `PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts`. The loader's `stripLegacyProjectFields()` function iterates this list and calls `unsetAtPath()` to physically remove them from the YAML document, preventing stale fields from cluttering project configs.
 
+**`GROVE_PROMOTED_FIELDS` — Grove-tier conditional stripping**: `GROVE_PROMOTED_FIELDS` (also exported from `packages/myco/src/config/schema.ts`) is a companion array listing the subset of fields that belong specifically to Grove tier — embedding settings, agent provider, agent harness, agent model, and agent scheduling fields. See the array definition in schema.ts for the current list. This array is spread into `PROJECT_TIER_LEGACY_FIELDS`, but with a critical conditional: `stripLegacyProjectFields()` only strips these fields when the project is Grove-bound (`hasGrove: true`). If no Grove exists yet, the values are retained in `myco.yaml` so they aren't lost. Once the project binds to a Grove, `myco update` lifts the values to Grove tier and then strips them from the project YAML.
+
 **When to use each:**
 - New field at correct tier from day one → just add to `SCOPE_REGISTRY`; `pruneToTier` enforces it automatically
-- Field moved from project → grove tier → add to `SCOPE_REGISTRY` with new home; also add to `PROJECT_TIER_LEGACY_FIELDS` so the old project-tier value gets stripped from `myco.yaml` on next load
-- Field removed entirely → add to `PROJECT_TIER_LEGACY_FIELDS` to clean up existing configs; no registry entry needed
+- Field moved from project → grove tier → add to `SCOPE_REGISTRY` with new home; also add to `GROVE_PROMOTED_FIELDS` (and by extension `PROJECT_TIER_LEGACY_FIELDS`) so the old project-tier value gets stripped from `myco.yaml` once Grove is bound
+- Field removed entirely → add to `PROJECT_TIER_LEGACY_FIELDS` directly to clean up existing configs; no registry entry needed
 
 This silent-strip pattern ensures that when developers pull code with a tier reorganization, old fields in `myco.yaml` do not interfere with new grove-tier values, preventing silent shadowing of grove defaults.
 
@@ -332,15 +334,7 @@ const scopeDefaults = {
 ```
 
 **Step 5: Handle restart-required fields (if applicable)**
-If the field requires daemon restart rather than live-reload, add it to the restart-required pattern in the UI:
-
-```typescript
-const RESTART_REQUIRED_PATHS = [
-  'daemon.port',
-  'daemon.log_level',
-  'new_field_requiring_restart'
-];
-```
+If the field requires daemon restart rather than live-reload, document it in the settings UI and ensure the save handler sends the appropriate IPC restart signal alongside the config write.
 
 ---
 
@@ -413,12 +407,14 @@ generated content here
 ```
 
 **Step 3: In-process reconciliation**
-Trigger reconciliation via SymbiontInstaller after config save - NOT CLI subprocess:
+Trigger reconciliation via the symbiont reconciler after config save — NOT a CLI subprocess:
 
 ```typescript
+import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
+
 // In config write handler
 if (newConfig.enable_new_feature !== oldConfig.enable_new_feature) {
-  await SymbiontInstaller.reconcileFeatureBlocks();
+  reconcileConfiguredSymbionts(projectRoot, vaultDir);
 }
 ```
 
@@ -450,7 +446,7 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Config tier migration false positives:** During drift analysis, config property paths like `myco.yaml` and `backup.dir` are configuration property references, not missing file paths. Verify that core config safety functions remain present in the loader module before assuming drift.
 
-**Legacy field shadowing:** When adding to PROJECT_TIER_LEGACY_FIELDS for migration, ensure the strip happens at load time before tier merging. If a legacy project-tier `agent.provider` exists alongside a new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's stripped.
+**Legacy field shadowing:** When adding to PROJECT_TIER_LEGACY_FIELDS for migration, ensure the strip happens at load time before tier merging. If a legacy project-tier `agent.provider` exists alongside a new grove-tier `agent.provider`, the legacy field will shadow the grove value until it's stripped. Note: fields in `GROVE_PROMOTED_FIELDS` are only stripped when the project is Grove-bound (`hasGrove: true`) — they remain in `myco.yaml` until a Grove is available to receive the migrated value.
 
 **SCOPE_REGISTRY sync test:** A scope-registry sync test enforces that every Zod schema leaf has a registry entry. After adding a new config field to the schema, always add it to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` — or the test will fail loudly.
 
@@ -474,11 +470,12 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] If touching daemon-behavior fields, reload signal is sent
 - [ ] New scoped config fields added to both Zod schema AND `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts`
 - [ ] Config reactions follow closure factory pattern and idempotency constraints
-- [ ] Config toggle side-effects use managed blocks and in-process reconciliation
+- [ ] Config toggle side-effects use managed blocks and in-process reconciliation via `reconcileConfiguredSymbionts` from `packages/myco/src/symbionts/reconcile.ts`
 - [ ] Grove architecture compatibility considered for multi-project coordination
 - [ ] Three-tier merge precedence understood and documented
 - [ ] Config tier migration compatibility verified for grove coordination features
-- [ ] Legacy field handling: use `PROJECT_TIER_LEGACY_FIELDS` in schema.ts for fields that need physical removal from project YAML; `pruneToTier` auto-enforces scope for everything else
+- [ ] Legacy field handling: use `PROJECT_TIER_LEGACY_FIELDS` (or `GROVE_PROMOTED_FIELDS` for Grove-tier fields) in schema.ts for fields that need physical removal from project YAML; `pruneToTier` auto-enforces scope for everything else
+- [ ] GROVE_PROMOTED_FIELDS entries only stripped when project is Grove-bound — retained in myco.yaml until Grove exists
 - [ ] Scoped-clear operations pass `{ pruneEmptyParents: true }` to `unsetAtPath()` to avoid empty-map residue
 - [ ] Capability-gated features use `capabilityEnabled(config, capId)` from `packages/myco/src/config/capabilities.ts`, not direct config reads
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss
