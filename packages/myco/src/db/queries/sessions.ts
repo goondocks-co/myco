@@ -8,6 +8,7 @@
 import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { closeOpenBatches } from '@myco/db/queries/batches.js';
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
@@ -528,7 +529,15 @@ export function updateSession(
 }
 
 /**
- * Close a session — set status to 'completed' and record the end time.
+ * Close a session — set status to 'completed', record the end time, and close
+ * any still-open prompt batches.
+ *
+ * This is the single completion chokepoint: every path that completes a session
+ * (SessionEnd, the manual API, the stale-session sweep) routes through here, so
+ * the invariant "a completed session has no open turns" holds structurally.
+ * Without the batch close, a session ended without a final Stop (e.g. a
+ * plan-mode→execution run that never returned end_turn) keeps its last turn
+ * open indefinitely.
  *
  * @returns the updated row, or null if the session does not exist.
  */
@@ -543,6 +552,8 @@ export function closeSession(
      SET status = ?, ended_at = ?
      WHERE id = ?`,
   ).run(STATUS_COMPLETED, endedAt, id);
+
+  closeOpenBatches(id, endedAt);
 
   const closed = getSession(id, { kind: 'all' });
 

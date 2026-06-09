@@ -1,4 +1,4 @@
-import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
+import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, closeSession } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities, countActivitiesBySessions } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
@@ -251,10 +251,10 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
 
     const wasActive = session.status === 'active';
     if (wasActive) {
-      updateSession(sessionId, {
-        status: 'completed',
-        ended_at: session.ended_at ?? epochSeconds(),
-      }, scope);
+      // Route through the completion chokepoint so the manual-complete path
+      // also closes open batches (no perpetually-open turn) — scope already
+      // verified via getSession above.
+      closeSession(sessionId, session.ended_at ?? epochSeconds());
     }
 
     await triggerTitleSummary(sessionId, {

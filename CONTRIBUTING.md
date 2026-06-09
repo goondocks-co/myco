@@ -46,9 +46,9 @@ npm install
 myco init
 ```
 
-For dogfooding, the vault lives at `~/.myco/vaults/myco/` (configured in `.claude/settings.json`).
+For dogfooding, the vault lives in the project-local `.myco/` directory — Myco vaults are always project-local, never global.
 
-### 4. Verify
+### 3. Verify
 
 ```bash
 myco doctor    # Health check
