@@ -150,7 +150,9 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/daemon/embedding',
   'tests/daemon/jobs',
   'tests/db',
-  'tests/deploy',
+  // tests/deploy intentionally omitted: shared.test.ts calls mock.module().
+  // The bundle path keeps the rest of the directory amortized while
+  // shared.test.ts runs from SOLO_NODE_FILES.
   'tests/embedding',
   'tests/grove',
   'tests/intelligence',
@@ -176,6 +178,27 @@ const NO_ISOLATE_NODE_TARGETS = [
   // shared Bun after neighboring hook fixtures mutate globals.
 ];
 
+// Files that call mock.module() and therefore cannot share a bun process
+// (the mock swaps the process-wide module registry), evicted from the
+// shared groups below. They do NOT go to the --isolate chunks either:
+// these are SQLite/daemon-server-heavy fixtures, the exact churn profile
+// that triggers the bun 1.3.14 --isolate runtime spin (180s phase-kill ×
+// retries). Each runs as its own plain single-file bun process instead —
+// process-level isolation at ordinary startup cost.
+const SOLO_NODE_FILES = [
+  'tests/agent/phase-loop.test.ts',
+  'tests/agent/tools-dry-run.test.ts',
+  'tests/agent/tools-skills.test.ts',
+  'tests/daemon/api/agent-runs-overrides-security.test.ts',
+  'tests/daemon/api/cortex.test.ts',
+  'tests/daemon/api/key-leak-guard.test.ts',
+  'tests/daemon/api/providers-ssrf.test.ts',
+  'tests/daemon/api/restart.test.ts',
+  'tests/daemon/api/stats.test.ts',
+  'tests/daemon/team-sync.test.ts',
+  'tests/deploy/shared.test.ts',
+];
+
 const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-agent-stable',
@@ -188,7 +211,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/agent/openai-runtime.test.ts',
       'tests/agent/openrouter-catalog.test.ts',
       'tests/agent/orchestrator.test.ts',
-      'tests/agent/phase-loop.test.ts',
       'tests/agent/provider-harness.test.ts',
       'tests/agent/provider.test.ts',
       'tests/agent/run-accounting.test.ts',
@@ -197,13 +219,12 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/agent/skill-candidate-quality.test.ts',
       'tests/agent/skill-drift.test.ts',
       'tests/agent/skill-staging.test.ts',
-      'tests/agent/tools-dry-run.test.ts',
       'tests/agent/tools/canopy-tools.test.ts',
-      // tests/agent/runtime-claude.test.ts intentionally omitted: it has
-      // top-level bun mock.module() calls for @myco/agent/provider.js and
-      // @myco/agent/harness/claude-code-executable.js. Those mocks are
-      // process-global and can poison provider/executable tests when Bun's
-      // platform-dependent file order runs runtime-claude first.
+      // runtime-claude.test.ts, phase-loop.test.ts, and tools-dry-run.test.ts
+      // intentionally omitted: they call mock.module(), which is
+      // process-global and poisons later files in a shared run (phase-loop's
+      // request-context mock erased scope filtering in context-queries on
+      // Linux orderings). assertNoModuleMocksInSharedFiles enforces this.
     ],
   },
   {
@@ -250,7 +271,6 @@ const NO_ISOLATE_NODE_GROUPS = [
     targets: [
       'tests/daemon/api/action-inflight.test.ts',
       'tests/daemon/api/action-scope.test.ts',
-      'tests/daemon/api/agent-runs-overrides-security.test.ts',
       'tests/daemon/api/agent-tasks.test.ts',
       'tests/daemon/api/backup-config-grove-tier.test.ts',
       'tests/daemon/api/backup-liveconfig.test.ts',
@@ -259,14 +279,12 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/api/config-cortex-paths.test.ts',
       'tests/daemon/api/config.test.ts',
       'tests/daemon/api/context.test.ts',
-      'tests/daemon/api/cortex.test.ts',
       'tests/daemon/api/database-scope.test.ts',
       'tests/daemon/api/database.test.ts',
       'tests/daemon/api/digest-revisions.test.ts',
       'tests/daemon/api/embedding-ops.test.ts',
       'tests/daemon/api/groves-crud.test.ts',
       'tests/daemon/api/groves.test.ts',
-      'tests/daemon/api/key-leak-guard.test.ts',
       'tests/daemon/api/log-explorer.test.ts',
       'tests/daemon/api/maintenance.test.ts',
       'tests/daemon/api/models.test.ts',
@@ -276,8 +294,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/api/projects-activity.test.ts',
       'tests/daemon/api/projects-backup-restore.test.ts',
       'tests/daemon/api/provider-secrets.test.ts',
-      'tests/daemon/api/providers-ssrf.test.ts',
-      'tests/daemon/api/restart.test.ts',
       'tests/daemon/api/run-serializer.test.ts',
       'tests/daemon/api/schemas/execution-overrides-traversal.test.ts',
       'tests/daemon/api/search-canopy.test.ts',
@@ -288,7 +304,6 @@ const NO_ISOLATE_NODE_GROUPS = [
       'tests/daemon/api/skills.test.ts',
       'tests/daemon/api/spores-session-filter.test.ts',
       'tests/daemon/api/spores.test.ts',
-      'tests/daemon/api/stats.test.ts',
       'tests/daemon/api/team-connect-handlers.test.ts',
       'tests/daemon/api/team-connect-status.test.ts',
       'tests/daemon/api/team-upgrade-worker.test.ts',
@@ -309,14 +324,12 @@ const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-agent-skill-tools',
     targets: [
-      'tests/agent/tools-skills.test.ts',
       'tests/agent/tools/vault-search-canopy.test.ts',
     ],
   },
   {
     label: 'tests-daemon-service-boundary',
     targets: [
-      'tests/daemon/team-sync.test.ts',
       'tests/daemon/reconciliation-stop.test.ts',
       'tests/daemon/reconcile-existing-daemon.test.ts',
       'tests/daemon/grove-runtime-cache.test.ts',
@@ -454,7 +467,9 @@ function writeNodeBundleTargets(files) {
 
   for (const file of files) {
     const key = groupKeyForTestFile(file);
-    if (!SAFE_NODE_BUNDLE_GROUPS.has(key)) {
+    // mock.module() files never bundle: a bundle concatenates sources into
+    // one file, so --isolate cannot contain the process-global mock.
+    if (!SAFE_NODE_BUNDLE_GROUPS.has(key) || fileHasModuleMock(file)) {
       isolated.push(file);
       continue;
     }
@@ -493,6 +508,41 @@ function writeNodeBundleTargets(files) {
   }
 
   return [...bundledTargets.sort(), ...isolated.sort()];
+}
+
+// bun's mock.module() swaps a module in the PROCESS-WIDE registry. In a
+// shared (no --isolate) phase the mock persists into every file that runs
+// after it — bun's file order is platform-dependent, so the poisoning
+// surfaces as a CI-only flake (e.g. a mocked projectScopeFromRequestContext
+// erasing scope filtering for a later tenancy test). Inside a generated
+// bundle file, --isolate can't separate the concatenated sources either.
+// Files that call mock.module() must run with per-file isolation; the
+// checks below enforce that instead of trusting the hand-maintained
+// group lists.
+const moduleMockCache = new Map();
+function fileHasModuleMock(file) {
+  if (!moduleMockCache.has(file)) {
+    let hasMock = false;
+    try {
+      hasMock = /\bmock\.module\(/.test(fs.readFileSync(path.resolve(REPO, file), 'utf-8'));
+    } catch { /* unreadable file — let bun surface it */ }
+    moduleMockCache.set(file, hasMock);
+  }
+  return moduleMockCache.get(file);
+}
+
+function assertNoModuleMocksInSharedFiles(sharedFiles) {
+  const offenders = sharedFiles.filter(fileHasModuleMock);
+  if (offenders.length === 0) return;
+  console.error(
+    '[run-bun-tests] FATAL: these files call mock.module() but are routed to a shared (no --isolate) phase:',
+  );
+  for (const file of offenders) console.error(`  - ${file}`);
+  console.error(
+    '[run-bun-tests] mock.module() leaks across files in a shared bun process. '
+    + 'Remove the file from NO_ISOLATE_NODE_TARGETS / NO_ISOLATE_NODE_GROUPS so it runs in the isolated phase.',
+  );
+  process.exit(1);
 }
 
 function targetCoversFile(target, file) {
@@ -673,12 +723,22 @@ function buildArgs() {
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file));
     const sharedFiles = nonDomFiles.filter(isCoveredByNoIsolateTarget);
-    const isolatedFiles = nonDomFiles.filter((file) => !isCoveredByNoIsolateTarget(file));
+    const soloFiles = SOLO_NODE_FILES.filter((file) => nonDomFiles.includes(file));
+    const isolatedFiles = nonDomFiles.filter(
+      (file) => !isCoveredByNoIsolateTarget(file) && !soloFiles.includes(file),
+    );
+    assertNoModuleMocksInSharedFiles(sharedFiles);
 
     const sharedTargets = findSharedTargets(sharedFiles);
     const sharedGroups = findSharedGroups(sharedFiles);
 
     const isolatedTargets = writeNodeBundleTargets(isolatedFiles);
+
+    if (soloFiles.length > 0) {
+      console.log(
+        `[run-bun-tests] solo node env: ${soloFiles.length} mock.module() files run as single-file processes`,
+      );
+    }
 
     if (sharedTargets.length > 0 || sharedGroups.length > 0) {
       const groupCount = sharedTargets.length + sharedGroups.length;
@@ -691,6 +751,11 @@ function buildArgs() {
     return {
       nonDomPhases: [
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
+        ...soloFiles.map((file) => ({
+          label: `node env solo ${bundleSlug(file.replace(/^tests\//, '').replace(/\.test\.ts$/, ''))}`,
+          args: [...options, file, "--path-ignore-patterns=**/*.test.tsx"],
+          isolate: false,
+        })),
         ...buildIsolatedNodePhases(isolatedTargets, options),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
