@@ -9,7 +9,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { closeSession, deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import {
   epochSeconds,
   MS_PER_SECOND,
@@ -48,27 +48,39 @@ export function completeStaleActiveSessions(
   thresholdSeconds: number = STALE_SESSION_THRESHOLD_MS / MS_PER_SECOND,
 ): number {
   const db = getDatabase();
-  const cutoff = epochSeconds() - thresholdSeconds;
+  const now = epochSeconds();
+  const cutoff = now - thresholdSeconds;
 
-  const info = db.prepare(
-    `UPDATE sessions
-     SET status = 'completed', ended_at = COALESCE(ended_at, ?)
-     WHERE status = 'active'
-       AND COALESCE(
-         (SELECT MAX(touch) FROM (
-           SELECT MAX(pb.started_at) AS touch
-             FROM prompt_batches pb
-            WHERE pb.session_id = sessions.id
-           UNION ALL
-           SELECT MAX(a.timestamp) AS touch
-             FROM activities a
-            WHERE a.session_id = sessions.id
-         )),
-         sessions.started_at
-       ) < ?`,
-  ).run(epochSeconds(), cutoff);
+  // Select first (rather than a bulk UPDATE) so we have the swept session ids
+  // and can close each one's still-open batch in the same pass.
+  const staleIds = db.prepare(
+    `SELECT id FROM sessions
+      WHERE status = 'active'
+        AND COALESCE(
+          (SELECT MAX(touch) FROM (
+            SELECT MAX(pb.started_at) AS touch
+              FROM prompt_batches pb
+             WHERE pb.session_id = sessions.id
+            UNION ALL
+            SELECT MAX(a.timestamp) AS touch
+              FROM activities a
+             WHERE a.session_id = sessions.id
+          )),
+          sessions.started_at
+        ) < ?`,
+  ).all(cutoff).map((r) => (r as { id: string }).id);
 
-  return info.changes;
+  if (staleIds.length === 0) return 0;
+
+  // closeSession is the completion chokepoint — it flips status, stamps
+  // ended_at, closes any still-open batch (so a session swept without a final
+  // Stop doesn't keep a perpetually-open turn), and enqueues the session for
+  // team sync. Done per-id in one transaction.
+  db.transaction(() => {
+    for (const id of staleIds) closeSession(id, now);
+  })();
+
+  return staleIds.length;
 }
 
 /**
