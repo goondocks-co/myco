@@ -249,7 +249,7 @@ export function createEmbeddingDetailsHandler(deps: EmbeddingDetailsDeps): Route
     return withDatabase(runtime.db, () =>
       handleEmbeddingDetails(runtime.manager, {
         projectId,
-        canopyDescribe: deps.canopyDescribeBacklog.read(scope),
+        canopyDescribe: deps.canopyDescribeBacklog.read(scope, { groveId: ctx.groveId ?? null }),
       }),
     );
   };

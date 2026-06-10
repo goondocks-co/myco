@@ -423,6 +423,15 @@ export interface CanopyDescribeBacklog {
   stale: number;
 }
 
+export interface CanopyDescribeBacklogOptions {
+  /**
+   * Restrict the count to these project ids. Grove-wide callers pass the
+   * active registered projects so rows from deleted or archived projects
+   * (which no scribe run will ever service) don't inflate the backlog.
+   */
+  projectIds?: readonly string[];
+}
+
 /**
  * Count the upstream Canopy scribe backlog. This is deliberately separate
  * from embedding queue depth: changed files keep their old vector until the
@@ -431,15 +440,21 @@ export interface CanopyDescribeBacklog {
 export function getCanopyDescribeBacklog(
   db: Database,
   scope: ProjectScope,
+  options: CanopyDescribeBacklogOptions = {},
 ): CanopyDescribeBacklog {
   const { sql: projectSql, params } = projectScopeClause(scope);
+  let restrictSql = '';
+  if (options.projectIds) {
+    restrictSql = ' AND project_id IN (SELECT value FROM json_each(?))';
+    params.push(JSON.stringify(options.projectIds));
+  }
   const row = db.prepare(
     `SELECT
        SUM(CASE WHEN llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS pending,
        SUM(CASE WHEN llm_updated_at IS NULL THEN 1 ELSE 0 END) AS undescribed,
        SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS stale
        FROM canopy_entries
-      WHERE 1 = 1${projectSql}`,
+      WHERE 1 = 1${projectSql}${restrictSql}`,
   ).get(...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
   return {
     pending: Number(row?.pending ?? 0),

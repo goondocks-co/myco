@@ -46,15 +46,15 @@ cd ../myco-branch-name
 
 **Critical**: use a sibling directory (e.g., `../myco-branch-name`), **not a subdirectory inside the repo**. Nested worktrees confuse Myco's CWD detection and create phantom sessions.
 
-### Step 2b: Bootstrap Myco hooks in the worktree
+### Step 2b: Pin the worktree to its dev binary
 
 ```bash
-myco-dev init --worktree   # or `myco init --worktree` when working from a released CLI
+make dev-link-worktree
 ```
 
-This materializes `.claude/settings.json`, `.agents/myco-run.cjs`, and `.myco/runtime.command` inside the worktree. Those files are gitignored and untracked — `git worktree add` only checks out tracked files, so without this step the worktree's capture stack is silent and the daemon never sees the work happening here. Symbiont enablement is inherited from the main repo's merged config, so no prompts; vault reads still resolve through the shared `<main>/.myco`.
+This writes a `.myco/runtime.command` file that pins this worktree to the freshly-built local binary (not the shared `~/.local/bin/myco-dev` symlink). All hooks, MCP calls, and CLI invocations in this worktree then dispatch to the worktree build. The file is gitignored, so it's never committed. When you're done (Step 6), run `make dev-unlink-worktree` to remove the pin.
 
-Skip this step ONLY when you have deliberately decided the worktree should not capture (rare; the default is to bootstrap).
+Skip this step ONLY when you deliberately want the worktree to fall back to the global binary.
 
 ### Step 3: Implement with incremental commits
 
@@ -160,7 +160,7 @@ This commit will be squashed into the feature commit in Step 6.
 make build
 ```
 
-This executes `tsc` + `vitest` + `tsup` + `vite` in sequence. **Do NOT use `npm run build`** — it runs only the bundler, silently skipping type checks and tests. `make build` is the gate before squash. Never proceed until it passes cleanly.
+This runs lint + fast unit tests + bundler (`tsc` + `vitest` fast profile + `tsup` + `vite`). Integration, smoke, and daemon tests are excluded from the default profile — they run in CI on every PR. **Do NOT use `npm run build`** — it runs only the bundler, silently skipping type checks and tests. For pre-release confidence when tagging a release, use `make build-all` instead. `make build` is the standard gate before squash. Never proceed until it passes cleanly.
 
 ### Step 6: Squash all commits, delete worktree, push
 
@@ -170,6 +170,9 @@ Run from inside the worktree directory (`../myco-branch-name`):
 # Squash all implementation + simplify commits into one
 git reset --soft $(git merge-base HEAD main)
 git commit -m "feat: <single clear description of the feature>"
+
+# Remove the dev binary pin
+make dev-unlink-worktree
 
 # Delete the worktree before pushing
 git worktree remove ../myco-branch-name
@@ -216,7 +219,7 @@ The single squashed commit becomes the PR commit.
 
 ### Standard Quality and Build Gotchas
 
-- **`npm run build` silently ships broken packages** — only `make build` runs the full `tsc` + `vitest` + `tsup` + `vite` chain
+- **`npm run build` silently ships broken packages** — only `make build` runs lint + fast unit tests + `tsc` + `tsup` + `vite`; for the full test sweep including integration/smoke, use `make build-all`
 - **Sibling directory, not subdirectory** — always use `../myco-branch-name`; nested worktrees cause CWD detection misattribution
 - **`/simplify` before squash, not after** — simplification belongs in the final squashed commit, not a follow-up cleanup PR
 - **Delete the worktree before pushing** — `git worktree remove` must precede `git push`; lingering worktrees confuse subsequent Claude Code sessions

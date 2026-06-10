@@ -163,9 +163,9 @@ const merged  = deepMergeConfig(stage2, pruneToTier(localRaw, 'local'));
 
 Myco uses a **promote-before-strip** two-layer automatic migration model for scope boundary evolution. Legacy fields are promoted (recognized) before being stripped (removed), ensuring zero data loss during migrations.
 
-**Layer 1: PROJECT_TIER_LEGACY_FIELDS Silent Recognition**
+**Layer 1: PROJECT_TIER_LEGACY_FIELDS and GROVE_PROMOTED_FIELDS**
 
-`PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts` lists the dot-path segments of fields that have been moved out of project tier. The internal `stripLegacyProjectFields` helper in `packages/myco/src/config/loader.ts` reads this list and silently removes those fields when writing project config. When `loadMergedConfig()` encounters them, `pruneToTier(..., 'project')` drops them — they are not included in the merged result:
+`PROJECT_TIER_LEGACY_FIELDS` in `packages/myco/src/config/schema.ts` lists the dot-path segments of all fields that have been moved out of project tier. The internal `stripLegacyProjectFields` helper in `packages/myco/src/config/loader.ts` reads this list and silently removes those fields when writing project config. When `loadMergedConfig()` encounters them, `pruneToTier(..., 'project')` drops them — they are not included in the merged result:
 
 ```typescript
 // packages/myco/src/config/schema.ts
@@ -174,10 +174,12 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
   ['appearance'],
-  // ... and others
+  // ... and others, including all of GROVE_PROMOTED_FIELDS via spread
 ];
 // pruneToTier(projectRaw, 'project') drops all of these automatically.
 ```
+
+`GROVE_PROMOTED_FIELDS` (also exported from `packages/myco/src/config/schema.ts`) is the companion subset listing fields that belong specifically to Grove tier — embedding settings, agent provider, harness, model, and scheduling fields. See the array definition in schema.ts for the current list. This array is spread into `PROJECT_TIER_LEGACY_FIELDS`, but with a **critical conditional**: `stripLegacyProjectFields()` only strips `GROVE_PROMOTED_FIELDS` entries when the project is Grove-bound (`hasGrove: true`). If the project has no Grove yet, these values are retained in the project config so they aren't silently lost. Once a Grove is bound, the values are available to migrate. Fields in `PROJECT_TIER_LEGACY_FIELDS` that are NOT in `GROVE_PROMOTED_FIELDS` (machine/personal tier moves) are always stripped unconditionally.
 
 **Layer 2: Atomic `myco update` Lift**
 
@@ -195,7 +197,7 @@ Running `myco update` performs an atomic, value-preserving migration: legacy pro
 
 When moving a field from one tier to another:
 
-1. Add the old path to `PROJECT_TIER_LEGACY_FIELDS` (or the equivalent for other tier moves) so the promote-before-strip mechanism recognizes it
+1. Add the old path to `PROJECT_TIER_LEGACY_FIELDS` (or `GROVE_PROMOTED_FIELDS` if it's a Grove-tier field) so the promote-before-strip mechanism recognizes it
 2. Update `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` to assign the new home tier and `overridableBy` list
 3. Add the new path to the appropriate tier Zod schema in `packages/myco/src/config/schema.ts`
 4. Write a migration function that reads legacy values and writes them to the new tier via `updateGroveConfig()` / `updateConfig()` / `saveMachineConfig()`
@@ -234,6 +236,8 @@ Before running a scope boundary migration in production:
 
 - **Promote-before-strip pattern**: The two-layer automatic migration model PROMOTES (recognizes) legacy project-tier fields in Layer 1 before STRIPPING (removing) them in Layer 2. This ensures zero data loss. Never skip the promotion phase or attempt direct removal without atomic lift validation.
 
+- **GROVE_PROMOTED_FIELDS conditional stripping**: Fields in `GROVE_PROMOTED_FIELDS` (the Grove-tier subset of `PROJECT_TIER_LEGACY_FIELDS`) are only stripped from project config when the project is Grove-bound. An unbound project retains these values so they survive until a Grove is available to receive them. Do not manually strip these fields from the project config without first ensuring the values are captured in Grove config.
+
 - **Legacy project ID migration**: When migrating from legacy project identifiers, preserve configuration continuity by mapping legacy values to binding_id-based storage before removing legacy entries.
 
 - **Grove identity coordination**: Project configuration changes may affect Grove-level settings inheritance. Always consider the Grove/project relationship when modifying project-scoped configuration patterns. Changes at Grove tier affect all projects unless overridden at project scope.
@@ -252,4 +256,4 @@ Before running a scope boundary migration in production:
 
 - **No-Grove gotcha — project-scope-only read paths**: Code paths that read project-scoped configuration without Grove context cannot access Grove-tier settings. This is intentional for security. If you need Grove settings in a project-only context, pass Grove context explicitly or redesignate the setting as project-scoped.
 
-- **liveConfig is not per-grove**: In `packages/myco/src/daemon/power-jobs.ts`, `liveConfig` is typed as `{ current: MycoConfig }` — a mutable container holding the daemon's boot-grove merged config. It updates on config-change events but is NOT per-project. When daemon jobs iterate multiple groves or projects, always call `loadMergedConfig({ projectPath })` for each project to get the correct grove-specific merged config. Reading from the shared `liveConfig` container in a multi-grove iteration applies the boot grove's config to all other projects.
+- **liveConfig is not per-grove**: In `packages/myco/src/daemon/power-jobs.ts`, `liveConfig` is typed as `{ current: MycoConfig }` — a mutable container holding the daemon's boot-grove merged config. It updates on config-change events but is NOT per-project. When daemon jobs iterate multiple groves or projects, always call `loadMergedConfig({ projectPath })` for each project to get the correct grove-specific merged config. Reading from the shared `liveConfig` container in a multi-grove iteration applies the boot grove's config to all other projects — a pattern confirmed to cause production failures where backup operations resolved to the wrong grove, causing a successful "Backup Now" to appear absent on the next read.
