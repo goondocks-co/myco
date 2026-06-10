@@ -662,6 +662,28 @@ export const GROVE_PROMOTED_FIELDS: ReadonlyArray<readonly string[]> = [
   ['agent', 'cold_project_threshold_days'],
 ];
 
+/**
+ * Grove-tier field paths that may appear in a project myco.yaml as legacy
+ * residue. They can only be safely stripped from the project file when a
+ * Grove is bound (so the value migrates instead of vanishing); on UNBOUND
+ * projects both the load and save paths retain them in myco.yaml. Shared by
+ * `stripLegacyProjectFields`, `migrateLegacyProjectFields`, and `saveConfig`
+ * so all three move/retain the exact same set.
+ */
+export const GROVE_TIER_FIELDS: ReadonlyArray<readonly string[]> = [
+  ['daemon', 'stale_session_threshold_ms'],
+  ['backup'],
+  ['maintenance'],
+  ['embedding', 'run_in_deep_sleep'],
+  ['agent', 'scheduled_tasks_active_window_days'],
+  ['appearance'],
+  ['team'],
+  ...GROVE_PROMOTED_FIELDS,
+  // 2026-06: skills.* is Grove-tier; only strip once a Grove is bound so
+  // the value can be migrated rather than dropped.
+  ['skills'],
+];
+
 /** Field paths the loader silently strips from project myco.yaml on load. */
 export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['daemon', 'port'],

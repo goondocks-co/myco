@@ -97,13 +97,24 @@ export function tierAllowsPath(tier: Tier, path: string): boolean {
   return e.home === tier || e.overridableBy.includes(tier);
 }
 
+/** Unknown paths already warned about — one stderr line per path per process. */
+const warnedUnknownPaths = new Set<string>();
+
 /** Return a copy of `raw` keeping only leaf paths this tier may contribute.
- *  Sparse: no defaults injected; unknown paths are dropped. */
+ *  Sparse: no defaults injected; unknown paths are dropped (fail-closed),
+ *  with a one-time stderr warning per path so the drop is observable. */
 export function pruneToTier(raw: Record<string, unknown>, tier: Tier): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const leaf of enumerateLeafPaths(raw)) {
     let allowed = false;
-    try { allowed = tierAllowsPath(tier, leaf); } catch { allowed = false; }
+    try {
+      allowed = tierAllowsPath(tier, leaf);
+    } catch {
+      if (!warnedUnknownPaths.has(leaf)) {
+        warnedUnknownPaths.add(leaf);
+        process.stderr.write(`[myco config] Unknown config path "${leaf}" has no scope registry entry; dropping it from the ${tier} tier\n`);
+      }
+    }
     if (!allowed) continue;
     const parts = leaf.split('.');
     let src: any = raw, dst: any = out;

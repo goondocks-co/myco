@@ -25,7 +25,8 @@ import {
 } from '@myco/agent/registry.js';
 import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { USER_TASK_SOURCE } from '@myco/constants.js';
-import { loadMergedConfig, updateConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
+import { z } from 'zod';
+import { loadMergedConfig, updateConfig, loadGroveConfig, updateTierConfigRaw, TierConfigUnreadableError } from '../../config/loader.js';
 import {
   capabilityEnabled,
   effectiveTaskScheduleEnabled,
@@ -33,6 +34,8 @@ import {
 } from '../../config/capabilities.js';
 import { withTaskConfig } from '../../config/updates.js';
 import type { TaskConfigUpdate } from '../../config/updates.js';
+import { setAtPath, unsetAtPath } from '../../utils/dot-path.js';
+import type { TaskProviderOverride } from '../../config/schema.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -362,25 +365,49 @@ export async function handleUpdateTaskConfig(
   }
 
   if (groveId) {
-    let updatedTasks;
+    let updatedTask: TaskProviderOverride | undefined;
     try {
       const groveConfig = loadGroveConfig(groveId);
       const updated = withTaskConfig(groveConfig, taskId, body);
-      updatedTasks = updated.agent.tasks;
-      saveGroveConfig(groveId, {
-        ...groveConfig,
-        agent: { ...groveConfig.agent, tasks: updatedTasks },
+      updatedTask = updated.agent.tasks?.[taskId];
+      // Verbatim subtree replace of THIS task only via setAtPath/unsetAtPath:
+      // task updates DELETE keys (null fields, emptied entries), so a deep
+      // merge would resurrect them from the raw doc — while replacing the
+      // whole agent.tasks map would rewrite sibling tasks from the Zod view,
+      // dropping any raw content (e.g. fields from a newer build) they carry.
+      updateTierConfigRaw({ kind: 'grove', groveId }, (rawDoc) => {
+        if (updatedTask === undefined) {
+          unsetAtPath(rawDoc, ['agent', 'tasks', taskId], { pruneEmptyParents: true });
+        } else {
+          setAtPath(rawDoc, ['agent', 'tasks', taskId], updatedTask);
+        }
+        return rawDoc;
       });
     } catch (err) {
+      if (err instanceof TierConfigUnreadableError) {
+        return {
+          status: 422,
+          body: {
+            error: 'tier_config_unreadable',
+            message: 'The on-disk grove config is invalid — fix or remove it before writing.',
+            file: err.filePath,
+          },
+        };
+      }
+      if (err instanceof z.ZodError) {
+        return { status: 422, body: { error: 'validation_failed', issues: err.issues } };
+      }
       return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };
     }
     return {
       status: HTTP_OK,
-      body: { taskId, config: updatedTasks?.[taskId] ?? null },
+      body: { taskId, config: updatedTask ?? null },
     };
   }
 
-  // No Grove bound — fall back to project-tier myco.yaml write.
+  // No Grove bound — write agent.tasks at project tier via updateConfig.
+  // saveConfig retains grove-tier values in myco.yaml while the project is
+  // unbound, and the next Grove-bound load lifts them into grove config.
   let updated;
   try {
     updated = updateConfig(vaultDir, (config) =>
