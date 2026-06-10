@@ -122,6 +122,13 @@ export const DAEMON_RESTART_HEALTH_DEADLINE_MS = 30_000;
 /** Minimum interval between hook-triggered capture recovery restarts. */
 export const DAEMON_CAPTURE_RECOVERY_COALESCE_MS = 30_000;
 
+/** Liveness probe attempts before a capture failure may restart the
+ *  service, and the pause between attempts. The retry window must ride
+ *  out a daemon event-loop stall longer than the capture request
+ *  timeout (observed: multi-second stalls during Grove auto-backups). */
+export const DAEMON_RECOVERY_PROBE_ATTEMPTS = 3;
+export const DAEMON_RECOVERY_PROBE_DELAY_MS = 750;
+
 /** Per-poll interval during the restart health-watch loop (ms). */
 export const DAEMON_RESTART_POLL_INTERVAL_MS = 500;
 
