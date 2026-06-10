@@ -20,15 +20,51 @@ import {
   type CanopyDescribeBacklog,
 } from '@myco/db/queries/canopy.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
+import { listRegisteredProjects, loadGroveRecord } from '@myco/grove/registry.js';
 
-export interface CanopyDescribeBacklogReader {
-  read(scope: ProjectScope): CanopyDescribeBacklog;
+export interface CanopyDescribeBacklogContext {
+  /** Grove the request is bound to; consulted for grove-wide reads. */
+  groveId?: string | null;
 }
 
-export function createCanopyDescribeBacklogReader(): CanopyDescribeBacklogReader {
+export interface CanopyDescribeBacklogReader {
+  read(scope: ProjectScope, context?: CanopyDescribeBacklogContext): CanopyDescribeBacklog;
+}
+
+export interface CanopyDescribeBacklogReaderOptions {
+  mycoHome?: string;
+}
+
+export function createCanopyDescribeBacklogReader(
+  options: CanopyDescribeBacklogReaderOptions = {},
+): CanopyDescribeBacklogReader {
   return {
-    read(scope) {
-      return getCanopyDescribeBacklog(getDatabase(), scope);
+    read(scope, context) {
+      const projectIds = scope.kind === 'all'
+        ? serviceableProjectIds(context?.groveId ?? null, options.mycoHome)
+        : null;
+      return getCanopyDescribeBacklog(
+        getDatabase(),
+        scope,
+        projectIds ? { projectIds } : {},
+      );
     },
   };
+}
+
+// Grove-wide backlog counts must reflect work the scribe can actually
+// service: active registered projects only. Rows left behind by deleted
+// projects (pre-cascade orphans) or held by archived projects would
+// otherwise inflate the dashboard with work no scheduled run will drain.
+// When the grove record can't be loaded the registry is unavailable, so
+// fall back to the unrestricted count rather than report a false zero.
+function serviceableProjectIds(
+  groveId: string | null,
+  mycoHome?: string,
+): string[] | null {
+  if (!groveId) return null;
+  const home = mycoHome ?? resolveMycoHome();
+  if (!loadGroveRecord(groveId, home)) return null;
+  return listRegisteredProjects(groveId, home).map((project) => project.project_id);
 }
