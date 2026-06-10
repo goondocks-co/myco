@@ -6,6 +6,8 @@ import {
   DAEMON_CAPTURE_RECOVERY_COALESCE_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_HEALTH_RETRY_DELAYS,
+  DAEMON_RECOVERY_PROBE_ATTEMPTS,
+  DAEMON_RECOVERY_PROBE_DELAY_MS,
   DAEMON_RESTART_HEALTH_DEADLINE_MS,
   DAEMON_RESTART_POLL_INTERVAL_MS,
   DAEMON_SPAWN_COALESCE_MS,
@@ -642,6 +644,8 @@ export class DaemonClient {
       return;
     }
 
+    if (await this.daemonConfirmedAlive()) return;
+
     if (this.captureRecoveryRecentlyRequested()) return;
 
     try {
@@ -656,6 +660,33 @@ export class DaemonClient {
     }
 
     await this.spawnDaemon();
+  }
+
+  /**
+   * A single failed capture request is not proof the daemon is down.
+   * Two healthy-daemon shapes reach the recovery path: a `daemon.json`
+   * briefly carrying a foreign pid/port (another process clobbered it;
+   * the daemon's self-reconciler heals it within one tick), and an
+   * event-loop stall that outlives the capture request timeout. Probe
+   * every discovery tier — the state file, the lifecycle lock, and the
+   * canonical port — with retries before concluding the service needs a
+   * restart. Restarting a healthy daemon costs every live session its
+   * capture continuity, so this errs toward "alive"; a genuinely dead
+   * daemon fails each probe with an immediate connection refusal, so
+   * the added recovery latency is just the inter-attempt pauses.
+   */
+  private async daemonConfirmedAlive(): Promise<boolean> {
+    for (let attempt = 0; attempt < DAEMON_RECOVERY_PROBE_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, DAEMON_RECOVERY_PROBE_DELAY_MS));
+      }
+      const direct = this.readDaemonJson();
+      if (direct && await this.isHealthy(direct)) return true;
+      const lock = this.readDaemonInfoFromLock();
+      if (lock && lock.port !== direct?.port && await this.isHealthy(lock)) return true;
+      if (await this.discoverViaHealth()) return true;
+    }
+    return false;
   }
 
   private captureRecoveryRecentlyRequested(): boolean {
