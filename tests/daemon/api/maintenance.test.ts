@@ -10,7 +10,9 @@ import { resolveGroveDir } from '@myco/grove/paths.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import {
   createGrove,
+  ForeignGroveError,
   registerProjectInGrove,
+  UnknownGroveError,
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
@@ -46,6 +48,7 @@ describe('maintenance API', () => {
   let workDir: string;
   let mycoHome: string;
   let previousMycoHome: string | undefined;
+  let previousVariant: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -54,6 +57,10 @@ describe('maintenance API', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
+    // served_by gates compare against currentDaemonVariant(); pin the
+    // default 'service' variant regardless of the ambient shell.
+    previousVariant = process.env.MYCO_SERVICE_VARIANT;
+    delete process.env.MYCO_SERVICE_VARIANT;
     logger = makeLogger(workDir);
   });
 
@@ -63,6 +70,8 @@ describe('maintenance API', () => {
     } else {
       process.env.MYCO_HOME = previousMycoHome;
     }
+    if (previousVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+    else process.env.MYCO_SERVICE_VARIANT = previousVariant;
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
@@ -324,10 +333,34 @@ describe('maintenance API', () => {
   // ---------------------------------------------------------------------
 
   describe('handleGroveMaintenance', () => {
-    it('returns 404 for an unknown Grove id', async () => {
+    it('throws UnknownGroveError for an unknown Grove id without creating groves/<id>/ (transport maps it to 404)', async () => {
       const { cache, handlers } = makeHandlers();
-      const response = await handlers.handleGroveMaintenance(emptyRequest({ id: 'grv_does_not_exist' }));
-      expect(response.status).toBe(404);
+      const unknownId = 'grove_' + 'f'.repeat(32);
+      for (const id of [unknownId, 'grv_does_not_exist']) {
+        let caught: unknown;
+        try {
+          await handlers.handleGroveMaintenance(emptyRequest({ id }));
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(UnknownGroveError);
+      }
+      // The well-formed unknown id must not have materialized a Grove dir.
+      expect(fs.existsSync(resolveGroveDir(unknownId, mycoHome))).toBe(false);
+      cache.closeAll();
+    });
+
+    it('throws ForeignGroveError for a Grove served by the other daemon variant, without opening its DB', async () => {
+      const grove = createGrove('Dogfood', mycoHome, { servedBy: 'service-dev' });
+      const { cache, handlers } = makeHandlers();
+      let caught: unknown;
+      try {
+        await handlers.handleGroveMaintenance(emptyRequest({ id: grove.id }));
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ForeignGroveError);
+      expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
       cache.closeAll();
     });
 

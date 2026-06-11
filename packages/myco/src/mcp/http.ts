@@ -4,6 +4,7 @@ import type { Database } from '../db/client.js';
 import { DaemonClient } from '../hooks/client.js';
 import { createMycoTools } from '../tools/index.js';
 import {
+  ForeignGroveError,
   isCallerTenancy,
   requestContextFromHttpHeaders,
   tryResolveRequestContextForVault,
@@ -78,6 +79,9 @@ function resolveRequestContextOrLegacy(
     // the same context-switch gate the daemon's main HTTP server uses.
     requestContext = requestContextFromHttpHeaders(req.headers, vaultDir, {
       expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
+      // Inbound daemon resolution: a tool call must never resolve to (and
+      // then open) a Grove served by the other daemon variant.
+      enforceGroveOwnership: true,
     });
   } catch (err) {
     // Preserve the auth-gate contract: a context-switch without the
@@ -85,6 +89,9 @@ function resolveRequestContextOrLegacy(
     // legacy-vault soft-fail. Re-throw so the caller's existing handling
     // applies.
     if (err instanceof UnauthorizedRequestContextError) throw err;
+    // Same for ownership: a Grove served by the other daemon variant is a
+    // 403 foreign_grove refusal, never the misleading legacy_vault 503.
+    if (err instanceof ForeignGroveError) throw err;
     // Pre-Grove vault: the resolver threw because there's no Grove project
     // id to bind to. Surface the soft-fail reason rather than a 500.
     const result = tryResolveRequestContextForVault(vaultDir);
@@ -130,6 +137,20 @@ export function createStreamableMcpHttpHandler(
         res.statusCode = 401;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: err.message }));
+        return;
+      }
+      // Grove served by the other daemon variant: surface the same 403
+      // `foreign_grove` contract the main HTTP path returns so MCP callers
+      // see the claim hint instead of a generic -32603/500.
+      if (err instanceof ForeignGroveError) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: 'foreign_grove',
+          message: err.message,
+          grove_id: err.groveId,
+          served_by: err.servedBy,
+        }));
         return;
       }
       throw err;

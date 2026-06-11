@@ -11,8 +11,19 @@ import {
   type ProjectScope,
 } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
+import {
+  findRegisteredProject,
+  ForeignGroveError,
+  groveServedByThisDaemon,
+  loadGroveRecord,
+  type GroveRecord,
+} from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
+
+// Transports that resolve inbound requests catch this alongside the
+// resolver's own error types; re-exported so they import one module for
+// the full request-resolution error surface.
+export { ForeignGroveError };
 
 export const REQUEST_CONTEXT_HEADERS = {
   projectRoot: 'x-myco-project-root',
@@ -104,6 +115,18 @@ export interface RequestContextAuthOptions {
    * with non-daemon callers (e.g. unit tests).
    */
   expectedAuthToken?: string | null;
+  /**
+   * Enforce `grove.toml served_by` ownership on the Grove this request
+   * resolves to: when the Grove is served by the other daemon variant
+   * (per `currentDaemonVariant()`), throw {@link ForeignGroveError}
+   * instead of returning a context whose `databasePath` points into a
+   * foreign Grove. Opt-in, set ONLY where the daemon resolves inbound
+   * requests (the HTTP API and `/mcp` transports). The same resolver
+   * also runs client-side — hooks, the stdio bridge, the CLI — where a
+   * throw would be swallowed and silently drop capture headers, so the
+   * default keeps today's non-throwing behavior.
+   */
+  enforceGroveOwnership?: boolean;
 }
 
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault' | 'url';
@@ -266,6 +289,7 @@ export function requestContextFromHttpHeaders(
   // trigger a manifest read — failure mode is "unauthorized" full stop.
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
+  const enforceGroveOwnership = options.enforceGroveOwnership === true;
   const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
   // Base context; caller headers below override to a real project.
   const { context: fallback, manifest } = buildVaultFallbackOrGlobal(fallbackVaultDir, { callerRoot });
@@ -283,13 +307,15 @@ export function requestContextFromHttpHeaders(
     // headers the auth gate guards), not on incidental projectRoot/machine/
     // session headers. Auth has already been enforced above.
     const tenancySource = tenancySourceFromExplicit(explicit);
-    if (explicit.groveId) return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource);
-    const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers', tenancySource);
+    if (explicit.groveId) {
+      return resolveRegisteredRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership);
+    }
+    const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers', tenancySource, enforceGroveOwnership);
     if (manifestContext) return manifestContext;
     return resolveLegacyHeaderRequestContext(explicit, fallback, tenancySource);
   }
 
-  return resolveManifestRequestContext(fallback, 'headers', manifest) ?? fallback;
+  return resolveManifestRequestContext(fallback, 'headers', manifest, 'synthesized', enforceGroveOwnership) ?? fallback;
 }
 
 /**
@@ -316,7 +342,7 @@ export function requestContextFromHttpHeaders(
 export function requestContextFromTenancyIds(
   ids: { groveId: string; projectId: string },
   fallbackVaultDir: string,
-  options: { headers: IncomingHttpHeaders; expectedAuthToken: string | null } = {
+  options: { headers: IncomingHttpHeaders; expectedAuthToken: string | null; enforceGroveOwnership?: boolean } = {
     headers: {},
     expectedAuthToken: null,
   },
@@ -329,7 +355,13 @@ export function requestContextFromTenancyIds(
     projectId: ids.projectId,
     sessionId: null,
   };
-  return resolveRegisteredRequestContext(explicit, fallback, 'url', tenancySourceFromExplicit(explicit));
+  return resolveRegisteredRequestContext(
+    explicit,
+    fallback,
+    'url',
+    tenancySourceFromExplicit(explicit),
+    options.enforceGroveOwnership === true,
+  );
 }
 
 /**
@@ -474,7 +506,11 @@ export function requestContextFromEnvironment(
     machineId,
     sessionId,
   };
-  return resolveRegisteredRequestContext(explicit, fallback, 'explicit', tenancySourceFromExplicit(explicit));
+  // Client-side resolution (hooks, stdio bridge, CLI): never enforce
+  // Grove ownership here — a throw would be swallowed by the hook
+  // client's catch and silently drop capture headers. The daemon
+  // enforces ownership when it resolves the inbound request.
+  return resolveRegisteredRequestContext(explicit, fallback, 'explicit', tenancySourceFromExplicit(explicit), false);
 }
 
 /**
@@ -743,6 +779,7 @@ function resolveManifestRequestContext(
   // `findRegisteredProject` either way, so an unregistered/unbound vault never
   // reaches this stamp — the anchor cannot masquerade as caller tenancy.
   tenancySource: TenancySource = 'synthesized',
+  enforceGroveOwnership = false,
 ): MycoRequestContext | null {
   const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
   if (!manifest?.grove?.binding_id) return null;
@@ -756,9 +793,10 @@ function resolveManifestRequestContext(
     fallback,
     source,
     tenancySource,
+    enforceGroveOwnership,
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(registered.project.project_id),
-    groveId: registered.grove.id,
+    grove: registered.grove,
     machineId: fallback.machineId,
     sessionId: fallback.sessionId,
     manifest,
@@ -770,6 +808,7 @@ function resolveManifestHeaderRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
   tenancySource: TenancySource,
+  enforceGroveOwnership: boolean,
 ): MycoRequestContext | null {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   if (!inputProjectRoot && !input.projectId) return null;
@@ -797,9 +836,10 @@ function resolveManifestHeaderRequestContext(
     fallback,
     source,
     tenancySource,
+    enforceGroveOwnership,
     projectRoot: registered.project.root,
     projectId: assertGroveProjectId(projectId),
-    groveId: registered.grove.id,
+    grove: registered.grove,
     machineId: input.machineId ?? fallback.machineId,
     sessionId: input.sessionId ?? fallback.sessionId,
     manifest,
@@ -811,6 +851,7 @@ function resolveRegisteredRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
   tenancySource: TenancySource,
+  enforceGroveOwnership: boolean,
 ): MycoRequestContext {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
   const manifestFromInputRoot = inputProjectRoot
@@ -860,9 +901,10 @@ function resolveRegisteredRequestContext(
     fallback,
     source,
     tenancySource,
+    enforceGroveOwnership,
     projectRoot: registeredRoot,
     projectId: assertGroveProjectId(projectId),
-    groveId: grove.id,
+    grove,
     machineId: input.machineId ?? fallback.machineId,
     sessionId: input.sessionId ?? fallback.sessionId,
     manifest,
@@ -887,13 +929,22 @@ function buildRegisteredRequestContext(input: {
   fallback: MycoRequestContext;
   source: RequestContextSource;
   tenancySource: TenancySource;
+  /**
+   * Daemon-side ownership gate (see RequestContextAuthOptions). Every
+   * registered-context branch funnels through here, so one check covers
+   * the grove-id header path, both manifest paths, and URL tenancy.
+   */
+  enforceGroveOwnership: boolean;
   projectRoot: string;
   projectId: GroveProjectId;
-  groveId: string;
+  grove: GroveRecord;
   machineId: string;
   sessionId: string | null;
   manifest: ProjectManifest | null;
 }): MycoRequestContext {
+  if (input.enforceGroveOwnership && !groveServedByThisDaemon(input.grove)) {
+    throw new ForeignGroveError(input.grove.id, input.grove.served_by);
+  }
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   if (input.manifest && input.manifest.project.id !== input.projectId) {
@@ -903,11 +954,11 @@ function buildRegisteredRequestContext(input: {
     ...input.fallback,
     projectRoot,
     projectId: input.projectId,
-    groveId: input.groveId,
+    groveId: input.grove.id,
     machineId: input.machineId,
     sessionId: input.sessionId,
     projectVaultDir,
-    databasePath: resolveGroveDbPath(input.groveId),
+    databasePath: resolveGroveDbPath(input.grove.id),
     source: input.source,
     tenancySource: input.tenancySource,
   };

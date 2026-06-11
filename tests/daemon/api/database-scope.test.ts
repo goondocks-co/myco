@@ -17,7 +17,8 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache';
 import { createDatabaseMaintenanceHandlers } from '@myco/daemon/api/database';
 import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager';
 import { ensureGroveDatabase } from '@myco/grove/database';
-import { createGrove } from '@myco/grove/registry';
+import { createGrove, ForeignGroveError, UnknownGroveError } from '@myco/grove/registry';
+import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import type { RouteRequest } from '@myco/daemon/router';
 
@@ -41,6 +42,7 @@ describe('database scope-aware actions', () => {
   let mycoHome: string;
   let previousMycoHome: string | undefined;
   let previousAuthToken: string | undefined;
+  let previousVariant: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -51,6 +53,10 @@ describe('database scope-aware actions', () => {
     process.env.MYCO_HOME = mycoHome;
     previousAuthToken = process.env.MYCO_DAEMON_AUTH;
     process.env.MYCO_DAEMON_AUTH = ALL_GROVES_TOKEN;
+    // served_by gates compare against currentDaemonVariant(); pin the
+    // default 'service' variant regardless of the ambient shell.
+    previousVariant = process.env.MYCO_SERVICE_VARIANT;
+    delete process.env.MYCO_SERVICE_VARIANT;
     logger = makeLogger(workDir);
   });
 
@@ -59,6 +65,8 @@ describe('database scope-aware actions', () => {
     else process.env.MYCO_DAEMON_AUTH = previousAuthToken;
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    if (previousVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+    else process.env.MYCO_SERVICE_VARIANT = previousVariant;
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
@@ -185,6 +193,50 @@ describe('database scope-aware actions', () => {
     const res = await handlers.handleOptimize(emptyRequest({ scope: { kind: 'grove', grove_id: grove.id } }));
     // Status undefined or 200 — either way, NOT 403.
     expect(res.status === 403).toBe(false);
+  });
+
+  it('refuses kind=grove for a foreign-served Grove before creating its DB (RC-5)', async () => {
+    const grove = createGrove('dogfood', mycoHome, { servedBy: 'service-dev' });
+    const handlers = makeHandlers();
+
+    let caught: unknown;
+    try {
+      await handlers.handleOptimize(emptyRequest({ scope: { kind: 'grove', grove_id: grove.id } }));
+    } catch (err) {
+      caught = err;
+    }
+    // Thrown (not soft-failed into a result row) so the daemon transport
+    // can map it to 403 foreign_grove; and the DB open never happened.
+    expect(caught).toBeInstanceOf(ForeignGroveError);
+    expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
+  });
+
+  it('refuses kind=grove vacuum for a foreign-served Grove (single-Grove vacuum arm)', async () => {
+    const grove = createGrove('dogfood', mycoHome, { servedBy: 'service-dev' });
+    const handlers = makeHandlers();
+
+    let caught: unknown;
+    try {
+      await handlers.handleVacuum(emptyRequest({ scope: { kind: 'grove', grove_id: grove.id } }));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ForeignGroveError);
+    expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
+  });
+
+  it('refuses kind=grove for an unknown Grove id without creating groves/<id>/ (RC-5)', async () => {
+    const unknownId = 'grove_' + 'f'.repeat(32);
+    const handlers = makeHandlers();
+
+    let caught: unknown;
+    try {
+      await handlers.handleOptimize(emptyRequest({ scope: { kind: 'grove', grove_id: unknownId } }));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UnknownGroveError);
+    expect(fs.existsSync(resolveGroveDir(unknownId, mycoHome))).toBe(false);
   });
 
   it('coalesces concurrent identical all-groves dispatches', async () => {

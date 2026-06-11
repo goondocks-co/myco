@@ -14,7 +14,7 @@ import {
   resolveGroveDbPath,
   resolveMycoHome,
 } from '@myco/grove/paths.js';
-import { loadGroveRecord } from '@myco/grove/registry.js';
+import { assertOwnedGrove, loadGroveRecord } from '@myco/grove/registry.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from '../grove-runtime-cache.js';
 import type { Logger } from '../logger.js';
 import { forEachGrove } from '../scope-iteration.js';
@@ -338,9 +338,14 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     groveId: string,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<PerGroveResultBase & T> {
-    const grove = loadGroveRecord(groveId, mycoHome);
-    const slug = grove?.slug ?? groveId;
-    return wrapPerGroveResult(groveId, slug, async () => {
+    // Body-scope grove ids arrive outside the request-context funnel, so
+    // existence and served_by ownership gate here — BEFORE
+    // wrapPerGroveResult (which would swallow the refusal into a result
+    // row) and before the cache opens the Grove DB and builds an
+    // embedding runtime on it. Throws propagate to the transport
+    // (403 foreign_grove / 404 grove_not_found).
+    const grove = assertOwnedGrove(groveId, mycoHome);
+    return wrapPerGroveResult(groveId, grove.slug, async () => {
       const { manager, db, databasePath } = buildManagerForGrove(groveId);
       return deps.cache.withPinned(databasePath, async () =>
         withDatabase(db, async () => run(manager, db)),
