@@ -13,24 +13,22 @@ import { listenEphemeral, closeServer } from '../helpers/net.js';
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /**
- * Drift guard for the policy table's `legacyBufferEvent` column. The column
- * is documentation-by-table for behavior that lives in each hook's
- * bufferEvent construction (a `stop` with no summary passes `bufferEvent:
- * null`; everything else always offers a copy) — nothing consults it at
- * runtime, so nothing would fail if a hook and its row diverged. This test
- * closes that gap: it runs every hook the table covers against a daemon
- * stub whose `/events` POSTs fail (a non-2xx — the unconditional-buffer
- * row of the fallback decision table), then asserts the buffer file's
- * presence matches the row:
+ * Behavioral guard for each hook's bufferEvent construction: every capture
+ * hook offers a buffer-fallback copy, except that a `stop` with no summary
+ * passes `bufferEvent: null` (an empty stop never writes a no-op row). The
+ * behavior lives in each hook's source — nothing else would fail if a hook
+ * silently stopped offering a copy. This test closes that gap: it runs
+ * every hook the policy table covers against a daemon stub whose `/events`
+ * POSTs fail (a non-2xx — the unconditional-buffer row of the fallback
+ * decision table), then asserts the buffer file's presence:
  *
- *   - 'always'       → the event is buffered;
- *   - 'summary-only' → buffered with an assistant response, absent without;
- *   - 'never'        → never buffered.
+ *   - content-present payload → the event is buffered;
+ *   - `payloadWithoutContent` (stop with no summary) → never buffered.
  *
  * A policy row with no hook mapping here fails loudly, so the table cannot
  * grow without this guard growing with it.
  */
-describe('legacyBufferEvent column ↔ hook bufferEvent behavior (drift guard)', () => {
+describe('policy table ↔ hook bufferEvent behavior (drift guard)', () => {
   let mycoHome: string;
   let projectRoot: string;
   let transcriptPath: string;
@@ -116,13 +114,13 @@ describe('legacyBufferEvent column ↔ hook bufferEvent behavior (drift guard)',
 
   /**
    * One hook invocation per policy row. `payload` carries the row's
-   * "content present" shape; `payloadWithoutSummary` (summary-only rows)
-   * carries the same event with nothing to recover.
+   * "content present" shape; `payloadWithoutContent` (stop) carries the
+   * same event with nothing to recover, which must not buffer.
    */
   const HOOK_FOR_TYPE: Record<string, {
     hook: string;
     payload: Record<string, unknown>;
-    payloadWithoutSummary?: Record<string, unknown>;
+    payloadWithoutContent?: Record<string, unknown>;
   }> = {
     user_prompt: {
       hook: 'user-prompt-submit',
@@ -139,7 +137,7 @@ describe('legacyBufferEvent column ↔ hook bufferEvent behavior (drift guard)',
     stop: {
       hook: 'stop',
       payload: { last_assistant_message: 'The final answer for this turn.' },
-      payloadWithoutSummary: {},
+      payloadWithoutContent: {},
     },
     subagent_start: {
       hook: 'subagent-start',
@@ -179,8 +177,8 @@ describe('legacyBufferEvent column ↔ hook bufferEvent behavior (drift guard)',
     expect(Object.keys(HOOK_FOR_TYPE).sort()).toEqual(Object.keys(CAPTURE_EVENT_POLICY).sort());
   });
 
-  for (const [type, policy] of Object.entries(CAPTURE_EVENT_POLICY)) {
-    it(`${type}: hook bufferEvent behavior matches legacyBufferEvent '${policy.legacyBufferEvent}'`, async () => {
+  for (const type of Object.keys(CAPTURE_EVENT_POLICY)) {
+    it(`${type}: hook buffers on daemon failure${HOOK_FOR_TYPE[type]?.payloadWithoutContent ? ' (and never without content)' : ''}`, async () => {
       const mapping = HOOK_FOR_TYPE[type];
       expect(mapping).toBeDefined();
 
@@ -192,19 +190,13 @@ describe('legacyBufferEvent column ↔ hook bufferEvent behavior (drift guard)',
       });
       expect(result.status).toBe(0);
 
-      if (policy.legacyBufferEvent === 'never') {
-        expect(bufferedTypes(sessionId)).toEqual([]);
-        return;
-      }
-
-      // 'always' and the content-present half of 'summary-only' both buffer.
+      // Content-present payloads buffer on the unconditional-buffer row.
       expect(bufferedTypes(sessionId)).toEqual([type]);
 
-      if (policy.legacyBufferEvent === 'summary-only') {
-        expect(mapping.payloadWithoutSummary).toBeDefined();
+      if (mapping.payloadWithoutContent) {
         const emptySessionId = `buffer-policy-${type.replace(/_/g, '-')}-empty-001`;
         const emptyResult = await runHook(mapping.hook, {
-          ...mapping.payloadWithoutSummary,
+          ...mapping.payloadWithoutContent,
           session_id: emptySessionId,
           transcript_path: transcriptPath,
         });

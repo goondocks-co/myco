@@ -1,12 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
-import { CAPTURE_EVENT_POLICY } from '@myco/capture/event-policy.js';
 import * as opencodePluginModule from '@myco/symbionts/templates/opencode/plugin.ts';
-import {
-  pluginLegacyBufferRows,
-  shouldBufferPluginFallback,
-} from '@myco/symbionts/templates/opencode/plugin.ts';
+import { shouldBufferPluginFallback } from '@myco/symbionts/templates/opencode/plugin.ts';
 /**
  * Plugin templates (opencode, pi) duplicate a helper block (BATCH_KIND,
  * bufferEvent, isIgnoredResponse, postEventWithBuffer) because they run in
@@ -172,39 +168,20 @@ function eventTypesPostedWithBuffer(source: string): string[] {
   return types;
 }
 
-describe('plugin buffer-fallback decision (ported capture event policy)', () => {
-  // The decision function and the legacy rows are imported from the opencode
-  // template, which Vitest executes directly. The byte-for-byte snippet-sync
-  // test above guarantees the pi template carries identical code, so these
-  // assertions cover both plugins.
+describe('plugin buffer-fallback decision (ported capture contract)', () => {
+  // The decision function is imported from the opencode template, which
+  // Vitest executes directly. The byte-for-byte snippet-sync test above
+  // guarantees the pi template carries identical code, so these assertions
+  // cover both plugins.
 
-  it('inlined legacy rows match CAPTURE_EVENT_POLICY\'s legacyBufferOnIgnored column', () => {
-    // The plugins can't import capture/event-policy.ts (zero-runtime-dep
-    // templates), so the rows they need are inlined. This pins the inline
-    // copy to the canonical table — a divergence is a drift bug.
-    const entries = Object.entries(pluginLegacyBufferRows());
-    expect(entries.length).toBeGreaterThan(0);
-    for (const [type, legacyBufferOnIgnored] of entries) {
-      expect(CAPTURE_EVENT_POLICY[type]).toBeDefined();
-      expect({ type, legacyBufferOnIgnored }).toEqual({
-        type,
-        legacyBufferOnIgnored: CAPTURE_EVENT_POLICY[type].legacyBufferOnIgnored,
-      });
-    }
-  });
-
-  it('every event type a plugin routes through postEventWithBuffer has an inline legacy row', () => {
-    // A new event type routed through the helper without a legacy row would
-    // silently fall back to the buffer-on-unknown default; require the row
-    // to be deliberate.
-    const rowTypes = Object.keys(pluginLegacyBufferRows());
+  it('every plugin-emitted event type routes through postEventWithBuffer', () => {
+    // The scan must keep finding event literals — if the helper call shape
+    // changes, this guard (and the policy-coverage test in
+    // tests/capture/event-policy.test.ts) would silently go blind.
     for (const pluginPath of Object.values(PLUGIN_PATHS)) {
       const source = fs.readFileSync(pluginPath, 'utf-8');
       const types = eventTypesPostedWithBuffer(source);
       expect(types.length).toBeGreaterThan(0);
-      for (const type of types) {
-        expect(rowTypes).toContain(type);
-      }
     }
   });
 
@@ -227,6 +204,14 @@ describe('plugin buffer-fallback decision (ported capture event policy)', () => 
     expect(shouldBufferPluginFallback({ ok: false }, 'user_prompt')).toBe(true);
     expect(shouldBufferPluginFallback({ ok: false, data: { error: 'x' } }, 'tool_use')).toBe(true);
 
+    // Ignored — never buffer, in any shape, for any type.
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule', persisted: false } }, 'user_prompt')).toBe(false);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'duplicate', persisted: false } }, 'pre_compact')).toBe(false);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'user_prompt')).toBe(false);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'tool_use')).toBe(false);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'some_future_type')).toBe(false);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, undefined)).toBe(false);
+
     // Honest contract.
     expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, persisted: true } }, 'user_prompt')).toBe(false);
     expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, persisted: false, buffered: true } }, 'user_prompt')).toBe(false);
@@ -235,23 +220,15 @@ describe('plugin buffer-fallback decision (ported capture event policy)', () => 
     // durability — buffer.
     expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, persisted: false } }, 'tool_use')).toBe(true);
 
-    // Contract-aware daemon's ignored — never buffer, even for types whose
-    // LEGACY column buffers on ignored.
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule', persisted: false } }, 'user_prompt')).toBe(false);
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'duplicate', persisted: false } }, 'pre_compact')).toBe(false);
-
-    // LEGACY daemon (no persisted field): exact per-type legacy behavior.
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'user_prompt')).toBe(true);
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'tool_use')).toBe(false);
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'pre_compact')).toBe(true);
-    // Unknown event type on a legacy ignore fails toward durability — buffer.
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'some_future_type')).toBe(true);
-    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, undefined)).toBe(true);
-
-    // Plain legacy ok — no buffer.
+    // Plain ok (no persisted field) — the daemon processed the event.
     expect(shouldBufferPluginFallback({ ok: true, data: { ok: true } }, 'user_prompt')).toBe(false);
     expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, batchId: 7 } }, 'user_prompt')).toBe(false);
     // Empty / non-JSON body (postJson returns ok with no data) — no buffer.
     expect(shouldBufferPluginFallback({ ok: true }, 'user_prompt')).toBe(false);
+
+    // Stop's queued contract — mirror parity with the hook CLI (the plugins
+    // buffer-before-POST on stop, so this row is never hit live).
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, queued: true } }, 'stop')).toBe(true);
+    expect(shouldBufferPluginFallback({ ok: true, data: { ok: true, ignored: 'invalid-session' } }, 'stop')).toBe(false);
   });
 });

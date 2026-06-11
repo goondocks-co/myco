@@ -30,11 +30,11 @@ export async function main() {
       ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS)
       : undefined;
 
-    // Buffer-fallback policy lives in the shared capture policy table
-    // (capture/event-policy.ts): tool_use replays directly without
-    // re-evaluating capture rules, so its legacy column never buffers a
-    // daemon-ignored tool — that would resurrect it on the next start.
-    // A transport failure (`!ok`) still buffers so reconcile can replay it.
+    // Buffer fallback (shouldBufferFallback): a daemon-ignored tool is never
+    // buffered — tool_use replays directly without re-evaluating capture
+    // rules (capture/event-policy.ts `direct`), so buffering would resurrect
+    // a deliberately-dropped activity on the next start. A transport failure
+    // (`!ok`) still buffers so reconcile can replay it.
     await captureCriticalEvent({
       vaultDir: VAULT_DIR,
       sessionId,

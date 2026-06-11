@@ -38,8 +38,7 @@ function enclosingObjectLiteral(source: string, fromIdx: number): string | null 
 
 /**
  * Drift guards for the capture event policy table — the single source of
- * truth the daemon reconciler (replayable set) and the hook CLI
- * (legacy buffer-fallback columns) both derive from.
+ * truth the daemon reconciler derives its replayable set from.
  */
 describe('capture event policy table', () => {
   it('derives REPLAYABLE_EVENT_TYPES exactly from the replayable column', () => {
@@ -69,29 +68,19 @@ describe('capture event policy table', () => {
     }
   });
 
-  it('pins the legacy per-hook columns the mixed-version fallback reproduces', () => {
-    expect(CAPTURE_EVENT_POLICY.user_prompt).toMatchObject({
-      replayMode: 'regate', legacyBufferOnIgnored: true, legacyBufferEvent: 'always',
-    });
-    expect(CAPTURE_EVENT_POLICY.tool_use).toMatchObject({
-      replayMode: 'direct', legacyBufferOnIgnored: false, legacyBufferEvent: 'always',
-    });
-    expect(CAPTURE_EVENT_POLICY.tool_failure).toMatchObject({
-      replayMode: 'direct', legacyBufferOnIgnored: true, legacyBufferEvent: 'always',
-    });
-    expect(CAPTURE_EVENT_POLICY.stop).toMatchObject({
-      replayMode: 'idempotent', legacyBufferOnIgnored: true, legacyBufferEvent: 'summary-only',
-    });
+  it('pins the replay mode of every replayable type', () => {
+    expect(CAPTURE_EVENT_POLICY.user_prompt.replayMode).toBe('regate');
+    expect(CAPTURE_EVENT_POLICY.tool_use.replayMode).toBe('direct');
+    expect(CAPTURE_EVENT_POLICY.tool_failure.replayMode).toBe('direct');
+    expect(CAPTURE_EVENT_POLICY.stop.replayMode).toBe('idempotent');
   });
 
-  it('falls back fail-open for unknown types (legacy sendEvent defaults)', () => {
+  it('falls back to not-replayable for unknown types', () => {
     expect(captureEventPolicy('some_future_type')).toEqual({
       replayable: false,
       replayMode: null,
-      legacyBufferOnIgnored: true,
-      legacyBufferEvent: 'always',
     });
-    expect(captureEventPolicy(undefined).legacyBufferOnIgnored).toBe(true);
+    expect(captureEventPolicy(undefined).replayable).toBe(false);
   });
 
   it('covers every event type the capture hooks and plugin templates emit (and carries no orphan rows)', () => {
