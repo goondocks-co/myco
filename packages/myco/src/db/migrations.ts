@@ -31,8 +31,6 @@ import {
   MIGRATION_TASKS_TABLE,
   CANOPY_ENTRIES_TABLE,
   CANOPY_MAPS_TABLE,
-  KNOWLEDGE_GIT_PROVENANCE_TABLE,
-  KNOWLEDGE_RELEASE_STATE_TABLE,
   CANOPY_SESSION_COLUMNS,
   CANOPY_ACTIVITY_COLUMN,
   CANOPY_INDEX_DDLS,
@@ -44,8 +42,6 @@ import {
   TABLE_DDLS,
   FTS_TABLES,
   SECONDARY_INDEXES,
-  TEAM_DELETE_TRIGGERS,
-  TEAM_DELETE_TRIGGER_TABLES,
   TEAM_SYNC_OBSERVED_TABLES,
 } from './schema-ddl.js';
 import {
@@ -120,6 +116,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 55, migrate: (db) => migrateV54ToV55(db) },
   { version: 56, migrate: (db, machineId) => migrateV55ToV56(db, machineId) },
   { version: 57, migrate: (db) => migrateV56ToV57(db) },
+  { version: 58, migrate: (db) => migrateV57ToV58(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2114,6 +2111,11 @@ function migrateV33ToV34(db: Database): void {
       rebuildTableForV34(db, rebuild);
     }
 
+    // Deliberate exception to the frozen-DDL rule (see the Frozen DDL
+    // snapshots block below): v34 applies the LIVE schema sets as the rescue
+    // floor for pre-v34 vaults. It creates every table before any index, so
+    // it cannot hit the missing-table class that bricked v41, and the
+    // migration-matrix test pins its end state structurally.
     for (const ddl of TABLE_DDLS) {
       db.exec(ddl);
     }
@@ -2552,6 +2554,102 @@ function migrateV39ToV40(db: Database): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Frozen DDL snapshots
+//
+// Migrations must never reference live schema constants (TABLE_DDLS,
+// SECONDARY_INDEXES, TEAM_DELETE_TRIGGERS, …): later additions to those
+// constants silently change a historical migration's semantics — and can
+// brick the chain outright when the addition targets a table that does not
+// exist yet at that point in history (v41 shipped applying live
+// SECONDARY_INDEXES and broke every vault stamped 34–40 once
+// session_myco_tool_calls indexes were added alongside v45). Two rules,
+// enforced structurally by tests/db/migration-matrix.test.ts:
+//   1. A migration applies only DDL frozen at the revision that shipped it;
+//      reapplyCurrentSchemaDdl() (schema.ts) supplies everything newer after
+//      the chain completes.
+//   2. A trigger BODY change ships as a new DROP+recreate migration (v53 is
+//      the precedent) — IF NOT EXISTS alone never refreshes bodies.
+// v34 is the deliberate exception: it applies the live DDL sets as the
+// rescue floor for pre-v34 vaults, and it creates all tables before any
+// index, so it cannot hit the missing-table class.
+// ---------------------------------------------------------------------------
+
+/** Frozen at the v41 revision: release-provenance table DDL. */
+const V41_KNOWLEDGE_GIT_PROVENANCE_TABLE = `
+  CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id                 TEXT,
+    machine_id                 TEXT NOT NULL DEFAULT 'local',
+    identity_key               TEXT NOT NULL UNIQUE,
+    session_id                 TEXT REFERENCES sessions(id),
+    prompt_batch_id            INTEGER REFERENCES prompt_batches(id),
+    capture_point              TEXT NOT NULL,
+    captured_at                INTEGER NOT NULL,
+    project_root               TEXT,
+    branch                     TEXT,
+    head_sha                   TEXT,
+    upstream_ref               TEXT,
+    upstream_sha               TEXT,
+    production_ref             TEXT,
+    production_sha             TEXT,
+    is_dirty                   INTEGER NOT NULL DEFAULT 0,
+    staged_count               INTEGER NOT NULL DEFAULT 0,
+    unstaged_count             INTEGER NOT NULL DEFAULT 0,
+    untracked_count            INTEGER NOT NULL DEFAULT 0,
+    changed_paths_json         TEXT,
+    tracked_blob_hashes_json   TEXT,
+    patch_ids_json             TEXT,
+    status_hash                TEXT NOT NULL,
+    evidence_json              TEXT,
+    error                      TEXT,
+    created_at                 INTEGER NOT NULL
+  )`;
+
+/** Frozen at the v41 revision: release-provenance table DDL. */
+const V41_KNOWLEDGE_RELEASE_STATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS knowledge_release_state (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id               TEXT,
+    machine_id               TEXT NOT NULL DEFAULT 'local',
+    identity_key             TEXT NOT NULL UNIQUE,
+    namespace                TEXT NOT NULL,
+    record_id                TEXT NOT NULL,
+    source_session_id        TEXT REFERENCES sessions(id),
+    source_prompt_batch_id   INTEGER REFERENCES prompt_batches(id),
+    state                    TEXT NOT NULL,
+    confidence               TEXT NOT NULL,
+    basis_kind               TEXT,
+    basis_ref                TEXT,
+    basis_sha                TEXT,
+    release_pr_number        INTEGER,
+    reason                   TEXT,
+    evidence_json            TEXT,
+    checked_at               INTEGER NOT NULL,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER,
+    synced_at                INTEGER
+  )`;
+
+/**
+ * Frozen at the v41 revision: the indexes v41 introduced for its two new
+ * tables. The era code looped the full live SECONDARY_INDEXES set; only the
+ * knowledge_* entries were new at v41 — every other index already existed on
+ * a v40 vault, and reapplyCurrentSchemaDdl() restores any later additions.
+ */
+const V41_RELEASE_PROVENANCE_INDEXES: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_project_captured ON knowledge_git_provenance (project_id, captured_at)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_session ON knowledge_git_provenance (session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_prompt_batch ON knowledge_git_provenance (prompt_batch_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_head_sha ON knowledge_git_provenance (head_sha)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_status_hash ON knowledge_git_provenance (status_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_project_checked ON knowledge_release_state (project_id, checked_at)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_record ON knowledge_release_state (namespace, record_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_state ON knowledge_release_state (state, confidence)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_session ON knowledge_release_state (source_session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_prompt_batch ON knowledge_release_state (source_prompt_batch_id)',
+];
+
 /**
  * Version 41 adds release-provenance tables:
  *   - knowledge_git_provenance: raw, append-oriented Git evidence captured
@@ -2565,9 +2663,9 @@ function migrateV39ToV40(db: Database): void {
 function migrateV40ToV41(db: Database): void {
   db.prepare('BEGIN').run();
   try {
-    db.prepare(KNOWLEDGE_GIT_PROVENANCE_TABLE).run();
-    db.prepare(KNOWLEDGE_RELEASE_STATE_TABLE).run();
-    for (const ddl of SECONDARY_INDEXES) db.prepare(ddl).run();
+    db.prepare(V41_KNOWLEDGE_GIT_PROVENANCE_TABLE).run();
+    db.prepare(V41_KNOWLEDGE_RELEASE_STATE_TABLE).run();
+    for (const ddl of V41_RELEASE_PROVENANCE_INDEXES) db.prepare(ddl).run();
     db.prepare(
       `INSERT INTO schema_version (version, applied_at)
        VALUES (?, ?)
@@ -3147,6 +3245,37 @@ function migrateV49ToV50(db: Database): void {
 }
 
 /**
+ * Frozen at the revision that shipped v51–v53 (one PR, no intermediate
+ * release): the delete-trigger table list and project_id-capturing bodies as
+ * of v53. v51 creates these triggers — SQLite validates trigger bodies
+ * lazily, so referencing `team_outbox.project_id` two steps before v53 adds
+ * that column is sound; the triggers cannot fire while
+ * `team_sync_state.enabled` is at its default 0 — and v53 re-creates them
+ * via DROP+CREATE after the column lands. Later additions to the live
+ * TEAM_DELETE_TRIGGER_TABLES must NOT appear here: a CREATE TRIGGER on a
+ * table that does not exist yet at this point in the chain throws and
+ * bricks the upgrade (the v41 failure class).
+ */
+const V53_TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+const V53_TEAM_DELETE_TRIGGERS: readonly string[] = V53_TEAM_DELETE_TRIGGER_TABLES.map(
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN (SELECT enabled FROM team_sync_state) = 1
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
+/**
  * v50 → v51: Grove-scoped Team-sync write path.
  *
  * Adds the per-Grove `team_sync_state` flag and the AFTER DELETE triggers
@@ -3163,7 +3292,7 @@ function migrateV50ToV51(db: Database): void {
         rowid_guard INTEGER PRIMARY KEY CHECK (rowid_guard = 1),
         enabled     INTEGER NOT NULL DEFAULT 0
       )`);
-    for (const trg of TEAM_DELETE_TRIGGERS) { db.exec(trg); }
+    for (const trg of V53_TEAM_DELETE_TRIGGERS) { db.exec(trg); }
     db.prepare(
       `INSERT INTO schema_version (version, applied_at)
        VALUES (?, ?)
@@ -3284,10 +3413,10 @@ function migrateV51ToV52(db: Database, machineId: string): void {
  *
  * The AFTER DELETE triggers must be recreated to capture `OLD.project_id`:
  * ALTER TABLE only touches the table, never trigger bodies. Every table in
- * TEAM_DELETE_TRIGGER_TABLES carries a `project_id` column, so the updated
- * TEAM_DELETE_TRIGGERS use `OLD.project_id` uniformly. We DROP each trigger
+ * the frozen v53 list carries a `project_id` column, so the recreated
+ * triggers use `OLD.project_id` uniformly. We DROP each trigger
  * (CREATE TRIGGER IF NOT EXISTS is a no-op when the old definition is still
- * present) and re-CREATE it from the current DDL, iterating both lists by
+ * present) and re-CREATE it from the frozen v53 DDL, iterating both lists by
  * index so the trigger name and its DDL stay aligned.
  */
 function migrateV52ToV53(db: Database): void {
@@ -3305,10 +3434,12 @@ function migrateV52ToV53(db: Database): void {
     }
 
     // Recreate the delete triggers so existing DBs capture project_id. ALTER
-    // does not update trigger bodies, so DROP + CREATE is required.
-    TEAM_DELETE_TRIGGER_TABLES.forEach((table, i) => {
+    // does not update trigger bodies, so DROP + CREATE is required. Uses the
+    // frozen v53 snapshot — never the live trigger list (see V53_TEAM_DELETE_
+    // TRIGGER_TABLES above).
+    V53_TEAM_DELETE_TRIGGER_TABLES.forEach((table, i) => {
       db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
-      db.exec(TEAM_DELETE_TRIGGERS[i]);
+      db.exec(V53_TEAM_DELETE_TRIGGERS[i]);
     });
 
     db.prepare(
@@ -3520,6 +3651,38 @@ function migrateV56ToV57(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(57, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v57 -> v58: drop the dead team_outbox retry-bookkeeping columns.
+ *
+ * v30 rebuilt team_outbox without `retry_count`/`last_attempt_at` for
+ * migrated vaults, but the fresh-install DDL kept declaring them — so vaults
+ * created at v30 or later carried two dead columns that migrated vaults
+ * lack. Nothing reads or writes either column. Dropping them converges
+ * fresh-created and migrated vaults on one shape, which the
+ * migration-matrix parity test asserts structurally. The PRAGMA guard makes
+ * this a no-op for vaults that went through v30.
+ */
+function migrateV57ToV58(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'team_outbox');
+    if (cols.has('retry_count')) {
+      db.prepare(`ALTER TABLE team_outbox DROP COLUMN retry_count`).run();
+    }
+    if (cols.has('last_attempt_at')) {
+      db.prepare(`ALTER TABLE team_outbox DROP COLUMN last_attempt_at`).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(58, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
