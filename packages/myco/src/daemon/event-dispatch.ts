@@ -104,6 +104,15 @@ export interface EventDispatchDeps {
    * is rejected here. When absent (tests), a private instance is used.
    */
   eventDedupCache?: EventDedupCache;
+  /**
+   * Clear the session's converged mark (the reconciler's identity map) when
+   * a per-type handler fails after the daemon-side buffer append succeeded.
+   * The appended copy is then unconverged by construction, and the next
+   * quiescent boundary (post-Stop trigger / drain pass / boot) replays it —
+   * the recovery mechanism the honest `persisted:false, buffered:true`
+   * response promises hooks, so they don't double-buffer.
+   */
+  clearConvergedMark?: (sessionId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +242,15 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
 
     let userPromptBatchId: number | undefined;
+    // Honest response contract: `persisted` reports whether every per-type
+    // handler that ran for this event committed its writes; `buffered`
+    // reports whether the daemon-side buffer append (which runs BEFORE the
+    // handlers) holds a durable copy the reconciler can replay. Types with
+    // no persisting handler (notification, error_occurred, …) report
+    // `persisted: true` — there is nothing to persist, so success is
+    // vacuous and the field still marks this daemon as contract-aware.
+    let handlerFailed = false;
+    let daemonBuffered = false;
     const requestProjectId = rowProjectIdFromRequestContext(req.requestContext);
     const requestProjectRoot = req.requestContext?.projectRoot ?? projectRoot;
     const requestFilesystemRoot = req.requestContext
@@ -254,7 +272,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       logger.info(LOG_KINDS.HOOKS_EVENT, 'Event suppressed as duplicate within dedup window', {
         type: event.type, session_id: event.session_id,
       });
-      return { body: { ok: true, ignored: 'duplicate' } };
+      return { body: { ok: true, ignored: 'duplicate', persisted: false } };
     }
 
     // Ensure session is registered (idempotent — handles daemon restarts mid-session)
@@ -286,7 +304,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             type: event.type,
             reason,
           });
-          return { body: { ok: true, ignored: reason } };
+          return { body: { ok: true, ignored: reason, persisted: false } };
         }
         if (shouldReevaluate) {
           droppedSessions.delete(event.session_id);
@@ -299,7 +317,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             type: event.type,
             reason: decision.reason ?? 'rule',
           });
-          return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
+          return { body: { ok: true, ignored: decision.reason ?? 'rule', persisted: false } };
         }
 
         // Persist + register through the single lifecycle helper. ordering
@@ -361,7 +379,22 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         sessionBuffers.set(event.session_id, new EventBuffer(bufferDir, event.session_id));
       }
     }
-    sessionBuffers.get(event.session_id)?.append(event);
+    try {
+      const buffer = sessionBuffers.get(event.session_id);
+      if (buffer) {
+        buffer.append(event);
+        daemonBuffered = true;
+      }
+    } catch (err) {
+      // The append failing must not block the live DB path — but the
+      // response below reports `buffered: false` so the hook knows no
+      // daemon-side copy exists and can take the buffer fallback itself.
+      logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Daemon-side buffer append failed', {
+        session_id: event.session_id,
+        type: event.type,
+        error: String(err),
+      });
+    }
 
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
@@ -503,6 +536,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           setTimeout(() => liveReconcile(event.session_id, reconcileAgent, reconcileTranscript), 0);
         }
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_BATCH, 'Failed to open batch', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -573,6 +607,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.transcript_path === 'string' ? event.transcript_path : undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
       }
       // Live capture: surface queued prompts + in-flight responses mid-turn.
@@ -634,6 +669,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           !!event.is_interrupt,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -650,6 +686,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       try {
         handleSubagentStart(event.session_id, agentId, agentType);
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -665,7 +702,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           session_id: event.session_id,
           agent_id: agentId,
         });
-        return { body: { ok: true, ignored: 'synthetic-subagent-stop' } };
+        return { body: { ok: true, ignored: 'synthetic-subagent-stop', persisted: false } };
       }
       logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
         session_id: event.session_id,
@@ -680,6 +717,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -696,6 +734,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.error_details === 'string' ? event.error_details : undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record stop failure', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -714,6 +753,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.task_description === 'string' ? event.task_description : undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record task completion', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -728,6 +768,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record pre-compact', { session_id: event.session_id, error: (err as Error).message });
       }
     }
@@ -742,10 +783,26 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           typeof event.compact_summary === 'string' ? event.compact_summary : undefined,
         );
       } catch (err) {
+        handlerFailed = true;
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record post-compact', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
-    return { body: { ok: true, ...(userPromptBatchId != null ? { batchId: userPromptBatchId } : {}) } };
+    // Honest outcome assembly. A failed handler answers `persisted: false`
+    // plus whether the daemon-side append holds a durable copy:
+    //
+    //   buffered: true  — recovery is daemon-owned. Clear the converged
+    //                     mark so the appended copy replays at the next
+    //                     quiescent boundary; the hook must NOT re-buffer
+    //                     (the double-buffer trap).
+    //   buffered: false — no daemon-side copy exists (the missing-grove/
+    //                     project-context path, or the append itself
+    //                     failed). The hook's buffer fallback is the only
+    //                     durable copy; it should buffer.
+    if (handlerFailed) {
+      deps.clearConvergedMark?.(event.session_id);
+      return { body: { ok: true, persisted: false, buffered: daemonBuffered } };
+    }
+    return { body: { ok: true, persisted: true, ...(userPromptBatchId != null ? { batchId: userPromptBatchId } : {}) } };
   };
 }
