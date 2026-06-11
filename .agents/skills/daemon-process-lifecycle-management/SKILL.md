@@ -353,3 +353,20 @@ async function selfUpdateWithServiceCoordination(): Promise<void> {
 ### PowerManager Serial Tick Starvation
 
 **Architectural gotcha** (`packages/myco/src/daemon/power.ts`): `PowerManager` runs all eligible jobs **serially** — each job is awaited before the next starts. The effective tick period is therefore `base_interval + Σ(job durations)`, not just `base_interval`. A single long-running job delays every subsequent job registered for that tick, including embedding and canopy scans. When adding a new `PowerJob`, account for this: long jobs starve later jobs. If a job's runtime is unbounded or variable, monitor `event_loop_lag_during_ms` in power job log entries to detect runaway jobs early. The `preventsDeepSleep` guard can gate a job but does not make it run concurrently.
+
+### Bun Exits on Unhandled Promise Rejections — No Process-Level Safety Net
+
+**Critical runtime gotcha**: Bun terminates the process immediately on any unhandled promise rejection. Unlike Node.js, there is no `process.on('unhandledRejection', handler)` recovery hook in the daemon codebase — and none will work reliably in Bun. Every async function that can fail must have a `.catch()` handler or be wrapped in `try/catch`. Fire-and-forget dispatches are especially dangerous: always attach `.catch(err => logger.error('...', err))` to prevent a silent background failure from crashing the daemon. When reviewing new async code, treat any unawaited promise without a `.catch()` as a crash risk.
+
+### Dev Restart: `make dev-build && myco-dev restart`
+
+**Development workflow**: When iterating on daemon code in a development checkout, the correct restart sequence is:
+```bash
+make dev-build    # rebuild the dev binary
+myco-dev restart  # restart the dev daemon instance
+```
+Do **not** use `launchctl stop/start` for development daemon restarts — that targets the production service plist, not the dev daemon. Using the wrong restart path leaves code changes unloaded while showing a "healthy" daemon response.
+
+### No Protocol-Skew Branches for Co-Shipped Components
+
+The daemon and CLI binary are always co-shipped at the same version. Do not add version-check branches (e.g., `if daemonVersion < X`) to handle protocol differences between the daemon and its own CLI. Protocol-skew guards add permanent dead-code debt and signal that the daemon's HTTP API has diverged from the CLI's expectations — which should never happen in a co-shipped release. If you find yourself writing a version-check branch, the correct fix is to update the API and CLI together in the same PR.

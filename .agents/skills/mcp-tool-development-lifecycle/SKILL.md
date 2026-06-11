@@ -156,13 +156,20 @@ Handle incomplete or placeholder tools appropriately:
 
 ## Procedure G: Cloud vs Local Placement Decisions
 
-Decide whether new tools belong in local or cloud MCP surface:
+Decide whether new tools belong in local or cloud MCP surface, and whether the hosting symbiont uses MCP or CLI transport:
 
 1. **Default to local-only** — new tools go in `TOOL_DEFINITIONS` unless they meet cloud criteria.
 2. **Promote to cloud surface** only if tool is semantically read-only, safe for federation, or required for Collective operations.
 3. **Use `COLLECTIVE_TOOL_DEFINITIONS`** for tools requiring Collective connection state.
 4. **Test both surfaces** — verify tools work correctly in both local and (if applicable) cloud federation.
 5. **Document placement rationale** — explain why tool belongs in its chosen surface.
+
+**`toolTransport` manifest field drives symbiont installer seams**: Each symbiont manifest declares `toolTransport: 'mcp' | 'cli'` (defined in `packages/myco/src/symbionts/manifest-schema.ts`, defaulting to `'mcp'`). This single field controls three installer seams:
+   - `shouldProvisionMcpServer()` in `packages/myco/src/symbionts/installer.ts` — returns `false` for `cli` transport, skipping MCP server provisioning entirely
+   - `CLI_TOOL_TRANSPORT_DIRECTIVE` injection (from `packages/myco/src/context/cortex-injection-context.ts`) — injected into context when `toolTransport === 'cli'` so the agent knows to call tools via `myco tool call` instead of MCP
+   - `myco doctor` treatment — CLI-transport symbionts have MCP config swept/uninstalled rather than verified
+
+   When deciding cloud vs local placement, also check the target symbiont's `toolTransport` — a `cli` symbiont cannot receive MCP tools regardless of TOOL_DEFINITIONS placement.
 
 ## Procedure H: Skill Lifecycle Belongs Inside the Harness, Not on MCP
 
@@ -219,3 +226,5 @@ Handle project context changes with Grove migration architecture:
 **Code duplication**: Extract shared utilities to `packages/myco/src/tools/shared.ts`. Avoid copy-pasting handler patterns.
 
 **Grove context injection failures**: Tools accessing project context must handle Grove migration gracefully to avoid environment-specific bugs.
+
+**Copilot CLI deferred-tool model**: The copilot CLI uses a deferred/searchable-tool model — one-shot tool probes ("do you have myco tools?") return a false-negative `NO_MYCO_MCP` or `NONE` even when the stdio bridge is connected and tools are available. The fix is to explicitly trigger tool search using the tool search regex pattern rather than relying on a single passive probe. Never treat a one-shot copilot tool absence as evidence that MCP is misconfigured; always verify with an explicit tool search invocation.

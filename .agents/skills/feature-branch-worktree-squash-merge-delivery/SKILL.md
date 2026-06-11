@@ -56,6 +56,19 @@ This writes a `.myco/runtime.command` file that pins this worktree to the freshl
 
 Skip this step ONLY when you deliberately want the worktree to fall back to the global binary.
 
+**Isolation caveat — schema migrations**: Do NOT use `make dev-link-worktree` when the feature branch carries a schema migration that the shared `~/.myco` vault hasn't seen yet. Running the worktree binary against the shared vault will migrate it in place, breaking the main branch. For isolated programmatic testing in schema-migration scenarios, use a temp git repo with a separate `MYCO_HOME`:
+
+```bash
+export MYCO_HOME=$(mktemp -d)   # scratch vault — migrated fresh, main vault untouched
+./dist/myco-daemon &
+# run your tests here
+unset MYCO_HOME
+```
+
+**Vendor asset caveat**: Native vendor assets are not automatically rebuilt in new worktrees. If the daemon or tests fail with native module errors after creating a worktree, run `npm rebuild` to force recompilation before proceeding.
+
+**Safe dogfood sequence**: (1) develop and commit on the worktree; (2) run isolated tests with a temp `MYCO_HOME` if the branch has schema changes; (3) switch to the root checkout for live daemon dogfood once the migration is confirmed safe.
+
 ### Step 3: Implement with incremental commits
 
 Commit regularly in the worktree. Don't worry about commit message quality — these will be squashed. Keep `.myco/` and `VAULT_GITIGNORE`-tracked files out of commits.
