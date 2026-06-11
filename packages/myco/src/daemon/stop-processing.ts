@@ -23,15 +23,13 @@ import {
 } from './plan-capture.js';
 import {
   getLatestBatch,
-  getBatchById,
   setResponseSummary,
+  resolveResponseSummaryTarget,
   populateBatchResponses,
   rehomeSystemActivitiesToHumanAnchor,
   closeOpenBatches,
   listBatchesBySession,
   findBatchByPromptPrefix,
-  PROMPT_BATCH_ORIGIN,
-  type BatchRow,
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
@@ -87,6 +85,15 @@ export interface StopProcessorDeps {
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
   planWatchConfig: PlanWatchConfig;
+  /**
+   * Fires after the queued stop-processing task for a session settles —
+   * the daemon-owned turn boundary, quiescent by construction. The
+   * reconciler hangs its deferred per-session convergence here so
+   * wedge-buffered events that arrived mid-turn replay without waiting
+   * for a restart or drain pass. Deferred off the queue's tick and
+   * fire-safe: errors are logged, never thrown into the stop chain.
+   */
+  onStopProcessed?: (sessionId: string) => void;
 }
 
 
@@ -227,22 +234,6 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     return true;
   }
 
-  /**
-   * Walk parent pointers up to the first non-steering batch so the response
-   * summary lands on the turn's owning prompt card. Steering children never
-   * themselves become parents (see handleUserPrompt), so a single hop is the
-   * expected depth; the loop survives an unexpected multi-hop chain anyway.
-   */
-  function findOwningParent(child: BatchRow): BatchRow | null {
-    let current: BatchRow | null = child;
-    while (current?.parent_prompt_batch_id != null) {
-      const parent = getBatchById(current.parent_prompt_batch_id, ALL_PROJECTS_SCOPE);
-      if (!parent || parent.id === current.id) break;
-      current = parent;
-    }
-    return current;
-  }
-
   async function processStopEvent(
     sessionId: string,
     user: string | undefined,
@@ -366,25 +357,21 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       // model, where the file is rewritten each turn and only contains the
       // current one — we always want that single turn's response on the latest
       // batch, regardless of prompt_number alignment.
-      // Anchor the response to the latest HUMAN turn, never a point-in-time
-      // system batch (a <system-reminder> / <task-notification> born-closed
-      // after the human prompt carries a higher prompt_number and would be
-      // `latestBatch`, stranding the turn's answer on a dashboard-hidden row
-      // that populateBatchResponses never clears — it only clears system
-      // batches whose prompt matched a transcript turn, which an envelope is
-      // not). populateBatchResponses handles the matched case; this is the
-      // per-turn-transcript fallback (Cursor), so target the human anchor.
-      const responseTarget = latestBatch && latestBatch.origin !== PROMPT_BATCH_ORIGIN.HUMAN
-        ? getLatestBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN })
-        : latestBatch;
-      if (resolvedResponse && responseTarget && !responseTarget.response_summary) {
-        const summaryTarget = responseTarget.parent_prompt_batch_id
-          ? findOwningParent(responseTarget)
-          : responseTarget;
-        if (summaryTarget && !summaryTarget.response_summary) {
-          try { setResponseSummary(summaryTarget.id, resolvedResponse); }
-          catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
-        }
+      // Anchor the response via the shared human-anchor resolution
+      // (`resolveResponseSummaryTarget`) — latest HUMAN turn, steering
+      // child redirected to its owning parent, never a point-in-time
+      // system batch (a <system-reminder> / <task-notification> born-
+      // closed after the human prompt carries a higher prompt_number and
+      // would be `latestBatch`, stranding the turn's answer on a
+      // dashboard-hidden row that populateBatchResponses never clears —
+      // it only clears system batches whose prompt matched a transcript
+      // turn, which an envelope is not). populateBatchResponses handles
+      // the matched case; this is the per-turn-transcript fallback
+      // (Cursor), so target the human anchor.
+      const summaryTarget = resolveResponseSummaryTarget(sessionId, latestBatch);
+      if (resolvedResponse && summaryTarget) {
+        try { setResponseSummary(summaryTarget.id, resolvedResponse); }
+        catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
       }
 
       // Close open batches but do NOT close the session — the Stop hook fires
@@ -809,6 +796,26 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       logger.error(LOG_KINDS.PROCESSOR_SESSION, 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });
 
+    // Post-Stop convergence trigger. Runs after the queued task body has
+    // settled — the daemon-owned turn boundary — and is deferred off the
+    // queue's tick (the deferGitProvenance precedent: setImmediate keeps
+    // the cost out of the serialized chain). Fire-safe by construction:
+    // the setImmediate body catches and logs, so a throwing trigger can
+    // never poison the stop chain or the request path.
+    const fireStopProcessed = () => {
+      if (!deps.onStopProcessed) return;
+      setImmediate(() => {
+        try {
+          deps.onStopProcessed?.(sessionId);
+        } catch (err) {
+          logger.warn(LOG_KINDS.PROCESSOR_SESSION, 'Post-stop convergence trigger failed', {
+            session_id: sessionId,
+            error: (err as Error).message,
+          });
+        }
+      });
+    };
+
     const prev = activeStopProcessing ?? Promise.resolve();
     // Chain the new run after prev, then null out activeStopProcessing
     // only if THIS chain is still the registered head — without this
@@ -821,7 +828,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     //       running. getActiveProcessing() consumers (shutdown drain,
     //       tests) then proceed on what looks like an idle queue and
     //       can interrupt chainB mid-write. /code-review finding C5.
-    const chain: Promise<void> = prev.then(run).finally(() => {
+    const chain: Promise<void> = prev.then(run).then(fireStopProcessed).finally(() => {
       if (activeStopProcessing === chain) {
         activeStopProcessing = null;
       }

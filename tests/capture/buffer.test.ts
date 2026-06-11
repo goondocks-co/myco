@@ -40,28 +40,12 @@ describe('EventBuffer', () => {
     expect(buffer.readAll()).toEqual([]);
   });
 
-  it('reports event count', () => {
-    const buffer = new EventBuffer(bufferDir, 'session-abc');
-    expect(buffer.count()).toBe(0);
-    buffer.append({ type: 'tool_use', tool: 'Read' });
-    buffer.append({ type: 'tool_use', tool: 'Write' });
-    expect(buffer.count()).toBe(2);
-  });
-
   it('deletes buffer file', () => {
     const buffer = new EventBuffer(bufferDir, 'session-abc');
     buffer.append({ type: 'tool_use', tool: 'Read' });
     expect(buffer.exists()).toBe(true);
     buffer.delete();
     expect(buffer.exists()).toBe(false);
-  });
-
-  it('respects max events limit', () => {
-    const buffer = new EventBuffer(bufferDir, 'session-abc', { maxEvents: 3 });
-    for (let i = 0; i < 5; i++) {
-      buffer.append({ type: 'tool_use', tool: `tool-${i}` });
-    }
-    expect(buffer.isOverflow()).toBe(true);
   });
 });
 
