@@ -332,7 +332,12 @@ function readRawYamlDocStrict(filePath: string): Record<string, unknown> {
   } catch (err) {
     throw new TierConfigUnreadableError(filePath, `invalid YAML — ${(err as Error).message}`);
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  // A null root (comments-only doc, bare `---`) holds zero YAML values —
+  // there is nothing a write could destroy, so treat it as empty rather
+  // than unwritable. Array/scalar roots still refuse: they're malformed
+  // docs whose content a write WOULD discard.
+  if (parsed === null || parsed === undefined) return {};
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new TierConfigUnreadableError(filePath, 'root must be a YAML mapping');
   }
   return parsed as Record<string, unknown>;
@@ -681,7 +686,24 @@ function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): 
   }
 
   const raw = fs.readFileSync(configPath, 'utf-8');
-  const parsed = YAML.parse(raw) as Record<string, unknown>;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = YAML.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    // Typed so write-path callers (scoped PUT, agent-tasks, symbionts patch)
+    // surface a 422 instead of a raw YAMLParseError 500. Load-path behavior
+    // is unchanged: corrupt myco.yaml has always thrown out of loadConfig.
+    throw new TierConfigUnreadableError(configPath, `invalid YAML — ${(err as Error).message}`);
+  }
+  // Non-mapping roots (null from a comments-only file, scalar, array) have
+  // always failed this loader — but as untyped TypeErrors from property
+  // access below. Classify them as unreadable so API callers get the same
+  // 422 contract as a parse failure. Unlike local.yaml (an optional overlay
+  // where a null root is treated as empty), myco.yaml is the project's
+  // identity document — a contentless root means it needs repair.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TierConfigUnreadableError(configPath, 'root must be a YAML mapping');
+  }
 
   // Detect v1 config and guide migration
   if (parsed.version === 1 || (parsed.intelligence as Record<string, unknown>)?.backend) {
@@ -795,7 +817,12 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   const projectOnly = ProjectConfigSchema.parse(validated) as Record<string, unknown>;
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
-  const onDiskRaw = readRawYamlDoc(configPath);
+  // Strict read: refuse to overlay-and-write when the on-disk doc is
+  // unparseable. updateConfig callers never get here (loadConfig already
+  // throws on corrupt myco.yaml); this guards direct saveConfig callers,
+  // which would otherwise replace the user's (recoverable) file with a doc
+  // built from a config object that never saw the on-disk values.
+  const onDiskRaw = readRawYamlDocStrict(configPath);
   const defaults = MycoConfigSchema.parse({ version: 3 });
 
   // Machine-tier fields (capture/notifications/daemon log fields/legacy
@@ -1176,8 +1203,15 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
 /**
  * Write local.yaml only when the serialized contents differ from `current`.
  * Skips the write (and mkdirSync) on a no-op to avoid noisy file mtimes.
+ *
+ * Strict-read gate: `current` comes from the lenient `loadLocalConfig`, which
+ * salvages an unparseable file as `{}` — building a write on that salvage
+ * would replace whatever the corrupt file held with just the caller's patch.
+ * Re-read the on-disk doc strictly and throw `TierConfigUnreadableError`
+ * before any write, mirroring the machine/grove raw-writer contract.
  */
 function writeLocalYamlIfChanged<T>(vaultDir: string, current: T, next: T): T {
+  readRawYamlDocStrict(localConfigPath(vaultDir));
   const existingYaml = YAML.stringify(current);
   const nextYaml = YAML.stringify(next);
   if (existingYaml === nextYaml) return next;

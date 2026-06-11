@@ -5,7 +5,7 @@ import { confirmDestructive } from './confirm.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { updateConfig } from '../config/loader.js';
+import { updateConfig, TierConfigUnreadableError } from '../config/loader.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -247,12 +247,20 @@ async function runProjectRemove(parsed: ParsedFlags): Promise<void> {
       console.log(`  – ${manifest.displayName}: nothing to remove`);
     }
 
-    updateConfig(vaultDir, (c) => {
-      if (!c.symbionts?.[symbiontName]) return c;
-      const { [symbiontName]: _, ...rest } = c.symbionts;
-      return { ...c, symbionts: Object.keys(rest).length > 0 ? rest : undefined };
-    });
-    console.log(`  ✓ Removed ${symbiontName} from myco.yaml`);
+    try {
+      updateConfig(vaultDir, (c) => {
+        if (!c.symbionts?.[symbiontName]) return c;
+        const { [symbiontName]: _, ...rest } = c.symbionts;
+        return { ...c, symbionts: Object.keys(rest).length > 0 ? rest : undefined };
+      });
+      console.log(`  ✓ Removed ${symbiontName} from myco.yaml`);
+    } catch (err) {
+      if (!(err instanceof TierConfigUnreadableError)) throw err;
+      // Teardown proceeds: an unparseable myco.yaml has no reachable
+      // symbionts block to clean, and remove must not clobber a file the
+      // user may still want to repair.
+      console.log(`  !! Skipped myco.yaml cleanup — file is unparseable (${err.filePath})`);
+    }
     return;
   }
 
