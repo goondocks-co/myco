@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { createSchema } from '@myco/db/schema.js';
+import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 
 const now = 1_780_600_000;
 const LOCAL = 'test-machine';
@@ -87,12 +87,12 @@ describe('migration v56 -> v57: unify spore retirement on obsolete', () => {
     db.close();
   });
 
-  it('advances schema_version to 57', () => {
+  it('advances schema_version to the current SCHEMA_VERSION', () => {
     const db = seedV56Db();
     createSchema(db, LOCAL);
 
     const { version } = db.prepare(`SELECT MAX(version) AS version FROM schema_version`).get() as { version: number };
-    expect(version).toBe(57);
+    expect(version).toBe(SCHEMA_VERSION);
     db.close();
   });
 

@@ -450,9 +450,7 @@ export const TEAM_OUTBOX_TABLE = `
     machine_id  TEXT NOT NULL,
     project_id  TEXT,
     created_at  INTEGER NOT NULL,
-    sent_at     INTEGER,
-    retry_count    INTEGER NOT NULL DEFAULT 0,
-    last_attempt_at INTEGER
+    sent_at     INTEGER
   )`;
 
 export const TEAM_SYNC_STATE_TABLE = `
