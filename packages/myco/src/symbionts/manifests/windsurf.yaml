@@ -56,6 +56,28 @@ capabilities:
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
   sessionStartInjection: false
   subagentStartInjection: false
+  # Tools whose tool_input carries a file path. Windsurf's hook payload puts
+  # event data in `tool_info` (mapped via hookFields.toolInput above), and
+  # `post_write_code` carries the path at the top level of that bag:
+  # `{ edits: [...], file_path: "..." }` — confirmed from the live buffer of
+  # smoke session 028329ac… (2026-06-11).
+  #
+  # READ-HOOK ABSENCE (app-side limitation): Cascade file views fire NO hook
+  # at all. The same smoke session read README.md (the assistant response
+  # even says "*Viewed file:…README.md*") yet the buffer contains only
+  # pre_user_prompt, post_write_code, and the cascade-response events.
+  # Windsurf's hook surface has no read/view event, so read activities
+  # cannot be captured — nothing to declare here until the app ships one.
+  # `post_run_command` IS registered in our hook template and documented
+  # (docs.windsurf.com/windsurf/cascade/hooks) to carry `tool_info.command`,
+  # so cat-style shell reads are the one read signal we can extract.
+  pathBearingTools:
+    - tool: post_write_code
+      pathField: file_path
+    - tool: post_run_command
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
 hooks:
   # Windsurf splits turn-end across two events. `post_cascade_response`
   # fires immediately with `tool_info.response` (inline text). The

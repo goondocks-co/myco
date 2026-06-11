@@ -59,7 +59,49 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "toolTransport": "cli",
       "canopyReadTools": [],
-      "pathBearingTools": []
+      "pathBearingTools": [
+        {
+          "tool": "view_file",
+          "pathField": "AbsolutePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "write_to_file",
+          "pathField": "TargetFile",
+          "pathKind": "file"
+        },
+        {
+          "tool": "read_file",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "replace",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "run_shell_command",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
     },
     "hooks": {}
   },
@@ -560,6 +602,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "rg",
             "perl"
           ]
+        },
+        {
+          "tool": "apply_patch",
+          "pathField": "command",
+          "extract": "patch"
         }
       ]
     },
@@ -844,7 +891,22 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ".cursor/plans/"
       ],
       "planTags": [],
-      "rules": []
+      "rules": [
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<user_query>"
+          },
+          "action": "rewrite_prompt",
+          "reason": "strip Cursor user_query envelope",
+          "strip_envelope": {
+            "open": "<user_query>",
+            "close": "</user_query>"
+          },
+          "trim": true
+        }
+      ]
     },
     "registration": {
       "hooksTarget": ".cursor/hooks.json",
@@ -882,7 +944,59 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "toolTransport": "cli",
       "canopyReadTools": [],
-      "pathBearingTools": []
+      "pathBearingTools": [
+        {
+          "tool": "Read",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Write",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Edit",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "MultiEdit",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Delete",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Grep",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Shell",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
     },
     "hooks": {}
   },
@@ -949,6 +1063,32 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tool": "edit",
           "pathField": "filePath",
           "pathKind": "file"
+        },
+        {
+          "tool": "apply_patch",
+          "pathField": "patchText",
+          "extract": "patch"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
         }
       ]
     },
@@ -995,7 +1135,44 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "toolTransport": "mcp",
       "canopyReadTools": [],
-      "pathBearingTools": []
+      "pathBearingTools": [
+        {
+          "tool": "read",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "write",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "edit",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
     },
     "hooks": {}
   },
@@ -1045,7 +1222,34 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "toolTransport": "cli",
       "canopyReadTools": [],
-      "pathBearingTools": []
+      "pathBearingTools": [
+        {
+          "tool": "post_write_code",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "post_run_command",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
     },
     "hooks": {
       "post_cascade_response": {

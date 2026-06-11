@@ -257,10 +257,13 @@ capabilities:
         - grep
         - rg
         - perl
-  # Codex's write surface flows through the same Bash tool (editor commands,
-  # apply_patch-style scripts) — no separate path-bearing tool name exists
-  # beyond the read entry above. Mirror canopyReadTools so capture stays
-  # symmetric with the read surface.
+  # Codex's read surface flows through the Bash tool; its write surface is
+  # the dedicated `apply_patch` tool, which carries the whole patch envelope
+  # on `command` ("*** Begin Patch\n*** Update File: docs/x.md\n…") — the
+  # path lives in the `*** Add/Update/Delete File:` header, so the `patch`
+  # extractor pulls the first one (multi-file patches still register a
+  # single activity row). Shape confirmed from the dogfood vault's activity
+  # history (2,780 apply_patch rows, previously all file_path=NULL).
   pathBearingTools:
     - tool: Bash
       pathField: command
@@ -280,6 +283,9 @@ capabilities:
         - grep
         - rg
         - perl
+    - tool: apply_patch
+      pathField: command
+      extract: patch
 
 hooks:
   # Single-event turn-end: `Stop` carries both the inline response and the

@@ -551,3 +551,75 @@ describe('transcript_meta_field_equals condition', () => {
     });
   });
 });
+
+describe('rewrite_prompt with strip_envelope', () => {
+  const envelopeRule = manifestWithRules('cursor', [
+    {
+      event: 'user_prompt',
+      scope: 'this_agent',
+      when: { prompt_starts_with: '<user_query>' },
+      action: 'rewrite_prompt',
+      strip_envelope: { open: '<user_query>', close: '</user_query>' },
+      reason: 'strip Cursor user_query envelope',
+      trim: true,
+    },
+  ]);
+
+  // The exact wrapped shape stored by the 2026-06-11 Cursor smoke session
+  // (64465029…): open tag, newline, verbatim text, newline, close tag.
+  const inner = 'This repo is myco’s capture pipeline project. Read the file README.md and tell me its first heading, then write a new file /tmp/smoke-v2-cursor.txt containing exactly: smoke-v2 cursor verified';
+  const wrapped = `<user_query>\n${inner}\n</user_query>`;
+
+  it('strips the envelope and keeps the inner text verbatim', () => {
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: wrapped }));
+    expect(result).toEqual({
+      action: 'rewrite',
+      prompt: inner,
+      reason: 'strip Cursor user_query envelope',
+    });
+  });
+
+  it('is idempotent — re-evaluating the stripped prompt passes it through unchanged', () => {
+    const first = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: wrapped }));
+    expect(first.action).toBe('rewrite');
+    const again = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({
+      prompt: (first as { prompt: string }).prompt,
+    }));
+    expect(again).toEqual({ action: 'pass', prompt: inner });
+  });
+
+  it('leaves an unwrapped prompt unchanged', () => {
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: inner }));
+    expect(result).toEqual({ action: 'pass', prompt: inner });
+  });
+
+  it('leaves a prompt with only the open tag unchanged (partial envelope)', () => {
+    const openOnly = `<user_query>\n${inner}`;
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: openOnly }));
+    expect(result).toEqual({ action: 'pass', prompt: openOnly });
+  });
+
+  it('leaves a prompt with only the close tag unchanged (partial envelope)', () => {
+    const closeOnly = `${inner}\n</user_query>`;
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: closeOnly }));
+    expect(result).toEqual({ action: 'pass', prompt: closeOnly });
+  });
+
+  it('does not blank out an empty envelope', () => {
+    const empty = '<user_query>\n</user_query>';
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({ prompt: empty }));
+    expect(result).toEqual({ action: 'pass', prompt: empty });
+  });
+
+  it('keeps interior whitespace and tag-like content verbatim', () => {
+    const tricky = 'line one\n\n  indented <code>block</code>\nline three';
+    const result = evaluateUserPromptRules([envelopeRule], 'cursor', ctx({
+      prompt: `<user_query>${tricky}</user_query>`,
+    }));
+    expect(result).toEqual({
+      action: 'rewrite',
+      prompt: tricky,
+      reason: 'strip Cursor user_query envelope',
+    });
+  });
+});

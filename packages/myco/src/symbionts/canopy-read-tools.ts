@@ -95,6 +95,12 @@ function resolveFromEntries(
       continue;
     }
 
+    if ('extract' in entry && entry.extract === 'patch') {
+      const resolved = resolvePatchFile(entry, input);
+      if (resolved) return resolved;
+      continue;
+    }
+
     const value = input[entry.pathField];
     if (typeof value === 'string' && value.length > 0) {
       return { filePath: value };
@@ -102,6 +108,37 @@ function resolveFromEntries(
   }
 
   return null;
+}
+
+/**
+ * File headers inside an apply_patch envelope. The grammar (shared by
+ * Codex and opencode) wraps hunks in `*** Begin Patch` … `*** End Patch`
+ * with one header per touched file:
+ *
+ *     *** Add File: <path>
+ *     *** Update File: <path>      (optionally followed by `*** Move to:`)
+ *     *** Delete File: <path>
+ */
+const PATCH_FILE_HEADER = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/m;
+
+/**
+ * Extract the file path from an apply_patch envelope string. A single
+ * envelope can touch multiple files; the FIRST header wins — one tool
+ * call only registers one activity row regardless (mirrors the
+ * last-positional compromise in `resolveShellArg`). `*** Move to:`
+ * destinations are deliberately not considered — the source header
+ * already identifies the file the patch is about.
+ */
+function resolvePatchFile(
+  entry: Extract<SymbiontCanopyReadTool, { extract: 'patch' }>,
+  input: Record<string, unknown>,
+): ResolvedRead | null {
+  const raw = input[entry.pathField];
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  const match = PATCH_FILE_HEADER.exec(raw);
+  if (!match) return null;
+  const filePath = match[1].trim();
+  return filePath.length > 0 ? { filePath } : null;
 }
 
 function resolveShellArg(

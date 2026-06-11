@@ -46,3 +46,18 @@ capabilities:
       pathField: filePath
     - tool: edit
       pathField: filePath
+    # apply_patch carries the whole patch envelope on `patchText`
+    # ("*** Begin Patch\n*** Add File: /tmp/x\n+…\n*** End Patch") — the
+    # path lives in the `*** Add/Update/Delete File:` header, not a field.
+    # Confirmed from the live buffer of smoke session ses_147807fe…
+    # (2026-06-11). The `patch` extractor returns the FIRST file header;
+    # multi-file patches only register one activity row anyway. Hunk-level
+    # content beyond the headers is not extractable.
+    - tool: apply_patch
+      pathField: patchText
+      extract: patch
+    # bash input is `{ command, … }` — extract cat-style reads.
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]

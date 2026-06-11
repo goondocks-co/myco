@@ -38,3 +38,20 @@ capabilities:
   # Pi can inject at before_agent_start, but spawned-subagent lifecycle needs
   # runtime proof before enabling direct child injection.
   subagentStartInjection: false
+  # Tools whose tool_input carries a file path. Pi's lowercase tools put it
+  # at `path` (relative or absolute) — confirmed from the live buffer of
+  # smoke session 2026-06-11T21-06-03…: `read`/`write` with
+  # `{ path, offset?, limit? }` / `{ path, content }`; the dogfood vault's
+  # activity history shows `edit` uses `{ path, edits: [...] }` and `bash`
+  # uses `{ command, timeout }`.
+  pathBearingTools:
+    - tool: read
+      pathField: path
+    - tool: write
+      pathField: path
+    - tool: edit
+      pathField: path
+    - tool: bash
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]

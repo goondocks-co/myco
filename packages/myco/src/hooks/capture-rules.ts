@@ -313,6 +313,25 @@ function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptD
     // pointless to omit.
     return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
   }
+  // rewrite_prompt + strip_envelope — remove a single enclosing tag pair
+  // (e.g. Cursor's `<user_query>…</user_query>` wrapper, new app payload
+  // behavior observed 2026-06-11). Strips ONLY when both tags are present;
+  // the inner text is kept verbatim apart from the whitespace adjacent to
+  // the tags, which belongs to the envelope. Idempotent: a stripped prompt
+  // no longer starts with the open tag, so re-evaluation passes through.
+  //
+  // Convergence note: prompts stored BEFORE this rule shipped carry the
+  // wrapper, while new buffers strip it — so a session spanning the upgrade
+  // can replay-mismatch on the first-256-chars dedupe key. The prefix
+  // second-chance match won't bridge it either, since the wrapper changes
+  // the head of the text. Accepted: the window is one session generation.
+  if (rule.strip_envelope) {
+    const stripped = stripEnvelope(ctx.prompt, rule.strip_envelope.open, rule.strip_envelope.close);
+    if (stripped === null) {
+      return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
+    }
+    return { action: 'rewrite', prompt: stripped, reason: rule.reason, origin: rule.set_origin };
+  }
   // rewrite_prompt — keep only the substring after the extract_after marker.
   // If the marker isn't in the prompt, fall through to `pass` so we don't
   // accidentally blank out a prompt that turned out not to match after all.
@@ -324,4 +343,19 @@ function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptD
   const next = rule.trim ? after.trim() : after;
   if (!next) return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
   return { action: 'rewrite', prompt: next, reason: rule.reason, origin: rule.set_origin };
+}
+
+/**
+ * Strip a single `open`…`close` envelope from a prompt. Returns the inner
+ * text, or null when the envelope isn't fully present (only one tag, tags
+ * out of order, or an empty interior — never blank out a prompt).
+ */
+function stripEnvelope(prompt: string, open: string, close: string): string | null {
+  if (!prompt.startsWith(open) || !prompt.endsWith(close)) return null;
+  if (prompt.length < open.length + close.length) return null;
+  const inner = prompt
+    .slice(open.length, prompt.length - close.length)
+    .replace(/^\s+/, '')
+    .replace(/\s+$/, '');
+  return inner.length > 0 ? inner : null;
 }
