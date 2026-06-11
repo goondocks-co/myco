@@ -32,13 +32,15 @@ export async function main() {
     if (!input.sessionId) return;
 
     // The Stop event carries the turn's assistant response (last_assistant_message)
-    // and triggers transcript mining. It's the single capture-critical event that
-    // historically had no buffer fallback, so a daemon down/restarting at Stop time
-    // silently dropped the whole turn's response. Route through the shared
-    // capture-critical path so it buffers on failure and reconcileBufferBatches
-    // replays it (reconciliation.ts `type:'stop'`, idempotent — only sets
-    // response_summary while NULL). `bufferEvent: null` when there's no response
-    // to recover, so an empty stop never writes a no-op buffer row.
+    // and triggers transcript mining. /events/stop is queued BY DESIGN — it
+    // answers { ok, queued: true } with no persist outcome — so the shared
+    // capture-critical path buffers every summary-bearing stop unless the
+    // daemon deliberately ignored it (a gate rejection like invalid-session
+    // or ephemeral-sub-invocation is not lost data). reconcileBufferBatches
+    // replays the copy (reconciliation.ts `type:'stop'`, idempotent — only
+    // sets response_summary while NULL), so a turn the queue already
+    // persisted converges as a no-op. `bufferEvent: null` when there's no
+    // response to recover, so an empty stop never writes a no-op buffer row.
     const summary = typeof input.lastResponse === 'string' ? input.lastResponse.trim() : '';
     await captureCriticalEvent({
       vaultDir: VAULT_DIR,

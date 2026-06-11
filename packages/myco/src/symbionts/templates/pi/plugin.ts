@@ -337,7 +337,6 @@ async function execMycoTool(
 //   - `resolveBufferDir(directory)` — Grove-scoped buffer dir, null on miss
 //   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
 //   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
-//   - `pluginLegacyBufferRows()` — accessor over the inlined legacy policy rows
 //   - `shouldBufferPluginFallback(result, eventType)` — the buffer decision
 //
 // Export discipline: opencode's legacy-plugin loader throws on any module
@@ -448,57 +447,26 @@ function isIgnoredResponse(data: unknown): boolean {
 }
 
 /**
- * LEGACY-daemon policy rows for the event types plugins route through
- * `postEventWithBuffer`: whether to buffer when an older daemon (a response
- * with no `persisted` field) answers 200 with `{ ignored: <reason> }`.
- *
- * Source of truth: the `legacyBufferOnIgnored` column of
- * `CAPTURE_EVENT_POLICY` in packages/myco/src/capture/event-policy.ts.
- * Plugins run inside the host agent and cannot import Myco modules, so the
- * rows they need are inlined here; a drift test
- * (tests/symbionts/plugin-shared-helpers.test.ts) pins each row to the
- * canonical table. `tool_use` is false because buffer replay re-inserts
- * tools directly without re-evaluating capture rules — buffering an ignored
- * tool would resurrect a deliberately-dropped activity on the next daemon
- * start.
- *
- * Deliberately NOT a module export: opencode's legacy-plugin loader walks
- * every module export and THROWS for any value that isn't a function, which
- * would abort the whole plugin at load. Functions are the only export shape
- * the loader tolerates — tests reach these rows through the
- * `pluginLegacyBufferRows()` accessor instead.
- */
-const PLUGIN_LEGACY_BUFFER_ON_IGNORED: Readonly<Record<string, boolean>> = {
-  user_prompt: true,
-  tool_use: false,
-  pre_compact: true,
-};
-
-/**
- * Test accessor for the inlined legacy rows. A function export (not a const)
- * because of the opencode loader constraint documented on the table above.
- */
-export function pluginLegacyBufferRows(): Readonly<Record<string, boolean>> {
-  return PLUGIN_LEGACY_BUFFER_ON_IGNORED;
-}
-
-/**
- * The plugin-side buffer-fallback decision over the daemon's honest
- * `/events` response contract. Mirrors `shouldBufferFallback` in
+ * The plugin-side buffer-fallback decision over the daemon's `/events`
+ * response contract. Mirrors `shouldBufferFallback` in
  * packages/myco/src/hooks/send-event.ts row for row:
  *
  *   - `!ok` (transport failure, timeout, non-2xx)        → BUFFER.
+ *   - `ok` + `ignored` (any shape)                       → never buffer. A
+ *     daemon's ignore is deliberate (capture rule, dedup, tombstone, gate
+ *     rejection) — ignored ≠ lost, and buffering it re-creates the noise
+ *     the gated-resurrection path exists to refuse.
  *   - `ok` + `persisted: true`                           → nothing.
  *   - `ok` + `persisted: false` + `buffered: true`       → nothing — the
  *     daemon-side append is the durable copy; re-buffering here is the
  *     double-buffer trap.
- *   - `ok` + `persisted: false` + `buffered: false`      → BUFFER. The one
+ *   - `ok` + `persisted: false` + `buffered` not true    → BUFFER. The one
  *     honest-fallback case: no persist AND no daemon-side copy.
- *   - `ok` + `ignored` + `persisted` present             → never buffer. A
- *     contract-aware daemon's ignore is deliberate — ignored ≠ lost.
- *   - `ok` with NO `persisted` field (LEGACY daemon during mixed-version
- *     rollout) → the inlined `PLUGIN_LEGACY_BUFFER_ON_IGNORED` rows; types
- *     missing a row fail toward durability (buffer).
+ *   - `ok` with NO `persisted` field, `stop`             → BUFFER. The stop
+ *     pipeline is queued by design and never reports a persist outcome
+ *     (plugins buffer-before-POST on stop, so this row is mirror parity).
+ *   - `ok` with NO `persisted` field, anything else      → nothing. A plain
+ *     ok means the daemon processed the event.
  */
 export function shouldBufferPluginFallback(
   result: { ok: boolean; data?: unknown },
@@ -506,37 +474,24 @@ export function shouldBufferPluginFallback(
 ): boolean {
   if (!result.ok) return true;
   const data = result.data;
+  if (isIgnoredResponse(data)) return false;
   const persisted = data !== null && typeof data === "object"
     ? (data as { persisted?: unknown }).persisted
     : undefined;
   if (typeof persisted === "boolean") {
-    if (isIgnoredResponse(data)) return false;
     if (persisted) return false;
     return (data as { buffered?: unknown }).buffered !== true;
   }
-  if (isIgnoredResponse(data)) {
-    // Own-key lookup so prototype properties ("constructor", "toString")
-    // can never masquerade as policy rows.
-    const key = eventType ?? "";
-    return Object.hasOwn(PLUGIN_LEGACY_BUFFER_ON_IGNORED, key)
-      ? PLUGIN_LEGACY_BUFFER_ON_IGNORED[key]!
-      : true;
-  }
-  return false;
+  return eventType === "stop";
 }
 
 /**
  * POST a capture event to the daemon, buffering to disk when the response
  * leaves no durable copy daemon-side (`shouldBufferPluginFallback`).
  *
- * Against contract-aware daemons (response carries `persisted`) a
- * deliberate `ignored` is never buffered. That retires the old
- * buffer-on-ignored channel this helper used as rule-bug recovery — the
- * trade accepted with the honest response contract: a daemon that says
- * "ignored" did so deliberately (capture rule, dedup, tombstone), and
- * buffering the event re-creates the noise the gated-resurrection path
- * exists to refuse. Older daemons (no `persisted` field) keep the
- * pre-contract per-type behavior via the inlined legacy rows.
+ * A deliberate `ignored` is never buffered — a daemon that says "ignored"
+ * did so deliberately (capture rule, dedup, tombstone), and buffering the
+ * event re-creates the noise the gated-resurrection path exists to refuse.
  */
 async function postEventWithBuffer(
   directory: string,

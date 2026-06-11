@@ -11,16 +11,16 @@ import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 const TEST_PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /**
- * The hook-side buffer-fallback decision table over the daemon's honest
- * response contract (capture/event-policy.ts + send-event.ts). Every row:
+ * The hook-side buffer-fallback decision table over the daemon's response
+ * contract (send-event.ts shouldBufferFallback). Every row:
  *
  *   !ok                                   → buffer
+ *   ok + ignored (any shape)              → never buffer (ignored ≠ lost)
  *   ok + persisted:true                   → nothing
  *   ok + persisted:false + buffered:true  → nothing (daemon copy durable)
  *   ok + persisted:false + buffered:false → buffer (the honest fallback)
- *   ok + ignored + persisted present      → never buffer (ignored ≠ lost)
- *   ok with NO persisted field (legacy daemon / every /events/stop reply)
- *                                         → policy table's legacy columns
+ *   ok, NO persisted field, stop          → buffer (queued by design)
+ *   ok, NO persisted field, anything else → nothing (plain ok = processed)
  *
  * Plus the central agent/origin enrichment of the buffered copy and the
  * fail-open guarantee (a throwing buffer write never propagates).
@@ -86,35 +86,39 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
   }
 
   describe('decision-table unit rows (shouldBufferFallback)', () => {
-    it('covers every row of the §3 decision table', () => {
+    it('covers every row of the decision table', () => {
       // Transport / timeout / non-2xx — always buffer.
       expect(shouldBufferFallback({ ok: false }, 'user_prompt')).toBe(true);
       expect(shouldBufferFallback({ ok: false, data: { error: 'x' } }, 'tool_use')).toBe(true);
+
+      // Ignored — never buffer, in any shape, for any type.
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule', persisted: false } }, 'user_prompt')).toBe(false);
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'duplicate', persisted: false } }, 'tool_failure')).toBe(false);
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'user_prompt')).toBe(false);
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'tool_use')).toBe(false);
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'invalid-session' } }, 'stop')).toBe(false);
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'ephemeral-sub-invocation' } }, 'stop')).toBe(false);
 
       // Honest contract.
       expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: true } }, 'user_prompt')).toBe(false);
       expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: true } }, 'user_prompt')).toBe(false);
       expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false, buffered: false } }, 'user_prompt')).toBe(true);
+      // Missing `buffered` under persisted:false fails toward durability.
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, persisted: false } }, 'tool_use')).toBe(true);
 
-      // Contract-aware daemon's ignored — never buffer, even for types whose
-      // LEGACY column buffers on ignored.
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule', persisted: false } }, 'user_prompt')).toBe(false);
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'duplicate', persisted: false } }, 'tool_failure')).toBe(false);
-
-      // LEGACY daemon (no persisted field): exact per-type legacy behavior.
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'user_prompt')).toBe(true);
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'tool_use')).toBe(false);
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'rule' } }, 'tool_failure')).toBe(true);
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, ignored: 'invalid-session' } }, 'stop')).toBe(true);
+      // Plain ok with no persisted field — the daemon processed the event.
       expect(shouldBufferFallback({ ok: true, data: { ok: true } }, 'user_prompt')).toBe(false);
       expect(shouldBufferFallback({ ok: true, data: { ok: true, batchId: 7 } }, 'user_prompt')).toBe(false);
+      expect(shouldBufferFallback({ ok: true }, 'user_prompt')).toBe(false);
 
-      // /events/stop success: queued, no persisted field — never a fallback.
-      expect(shouldBufferFallback({ ok: true, data: { ok: true, queued: true } }, 'stop')).toBe(false);
+      // /events/stop success: queued by design, no persisted field — the
+      // summary-bearing stop always gets a buffered copy (NULL-only replay
+      // makes the duplicate a no-op).
+      expect(shouldBufferFallback({ ok: true, data: { ok: true, queued: true } }, 'stop')).toBe(true);
     });
   });
 
-  it('buffers on transport failure (legacy behavior preserved)', async () => {
+  it('buffers on transport failure (durability default)', async () => {
     const sessionId = 'ccev-transport-001';
     await run({
       sessionId,
@@ -169,44 +173,44 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
     expect(bufferedLines(sessionId)).toHaveLength(0);
   });
 
-  describe('LEGACY daemon (no persisted field) reproduces today\'s exact per-hook behavior', () => {
-    it('user_prompt buffers on ignored', async () => {
-      const sessionId = 'ccev-legacy-prompt-001';
+  describe('responses with no persisted field (plain ok + the queued stop contract)', () => {
+    it('never buffers an ignored response, even without a persisted field', async () => {
+      const sessionId = 'ccev-ignored-no-persisted-001';
       await run({
         sessionId,
         result: { ok: true, data: { ok: true, ignored: 'rule' } },
         postBody: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'p' },
         bufferEvent: { type: 'user_prompt', prompt: 'p' },
       });
-      expect(bufferedLines(sessionId)).toHaveLength(1);
-    });
-
-    it('tool_use does NOT buffer on ignored (direct replay would resurrect a dropped tool)', async () => {
-      const sessionId = 'ccev-legacy-tool-001';
-      await run({
-        sessionId,
-        result: { ok: true, data: { ok: true, ignored: 'rule' } },
-        postBody: { type: 'tool_use', session_id: sessionId, agent: 'claude-code', tool_name: 'Bash' },
-        bufferEvent: { type: 'tool_use', tool_name: 'Bash' },
-      });
       expect(bufferedLines(sessionId)).toHaveLength(0);
     });
 
-    it('stop buffers on ignored only when there is a summary (bufferEvent present)', async () => {
-      const sessionId = 'ccev-legacy-stop-001';
+    it('buffers the summary-bearing stop on the queued-by-design response', async () => {
+      const sessionId = 'ccev-stop-queued-001';
       // /events/stop posts carry no `type`; the event type comes from the
       // bufferEvent — exactly the live stop hook's shape.
       await run({
         sessionId,
-        result: { ok: true, data: { ok: true, ignored: 'invalid-session' } },
+        result: { ok: true, data: { ok: true, queued: true } },
         postBody: { session_id: sessionId, agent: 'codex', last_assistant_message: 'answer' },
         bufferEvent: { type: 'stop', last_assistant_message: 'answer', agent: 'codex' },
       });
       expect(bufferedLines(sessionId)).toHaveLength(1);
     });
 
+    it('does not buffer a stop the daemon deliberately ignored (gate rejection ≠ lost data)', async () => {
+      const sessionId = 'ccev-stop-ignored-001';
+      await run({
+        sessionId,
+        result: { ok: true, data: { ok: true, ignored: 'invalid-session' } },
+        postBody: { session_id: sessionId, agent: 'codex', last_assistant_message: 'answer' },
+        bufferEvent: { type: 'stop', last_assistant_message: 'answer', agent: 'codex' },
+      });
+      expect(bufferedLines(sessionId)).toHaveLength(0);
+    });
+
     it('stop without a summary never buffers (bufferEvent null), even on transport failure', async () => {
-      const sessionId = 'ccev-legacy-stop-empty-001';
+      const sessionId = 'ccev-stop-empty-001';
       await run({
         sessionId,
         result: { ok: false },
@@ -216,8 +220,8 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
       expect(bufferedLines(sessionId)).toHaveLength(0);
     });
 
-    it('plain legacy ok (no persisted field, not ignored) does not buffer', async () => {
-      const sessionId = 'ccev-legacy-ok-001';
+    it('plain ok (no persisted field, not ignored, not stop) does not buffer', async () => {
+      const sessionId = 'ccev-plain-ok-001';
       await run({
         sessionId,
         result: { ok: true, data: { ok: true, batchId: 3 } },
@@ -225,6 +229,56 @@ describe('captureCriticalEvent — policy-driven buffer fallback', () => {
         bufferEvent: { type: 'user_prompt', prompt: 'p' },
       });
       expect(bufferedLines(sessionId)).toHaveLength(0);
+    });
+  });
+
+  describe('stderr trace: muted for the queued-by-design stop, kept for failures', () => {
+    function captureStderr(): { output: () => string; restore: () => void } {
+      const original = process.stderr.write.bind(process.stderr);
+      let captured = '';
+      process.stderr.write = ((chunk: unknown): boolean => {
+        captured += String(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+      return {
+        output: () => captured,
+        restore: () => { process.stderr.write = original; },
+      };
+    }
+
+    it('stop on the queued response buffers WITHOUT a stderr trace (per-turn noise)', async () => {
+      const sessionId = 'ccev-stop-queued-quiet-001';
+      const stderr = captureStderr();
+      try {
+        await run({
+          sessionId,
+          result: { ok: true, data: { ok: true, queued: true } },
+          postBody: { session_id: sessionId, agent: 'codex', last_assistant_message: 'answer' },
+          bufferEvent: { type: 'stop', last_assistant_message: 'answer', agent: 'codex' },
+        });
+      } finally {
+        stderr.restore();
+      }
+      expect(bufferedLines(sessionId)).toHaveLength(1);
+      expect(stderr.output()).not.toContain('buffered');
+    });
+
+    it('stop on transport failure buffers WITH the stderr trace', async () => {
+      const sessionId = 'ccev-stop-transport-loud-001';
+      const stderr = captureStderr();
+      try {
+        await run({
+          sessionId,
+          result: { ok: false },
+          postBody: { session_id: sessionId, agent: 'codex', last_assistant_message: 'answer' },
+          bufferEvent: { type: 'stop', last_assistant_message: 'answer', agent: 'codex' },
+        });
+      } finally {
+        stderr.restore();
+      }
+      expect(bufferedLines(sessionId)).toHaveLength(1);
+      expect(stderr.output()).toContain('test-hook buffered (transport-failure)');
+      expect(stderr.output()).toContain(`session=${sessionId}`);
     });
   });
 

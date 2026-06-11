@@ -5,7 +5,6 @@ import { type NormalizedHookInput } from './normalize.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveProjectBufferDirFromRoot } from '../capture/buffer-location.js';
-import { captureEventPolicy } from '../capture/event-policy.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
@@ -18,44 +17,50 @@ function responseField(data: unknown, field: string): unknown {
 }
 
 /**
- * The hook-side buffer-fallback decision over the daemon's honest response
- * contract. One row per response shape:
+ * The hook-side buffer-fallback decision over the daemon's response
+ * contract. Vintage-blind — hooks and daemon ship in one binary and the
+ * detached update script rewrites every hook/plugin before restarting the
+ * service, so the only version skew is a seconds-long window inside one
+ * scripted flow where content-keyed convergence makes either choice safe.
+ * One row per response shape:
  *
- *   - `!ok` (transport failure, timeout, non-2xx)        → BUFFER. The
+ *   - `!ok` (transport failure, timeout, non-2xx, malformed) → BUFFER. The
  *     daemon may have completed the work before the failure; content-keyed
  *     convergence collapses that duplicate on replay.
+ *   - `ok` + `ignored` (any shape)                       → never buffer. A
+ *     daemon's ignore is deliberate (capture rule, dedup, tombstone,
+ *     gate rejection) — ignored ≠ lost, and buffering it re-creates the
+ *     noise the gated-resurrection path exists to refuse.
  *   - `ok` + `persisted: true`                           → nothing.
  *   - `ok` + `persisted: false` + `buffered: true`       → nothing. The
  *     daemon-side append is the durable copy and the daemon cleared the
  *     session's converged mark; hook re-buffering is the double-buffer trap.
- *   - `ok` + `persisted: false` + `buffered: false`      → BUFFER. The one
+ *   - `ok` + `persisted: false` + `buffered` not true    → BUFFER. The one
  *     honest-fallback case: the daemon could not persist AND holds no
  *     buffered copy (missing grove/project request context, append failure).
- *   - `ok` + `ignored` + `persisted` present             → never buffer. A
- *     contract-aware daemon's ignore is deliberate (capture rule, dedup,
- *     tombstone) — ignored ≠ lost, and buffering it re-creates the noise
- *     the gated-resurrection path exists to refuse.
- *   - `ok` with NO `persisted` field (LEGACY daemon during mixed-version
- *     rollout, and every /events/stop response — the stop pipeline is
- *     queued and never reports a persist outcome) → the policy table's
- *     legacy columns: buffer on `ignored` only when the event type's
- *     `legacyBufferOnIgnored` says so.
+ *   - `ok` with NO `persisted` field, `stop`             → BUFFER. The stop
+ *     pipeline is queued BY DESIGN ({ ok, queued: true }) and never reports
+ *     a synchronous persist outcome, so the summary-bearing event always
+ *     gets a buffered copy; replay is NULL-only idempotent, so a copy of a
+ *     turn the queue later persists converges as a no-op.
+ *   - `ok` with NO `persisted` field, anything else      → nothing. A plain
+ *     ok means the daemon processed the event.
  */
 export function shouldBufferFallback(
   result: { ok: boolean; data?: unknown },
   eventType: string | undefined,
 ): boolean {
   if (!result.ok) return true;
+  if (isIgnoredEventResponse(result.data)) return false;
   const persisted = responseField(result.data, 'persisted');
   if (typeof persisted === 'boolean') {
-    if (isIgnoredEventResponse(result.data)) return false;
     if (persisted) return false;
     return responseField(result.data, 'buffered') !== true;
   }
-  if (isIgnoredEventResponse(result.data)) {
-    return captureEventPolicy(eventType).legacyBufferOnIgnored;
-  }
-  return false;
+  // No persist outcome in the response: /events/stop is queued by design,
+  // so stop always buffers its summary; everything else treats plain ok as
+  // processed.
+  return eventType === 'stop';
 }
 
 /**
@@ -74,6 +79,11 @@ export function classifyBufferFallback(result: { ok: boolean; data?: unknown }):
     if (responseField(result.data, 'persisted') === false) {
       return 'daemon-unpersisted';
     }
+    if (responseField(result.data, 'queued') === true) {
+      // /events/stop's by-design response — the buffered copy backs the
+      // queued pipeline, it does not signal a failure.
+      return 'daemon-queued';
+    }
     return 'unknown';
   }
   // transport failure (fetch threw, daemon.json missing, recovery path)
@@ -89,8 +99,7 @@ export function classifyBufferFallback(result: { ok: boolean; data?: unknown }):
  * exists daemon-side, fall back to the on-disk EventBuffer so
  * `reconcileBufferBatches` can replay it. This is the one durability
  * boundary every capture hook shares; the fallback decision lives entirely
- * in {@link shouldBufferFallback}, driven by the shared capture policy
- * table — hooks carry no per-hook buffering flags.
+ * in {@link shouldBufferFallback} — hooks carry no per-hook buffering flags.
  *
  * The buffer write MUST live in the hook process: it only happens when the
  * daemon holds no copy, so there is nothing to delegate it to. Hooks stay
@@ -145,10 +154,16 @@ export async function captureCriticalEvent(opts: {
         }
         new EventBuffer(location.bufferDir, sessionId).append(enriched);
         // Stderr trace so "session not captured" investigations can see the
-        // buffer-fallback path firing without a daemon round-trip.
-        process.stderr.write(
-          `[myco] ${hookName} buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
-        );
+        // buffer-fallback path firing without a daemon round-trip. The
+        // queued-by-design stop response buffers every successful turn —
+        // tracing it would drown the failure signal investigations grep
+        // for, so only failure-shaped classifications log.
+        const reason = classifyBufferFallback(result);
+        if (reason !== 'daemon-queued') {
+          process.stderr.write(
+            `[myco] ${hookName} buffered (${reason}) session=${sessionId}\n`,
+          );
+        }
       } else {
         process.stderr.write(
           `[myco] ${hookName} dropped (project-not-registered) session=${sessionId}\n`,
