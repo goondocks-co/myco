@@ -15,6 +15,23 @@ capture:
     # Watch both: home for agent-written plans, project-local for any committed plans.
     - ~/.cursor/plans/
     - .cursor/plans/
+  rules:
+    # New Cursor app payloads (observed live 2026-06-11, smoke session
+    # 64465029-53bf-43c2-bb6a-aea6627f56f4) wrap the user's text in a
+    # `<user_query>\n…\n</user_query>` envelope. Strip it so the stored
+    # prompt is the user's verbatim text. The strip only fires when BOTH
+    # tags are present (partial tags pass through untouched) and is
+    # idempotent — see stripEnvelope in hooks/capture-rules.ts, which also
+    # documents the replay-convergence window for sessions whose earlier
+    # batches were stored wrapped.
+    - event: user_prompt
+      when:
+        prompt_starts_with: "<user_query>"
+      action: rewrite_prompt
+      strip_envelope:
+        open: "<user_query>"
+        close: "</user_query>"
+      reason: strip Cursor user_query envelope
 registration:
   hooksTarget: .cursor/hooks.json
   globalHooksTarget: ~/.cursor/hooks.json
@@ -48,3 +65,31 @@ capabilities:
   # Cursor currently exposes subagentStart for lifecycle allow/deny, not
   # proven child model-context injection.
   subagentStartInjection: false
+  # Tools whose tool_input carries a file path. Cursor's composer exposes a
+  # Claude-Code-style tool surface (snake_case `file_path`), confirmed from
+  # live hook payloads (smoke session 64465029…, 2026-06-11: Read failure
+  # event with `tool_input.file_path`) and the dogfood vault's activity
+  # history (Read/Write/Edit/Delete/Grep/Shell input shapes). Without these
+  # entries, events attributed `agent: cursor` stored file_path=NULL — only
+  # events that Cursor's embedded Claude Code runtime mislabeled as
+  # `claude-code` happened to extract via that manifest.
+  pathBearingTools:
+    - tool: Read
+      pathField: file_path
+    - tool: Write
+      pathField: file_path
+    - tool: Edit
+      pathField: file_path
+    - tool: MultiEdit
+      pathField: file_path
+    - tool: Delete
+      pathField: file_path
+    # Grep carries `file_path` only when scoped to a single file; pattern-only
+    # searches have no path to extract and resolve to null.
+    - tool: Grep
+      pathField: file_path
+    # Shell input is `{ command, cwd, timeout }` — extract cat-style reads.
+    - tool: Shell
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
