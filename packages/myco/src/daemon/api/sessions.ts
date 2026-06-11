@@ -7,6 +7,9 @@ import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js'
 import { getTeamMachineId } from '@myco/team/context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
+import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
+import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
+import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
 import { triggerTitleSummary } from '../trigger-title-summary.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -14,6 +17,7 @@ import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
+import { isGroveEraId } from '@myco/grove/ids.js';
 import {
   releaseStateAnnotation,
   releaseStateAnnotationMap,
@@ -197,7 +201,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     const sessionId = req.params.id;
     const scope = projectScopeFromRequestContext(req.requestContext);
     if (!getSession(sessionId, scope)) return { status: 404, body: { error: 'Session not found' } };
-    const result = deleteSessionCascade(sessionId);
+    const result = deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.API_DELETE);
     if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
 
     // Clear the per-lifetime reconciliation cache so a re-registration
@@ -217,11 +221,28 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     // request's project vault dir — the bootstrap manager/anchor vault would
     // leave the grove's vectors orphaned and miss the project's on-disk files
     // (markdown + buffer journal), defeating the same-id reload guard.
+    // The buffer journal lives under the GROVE project dir: resolve it from
+    // the request context, falling back to the deleted row's project id; an
+    // unresolvable dir is skipped (the tombstone keeps the file inert), never
+    // guessed.
+    const ctx = req.requestContext;
+    const ctxIsGroveBound = !!ctx?.groveId && !!ctx?.projectId
+      && isGroveEraId(ctx.groveId, 'grove') && isGroveEraId(ctx.projectId, 'project');
+    const bufferDir = ctxIsGroveBound
+      ? resolveProjectBufferDir(ctx!.groveId!, ctx!.projectId!)
+      : resolveBufferDirForProjectId(result.projectId);
+    if (!bufferDir) {
+      logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Session delete: buffer dir unresolvable — skipping buffer cleanup', {
+        session_id: sessionId,
+        project_id: result.projectId,
+      });
+    }
     cleanupAfterSessionCascade(
       sessionId,
       result,
       resolveEmbeddingManager(req.requestContext),
       req.requestContext?.projectVaultDir ?? vaultDir,
+      bufferDir,
     ).catch(() => {});
 
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {

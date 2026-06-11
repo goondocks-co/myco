@@ -117,6 +117,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 56, migrate: (db, machineId) => migrateV55ToV56(db, machineId) },
   { version: 57, migrate: (db) => migrateV56ToV57(db) },
   { version: 58, migrate: (db) => migrateV57ToV58(db) },
+  { version: 59, migrate: (db) => migrateV58ToV59(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3683,6 +3684,49 @@ function migrateV57ToV58(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(58, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Frozen at the v59 revision: session tombstone table + its project-scope
+ * index (the GROVE_PROJECT_SCOPE_INDEX_DDLS entry v59 introduced). Per the
+ * frozen-DDL rules above, this migration must never reference the live
+ * SESSION_TOMBSTONES_TABLE constant — later edits to the live DDL would
+ * silently change this migration's semantics.
+ */
+const V59_SESSION_TOMBSTONES_TABLE = `
+  CREATE TABLE IF NOT EXISTS session_tombstones (
+    session_id  TEXT PRIMARY KEY,
+    project_id  TEXT,
+    deleted_at  INTEGER NOT NULL,
+    source      TEXT NOT NULL
+  )`;
+
+const V59_SESSION_TOMBSTONES_INDEX =
+  'CREATE INDEX IF NOT EXISTS idx_session_tombstones_project_id ON session_tombstones (project_id)';
+
+/**
+ * v58 -> v59: session deletion tombstones.
+ *
+ * Every `deleteSessionCascade` now records a tombstone row so the buffer
+ * reconciler can distinguish a deliberately-deleted session (skip, discard
+ * the lingering buffer) from a session whose row was simply lost (eligible
+ * for gate-checked resurrection). Local-only — no team-sync registry entry
+ * and no SYNC_PROTOCOL_VERSION bump.
+ */
+function migrateV58ToV59(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.exec(V59_SESSION_TOMBSTONES_TABLE);
+    db.exec(V59_SESSION_TOMBSTONES_INDEX);
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(59, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

@@ -21,7 +21,7 @@ import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap } from '../cli/bootstrap.js';
-import { resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -1118,6 +1118,18 @@ export async function main(): Promise<void> {
     projectRoot,
     onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
     eventDedupCache,
+    registry,
+    machineId,
+    // Per-dir Grove DB binding through the shared runtime cache — the same
+    // handles the HTTP layer serves requests with. Without this, boot-time
+    // reconciliation (no ambient request scope) reads/writes the
+    // bootstrap/anchor vault: Grove tombstones invisible, resurrections
+    // landing in the anchor. existsSync guards against materializing an
+    // empty DB for a registered-but-unprovisioned Grove.
+    resolveGroveDb: (groveId) => {
+      const groveDbPath = resolveGroveDbPath(groveId);
+      return fs.existsSync(groveDbPath) ? runtimeCache.getDatabase(groveDbPath) : null;
+    },
   });
   reconciler.runStartupReconciliation();
 
@@ -2182,6 +2194,7 @@ export async function main(): Promise<void> {
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
+    reconciler,
   });
   const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,

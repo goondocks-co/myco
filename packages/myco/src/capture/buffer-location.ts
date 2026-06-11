@@ -15,10 +15,18 @@
  * the resolver always succeeds for live capture.
  */
 
-import { resolveProjectBufferDir, resolveMycoHome, currentDaemonVariant } from '../grove/paths.js';
+import path from 'node:path';
+import {
+  resolveProjectBufferDir,
+  resolveMycoHome,
+  resolveGrovesDir,
+  currentDaemonVariant,
+} from '../grove/paths.js';
+import { isGroveEraId } from '../grove/ids.js';
 import {
   ensureProjectRegistered,
   findProjectByRoot,
+  getRegisteredProjectInGrove,
   listGroves,
   listRegisteredProjects,
 } from '../grove/registry.js';
@@ -74,6 +82,71 @@ export function resolveProjectBufferDirFromRoot(
  * (Grove discovery order, then per-Grove project iteration order) so log
  * output stays stable.
  */
+/**
+ * The `(groveId, projectId)` ownership a buffer dir path encodes —
+ * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/` — or `null` when
+ * the path is not Grove-shaped (or lies outside this install's Grove tree).
+ *
+ * Pure path decoding: it does NOT consult the registry. Callers that need
+ * "is this still the project's current home" must verify the decoded pair
+ * against the registry (see `bufferDirCurrentRegistration`).
+ */
+export function bufferDirIdentity(
+  bufferDir: string,
+  mycoHome = resolveMycoHome(),
+): { groveId: string; projectId: string } | null {
+  const resolved = path.resolve(bufferDir);
+  if (path.basename(resolved) !== 'buffer') return null;
+  const projectDir = path.dirname(resolved);
+  const projectId = path.basename(projectDir);
+  const projectsDir = path.dirname(projectDir);
+  if (path.basename(projectsDir) !== 'projects') return null;
+  const groveDir = path.dirname(projectsDir);
+  const groveId = path.basename(groveDir);
+  if (path.dirname(groveDir) !== path.resolve(resolveGrovesDir(mycoHome))) return null;
+  if (!isGroveEraId(groveId, 'grove') || !isGroveEraId(projectId, 'project')) return null;
+  return { groveId, projectId };
+}
+
+/**
+ * Verify that the `(groveId, projectId)` a buffer dir encodes is still a
+ * CURRENT registration: the project must be actively registered in that
+ * exact Grove. Returns the registered project's root when the registration
+ * holds, or `null` for a stale dir (project moved Groves, re-registered
+ * under a new id, archived, or deleted). The reconciler treats `null` as
+ * "do not resurrect from this dir".
+ */
+export function bufferDirCurrentRegistration(
+  bufferDir: string,
+  mycoHome = resolveMycoHome(),
+): { groveId: string; projectId: string; projectRoot: string } | null {
+  const identity = bufferDirIdentity(bufferDir, mycoHome);
+  if (!identity) return null;
+  const project = getRegisteredProjectInGrove(identity.groveId, identity.projectId, mycoHome);
+  if (!project) return null;
+  return { ...identity, projectRoot: project.root };
+}
+
+/**
+ * Resolve a project's buffer dir from its project id alone, by walking
+ * the Groves this daemon serves. Used by deletion-cleanup paths that hold
+ * only a session row's `project_id` (no request context). Returns `null`
+ * when the project is not registered in any served Grove — callers must
+ * log and skip; guessing a path is the divergent-state bug class this
+ * module exists to prevent.
+ */
+export function resolveBufferDirForProjectId(
+  projectId: string | null,
+  mycoHome = resolveMycoHome(),
+): string | null {
+  if (!projectId || !isGroveEraId(projectId, 'project')) return null;
+  for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+    const project = getRegisteredProjectInGrove(grove.id, projectId, mycoHome, { includeArchived: true });
+    if (project) return resolveProjectBufferDir(grove.id, projectId, mycoHome);
+  }
+  return null;
+}
+
 export function listAllProjectBufferDirs(mycoHome = resolveMycoHome()): string[] {
   // Reconciler scope: only the Groves this daemon serves. The
   // cross-Grove SQLite gate would block real writes too, but
