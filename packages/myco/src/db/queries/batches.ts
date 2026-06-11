@@ -9,6 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -891,6 +892,56 @@ export function getLatestBatch(
 
   if (!row) return null;
   return toBatchRow(row);
+}
+
+/**
+ * Walk parent pointers up to the first non-steering batch so the response
+ * summary lands on the turn's owning prompt card. Steering children never
+ * themselves become parents (see handleUserPrompt), so a single hop is the
+ * expected depth; the loop survives an unexpected multi-hop chain anyway.
+ */
+export function findOwningParent(child: BatchRow): BatchRow | null {
+  let current: BatchRow | null = child;
+  while (current?.parent_prompt_batch_id != null) {
+    const parent = getBatchById(current.parent_prompt_batch_id, ALL_PROJECTS_SCOPE);
+    if (!parent || parent.id === current.id) break;
+    current = parent;
+  }
+  return current;
+}
+
+/**
+ * Resolve the batch a turn's response summary belongs on, or `null` when
+ * no summary write should happen.
+ *
+ * Anchors the response to the latest HUMAN turn, never a point-in-time
+ * system batch (a <system-reminder> / <task-notification> born-closed
+ * after the human prompt carries a higher prompt_number and would be the
+ * latest batch, stranding the turn's answer on a dashboard-hidden row).
+ * A steering child redirects to its owning parent — there's only one
+ * combined assistant response per turn, and it belongs on the parent so
+ * the UI's parent card renders it. A target that already carries a
+ * summary yields `null` (the write is first-wins idempotent).
+ *
+ * Shared between the live Stop pipeline and buffer stop replay so both
+ * paths land the summary on the same row.
+ *
+ * @param latest the session's latest batch, when the caller already
+ *   fetched it; pass `null` only when the session has no batches.
+ */
+export function resolveResponseSummaryTarget(
+  sessionId: string,
+  latest: BatchRow | null,
+): BatchRow | null {
+  const responseTarget = latest && latest.origin !== PROMPT_BATCH_ORIGIN.HUMAN
+    ? getLatestBatch(sessionId, { origin: PROMPT_BATCH_ORIGIN.HUMAN })
+    : latest;
+  if (!responseTarget || responseTarget.response_summary) return null;
+  const summaryTarget = responseTarget.parent_prompt_batch_id
+    ? findOwningParent(responseTarget)
+    : responseTarget;
+  if (!summaryTarget || summaryTarget.response_summary) return null;
+  return summaryTarget;
 }
 
 /**

@@ -114,11 +114,52 @@ export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 /**
  * How long a session deletion tombstone survives before
  * `pruneSessionTombstones` reclaims it. Must stay strictly longer than
- * every buffer-retention window (STALE_BUFFER_MAX_AGE_MS today; the
- * buffer hard-retention cap planned for RC-7 Phase 3) — a buffer file
- * must never outlive the tombstone that prevents its resurrection.
+ * every buffer-retention window (STALE_BUFFER_MAX_AGE_MS and
+ * BUFFER_HARD_RETENTION_MS) — a buffer file must never outlive the
+ * tombstone that prevents its resurrection. Quarantined buffer files are
+ * also pruned at this age, so quarantine never outlives the tombstone
+ * window either.
  */
 export const TOMBSTONE_RETENTION_MS = 14 * MS_PER_DAY;
+
+/**
+ * Hard retention cap for DIVERGING buffer files — buffers convergence has
+ * not absorbed (stale-dir orphans, gate-undecidable content, persistent
+ * replay failures). At this age the file moves to the buffer dir's
+ * `quarantine/` subdirectory instead of being deleted: a diverging buffer
+ * is the only durable copy of unreplayed events, so retention removes it
+ * from enumeration without destroying it. Strictly shorter than
+ * TOMBSTONE_RETENTION_MS (14d), which prunes the quarantined copy.
+ */
+export const BUFFER_HARD_RETENTION_MS = 7 * MS_PER_DAY;
+
+// --- Capture buffer drain (RC-7 Phase 3) ---
+/** Cadence of the periodic quiescence-gated buffer drain job. */
+export const CAPTURE_BUFFER_DRAIN_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * How long a session's buffer file must sit unmodified before the drain
+ * job treats an open-row session as quiescent. Deliberately much wider
+ * than the 10s live dedup window (EVENT_DEDUP_WINDOW_MS): the gate is
+ * "no turn in flight", not "no duplicate in flight".
+ */
+export const BUFFER_QUIESCENCE_IDLE_MS = 5 * 60 * 1000;
+
+/**
+ * Maximum sessions one drain pass converges, mirroring the drain.slice
+ * bound on EMBEDDING_RECONCILE — a backlog spread across many sessions
+ * drains across passes instead of monopolizing one tick. Hitting the cap
+ * is logged; the remainder is picked up next pass.
+ */
+export const CAPTURE_BUFFER_DRAIN_SESSION_CAP = 50;
+
+/**
+ * Cap on how many drain passes a failing session sits out under
+ * exponential backoff (2^attempts passes, capped here) — a poisoned
+ * buffer retries at most every ~2h on the 15-minute cadence instead of
+ * hot-looping every pass.
+ */
+export const CAPTURE_BUFFER_DRAIN_BACKOFF_CAP_PASSES = 8;
 
 // --- Stop replay ---
 /**

@@ -50,7 +50,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
       JSON.stringify({ type: 'user_prompt', prompt: promptText, timestamp: '2026-05-18T17:37:20.907Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     // First call: session row not present, no tombstone, and the buffer
     // dir is not a current Grove registration — the identity gate refuses
@@ -80,7 +80,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     seedSession({ id: sessionId, agent: 'claude-code' });
     deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.API_DELETE);
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession(sessionId);
 
     // Skip-not-resurrect: no rows created, buffer gone, marked converged
@@ -95,7 +95,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     const sessionId = 'cache-poison-002';
     seedSession({ id: sessionId, agent: 'claude-code' });
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     // No buffer file on disk yet — reconciler should silently no-op.
     reconciler.reconcileSession(sessionId);
@@ -114,7 +114,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     expect(batches[0].user_prompt).toBe(promptText);
   });
 
-  it('a successful reconcile still marks the session — a second call is a no-op (existing per-lifetime guard preserved)', () => {
+  it('a successful reconcile marks the session by buffer identity — an unchanged buffer is a no-op; a changed one re-converges without duplicating', () => {
     const sessionId = 'cache-poison-003';
     seedSession({ id: sessionId, agent: 'claude-code' });
 
@@ -123,20 +123,31 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
       JSON.stringify({ type: 'user_prompt', prompt: promptText, timestamp: '2026-05-18T17:37:20.907Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
     reconciler.reconcileSession(sessionId);
     const batchesAfterFirst = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batchesAfterFirst).toHaveLength(1);
 
-    // Append a second event to the buffer. The cache is now marked, so a
-    // second reconcileSession must skip without re-replaying — this is
-    // the existing once-per-lifetime guarantee. If it ever re-replayed,
-    // we'd get duplicate batches.
+    // Identical file → converged-map skip; nothing replays twice.
+    reconciler.reconcileSession(sessionId);
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+
+    // Append a second event. The mark is now STALE (identity changed), so
+    // the next call re-converges: the already-stored first prompt matches
+    // and is NOT re-inserted; only the new event replays. This is the
+    // identity-keyed mark that lets the post-Stop trigger and the drain
+    // job recover wedge-buffered events without a restart.
     fs.appendFileSync(path.join(bufferDir, `${sessionId}.jsonl`),
       JSON.stringify({ type: 'user_prompt', prompt: 'second prompt', timestamp: '2026-05-18T17:42:00.000Z' }) + '\n',
     );
     reconciler.reconcileSession(sessionId);
-    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+    const batchesAfterAppend = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batchesAfterAppend).toHaveLength(2);
+    expect(batchesAfterAppend.map((b) => b.user_prompt)).toEqual(['first prompt', 'second prompt']);
+
+    // And the refreshed mark makes the next call a no-op again.
+    reconciler.reconcileSession(sessionId);
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(2);
   });
 });

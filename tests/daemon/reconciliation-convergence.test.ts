@@ -77,7 +77,7 @@ describe('Buffer reconciliation — content-keyed convergence', () => {
 
   function makeReconciler(logger = silentLogger, eventDedupCache?: EventDedupCache) {
     return createReconciler({
-      bufferDirs: [bufferDir],
+      bufferDirs: () => [bufferDir],
       logger,
       projectRoot: process.cwd(),
       eventDedupCache,

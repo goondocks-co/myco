@@ -8,7 +8,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { listBufferSessionIds, cleanStaleBuffers, type BufferCleanupDecision } from '@myco/capture/buffer.js';
+import {
+  listBufferSessionIds,
+  cleanStaleBuffers,
+  pruneQuarantinedBuffers,
+  type BufferCleanupDecision,
+} from '@myco/capture/buffer.js';
 import { bufferDirCurrentRegistration, bufferDirIdentity } from '@myco/capture/buffer-location.js';
 import { openDatabase, withDatabase, type Database } from '@myco/db/client.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
@@ -16,6 +21,7 @@ import {
   listBatchesBySession,
   getLatestBatch,
   setResponseSummary,
+  resolveResponseSummaryTarget,
   toPromptBatchOrigin,
   PROMPT_PREFIX_MATCH_CHARS,
   type BatchRow,
@@ -29,6 +35,11 @@ import {
   STALE_BUFFER_MAX_AGE_MS,
   STALE_SESSION_THRESHOLD_MS,
   STOP_REPLAY_OPEN_BATCH_FRESHNESS_MS,
+  BUFFER_HARD_RETENTION_MS,
+  BUFFER_QUIESCENCE_IDLE_MS,
+  CAPTURE_BUFFER_DRAIN_SESSION_CAP,
+  CAPTURE_BUFFER_DRAIN_BACKOFF_CAP_PASSES,
+  TOMBSTONE_RETENTION_MS,
   DEFAULT_SYMBIONT_NAME,
   MS_PER_SECOND,
   epochSeconds,
@@ -82,18 +93,21 @@ const CONVERGENCE_QUERY_LIMIT = 100_000;
 
 export interface ReconcilerDeps {
   /**
-   * Every buffer directory the reconciler should scan. One per registered
-   * project under the global install at
+   * Every buffer directory the reconciler should scan, re-resolved on
+   * EACH use — a thunk, not a snapshot, so a project registered after
+   * reconciler construction is visible to the next pass without a daemon
+   * restart. One dir per registered project under the global install at
    * `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. There is NO
    * legacy fallback — `capture/buffer-location.ts` enforces the
    * no-divergent-location invariant structurally, and the reconciler
-   * trusts that contract. Derived from `listAllProjectBufferDirs()`.
+   * trusts that contract. Wraps `listAllProjectBufferDirs()`, which also
+   * excludes archived projects (the registry's default listing filter).
    *
    * Order matters only for log determinism; per-session lookup tries each
    * directory in order and uses the first match (a session's events live
    * in exactly one dir).
    */
-  bufferDirs: string[];
+  bufferDirs: () => string[];
   logger: DaemonLogger;
   /** Canonical project root — derived from vaultDir, never cwd. */
   projectRoot: string;
@@ -137,6 +151,29 @@ export interface ReconcilerDeps {
   resolveGroveDb?: (groveId: string) => Database | null;
 }
 
+/** Outcome counts for one drain pass (log + test observability). */
+export interface DrainPassSummary {
+  /**
+   * Real convergence attempts — sessions that passed the quiescence gate
+   * and ran a pass (drained + failed + benign-deferred). Only these
+   * consume per-pass cap slots.
+   */
+  attempted: number;
+  /** Attempts that converged (mark written or buffer terminally discarded). */
+  drained: number;
+  /**
+   * Sessions skipped this pass by the quiescence gate. Gate checks are
+   * cheap reads and consume NO cap slot.
+   */
+  skippedQuiescent: number;
+  /** Sessions sitting out under per-session failure backoff. */
+  skippedBackoff: number;
+  /** Sessions deferred because the per-pass cap was reached. */
+  deferredByCap: number;
+  /** Drain attempts that errored or did not converge (backoff recorded). */
+  failed: number;
+}
+
 export interface Reconciler {
   reconcileSession(sessionId: string): void;
   replayEvent(sessionId: string, event: Record<string, unknown>): 'prompt' | 'activity' | null;
@@ -146,16 +183,25 @@ export interface Reconciler {
   /**
    * Convergence-aware buffer cleanup across every known buffer dir.
    * Deletes tombstoned sessions' buffers immediately; deletes converged
-   * buffers of closed sessions past STALE_BUFFER_MAX_AGE_MS; NEVER
-   * deletes a diverging buffer (P3 adds the hard retention cap).
+   * buffers of closed sessions past STALE_BUFFER_MAX_AGE_MS; quarantines
+   * (never deletes) a diverging buffer past BUFFER_HARD_RETENTION_MS;
+   * prunes quarantined files past TOMBSTONE_RETENTION_MS.
    */
   cleanStaleBuffers(excludeSessionId?: string): number;
   /**
-   * True when the session has a non-empty buffer file that this daemon
-   * lifetime has not converged. The dead-session sweep consults this to
-   * defer deleting a zero-batch session whose buffer may still replay.
+   * True when the session has a non-empty buffer file whose current
+   * identity has not been converged (no mark, or the file changed since
+   * the converged pass). The dead-session sweep consults this to defer
+   * deleting a zero-batch session whose buffer may still replay.
    */
   hasUnconvergedBuffer(sessionId: string): boolean;
+  /**
+   * One quiescence-gated drain pass: converge every drain-eligible
+   * diverging buffer (capped per pass), then run convergence-aware
+   * cleanup + quarantine over the visited dirs. `groveId` scopes the
+   * pass to one Grove's dirs (the power-job fan-out shape).
+   */
+  runDrainPass(options?: { groveId?: string }): DrainPassSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,10 +217,16 @@ export interface Reconciler {
  * per daemon lifetime.
  */
 export function createReconciler({ bufferDirs, logger, projectRoot, onSessionReconciled, eventDedupCache, registry, machineId, resolveGroveDb }: ReconcilerDeps): Reconciler {
-  // Track sessions already reconciled this daemon lifetime to avoid
-  // redundant file reads (startup scan + register + event can all fire).
-  // A session is only added after a pass converges (zero replay errors,
-  // unchanged file identity) — failed or aborted passes stay eligible.
+  // Converged map: session id → the buffer file identity (size, mtimeMs)
+  // the last converged pass observed. A session whose CURRENT file
+  // matches its entry is skipped (startup scan + register + event +
+  // post-Stop trigger + drain pass can all fire); an entry whose identity
+  // no longer matches is STALE — events arrived since the converged pass
+  // and the session is eligible to re-converge. An entry is only written
+  // after a pass converges (zero replay errors, unchanged file identity)
+  // — failed or aborted passes stay eligible. Entries are evicted on
+  // buffer delete/quarantine and clearSession, so the map stays bounded
+  // by the live buffer-file population.
   //
   // Keys are bare session ids, deliberately NOT grove-qualified: a session
   // resolves to exactly ONE buffer dir (locateBufferContent takes the
@@ -183,7 +235,20 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
   // IN ITS GROVE DB". Cross-Grove same-id collision would require two
   // UUID session ids to coincide AND would still collapse to the first
   // dir, the reconciler's pre-existing resolution rule.
-  const reconciledSessions = new Set<string>();
+  const reconciledSessions = new Map<string, BufferIdentity>();
+
+  // Per-session drain failure backoff: a session whose drain attempt
+  // errored (or completed without converging) sits out 2^failures passes
+  // (capped) before retrying, so a poisoned event can't hot-loop the
+  // drain job. Reset on a successful (converged) attempt.
+  const drainBackoff = new Map<string, { failures: number; skipPasses: number }>();
+
+  // Drain scan rotation, per pass scope (grove id, or '*' for an
+  // unscoped pass): the candidate key of the last session that consumed
+  // a cap slot. The next pass starts scanning AFTER it so a cap-sized
+  // block of undrainable diverging buffers can't permanently starve the
+  // candidates behind it.
+  const drainScanCursors = new Map<string, string>();
 
   // Default Grove-DB resolver: open the Grove's SQLite file directly when
   // it exists (one cached handle per Grove per reconciler lifetime). The
@@ -238,6 +303,34 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     }
   }
 
+  function identityEquals(a: BufferIdentity, b: BufferIdentity): boolean {
+    return a.size === b.size && a.mtimeMs === b.mtimeMs;
+  }
+
+  /** Converged-map check against a CURRENT file identity. */
+  function isConverged(sessionId: string, identity: BufferIdentity): boolean {
+    const mark = reconciledSessions.get(sessionId);
+    return mark !== undefined && identityEquals(mark, identity);
+  }
+
+  /**
+   * Stat-only location of a session's buffer file across all known dirs —
+   * the cheap precursor to `locateBufferContent` for skip decisions that
+   * don't need the file's content. First dir with a non-empty file wins,
+   * mirroring the content locator's resolution rule.
+   */
+  function statBufferAcrossDirs(
+    sessionId: string,
+  ): { dir: string; path: string; identity: BufferIdentity } | null {
+    for (const dir of bufferDirs()) {
+      const bufferPath = path.join(dir, `${sessionId}.jsonl`);
+      const identity = statBufferIdentity(bufferPath);
+      if (!identity || identity.size === 0) continue;
+      return { dir, path: bufferPath, identity };
+    }
+    return null;
+  }
+
   /**
    * Locate the buffer file for a session across all known buffer dirs.
    * Returns the first dir whose buffer file exists and is non-empty, or
@@ -253,7 +346,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
   function locateBufferContent(
     sessionId: string,
   ): { dir: string; path: string; content: string; identity: BufferIdentity } | null {
-    for (const dir of bufferDirs) {
+    for (const dir of bufferDirs()) {
       const bufferPath = path.join(dir, `${sessionId}.jsonl`);
       const identity = statBufferIdentity(bufferPath);
       if (!identity) continue;
@@ -343,7 +436,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
         : '';
       if (!summary) return null;
       const latest = getLatestBatch(sessionId);
-      if (!latest || latest.response_summary) return null;
+      if (!latest) return null;
       // Staleness-qualified open-batch guard. A FRESH open batch is a turn
       // that may still be live — a replayed stop landing on it would
       // attribute a buffered assistant message to a turn it may not belong
@@ -368,7 +461,23 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
           return null;
         }
       }
-      setResponseSummary(latest.id, summary);
+      // Same human-anchor resolution the live Stop pipeline uses: latest
+      // HUMAN-origin batch, steering child redirected to its owning
+      // parent, summary-bearing target → no write. A trailing system
+      // batch (a <task-notification> after the human prompt) must not
+      // absorb the turn's summary on replay any more than it does live.
+      //
+      // Accepted limitation (pre-existing P1 class): stop events carry no
+      // turn key, so when ONE session misses TWO stops, both replay
+      // against "the latest summary-less target" in chronological order —
+      // if the first turn's prompt was also missed and recovered in this
+      // same pass, turn 1's stop can land on turn 2's batch first-wins
+      // and strand turn 2's summary on turn 1's. Recovered-with-possible-
+      // cross-turn-misattribution is the deliberate trade over dropping
+      // the summaries; turn-keyed stop events are a possible future fix.
+      const target = resolveResponseSummaryTarget(sessionId, latest);
+      if (!target) return null;
+      setResponseSummary(target.id, summary);
       return 'activity';
     }
     return null;
@@ -443,12 +552,13 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
   }
 
   /**
-   * Discard a session's buffer file and mark the session converged. The
-   * skip-not-resurrect terminal state for tombstoned and gate-rejected
-   * sessions: no DB row exists, none will be created, and the buffer must
-   * not linger as a resurrection candidate. The mark is only applied when
-   * the unlink succeeds — a failed delete leaves the session eligible so
-   * the next trigger retries.
+   * Discard a session's buffer file — the skip-not-resurrect terminal
+   * state for tombstoned and gate-rejected sessions: no DB row exists,
+   * none will be created, and the buffer must not linger as a
+   * resurrection candidate. The converged-map entry is evicted (file
+   * gone → no identity to match; every trigger no-ops on the absent
+   * file). A failed delete leaves state untouched so the next trigger
+   * retries.
    */
   function discardBuffer(sessionId: string, bufferPath: string, reason: string): void {
     try {
@@ -462,7 +572,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       });
       return;
     }
-    reconciledSessions.add(sessionId);
+    reconciledSessions.delete(sessionId);
     logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: buffer discarded without replay', {
       session_id: sessionId,
       buffer_path: bufferPath,
@@ -614,88 +724,50 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
    * batch). The session is marked reconciled only when the pass completes
    * with zero replay errors against an unchanged buffer file.
    */
-  function reconcileSession(sessionId: string): void {
-    if (reconciledSessions.has(sessionId)) return;
+  /** Per-event verdict from {@link createConvergenceMatcher}. */
+  type ConvergenceVerdict =
+    | { kind: 'duplicate' }   // intra-buffer copy within the dedup window
+    | { kind: 'dropped' }     // pre-rule prompt the manifest would DROP
+    | { kind: 'converged' }   // consumed a stored row (or prefix-matched)
+    | { kind: 'unmatched'; exactKey: string }; // no stored counterpart
 
-    // Locate the session's buffer across every known dir. Buffer file
-    // absent in every dir → return WITHOUT marking reconciled so a later
-    // call (after the buffer appears) can replay it.
-    const located = locateBufferContent(sessionId);
-    if (!located) return;
-
-    // Bind the whole pass to the Grove DB that OWNS the located buffer
-    // dir. At boot the ambient DB is the bootstrap/anchor vault — running
-    // unbound there made every Grove session's tombstone invisible and
-    // replayed its events into the anchor. On the live path the HTTP layer
-    // already bound the request's Grove DB; rebinding resolves the same
-    // shared handle (cache hit), so nesting is a no-op.
-    const scope = groveScopeForDir(located.dir);
-    if (scope.kind === 'unavailable') {
-      logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — Grove DB for buffer dir unavailable', {
-        session_id: sessionId,
-        buffer_dir: located.dir,
-        grove_id: scope.groveId,
-      });
-      return;
-    }
-    if (scope.kind === 'scoped') {
-      withDatabase(scope.db, () => reconcileLocatedSession(sessionId, located));
-    } else {
-      reconcileLocatedSession(sessionId, located);
-    }
-  }
-
-  /** The per-session pass body; runs inside the owning Grove's DB scope. */
-  function reconcileLocatedSession(
+  /**
+   * Build the per-pass content matcher: a DB-side multiset snapshot plus
+   * the chronological match-and-consume walk, shared between the replay
+   * pass and the quarantine diagnostics (unmatched-event count).
+   *
+   * The multiset holds every stored prompt and every stored
+   * non-bookkeeping activity, keyed with the convergence projections of
+   * the shared fingerprint (`@myco/capture/dedup.js`). Multiset
+   * (key → count) so N genuine same-text turns consume N matches.
+   * Bookkeeping rows (subagent_*, task_completed, compact, stop_failure)
+   * come from non-replayable events and must never absorb a tool match.
+   *
+   * Three guards apply per prompt / tool event:
+   *
+   *   1. Intra-buffer collapse — the live dispatcher's content+window
+   *      dedup applied over the whole file, so the daemon-appended copy
+   *      and the hook CLI's duplicate copy (written whenever the daemon
+   *      returns `ignored: 'duplicate'` — see `hooks/send-event.ts`)
+   *      count as ONE logical event.
+   *   2. Exact content match — the event's convergence key consumes one
+   *      unconsumed DB row with the same key. user_prompt events key on
+   *      the candidate replay text (the rewritten form the live hook
+   *      stored and replay would insert), not the raw buffered text.
+   *   3. Second-chance prefix match (user_prompt only) — catches miner
+   *      tail-rewrites of LONG prompts where exact text diverged. Skips
+   *      WITHOUT consuming a multiset count. Matches only against the
+   *      PRE-PASS batch snapshot so a prompt replayed earlier in this
+   *      pass can't absorb a later genuine same-text turn.
+   *
+   * Stateful per pass (the multiset is consumed, the dedup-window memory
+   * accumulates) — create one matcher per pass and feed it the buffer's
+   * events in chronological order. Must run inside the owning Grove's DB
+   * scope. Stop events must not be passed in (no DB-row projection).
+   */
+  function createConvergenceMatcher(
     sessionId: string,
-    located: NonNullable<ReturnType<typeof locateBufferContent>>,
-  ): void {
-    // Four-way discrimination on the session row. Row present → normal
-    // convergence. Row absent → tombstone / resurrection / retention.
-    let resurrected = false;
-    let staleResurrection = false;
-    let allEvents: Array<Record<string, unknown>> | null = null;
-    if (!getSession(sessionId, ALL_PROJECTS_SCOPE)) {
-      // (2) Tombstoned: the row was deliberately deleted through
-      // deleteSessionCascade. Skip-not-resurrect — discard the lingering
-      // buffer so nothing can replay it, and mark converged.
-      if (hasSessionTombstone(sessionId)) {
-        discardBuffer(sessionId, located.path, 'session tombstoned');
-        return;
-      }
-      allEvents = parseBufferEvents(sessionId, located);
-      if (!allEvents) return;
-      // (4) No replayable content: nothing to resurrect. Leave the file
-      // for retention (P3 adds the hard cap) without marking reconciled —
-      // a row appearing later must stay free to converge.
-      if (!allEvents.some((event) => REPLAYABLE_EVENT_TYPES.has(String(event.type)))) {
-        logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — session row absent, no replayable events', {
-          session_id: sessionId,
-        });
-        return;
-      }
-      // (3) Gate-checked resurrection. A resurrection whose newest event
-      // already predates the stale threshold is historical recovery — it
-      // will be closed right after convergence and must NOT enter the
-      // in-memory registry (nothing will ever unregister it, and registry
-      // membership shields sessions from the dead sweep).
-      const newestMs = newestReplayableTimestampMs(allEvents);
-      staleResurrection = newestMs !== undefined && Date.now() - newestMs > STALE_SESSION_THRESHOLD_MS;
-      if (!resurrectSession(sessionId, located, allEvents, { registerInRegistry: !staleResurrection })) return;
-      resurrected = true;
-    }
-
-    allEvents ??= parseBufferEvents(sessionId, located);
-    if (!allEvents) return;
-
-    let replayErrors = 0;
-
-    // DB-side content multiset: every stored prompt and every stored
-    // non-bookkeeping activity, keyed with the convergence projections of
-    // the shared fingerprint. Multiset (key → count) so N genuine
-    // same-text turns consume N matches. Bookkeeping rows (subagent_*,
-    // task_completed, compact, stop_failure) come from non-replayable
-    // events and must never absorb a tool match.
+  ): (event: Record<string, unknown>) => ConvergenceVerdict {
     const existingBatches = listBatchesBySession(sessionId, {
       scope: ALL_PROJECTS_SCOPE,
       limit: CONVERGENCE_QUERY_LIMIT,
@@ -714,24 +786,158 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       const key = dedupKeyFromActivity(activity);
       dbKeyCounts.set(key, (dbKeyCounts.get(key) ?? 0) + 1);
     }
+    const seenKeys = new Map<string, number>();
 
-    // Match-and-consume chronologically. Three guards apply before a
-    // prompt / tool event reaches replayEvent:
-    //
-    //   1. Intra-buffer collapse — the live dispatcher's content+window
-    //      dedup applied over the whole file, so the daemon-appended copy
-    //      and the hook CLI's duplicate copy (written whenever the daemon
-    //      returns `ignored: 'duplicate'` — see `hooks/send-event.ts`)
-    //      count as ONE logical event.
-    //   2. Exact content match — the event's convergence key consumes one
-    //      unconsumed DB row with the same key. user_prompt events key on
-    //      the candidate replay text (the rewritten form the live hook
-    //      stored and replay would insert), not the raw buffered text.
-    //   3. Second-chance prefix match (user_prompt only) — catches miner
-    //      tail-rewrites of LONG prompts where exact text diverged. Skips
-    //      WITHOUT consuming a multiset count.
-    //
-    // Stop events take none of these: they have no DB-row projection and
+    return (event) => {
+      const type = String(event.type);
+      const eventWithSession = {
+        ...event,
+        type,
+        session_id: sessionId,
+      } as Record<string, unknown> & { type: string; session_id: string };
+      const exactKey = eventDedupKey(eventWithSession);
+      const ts = eventTimestampMs(event) ?? Date.now();
+      const lastSeen = seenKeys.get(exactKey);
+      if (lastSeen !== undefined && ts - lastSeen < EVENT_DEDUP_WINDOW_MS) {
+        return { kind: 'duplicate' };
+      }
+      seenKeys.set(exactKey, ts);
+
+      // Mirror replayEvent's user_prompt gate so a pre-rule event the
+      // manifest would DROP neither consumes a DB row nor replays, and so
+      // both match layers compare the text replay WOULD insert.
+      let candidateText: string | null = null;
+      if (type === 'user_prompt') {
+        const promptText = String(event.prompt ?? '');
+        if (typeof event.origin === 'string') {
+          candidateText = promptText;
+        } else {
+          const decision = classifyNextPromptDecision(
+            typeof event.agent === 'string' ? event.agent : undefined,
+            promptText,
+          );
+          if (decision.action === 'drop') return { kind: 'dropped' };
+          candidateText = decision.action === 'rewrite' ? decision.prompt : promptText;
+        }
+      }
+
+      const matchKey = type === 'user_prompt'
+        ? convergenceEventKey({ ...eventWithSession, prompt: candidateText ?? '' })
+        : convergenceEventKey(eventWithSession);
+      const remaining = dbKeyCounts.get(matchKey) ?? 0;
+      if (remaining > 0) {
+        dbKeyCounts.set(matchKey, remaining - 1);
+        return { kind: 'converged' };
+      }
+
+      if (type === 'user_prompt' && candidateText && hasPrefixMatchedBatch(existingBatches, candidateText)) {
+        return { kind: 'converged' };
+      }
+
+      return { kind: 'unmatched', exactKey };
+    };
+  }
+
+  /**
+   * What a convergence pass made of a session:
+   *
+   *   - 'converged'     — mark written (or the buffer terminally
+   *                       discarded); nothing left to replay.
+   *   - 'deferred'      — benign non-completion (fresh torn tail, events
+   *                       arrived mid-pass, retention-bound content,
+   *                       stale-dir skip): retry on the next trigger,
+   *                       no failure recorded.
+   *   - 'replay-errors' — one or more events failed to replay; the drain
+   *                       job records a failure and backs the session off.
+   */
+  type PassResult = 'converged' | 'deferred' | 'replay-errors';
+
+  function reconcileSession(sessionId: string): PassResult {
+    // Stat-only converged-map skip: identical (size, mtimeMs) to the last
+    // converged pass means no events arrived since — nothing to do, and
+    // the file is not even read. A stale mark (identity changed) falls
+    // through and re-converges; that staleness check is what lets the
+    // post-Stop trigger and the drain job pick up wedge-buffered events
+    // without any explicit mark-clearing.
+    const pre = statBufferAcrossDirs(sessionId);
+    if (!pre) return 'converged';
+    if (isConverged(sessionId, pre.identity)) return 'converged';
+
+    // Locate the session's buffer across every known dir. Buffer file
+    // absent in every dir → return WITHOUT marking reconciled so a later
+    // call (after the buffer appears) can replay it.
+    const located = locateBufferContent(sessionId);
+    if (!located) return 'deferred';
+
+    // Bind the whole pass to the Grove DB that OWNS the located buffer
+    // dir. At boot the ambient DB is the bootstrap/anchor vault — running
+    // unbound there made every Grove session's tombstone invisible and
+    // replayed its events into the anchor. On the live path the HTTP layer
+    // already bound the request's Grove DB; rebinding resolves the same
+    // shared handle (cache hit), so nesting is a no-op.
+    const scope = groveScopeForDir(located.dir);
+    if (scope.kind === 'unavailable') {
+      logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — Grove DB for buffer dir unavailable', {
+        session_id: sessionId,
+        buffer_dir: located.dir,
+        grove_id: scope.groveId,
+      });
+      return 'deferred';
+    }
+    return scope.kind === 'scoped'
+      ? withDatabase(scope.db, () => reconcileLocatedSession(sessionId, located))
+      : reconcileLocatedSession(sessionId, located);
+  }
+
+  /** The per-session pass body; runs inside the owning Grove's DB scope. */
+  function reconcileLocatedSession(
+    sessionId: string,
+    located: NonNullable<ReturnType<typeof locateBufferContent>>,
+  ): PassResult {
+    // Four-way discrimination on the session row. Row present → normal
+    // convergence. Row absent → tombstone / resurrection / retention.
+    let resurrected = false;
+    let staleResurrection = false;
+    let allEvents: Array<Record<string, unknown>> | null = null;
+    if (!getSession(sessionId, ALL_PROJECTS_SCOPE)) {
+      // (2) Tombstoned: the row was deliberately deleted through
+      // deleteSessionCascade. Skip-not-resurrect — discard the lingering
+      // buffer so nothing can replay it, and mark converged.
+      if (hasSessionTombstone(sessionId)) {
+        discardBuffer(sessionId, located.path, 'session tombstoned');
+        return 'converged';
+      }
+      allEvents = parseBufferEvents(sessionId, located);
+      if (!allEvents) return 'deferred';
+      // (4) No replayable content: nothing to resurrect. Leave the file
+      // for retention (the hard cap quarantines it eventually) without
+      // marking reconciled — a row appearing later must stay free to
+      // converge.
+      if (!allEvents.some((event) => REPLAYABLE_EVENT_TYPES.has(String(event.type)))) {
+        logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — session row absent, no replayable events', {
+          session_id: sessionId,
+        });
+        return 'deferred';
+      }
+      // (3) Gate-checked resurrection. A resurrection whose newest event
+      // already predates the stale threshold is historical recovery — it
+      // will be closed right after convergence and must NOT enter the
+      // in-memory registry (nothing will ever unregister it, and registry
+      // membership shields sessions from the dead sweep).
+      const newestMs = newestReplayableTimestampMs(allEvents);
+      staleResurrection = newestMs !== undefined && Date.now() - newestMs > STALE_SESSION_THRESHOLD_MS;
+      if (!resurrectSession(sessionId, located, allEvents, { registerInRegistry: !staleResurrection })) return 'deferred';
+      resurrected = true;
+    }
+
+    allEvents ??= parseBufferEvents(sessionId, located);
+    if (!allEvents) return 'deferred';
+
+    let replayErrors = 0;
+
+    // Match-and-consume chronologically via the shared matcher (see
+    // `createConvergenceMatcher` for the three pre-replay guards). Stop
+    // events bypass the matcher: they have no DB-row projection and
     // their fingerprint carries no content (every stop in a session shares
     // one key, so collapse would eat a rapid second turn's summary). Each
     // is replayed at its chronological position — after the prompts that
@@ -747,8 +953,8 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     let duplicatesSuppressed = 0;
     let eventsConverged = 0;
     let summariesRecovered = 0;
-    const seenKeys = new Map<string, number>();
     const passCreatedBatchIds = new Set<number>();
+    const matchEvent = createConvergenceMatcher(sessionId);
 
     for (const event of allEvents) {
       const type = String(event.type);
@@ -767,52 +973,10 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
         continue;
       }
 
-      const eventWithSession = {
-        ...event,
-        type,
-        session_id: sessionId,
-      } as Record<string, unknown> & { type: string; session_id: string };
-      const exactKey = eventDedupKey(eventWithSession);
-      const ts = eventTimestampMs(event) ?? Date.now();
-      const lastSeen = seenKeys.get(exactKey);
-      if (lastSeen !== undefined && ts - lastSeen < EVENT_DEDUP_WINDOW_MS) {
-        duplicatesSuppressed++;
-        continue;
-      }
-      seenKeys.set(exactKey, ts);
-
-      // Mirror replayEvent's user_prompt gate so a pre-rule event the
-      // manifest would DROP neither consumes a DB row nor replays, and so
-      // both match layers compare the text replay WOULD insert.
-      let candidateText: string | null = null;
-      if (type === 'user_prompt') {
-        const promptText = String(event.prompt ?? '');
-        if (typeof event.origin === 'string') {
-          candidateText = promptText;
-        } else {
-          const decision = classifyNextPromptDecision(
-            typeof event.agent === 'string' ? event.agent : undefined,
-            promptText,
-          );
-          if (decision.action === 'drop') continue;
-          candidateText = decision.action === 'rewrite' ? decision.prompt : promptText;
-        }
-      }
-
-      const matchKey = type === 'user_prompt'
-        ? convergenceEventKey({ ...eventWithSession, prompt: candidateText ?? '' })
-        : convergenceEventKey(eventWithSession);
-      const remaining = dbKeyCounts.get(matchKey) ?? 0;
-      if (remaining > 0) {
-        dbKeyCounts.set(matchKey, remaining - 1);
-        eventsConverged++;
-        continue;
-      }
-
-      if (type === 'user_prompt' && candidateText && hasPrefixMatchedBatch(existingBatches, candidateText)) {
-        eventsConverged++;
-        continue;
-      }
+      const verdict = matchEvent(event);
+      if (verdict.kind === 'duplicate') { duplicatesSuppressed++; continue; }
+      if (verdict.kind === 'dropped') continue;
+      if (verdict.kind === 'converged') { eventsConverged++; continue; }
 
       try {
         const result = replayEvent(sessionId, event, passCreatedBatchIds);
@@ -821,7 +985,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
         // Mirror the replay into the live duplicate cache (replay-time
         // stamp) so a late live POST of the same physical event is
         // rejected by the dispatcher instead of double-inserting.
-        if (result !== null) eventDedupCache?.record(exactKey, Date.now());
+        if (result !== null) eventDedupCache?.record(verdict.exactKey, Date.now());
       } catch (err) {
         replayErrors++;
         logger.warn(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: failed to replay event', {
@@ -835,11 +999,12 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     // identical to the pre-read snapshot (no events arrived mid-pass).
     // Anything else leaves the session eligible for the next trigger.
     const after = statBufferIdentity(located.path);
-    const identityUnchanged = after !== null
-      && after.size === located.identity.size
-      && after.mtimeMs === located.identity.mtimeMs;
-    if (replayErrors === 0 && identityUnchanged) {
-      reconciledSessions.add(sessionId);
+    const identityUnchanged = after !== null && identityEquals(after, located.identity);
+    const passResult: PassResult = replayErrors > 0
+      ? 'replay-errors'
+      : identityUnchanged ? 'converged' : 'deferred';
+    if (passResult === 'converged' && after !== null) {
+      reconciledSessions.set(sessionId, after);
     } else {
       logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation pass not converged — session stays eligible', {
         session_id: sessionId,
@@ -871,6 +1036,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       });
     }
     tryReEnrich(sessionId);
+    return passResult;
   }
 
   /** Invoke `onSessionReconciled` if provided, swallowing + logging any error. */
@@ -894,42 +1060,284 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
    *   - anything else (diverging, live,
    *     row-absent-no-tombstone)        → 'retain'
    *
-   * A diverging buffer is the only durable copy of unreplayed events and
-   * is NEVER deleted here — P3 adds the 7d hard cap + quarantine; for P2
-   * such buffers are simply retained.
+   * "Converged" requires mark CURRENCY: the converged-map entry must
+   * match the file's CURRENT (size, mtimeMs) identity. Mark presence
+   * alone is not enough — a closed session converged at identity I1
+   * whose buffer later gained a wedge-buffered event (I2) holds the only
+   * durable copy of that unreplayed event; an 'age-gated' classification
+   * would let the 24h gate destroy it whenever the drain couldn't
+   * re-converge first (persistent replay errors under backoff, or any
+   * append between drain cadences). A stale-mark file is DIVERGING
+   * ('retain') and is never deleted here — past BUFFER_HARD_RETENTION_MS
+   * it is QUARANTINED (moved, preserved) by `cleanStaleBuffers`'
+   * hard-cap option.
    */
-  function classifyBufferForCleanup(sessionId: string): BufferCleanupDecision {
+  function classifyBufferForCleanup(sessionId: string, identity: BufferIdentity): BufferCleanupDecision {
     if (hasSessionTombstone(sessionId)) return 'delete';
     const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
-    if (row && row.status !== 'active' && reconciledSessions.has(sessionId)) return 'age-gated';
+    if (row && row.status !== 'active' && isConverged(sessionId, identity)) return 'age-gated';
     return 'retain';
   }
 
   /**
-   * Convergence-aware buffer cleanup across every known dir. Each dir's
+   * Unmatched-event diagnostic for a quarantined buffer: how many of its
+   * replayable prompt/tool events have no stored DB counterpart. Runs the
+   * shared matcher in count-only mode (no replay, no side effects beyond
+   * the matcher's own per-call state). Stop events are excluded — they
+   * have no DB-row projection. Must run inside the owning Grove's scope.
+   */
+  function countUnmatchedEvents(sessionId: string, filePath: string): number {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      return 0;
+    }
+    const matchEvent = createConvergenceMatcher(sessionId);
+    let unmatched = 0;
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      const type = String(event.type);
+      if (!REPLAYABLE_EVENT_TYPES.has(type) || type === 'stop') continue;
+      if (matchEvent(event).kind === 'unmatched') unmatched++;
+    }
+    return unmatched;
+  }
+
+  /**
+   * Convergence-aware buffer cleanup over the given dirs. Each dir's
    * classification runs bound to ITS Grove's DB — the classifier reads
    * tombstones and session status, and an ambient binding (the anchor at
    * boot, the requester's Grove on the unregister path) would classify
    * every other Grove's sessions as never-seen → retain. Dirs whose Grove
    * DB is unavailable are skipped (retain everything — fail-safe).
+   *
+   * Retention completion runs here too: a diverging ('retain') buffer
+   * past BUFFER_HARD_RETENTION_MS moves into the dir's quarantine/
+   * subdir (WARN with its unmatched-event count), and quarantined files
+   * past TOMBSTONE_RETENTION_MS are pruned — the same pass that prunes
+   * the tombstones whose window they must not outlive. Deletes and
+   * quarantine moves both evict the converged-map entry. The quarantine
+   * prune is pure filesystem work and runs even for unavailable-Grove
+   * dirs — a Grove whose DB vanished must still age out its quarantine.
    */
-  function cleanBuffers(excludeSessionId?: string): number {
+  function cleanBufferDirs(dirs: readonly string[], excludeSessionId?: string): number {
     let totalCleaned = 0;
-    for (const dir of bufferDirs) {
+    let totalPruned = 0;
+    for (const dir of dirs) {
+      totalPruned += pruneQuarantinedBuffers(dir, TOMBSTONE_RETENTION_MS);
       const scope = groveScopeForDir(dir);
       if (scope.kind === 'unavailable') continue;
-      const run = () => cleanStaleBuffers(dir, STALE_BUFFER_MAX_AGE_MS, excludeSessionId, classifyBufferForCleanup);
+      const run = () => cleanStaleBuffers(dir, {
+        maxAgeMs: STALE_BUFFER_MAX_AGE_MS,
+        ...(excludeSessionId !== undefined ? { excludeSessionId } : {}),
+        classify: classifyBufferForCleanup,
+        onRemoved: (sessionId) => reconciledSessions.delete(sessionId),
+        quarantine: {
+          maxAgeMs: BUFFER_HARD_RETENTION_MS,
+          onQuarantined: (sessionId, quarantinedPath) => {
+            reconciledSessions.delete(sessionId);
+            drainBackoff.delete(sessionId);
+            logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Diverging buffer quarantined at hard retention cap', {
+              session_id: sessionId,
+              quarantined_path: quarantinedPath,
+              unmatched_events: countUnmatchedEvents(sessionId, quarantinedPath),
+            });
+          },
+        },
+      });
       totalCleaned += scope.kind === 'scoped' ? withDatabase(scope.db, run) : run();
     }
-    if (totalCleaned > 0) {
-      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', { stale_removed: totalCleaned });
+    if (totalCleaned > 0 || totalPruned > 0) {
+      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer cleanup complete', {
+        stale_removed: totalCleaned,
+        quarantine_pruned: totalPruned,
+      });
     }
     return totalCleaned;
   }
 
+  /** Cleanup across every known dir (public surface + startup path). */
+  function cleanBuffers(excludeSessionId?: string): number {
+    return cleanBufferDirs(bufferDirs(), excludeSessionId);
+  }
+
   function hasUnconvergedBuffer(sessionId: string): boolean {
-    if (reconciledSessions.has(sessionId)) return false;
-    return locateBufferContent(sessionId) !== null;
+    const located = statBufferAcrossDirs(sessionId);
+    if (!located) return false;
+    return !isConverged(sessionId, located.identity);
+  }
+
+  /**
+   * Quiescence gate: may a drain pass converge this session's buffer NOW
+   * without racing a live turn? Eligible when:
+   *
+   *   (a) the session row is ABSENT — the resurrection path; no live turn
+   *       can exist for a row-less session by construction (P2's
+   *       tombstone/identity/capture gates still apply inside the pass);
+   *   (b) the session is CLOSED (status flipped through the completion
+   *       chokepoint, `closeSession`); or
+   *   (c) the session has NO open batch (latest batch ended_at set, or no
+   *       batches at all) AND the buffer file has been idle for at least
+   *       BUFFER_QUIESCENCE_IDLE_MS — an active session between turns.
+   *
+   * Must run inside the owning Grove's DB scope.
+   */
+  function isDrainQuiescent(sessionId: string, identity: BufferIdentity): boolean {
+    const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
+    if (!row) return true;
+    if (row.status !== 'active') return true;
+    const latest = getLatestBatch(sessionId);
+    if (latest && latest.ended_at === null) return false;
+    return Date.now() - identity.mtimeMs >= BUFFER_QUIESCENCE_IDLE_MS;
+  }
+
+  function runDrainPass(options: { groveId?: string } = {}): DrainPassSummary {
+    const dirs = bufferDirs().filter((dir) =>
+      options.groveId === undefined || bufferDirIdentity(dir)?.groveId === options.groveId,
+    );
+    const summary: DrainPassSummary = {
+      attempted: 0,
+      drained: 0,
+      skippedQuiescent: 0,
+      skippedBackoff: 0,
+      deferredByCap: 0,
+      failed: 0,
+    };
+
+    // Flat candidate list (stable dir order, per-dir readdir order),
+    // rotated to start AFTER the previous pass's last cap-consuming
+    // session. Without rotation, ≥cap undrainable diverging buffers at
+    // the front of the scan would starve everything behind them until
+    // quarantine; with it, every candidate is reached within two passes.
+    interface DrainCandidate { dir: string; sessionId: string; key: string; scope: DirScope }
+    const candidates: DrainCandidate[] = [];
+    for (const dir of dirs) {
+      const scope = groveScopeForDir(dir);
+      if (scope.kind === 'unavailable') {
+        logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Drain pass skipping dir — Grove DB unavailable', {
+          buffer_dir: dir,
+          grove_id: scope.groveId,
+        });
+        continue;
+      }
+      for (const sessionId of listBufferSessionIds(dir)) {
+        candidates.push({ dir, sessionId, key: `${dir}\0${sessionId}`, scope });
+      }
+    }
+    const cursorKey = options.groveId ?? '*';
+    const cursor = drainScanCursors.get(cursorKey);
+    let start = 0;
+    if (cursor !== undefined && candidates.length > 0) {
+      const idx = candidates.findIndex((c) => c.key === cursor);
+      if (idx >= 0) start = (idx + 1) % candidates.length;
+    }
+
+    let capConsumed = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      const { dir, sessionId, key, scope } = candidates[(start + i) % candidates.length];
+      const identity = statBufferIdentity(path.join(dir, `${sessionId}.jsonl`));
+      if (!identity || identity.size === 0) continue;
+      if (isConverged(sessionId, identity)) continue;
+
+      // Failure backoff: an erroring session sits out 2^failures passes
+      // (capped) so a poisoned buffer can't hot-loop the job.
+      const backoff = drainBackoff.get(sessionId);
+      if (backoff && backoff.skipPasses > 0) {
+        backoff.skipPasses--;
+        summary.skippedBackoff++;
+        continue;
+      }
+
+      // Per-pass cap on real convergence attempts: the remainder is
+      // counted (and logged below), never silently truncated; rotation
+      // hands it the head of the next pass.
+      if (capConsumed >= CAPTURE_BUFFER_DRAIN_SESSION_CAP) {
+        summary.deferredByCap++;
+        continue;
+      }
+
+      let outcome: 'quiescence-skip' | 'thrown' | PassResult;
+      let thrownError = '';
+      try {
+        const drainOne = (): 'quiescence-skip' | PassResult => {
+          if (!isDrainQuiescent(sessionId, identity)) return 'quiescence-skip';
+          return reconcileSession(sessionId);
+        };
+        outcome = scope.kind === 'scoped' ? withDatabase(scope.db, drainOne) : drainOne();
+      } catch (err) {
+        outcome = 'thrown';
+        thrownError = String(err);
+      }
+
+      // Quiescence-skips are cheap gate reads — they consume no cap slot,
+      // so ≥cap not-yet-quiescent sessions can't starve drainable ones.
+      if (outcome === 'quiescence-skip') {
+        summary.skippedQuiescent++;
+        continue;
+      }
+
+      summary.attempted++;
+      capConsumed++;
+      drainScanCursors.set(cursorKey, key);
+      if (outcome === 'thrown') {
+        recordDrainFailure(sessionId, summary, thrownError);
+      } else if (outcome === 'converged') {
+        summary.drained++;
+        drainBackoff.delete(sessionId);
+      } else if (outcome === 'replay-errors') {
+        recordDrainFailure(sessionId, summary, 'replay errors during pass');
+      }
+      // 'deferred' is benign (fresh torn tail, mid-pass append,
+      // retention-bound content): retried next pass, no backoff.
+    }
+
+    if (summary.deferredByCap > 0) {
+      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Drain pass hit the per-pass session cap — remainder deferred to next pass', {
+        cap: CAPTURE_BUFFER_DRAIN_SESSION_CAP,
+        deferred: summary.deferredByCap,
+      });
+    }
+
+    // Retention runs on the same cadence, scoped to the visited dirs.
+    cleanBufferDirs(dirs);
+
+    // Converged-map / backoff hygiene: deletes that happen OUTSIDE the
+    // reconciler (maintenance-sweep cascade cleanup, manual removal)
+    // can't evict through the cleanup callbacks above. Drop entries
+    // whose buffer file no longer exists in any dir so both maps stay
+    // bounded by the live buffer-file population.
+    for (const sessionId of [...reconciledSessions.keys()]) {
+      if (!statBufferAcrossDirs(sessionId)) reconciledSessions.delete(sessionId);
+    }
+    for (const sessionId of [...drainBackoff.keys()]) {
+      if (!statBufferAcrossDirs(sessionId)) drainBackoff.delete(sessionId);
+    }
+
+    if (summary.drained > 0 || summary.failed > 0) {
+      logger.info(LOG_KINDS.CAPTURE_BUFFER, 'Buffer drain pass complete', { ...summary });
+    }
+    return summary;
+  }
+
+  function recordDrainFailure(sessionId: string, summary: DrainPassSummary, error: string): void {
+    summary.failed++;
+    const failures = (drainBackoff.get(sessionId)?.failures ?? 0) + 1;
+    const skipPasses = Math.min(2 ** failures, CAPTURE_BUFFER_DRAIN_BACKOFF_CAP_PASSES);
+    drainBackoff.set(sessionId, { failures, skipPasses });
+    logger.warn(LOG_KINDS.CAPTURE_BUFFER, 'Drain attempt failed — session backing off', {
+      session_id: sessionId,
+      failures,
+      skip_passes: skipPasses,
+      error,
+    });
   }
 
   /**
@@ -944,9 +1352,9 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     // Reconcile every buffer file across all known dirs. A session shows
     // up at most once even if its buffer lives in only one dir —
     // `reconcileSession` is idempotent across multiple invocations via
-    // the `reconciledSessions` set.
+    // the converged map.
     const seen = new Set<string>();
-    for (const dir of bufferDirs) {
+    for (const dir of bufferDirs()) {
       for (const sessionId of listBufferSessionIds(dir)) {
         if (seen.has(sessionId)) continue;
         seen.add(sessionId);
@@ -963,6 +1371,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
 
   function clearSession(sessionId: string): void {
     reconciledSessions.delete(sessionId);
+    drainBackoff.delete(sessionId);
   }
 
   return {
@@ -972,5 +1381,6 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
     clearSession,
     cleanStaleBuffers: cleanBuffers,
     hasUnconvergedBuffer,
+    runDrainPass,
   };
 }

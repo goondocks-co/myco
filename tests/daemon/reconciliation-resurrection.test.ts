@@ -136,7 +136,7 @@ describe('Buffer reconciliation — tombstones + gate-checked resurrection', () 
     extra: { registry?: { register: (id: string, meta: unknown) => void } } = {},
   ): Reconciler {
     return createReconciler({
-      bufferDirs: dirs,
+      bufferDirs: () => dirs,
       logger,
       projectRoot,
       machineId: 'test-machine',
@@ -440,15 +440,18 @@ describe('Buffer reconciliation — tombstones + gate-checked resurrection', () 
 
     const reconciler = makeReconciler();
 
-    // Converged + closed, 25h old → eligible.
+    // Converged + closed, 25h old → eligible. The file is aged BEFORE the
+    // converging pass so the mark records the file's final identity — the
+    // age gate requires mark CURRENCY, not mere presence (in production
+    // an untouched file keeps its converge-time identity as it ages).
     const convergedId = 'retain-converged-016';
     inGrove(() => upsertSession({ id: convergedId, agent: 'claude-code', started_at: nowSec(), created_at: nowSec(), project_id: projectId }));
     writeBuffer(convergedId, [
       { type: 'user_prompt', prompt: 'done work', origin: 'human', agent: 'claude-code', transcript_path: TRANSCRIPT, timestamp: iso(dayPlus) },
     ]);
+    ageBuffer(convergedId, dayPlus);
     reconciler.reconcileSession(convergedId);
     inGrove(() => closeSession(convergedId, nowSec()));
-    ageBuffer(convergedId, dayPlus);
 
     // Converged but still ACTIVE at 25h → retained.
     const activeId = 'retain-active-016';

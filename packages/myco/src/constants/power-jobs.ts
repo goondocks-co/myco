@@ -21,6 +21,13 @@ export const POWER_JOB_NAMES = {
    * config into any newly-detected agent. Idempotent.
    */
   SYMBIONT_DETECTION: 'symbiont-detection',
+  /**
+   * Periodic quiescence-gated convergence of capture buffer files into
+   * the DB, plus convergence-aware retention (cleanup + quarantine).
+   * Catches sessions whose buffers diverged without a restart or
+   * register/event trigger to converge them.
+   */
+  CAPTURE_BUFFER_DRAIN: 'capture-buffer-drain',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

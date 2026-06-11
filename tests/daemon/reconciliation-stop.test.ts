@@ -65,7 +65,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'recovered summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
@@ -87,7 +87,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'buffered summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
@@ -104,7 +104,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: '', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
@@ -124,7 +124,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'late summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
@@ -146,13 +146,39 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'should not land', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].ended_at).toBeNull();
     expect(batches[0].response_summary).toBeNull();
+  });
+
+  // Shared human-anchor resolution (resolveResponseSummaryTarget): a
+  // trailing SYSTEM batch (a <task-notification> born after the human
+  // prompt) wins getLatestBatch by prompt_number, but the replayed stop's
+  // summary belongs to the human turn — same anchoring as the live path.
+  it('replay stop lands on the latest HUMAN batch when a trailing system batch is the latest', () => {
+    const { batchId: humanBatchId } = handleUserPrompt('s-stop', 'real question', { kind: 'initial' });
+    backdateBatch(humanBatchId, STALE_AGE_SECONDS);
+    const { batchId: systemBatchId } = handleUserPrompt('s-stop', '<task-notification>done</task-notification>', { origin: 'system' });
+    backdateBatch(systemBatchId, STALE_AGE_SECONDS);
+
+    const bufferPath = path.join(bufferDir, 's-stop.jsonl');
+    fs.writeFileSync(bufferPath,
+      JSON.stringify({ type: 'user_prompt', prompt: 'real question', timestamp: new Date().toISOString() }) + '\n' +
+      JSON.stringify({ type: 'stop', last_assistant_message: 'anchored answer', timestamp: new Date().toISOString() }) + '\n',
+    );
+
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    reconciler.reconcileSession('s-stop');
+
+    const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
+    const human = batches.find((b) => b.id === humanBatchId)!;
+    const system = batches.find((b) => b.id === systemBatchId)!;
+    expect(human.response_summary).toBe('anchored answer');
+    expect(system.response_summary).toBeNull();
   });
 
   it('recovers onto a STALE open batch without closing it', () => {
@@ -165,7 +191,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'stale-open recovery', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
