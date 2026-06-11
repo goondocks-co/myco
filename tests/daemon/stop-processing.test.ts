@@ -548,7 +548,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, queued: true });
     await stopProcessor.getActiveProcessing();
 
     const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
@@ -614,7 +614,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, queued: true });
     await stopProcessor.getActiveProcessing();
 
     const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
@@ -689,7 +689,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, queued: true });
     await stopProcessor.getActiveProcessing();
 
     const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
@@ -751,7 +751,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, queued: true });
     await stopProcessor.getActiveProcessing();
 
     expect(listPlansBySession(sessionId, ALL_PROJECTS_SCOPE)).toHaveLength(0);
@@ -813,7 +813,7 @@ describe('createStopProcessor session capture rules', () => {
           last_assistant_message: 'done',
         },
       } as never);
-      expect(res.body).toEqual({ ok: true });
+      expect(res.body).toEqual({ ok: true, queued: true });
       await stopProcessor.getActiveProcessing();
     }
 

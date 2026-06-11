@@ -13,11 +13,14 @@ import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
+import { getDatabase } from '@myco/db/client.js';
+import { EventBuffer } from '@myco/capture/buffer.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 function makeHandler(opts: {
   liveReconcile?: (sessionId: string, agent: string, transcriptPath: string) => void;
   planWatchConfig?: { watchDirs: string[]; projectRoot: string; extensions?: string[] };
+  clearConvergedMark?: (sessionId: string) => void;
 } = {}) {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
   const logger = new DaemonLogger(logDir, { level: 'debug' });
@@ -50,6 +53,7 @@ function makeHandler(opts: {
     planWatchConfig: opts.planWatchConfig ?? { watchDirs: [], projectRoot: vaultDir },
     triggerTitleSummary: async () => {},
     liveReconcile: opts.liveReconcile,
+    clearConvergedMark: opts.clearConvergedMark,
   });
 
   return { handler, registry, sessionBuffers, logger, vaultDir };
@@ -78,7 +82,7 @@ describe('createEventDispatcher', () => {
       pathname: '/events',
     });
 
-    expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation' });
+    expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation', persisted: false });
     expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeUndefined();
     expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
     expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(0);
@@ -115,7 +119,7 @@ describe('createEventDispatcher', () => {
       pathname: '/events',
     });
 
-    expect(res.body).toEqual({ ok: true });
+    expect(res.body).toEqual({ ok: true, persisted: true });
     expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeDefined();
     expect(getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent).toBe('codex');
     expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
@@ -400,7 +404,7 @@ describe('createEventDispatcher', () => {
         pathname: '/events',
       });
 
-      expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation' });
+      expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation', persisted: false });
       expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
       expect(sessionBuffers.has(sessionId)).toBe(false);
 
@@ -481,8 +485,8 @@ describe('createEventDispatcher', () => {
 
       expect(first.body).toMatchObject({ ok: true });
       expect(first.body).not.toMatchObject({ ignored: 'duplicate' });
-      expect(second.body).toEqual({ ok: true, ignored: 'duplicate' });
-      expect(third.body).toEqual({ ok: true, ignored: 'duplicate' });
+      expect(second.body).toEqual({ ok: true, ignored: 'duplicate', persisted: false });
+      expect(third.body).toEqual({ ok: true, ignored: 'duplicate', persisted: false });
 
       // Without the guard, three identical user_prompt POSTs would create
       // three batches (the bug we're fixing). With it, exactly one batch.
@@ -540,8 +544,8 @@ describe('createEventDispatcher', () => {
 
       expect(r1.body).toMatchObject({ ok: true });
       expect(r1.body).not.toMatchObject({ ignored: 'duplicate' });
-      expect(r2.body).toEqual({ ok: true, ignored: 'duplicate' });
-      expect(r3.body).toEqual({ ok: true, ignored: 'duplicate' });
+      expect(r2.body).toEqual({ ok: true, ignored: 'duplicate', persisted: false });
+      expect(r3.body).toEqual({ ok: true, ignored: 'duplicate', persisted: false });
 
       // Dedup verified via response status + a single landed activity. The
       // buffer-side assertion that used to live here required a Grove-
@@ -665,6 +669,155 @@ describe('createEventDispatcher', () => {
       // what happens if the contract widens later.
       expect(res.body).toMatchObject({ ok: true });
       expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('honest response contract (persisted / buffered)', () => {
+    // The /events response must report what actually happened: handlers
+    // committed (`persisted: true`), handler failed but the daemon-side
+    // buffer append holds a durable copy (`persisted: false, buffered:
+    // true` + converged mark cleared so the copy replays at the next
+    // quiescent boundary), or handler failed with no daemon-side copy
+    // (`buffered: false` — the hook's one honest buffer-fallback case).
+
+    function makeRealSession(sessionId: string) {
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-honest-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+      return { transcriptDir, transcriptPath };
+    }
+
+    /** Make `handleToolUse`'s insert fail deterministically. */
+    function withBrokenActivitiesTable<T>(fn: () => Promise<T>): Promise<T> {
+      const db = getDatabase();
+      db.exec('ALTER TABLE activities RENAME TO activities_offline');
+      return fn().finally(() => {
+        db.exec('ALTER TABLE activities_offline RENAME TO activities');
+      });
+    }
+
+    it('reports persisted:false buffered:true and clears the converged mark when a handler fails after the daemon-side append', async () => {
+      const cleared: string[] = [];
+      const { handler, sessionBuffers, logger, vaultDir } = makeHandler({
+        clearConvergedMark: (sessionId) => cleared.push(sessionId),
+      });
+      const sessionId = 'honest-handler-fail-buffered-001';
+      const { transcriptDir, transcriptPath } = makeRealSession(sessionId);
+      // Pre-seeded buffer stands in for the Grove-bound dispatch path —
+      // TEST_REQUEST_CONTEXT carries no groveId, so dispatch would
+      // otherwise skip the daemon-side append entirely.
+      const bufferDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-honest-buf-'));
+      sessionBuffers.set(sessionId, new EventBuffer(bufferDir, sessionId));
+
+      const res = await withBrokenActivitiesTable(() => handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'tool_use',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          tool_name: 'Bash',
+          tool_input: { command: 'echo honest contract' },
+        },
+        query: {}, params: {}, pathname: '/events',
+      }));
+
+      expect(res.body).toEqual({ ok: true, persisted: false, buffered: true });
+      // The recovery promise: the converged mark was cleared so the
+      // daemon-appended copy replays at the next quiescent boundary.
+      expect(cleared).toEqual([sessionId]);
+      // The daemon-side copy really exists (it is the durable copy the
+      // response promises).
+      const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
+      const lines = fs.readFileSync(bufferPath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({ type: 'tool_use', tool_name: 'Bash' });
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+      fs.rmSync(bufferDir, { recursive: true, force: true });
+    });
+
+    it('reports persisted:false buffered:false when the handler fails and the daemon-side append was skipped (missing grove/project context)', async () => {
+      const cleared: string[] = [];
+      const { handler, logger, vaultDir } = makeHandler({
+        clearConvergedMark: (sessionId) => cleared.push(sessionId),
+      });
+      const sessionId = 'honest-handler-fail-unbuffered-001';
+      const { transcriptDir, transcriptPath } = makeRealSession(sessionId);
+
+      // TEST_REQUEST_CONTEXT has groveId: null — the no-fallback buffer
+      // rule skips the daemon-side append, so no durable copy exists.
+      const res = await withBrokenActivitiesTable(() => handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'tool_use',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          tool_name: 'Bash',
+          tool_input: { command: 'echo no daemon copy' },
+        },
+        query: {}, params: {}, pathname: '/events',
+      }));
+
+      expect(res.body).toEqual({ ok: true, persisted: false, buffered: false });
+      expect(cleared).toEqual([sessionId]);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('pins the non-persisting-type shape: a type with no handler reports persisted:true (vacuous success)', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'honest-non-persisting-001';
+      const { transcriptDir, transcriptPath } = makeRealSession(sessionId);
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'notification',
+          session_id: sessionId,
+          agent: 'copilot',
+          transcript_path: transcriptPath,
+          payload: { message: 'agent paused' },
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(res.body).toEqual({ ok: true, persisted: true });
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('keeps success responses honest: a persisting handler that commits reports persisted:true with its extras', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'honest-success-001';
+      const { transcriptDir, transcriptPath } = makeRealSession(sessionId);
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          prompt: 'a prompt that persists end to end',
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+      expect(batches).toHaveLength(1);
+      expect(res.body).toEqual({ ok: true, persisted: true, batchId: batches[0].id });
 
       logger.close();
       fs.rmSync(vaultDir, { recursive: true, force: true });

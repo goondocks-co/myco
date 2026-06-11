@@ -30,9 +30,10 @@ export async function main() {
       ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS)
       : undefined;
 
-    // bufferOnIgnored: false — tool_use replay (reconciliation.ts) inserts the
-    // activity directly without re-evaluating capture rules, so buffering a
-    // daemon-dropped (`ignored`) tool would resurrect it on the next start.
+    // Buffer-fallback policy lives in the shared capture policy table
+    // (capture/event-policy.ts): tool_use replays directly without
+    // re-evaluating capture rules, so its legacy column never buffers a
+    // daemon-ignored tool — that would resurrect it on the next start.
     // A transport failure (`!ok`) still buffers so reconcile can replay it.
     await captureCriticalEvent({
       vaultDir: VAULT_DIR,
@@ -55,7 +56,6 @@ export async function main() {
         output_preview: outputPreview,
         transcript_path: input.transcriptPath,
       },
-      bufferOnIgnored: false,
     });
   } catch (error) {
     process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);

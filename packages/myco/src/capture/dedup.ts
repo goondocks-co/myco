@@ -10,11 +10,15 @@
  *      watching the same project). The dispatcher's in-memory dedup cache
  *      catches these and returns `ignored: 'duplicate'`.
  *
- *   2. **Buffer replay path** (`reconciliation.ts`) — the hook CLI writes
- *      the event to the buffer file whenever the daemon returns
- *      `ignored: 'duplicate'` (so reconcile can replay if the dedup was
- *      wrong). Without this helper, the replay re-inserts the duplicate as
- *      a fresh prompt_batch — the original dedup decision evaporates.
+ *   2. **Buffer replay path** (`reconciliation.ts`) — duplicate copies of an
+ *      already-processed event can land in the buffer file: the hook CLI
+ *      buffers on any transport failure (the daemon may have completed the
+ *      work before the response was lost), and against a LEGACY daemon (no
+ *      `persisted` field in the response) it also buffers on `ignored` per
+ *      the policy table's legacy columns (`capture/event-policy.ts`; a
+ *      contract-aware daemon's `ignored` is never buffered). Without this
+ *      helper, the replay re-inserts such a copy as a fresh prompt_batch —
+ *      the original dedup decision evaporates.
  *
  * Both paths must use the SAME fingerprint, or the buffer replay will
  * resurrect events the live path correctly rejected. This module is the

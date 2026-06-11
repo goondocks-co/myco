@@ -49,9 +49,10 @@ export async function main() {
     const originField = decision.origin ? { origin: decision.origin } : undefined;
 
     // Kind classification happens on the daemon; Stop-time reconciler repairs it.
-    // bufferOnIgnored defaults true: user_prompt replay re-applies the capture
-    // rule (classifyNextPromptDecision), so a buffered ignored prompt is re-
-    // filtered on replay rather than blindly re-inserted. Reuse the warmed client.
+    // Buffer-fallback policy (capture/event-policy.ts): user_prompt replay
+    // re-applies the capture rule (classifyNextPromptDecision), so a legacy-
+    // daemon ignored prompt that buffers is re-filtered on replay rather than
+    // blindly re-inserted. Reuse the warmed client.
     await captureCriticalEvent({
       vaultDir: VAULT_DIR,
       sessionId,

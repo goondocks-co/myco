@@ -61,22 +61,18 @@ import {
   dedupKeyFromActivity,
   isBookkeepingActivity,
 } from '@myco/capture/dedup.js';
+import { REPLAYABLE_EVENT_TYPES } from '@myco/capture/event-policy.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Event types replayed during buffer reconciliation. */
-const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set([
-  'user_prompt',
-  'tool_use',
-  'tool_failure',
-  // `stop` events carry the last assistant message and need to survive daemon
-  // downtime so response_summary isn't lost when the TUI fires idle during a
-  // restart window. Replay sets the summary on the session's latest batch
-  // without re-running full stop processing (which already ran live).
-  'stop',
-]);
+// Replayed event types come from the shared capture policy table —
+// user_prompt / tool_use / tool_failure replay through the live handlers,
+// and `stop` events carry the last assistant message (replay sets the
+// summary on the session's latest batch without re-running full stop
+// processing, which already ran live). Deriving the set keeps the
+// reconciler and the hook CLI's buffer-fallback policy in lockstep.
 
 /**
  * Row-fetch bound for the convergence multiset. A session's buffer file holds
