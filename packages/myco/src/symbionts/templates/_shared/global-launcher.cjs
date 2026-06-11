@@ -87,7 +87,8 @@ if (!bin) {
   // No pin, no vendored binary, no PATH — surface as a tool-error envelope
   // when invoked as the MCP CLI so the agent host sees the failure cleanly,
   // and as a silent exit for hook contexts (which would just spam stderr
-  // every keystroke under Cursor).
+  // every keystroke under Cursor). Either way, leave a diagnostic trace.
+  logLaunchFailure({ code: 'UNRESOLVED_BINARY' }, null);
   if (args[0] === 'tool') writeToolRuntimeUnavailable('myco', args);
   process.exit(args[0] === 'tool' ? 1 : 0);
 }
@@ -95,6 +96,7 @@ if (!bin) {
 try {
   execFileSync(bin, args, spawnOptions());
 } catch (err) {
+  logLaunchFailure(err, bin);
   if (err && typeof err === 'object' && err.code === 'ENOENT') {
     if (args[0] === 'tool') {
       writeToolRuntimeUnavailable(bin, args);
@@ -102,7 +104,39 @@ try {
     }
     process.exit(0);
   }
-  process.exit((err && typeof err.status === 'number') ? err.status : 1);
+  // A numeric status is the child's own exit code — propagate it in every
+  // context (the binary's hook handlers are fail-open and exit 0, so a
+  // nonzero numeric status from the binary means something real).
+  if (err && typeof err.status === 'number') process.exit(err.status);
+  // No numeric status: the child was killed by a signal, or the spawn
+  // itself failed (EAGAIN/EMFILE under fork pressure, EACCES/ETXTBSY
+  // during binary replacement). Hook contexts exit 0 — silent for the
+  // agent, matching the launcher's silent-for-hooks contract; the
+  // diagnostic line above plus the daemon-side divergence replay carry
+  // the trail. Tool/CLI/MCP contexts report failure.
+  process.exit(args[0] === 'hook' ? 0 : 1);
+}
+
+// Best-effort one-line launch-failure diagnostic, written to stderr and
+// appended to `<mycoHome>/logs/launcher.log`. Signal kills and spawn-class
+// errors carry no numeric status and the child never gets to write stderr,
+// so without this trace a failed launch is indistinguishable from a clean
+// silent exit. Never throws — a full disk or read-only logs dir must not
+// change launcher behavior.
+function logLaunchFailure(err, binPath) {
+  let line;
+  try {
+    const e = (err && typeof err === 'object') ? err : {};
+    const summary = args.slice(0, 3).join(' ');
+    line = `${new Date().toISOString()} launch-failure args=[${summary}] code=${e.code ?? 'none'} signal=${e.signal ?? 'none'} status=${e.status ?? 'none'} bin=${binPath || 'unresolved'}\n`;
+  } catch { return; }
+  try { process.stderr.write(line); } catch { /* stderr unavailable */ }
+  try {
+    const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+    const logsDir = path.join(home, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.appendFileSync(path.join(logsDir, 'launcher.log'), line);
+  } catch { /* log write failure must not alter launch behavior */ }
 }
 
 function readPinFile(filePath) {
