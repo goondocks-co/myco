@@ -414,6 +414,9 @@ export async function handleUpdateTaskConfig(
       withTaskConfig(config, taskId, body),
     );
   } catch (err) {
+    if (err instanceof TierConfigUnreadableError) {
+      return { status: 422, body: { error: 'tier_config_unreadable', message: err.message, file: err.filePath } };
+    }
     // withTaskConfig throws on unknown keys to prevent silent drops.
     // Surface the message to the UI so a stale form payload fails loudly.
     return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };

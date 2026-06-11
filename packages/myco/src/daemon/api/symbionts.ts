@@ -1,5 +1,5 @@
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
-import { loadConfig, loadMergedConfig, getEnabledSymbiontNames } from '../../config/loader.js';
+import { loadConfig, loadMergedConfig, getEnabledSymbiontNames, TierConfigUnreadableError } from '../../config/loader.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -375,6 +375,9 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
         sanitized as Record<string, { enabled: boolean } | null>,
       );
     } catch (err) {
+      if (err instanceof TierConfigUnreadableError) {
+        return { status: 422, body: errorBody('tier_config_unreadable', err.message) };
+      }
       return { status: 500, body: errorBody('patch_failed', (err as Error).message) };
     }
     return { body: { symbionts: updated.symbionts ?? {} } };
