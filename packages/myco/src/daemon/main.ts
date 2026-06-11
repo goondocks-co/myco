@@ -10,7 +10,7 @@ import { DaemonServer } from './server.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger, type Logger } from './logger.js';
-import { loadMergedConfig } from '../config/loader.js';
+import { loadMergedConfig, setTierParseFailureListener } from '../config/loader.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
@@ -1357,6 +1357,20 @@ export async function main(): Promise<void> {
 
   reactions.on(['agent.tasks'], async () => {
     await syncScheduledTasks();
+  });
+
+  // Tier config files that exist but can't be honored (corrupt YAML, value
+  // violations, unreadable personal overlay) silently revert their tier to
+  // defaults — surface each one as a settings notification. The loader
+  // dedupes per file+reason and notify()'s 5-minute window absorbs repeats.
+  setTierParseFailureListener((filePath, reason) => {
+    notify(bootstrapVaultDir, {
+      domain: 'settings',
+      type: 'settings.config_unreadable',
+      title: 'Config file could not be honored',
+      message: `${filePath}: ${reason}`,
+      metadata: { filePath, reason },
+    }, liveConfig.current, { scope: 'daemon' });
   });
 
   async function applyConfigWriteReactions(

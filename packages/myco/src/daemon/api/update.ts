@@ -26,6 +26,7 @@ import {
   resolveRuntimeCommand,
   isManagedMachineRuntime,
 } from '../update-checker.js';
+import { TierConfigUnreadableError } from '../../config/loader.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import * as updateInProgress from '../update-in-progress.js';
 import { RELEASE_CHANNELS } from '../../constants/update.js';
@@ -392,7 +393,21 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     const { channel } = parsed.data;
     const config = readUpdateConfig();
 
-    writeProjectReleaseChannel(vaultDir, channel);
+    try {
+      writeProjectReleaseChannel(vaultDir, channel);
+    } catch (err) {
+      if (err instanceof TierConfigUnreadableError) {
+        return {
+          status: 422,
+          body: {
+            error: 'tier_config_unreadable',
+            message: 'The on-disk machine config is invalid — fix or remove it before changing the channel.',
+            file: err.filePath,
+          },
+        };
+      }
+      throw err;
+    }
     clearCachedCheck();
 
     const snapshot = readVaultSnapshot();

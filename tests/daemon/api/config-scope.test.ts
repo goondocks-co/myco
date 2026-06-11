@@ -60,9 +60,11 @@ describe('scoped config HTTP handlers', () => {
   });
 
   it('PUT /scoped scope=project with invalid patch returns 400 validation_failed', async () => {
+    // release_provenance.* is project-homed (passes the scope gate), so an
+    // invalid value exercises the Zod validation path.
     const res = await handlePutScopedConfig(tmpDir, {
       scope: 'project',
-      patch: { notifications: { enabled: 'nope' } },
+      patch: { release_provenance: { enabled: 'nope' } },
     });
     expect(res.status).toBe(400);
     expect((res.body as any).error).toBe('validation_failed');
@@ -79,15 +81,17 @@ describe('scoped config HTTP handlers', () => {
       patch: { appearance: { theme: 'moss' } },
     });
     expect(local.status).toBe(400);
-    expect((local.body as any).error).toBe('appearance_is_grove_scoped');
+    expect((local.body as any).error).toBe('scope_violation');
+    expect((local.body as any).paths).toEqual(['appearance.theme']);
     expect(project.status).toBe(400);
-    expect((project.body as any).error).toBe('appearance_is_grove_scoped');
+    expect((project.body as any).error).toBe('scope_violation');
+    expect((project.body as any).paths).toEqual(['appearance.theme']);
   });
 
-  it('PUT /scoped list-delta targeting appearance.* gets the same Grove-scoped 400', async () => {
-    // A list-delta is a new way to write config paths; it must pass through
-    // the same path-based scope guard as patch/clear — so an op targeting
-    // appearance.* returns the specific error, not a generic validation_failed.
+  it('PUT /scoped addToList targeting appearance.* gets the same scope-gate 400; removeFromList stays exempt', async () => {
+    // addToList introduces values, so it passes through the same registry
+    // gate as patch. removeFromList only deletes — it stays exempt so stale
+    // wrong-tier residue remains removable.
     const add = await handlePutScopedConfig(tmpDir, {
       scope: 'local',
       addToList: [{ path: 'appearance.accents', values: ['moss'] }],
@@ -97,9 +101,9 @@ describe('scoped config HTTP handlers', () => {
       removeFromList: [{ path: 'appearance.accents', values: ['moss'] }],
     });
     expect(add.status).toBe(400);
-    expect((add.body as any).error).toBe('appearance_is_grove_scoped');
-    expect(remove.status).toBe(400);
-    expect((remove.body as any).error).toBe('appearance_is_grove_scoped');
+    expect((add.body as any).error).toBe('scope_violation');
+    expect((add.body as any).paths).toEqual(['appearance.accents']);
+    expect(remove.status).toBeUndefined();
   });
 
   it('PUT /grove-config writes appearance for the current Grove', async () => {
@@ -172,16 +176,18 @@ describe('scoped config HTTP handlers', () => {
   it('PUT /scoped applies patch and clear atomically', async () => {
     // Seed a local agent.provider override.
     await handlePutScopedConfig(tmpDir, { scope: 'local', patch: { agent: { provider: { type: 'anthropic' } } } });
-    // Atomic: clear agent.provider AND set scheduled_tasks_enabled=false
+    // Atomic: clear agent.provider AND set agent.model. (agent.model is
+    // local-overridable via the `agent` registry block;
+    // agent.scheduled_tasks_enabled is Grove-locked and now scope-gated.)
     const res = await handlePutScopedConfig(tmpDir, {
       scope: 'local',
-      patch: { agent: { scheduled_tasks_enabled: false } },
+      patch: { agent: { model: 'claude-haiku-4-5' } },
       clear: ['agent.provider'],
     });
     expect(res.status).toBeUndefined();
     const local = await handleGetLocalConfig(tmpDir);
     expect((local.body as any).agent?.provider).toBeUndefined();
-    expect((local.body as any).agent?.scheduled_tasks_enabled).toBe(false);
+    expect((local.body as any).agent?.model).toBe('claude-haiku-4-5');
   });
 
   it('PUT /scoped rejects 400 when patch and clear overlap', async () => {
@@ -232,12 +238,26 @@ describe('scoped config HTTP handlers', () => {
   });
 
   it('PUT /scoped rejects invalid local overlays before writing local.yaml', async () => {
+    // notifications.* is local-overridable (passes the scope gate), so the
+    // bogus value exercises the merged-validation path. (daemon.log_level is
+    // machine-locked and now rejected earlier, by the scope gate.)
     const res = await handlePutScopedConfig(tmpDir, {
       scope: 'local',
-      patch: { daemon: { log_level: 'verbose' } },
+      patch: { notifications: { default_mode: 'verbose' } },
     });
     expect(res.status).toBe(400);
     expect((res.body as any).error).toBe('validation_failed');
+    expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
+  });
+
+  it('PUT /scoped rejects wrong-tier patches with a 400 listing the paths', async () => {
+    const res = await handlePutScopedConfig(tmpDir, {
+      scope: 'local',
+      patch: { daemon: { log_level: 'debug' } },
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as any).error).toBe('scope_violation');
+    expect((res.body as any).paths).toEqual(['daemon.log_level']);
     expect(fs.existsSync(path.join(tmpDir, 'local.yaml'))).toBe(false);
   });
 

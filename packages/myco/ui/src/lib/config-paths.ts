@@ -5,7 +5,7 @@ import type { MycoConfig } from '../hooks/use-config';
  *
  * `DotPaths<T>` is the union of all valid dotted paths into `T`. Used to
  * constrain the `path` prop on `<ScopedField>` and the `path` argument on
- * `useScopedConfig().setField()` / `resetField()` / `promoteField()` so a
+ * `useScopedConfig().setField()` / `resetField()` so a
  * typo at the call site is a compile error.
  *
  * `PathValue<T, P>` walks a dotted path and yields the leaf type — letting

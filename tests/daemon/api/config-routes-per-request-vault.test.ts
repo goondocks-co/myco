@@ -179,11 +179,14 @@ describe('registerConfigRoutes — per-request projectVaultDir wiring', () => {
   });
 
   it('PUT /api/config/scoped at scope=local writes the requested project local.yaml', async () => {
+    // cortex.* is project-homed with a Personal override (scope registry),
+    // so it's a legitimate local-scope write. (release_provenance.* is
+    // project-locked and now rejected by the scope gate.)
     await routes.scopedPut({
       requestContext: { projectVaultDir: projectB },
       body: {
         scope: 'local',
-        patch: { release_provenance: { enabled: false } },
+        patch: { cortex: { enabled: false } },
       },
     });
     expect(fs.existsSync(path.join(projectA, 'local.yaml'))).toBe(false);

@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { z } from 'zod';
 import {
   MycoConfigSchema,
   MachineConfigSchema,
   GroveConfigSchema,
   ProjectConfigSchema,
   PROJECT_TIER_LEGACY_FIELDS,
-  GROVE_PROMOTED_FIELDS,
+  GROVE_TIER_FIELDS,
   type MycoConfig,
   type MachineConfig,
   type GroveConfig,
@@ -16,6 +17,8 @@ import {
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { pruneToTier } from './scope.js';
+import { CAPABILITIES } from './capabilities.js';
+import { enumerateLeafPaths } from './leaf-paths.js';
 import { stripDefaultSections } from './sparse.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
@@ -59,19 +62,6 @@ function stripLegacyProjectFields(
   // Grove-tier fields can only be safely stripped when there's a Grove
   // to migrate them into. Otherwise they stay until the project gets
   // bound to a Grove.
-  const GROVE_TIER_FIELDS: ReadonlyArray<readonly string[]> = [
-    ['daemon', 'stale_session_threshold_ms'],
-    ['backup'],
-    ['maintenance'],
-    ['embedding', 'run_in_deep_sleep'],
-    ['agent', 'scheduled_tasks_active_window_days'],
-    ['appearance'],
-    ['team'],
-    ...GROVE_PROMOTED_FIELDS,
-    // 2026-06: skills.* is Grove-tier; only strip once a Grove is bound so
-    // the value can be migrated rather than dropped.
-    ['skills'],
-  ];
   const groveTierKeys = new Set(GROVE_TIER_FIELDS.map((seg) => seg.join('.')));
 
   let stripped = false;
@@ -95,6 +85,71 @@ interface CachedTierConfig<T> {
 const machineConfigCache = new Map<string, CachedTierConfig<MachineConfig>>();
 const groveConfigCache = new Map<string, CachedTierConfig<GroveConfig>>();
 
+// ---------------------------------------------------------------------------
+// Tier parse-failure registry — loud, deduped, observable
+// ---------------------------------------------------------------------------
+//
+// A tier file that exists but can't be honored (corrupt YAML, non-mapping
+// root, genuine Zod value violations) silently reverts that tier to defaults.
+// Every such failure is logged to stderr (deduped per file+reason per
+// process) and reported to an optional listener so the daemon can surface a
+// notification. The loader must NOT import the notification layer itself —
+// notify() loads merged config, which would recurse straight back here.
+
+const tierParseFailures = new Map<string, string>();
+let tierParseFailureListener: ((filePath: string, reason: string) => void) | null = null;
+
+export function setTierParseFailureListener(
+  fn: ((filePath: string, reason: string) => void) | null,
+): void {
+  tierParseFailureListener = fn;
+  // Replay failures recorded before registration: tier files are read during
+  // daemon boot (config load) before the daemon wires its listener, and the
+  // dedupe map would otherwise swallow the very incident the listener exists
+  // to surface (a file already corrupt at startup). A file deleted since the
+  // failure no longer needs surfacing — drop its record instead.
+  if (fn) {
+    for (const [filePath, reason] of tierParseFailures) {
+      if (!fs.existsSync(filePath)) {
+        tierParseFailures.delete(filePath);
+        continue;
+      }
+      fn(filePath, reason);
+    }
+  }
+}
+
+function recordTierParseFailure(filePath: string, reason: string): void {
+  if (tierParseFailures.get(filePath) === reason) return;
+  tierParseFailures.set(filePath, reason);
+  process.stderr.write(`[myco config] Failed to honor ${filePath}: ${reason}\n`);
+  tierParseFailureListener?.(filePath, reason);
+}
+
+/**
+ * Remove every `unrecognized_keys` path reported by a Zod error from `doc`.
+ * Returns true when at least one key was removed. Used to salvage tier files
+ * that carry unknown keys (e.g. written by a newer Myco version): known
+ * values are honored instead of silently reverting the whole tier to
+ * defaults.
+ */
+function stripUnrecognizedKeys(doc: Record<string, unknown>, error: z.ZodError): boolean {
+  let stripped = false;
+  for (const issue of error.issues) {
+    if (issue.code !== 'unrecognized_keys') continue;
+    for (const key of issue.keys) {
+      if (unsetAtPath(doc, [...issue.path.map(String), key])) stripped = true;
+    }
+  }
+  return stripped;
+}
+
+function zodReason(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+    .join('; ');
+}
+
 function readTierConfig<T>(
   filePath: string,
   cache: Map<string, CachedTierConfig<T>>,
@@ -109,6 +164,11 @@ function readTierConfig<T>(
     return cached.config;
   }
   let result: T;
+  let failedThisRead = false;
+  const fail = (reason: string): void => {
+    failedThisRead = true;
+    recordTierParseFailure(filePath, reason);
+  };
   if (!stat) {
     result = parseEmpty();
   } else {
@@ -120,22 +180,43 @@ function readTierConfig<T>(
       try {
         parsed = YAML.parse(raw);
       } catch (err) {
-        process.stderr.write(`[myco config] Failed to parse ${filePath}: ${(err as Error).message}\n`);
+        fail(`invalid YAML — ${(err as Error).message}`);
         result = parseEmpty();
         cache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, config: result });
         return result;
       }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        fail('root must be a YAML mapping');
         result = parseEmpty();
       } else {
         try {
           result = parseDoc(parsed);
-        } catch {
+        } catch (err) {
+          // Salvage: unknown keys (strict tier schemas) must not revert the
+          // whole tier to defaults — strip them and honor the known values.
+          // Only genuine value violations fall back to defaults, loudly.
           result = parseEmpty();
+          if (err instanceof z.ZodError) {
+            const salvaged = structuredClone(parsed) as Record<string, unknown>;
+            if (stripUnrecognizedKeys(salvaged, err)) {
+              try {
+                result = parseDoc(salvaged);
+              } catch (err2) {
+                fail(err2 instanceof z.ZodError ? zodReason(err2) : (err2 as Error).message);
+              }
+            } else {
+              fail(zodReason(err));
+            }
+          } else {
+            fail((err as Error).message);
+          }
         }
       }
     }
   }
+  // A clean read clears the failure record so a later re-corruption of the
+  // same file (even with an identical reason) notifies again.
+  if (!failedThisRead) tierParseFailures.delete(filePath);
   cache.set(filePath, { mtimeMs: stat?.mtimeMs ?? null, size: stat?.size ?? null, config: result });
   return result;
 }
@@ -189,16 +270,23 @@ export function saveGroveConfig(
 /**
  * Load → transform → save in one call, matching the `updateConfig` pattern
  * for the project tier. Returns the saved (Zod-validated) GroveConfig.
+ *
+ * The transform receives the Zod-defaulted parsed view; its result is
+ * deep-merged onto the RAW on-disk doc so unknown keys survive the write.
+ * Deep-merge cannot DELETE keys — callers that need wholesale subtree
+ * replacement (e.g. agent.tasks, where task updates remove keys) should use
+ * `updateTierConfigRaw` directly with `setAtPath` (verbatim subtree set).
  */
 export function updateGroveConfig(
   groveId: string,
   transform: (current: GroveConfig) => GroveConfig,
   opts?: { mycoHome?: string },
 ): GroveConfig {
-  const current = loadGroveConfig(groveId, opts?.mycoHome);
-  const next = transform(current);
-  saveGroveConfig(groveId, next, opts?.mycoHome);
-  return next;
+  return updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
+    const current = loadGroveConfig(groveId, opts?.mycoHome);
+    const next = transform(current);
+    return deepMergeConfig(raw, next as unknown as Record<string, unknown>);
+  }, opts);
 }
 
 function readRawYamlDoc(filePath: string): Record<string, unknown> {
@@ -214,6 +302,109 @@ function readRawYamlDoc(filePath: string): Record<string, unknown> {
     // Fall through; corrupt YAML is treated as empty.
   }
   return {};
+}
+
+// ---------------------------------------------------------------------------
+// Shared raw-merge tier writer — machine + grove
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a tier file exists, is non-empty, and cannot be parsed as a
+ * YAML mapping. Write paths must refuse to proceed (the lenient read path
+ * would treat the doc as empty and the subsequent write would wipe the
+ * file); API callers surface it as a 422.
+ */
+export class TierConfigUnreadableError extends Error {
+  constructor(public readonly filePath: string, reason: string) {
+    super(`On-disk config at ${filePath} is invalid — fix or remove it (${reason})`);
+    this.name = 'TierConfigUnreadableError';
+  }
+}
+
+/** Strict variant of `readRawYamlDoc`: corrupt content throws instead of `{}`. */
+function readRawYamlDocStrict(filePath: string): Record<string, unknown> {
+  if (!fs.existsSync(filePath)) return {};
+  const raw = fs.readFileSync(filePath, 'utf-8').trim();
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch (err) {
+    throw new TierConfigUnreadableError(filePath, `invalid YAML — ${(err as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TierConfigUnreadableError(filePath, 'root must be a YAML mapping');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * Validate a raw tier doc with unknown keys TOLERATED: parse a deep-cloned
+ * copy with `unrecognized_keys` stripped. A pass means the raw doc (unknown
+ * keys preserved) is safe to persist; genuine value violations rethrow the
+ * ZodError for the caller to surface.
+ */
+function parseTierDocTolerant<T>(parse: (doc: unknown) => T, rawDoc: Record<string, unknown>): T {
+  try {
+    return parse(rawDoc);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      const stripped = structuredClone(rawDoc);
+      if (stripUnrecognizedKeys(stripped, err)) {
+        return parse(stripped);
+      }
+    }
+    throw err;
+  }
+}
+
+export type TierWriteTarget = { kind: 'machine' } | { kind: 'grove'; groveId: string };
+
+export function updateTierConfigRaw(
+  target: { kind: 'machine' },
+  mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
+  opts?: { mycoHome?: string },
+): MachineConfig;
+export function updateTierConfigRaw(
+  target: { kind: 'grove'; groveId: string },
+  mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
+  opts?: { mycoHome?: string },
+): GroveConfig;
+export function updateTierConfigRaw(
+  target: TierWriteTarget,
+  mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
+  opts?: { mycoHome?: string },
+): MachineConfig | GroveConfig;
+/**
+ * Canonical write path for machine/grove tier files. Reads the RAW on-disk
+ * doc (throwing `TierConfigUnreadableError` rather than wiping a corrupt
+ * file), applies `mutate`, validates tolerantly (unknown keys preserved on
+ * disk; value violations throw ZodError), persists atomically, and
+ * invalidates the tier + merged caches. Returns the Zod-parsed full view —
+ * the shape API responses and the UI's PUT-response cache expect.
+ */
+export function updateTierConfigRaw(
+  target: TierWriteTarget,
+  mutate: (rawDoc: Record<string, unknown>) => Record<string, unknown> | void,
+  opts?: { mycoHome?: string },
+): MachineConfig | GroveConfig {
+  const mycoHome = opts?.mycoHome ?? resolveMycoHome();
+  const filePath = target.kind === 'machine'
+    ? resolveGlobalConfigPath(mycoHome)
+    : resolveGroveConfigPath(target.groveId, mycoHome);
+
+  const rawDoc = readRawYamlDocStrict(filePath);
+  const nextRaw = mutate(rawDoc) ?? rawDoc;
+  const parsedView = target.kind === 'machine'
+    ? parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), nextRaw)
+    : parseTierDocTolerant((doc) => GroveConfigSchema.parse(doc), nextRaw);
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  atomicWriteFileSync(filePath, YAML.stringify(nextRaw), 'utf-8');
+  if (target.kind === 'machine') machineConfigCache.delete(filePath);
+  else groveConfigCache.delete(filePath);
+  invalidateMergedConfigCache();
+  return parsedView;
 }
 
 /**
@@ -236,40 +427,87 @@ const MACHINE_RELOCATE_FIELDS: ReadonlyArray<readonly [readonly string[], readon
 ];
 
 /**
- * Relocate legacy machine-tier residue (capture/notifications/daemon log fields)
- * out of a project's parsed doc and into machine config, mirroring the exact
- * `moveMachine` semantics from `migrateLegacyProjectFields`: move only when the
- * source has a value AND the machine config has no explicit value for that path
- * (so a newer machine value is never clobbered). Idempotent. Reads the RAW
- * target YAML (no Zod defaults) so defaults don't block or trigger a move.
+ * Machine-tier relocation pairs handled on the SAVE path: every entry of
+ * `MACHINE_RELOCATE_FIELDS` plus the legacy `update.channel` →
+ * `daemon.update_channel` lift.
+ */
+const SAVE_PATH_MACHINE_RELOCATE_FIELDS: ReadonlyArray<readonly [readonly string[], readonly string[]]> = [
+  ...MACHINE_RELOCATE_FIELDS,
+  [['update', 'channel'], ['daemon', 'update_channel']],
+];
+
+/**
+ * Relocate machine-tier values (capture/notifications/daemon log fields,
+ * legacy update.channel) out of a project save and into machine config —
+ * LEAF-WISE, deep-merged into the raw machine doc. Block-level writes would
+ * wipe machine-explicit leaves (e.g. `capture.transcript_paths`) whenever a
+ * project section relocates over an existing machine section.
+ *
+ * Per-leaf rule: relocate when the leaf is on-disk residue in myco.yaml OR
+ * its value differs from the schema default. When the machine doc already
+ * has that exact leaf, the no-clobber stands UNLESS the caller-set value
+ * differs from default — the caller wins at leaf granularity, so an
+ * explicit `updateConfig` write of a machine-homed leaf actually lands.
  *
  * Returns true when a write to machine config occurred.
  */
 function relocateMachineFieldsFromProject(
-  parsed: Record<string, unknown>,
+  validated: Record<string, unknown>,
+  onDiskRaw: Record<string, unknown>,
+  defaults: Record<string, unknown>,
   mycoHome: string,
 ): boolean {
   const machinePath = resolveGlobalConfigPath(mycoHome);
   const machineRaw = readRawYamlDoc(machinePath);
   let machineDirty = false;
 
-  for (const [sourcePath, targetPath] of MACHINE_RELOCATE_FIELDS) {
-    const value = getAtPath(parsed, sourcePath);
+  for (const [sourcePath, targetPath] of SAVE_PATH_MACHINE_RELOCATE_FIELDS) {
+    const value = getAtPath(validated, sourcePath);
     if (value === undefined) continue;
-    if (getAtPath(machineRaw, targetPath) !== undefined) continue; // explicit value already
-    setAtPath(machineRaw, targetPath, value);
-    machineDirty = true;
+
+    // Enumerate leaves of section values; scalar/array sources are a single leaf.
+    const leafSuffixes = (value !== null && typeof value === 'object' && !Array.isArray(value))
+      ? enumerateLeafPaths(value).map((leaf) => leaf.split('.'))
+      : [[]];
+
+    for (const suffix of leafSuffixes) {
+      const fullSource = [...sourcePath, ...suffix];
+      const fullTarget = [...targetPath, ...suffix];
+      const leafValue = getAtPath(validated, fullSource);
+      if (leafValue === undefined) continue;
+      const defaultValue = getAtPath(defaults, fullSource);
+      const differsFromDefault = YAML.stringify(leafValue) !== YAML.stringify(defaultValue);
+      const onDiskValue = getAtPath(onDiskRaw, fullSource);
+      const onDisk = onDiskValue !== undefined;
+      if (!onDisk && !differsFromDefault) continue; // defaults aren't meaningful
+      if (getAtPath(machineRaw, fullTarget) !== undefined) {
+        // A leaf may overwrite an explicit machine value only when the caller
+        // changed it in THIS save (differs from the project file's pre-save
+        // state). Unchanged on-disk residue never clobbers a machine value —
+        // the machine value is the newer intent; the residue is simply
+        // dropped from the project file by the schema strip.
+        const callerChanged = YAML.stringify(leafValue) !== YAML.stringify(onDiskValue);
+        if (!callerChanged) continue;
+      }
+      setAtPath(machineRaw, fullTarget, leafValue);
+      machineDirty = true;
+    }
   }
 
   if (machineDirty) {
     try {
-      const validated = MachineConfigSchema.parse(machineRaw);
-      saveMachineConfig(validated, mycoHome);
-      return true;
+      // Tolerant validation, then persist the RAW doc — unknown keys in the
+      // machine file survive the relocation instead of being wiped.
+      parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), machineRaw);
     } catch {
-      // Defensive: leave the field in place rather than corrupt machine storage.
+      // Defensive: never corrupt machine storage from a project save.
       return false;
     }
+    fs.mkdirSync(path.dirname(machinePath), { recursive: true });
+    atomicWriteFileSync(machinePath, YAML.stringify(machineRaw), 'utf-8');
+    machineConfigCache.delete(machinePath);
+    invalidateMergedConfigCache();
+    return true;
   }
   return false;
 }
@@ -306,15 +544,13 @@ function migrateLegacyProjectFields(
       groveDirty = true;
     };
 
-    tryMove(['daemon', 'stale_session_threshold_ms'], ['daemon', 'stale_session_threshold_ms']);
-    tryMove(['backup'], ['backup']);
-    tryMove(['maintenance'], ['maintenance']);
-    tryMove(['embedding', 'run_in_deep_sleep'], ['embedding', 'run_in_deep_sleep']);
-    tryMove(['agent', 'scheduled_tasks_active_window_days'], ['agent', 'scheduled_tasks_active_window_days']);
-    tryMove(['appearance'], ['appearance']);
-    tryMove(['team'], ['team']);
-    // 2026-06 settings-scope correction: skills.* → Grove tier.
-    tryMove(['skills'], ['skills']);
+    // Every Grove-tier field that can appear in a legacy project myco.yaml
+    // (source path === target path for all entries). Derived from the shared
+    // GROVE_TIER_FIELDS export so the lift list can't drift from the strip
+    // list — Grove-bind lifts retained values instead of wiping them.
+    for (const segments of GROVE_TIER_FIELDS) {
+      tryMove(segments, segments);
+    }
 
     if (groveDirty) {
       try {
@@ -562,52 +798,56 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   const onDiskRaw = readRawYamlDoc(configPath);
   const defaults = MycoConfigSchema.parse({ version: 3 });
 
-  // Machine-tier `capture`/`notifications` are dropped by ProjectConfigSchema's
-  // strip. The load-path migration (migrateLegacyProjectFields, gated by
-  // migrateTiers=true) relocates them to machine config — but updateConfig →
-  // loadConfig runs WITHOUT migrateTiers, so an un-migrated project's
-  // capture/notifications can reach saveConfig still living in myco.yaml. Were
-  // we to only strip them here, the values would be lost: not kept (project),
-  // not relocated (the migration never ran). Relocate them on the save path too,
-  // mirroring migrateLegacyProjectFields' moveMachine semantics (move only
-  // legacy residue; never clobber a newer machine value; idempotent) so NO
-  // capture/notifications value is ever lost on save.
-  //
-  // Only relocate a value that is MEANINGFUL — present on disk in myco.yaml
-  // (legacy residue) OR a non-default value the caller just set. Otherwise the
-  // always-defaulted `validated` block would pollute machine config with a
-  // defaults block on every clean save (mirrors the sparse-doc semantics).
-  const machineResidue: Record<string, unknown> = {};
-  for (const key of ['capture', 'notifications'] as const) {
-    const onDisk = getAtPath(onDiskRaw, [key]) !== undefined;
-    const isDefault = YAML.stringify(validated[key]) === YAML.stringify(defaults[key]);
-    if (onDisk || !isDefault) {
-      machineResidue[key] = validated[key];
-    }
-  }
-  if (Object.keys(machineResidue).length > 0) {
-    relocateMachineFieldsFromProject(machineResidue, resolveMycoHome());
-  }
+  // Machine-tier fields (capture/notifications/daemon log fields/legacy
+  // update.channel) are dropped by ProjectConfigSchema's strip. The load-path
+  // migration (migrateLegacyProjectFields, gated by migrateTiers=true)
+  // relocates them to machine config — but updateConfig → loadConfig runs
+  // WITHOUT migrateTiers, so an un-migrated project's machine-tier values can
+  // reach saveConfig still living in myco.yaml. Were we to only strip them
+  // here, the values would be lost: not kept (project), not relocated (the
+  // migration never ran). Relocate them on the save path too — leaf-wise, so
+  // a relocated section never wipes machine-explicit leaves, and only for
+  // MEANINGFUL leaves (on-disk residue OR non-default caller values) so clean
+  // saves don't pollute machine config with defaults blocks.
+  relocateMachineFieldsFromProject(
+    validated as unknown as Record<string, unknown>,
+    onDiskRaw,
+    defaults as unknown as Record<string, unknown>,
+    resolveMycoHome(),
+  );
 
-  // Grove-tier `skills` is dropped by ProjectConfigSchema's strip, but that's
-  // only safe once a Grove is bound (the load-path migration relocates it to
+  // Grove-tier fields are dropped by ProjectConfigSchema's strip, but that's
+  // only safe once a Grove is bound (the load-path migration relocates them to
   // grove config then). On an UNBOUND project there's no Grove to migrate
-  // into, so dropping it here would lose a user-set value entirely — neither
+  // into, so dropping them here would lose user-set values entirely — neither
   // kept (project) nor migrated (grove). Mirror the load-path deferral
-  // (stripLegacyProjectFields skips skills when !hasGrove): keep the skills
-  // block in myco.yaml until a Grove is bound. The next Grove-bound load runs
-  // migrateLegacyProjectFields to lift + strip it.
+  // (stripLegacyProjectFields skips grove-tier fields when !hasGrove): retain
+  // every meaningful GROVE_TIER_FIELDS value in myco.yaml until a Grove is
+  // bound. The next Grove-bound load runs migrateLegacyProjectFields to
+  // lift + strip them.
   //
-  // Re-attach only when skills is meaningful — either already persisted on
-  // disk OR carrying a non-default value the caller just set — so clean
-  // projects aren't polluted with a grove-tier defaults block (mirrors the
-  // sparse-doc semantics: defaults never get written to myco.yaml).
+  // Meaningful = already persisted on disk OR carrying a non-default value
+  // the caller just set — so clean projects aren't polluted with grove-tier
+  // defaults blocks (mirrors the sparse-doc semantics: defaults never get
+  // written to myco.yaml). Sub-path entries compare at the LEAF, not the
+  // section, so stripDefaultSections below doesn't end up keeping
+  // default-valued sparse leaves inside an otherwise non-default section.
   const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
   if (groveId === null) {
-    const onDisk = getAtPath(onDiskRaw, ['skills']) !== undefined;
-    const isDefault = YAML.stringify(validated.skills) === YAML.stringify(defaults.skills);
-    if (onDisk || !isDefault) {
-      setAtPath(projectOnly, ['skills'], validated.skills);
+    for (const segments of GROVE_TIER_FIELDS) {
+      const value = getAtPath(validated as unknown as Record<string, unknown>, segments);
+      if (value === undefined) continue; // cleared/optional — nothing to retain
+      const defaultValue = getAtPath(defaults as unknown as Record<string, unknown>, segments);
+      const onDisk = getAtPath(onDiskRaw, segments) !== undefined;
+      // Explicit both-undefined guard: YAML.stringify(undefined) returns
+      // undefined, which would make two absent values compare "equal" only
+      // by accident — state it directly instead.
+      const differsFromDefault = defaultValue === undefined
+        ? true
+        : YAML.stringify(value) !== YAML.stringify(defaultValue);
+      if (onDisk || differsFromDefault) {
+        setAtPath(projectOnly, segments, value);
+      }
     }
   }
 
@@ -705,6 +945,25 @@ export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
   return doc as Partial<MycoConfig>;
 }
 
+/**
+ * True when the personal overlay file EXISTS, is non-empty, and cannot be
+ * honored (YAML parse failure or a non-mapping root). Deliberately separate
+ * from `loadLocalConfig`, whose `{}`-on-malformed return contract is pinned
+ * by callers — this classifier lets `loadMergedConfig` fail closed without
+ * changing that contract. A missing or empty file is NOT unreadable.
+ */
+function isLocalOverlayUnreadable(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  const raw = fs.readFileSync(filePath, 'utf-8').trim();
+  if (!raw) return false;
+  try {
+    const parsed: unknown = YAML.parse(raw);
+    return !parsed || typeof parsed !== 'object' || Array.isArray(parsed);
+  } catch {
+    return true;
+  }
+}
+
 export function migrateLegacyLocalAppearanceToGrove(
   vaultDir: string,
   groveId: string | null,
@@ -796,7 +1055,13 @@ export function invalidateMergedConfigCache(vaultDir?: string): void {
     mergedConfigCache.clear();
     return;
   }
-  mergedConfigCache.delete(vaultDir);
+  // Entries are keyed `${vaultDir}::${groveId ?? ''}` — drop every Grove
+  // variant for this vault.
+  for (const key of mergedConfigCache.keys()) {
+    if (key === vaultDir || key.startsWith(`${vaultDir}::`)) {
+      mergedConfigCache.delete(key);
+    }
+  }
 }
 
 export interface LoadMergedConfigOptions {
@@ -868,6 +1133,25 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
   const stage1 = deepMergeConfig(pruneToTier(machineRaw, 'machine'), pruneToTier(groveRaw, 'grove'));
   const stage2 = deepMergeConfig(stage1, pruneToTier(projectRaw, 'project'));
   const stage3 = deepMergeConfig(stage2, pruneToTier(local as Record<string, unknown>, 'local'));
+
+  // Fail closed when the personal overlay exists but can't be honored.
+  // local.yaml is where capability OFF-gates live (capture-only projects);
+  // loadLocalConfig returns {} for a corrupt file, which would silently
+  // re-enable every capability (`capabilityEnabled` is `!== false`). Force
+  // every capability master gate off until the file is fixed or removed.
+  if (isLocalOverlayUnreadable(localPath)) {
+    for (const capability of Object.values(CAPABILITIES)) {
+      setAtPath(stage3, capability.masterGate.split('.'), false);
+    }
+    recordTierParseFailure(
+      localPath,
+      'personal overlay is unreadable — all capabilities forced off until it is fixed or removed',
+    );
+  } else {
+    // A readable overlay clears the failure record so re-corruption notifies.
+    tierParseFailures.delete(localPath);
+  }
+
   const result = MycoConfigSchema.parse(stage3);
 
   // Re-stat after load — loadConfig may have written a migrated file back.
