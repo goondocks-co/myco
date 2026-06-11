@@ -8,6 +8,7 @@ import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
 import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
+  currentDaemonVariant,
   pathsEquivalent,
   resolveGlobalConfigPath,
   resolveGroveDir,
@@ -222,6 +223,73 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
   // rejects malformed ids before any path is constructed.
   if (!isGroveEraId(groveId, 'grove')) return null;
   return groveRecordCache.get(resolveGroveMetadataPath(groveId, mycoHome));
+}
+
+/**
+ * True when this process's daemon variant owns the Grove. Reads always
+ * normalize `served_by` to `'service' | 'service-dev'` (legacy records
+ * without the field read as `'service'`), so plain equality is the whole
+ * ownership predicate. On-demand seams — tool-call Grove pivots and the
+ * daemon's inbound request resolution — gate cross-Grove access through
+ * this before any database is opened or schema-migrated.
+ */
+export function groveServedByThisDaemon(
+  grove: Pick<GroveRecord, 'served_by'>,
+  variant: DaemonVariant = currentDaemonVariant(),
+): boolean {
+  return grove.served_by === variant;
+}
+
+/**
+ * A request resolved to a Grove that is served by the other daemon
+ * variant. Thrown by daemon-side request resolution when Grove-ownership
+ * enforcement is enabled; transports translate it into a 403
+ * `foreign_grove` error so the caller never reaches a database the
+ * daemon does not own. Crossing the boundary deliberately is what
+ * `myco grove claim` is for.
+ */
+export class ForeignGroveError extends Error {
+  constructor(
+    public readonly groveId: string,
+    public readonly servedBy: DaemonVariant,
+  ) {
+    super(
+      `Grove ${groveId} is served by another daemon (${servedBy}); `
+      + 'claim it first (myco grove claim)',
+    );
+    this.name = 'ForeignGroveError';
+  }
+}
+
+/**
+ * A caller named a Grove id that has no record on this machine. Thrown by
+ * {@link assertOwnedGrove} so unknown (or junk) ids are refused before any
+ * path under `groves/<id>/` is materialized; the daemon transport maps it
+ * to a 404 `grove_not_found`.
+ */
+export class UnknownGroveError extends Error {
+  constructor(public readonly groveId: string) {
+    super(`Unknown Grove: ${groveId}`);
+    this.name = 'UnknownGroveError';
+  }
+}
+
+/**
+ * Existence + ownership gate for caller-named Grove ids that arrive
+ * OUTSIDE the request-context funnel (body `ActionScope.grove_id`, URL
+ * `:id` params). Throws {@link UnknownGroveError} when no record exists —
+ * so an unknown id can never create `groves/<id>/` as a side effect of a
+ * DB open — and {@link ForeignGroveError} when the Grove is served by the
+ * other daemon variant. Call it BEFORE any `cache.getDatabase` /
+ * `resolveGroveDbPath` on the named Grove.
+ */
+export function assertOwnedGrove(groveId: string, mycoHome = resolveMycoHome()): GroveRecord {
+  const grove = loadGroveRecord(groveId, mycoHome);
+  if (!grove) throw new UnknownGroveError(groveId);
+  if (!groveServedByThisDaemon(grove)) {
+    throw new ForeignGroveError(grove.id, grove.served_by);
+  }
+  return grove;
 }
 
 export interface CreateGroveOptions {

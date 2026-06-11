@@ -221,4 +221,65 @@ describe('streamable HTTP MCP', () => {
       'x-myco-session-id': 'sess-a',
     });
   });
+
+  it('rejects a foreign-served Grove with 403 foreign_grove, not the legacy_vault 503', async () => {
+    const previousHome = process.env.MYCO_HOME;
+    const previousVariant = process.env.MYCO_SERVICE_VARIANT;
+    // Env mutation and fixture setup live inside the try so a setup
+    // throw can't leak MYCO_HOME / MYCO_SERVICE_VARIANT into later tests.
+    try {
+      delete process.env.MYCO_SERVICE_VARIANT;
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-foreign-'));
+      tmpDirs.push(tmp);
+      const home = path.join(tmp, 'home');
+      process.env.MYCO_HOME = home;
+      const projectRoot = path.join(tmp, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+      const vaultDir = path.join(projectRoot, '.myco');
+      fs.mkdirSync(vaultDir, { recursive: true });
+      // The Grove is served by the dev daemon; this handler runs as the
+      // 'service' variant, so resolution must refuse it up front.
+      const grove = createGrove('Dogfood', home, { servedBy: 'service-dev' });
+      saveProjectManifest(vaultDir, {
+        project: { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Project B' },
+        grove: { binding_id: 'gbind-b', slug: grove.slug, mode: 'local' },
+      });
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        projectName: 'Project B',
+        projectRoot,
+        bindingId: 'gbind-b',
+      }, home);
+      const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient() });
+      const url = await listen((req, res) => {
+        void handler(req, res);
+      });
+
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } },
+      });
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'x-myco-grove-id': grove.id,
+          'x-myco-project-id': 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+        body,
+      });
+      expect(response.status).toBe(403);
+      const payload = await response.json() as { error?: string; grove_id?: string; served_by?: string };
+      expect(payload.error).toBe('foreign_grove');
+      expect(payload.grove_id).toBe(grove.id);
+      expect(payload.served_by).toBe('service-dev');
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      if (previousVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+      else process.env.MYCO_SERVICE_VARIANT = previousVariant;
+    }
+  });
 });

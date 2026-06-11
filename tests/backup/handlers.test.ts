@@ -3,9 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
+import {
+  clearGroveRegistryCaches,
+  createGrove,
+  ForeignGroveError,
+  UnknownGroveError,
+  type GroveRecord,
+} from '@myco/grove/registry.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
-import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths.js';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
@@ -29,6 +35,10 @@ function setup(): Env {
   fs.mkdirSync(mycoHome, { recursive: true });
   const prev = process.env.MYCO_HOME;
   process.env.MYCO_HOME = mycoHome;
+  // served_by gates compare against currentDaemonVariant(); pin the
+  // default 'service' variant regardless of the ambient shell.
+  const prevVariant = process.env.MYCO_SERVICE_VARIANT;
+  delete process.env.MYCO_SERVICE_VARIANT;
   clearGroveRegistryCaches();
   const grove = createGrove('Solo', mycoHome);
   ensureGroveDatabase(grove.id, mycoHome);
@@ -45,6 +55,8 @@ function setup(): Env {
       cache.closeAll();
       if (prev === undefined) delete process.env.MYCO_HOME;
       else process.env.MYCO_HOME = prev;
+      if (prevVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+      else process.env.MYCO_SERVICE_VARIANT = prevVariant;
       clearGroveRegistryCaches();
       fs.rmSync(workDir, { recursive: true, force: true });
     },
@@ -152,5 +164,50 @@ describe('backup handlers — explicit Grove, fail-loud', () => {
     expect(noGrove.status).toBe(400);
     const unknown = await handlers.handleRestoreStatus(req({ requestContext: ctx(env.grove.id), query: { job_id: 'nope' } }));
     expect(unknown.status).toBe(404);
+  });
+
+  it('create backup succeeds for a Grove served by this daemon variant', async () => {
+    const handlers = createBackupHandlers({ cache: env.cache, machineId: MACHINE, mycoHome: env.mycoHome });
+    const res = await handlers.handleCreateBackup(req({
+      body: { scope: { kind: 'grove', grove_id: env.grove.id } },
+    }));
+    expect(res.status ?? 200).toBe(200);
+    const body = res.body as { summary: { ok: number; failed: number }; file_path?: string };
+    expect(body.summary).toEqual({ ok: 1, failed: 0 });
+    expect(body.file_path).toBeTruthy();
+  });
+
+  it('create backup refuses a foreign-served Grove before opening its DB (RC-5)', async () => {
+    const foreign = createGrove('Dogfood', env.mycoHome, { servedBy: 'service-dev' });
+    const handlers = createBackupHandlers({ cache: env.cache, machineId: MACHINE, mycoHome: env.mycoHome });
+
+    let caught: unknown;
+    try {
+      await handlers.handleCreateBackup(req({
+        body: { scope: { kind: 'grove', grove_id: foreign.id } },
+      }));
+    } catch (err) {
+      caught = err;
+    }
+    // Thrown so the daemon transport maps it to 403 foreign_grove; the
+    // foreign Grove's DB was never opened or created.
+    expect(caught).toBeInstanceOf(ForeignGroveError);
+    expect(fs.existsSync(resolveGroveDbPath(foreign.id, env.mycoHome))).toBe(false);
+  });
+
+  it('create backup refuses an unknown Grove id without creating groves/<id>/ (RC-5)', async () => {
+    const unknownId = 'grove_' + 'f'.repeat(32);
+    const handlers = createBackupHandlers({ cache: env.cache, machineId: MACHINE, mycoHome: env.mycoHome });
+
+    let caught: unknown;
+    try {
+      await handlers.handleCreateBackup(req({
+        body: { scope: { kind: 'grove', grove_id: unknownId } },
+      }));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UnknownGroveError);
+    expect(fs.existsSync(resolveGroveDir(unknownId, env.mycoHome))).toBe(false);
   });
 });
