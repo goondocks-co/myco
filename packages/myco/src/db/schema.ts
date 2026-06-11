@@ -20,7 +20,7 @@ import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES, TEAM_DELETE_TRIGGERS } from 
 import { MIGRATIONS } from './migrations.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 58;
+export const SCHEMA_VERSION = 59;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };

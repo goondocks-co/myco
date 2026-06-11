@@ -3,6 +3,8 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { seedSession } from '../helpers/sessions.js';
 import { createReconciler } from '@myco/daemon/reconciliation.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
+import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,9 +15,14 @@ const silentLogger = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any;
 
-// reconcileSession bails when the session row is absent (deleted, or
-// not yet created). The bail must NOT mark the session reconciled — a
-// later call after the row appears has to replay the buffer cleanly.
+// A session row being absent is no longer one shape — the reconciler
+// discriminates three ways:
+//   - tombstoned (deliberately deleted)      → discard the buffer, mark
+//   - never-registered buffer dir            → skip WITHOUT marking, so a
+//     later call after the row appears completes the replay
+//   - gate-rejected resurrection candidate   → discard the buffer, no row
+//     (covered in reconciliation-resurrection.test.ts — it needs a real
+//     sandboxed Grove registration to pass the identity gate)
 
 describe('Buffer reconciliation — cache poisoning protection', () => {
   let tmpDir: string;
@@ -35,7 +42,7 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('a bailout for a missing session row does NOT mark the session reconciled — a later call after the row appears completes the replay', () => {
+  it('a row-absent skip for a never-registered buffer dir does NOT mark the session reconciled — a later call after the row appears completes the replay', () => {
     const sessionId = 'cache-poison-001';
     const promptText = 'investigate the wedge';
     const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
@@ -45,10 +52,12 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
 
     const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
 
-    // First call: session row not present yet. Reconciler must bail and
-    // must NOT poison the cache.
+    // First call: session row not present, no tombstone, and the buffer
+    // dir is not a current Grove registration — the identity gate refuses
+    // resurrection, leaves the file, and must NOT poison the cache.
     reconciler.reconcileSession(sessionId);
     expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+    expect(fs.existsSync(bufferPath)).toBe(true);
 
     // Simulate the /events auto-register path: the session row appears.
     seedSession({ id: sessionId, agent: 'claude-code' });
@@ -59,6 +68,27 @@ describe('Buffer reconciliation — cache poisoning protection', () => {
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].user_prompt).toBe(promptText);
+  });
+
+  it('a row-absent TOMBSTONED session is terminal — the buffer is discarded and the session marked converged', () => {
+    const sessionId = 'cache-poison-004';
+    const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(bufferPath,
+      JSON.stringify({ type: 'user_prompt', prompt: 'stale events', timestamp: '2026-05-18T17:37:20.907Z' }) + '\n',
+    );
+    // Real deletion flow: the cascade removes the row AND writes the tombstone.
+    seedSession({ id: sessionId, agent: 'claude-code' });
+    deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.API_DELETE);
+
+    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    reconciler.reconcileSession(sessionId);
+
+    // Skip-not-resurrect: no rows created, buffer gone, marked converged
+    // (a second call is a no-op even though nothing replayed).
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+    expect(fs.existsSync(bufferPath)).toBe(false);
+    reconciler.reconcileSession(sessionId);
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
   it('a missing buffer file does NOT poison the cache either — a later call after the buffer is written replays it', () => {

@@ -5,6 +5,7 @@ import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
 import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
 import { TEAM_DELETE_TRIGGER_TABLES } from '@myco/db/schema-ddl.js';
 // Relative import of the dependency-free worker module (not index.ts, which
@@ -106,7 +107,7 @@ describe('session cascade journals child deletes via triggers', () => {
       `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at, machine_id)
        VALUES ('sp_c1', 'a1', 's1', 'decision', 'c', 1, 'local')`,
     ).run();
-    deleteSessionCascade('s1');
+    deleteSessionCascade('s1', SESSION_TOMBSTONE_SOURCE.API_DELETE);
     const deletes = db.prepare(
       `SELECT DISTINCT table_name FROM team_outbox WHERE operation='delete'`,
     ).all() as Array<{ table_name: string }>;
@@ -132,7 +133,7 @@ describe('session cascade journals child deletes via triggers', () => {
       `INSERT INTO spores (id, agent_id, session_id, observation_type, content, created_at, machine_id)
        VALUES ('sp_c2', 'a2', 's2', 'decision', 'c', 1, 'local')`,
     ).run();
-    deleteSessionCascade('s2');
+    deleteSessionCascade('s2', SESSION_TOMBSTONE_SOURCE.API_DELETE);
     const sessRows = db.prepare(
       `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='sessions' AND operation='delete'`,
     ).get() as { n: number };

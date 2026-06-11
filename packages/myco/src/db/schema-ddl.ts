@@ -58,6 +58,29 @@ export const SESSIONS_TABLE = `
     canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0
   )`;
 
+/**
+ * Local-only deletion markers for sessions removed through
+ * `deleteSessionCascade`. The buffer reconciler consults this table before
+ * resurrecting a session row from a lingering buffer file: a tombstone means
+ * the deletion was deliberate (user delete, maintenance sweep, invalid
+ * capture) and the buffer must be discarded, not replayed.
+ *
+ * Deliberately absent from every team-sync registry
+ * (TEAM_SYNC_OBSERVED_TABLES / TEAM_DELETE_TRIGGER_TABLES): tombstones gate
+ * a strictly machine-local concern — this daemon's buffer files — and the
+ * sessions delete itself already journals to team_outbox via its own
+ * trigger. Rows age out via `pruneSessionTombstones`
+ * (TOMBSTONE_RETENTION_MS), which outlives every buffer-retention window
+ * so a buffer file can never survive its own tombstone.
+ */
+export const SESSION_TOMBSTONES_TABLE = `
+  CREATE TABLE IF NOT EXISTS session_tombstones (
+    session_id  TEXT PRIMARY KEY,
+    project_id  TEXT,
+    deleted_at  INTEGER NOT NULL,
+    source      TEXT NOT NULL
+  )`;
+
 export const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -790,6 +813,7 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'canopy_entries',
   'canopy_maps',
   'session_myco_tool_calls',
+  'session_tombstones',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
@@ -1141,6 +1165,7 @@ export const TABLE_DDLS = [
   MIGRATION_TASKS_TABLE,
   // Capture layer (order matters for FK references)
   SESSIONS_TABLE,
+  SESSION_TOMBSTONES_TABLE,
   PROMPT_BATCHES_TABLE,
   KNOWLEDGE_GIT_PROVENANCE_TABLE,
   KNOWLEDGE_RELEASE_STATE_TABLE,

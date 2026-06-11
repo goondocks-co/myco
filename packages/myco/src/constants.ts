@@ -111,6 +111,15 @@ export function epochSeconds(): number {
 /** Max age for stale buffer files before cleanup (ms). */
 export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 
+/**
+ * How long a session deletion tombstone survives before
+ * `pruneSessionTombstones` reclaims it. Must stay strictly longer than
+ * every buffer-retention window (STALE_BUFFER_MAX_AGE_MS today; the
+ * buffer hard-retention cap planned for RC-7 Phase 3) — a buffer file
+ * must never outlive the tombstone that prevents its resurrection.
+ */
+export const TOMBSTONE_RETENTION_MS = 14 * MS_PER_DAY;
+
 // --- Stop replay ---
 /**
  * How recently a session's latest OPEN batch must have shown activity for a

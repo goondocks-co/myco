@@ -101,6 +101,8 @@ export const ENSURE_SESSION_SOURCE = {
   BACKFILL: 'backfill',
   /** `/context` cortex serve path (race against `/sessions/register`). */
   CONTEXT: 'context',
+  /** Buffer reconciler resurrecting a gate-passing session from its buffer. */
+  RECONCILE: 'reconcile',
 } as const;
 
 export type EnsureSessionSource = (typeof ENSURE_SESSION_SOURCE)[keyof typeof ENSURE_SESSION_SOURCE];
@@ -113,7 +115,12 @@ export interface EnsureSessionParams {
   machineId: string;
   /** ISO 8601 timestamp from the inbound event; falls back to `now`. */
   startedAt?: string;
-  registry: SessionRegistry;
+  /**
+   * Structural slice of SessionRegistry — only `register` is consumed, so
+   * callers without the daemon's full registry (the buffer reconciler) can
+   * satisfy the contract with the registry handle they were given.
+   */
+  registry: Pick<SessionRegistry, 'register'>;
   logger: Logger;
   /** Code path that invoked this — see {@link ENSURE_SESSION_SOURCE}. */
   source: EnsureSessionSource;

@@ -34,7 +34,13 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { createProjectId } from '@myco/grove/ids.js';
-import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import {
+  resolveGroveDbPath,
+  resolveGroveProjectDir,
+  resolveProjectBufferDir,
+  resolveProjectVaultDir,
+} from '@myco/grove/paths.js';
+import { listBufferSessionIds } from '@myco/capture/buffer.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 
 let tmpDir: string;
@@ -150,6 +156,33 @@ describe('project lifecycle cleanup', () => {
     expect(result.project_id).toBe(projectId);
     expect(fs.existsSync(resolveProjectVaultDir(projectRoot))).toBe(false);
     expect(listRegisteredProjects(grove.id, mycoHome, { includeArchived: true })).toEqual([]);
+  });
+
+  it('permanent delete removes the Grove-side project dir (buffer included) — a same-id re-register has zero resurrection candidates', () => {
+    const { grove, projectId } = registerProjectWithVault();
+    const groveProjectDir = resolveGroveProjectDir(grove.id, projectId, mycoHome);
+    const bufferDir = resolveProjectBufferDir(grove.id, projectId, mycoHome);
+    fs.mkdirSync(bufferDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(bufferDir, 'sess-leftover.jsonl'),
+      '{"type":"user_prompt","prompt":"stale","timestamp":"2026-06-01T00:00:00Z"}\n',
+    );
+
+    deleteProjectPermanently(grove.id, projectId, mycoHome);
+
+    // The whole Grove-side project dir is gone with the rows + tombstones;
+    // the pre-delete snapshot remains the recovery path.
+    expect(fs.existsSync(groveProjectDir)).toBe(false);
+
+    // Re-registering the SAME project id presents no buffer files for the
+    // reconciler to treat as resurrection candidates.
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'project',
+      projectRoot,
+    }, mycoHome);
+    expect(listBufferSessionIds(resolveProjectBufferDir(grove.id, projectId, mycoHome))).toEqual([]);
   });
 
   it('unarchive re-provisions a fresh capture-only vault', () => {

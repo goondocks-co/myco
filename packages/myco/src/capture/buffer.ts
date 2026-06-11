@@ -98,7 +98,24 @@ export function listBufferSessionIds(bufferDir: string): string[] {
 }
 
 /**
- * Remove buffer files older than `maxAgeMs`.
+ * Per-session retention decision for `cleanStaleBuffers`:
+ *
+ *   - 'delete'    — remove immediately, regardless of age (tombstoned
+ *                   sessions: the DB row was deliberately deleted).
+ *   - 'age-gated' — remove only when older than `maxAgeMs` (sessions whose
+ *                   buffer is fully converged into a closed DB row).
+ *   - 'retain'    — never remove (diverging buffers; convergence has not
+ *                   absorbed every event yet).
+ */
+export type BufferCleanupDecision = 'delete' | 'age-gated' | 'retain';
+
+/**
+ * Remove buffer files per the retention policy.
+ *
+ * Without `classify`, every file is age-gated (the original mtime-only
+ * behavior). Daemon callers pass the reconciler's convergence-aware
+ * classifier so a diverging buffer — the only durable copy of unreplayed
+ * events — is never deleted on age alone.
  *
  * @param excludeSessionId - skip this session (e.g., the currently active one)
  * @returns count of files removed
@@ -107,6 +124,7 @@ export function cleanStaleBuffers(
   bufferDir: string,
   maxAgeMs: number,
   excludeSessionId?: string,
+  classify?: (sessionId: string) => BufferCleanupDecision,
 ): number {
   let removed = 0;
   try {
@@ -115,11 +133,14 @@ export function cleanStaleBuffers(
       if (!file.endsWith('.jsonl')) continue;
       if (excludeSessionId && file === `${excludeSessionId}.jsonl`) continue;
       const filePath = path.join(bufferDir, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-        removed++;
+      const decision = classify ? classify(file.replace('.jsonl', '')) : 'age-gated';
+      if (decision === 'retain') continue;
+      if (decision === 'age-gated') {
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs >= cutoff) continue;
       }
+      fs.unlinkSync(filePath);
+      removed++;
     }
   } catch { /* buffer dir may not exist */ }
   return removed;

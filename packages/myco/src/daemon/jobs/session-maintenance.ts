@@ -8,13 +8,18 @@
  *    are deleted via cascade, including vault file and embedding vector cleanup.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { closeSession, deleteSessionCascade } from '@myco/db/queries/sessions.js';
+import { SESSION_TOMBSTONE_SOURCE, pruneSessionTombstones } from '@myco/db/queries/session-tombstones.js';
+import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import {
   epochSeconds,
   MS_PER_SECOND,
   STALE_SESSION_THRESHOLD_MS,
   DEAD_SESSION_MAX_PROMPTS,
+  TOMBSTONE_RETENTION_MS,
 } from '../../constants.js';
 import type { Logger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -146,6 +151,15 @@ export interface SessionMaintenanceDeps {
    * When omitted, falls back to `STALE_SESSION_THRESHOLD_MS`.
    */
   staleThresholdMs?: number;
+  /**
+   * The reconciler's convergence probe (`Reconciler.hasUnconvergedBuffer`).
+   * A zero-batch session whose buffer has NOT been converged this daemon
+   * lifetime is deferred for one sweep cycle — the next reconcile trigger
+   * either replays it (the session then has batches and stops qualifying
+   * as dead) or proves it genuinely empty. Optional: when absent, the
+   * sweep behaves as before (tests, legacy callers).
+   */
+  hasUnconvergedBuffer?: (sessionId: string) => boolean;
 }
 
 /**
@@ -156,6 +170,14 @@ export interface SessionMaintenanceDeps {
 export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promise<void> {
   const { logger, registeredSessionIds, embeddingManager, resolveProjectVaultDir, staleThresholdMs } = deps;
   const registered = registeredSessionIds();
+
+  // Reclaim tombstones older than the retention window. Retention outlives
+  // every buffer-retention window, so by the time a tombstone is pruned no
+  // buffer file for that session can still exist to resurrect it.
+  const prunedTombstones = pruneSessionTombstones(TOMBSTONE_RETENTION_MS);
+  if (prunedTombstones > 0) {
+    logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Pruned expired session tombstones', { count: prunedTombstones });
+  }
 
   // Task 1: Complete stale sessions
   const thresholdSeconds = (staleThresholdMs ?? STALE_SESSION_THRESHOLD_MS) / MS_PER_SECOND;
@@ -170,20 +192,40 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
 
   let deletedCount = 0;
   for (const sessionId of deadIds) {
-    const result = deleteSessionCascade(sessionId);
+    // A zero-batch session with an unconverged buffer may only LOOK dead —
+    // its prompts could still be sitting unreplayed on disk. Defer this
+    // cycle; the next reconcile trigger converges the buffer, after which
+    // the session either has batches (no longer dead) or is genuinely empty
+    // and sweeps normally.
+    if (deps.hasUnconvergedBuffer?.(sessionId)) {
+      logger.debug(LOG_KINDS.MAINTENANCE_SESSION, 'Deferred dead-session sweep — unconverged buffer present', {
+        session_id: sessionId,
+      });
+      continue;
+    }
+
+    const result = deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.MAINTENANCE_SWEEP);
     if (!result.deleted) continue;
 
+    // Buffer journal lives under the GROVE project dir; resolve from the
+    // deleted row's project id. Unresolvable → skip the buffer file (the
+    // tombstone keeps it inert), never guess a path.
+    const bufferDir = resolveBufferDirForProjectId(result.projectId);
     const vaultDir = resolveProjectVaultDir(result.projectId);
     if (vaultDir) {
-      await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir);
+      await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir);
     } else {
       // No registered project — vector cleanup still runs; vault files
       // (if any) are unreachable without a project root, so skip the
-      // filesystem pass rather than guess.
+      // filesystem pass rather than guess. The buffer journal is still
+      // removed when its Grove dir resolved.
       for (const sporeId of result.deletedSporeIds) {
         try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
       }
       try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
+      if (bufferDir) {
+        try { fs.unlinkSync(path.join(bufferDir, `${sessionId}.jsonl`)); } catch { /* best-effort */ }
+      }
     }
 
     deletedCount++;

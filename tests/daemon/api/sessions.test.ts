@@ -6,6 +6,7 @@ import os from 'node:os';
 import { initDatabase, closeDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
+import { getSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers, createGetSessionHandler, handleListSessions } from '@myco/daemon/api/sessions';
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
@@ -253,6 +254,23 @@ describe('handleCompleteSession', () => {
 
     expect(reconcilerStub.clearSession).toHaveBeenCalledWith('sess-delete-clear-registry');
     expect(registryStub.unregister).toHaveBeenCalledWith('sess-delete-clear-registry');
+  });
+
+  it('handleDeleteSession writes an api_delete tombstone so the reconciler never resurrects the id', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-delete-tombstone',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+      status: 'completed',
+    });
+
+    const { handleDeleteSession } = makeHandlers();
+    await handleDeleteSession(makeRequest({ params: { id: 'sess-delete-tombstone' } }));
+
+    expect(getSession('sess-delete-tombstone', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-delete-tombstone')?.source).toBe('api_delete');
   });
 
   it('resolves the grove embedding manager from the request context for cascade cleanup (anchor-leak guard)', async () => {

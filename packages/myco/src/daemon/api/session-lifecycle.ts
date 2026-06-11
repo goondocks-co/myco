@@ -19,11 +19,10 @@ import type { PowerManager } from '../power.js';
 import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
-import { cleanStaleBuffers } from '@myco/capture/buffer.js';
 import { closeSession, updateSession, getSession } from '@myco/db/queries/sessions.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
-import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
+import { epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/grove/request-context.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -53,7 +52,12 @@ export const UnregisterBody = z.object({ session_id: z.string() });
 export interface SessionLifecycleDeps {
   registry: SessionRegistry;
   sessionBuffers: Map<string, EventBuffer>;
-  reconciler: { reconcileSession: (sessionId: string) => void; clearSession: (sessionId: string) => void };
+  reconciler: {
+    reconcileSession: (sessionId: string) => void;
+    clearSession: (sessionId: string) => void;
+    /** Convergence-aware cleanup across the reconciler's Grove buffer dirs. */
+    cleanStaleBuffers: (excludeSessionId?: string) => number;
+  };
   stopProcessor: { clearSession: (sessionId: string) => void };
   /**
    * The authoritative "converge DB to transcript" operation, shared with the
@@ -245,10 +249,12 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       logger,
     });
     registry.unregister(session_id);
-    // Opportunistically clean stale buffers for OTHER sessions (>24h).
-    // We do NOT delete THIS session's buffer — session reload reuses the same ID.
-    const bufferDir = `${vaultDir}/buffer`;
-    cleanStaleBuffers(bufferDir, STALE_BUFFER_MAX_AGE_MS, session_id);
+    // Opportunistically clean stale buffers for OTHER sessions through the
+    // reconciler's convergence-aware policy over the real GROVE buffer dirs
+    // (the legacy `<vaultDir>/buffer` path never held the global-era files).
+    // We do NOT delete THIS session's buffer — session reload reuses the
+    // same ID.
+    reconciler.cleanStaleBuffers(session_id);
 
     // Final convergence at the authoritative turn boundary. The per-turn Stop
     // hook converges each COMPLETED turn, but a turn interrupted mid-response

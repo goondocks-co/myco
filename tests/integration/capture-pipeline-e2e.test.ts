@@ -36,6 +36,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { getDatabase } from '@myco/db/client.js';
 import { TEST_REQUEST_CONTEXT, makeTestRequestContext } from '../helpers/request-context';
 import { createEventDispatcher } from '@myco/daemon/event-dispatch.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
@@ -270,7 +271,18 @@ function makeDispatcherWithRealReconciler(opts: { bufferDir: string; vaultDir?: 
     deepSleepHolder: () => null,
   });
   const sessionBuffers = new Map();
-  const reconciler = createReconciler({ bufferDirs: [opts.bufferDir], logger: logger as never, projectRoot: process.cwd() });
+  const reconciler = createReconciler({
+    bufferDirs: [opts.bufferDir],
+    logger: logger as never,
+    projectRoot: process.cwd(),
+    // This harness is single-DB by design: the Grove is registered (so the
+    // dispatcher's no-fallback buffer routing works) but all rows live in
+    // setupTestDb()'s ambient DB — the Grove's own DB file never exists.
+    // Route the reconciler's per-dir Grove binding to that ambient handle;
+    // per-Grove scoping coverage lives in
+    // tests/daemon/reconciliation-resurrection.test.ts.
+    resolveGroveDb: () => getDatabase(),
+  });
 
   const handler = createEventDispatcher({
     registry,

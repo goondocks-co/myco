@@ -15,12 +15,20 @@ import type { EmbeddingManager } from '../embedding/manager.js';
  *
  * All operations are best-effort — partial failures are swallowed so that
  * one missing file does not block cleanup of the rest.
+ *
+ * @param bufferDir - the session's GROVE buffer dir
+ *   (`~/.myco/groves/<g>/projects/<p>/buffer/`), resolved by the caller
+ *   from its request context or the deleted row's project id. Pass `null`
+ *   when unresolvable — the buffer file is then skipped (and logged by the
+ *   caller), never guessed: the deletion tombstone already prevents the
+ *   lingering file from resurrecting the session.
  */
 export async function cleanupAfterSessionCascade(
   sessionId: string,
   result: DeleteCascadeResult,
   embeddingManager: EmbeddingManager,
   vaultDir: string,
+  bufferDir: string | null,
 ): Promise<void> {
   // Embedding vectors
   try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
@@ -50,6 +58,10 @@ export async function cleanupAfterSessionCascade(
   }
 
   // Buffer journal file. Removed alongside DB cascade so a same-id
-  // reload doesn't resurrect stale events through reconciliation.
-  try { await unlink(`${vaultDir}/buffer/${sessionId}.jsonl`); } catch { /* best-effort */ }
+  // reload doesn't resurrect stale events through reconciliation. Lives
+  // under the Grove tree, never the project vault — the caller resolves
+  // the real dir or passes null (skip, tombstone keeps it inert).
+  if (bufferDir) {
+    try { await unlink(`${bufferDir}/${sessionId}.jsonl`); } catch { /* best-effort */ }
+  }
 }

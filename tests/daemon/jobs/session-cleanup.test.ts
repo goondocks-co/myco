@@ -27,7 +27,9 @@ describe('cleanupAfterSessionCascade — buffer journal unlink', () => {
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-cascade-'));
-    bufferDir = path.join(vaultDir, 'buffer');
+    // The buffer dir is caller-resolved (Grove tree), independent of the
+    // project vault dir — the legacy `<vaultDir>/buffer` guess is gone.
+    bufferDir = path.join(vaultDir, 'grove-buffer');
     fs.mkdirSync(bufferDir, { recursive: true });
   });
 
@@ -38,13 +40,13 @@ describe('cleanupAfterSessionCascade — buffer journal unlink', () => {
   // Cascade-delete is the user's explicit "this session is gone" intent,
   // so the buffer journal is removed alongside the DB rows. Leaving it
   // behind lets a same-id reload resurrect stale events at reconcile.
-  it('unlinks <vaultDir>/buffer/<sessionId>.jsonl when present', async () => {
+  it('unlinks <bufferDir>/<sessionId>.jsonl when present', async () => {
     const sessionId = 'cascade-buf-001';
     const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
     fs.writeFileSync(bufferPath, '{"type":"user_prompt","prompt":"hi","timestamp":"2026-05-18T00:00:00Z"}\n');
     expect(fs.existsSync(bufferPath)).toBe(true);
 
-    await cleanupAfterSessionCascade(sessionId, emptyResult(), makeEmbeddingStub(), vaultDir);
+    await cleanupAfterSessionCascade(sessionId, emptyResult(), makeEmbeddingStub(), vaultDir, bufferDir);
 
     expect(fs.existsSync(bufferPath)).toBe(false);
   });
@@ -53,8 +55,19 @@ describe('cleanupAfterSessionCascade — buffer journal unlink', () => {
     const sessionId = 'cascade-buf-002';
     // No buffer file written. Should not throw.
     await expect(
-      cleanupAfterSessionCascade(sessionId, emptyResult(), makeEmbeddingStub(), vaultDir),
+      cleanupAfterSessionCascade(sessionId, emptyResult(), makeEmbeddingStub(), vaultDir, bufferDir),
     ).resolves.toBeUndefined();
+  });
+
+  it('skips the buffer pass when the dir was unresolvable (null) — never guesses a path', async () => {
+    const sessionId = 'cascade-buf-005';
+    const bufferPath = path.join(bufferDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(bufferPath, '{"type":"user_prompt","prompt":"hi","timestamp":"2026-05-18T00:00:00Z"}\n');
+
+    await cleanupAfterSessionCascade(sessionId, emptyResult(), makeEmbeddingStub(), vaultDir, null);
+
+    // The file survives; the deletion tombstone keeps it inert.
+    expect(fs.existsSync(bufferPath)).toBe(true);
   });
 
   it('leaves other sessions\' buffer files untouched', async () => {
@@ -65,7 +78,7 @@ describe('cleanupAfterSessionCascade — buffer journal unlink', () => {
     fs.writeFileSync(targetPath, '{"type":"user_prompt","prompt":"x","timestamp":"2026-05-18T00:00:00Z"}\n');
     fs.writeFileSync(survivorPath, '{"type":"user_prompt","prompt":"y","timestamp":"2026-05-18T00:00:00Z"}\n');
 
-    await cleanupAfterSessionCascade(targetId, emptyResult(), makeEmbeddingStub(), vaultDir);
+    await cleanupAfterSessionCascade(targetId, emptyResult(), makeEmbeddingStub(), vaultDir, bufferDir);
 
     expect(fs.existsSync(targetPath)).toBe(false);
     expect(fs.existsSync(survivorPath)).toBe(true);
