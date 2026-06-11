@@ -1101,10 +1101,6 @@ export async function main(): Promise<void> {
     ),
   });
 
-  // Every registered project's buffer dir under the global Grove tree.
-  // No legacy bootstrap path — there is exactly one canonical home for a
-  // project's buffer, and the reconciler scans those and only those.
-  const bufferDirs = listAllProjectBufferDirs();
   const sessionBuffers = new Map<string, EventBuffer>();
 
   // One duplicate cache shared between the live /events dispatcher and the
@@ -1113,7 +1109,12 @@ export async function main(): Promise<void> {
   const eventDedupCache = new EventDedupCache();
 
   const reconciler = createReconciler({
-    bufferDirs,
+    // Every registered project's buffer dir under the global Grove tree,
+    // re-resolved per pass so a project registered after boot is visible
+    // without a restart. No legacy bootstrap path — there is exactly one
+    // canonical home for a project's buffer, and the reconciler scans
+    // those and only those.
+    bufferDirs: () => listAllProjectBufferDirs(),
     logger,
     projectRoot,
     onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
@@ -1196,6 +1197,12 @@ export async function main(): Promise<void> {
     machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
+    // Post-Stop convergence trigger: re-converge THIS session's buffer at
+    // the turn boundary when its converged mark is stale (identity-aware
+    // skip inside reconcileSession makes the matching case a no-op).
+    // Recovers wedge-buffered events that arrived mid-turn without
+    // waiting for a restart or the 15-minute drain cadence.
+    onStopProcessed: (sessionId) => reconciler.reconcileSession(sessionId),
   });
 
   // --- Session routes ---

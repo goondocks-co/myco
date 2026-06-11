@@ -51,7 +51,7 @@ describe('Buffer reconciliation — duplicate suppression', () => {
       JSON.stringify({ type: 'user_prompt', prompt: promptText, timestamp: '2026-05-15T15:55:07.597Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession(sessionId);
 
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
@@ -77,7 +77,7 @@ describe('Buffer reconciliation — duplicate suppression', () => {
       JSON.stringify({ ...toolEvent, timestamp: '2026-05-15T15:55:01.040Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession(sessionId);
 
     expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
@@ -97,7 +97,7 @@ describe('Buffer reconciliation — duplicate suppression', () => {
       JSON.stringify({ type: 'user_prompt', prompt: 'continue', timestamp: '2026-05-15T15:00:15.000Z' }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDirs: [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
+    const reconciler = createReconciler({ bufferDirs: () => [bufferDir], logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession(sessionId);
 
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });

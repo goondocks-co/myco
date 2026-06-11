@@ -272,7 +272,7 @@ function makeDispatcherWithRealReconciler(opts: { bufferDir: string; vaultDir?: 
   });
   const sessionBuffers = new Map();
   const reconciler = createReconciler({
-    bufferDirs: [opts.bufferDir],
+    bufferDirs: () => [opts.bufferDir],
     logger: logger as never,
     projectRoot: process.cwd(),
     // This harness is single-DB by design: the Grove is registered (so the

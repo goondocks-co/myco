@@ -20,7 +20,12 @@ import {
   listStaleStagingDirs,
   cleanupStagedSkill,
 } from '@myco/agent/tools/skill-staging.js';
-import { EMBEDDING_BATCH_SIZE, MS_PER_DAY, MS_PER_HOUR } from '@myco/constants.js';
+import {
+  EMBEDDING_BATCH_SIZE,
+  MS_PER_DAY,
+  MS_PER_HOUR,
+  CAPTURE_BUFFER_DRAIN_INTERVAL_MS,
+} from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { POWER_JOB_NAMES, type PowerJobName } from '@myco/constants/power-jobs.js';
 import {
@@ -74,11 +79,16 @@ export interface PowerJobDeps {
   daemonStateDir: string;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
   /**
-   * The buffer reconciler's convergence probe. The dead-session sweep
-   * defers zero-batch sessions whose buffer hasn't converged this daemon
-   * lifetime — their prompts may still be sitting unreplayed on disk.
+   * The buffer reconciler. The dead-session sweep consults
+   * `hasUnconvergedBuffer` to defer zero-batch sessions whose buffer
+   * hasn't converged — their prompts may still be sitting unreplayed on
+   * disk. `runDrainPass` is the quiescence-gated drain job's per-Grove
+   * body (convergence + retention/quarantine).
    */
-  reconciler?: { hasUnconvergedBuffer(sessionId: string): boolean };
+  reconciler?: {
+    hasUnconvergedBuffer(sessionId: string): boolean;
+    runDrainPass(options?: { groveId?: string }): unknown;
+  };
 }
 
 export interface PowerJobsResult {
@@ -330,6 +340,32 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       });
     }),
   });
+
+  // Quiescence-gated capture-buffer drain: converge diverging buffers
+  // (sessions whose buffer changed without a restart / register / event /
+  // post-Stop trigger to converge them), then run convergence-aware
+  // retention (cleanup + quarantine) over each Grove's buffer dirs. The
+  // reconciler re-resolves buffer dirs per pass, applies the quiescence
+  // gate per session, and bounds each pass with the session cap +
+  // per-session failure backoff. Same power states as SESSION_MAINTENANCE;
+  // cadence is the job-level 15-minute throttle (ticks fire more often).
+  let lastBufferDrainAt = 0;
+  if (deps.reconciler) {
+    const drainReconciler = deps.reconciler;
+    runner.register({
+      name: POWER_JOB_NAMES.CAPTURE_BUFFER_DRAIN,
+      runIn: ['active', 'idle', 'sleep'],
+      kind: 'housekeeping',
+      fn: async () => {
+        const now = Date.now();
+        if (now - lastBufferDrainAt < CAPTURE_BUFFER_DRAIN_INTERVAL_MS) return;
+        lastBufferDrainAt = now;
+        await fanOutGroves(POWER_JOB_NAMES.CAPTURE_BUFFER_DRAIN, async (scope) => {
+          drainReconciler.runDrainPass({ groveId: scope.grove.id });
+        })();
+      },
+    });
+  }
 
   runner.register({
     name: POWER_JOB_NAMES.LOG_RETENTION,

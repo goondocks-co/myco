@@ -2,33 +2,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 
-interface BufferOptions {
-  maxEvents?: number;
-}
+/**
+ * Subdirectory of a buffer dir holding quarantined (hard-retention-capped
+ * diverging) buffer files. Excluded from every buffer enumeration — the
+ * listing/locating helpers below only look at `*.jsonl` entries directly
+ * inside the buffer dir and never descend.
+ */
+export const BUFFER_QUARANTINE_DIRNAME = 'quarantine';
 
 export class EventBuffer {
   private filePath: string;
   private lockPath: string;
-  private maxEvents: number;
-  private eventCount = 0;
 
   constructor(
     private bufferDir: string,
     private sessionId: string,
-    options: BufferOptions = {},
   ) {
     this.filePath = path.join(bufferDir, `${sessionId}.jsonl`);
     this.lockPath = path.join(bufferDir, `.${sessionId}.lock`);
-    this.maxEvents = options.maxEvents ?? 500;
 
     // Ensure the buffer dir exists once at construction so the per-append
     // hot path doesn't repeat mkdirSync for every event.
     fs.mkdirSync(this.bufferDir, { recursive: true });
-
-    if (fs.existsSync(this.filePath)) {
-      const content = fs.readFileSync(this.filePath, 'utf-8').trim();
-      this.eventCount = content ? content.split('\n').length : 0;
-    }
   }
 
   /**
@@ -49,7 +44,6 @@ export class EventBuffer {
     withFileLockSync(this.lockPath, () => {
       fs.appendFileSync(this.filePath, line + '\n');
     });
-    this.eventCount++;
   }
 
   readAll(): Array<Record<string, unknown>> {
@@ -57,10 +51,6 @@ export class EventBuffer {
     const content = fs.readFileSync(this.filePath, 'utf-8').trim();
     if (!content) return [];
     return content.split('\n').map((line) => JSON.parse(line));
-  }
-
-  count(): number {
-    return this.eventCount;
   }
 
   exists(): boolean {
@@ -71,11 +61,6 @@ export class EventBuffer {
     if (fs.existsSync(this.filePath)) {
       fs.unlinkSync(this.filePath);
     }
-    this.eventCount = 0;
-  }
-
-  isOverflow(): boolean {
-    return this.eventCount > this.maxEvents;
   }
 
   getFilePath(): string {
@@ -104,10 +89,81 @@ export function listBufferSessionIds(bufferDir: string): string[] {
  *                   sessions: the DB row was deliberately deleted).
  *   - 'age-gated' — remove only when older than `maxAgeMs` (sessions whose
  *                   buffer is fully converged into a closed DB row).
- *   - 'retain'    — never remove (diverging buffers; convergence has not
- *                   absorbed every event yet).
+ *   - 'retain'    — keep (diverging buffers; convergence has not absorbed
+ *                   every event yet). Subject ONLY to the hard retention
+ *                   cap, which quarantines rather than deletes.
  */
 export type BufferCleanupDecision = 'delete' | 'age-gated' | 'retain';
+
+export interface CleanStaleBuffersOptions {
+  /** Age gate (ms) for 'age-gated' files. */
+  maxAgeMs: number;
+  /** Skip this session (e.g., the currently active one). */
+  excludeSessionId?: string;
+  /**
+   * Per-session retention decision; absent → every file is age-gated.
+   * Receives the file's CURRENT (size, mtimeMs) identity so the caller
+   * can require its converged mark to match — a file that changed since
+   * the converged pass holds unreplayed events and must classify as
+   * diverging ('retain'), never 'age-gated'.
+   */
+  classify?: (sessionId: string, identity: { size: number; mtimeMs: number }) => BufferCleanupDecision;
+  /**
+   * Hard retention cap for 'retain' files: a retained (diverging) buffer
+   * idle past `maxAgeMs` is MOVED into the dir's `quarantine/` subdir —
+   * never deleted, it may be the only durable copy of unreplayed events.
+   */
+  quarantine?: {
+    maxAgeMs: number;
+    /** Fires after a successful move with the file's new path. */
+    onQuarantined?: (sessionId: string, quarantinedPath: string) => void;
+  };
+  /** Fires after each successful delete (cache eviction hook). */
+  onRemoved?: (sessionId: string) => void;
+}
+
+/**
+ * Move one buffer file into the dir's quarantine subdirectory, preserving
+ * the filename (a name collision gains a `.N` suffix before the extension).
+ * Returns the quarantined path.
+ */
+export function quarantineBufferFile(bufferDir: string, file: string): string {
+  const quarantineDir = path.join(bufferDir, BUFFER_QUARANTINE_DIRNAME);
+  fs.mkdirSync(quarantineDir, { recursive: true });
+  const ext = path.extname(file);
+  const base = path.basename(file, ext);
+  let target = path.join(quarantineDir, file);
+  for (let n = 1; fs.existsSync(target); n++) {
+    target = path.join(quarantineDir, `${base}.${n}${ext}`);
+  }
+  fs.renameSync(path.join(bufferDir, file), target);
+  return target;
+}
+
+/**
+ * Delete quarantined buffer files idle past `maxAgeMs`. Callers pass
+ * TOMBSTONE_RETENTION_MS so a quarantined copy never outlives the
+ * tombstone window that prevents its session's resurrection.
+ *
+ * @returns count of files pruned
+ */
+export function pruneQuarantinedBuffers(bufferDir: string, maxAgeMs: number): number {
+  const quarantineDir = path.join(bufferDir, BUFFER_QUARANTINE_DIRNAME);
+  let pruned = 0;
+  try {
+    const cutoff = Date.now() - maxAgeMs;
+    for (const file of fs.readdirSync(quarantineDir)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const filePath = path.join(quarantineDir, file);
+      try {
+        if (fs.statSync(filePath).mtimeMs >= cutoff) continue;
+        fs.unlinkSync(filePath);
+        pruned++;
+      } catch { /* concurrent removal — skip */ }
+    }
+  } catch { /* quarantine dir may not exist */ }
+  return pruned;
+}
 
 /**
  * Remove buffer files per the retention policy.
@@ -115,32 +171,48 @@ export type BufferCleanupDecision = 'delete' | 'age-gated' | 'retain';
  * Without `classify`, every file is age-gated (the original mtime-only
  * behavior). Daemon callers pass the reconciler's convergence-aware
  * classifier so a diverging buffer — the only durable copy of unreplayed
- * events — is never deleted on age alone.
+ * events — is never deleted on age alone; the `quarantine` option completes
+ * retention for those files by moving (not deleting) them once they pass
+ * the hard cap.
  *
- * @param excludeSessionId - skip this session (e.g., the currently active one)
- * @returns count of files removed
+ * @returns count of files removed (deletes only; quarantine moves are
+ *   reported through `onQuarantined`, not the return value)
  */
 export function cleanStaleBuffers(
   bufferDir: string,
-  maxAgeMs: number,
-  excludeSessionId?: string,
-  classify?: (sessionId: string) => BufferCleanupDecision,
+  options: CleanStaleBuffersOptions,
 ): number {
+  const { maxAgeMs, excludeSessionId, classify, quarantine, onRemoved } = options;
   let removed = 0;
   try {
-    const cutoff = Date.now() - maxAgeMs;
+    const now = Date.now();
+    const cutoff = now - maxAgeMs;
     for (const file of fs.readdirSync(bufferDir)) {
       if (!file.endsWith('.jsonl')) continue;
       if (excludeSessionId && file === `${excludeSessionId}.jsonl`) continue;
+      const sessionId = file.replace('.jsonl', '');
       const filePath = path.join(bufferDir, file);
-      const decision = classify ? classify(file.replace('.jsonl', '')) : 'age-gated';
-      if (decision === 'retain') continue;
-      if (decision === 'age-gated') {
-        const stat = fs.statSync(filePath);
-        if (stat.mtimeMs >= cutoff) continue;
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        continue; // concurrent removal
       }
+      const identity = { size: stat.size, mtimeMs: stat.mtimeMs };
+      const decision = classify ? classify(sessionId, identity) : 'age-gated';
+      if (decision === 'retain') {
+        if (!quarantine) continue;
+        if (identity.mtimeMs >= now - quarantine.maxAgeMs) continue;
+        try {
+          const target = quarantineBufferFile(bufferDir, file);
+          quarantine.onQuarantined?.(sessionId, target);
+        } catch { /* move failed — retry next pass */ }
+        continue;
+      }
+      if (decision === 'age-gated' && identity.mtimeMs >= cutoff) continue;
       fs.unlinkSync(filePath);
       removed++;
+      onRemoved?.(sessionId);
     }
   } catch { /* buffer dir may not exist */ }
   return removed;
