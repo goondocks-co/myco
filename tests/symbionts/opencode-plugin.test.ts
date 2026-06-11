@@ -286,12 +286,14 @@ describe('opencode plugin runtime hooks', () => {
   });
 
   describe('server-side drop buffering', () => {
-    // Regression: before the fix, the plugin treated HTTP 200 as success
-    // regardless of body. The daemon could return `{ ok: true, ignored: "..."}`
-    // to silently drop events, and the plugin would never route them to the
-    // on-disk buffer. That's how a stale capture rule erased every event of a
-    // live opencode session across a daemon restart. An ignored response must
-    // trigger the same buffer write as a transport failure would.
+    // The plugin's buffer fallback follows the capture event policy table
+    // (packages/myco/src/capture/event-policy.ts) via the ported
+    // `shouldBufferPluginFallback`. Against a contract-aware daemon
+    // (response carries `persisted`) a deliberate `ignored` is never
+    // buffered — ignored ≠ lost. Against a LEGACY daemon (no `persisted`
+    // field) the per-type legacy rows apply: user_prompt buffers on
+    // ignored (rule bugs have erased live sessions before), tool_use does
+    // NOT (direct replay would resurrect a deliberately-dropped activity).
     //
     // Post-global-install (plan 38cff0752c919ffd §2), the buffer lives at
     // `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. Tests seed a
@@ -327,7 +329,7 @@ describe('opencode plugin runtime hooks', () => {
       };
     }
 
-    it('buffers a chat.message event when daemon returns 200 with ignored field', async () => {
+    it('buffers a chat.message event when a LEGACY daemon returns 200 with ignored field', async () => {
       const ctx = setupHome();
       const fetchMock = vi.fn(async () =>
         new Response(JSON.stringify({ ok: true, ignored: 'ephemeral-sub-invocation' }), { status: 200 }),
@@ -371,7 +373,11 @@ describe('opencode plugin runtime hooks', () => {
       ctx.restore();
     });
 
-    it('buffers a tool.execute.after event when daemon returns 200 with ignored', async () => {
+    it('does NOT buffer a tool.execute.after event on a LEGACY daemon ignore (replay would resurrect a dropped tool)', async () => {
+      // tool_use replays directly without re-evaluating capture rules
+      // (CAPTURE_EVENT_POLICY.tool_use.legacyBufferOnIgnored === false), so
+      // buffering an ignored tool would re-insert a deliberately-dropped
+      // activity on the daemon's next startup reconcile.
       const ctx = setupHome();
       const fetchMock = vi.fn(async () =>
         new Response(JSON.stringify({ ok: true, ignored: 'rule' }), { status: 200 }),
@@ -386,12 +392,75 @@ describe('opencode plugin runtime hooks', () => {
         { output: 'file contents', metadata: {} },
       );
 
-      const lines = bufferLinesAt(ctx.home, 'ses-silent-drop-3');
+      expect(bufferLinesAt(ctx.home, 'ses-silent-drop-3')).toEqual([]);
+
+      ctx.restore();
+    });
+
+    it('never buffers a contract-aware daemon ignore, even for user_prompt', async () => {
+      // A response carrying `persisted` is the honest contract — its
+      // `ignored` is deliberate (capture rule, dedup, tombstone) and must
+      // not be resurrected via the buffer, unlike the legacy-daemon case.
+      const ctx = setupHome();
+      const fetchMock = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true, ignored: 'rule', persisted: false }), { status: 200 }),
+      );
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory: ctx.directory, worktree: ctx.directory });
+
+      await plugin['chat.message'](
+        { sessionID: 'ses-contract-ignored-1' },
+        { parts: [{ type: 'text', text: 'a deliberately-ignored prompt' }] },
+      );
+
+      expect(bufferLinesAt(ctx.home, 'ses-contract-ignored-1')).toEqual([]);
+
+      ctx.restore();
+    });
+
+    it('does not buffer when the daemon failed to persist but holds a buffered copy', async () => {
+      const ctx = setupHome();
+      const fetchMock = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true, persisted: false, buffered: true }), { status: 200 }),
+      );
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory: ctx.directory, worktree: ctx.directory });
+
+      await plugin['chat.message'](
+        { sessionID: 'ses-daemon-buffered-1' },
+        { parts: [{ type: 'text', text: 'daemon holds the durable copy' }] },
+      );
+
+      expect(bufferLinesAt(ctx.home, 'ses-daemon-buffered-1')).toEqual([]);
+
+      ctx.restore();
+    });
+
+    it('buffers the one honest-fallback case: persisted:false with no daemon-side copy', async () => {
+      const ctx = setupHome();
+      const fetchMock = vi.fn(async () =>
+        new Response(JSON.stringify({ ok: true, persisted: false, buffered: false }), { status: 200 }),
+      );
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const client = { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn() } };
+      const plugin = await MycoPlugin({ client, directory: ctx.directory, worktree: ctx.directory });
+
+      await plugin['chat.message'](
+        { sessionID: 'ses-honest-fallback-1' },
+        { parts: [{ type: 'text', text: 'no durable copy anywhere' }] },
+      );
+
+      const lines = bufferLinesAt(ctx.home, 'ses-honest-fallback-1');
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0])).toMatchObject({
-        type: 'tool_use',
+        type: 'user_prompt',
         agent: 'opencode',
-        tool_name: 'read',
+        prompt: 'no durable copy anywhere',
       });
 
       ctx.restore();
