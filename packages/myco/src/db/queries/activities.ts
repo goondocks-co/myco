@@ -393,6 +393,18 @@ export function listActivitiesByBatch(
 }
 
 /**
+ * Latest activity timestamp (epoch seconds) attached to a batch, or null
+ * when the batch has no activities. Single indexed MAX() — the liveness
+ * signal the stop-replay freshness guard reads for open batches.
+ */
+export function latestActivityTimestampForBatch(promptBatchId: number): number | null {
+  const row = getDatabase().prepare(
+    `SELECT MAX(timestamp) AS ts FROM activities WHERE prompt_batch_id = ?`,
+  ).get(promptBatchId) as { ts: number | null };
+  return row.ts ?? null;
+}
+
+/**
  * Count total activities for a given session.
  */
 export function countActivities(sessionId: string): number {

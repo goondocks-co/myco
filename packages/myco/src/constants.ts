@@ -111,6 +111,18 @@ export function epochSeconds(): number {
 /** Max age for stale buffer files before cleanup (ms). */
 export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 
+// --- Stop replay ---
+/**
+ * How recently a session's latest OPEN batch must have shown activity for a
+ * replayed stop event to treat it as a live turn and skip the summary write.
+ * An open batch older than this is a missed-Stop turn (the Stop is what
+ * closes batches — if it never arrived, the batch stays open forever) and
+ * its buffered summary is recoverable. Conservative: the cost of skipping a
+ * fresh batch is a delayed recovery on the next pass; the cost of writing
+ * onto a live turn is a misattributed summary.
+ */
+export const STOP_REPLAY_OPEN_BATCH_FRESHNESS_MS = 30 * 60 * MS_PER_SECOND;
+
 // --- Retry backoff ---
 /** Retry delays for daemon health check (ms). */
 export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
