@@ -51,7 +51,7 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
-import { eventDedupKey, EVENT_DEDUP_WINDOW_MS } from '@myco/capture/dedup.js';
+import { EventDedupCache } from './event-dedup-cache.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -98,6 +98,12 @@ export interface EventDispatchDeps {
    * even when it isn't the foreground project in the web UI.
    */
   projectStateTracker?: ProjectPowerStateTracker;
+  /**
+   * Shared duplicate cache — the buffer reconciler records replayed events
+   * into the same instance so a late live POST of an already-replayed event
+   * is rejected here. When absent (tests), a private instance is used.
+   */
+  eventDedupCache?: EventDedupCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,17 +113,6 @@ export interface EventDispatchDeps {
 // Cap dropped-session cache to bound memory. Dropped sessions are rarely
 // revisited; FIFO eviction via Map ordering is sufficient.
 const DROP_DECISION_CACHE_MAX = 1024;
-
-// Suppress identical /events POSTs that arrive within `EVENT_DEDUP_WINDOW_MS`.
-// Hook scripts can re-fire the same event when the daemon was previously
-// slow or briefly unavailable (Claude Code retries, multi-symbiont overlap,
-// Codex's user_prompt-submit hook observed firing twice within ~30ms), and
-// the inserts at handleUserPrompt / insertActivityWithBatch have no natural
-// idempotency. A 10-second window catches retry storms without suppressing
-// legitimate same-text turns. The window value and fingerprint live in
-// `@myco/capture/dedup.js` so the buffer reconciler can apply the same key
-// when replaying events the live path already rejected.
-const EVENT_DEDUP_CACHE_MAX = 4096;
 
 export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   const {
@@ -140,29 +135,19 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
   );
 
-  // FIFO dedup cache for event idempotency. Key includes session_id, type,
-  // and a content fingerprint (see `@myco/capture/dedup.js`) so the cache
-  // can distinguish "same prompt sent twice" from "same hook type for two
-  // different prompts." Shared with the buffer reconciler so duplicates the
-  // live path correctly rejected don't resurrect on replay.
-  const recentEvents = new Map<string, number>();
-  function isDuplicateEvent(event: { type: string; session_id: string } & Record<string, unknown>, nowMs: number): boolean {
-    const key = eventDedupKey(event);
-    const lastSeenMs = recentEvents.get(key);
-    if (lastSeenMs !== undefined && nowMs - lastSeenMs < EVENT_DEDUP_WINDOW_MS) {
-      // Refresh LRU position so a sustained retry stream stays caught
-      recentEvents.delete(key);
-      recentEvents.set(key, lastSeenMs);
-      return true;
-    }
-    recentEvents.set(key, nowMs);
-    if (recentEvents.size > EVENT_DEDUP_CACHE_MAX) {
-      // FIFO eviction — Map preserves insertion order
-      const oldest = recentEvents.keys().next().value;
-      if (oldest !== undefined) recentEvents.delete(oldest);
-    }
-    return false;
-  }
+  // Dedup cache for event idempotency. Suppresses identical /events POSTs
+  // within the dedup window — hook scripts re-fire the same event when the
+  // daemon was previously slow or briefly unavailable (Claude Code retries,
+  // multi-symbiont overlap, Codex's user_prompt-submit hook observed firing
+  // twice within ~30ms), and the inserts at handleUserPrompt /
+  // insertActivityWithBatch have no natural idempotency. The 10-second
+  // window catches retry storms without suppressing legitimate same-text
+  // turns. Key includes session_id, type, and a content fingerprint (see
+  // `@myco/capture/dedup.js`) so the cache can distinguish "same prompt sent
+  // twice" from "same hook type for two different prompts." Shared with the
+  // buffer reconciler so duplicates the live path correctly rejected don't
+  // resurrect on replay — and so replayed events reject late live copies.
+  const eventDedupCache = deps.eventDedupCache ?? new EventDedupCache();
 
   // Cache drop decisions by session_id so a rejected session that keeps firing
   // events doesn't re-open + re-read (up to 128 KB) its transcript every time.
@@ -261,7 +246,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     // activities. A wedged-then-recovered daemon, or two symbionts watching
     // the same project, can deliver the same physical event multiple times
     // within seconds; the downstream insert paths are not idempotent.
-    if (isDuplicateEvent(event, Date.now())) {
+    if (eventDedupCache.isDuplicate(event, Date.now())) {
       // Promoted from debug to info so `grep hooks.event` in the default
       // daemon log surfaces the volume of in-flight duplicate-fire patterns
       // (Codex's double-fire, Claude retries, multi-symbiont overlap) — a

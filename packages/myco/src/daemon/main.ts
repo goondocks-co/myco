@@ -183,6 +183,7 @@ import {
   handleTaskCompleted, handleCompact, syncTranscriptPromptBatches,
 } from './event-handlers.js';
 import { createReconciler } from './reconciliation.js';
+import { EventDedupCache } from './event-dedup-cache.js';
 import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
@@ -1106,11 +1107,17 @@ export async function main(): Promise<void> {
   const bufferDirs = listAllProjectBufferDirs();
   const sessionBuffers = new Map<string, EventBuffer>();
 
+  // One duplicate cache shared between the live /events dispatcher and the
+  // buffer reconciler: live duplicates are suppressed AND replayed events
+  // reject their own late live copies.
+  const eventDedupCache = new EventDedupCache();
+
   const reconciler = createReconciler({
     bufferDirs,
     logger,
     projectRoot,
     onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
+    eventDedupCache,
   });
   reconciler.runStartupReconciliation();
 
@@ -1214,6 +1221,7 @@ export async function main(): Promise<void> {
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
     projectStateTracker,
+    eventDedupCache,
   });
   server.registerRoute('POST', '/events', eventDispatcher);
 
