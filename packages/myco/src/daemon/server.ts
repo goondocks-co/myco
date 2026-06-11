@@ -10,6 +10,7 @@ import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
+  ForeignGroveError,
   REQUEST_CONTEXT_AUTH_ENV,
   UnauthorizedRequestContextError,
   UnknownRequestContextError,
@@ -17,7 +18,7 @@ import {
   requestContextFromTenancyIds,
   type MycoRequestContext,
 } from '../grove/request-context.js';
-import { isProjectPaused } from '../grove/registry.js';
+import { isProjectPaused, UnknownGroveError } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
 import { type DaemonState } from './service-state.js';
 import {
@@ -378,6 +379,37 @@ export class DaemonServer {
           res.end(JSON.stringify({ error: 'unknown_tenancy', message: error.message }));
           return;
         }
+        if (error instanceof ForeignGroveError) {
+          // The request resolved to a Grove served by the other daemon
+          // variant. Refuse before any handler (or DB open) runs —
+          // `myco grove claim` is the supported cross-daemon path.
+          // Logged at warn: hook clients swallow 403s silently, so this
+          // line is the only daemon-side trace during a claim window.
+          this.logger.warn(LOG_KINDS.SERVER_ERROR, 'Refused request for foreign-served Grove', {
+            path: req.url,
+            grove_id: error.groveId,
+            served_by: error.servedBy,
+          });
+          res.writeHead(403, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({
+            error: 'foreign_grove',
+            message: error.message,
+            grove_id: error.groveId,
+            served_by: error.servedBy,
+          }));
+          return;
+        }
+        if (error instanceof UnknownGroveError) {
+          // A caller-named Grove id (body scope / URL :id) with no record
+          // on this machine: 404 before any groves/<id>/ path is created.
+          res.writeHead(404, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({
+            error: 'grove_not_found',
+            message: error.message,
+            grove_id: error.groveId,
+          }));
+          return;
+        }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
           path: req.url,
           error: (error as Error).message,
@@ -501,11 +533,14 @@ export class DaemonServer {
       return requestContextFromTenancyIds(
         { groveId: params.groveId, projectId: params.projectId },
         this.vaultDir,
-        { headers, expectedAuthToken: this.authToken },
+        { headers, expectedAuthToken: this.authToken, enforceGroveOwnership: true },
       );
     }
     return requestContextFromHttpHeaders(headers, this.vaultDir, {
       expectedAuthToken: this.authToken,
+      // Inbound daemon resolution: a request must never resolve to (and
+      // then open) a Grove served by the other daemon variant.
+      enforceGroveOwnership: true,
     });
   }
 

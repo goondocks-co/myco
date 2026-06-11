@@ -30,7 +30,7 @@ import type { RestoreResult } from '@myco/backup/engine.js';
 import { z } from 'zod';
 import { loadMergedConfig, updateTierConfigRaw, TierConfigUnreadableError } from '../../config/loader.js';
 import { setAtPath, unsetAtPath } from '../../utils/dot-path.js';
-import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
+import { assertOwnedGrove, loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
 import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome, currentDaemonVariant } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import path from 'node:path';
@@ -170,9 +170,11 @@ export function createBackupHandlers(deps: BackupDeps) {
       });
     }
 
-    // scope.kind === 'grove'
-    const grove = loadGroveRecord(scope.grove_id, mycoHome);
-    if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
+    // scope.kind === 'grove'. Body-scope grove ids arrive outside the
+    // request-context funnel, so existence and served_by ownership gate
+    // here before the backup opens the Grove DB; throws propagate to the
+    // transport (403 foreign_grove / 404 grove_not_found).
+    const grove = assertOwnedGrove(scope.grove_id, mycoHome);
     const key = `backup:${actionScopeKey(scope)}`;
     return inflight.run(key, async (): Promise<RouteResponse> => {
       const result = performBackupForGrove(grove);

@@ -18,7 +18,7 @@ import {
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
 import {
-  loadGroveRecord,
+  assertOwnedGrove,
   listRegisteredProjects,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -383,8 +383,12 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
 
   async function handleGroveMaintenance(req: RouteRequest): Promise<RouteResponse> {
     const groveId = req.params.id;
-    const grove = loadGroveRecord(groveId, mycoHome);
-    if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
+    // URL :id arrives outside the request-context funnel, so existence
+    // and served_by ownership gate here — BEFORE the cache opens (and
+    // schema-migrates) the Grove DB, and outside the summary try/catch
+    // below so the refusal isn't swallowed into an error summary. Throws
+    // propagate to the transport (403 foreign_grove / 404 grove_not_found).
+    const grove = assertOwnedGrove(groveId, mycoHome);
 
     const databasePath = resolveGroveDbPath(grove.id, mycoHome);
     const groveHome = resolveGroveDir(grove.id, mycoHome);

@@ -5,7 +5,7 @@ import {
   resolveGroveDir,
   resolveMycoHome,
 } from '@myco/grove/paths.js';
-import { loadGroveRecord } from '@myco/grove/registry.js';
+import { assertOwnedGrove } from '@myco/grove/registry.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import type { Logger } from '../logger.js';
 import { DatabaseMaintenanceManager } from '../database/manager.js';
@@ -67,11 +67,15 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     groveId: string,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<PerGroveResultBase & T> {
-    const grove = loadGroveRecord(groveId, mycoHome);
-    const slug = grove?.slug ?? groveId;
+    // Body-scope grove ids arrive outside the request-context funnel, so
+    // existence and served_by ownership gate here — BEFORE the cache
+    // opens (and schema-migrates) the Grove DB. An unknown id must not
+    // create groves/<id>/ as a side effect; throws propagate to the
+    // transport (403 foreign_grove / 404 grove_not_found).
+    const grove = assertOwnedGrove(groveId, mycoHome);
     const dbPath = resolveGroveDbPath(groveId, mycoHome);
     const db = deps.cache.getDatabase(dbPath);
-    return wrapPerGroveResult(groveId, slug, () =>
+    return wrapPerGroveResult(groveId, grove.slug, () =>
       deps.cache.withPinned(dbPath, async () =>
         withDatabase(db, async () => run(buildManagerForGrove(groveId))),
       ),
