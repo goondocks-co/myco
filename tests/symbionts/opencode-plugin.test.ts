@@ -286,14 +286,10 @@ describe('opencode plugin runtime hooks', () => {
   });
 
   describe('server-side drop buffering', () => {
-    // The plugin's buffer fallback follows the capture event policy table
-    // (packages/myco/src/capture/event-policy.ts) via the ported
-    // `shouldBufferPluginFallback`. Against a contract-aware daemon
-    // (response carries `persisted`) a deliberate `ignored` is never
-    // buffered — ignored ≠ lost. Against a LEGACY daemon (no `persisted`
-    // field) the per-type legacy rows apply: user_prompt buffers on
-    // ignored (rule bugs have erased live sessions before), tool_use does
-    // NOT (direct replay would resurrect a deliberately-dropped activity).
+    // The plugin's buffer fallback (`shouldBufferPluginFallback`) mirrors
+    // the hook CLI's contract: a deliberate `ignored` is never buffered in
+    // any response shape — ignored ≠ lost, and buffering it would resurrect
+    // a deliberately-dropped event on the daemon's next startup reconcile.
     //
     // Post-global-install (plan 38cff0752c919ffd §2), the buffer lives at
     // `~/.myco/groves/<groveId>/projects/<projectId>/buffer/`. Tests seed a
@@ -329,7 +325,7 @@ describe('opencode plugin runtime hooks', () => {
       };
     }
 
-    it('buffers a chat.message event when a LEGACY daemon returns 200 with ignored field', async () => {
+    it('does NOT buffer a chat.message event the daemon ignored (no persisted field)', async () => {
       const ctx = setupHome();
       const fetchMock = vi.fn(async () =>
         new Response(JSON.stringify({ ok: true, ignored: 'ephemeral-sub-invocation' }), { status: 200 }),
@@ -344,13 +340,7 @@ describe('opencode plugin runtime hooks', () => {
         { parts: [{ type: 'text', text: 'a real user prompt' }] },
       );
 
-      const lines = bufferLinesAt(ctx.home, 'ses-silent-drop-1');
-      expect(lines).toHaveLength(1);
-      expect(JSON.parse(lines[0])).toMatchObject({
-        type: 'user_prompt',
-        agent: 'opencode',
-        prompt: 'a real user prompt',
-      });
+      expect(bufferLinesAt(ctx.home, 'ses-silent-drop-1')).toEqual([]);
 
       ctx.restore();
     });
@@ -373,11 +363,11 @@ describe('opencode plugin runtime hooks', () => {
       ctx.restore();
     });
 
-    it('does NOT buffer a tool.execute.after event on a LEGACY daemon ignore (replay would resurrect a dropped tool)', async () => {
+    it('does NOT buffer a tool.execute.after event on a daemon ignore (replay would resurrect a dropped tool)', async () => {
       // tool_use replays directly without re-evaluating capture rules
-      // (CAPTURE_EVENT_POLICY.tool_use.legacyBufferOnIgnored === false), so
-      // buffering an ignored tool would re-insert a deliberately-dropped
-      // activity on the daemon's next startup reconcile.
+      // (CAPTURE_EVENT_POLICY.tool_use replayMode 'direct'), so buffering
+      // an ignored tool would re-insert a deliberately-dropped activity
+      // on the daemon's next startup reconcile.
       const ctx = setupHome();
       const fetchMock = vi.fn(async () =>
         new Response(JSON.stringify({ ok: true, ignored: 'rule' }), { status: 200 }),
@@ -397,10 +387,9 @@ describe('opencode plugin runtime hooks', () => {
       ctx.restore();
     });
 
-    it('never buffers a contract-aware daemon ignore, even for user_prompt', async () => {
-      // A response carrying `persisted` is the honest contract — its
+    it('never buffers a daemon ignore that carries the honest contract fields', async () => {
       // `ignored` is deliberate (capture rule, dedup, tombstone) and must
-      // not be resurrected via the buffer, unlike the legacy-daemon case.
+      // not be resurrected via the buffer — with or without `persisted`.
       const ctx = setupHome();
       const fetchMock = vi.fn(async () =>
         new Response(JSON.stringify({ ok: true, ignored: 'rule', persisted: false }), { status: 200 }),

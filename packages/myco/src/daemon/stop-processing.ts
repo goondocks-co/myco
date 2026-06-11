@@ -838,10 +838,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // The stop pipeline is queued — this response returns before
     // processStopEvent runs, so the route cannot honestly claim
     // `persisted`. `queued: true` states exactly what is known. The hook
-    // CLI's buffer fallback therefore runs under the policy table's legacy
-    // columns for `stop` (summary-only buffering), by design: replay is
-    // NULL-only idempotent, so a buffered copy of a turn the queue later
-    // persists converges as a no-op.
+    // CLI therefore buffers every summary-bearing stop, by design: replay
+    // is NULL-only idempotent, so a buffered copy of a turn the queue
+    // later persists converges as a no-op.
     return { body: { ok: true, queued: true } };
   };
 
