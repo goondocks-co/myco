@@ -13,8 +13,11 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   grove <subcommand>       Manage local Groves
   update                   Update vault files and agent registration
-  remove [--remove-vault]    Remove Myco from this project (vault preserved by default)
-  remove --symbiont <name>   Unregister a single agent and remove from config
+  remove [--purge] [--yes]   Remove Myco's machine-wide install (prompts unless --yes;
+                             captured data preserved unless --purge)
+  remove --project [<path>] | --symbiont <name> | --remove-vault
+                             Project-scoped removal (any of these flags switches scope;
+                             vault preserved unless --remove-vault)
   config <get|set> [args]  Get or set vault config values
   detect-providers         Detect available LLM/embedding providers (JSON)
   verify                   Test LLM and embedding connectivity
