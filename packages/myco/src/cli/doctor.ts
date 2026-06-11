@@ -17,6 +17,7 @@ import {
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { isProcessAlive } from './shared.js';
+import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { manifestToolTransport } from '../symbionts/capabilities.js';
@@ -57,7 +58,10 @@ export interface DoctorCheck {
 async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; config: import('../config/schema.js').MycoConfig | null }> {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   if (!fs.existsSync(configPath)) {
-    return { check: { name: 'Vault', status: 'fail', detail: `${CONFIG_FILENAME} not found in ${vaultDir}`, fixable: false }, config: null };
+    // Not a failure: `myco doctor` from a non-project directory (e.g.
+    // $HOME right after install) is a documented flow and must exit 0
+    // on a healthy machine. Only an unparseable config is a hard fail.
+    return { check: { name: 'Vault', status: 'warn', detail: `No ${CONFIG_FILENAME} in ${vaultDir} — run from a project directory for project checks`, fixable: false }, config: null };
   }
   try {
     const { loadMergedConfig } = await import('../config/loader.js');
@@ -440,7 +444,11 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
   try {
     const state = readDaemonState(daemonFile);
     if (!state) {
-      return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but no PID', fixable: true };
+      // readDaemonState returns null (it never throws) when the file is
+      // unreadable, unparseable, or fails shape validation — the
+      // malformed-state case `fix()` repairs via deleteIfMalformed. The
+      // 'parse error' wording is the contract fix() keys on.
+      return { name: 'Daemon', status: 'fail', detail: 'daemon state parse error: daemon.json exists but is unreadable or malformed', fixable: true };
     }
     if (!state.pid) {
       return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but no PID', fixable: true };
@@ -522,11 +530,18 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [vaultCheck];
 
   if (!config) {
+    // Vault-dependent checks can't run. These rows are warn, not fail:
+    // an unreadable config already failed the Vault row above, and a
+    // simply-absent config (doctor run outside a project) is a healthy
+    // state that must not flip the exit code.
+    const detail = vaultCheck.status === 'fail'
+      ? 'Skipped (vault check failed)'
+      : 'Skipped — run from a project directory for project checks';
     checks.push(
-      { name: 'Database', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
-      { name: 'Intelligence', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
-      { name: 'Embeddings', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
-      { name: 'Agents', status: 'fail', detail: 'Skipped (vault check failed)', fixable: false },
+      { name: 'Database', status: 'warn', detail, fixable: false },
+      { name: 'Intelligence', status: 'warn', detail, fixable: false },
+      { name: 'Embeddings', status: 'warn', detail, fixable: false },
+      { name: 'Agents', status: 'warn', detail, fixable: false },
       await checkDaemon(vaultDir),
     );
     return checks;
@@ -938,8 +953,26 @@ function formatCheck(check: DoctorCheck): string {
 
 // --- CLI entry point ---
 
+const USAGE = `Usage: myco doctor [--fix]
+
+Check vault and machine install health.
+
+Options:
+  --fix          Attempt to repair fixable issues
+  -h, --help     Show this help
+`;
+
 export async function run(args: string[], vaultDir: string): Promise<void> {
-  const shouldFix = args.includes('--fix');
+  if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+
+  const parsed = parseStrictFlags('myco doctor', args, [
+    { name: '--fix' },
+    { name: '--help', aliases: ['-h'] },
+  ], USAGE);
+  const shouldFix = parsed.has('--fix');
 
   console.log('\nmyco doctor\n');
 
@@ -961,6 +994,10 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   console.log(`  ${issues.length} issue(s) found.`);
 
+  // The exit code reflects the FINAL state: when --fix repairs something,
+  // re-run the checks so `myco doctor --fix && ...` chains succeed after
+  // a successful repair instead of reporting the pre-fix failures.
+  let finalChecks = checks;
   if (shouldFix) {
     const actions = await fix(vaultDir, checks);
     if (actions.length > 0) {
@@ -969,6 +1006,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
         console.log(`  Fixed: ${action}`);
       }
       console.log('');
+      finalChecks = await runChecks(vaultDir);
     } else {
       console.log('  No auto-fixable issues.\n');
     }
@@ -976,5 +1014,12 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     console.log(`  Run \`myco doctor --fix\` to repair ${fixable.length} fixable issue(s).\n`);
   } else {
     console.log('');
+  }
+
+  // Failed checks must be visible to scripts and CI, not just humans
+  // reading the table. Warnings stay exit-0 — a healthy machine install
+  // run outside a project produces only warn rows.
+  if (finalChecks.some((check) => check.status === 'fail')) {
+    process.exitCode = 1;
   }
 }

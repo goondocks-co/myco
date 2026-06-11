@@ -1,4 +1,5 @@
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { parseStrictFlags } from './args.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { loadManifests } from '../symbionts/detect.js';
@@ -48,32 +49,40 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
+  const parsed = parseStrictFlags('myco update', args, [
+    { name: '--project', value: 'required' },
+    { name: '--all-projects' },
+    { name: '--target-version', value: 'required' },
+    { name: '--cancel-update' },
+    { name: '--help', aliases: ['-h'] },
+  ], USAGE);
+
   // `--target-version <v>` writes a binary-update intent for the daemon's
   // reconciler to pick up. Distinct from the project-config-sync path
   // (the rest of this command). Doesn't touch project files.
-  const targetVersionIdx = args.indexOf('--target-version');
-  if (targetVersionIdx !== -1) {
-    const target = args[targetVersionIdx + 1];
-    if (!target) {
-      console.error('--target-version requires a version argument');
-      process.exit(1);
-    }
-    await runUpdateIntent(target);
+  if (parsed.has('--target-version')) {
+    await runUpdateIntent(parsed.value('--target-version')!);
     return;
   }
 
-  if (args.includes('--cancel-update')) {
+  if (parsed.has('--cancel-update')) {
     await runCancelUpdate();
     return;
   }
 
-  // Explicit single-project targeting — update only this project.
-  const projectIdx = args.indexOf('--project');
-  if (projectIdx !== -1 && args[projectIdx + 1]) {
+  // Explicit single-project targeting — update only this project. The
+  // strict parser guarantees a value: a bare `--project` is a usage
+  // error, not a silent fan-out to every registered project.
+  if (parsed.has('--project')) {
+    let machineWideErrors: string[] = [];
     try {
-      await runForProject(args[projectIdx + 1]);
+      machineWideErrors = await runForProject(parsed.value('--project')!);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    if (machineWideErrors.length > 0) {
+      reportMachineWideErrors(machineWideErrors);
       process.exit(1);
     }
     return;
@@ -83,6 +92,13 @@ export async function run(args: string[]): Promise<void> {
   // Grove/project, so `myco update` updates them all. `--all-projects`
   // is a deprecated, tolerated alias for this default.
   await runAllProjects();
+}
+
+function reportMachineWideErrors(errors: string[]): void {
+  console.error(`⚠ ${errors.length} machine-wide update step${errors.length === 1 ? '' : 's'} failed:`);
+  for (const error of errors) {
+    console.error(`  - ${error}`);
+  }
 }
 
 /**
@@ -96,8 +112,13 @@ export async function run(args: string[]): Promise<void> {
  * `myco update --all-projects` with N registered projects doesn't
  * re-run these N times. /code-review finding C7.
  */
-async function runMachineWideUpdate(allManifests: SymbiontManifest[], currentVersion: string, stampPath: string): Promise<number> {
+async function runMachineWideUpdate(
+  allManifests: SymbiontManifest[],
+  currentVersion: string,
+  stampPath: string,
+): Promise<{ updatedCount: number; errors: string[] }> {
   let updatedCount = 0;
+  const errors: string[] = [];
 
   // --- Refresh GLOBAL symbiont configs ---
   //
@@ -123,6 +144,7 @@ async function runMachineWideUpdate(allManifests: SymbiontManifest[], currentVer
       console.log(`  ✓ Updated ${label}: ${installed.join(', ')}`);
     } else if (d.status === 'error') {
       console.log(`  ✗ Failed to update ${d.symbiont}: ${d.error ?? 'unknown error'}`);
+      errors.push(`${d.symbiont}: ${d.error ?? 'unknown error'}`);
     }
   }
   updatedCount += installedCount;
@@ -205,7 +227,7 @@ async function runMachineWideUpdate(allManifests: SymbiontManifest[], currentVer
     // Non-fatal — stamp write failure shouldn't break the update
   }
 
-  return updatedCount;
+  return { updatedCount, errors };
 }
 
 interface RunForProjectOptions {
@@ -218,7 +240,12 @@ interface RunForProjectOptions {
   skipMachineWide?: boolean;
 }
 
-async function runForProject(projectRoot: string | undefined, options: RunForProjectOptions = {}): Promise<void> {
+/**
+ * Sync one project's managed files. Returns the machine-wide step errors
+ * (per-symbiont global-install failures) so the CLI entry point can fold
+ * them into its exit-code rollup; empty when `skipMachineWide` is set.
+ */
+async function runForProject(projectRoot: string | undefined, options: RunForProjectOptions = {}): Promise<string[]> {
   const vaultDir = projectRoot
     ? path.join(projectRoot, '.myco')
     : resolveVaultDir();
@@ -272,8 +299,11 @@ async function runForProject(projectRoot: string | undefined, options: RunForPro
   // Machine-wide refresh (global symbiont install, config scrub,
   // per-project migration pass, version stamp). Skipped by --all-projects
   // which hoists this work out of its per-project loop. /code-review C7.
+  let machineWideErrors: string[] = [];
   if (!options.skipMachineWide) {
-    updatedCount += await runMachineWideUpdate(allManifests, currentVersion, stampPath);
+    const machineWide = await runMachineWideUpdate(allManifests, currentVersion, stampPath);
+    updatedCount += machineWide.updatedCount;
+    machineWideErrors = machineWide.errors;
   }
 
   // HTTP MCP entries depend on the local daemon being reachable at the
@@ -319,6 +349,8 @@ async function runForProject(projectRoot: string | undefined, options: RunForPro
     console.log(`Dashboard: ${dashboardUrl}`);
   }
   console.log('Run `myco doctor` to verify setup health.');
+
+  return machineWideErrors;
 }
 
 /**
@@ -435,10 +467,13 @@ async function runAllProjects(): Promise<void> {
   const allManifests = loadManifests();
   const currentVersion = getPluginVersion();
   const stampPath = resolveLastUpdateVersionPath();
+  const machineWideErrors: string[] = [];
   try {
-    await runMachineWideUpdate(allManifests, currentVersion, stampPath);
+    machineWideErrors.push(...(await runMachineWideUpdate(allManifests, currentVersion, stampPath)).errors);
   } catch (error) {
-    console.error(`  ✗ Machine-wide refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`  ✗ Machine-wide refresh failed: ${message}`);
+    machineWideErrors.push(`machine-wide refresh: ${message}`);
   }
 
   const failures: { target: typeof targets[number]; error: unknown }[] = [];
@@ -453,14 +488,19 @@ async function runAllProjects(): Promise<void> {
   }
 
   console.log('');
-  if (failures.length === 0) {
+  if (failures.length === 0 && machineWideErrors.length === 0) {
     console.log(`✓ Updated all ${targets.length} project${targets.length === 1 ? '' : 's'}.`);
     return;
   }
 
-  console.error(`⚠ ${failures.length} of ${targets.length} project${targets.length === 1 ? '' : 's'} failed:`);
-  for (const { target, error } of failures) {
-    console.error(`  - ${target.groveSlug}/${target.projectName}: ${error instanceof Error ? error.message : String(error)}`);
+  if (machineWideErrors.length > 0) {
+    reportMachineWideErrors(machineWideErrors);
+  }
+  if (failures.length > 0) {
+    console.error(`⚠ ${failures.length} of ${targets.length} project${targets.length === 1 ? '' : 's'} failed:`);
+    for (const { target, error } of failures) {
+      console.error(`  - ${target.groveSlug}/${target.projectName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   process.exit(1);
 }

@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, runChecks } from '@myco/cli/doctor';
+import { type DoctorCheck, checkCaptureFlow, checkMigrationStatus, checkSymbiontEdgeCases, fix, isSymbiontRegistered, isSymbiontRegisteredGlobally, run, runChecks } from '@myco/cli/doctor';
 import { loadManifests } from '@myco/symbionts/detect';
 import { manifestToolTransport } from '@myco/symbionts/capabilities';
 import { expandHome } from '@myco/grove/paths';
@@ -10,6 +10,7 @@ import { openDatabase, withDatabase, initDatabase, closeDatabase } from '@myco/d
 import { createSchema } from '@myco/db/schema.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { resolveDaemonDataPaths } from '@myco/daemon/data-paths.js';
+import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
 import { recordMigrationPass, listMigrationErrors } from '@myco/db/queries/migration-log.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
@@ -21,11 +22,27 @@ function findManifest(name: string) {
 }
 
 describe('runChecks', () => {
-  it('returns vault check failure when myco.yaml missing', async () => {
+  it('reports a missing myco.yaml as warn (not fail) so doctor outside a project exits 0', async () => {
+    // RC-6: a missing vault config is the documented "run doctor from
+    // $HOME after install" flow, not a failure. Only an unparseable
+    // config fails the Vault row.
     const checks = await runChecks('/tmp/nonexistent-vault-' + Date.now());
     const vaultCheck = checks.find((c) => c.name === 'Vault');
     expect(vaultCheck).toBeDefined();
-    expect(vaultCheck!.status).toBe('fail');
+    expect(vaultCheck!.status).toBe('warn');
+    expect(checks.every((c) => c.status !== 'fail' || c.name === 'Daemon')).toBe(true);
+  });
+
+  it('reports an unparseable myco.yaml as a Vault failure', async () => {
+    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-badyaml-'));
+    try {
+      fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: [unclosed\n', 'utf-8');
+      const checks = await runChecks(vaultDir);
+      const vaultCheck = checks.find((c) => c.name === 'Vault');
+      expect(vaultCheck!.status).toBe('fail');
+    } finally {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    }
   });
 
   it('returns all expected check names', async () => {
@@ -36,6 +53,98 @@ describe('runChecks', () => {
     expect(names).toContain('Embeddings');
     expect(names).toContain('Agents');
     expect(names).toContain('Daemon');
+  });
+});
+
+describe('doctor exit codes', () => {
+  let vaultDir: string;
+  let savedMycoHome: string | undefined;
+  let mycoHome: string;
+
+  beforeEach(() => {
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-exit-'));
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-exit-home-'));
+    savedMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
+    process.exitCode = 0;
+  });
+
+  async function runDoctorQuietly(args: string[]): Promise<void> {
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run(args, vaultDir);
+    } finally {
+      logSpy.mockRestore();
+    }
+  }
+
+  it('exits 0 from a non-project directory (healthy machine, warn rows only)', async () => {
+    await runDoctorQuietly([]);
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it('sets exit code 1 when a check fails', async () => {
+    // Unparseable config → Vault check fails.
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: [unclosed\n', 'utf-8');
+    await runDoctorQuietly([]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('reports a malformed daemon.json as a fixable failure', async () => {
+    const statePath = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '{not json', 'utf-8');
+
+    const checks = await runChecks(vaultDir);
+    const daemon = checks.find((c) => c.name === 'Daemon');
+    expect(daemon!.status).toBe('fail');
+    expect(daemon!.fixable).toBe(true);
+    expect(daemon!.detail).toContain('parse error');
+  });
+
+  it('exits 0 when --fix repairs the only failing check (exit code reflects post-fix state)', async () => {
+    // Malformed daemon.json → Daemon fail (fixable). fix() deletes it via
+    // deleteIfMalformed; the recheck then sees a clean machine.
+    const statePath = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '{not json', 'utf-8');
+
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runDoctorQuietly(['--fix']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(fs.existsSync(statePath)).toBe(false);
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it('keeps exit code 1 when --fix cannot repair the failure', async () => {
+    // Unparseable myco.yaml is not auto-fixable.
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: [unclosed\n', 'utf-8');
+    await runDoctorQuietly(['--fix']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('rejects an unknown flag with exit code 2', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as never);
+    const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await expect(run(['--fxi'], vaultDir)).rejects.toThrow(/process\.exit\(2\)/);
+    expect(stderrSpy.mock.calls.flat().join('')).toContain("unknown flag '--fxi'");
+
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 });
 
