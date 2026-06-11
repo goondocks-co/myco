@@ -73,6 +73,12 @@ export interface PowerJobDeps {
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
+  /**
+   * The buffer reconciler's convergence probe. The dead-session sweep
+   * defers zero-batch sessions whose buffer hasn't converged this daemon
+   * lifetime — their prompts may still be sitting unreplayed on disk.
+   */
+  reconciler?: { hasUnconvergedBuffer(sessionId: string): boolean };
 }
 
 export interface PowerJobsResult {
@@ -318,6 +324,9 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         embeddingManager: manager,
         resolveProjectVaultDir: projectVaultDirResolvers.get(scope).resolve,
         staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
+        ...(deps.reconciler
+          ? { hasUnconvergedBuffer: (sessionId: string) => deps.reconciler!.hasUnconvergedBuffer(sessionId) }
+          : {}),
       });
     }),
   });

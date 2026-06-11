@@ -15,7 +15,7 @@ function makeHandlers(vaultDir: string, miner: { reconcileAndAttributeResponses:
   return createSessionLifecycleHandlers({
     registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
     sessionBuffers: new Map(),
-    reconciler: { reconcileSession: vi.fn(), clearSession: vi.fn() },
+    reconciler: { reconcileSession: vi.fn(), clearSession: vi.fn(), cleanStaleBuffers: vi.fn(() => 0) },
     stopProcessor: { clearSession: vi.fn() },
     transcriptMiner: miner,
     server: { updateDaemonJsonSessions: vi.fn() },

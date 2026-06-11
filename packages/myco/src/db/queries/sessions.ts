@@ -9,6 +9,7 @@ import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { closeOpenBatches } from '@myco/db/queries/batches.js';
+import { insertSessionTombstone, type SessionTombstoneSource } from '@myco/db/queries/session-tombstones.js';
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
@@ -562,27 +563,6 @@ export function closeSession(
   return closed;
 }
 
-/**
- * Delete a session and all its child rows (batches, activities, attachments).
- *
- * No ON DELETE CASCADE in the schema, so we delete children first.
- * Returns true if the session existed and was deleted.
- *
- * Team-sync delete propagation is handled automatically by the
- * sessions_team_ad and prompt_batches_team_ad triggers, which journal
- * every delete into team_outbox when sync is enabled.
- */
-export function deleteSession(id: string): boolean {
-  const db = getDatabase();
-
-  db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(id);
-  db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(id);
-  db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(id);
-  const info = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
-
-  return info.changes > 0;
-}
-
 // ---------------------------------------------------------------------------
 // Cascade delete + impact query
 // ---------------------------------------------------------------------------
@@ -638,10 +618,19 @@ export function getSessionImpact(sessionId: string): SessionImpact {
 /**
  * Delete a session and ALL related data in a single transaction.
  *
+ * This is the ONLY session deletion path — every deletion writes a
+ * `session_tombstones` row inside the same transaction so the buffer
+ * reconciler refuses to resurrect the session from a lingering buffer
+ * file. `source` records which deletion path fired (user delete,
+ * maintenance sweep, invalid-capture cleanup).
+ *
  * Returns counts of deleted rows and IDs needed for post-transaction
  * cleanup (vault files, embedding vectors).
  */
-export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
+export function deleteSessionCascade(
+  sessionId: string,
+  source: SessionTombstoneSource,
+): DeleteCascadeResult {
   const db = getDatabase();
 
   const zeroCounts: DeleteCascadeResult = {
@@ -734,6 +723,11 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     const prompts = changesSince(db);
     db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
     const sessionDeleted = changesSince(db) > 0;
+
+    // Tombstone inside the same transaction: a committed cascade and its
+    // resurrection guard are atomic — there is no window where the row is
+    // gone but the reconciler could still replay the session's buffer.
+    insertSessionTombstone(db, { sessionId, projectId, source });
 
     return {
       deleted: sessionDeleted,

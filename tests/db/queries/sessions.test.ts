@@ -20,6 +20,12 @@ import {
   reactivateSessionIfCompleted,
 } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
+import {
+  SESSION_TOMBSTONE_SOURCE,
+  getSessionTombstone,
+  hasSessionTombstone,
+  pruneSessionTombstones,
+} from '@myco/db/queries/session-tombstones.js';
 import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
@@ -616,7 +622,7 @@ describe('session query helpers', () => {
       createAttachment(session.id, '/path/file2.png');
       createGraphEdge(agentId, session.id);
 
-      const result = deleteSessionCascade(session.id);
+      const result = deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
 
       expect(result.deleted).toBe(true);
       expect(result.counts.prompts).toBe(2);
@@ -648,7 +654,7 @@ describe('session query helpers', () => {
       createPlan(session.id, 'plan-linked', batchId);
       createSkillUsage(agentId, session.id, 'skill-linked');
 
-      const result = deleteSessionCascade(session.id);
+      const result = deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
       expect(result.deleted).toBe(true);
 
       const db = getDatabase();
@@ -679,7 +685,7 @@ describe('session query helpers', () => {
       createSpore(agentId, sessA.id, 'spore-res-a');
       createResolutionEvent(agentId, 'spore-res-a', sessB.id);
 
-      const result = deleteSessionCascade(sessA.id);
+      const result = deleteSessionCascade(sessA.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
       expect(result.deleted).toBe(true);
       expect(result.counts.resolutionEvents).toBe(1);
     });
@@ -691,7 +697,7 @@ describe('session query helpers', () => {
       createReleaseEvidence(session.id);
       createReleaseEvidence(session.id, batchId);
 
-      const result = deleteSessionCascade(session.id);
+      const result = deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
       expect(result.deleted).toBe(true);
 
       const db = getDatabase();
@@ -707,7 +713,7 @@ describe('session query helpers', () => {
     });
 
     it('returns deleted: false for non-existent session', () => {
-      const result = deleteSessionCascade('does-not-exist');
+      const result = deleteSessionCascade('does-not-exist', SESSION_TOMBSTONE_SOURCE.API_DELETE);
 
       expect(result.deleted).toBe(false);
       expect(result.counts.prompts).toBe(0);
@@ -731,7 +737,7 @@ describe('session query helpers', () => {
       createBatch(sess2.id);
       createSpore(agentId, sess2.id, 'spore-keep-2');
 
-      deleteSessionCascade(sess1.id);
+      deleteSessionCascade(sess1.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
 
       // sess2 data should be untouched
       expect(getSession(sess2.id, ALL_PROJECTS_SCOPE)).not.toBeNull();
@@ -744,11 +750,48 @@ describe('session query helpers', () => {
       const session = makeSession({ id: 'sess-idem' });
       upsertSession(session);
 
-      const first = deleteSessionCascade(session.id);
+      const first = deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
       expect(first.deleted).toBe(true);
 
-      const second = deleteSessionCascade(session.id);
+      const second = deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.API_DELETE);
       expect(second.deleted).toBe(false);
+    });
+
+    it('writes a tombstone with the deleted row\'s project_id and the caller\'s source', () => {
+      const session = makeSession({ id: 'sess-tomb', project_id: 'project-tomb' });
+      upsertSession(session);
+
+      deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.MAINTENANCE_SWEEP);
+
+      const tombstone = getSessionTombstone(session.id)!;
+      expect(tombstone).not.toBeNull();
+      expect(tombstone.project_id).toBe('project-tomb');
+      expect(tombstone.source).toBe('maintenance_sweep');
+      expect(tombstone.deleted_at).toBeGreaterThan(0);
+    });
+
+    it('writes NO tombstone for a no-row session (deleted: false)', () => {
+      const result = deleteSessionCascade('never-existed', SESSION_TOMBSTONE_SOURCE.API_DELETE);
+
+      expect(result.deleted).toBe(false);
+      expect(hasSessionTombstone('never-existed')).toBe(false);
+    });
+
+    it('pruneSessionTombstones removes only rows older than the window', () => {
+      const session = makeSession({ id: 'sess-prune' });
+      upsertSession(session);
+      deleteSessionCascade(session.id, SESSION_TOMBSTONE_SOURCE.INVALID_CAPTURE);
+
+      // Fresh tombstone survives a 14d window.
+      expect(pruneSessionTombstones(14 * 24 * 60 * 60 * 1000)).toBe(0);
+      expect(hasSessionTombstone(session.id)).toBe(true);
+
+      // Age the row past the window, then prune.
+      getDatabase().prepare(
+        `UPDATE session_tombstones SET deleted_at = deleted_at - 15 * 24 * 60 * 60 WHERE session_id = ?`,
+      ).run(session.id);
+      expect(pruneSessionTombstones(14 * 24 * 60 * 60 * 1000)).toBe(1);
+      expect(hasSessionTombstone(session.id)).toBe(false);
     });
   });
 

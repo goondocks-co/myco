@@ -5,9 +5,11 @@ import { createGroveBackup } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
 import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import fs from 'node:fs';
 import { ensureGroveDatabase } from './database.js';
 import {
   resolveGroveDbPath,
+  resolveGroveProjectDir,
   resolveMycoHome,
 } from './paths.js';
 import {
@@ -100,6 +102,14 @@ export function deleteProjectPermanently(
     // tombstone enqueue is needed (it would double-journal).
     deleteProjectRows(db, project.project_id);
     deregisterProjectInGrove(groveId, project.project_id, mycoHome);
+    // Remove the Grove-side project dir (buffer/ and any per-project
+    // artifacts). With the rows, tombstones, AND buffer files gone
+    // together, a later re-register of the same project id presents zero
+    // resurrection candidates. The whole-Grove snapshot taken above is a
+    // SQL dump of DB tables only — buffer .jsonl files are NOT captured,
+    // so unconverged buffered events in this dir are destroyed by design;
+    // only rows already in the DB are recoverable from the snapshot.
+    tryRemoveGroveProjectDir(groveId, project.project_id, mycoHome);
     tryRemoveProjectVault(project.root, 'delete', project.project_id);
     return {
       grove_id: groveId,
@@ -115,6 +125,16 @@ export function deleteProjectPermanently(
 
 export function removeProjectVault(projectRoot: string): void {
   ProjectVault.atRoot(projectRoot).removeManagedProjectFiles();
+}
+
+function tryRemoveGroveProjectDir(groveId: string, projectId: string, mycoHome: string): void {
+  try {
+    fs.rmSync(resolveGroveProjectDir(groveId, projectId, mycoHome), { recursive: true, force: true });
+  } catch (err) {
+    process.stderr.write(
+      `[myco] project delete could not remove Grove project dir project_id=${projectId}: ${(err as Error).message}\n`,
+    );
+  }
 }
 
 function tryRemoveProjectVault(projectRoot: string, action: 'archive' | 'delete', projectId: string): void {

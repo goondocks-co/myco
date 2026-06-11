@@ -35,6 +35,8 @@ import {
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
+import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
+import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import { listSessionFileActivities } from '@myco/db/queries/activities.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
@@ -208,10 +210,20 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionBuffers.delete(sessionId);
     sessionTitleCache.delete(sessionId);
 
-    const result = deleteSessionCascade(sessionId);
+    const result = deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.INVALID_CAPTURE);
     if (!result.deleted) return false;
 
-    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
+    // Resolve the GROVE buffer dir from the deleted row's project id so
+    // the lingering buffer file is actually removed; unresolvable → skip
+    // (the tombstone keeps the file from resurrecting), never guess.
+    const bufferDir = resolveBufferDirForProjectId(result.projectId);
+    if (!bufferDir) {
+      logger.warn(LOG_KINDS.HOOKS_STOP, 'Invalid-session cleanup: buffer dir unresolvable — skipping buffer cleanup', {
+        session_id: sessionId,
+        project_id: result.projectId,
+      });
+    }
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir).catch(() => {});
     return true;
   }
 
