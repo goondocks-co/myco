@@ -90,6 +90,66 @@ describe('myco update', () => {
     }
   });
 
+  it('rejects --project with a missing value with exit code 2 instead of fanning out to all projects', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { run } = await import('@myco/cli/update.js');
+    await expect(run(['--project'])).rejects.toThrow(/process\.exit\(2\)/);
+
+    expect(stderrSpy.mock.calls.flat().join('')).toContain('--project requires a value');
+    // Nothing was updated — the daemon was never consulted.
+    expect(ensureRunningMock).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('rejects --project followed by another flag with exit code 2', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { run } = await import('@myco/cli/update.js');
+    await expect(run(['--project', '--all-projects'])).rejects.toThrow(/process\.exit\(2\)/);
+
+    expect(ensureRunningMock).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('rejects an unknown flag with exit code 2', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as never);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const { run } = await import('@myco/cli/update.js');
+    await expect(run(['--bogus'])).rejects.toThrow(/process\.exit\(2\)/);
+
+    expect(stderrSpy.mock.calls.flat().join('')).toContain("unknown flag '--bogus'");
+    expect(ensureRunningMock).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('still accepts --all-projects (update-installer.sh and the Makefile hardcode it)', async () => {
+    // Strict argv parsing must keep the deprecated alias in the
+    // vocabulary: the daemon's post-install script and `make dev-link`
+    // both invoke `myco update --all-projects`.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--all-projects']);
+
+    // Empty sandbox registry: the command reaches the no-targets path
+    // instead of exiting 2 at the parser.
+    expect(logSpy.mock.calls.flat().join(' ')).toContain('No registered projects');
+    logSpy.mockRestore();
+  });
+
   it('prints help without touching project files', async () => {
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const { run } = await import('@myco/cli/update.js');

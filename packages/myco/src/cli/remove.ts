@@ -1,5 +1,7 @@
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
-import { isProcessAlive, parseStringFlag } from './shared.js';
+import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
+import { isProcessAlive } from './shared.js';
+import { parseStrictFlags, type ParsedFlags } from './args.js';
+import { confirmDestructive } from './confirm.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
 import { resolveMycoHome } from '../grove/paths.js';
@@ -25,12 +27,17 @@ With no flags, removes Myco's global install: unregisters the OS service,
 deletes the global launchers, strips Myco's blocks from each detected
 agent's user-global config, and unlinks the Myco-shipped skill symlinks.
 Captured data under ~/.myco/ is preserved unless --purge is passed.
+Prompts for confirmation; pass --yes for non-interactive use.
+
+Passing --project, --symbiont, or --remove-vault switches to project scope.
 
 Options:
-  --project [<path>]     Remove Myco's project-local install (legacy path)
+  --project [<path>]     Remove Myco's project-local install (defaults to cwd)
   --symbiont <name>      Remove just one symbiont's project-local install
-  --purge                Also delete ~/.myco/ (Grove DB + captured data)
-  --remove-vault         Project-scope only: delete the project's .myco/ dir
+  --purge                Global scope: also delete ~/.myco/ (Grove DB + captured data)
+                         Project scope: alias for --remove-vault
+  --remove-vault         Project scope: delete the project's .myco/ dir
+  --yes                  Skip the confirmation prompt
   -h, --help             Show this help
 `;
 
@@ -40,15 +47,65 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  if (args.includes('--symbiont') || args.includes('--project')) {
-    return await runProjectRemove(args);
+  const parsed = parseStrictFlags('myco remove', args, [
+    { name: '--project', value: 'optional' },
+    { name: '--symbiont', value: 'required' },
+    { name: '--purge' },
+    { name: '--remove-vault' },
+    { name: '--yes' },
+    { name: '--help', aliases: ['-h'] },
+  ], USAGE);
+
+  // --symbiont removes one agent's registration; the vault-deletion flags
+  // don't apply to it. Reject the combination outright — silently
+  // dropping a destructive flag is the bug class this command just shed.
+  if (parsed.has('--symbiont') && (parsed.has('--remove-vault') || parsed.has('--purge'))) {
+    process.stderr.write(`myco remove: --remove-vault/--purge cannot be combined with --symbiont\n\n${USAGE}`);
+    process.exit(2);
   }
 
-  return await runGlobalRemove(args.includes('--purge'));
+  // --remove-vault is a project-scope operation: without this routing it
+  // would fall through to the machine-wide teardown below (and then be
+  // ignored there) — the exact opposite of what the caller asked for.
+  if (parsed.has('--symbiont') || parsed.has('--project') || parsed.has('--remove-vault')) {
+    return await runProjectRemove(parsed);
+  }
+
+  return await runGlobalRemove({
+    purge: parsed.has('--purge'),
+    assumeYes: parsed.has('--yes'),
+  });
 }
 
-async function runGlobalRemove(purge: boolean): Promise<void> {
+async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Promise<void> {
+  const { purge, assumeYes } = opts;
   const mycoHome = resolveMycoHome();
+
+  if (!assumeYes) {
+    let projectCount = 0;
+    try {
+      const { currentDaemonVariant } = await import('../grove/paths.js');
+      const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
+      for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+        projectCount += listRegisteredProjects(grove.id, mycoHome).length;
+      }
+    } catch { /* registry unreadable — the summary still describes the rest */ }
+    const summary = [
+      'myco remove will tear down the machine-wide Myco install:',
+      '  - unregister the Myco OS service',
+      "  - strip Myco's blocks from every detected agent's global config",
+      `  - clean project-local artifacts in ${projectCount} registered project${projectCount === 1 ? '' : 's'}`,
+      purge
+        ? `  - DELETE ${mycoHome} (Grove DB + all captured data)`
+        : `  - preserve captured data at ${mycoHome} (pass --purge to delete it)`,
+    ].join('\n');
+    if (!await confirmDestructive(summary)) {
+      console.error('Aborted — nothing was removed.');
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   console.log(`Removing Myco global install (${mycoHome})\n`);
 
   // --- Unregister the OS service (do this first so launchd/systemd
@@ -142,16 +199,37 @@ async function cleanProjectLocalArtifacts(projectRoot: string, pkgRoot: string):
   removeProjectLaunchers(projectRoot, { legacy: true, active: true, runtimeCommand: true });
 }
 
-async function runProjectRemove(args: string[]): Promise<void> {
-  const vaultDir = resolveVaultDir();
-  if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.error(`No myco.yaml found in ${vaultDir}. Nothing to remove.`);
-    process.exit(1);
+async function runProjectRemove(parsed: ParsedFlags): Promise<void> {
+  const projectArg = parsed.value('--project');
+  const explicitRoot = projectArg ? path.resolve(projectArg) : null;
+  const vaultDir = explicitRoot ? path.join(explicitRoot, '.myco') : resolveVaultDir();
+  const projectRoot = explicitRoot ?? resolveProjectRoot(vaultDir);
+  const hasConfig = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
+  const symbiontName = parsed.value('--symbiont');
+  const assumeYes = parsed.has('--yes');
+  const removeVault = parsed.has('--remove-vault') || parsed.has('--purge');
+
+  // Safety gate BEFORE any cleanup. Project-scope uninstall resolves
+  // config dirs relative to the root, so `--project ~` would strip the
+  // user's GLOBAL agent configs (~/.claude, ~/.cursor, …) and
+  // `--remove-vault` would rmSync ~/.myco itself. Same guard class as
+  // the hook hot path: reject /, $HOME, and home-shaped directories.
+  try {
+    assertSafeProjectRoot(projectRoot);
+  } catch (err) {
+    if (err instanceof UnsafeProjectRootError) {
+      console.error(`Refusing project-scope removal at ${err.projectRoot}: ${err.reason}.`);
+      console.error('Pass the project repository root via --project <path>.');
+      process.exit(1);
+    }
+    throw err;
   }
 
-  const symbiontName = parseStringFlag(args, '--symbiont');
-
   if (symbiontName) {
+    if (!hasConfig) {
+      console.error(`No myco.yaml found in ${vaultDir}. Nothing to remove.`);
+      process.exit(1);
+    }
     const allManifests = loadManifests();
     const manifest = allManifests.find((m) => m.name === symbiontName);
     if (!manifest) {
@@ -159,7 +237,6 @@ async function runProjectRemove(args: string[]): Promise<void> {
       process.exit(1);
     }
 
-    const projectRoot = resolveProjectRoot(vaultDir);
     const pkgRoot = resolvePackageRoot();
     const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
     const removed = uninstallLabels(installer.uninstall());
@@ -179,10 +256,37 @@ async function runProjectRemove(args: string[]): Promise<void> {
     return;
   }
 
-  const projectRoot = resolveProjectRoot(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
-  const removeVault = args.includes('--remove-vault') || args.includes('--purge');
+
+  // Confirm the vault deletion UP FRONT — before any teardown — so a
+  // decline leaves the project fully intact instead of half-removed
+  // (hooks stripped, daemon stopped, vault still present).
+  if (removeVault && !assumeYes && fs.existsSync(vaultDir)) {
+    const confirmed = await confirmDestructive(
+      `This removes Myco's project-local install from ${projectRoot} and permanently deletes the vault at ${vaultDir} (captured sessions, spores, and project config).`,
+    );
+    if (!confirmed) {
+      console.error('Aborted — nothing was removed. Re-run with --yes to skip confirmation.');
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  // Orphan remedy: launcher artifacts without a myco.yaml — the state
+  // `myco doctor` reports as "orphan project-local launcher stubs" and
+  // routes here. There is no config or daemon to act on, but the
+  // launcher/per-symbiont artifact cleanup still applies.
+  if (!hasConfig) {
+    console.log(`No myco.yaml in ${vaultDir} — cleaning orphan launcher artifacts in ${projectRoot}\n`);
+    await cleanProjectLocalArtifacts(projectRoot, pkgRoot);
+    if (removeVault && fs.existsSync(vaultDir)) {
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      console.log(`  ✓ Removed vault at ${vaultDir}`);
+    }
+    console.log('\nOrphan project-local artifacts cleaned.');
+    return;
+  }
 
   console.log(`Removing Myco project-local install from ${projectRoot}\n`);
 
@@ -226,7 +330,7 @@ async function runProjectRemove(args: string[]): Promise<void> {
     fs.rmSync(vaultDir, { recursive: true, force: true });
     console.log(`  ✓ Removed vault at ${vaultDir}`);
   } else {
-    console.log(`  – Vault preserved at ${vaultDir} (use --purge to delete)`);
+    console.log(`  – Vault preserved at ${vaultDir} (use --remove-vault to delete)`);
   }
 
   console.log('\nMyco project-local install removed.');

@@ -294,7 +294,7 @@ When implementing project migration, bulk deletion, or Grove-wide operations, be
 
 ### myco remove --purge Blast Radius
 
-The `myco remove --purge` command performs a registered-project walk that affects ALL projects in the Grove registry unless explicitly scoped. Always use `--scope grove-id` or `--scope project-id` to limit purge operations.
+The `myco remove --purge` command performs a registered-project walk that affects ALL projects served by the current daemon variant, then deletes `~/.myco/` itself — it is the machine-wide teardown and prompts for confirmation (`--yes` to skip). There is no partial scope flag: to limit removal to one project, use `myco remove --project <root>` (add `--remove-vault` to also delete that project's `.myco/`).
 
 ## Procedure G: Security and Authorization Patterns
 

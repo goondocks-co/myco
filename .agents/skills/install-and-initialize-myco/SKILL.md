@@ -137,16 +137,24 @@ Updates the CLI binary and refreshes hook files, MCP entries, and skill symlinks
 
 This migration preserves configuration values that previously would have been lost during updates. The migrated settings become available to all projects within the Grove while maintaining their configured behavior.
 
-### 6. Removing Myco from a Project
+### 6. Removing Myco
 
 ```bash
 myco remove
 ```
 
-Stops the daemon, removes hooks, removes MCP entries, removes skill symlinks, and cleans gitignore blocks. The vault (`.myco/` with all session history and spores) is **preserved by default**. To also delete the vault:
+Bare `myco remove` is the **machine-wide uninstall**: it unregisters the OS service, strips Myco's blocks from every detected agent's global config, deletes the global launchers, and cleans project-local artifacts in registered projects. Captured data under `~/.myco/` is preserved unless you pass `--purge`. The command prompts for confirmation; pass `--yes` in non-interactive shells.
+
+To remove Myco from a single project instead, pass `--project` (and optionally a path):
 
 ```bash
-myco remove --remove-vault
+myco remove --project /path/to/project
+```
+
+Stops the project daemon and removes hooks, MCP entries, and skill symlinks for that project. The project vault (`.myco/` with all session history and spores) is **preserved by default**. To also delete the vault:
+
+```bash
+myco remove --project /path/to/project --remove-vault
 ```
 
 ## Development Environment Setup
