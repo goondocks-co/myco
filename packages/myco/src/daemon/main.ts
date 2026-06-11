@@ -1236,6 +1236,11 @@ export async function main(): Promise<void> {
     liveConfig,
     vaultDir: bootstrapVaultDir,
     reconcileSession: reconciler.reconcileSession,
+    // Handler-failure recovery: the dispatcher answers `persisted:false,
+    // buffered:true` and clears the converged mark so the daemon-appended
+    // buffer copy replays at the next quiescent boundary (post-Stop
+    // trigger / drain pass / boot) instead of relying on hook re-buffering.
+    clearConvergedMark: reconciler.clearSession,
     liveReconcile,
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
