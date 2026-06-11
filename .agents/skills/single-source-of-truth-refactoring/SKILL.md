@@ -175,6 +175,39 @@ Named wrappers win over inlining because:
 
 Trade-off: 2–4 lines of wrapper noise. Semantic clarity wins for shared infrastructure.
 
+### D3 — Config write path canonicalization
+
+**When:** Multiple callers independently load a config file, spread its contents, mutate a field, and re-save — the load-spread-save anti-pattern.
+
+**Fix:** Use `updateTierConfigRaw` (in `config/loader.ts`) as the single canonical write path for machine/grove config changes:
+```typescript
+// Before: load-spread-save anti-pattern (duplicates merge logic, error-prone)
+const existing = await loadMachineConfig(vaultDir);
+await saveMachineConfig(vaultDir, { ...existing, someField: newValue });
+
+// After: canonical write path
+await updateTierConfigRaw({ kind: 'machine', vaultDir }, (raw) => {
+  raw.someField = newValue;
+  return raw;
+});
+```
+
+`updateTierConfigRaw` owns the read-modify-write cycle. Internally it relies on the `GROVE_TIER_FIELDS` constant (in `config/loader.ts`) as the shared definition of which fields belong at the grove tier — the same constant consumed by strip, retain, and lift operations so those three code paths can never independently drift.
+
+### D4 — Shared extract handler and UI error string consolidation
+
+**When:** Multiple API route handlers share the same validation + update logic, or UI components independently convert error values to strings.
+
+**Config handler consolidation:** If two PUT handlers differ only in which config tier they write, extract the shared logic into a typed helper. The `handlePutTierConfig<TConfig>(body, options)` pattern in the config API is the canonical example — each endpoint delegates to the single function parameterized by tier kind:
+```typescript
+// Grove config PUT
+return handlePutTierConfig<GroveConfig>(body, { kind: 'grove', groveId: req.groveId });
+// Machine config PUT
+return handlePutTierConfig<MachineConfig>(body, { kind: 'machine' });
+```
+
+**UI error string consolidation:** If components independently do `err instanceof Error ? err.message : String(err)` or equivalent, replace with the canonical `errorMessage(err)` helper. This function consolidates 12+ ad-hoc error-to-string patterns that existed across UI components. Any new UI code that converts a caught error to a string should use it rather than inlining the pattern again.
+
 ## Procedure E: Centralizing Service State Paths and Ownership Predicates
 
 ### E1 — Service state path properties
@@ -228,14 +261,17 @@ const lockFile = daemonService.lockPath;
 
 **Violations fail silently, not loudly.** SSoT violations rarely throw. CI stays green. Divergence surfaces in production: a file isn't uninstalled, a Grove migrates to the wrong daemon, an agent sees a different field shape than the harness validates against. When you see unexpected runtime behavior that tests "should" cover, check for duplicate ownership logic before assuming a test gap.
 
-**Verify all seven smell classes after any SSoT refactor.** Use this table as a checklist:
+**Verify all smell classes after any SSoT refactor.** Use this table as a checklist:
 
-| Smell | Canonical fix | File |
-|-------|---------------|------|
+| Smell | Canonical fix | Canonical location |
+|-------|---------------|--------------------|
 | Projection logic in 2+ consumers | Named projections module | `read-projections.ts` |
 | Provider capability defaults in switch blocks | Named constants | `context-windows.ts` |
 | Magic string literals scattered | Named constant | `constants.ts` |
 | Strategy config inline at call sites | Named semantic wrappers | `config/loader.ts`, `settings-merge.ts` |
+| Config write via load-spread-save | `updateTierConfigRaw()` + `GROVE_TIER_FIELDS` | `config/loader.ts` |
+| Duplicated PUT handler validation logic | Typed extract helper (e.g. `handlePutTierConfig<T>`) | domain API module |
+| Ad-hoc error-to-string in UI | `errorMessage()` canonical helper | UI lib module |
 | File paths reconstructed at call sites | Service state path properties | `daemon/service-state.ts` |
 | Parallel ownership predicates | Single canonical helper | `symbionts/install-helpers.ts` |
 | Variant dispatch at N sites | Single `currentDaemonVariant()` | `grove/paths.ts` |

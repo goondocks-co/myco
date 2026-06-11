@@ -88,6 +88,11 @@ SKILL.md files capture **reusable project procedures** — step-by-step playbook
 
 **Test:** "Is this a step-by-step playbook for a task someone repeats?" If yes → SKILL.md. If it's a standing operating rule → AGENTS.md. If it's the WHY behind the procedure → vault.
 
+**In-package vs. harness-generated skills:** Myco has two distinct kinds of SKILL.md files:
+
+- **Harness-generated** (`.agents/skills/<slug>/SKILL.md`): produced by the `skill-evolve` pipeline. Must include `name: myco:<slug>` and `managed_by: myco` in frontmatter. These are the evolving operational skills tracked by the vault lifecycle.
+- **In-package** (`packages/myco/skills/<slug>/SKILL.md`): bundled reference skills shipped with the package. Use a plain `name: <slug>` (e.g. `name: myco-rules`) with no `myco:` prefix and no `managed_by` field. Do NOT add `managed_by: myco` to in-package skills — that would incorrectly enroll them in the vault skill lifecycle pipeline.
+
 ## Procedure C: Behavioral Context → Code Comments
 
 Code comments describe **what the code does and why it behaves that way** — the invariants it maintains, the edge cases it handles, and the shape of its contracts.
@@ -160,6 +165,12 @@ User-facing docs (README, CHANGELOG, quickstart, docs/, marketing site) guide us
 
 **Test:** "Would a user need to know this to install, configure, or troubleshoot?" If no → cut it.
 
+**Dual-surface docs architecture:** `docs/` uses a two-layer build:
+- Raw `.md` files (e.g., `docs/cloud-mcp.md`) are the source of truth and serve as AI-readable reference material.
+- `docs/build.mjs` compiles them to rendered HTML for human readers.
+
+Always write content in the raw `.md` source files; do not hand-edit generated HTML. PRs touching docs should touch the `.md` sources — the HTML is derived automatically by the build script.
+
 **Enforcement precedents:**
 - **PR #355 (`c6669f7e`):** `_unbound-bootstrap` removed from CHANGELOG, README, quickstart, and marketing site. Chris's framing: *"Users expect myco to not crash and work correctly without knowing why."*
 - **Cloud MCP branch (`cd96797`):** Full rewrite pass converted implementation-narrating drafts into user-facing guides across `docs/cloud-mcp.md`, `docs/team-sync.md`, and `README.md`. Chris's exact framing: *"The docs should read user documentation, not change logs."*
@@ -174,12 +185,15 @@ User-facing docs (README, CHANGELOG, quickstart, docs/, marketing site) guide us
 
 **"Just a quick comment" is a smell.** If you're tempted to add an incident date, a PR reference, or a "we chose this because" note as a code comment because "it's just a quick reminder" — it isn't quick. It's knowledge placed on the wrong surface. Write a vault spore instead.
 
+**In-package skills are not harness-managed.** Adding `managed_by: myco` to a file under `packages/myco/skills/` is a surface violation — it would pull a bundled product skill into the vault lifecycle pipeline incorrectly. The absence of `managed_by` is intentional for in-package skills.
+
 ## Quick Reference
 
 | Surface | Store here | Don't store here |
 |---|---|---|
 | **AGENTS.md** | Durable agent rules, project-wide architectural invariants | Implementation details, one-off decisions, procedure-specific guidance |
-| **SKILL.md** | Codified procedures with steps, examples, gotchas | Project-wide invariants, historical rationale, user-facing explanations |
+| **SKILL.md** (harness) | Codified procedures with steps, examples, gotchas | Project-wide invariants, historical rationale, user-facing explanations |
+| **SKILL.md** (in-package) | Bundled product reference skills (`packages/myco/skills/`) — no `managed_by` | Do not add `managed_by: myco` |
 | **Code comments** | Behavioral invariants, HOW the code works, contract shapes | Incident dates, spore/PR/ticket IDs, decision rationale, historical narrative |
 | **Myco vault** | Decisions, rationale, incidents, tradeoffs, cross-references, rigor gaps | Content that belongs in user docs or code comments |
 | **User docs** | What you can do, how to set up, how to troubleshoot | Internals, defensive fallbacks, implementation choices, changelog content |

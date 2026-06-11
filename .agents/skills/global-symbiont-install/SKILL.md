@@ -266,3 +266,37 @@ Do not expose internal fallback terminology (`_unbound-bootstrap/`,
 "phantom vault") in user-facing docs. Users' mental model is:
 *install → default Grove auto-created → first hook fires → project registered*.
 Everything else is implementation noise that adds confusion without value.
+
+### toolTransport Manifest Field Drives Installer Hook-Command Seam
+
+The `toolTransport` field in `SymbiontCapabilities`
+(`packages/myco/src/symbionts/manifest-schema.ts`, default `'mcp'`) declares
+whether a symbiont accesses Myco tools via MCP transport or CLI transport. This
+field directly gates the installer's hook-command generation: MCP-transport
+symbionts get one hook command shape; CLI-transport symbionts get another. When
+adding a new symbiont, set `toolTransport` correctly in the manifest **before**
+wiring up the installer — an incorrect value silently produces a hook command
+that cannot invoke Myco tools at runtime. The runtime resolver lives in
+`packages/myco/src/symbionts/capabilities.ts`.
+
+### assertSafeProjectRoot Required Before Any Project-Root Cleanup
+
+`assertSafeProjectRoot(projectRoot)` (exported from
+`packages/myco/src/vault/resolve.ts`) must be called before any cleanup or
+write operation that targets a project root directory. It rejects unsafe paths
+(e.g., `~/.myco`, system directories, the grove root itself) that would cause
+catastrophic cross-project damage if written to during a global install walk.
+Already used in `packages/myco/src/cli/remove.ts` and
+`packages/myco/src/grove/registry.ts`. Do not bypass it with ad-hoc path
+checks — the function covers edge cases that manual checks miss.
+
+### myco update Skips Re-Install When Content Matches Template
+
+When a symbiont's installed hook file content matches the current template
+byte-for-byte, `myco update` treats the installation as up-to-date and skips
+it. If a bug existed in both the template and the installer simultaneously, a
+template-only fix will not propagate to projects whose hook files already match
+the (buggy) template output — the update pass sees identical content and skips
+them. After fixing a template bug, verify that installed hook files don't
+already match the old buggy template; if they do, a manual force-reinstall is
+required to push the fix.
