@@ -23,6 +23,18 @@ const CaptureRuleSchema = z.object({
   reason: z.string().optional(),
   /** For rewrite_prompt: keep the substring after this marker. */
   extract_after: z.string().optional(),
+  /**
+   * For rewrite_prompt: strip a single enclosing tag envelope. Fires only
+   * when the prompt starts with `open` AND ends with `close`; the inner
+   * text is kept verbatim (boundary whitespace adjacent to the tags is
+   * consumed as part of the envelope). When only one side is present the
+   * rule falls through to `pass` unchanged — same fail-safe stance as
+   * `extract_after`. Evaluated before `extract_after` when both are set.
+   */
+  strip_envelope: z.object({
+    open: z.string().min(1),
+    close: z.string().min(1),
+  }).optional(),
   /** For rewrite_prompt: trim whitespace from the extracted substring. */
   trim: z.boolean().default(true),
   /**
@@ -288,6 +300,11 @@ const RegistrationSchema = z.object({
  *    extracted via shlex; the entry's `readCommands` allowlist names the
  *    commands whose first non-flag argument is a path (e.g. Codex's `Bash`
  *    with `cat`, `head`, `tail`).
+ *  - patch: the path is embedded in an apply_patch envelope string
+ *    (`*** Begin Patch` … `*** End Patch`); the resolver scans the file
+ *    headers (`*** Add File:` / `*** Update File:` / `*** Delete File:`)
+ *    and returns the first one. Codex carries the envelope on `command`,
+ *    opencode on `patchText`.
  *
  * `pathKind` is reserved for future image/URL support and defaults to `'file'`.
  */
@@ -304,9 +321,16 @@ const CanopyReadToolShellArg = z.strictObject({
   readCommands: z.array(z.string().min(1)).min(1),
 });
 
+const CanopyReadToolPatch = z.strictObject({
+  tool: z.string().min(1),
+  pathField: z.string().min(1),
+  extract: z.literal('patch'),
+});
+
 const CanopyReadToolSchema = z.union([
   // More-specific first — z.union picks the first matching variant.
   CanopyReadToolShellArg,
+  CanopyReadToolPatch,
   CanopyReadToolStructured,
 ]);
 

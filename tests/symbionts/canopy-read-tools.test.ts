@@ -265,6 +265,52 @@ describe('extractAnyPath — shell-arg variant', () => {
   });
 });
 
+describe('extractAnyPath — patch variant', () => {
+  const patchManifest = {
+    capabilities: {
+      pathBearingTools: [
+        { tool: 'apply_patch', pathField: 'patchText', extract: 'patch' },
+      ],
+    },
+  } as unknown as SymbiontManifest;
+
+  it('extracts the path from an Add File header', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: '*** Begin Patch\n*** Add File: /tmp/new.txt\n+hello\n*** End Patch',
+    })).toEqual({ filePath: '/tmp/new.txt' });
+  });
+  it('extracts the path from an Update File header', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: '*** Begin Patch\n*** Update File: docs/groves.md\n@@\n-a\n+b\n*** End Patch',
+    })).toEqual({ filePath: 'docs/groves.md' });
+  });
+  it('extracts the path from a Delete File header', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: '*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch',
+    })).toEqual({ filePath: 'src/old.ts' });
+  });
+  it('returns the FIRST header for multi-file patches', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: '*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** Add File: b.ts\n+z\n*** End Patch',
+    })).toEqual({ filePath: 'a.ts' });
+  });
+  it('returns null when the envelope has no file header', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: '*** Begin Patch\n*** End Patch',
+    })).toBeNull();
+  });
+  it('returns null when the field is missing, empty, or not a string', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {})).toBeNull();
+    expect(extractAnyPath(patchManifest, 'apply_patch', { patchText: '' })).toBeNull();
+    expect(extractAnyPath(patchManifest, 'apply_patch', { patchText: 42 })).toBeNull();
+  });
+  it('does not match a header that is not at the start of a line', () => {
+    expect(extractAnyPath(patchManifest, 'apply_patch', {
+      patchText: 'prefix *** Add File: /tmp/x.txt',
+    })).toBeNull();
+  });
+});
+
 describe('allPathBearingToolNames', () => {
   it('returns Claude Read/Write/Edit/MultiEdit and Codex Bash', () => {
     const names = allPathBearingToolNames();

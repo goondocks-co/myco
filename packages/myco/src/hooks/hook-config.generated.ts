@@ -356,7 +356,23 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "followupMessage": "followup_message",
         "systemMessage": "system_message"
       }
-    }
+    },
+    "captureRules": [
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<user_query>"
+        },
+        "action": "rewrite_prompt",
+        "reason": "strip Cursor user_query envelope",
+        "strip_envelope": {
+          "open": "<user_query>",
+          "close": "</user_query>"
+        },
+        "trim": true
+      }
+    ]
   },
   "opencode": {},
   "pi": {},

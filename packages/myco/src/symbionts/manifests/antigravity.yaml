@@ -114,3 +114,26 @@ capabilities:
   sessionStartInjection: true
   subagentStartInjection: false
   preToolUseInjection: false
+  # Tools whose toolCall.args carry a file path. Antigravity's current app
+  # uses PascalCase argument names — confirmed from the live buffer of smoke
+  # session b49c825e… (2026-06-11): `view_file` with `{ AbsolutePath,
+  # StartLine, EndLine, … }` and `write_to_file` with `{ TargetFile,
+  # CodeContent, Overwrite, … }`. The snake_case entries below cover the
+  # Gemini-era tool surface (`read_file`/`replace` with `file_path`,
+  # `run_shell_command` with `command`) still present in older installs —
+  # the dogfood vault has extracted rows for both generations.
+  pathBearingTools:
+    # Current Antigravity app (PascalCase args)
+    - tool: view_file
+      pathField: AbsolutePath
+    - tool: write_to_file
+      pathField: TargetFile
+    # Gemini-era surface (snake_case args)
+    - tool: read_file
+      pathField: file_path
+    - tool: replace
+      pathField: file_path
+    - tool: run_shell_command
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
