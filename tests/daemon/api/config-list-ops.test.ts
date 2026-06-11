@@ -124,8 +124,10 @@ describe('machine config addToList / removeFromList', () => {
     const res = await handlePutMachineConfig({
       addToList: [{ path: 'capture.ignore.paths', values: [42 as unknown as string] }],
     });
-    // MachineConfigSchema requires string[] — Zod should reject non-string entries
-    expect(res.response.status).toBe(400);
+    // MachineConfigSchema requires string[] — Zod rejects non-string entries.
+    // Value violations on tier PUTs are 422s (RC-3: 400 stays reserved for
+    // malformed requests and scope violations).
+    expect(res.response.status).toBe(422);
     expect((res.response.body as any).error).toBe('validation_failed');
   });
 

@@ -714,21 +714,69 @@ describe('Settings-scope correction (2026-06) — tier migration', () => {
     expect(merged.notifications.default_mode).toBe('banner');
   });
 
-  it('saveConfig does not clobber a newer explicit machine capture value (Fix #1 idempotence)', () => {
-    // The user already set capture explicitly in machine config. A later
-    // un-migrated project save must NOT overwrite that newer machine value —
-    // saveConfig's relocation mirrors moveMachine's "skip if target present".
+  it('saveConfig machine relocation is leaf-wise: unchanged residue never clobbers an explicit machine leaf', () => {
+    // RC-3 semantics: relocation merges LEAF-WISE into the machine doc, and a
+    // leaf may overwrite an explicit machine value only when the caller
+    // changed it in this save. Stale on-disk residue in myco.yaml is dropped
+    // by the schema strip, not relocated over the machine's newer value.
     fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
-    fs.writeFileSync(machinePath(), 'capture:\n  buffer_max_events: 111\n');
+    fs.writeFileSync(
+      machinePath(),
+      'capture:\n  buffer_max_events: 111\n  transcript_paths:\n    - /machine/explicit\n',
+    );
     writeProject(tmpDir, 'version: 3\ncapture:\n  buffer_max_events: 999\n');
     const config = loadConfig(tmpDir);
 
     saveConfig(tmpDir, config);
 
-    // The explicit machine value wins; the stale project value is NOT moved over it.
+    const machineRaw = readYaml(machinePath());
+    // Unchanged residue does not clobber the machine's explicit value.
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(111);
+    // The machine-explicit sibling leaf survives — no block-level overwrite.
+    expect((machineRaw.capture as Record<string, unknown>).transcript_paths).toEqual(['/machine/explicit']);
+    // … and capture is still stripped from myco.yaml.
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
+  });
+
+  it('saveConfig machine relocation: a caller-changed leaf lands on machine config, siblings survive', () => {
+    // A deliberate updateConfig write of a machine-homed leaf must actually
+    // land (caller wins at leaf granularity), while machine-explicit sibling
+    // leaves are never wiped by a section-level write.
+    fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
+    fs.writeFileSync(
+      machinePath(),
+      'capture:\n  buffer_max_events: 111\n  transcript_paths:\n    - /machine/explicit\n',
+    );
+    writeProject(tmpDir, 'version: 3\n');
+
+    updateConfig(tmpDir, (config) => ({
+      ...config,
+      capture: { ...config.capture, buffer_max_events: 999 },
+    }));
+
+    const machineRaw = readYaml(machinePath());
+    // The caller-set value wins at its leaf.
+    expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(999);
+    // The machine-explicit sibling leaf survives.
+    expect((machineRaw.capture as Record<string, unknown>).transcript_paths).toEqual(['/machine/explicit']);
+    const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
+    expect(persisted.capture).toBeUndefined();
+  });
+
+  it('saveConfig relocation never clobbers an explicit machine leaf with a default-valued one', () => {
+    // A default-valued leaf is not "meaningful" — it must neither relocate
+    // over an explicit machine value nor pollute the machine doc.
+    fs.mkdirSync(path.dirname(machinePath()), { recursive: true });
+    fs.writeFileSync(machinePath(), 'capture:\n  buffer_max_events: 111\n');
+    // 500 is the schema default for buffer_max_events.
+    writeProject(tmpDir, 'version: 3\ncapture:\n  buffer_max_events: 500\n');
+    const config = loadConfig(tmpDir);
+
+    saveConfig(tmpDir, config);
+
     const machineRaw = readYaml(machinePath());
     expect((machineRaw.capture as Record<string, unknown>).buffer_max_events).toBe(111);
-    // … and it's still stripped from myco.yaml.
     const persisted = readYaml(path.join(tmpDir, 'myco.yaml'));
     expect(persisted.capture).toBeUndefined();
   });

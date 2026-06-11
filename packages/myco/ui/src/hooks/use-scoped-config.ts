@@ -35,9 +35,6 @@ const NOTIFICATIONS_KEY = ['notifications'] as const;
  * - `setField` writes a single field into the chosen scope by constructing
  *   a nested patch that matches the dotted path.
  * - `resetField` clears a local override so the project value shines through.
- * - `promoteField` copies the current effective value into the project
- *   config, then clears the local override — equivalent to "this was working
- *   for me, make it the team default."
  *
  * Returned callbacks are stable across re-renders (data is read through refs)
  * so consumers don't have their `useCallback` deps thrash on every refetch.
@@ -156,15 +153,6 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
     invalidateLocal();
   }, [contextHeaders, invalidateLocal]);
 
-  const promoteField = useCallback(async (path: ConfigPath): Promise<void> => {
-    const value = getAtPath((mergedRef.current ?? {}) as Record<string, unknown>, path);
-    const patch: Record<string, unknown> = {};
-    setAtPath(patch, path, value);
-    await writeScopedConfig('project', patch, undefined, contextHeaders);
-    await clearLocalConfigKeys([path], contextHeaders);
-    invalidateLocal();
-  }, [contextHeaders, invalidateLocal]);
-
   const isLocalOverride = useCallback(
     (path: ConfigPath): boolean =>
       getAtPath((localRef.current ?? {}) as Record<string, unknown>, path) !== undefined,
@@ -232,7 +220,6 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
     setFields,
     resetField,
     resetFields,
-    promoteField,
     addToConfigList,
     removeFromConfigList,
   };

@@ -27,8 +27,9 @@ import {
 import { restoreViaChild } from '@myco/backup/restore-runner.js';
 import { RestoreJobRegistry } from '@myco/backup/restore-jobs.js';
 import type { RestoreResult } from '@myco/backup/engine.js';
-import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
-import { GroveConfigSchema } from '../../config/schema.js';
+import { z } from 'zod';
+import { loadMergedConfig, updateTierConfigRaw, TierConfigUnreadableError } from '../../config/loader.js';
+import { setAtPath, unsetAtPath } from '../../utils/dot-path.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
 import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome, currentDaemonVariant } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
@@ -357,12 +358,28 @@ export function createBackupConfigHandlers(deps: BackupConfigDeps) {
       return { status: 404, body: { error: 'no_grove_in_context' } };
     }
     const { dir } = req.body as { dir?: string | null };
-    const current = loadGroveConfig(groveId);
-    const next = GroveConfigSchema.parse({
-      ...current,
-      backup: { ...current.backup, dir: dir || undefined },
-    });
-    saveGroveConfig(groveId, next);
+    try {
+      updateTierConfigRaw({ kind: 'grove', groveId }, (rawDoc) => {
+        if (dir) setAtPath(rawDoc, ['backup', 'dir'], dir);
+        else unsetAtPath(rawDoc, ['backup', 'dir'], { pruneEmptyParents: true });
+        return rawDoc;
+      }, { mycoHome });
+    } catch (err) {
+      if (err instanceof TierConfigUnreadableError) {
+        return {
+          status: 422,
+          body: {
+            error: 'tier_config_unreadable',
+            message: 'The on-disk grove config is invalid — fix or remove it before writing.',
+            file: err.filePath,
+          },
+        };
+      }
+      if (err instanceof z.ZodError) {
+        return { status: 422, body: { error: 'validation_failed', issues: err.issues } };
+      }
+      throw err;
+    }
     return { body: { dir: dir || null } };
   }
 

@@ -1,7 +1,14 @@
 import fs from 'node:fs';
-import { loadConfig, updateConfig } from '../config/loader.js';
+import {
+  loadConfig,
+  updateConfig,
+  updateTierConfigRaw,
+  TierConfigUnreadableError,
+} from '../config/loader.js';
+import { scopePolicyForPath, type ScopeEntry } from '../config/scope.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
 import { withValue } from '../config/updates.js';
-import { getAtPath } from '../utils/dot-path.js';
+import { getAtPath, setAtPath } from '../utils/dot-path.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
@@ -41,9 +48,44 @@ function configGet(dotPath: string, vaultDir: string): void {
 function configSet(dotPath: string, rawValue: string, vaultDir: string): void {
   const value = parseValue(rawValue);
 
+  // Scope-aware dispatch: write the value into the tier file that owns the
+  // path so it actually takes effect (a wrong-tier write is pruned at merge
+  // time and silently vanishes).
+  let policy: ScopeEntry;
   try {
-    updateConfig(vaultDir, (config) => withValue(config, dotPath, value));
+    policy = scopePolicyForPath(dotPath);
+  } catch {
+    console.error(`Unknown config setting: ${dotPath}`);
+    process.exit(1);
+    return;
+  }
+
+  try {
+    if (policy.home === 'machine') {
+      updateTierConfigRaw({ kind: 'machine' }, (rawDoc) => {
+        setAtPath(rawDoc, dotPath, value);
+        return rawDoc;
+      });
+    } else if (policy.home === 'grove') {
+      const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
+      if (groveId) {
+        updateTierConfigRaw({ kind: 'grove', groveId }, (rawDoc) => {
+          setAtPath(rawDoc, dotPath, value);
+          return rawDoc;
+        });
+      } else {
+        // Unbound project: myco.yaml retains grove-tier values until a
+        // Grove binds, then the loader lifts them into grove config.
+        updateConfig(vaultDir, (config) => withValue(config, dotPath, value));
+      }
+    } else {
+      updateConfig(vaultDir, (config) => withValue(config, dotPath, value));
+    }
   } catch (err) {
+    if (err instanceof TierConfigUnreadableError) {
+      console.error(err.message);
+      process.exit(1);
+    }
     if (err instanceof Error && 'issues' in err) {
       const issues = (err as { issues: Array<{ path: (string | number)[]; message: string }> }).issues;
       console.error('Validation error:');

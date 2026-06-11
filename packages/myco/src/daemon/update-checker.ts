@@ -21,7 +21,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import semver from 'semver';
-import { loadMachineConfig, saveMachineConfig } from '../config/loader.js';
+import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
+import { setAtPath } from '../utils/dot-path.js';
 
 import {
   NPM_REGISTRY_BASE_URL,
@@ -319,10 +320,9 @@ export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
  * `vaultDir` parameter is retained for call-site compatibility only.
  */
 export function writeProjectReleaseChannel(_vaultDir: string | undefined, channel: ReleaseChannel): void {
-  const machine = loadMachineConfig();
-  saveMachineConfig({
-    ...machine,
-    daemon: { ...machine.daemon, update_channel: channel },
+  updateTierConfigRaw({ kind: 'machine' }, (rawDoc) => {
+    setAtPath(rawDoc, ['daemon', 'update_channel'], channel);
+    return rawDoc;
   });
 }
 

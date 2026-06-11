@@ -62,6 +62,7 @@ export function registerBuiltinDomains(): void {
     label: 'Settings',
     types: [
       { id: 'settings.saved', label: 'Settings saved', defaultMode: 'banner', defaultLevel: 'success' },
+      { id: 'settings.config_unreadable', label: 'Config file unreadable', defaultMode: 'banner', defaultLevel: 'error' },
     ],
   });
 }

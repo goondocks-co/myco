@@ -5,21 +5,21 @@ import {
   loadMergedConfig,
   loadLocalConfig,
   loadGroveConfig,
-  saveGroveConfig,
   loadMachineConfig,
-  saveMachineConfig,
   deepMergeConfig,
   migrateLegacyLocalAppearanceToGrove,
+  updateTierConfigRaw,
+  TierConfigUnreadableError,
+  type TierWriteTarget,
 } from '../../config/loader.js';
 import { z } from 'zod';
 import {
   MycoConfigSchema,
-  GroveConfigSchema,
-  MachineConfigSchema,
   type MycoConfig,
   type GroveConfig,
   type MachineConfig,
 } from '../../config/schema.js';
+import { tierAllowsPath, type Tier } from '../../config/scope.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -96,6 +96,40 @@ function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
+ * Registry-driven write gate, shared by the scoped and tier PUT handlers.
+ * Returns the subset of `paths` the given tier may NOT write: paths whose
+ * scope registry entry names a different home with no override for this
+ * tier, plus paths the registry doesn't know at all (scopePolicyForPath
+ * throws → fail closed). Callers reject the write with a 400 listing them.
+ *
+ * Only value-INTRODUCING paths (patch leaves + addToList) are gated; clears
+ * and removeFromList stay exempt so stale wrong-tier residue remains
+ * deletable through the same API that created it.
+ */
+function scopeViolations(tier: Tier, paths: string[]): string[] {
+  const offending: string[] = [];
+  for (const p of paths) {
+    try {
+      if (!tierAllowsPath(tier, p)) offending.push(p);
+    } catch {
+      offending.push(p);
+    }
+  }
+  return offending;
+}
+
+function scopeViolationResponse(tier: Tier, paths: string[]): RouteResponse {
+  return {
+    status: 400,
+    body: {
+      error: 'scope_violation',
+      message: `These config paths are not writable at the ${tier} scope`,
+      paths,
+    },
+  };
+}
+
+/**
  * PUT /api/config/scoped — atomic patch + clear + list-delta against project or local config.
  *
  * Request body:
@@ -114,7 +148,7 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   if (!isScopedConfigScope(payload.scope)) {
     return { status: 400, body: { error: 'scope must be project or local' } };
   }
-  const scope = payload.scope;
+  const scope = payload.scope as 'project' | 'local';
   const patch = payload.patch ?? {};
   const clearListOrError = validateClearList(payload.clear);
   if (Array.isArray(clearListOrError) === false) return clearListOrError;
@@ -140,24 +174,16 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   if (overlap.length > 0) {
     return { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } };
   }
-  // List-delta ops write config paths too, so they pass through the same
-  // path-based scope guards as patch/clear — a list-delta targeting
-  // appearance.* gets the specific 400 below, not a generic validation_failed.
-  const listOpPaths = [...addOpsOrError, ...removeOpsOrError].map((op) => op.path);
-  const appearancePaths = [
-    ...patchLeaves.filter((leaf) => pathsOverlap(leaf, 'appearance')),
-    ...clearList.filter((clearPath) => pathsOverlap(clearPath, 'appearance')),
-    ...listOpPaths.filter((opPath) => pathsOverlap(opPath, 'appearance')),
-  ];
-  if (appearancePaths.length > 0) {
-    return {
-      status: 400,
-      body: {
-        error: 'appearance_is_grove_scoped',
-        message: 'appearance settings must be written through Grove config',
-        keys: appearancePaths,
-      },
-    };
+  // Registry-driven scope gate: value-introducing writes (patch + addToList)
+  // against a path this scope doesn't own get a 400 instead of the old
+  // 200-then-vanish (pruneToTier silently dropped them at merge time).
+  // Clears and removeFromList stay exempt so stale residue is deletable.
+  const violations = scopeViolations(scope, [
+    ...patchLeaves,
+    ...addOpsOrError.map((op) => op.path),
+  ]);
+  if (violations.length > 0) {
+    return scopeViolationResponse(scope, violations);
   }
 
   if (scope === 'local') {
@@ -292,6 +318,9 @@ function applyListDeltas(
 
   for (const op of removeOps) {
     const existing = getAtPath(working, op.path);
+    // Nothing at the path → nothing to remove. Skip the write so an exempt
+    // removeFromList of an absent path can't plant an empty array as residue.
+    if (existing === undefined) continue;
     const arr = Array.isArray(existing) ? existing : [];
     setAtPath(working, op.path, arr.filter((v) => !op.values.includes(v)));
     touchedPaths.push(op.path);
@@ -301,9 +330,13 @@ function applyListDeltas(
 }
 
 interface TierPutOptions<TConfig> {
-  load: () => TConfig;
-  save: (validated: TConfig) => void;
-  validate: (merged: unknown) => TConfig;
+  /** Tier name for the registry-driven scope gate. */
+  tier: Tier;
+  /** Write target routed through `updateTierConfigRaw`. */
+  target: TierWriteTarget;
+  /** Zod-defaulted view — list-delta results are computed against this so
+   *  schema-default array members aren't lost on sparse files. */
+  loadView: () => TConfig;
   /** Optional patch sanitizer — strip fields the user can't write to this tier. */
   sanitizePatch?: (patch: Record<string, unknown>) => Record<string, unknown>;
   /**
@@ -316,10 +349,12 @@ interface TierPutOptions<TConfig> {
 }
 
 /**
- * Shared PUT handler for tier config files (Grove, Machine). Loads
- * current, applies sanitized patch and any list-delta ops, validates,
- * persists, returns the canonical post-merge value plus touched leaf
- * paths so the caller can fire `applyConfigWriteReactions`.
+ * Shared PUT handler for tier config files (Grove, Machine). Applies the
+ * sanitized patch and any list-delta ops through `updateTierConfigRaw` — the
+ * RAW on-disk doc is mutated and persisted, so unknown keys survive the
+ * write and a corrupt file is refused (422) instead of being wiped. Returns
+ * the canonical Zod-parsed full config plus touched leaf paths so the
+ * caller can fire `applyConfigWriteReactions`.
  *
  * Request body may contain any combination of:
  *   patch          — deep-merged into the current config
@@ -351,14 +386,14 @@ async function handlePutTierConfig<TConfig>(
     : (incoming as Record<string, unknown>);
   // Drop list-delta ops targeting protected paths, mirroring how
   // `sanitizePatch` strips the same field from `patch`.
-  const addOpsOrError = options.isProtectedPath
+  const addOps = options.isProtectedPath
     ? addOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
     : addOpsRaw;
-  const removeOpsOrError = options.isProtectedPath
+  const removeOps = options.isProtectedPath
     ? removeOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
     : removeOpsRaw;
   const patchLeaves = enumerateLeafPaths(patch);
-  const hasListOps = addOpsOrError.length > 0 || removeOpsOrError.length > 0;
+  const hasListOps = addOps.length > 0 || removeOps.length > 0;
 
   if (patchLeaves.length === 0 && !hasListOps) {
     return {
@@ -367,21 +402,53 @@ async function handlePutTierConfig<TConfig>(
     };
   }
 
+  // Registry-driven scope gate — same contract as the scoped handler:
+  // value-introducing writes (patch + addToList) for paths this tier
+  // doesn't own are rejected; removeFromList stays exempt.
+  const violations = scopeViolations(options.tier, [
+    ...patchLeaves,
+    ...addOps.map((op) => op.path),
+  ]);
+  if (violations.length > 0) {
+    return { response: scopeViolationResponse(options.tier, violations), touchedPaths: [] };
+  }
+
   try {
-    const current = options.load();
-    let working = deepMergeConfig(
-      current as Record<string, unknown>,
-      patch as Record<string, unknown>,
-    ) as Record<string, unknown>;
-    const listTouched = applyListDeltas(working, addOpsOrError, removeOpsOrError);
-    const validated = options.validate(working);
-    options.save(validated);
-    const allTouched = [...patchLeaves, ...listTouched];
-    return { response: { body: validated }, touchedPaths: allTouched };
+    // Compute list-delta results against the Zod-DEFAULTED view so members
+    // that only exist as schema defaults on a sparse file survive the op,
+    // then write the FULL resulting array into the raw doc.
+    const working = deepMergeConfig(
+      structuredClone(options.loadView()) as Record<string, unknown>,
+      patch,
+    );
+    const listTouched = applyListDeltas(working, addOps, removeOps);
+
+    const validated = updateTierConfigRaw(options.target, (rawDoc) => {
+      const next = deepMergeConfig(rawDoc, patch);
+      for (const opPath of listTouched) {
+        setAtPath(next, opPath, getAtPath(working, opPath));
+      }
+      return next;
+    }) as TConfig;
+
+    return { response: { body: validated }, touchedPaths: [...patchLeaves, ...listTouched] };
   } catch (err) {
+    if (err instanceof TierConfigUnreadableError) {
+      return {
+        response: {
+          status: 422,
+          body: {
+            error: 'tier_config_unreadable',
+            message: 'The on-disk config file is invalid — fix or remove it before writing.',
+            file: err.filePath,
+          },
+        },
+        touchedPaths: [],
+      };
+    }
     if (err instanceof z.ZodError) {
       return {
-        response: { status: 400, body: { error: 'validation_failed', issues: err.issues } },
+        response: { status: 422, body: { error: 'validation_failed', issues: err.issues } },
         touchedPaths: [],
       };
     }
@@ -404,9 +471,9 @@ export async function handlePutGroveConfig(
     };
   }
   return handlePutTierConfig<GroveConfig>(body, {
-    load: () => loadGroveConfig(groveId),
-    save: (validated) => saveGroveConfig(groveId, validated),
-    validate: (merged) => GroveConfigSchema.parse(merged) as GroveConfig,
+    tier: 'grove',
+    target: { kind: 'grove', groveId },
+    loadView: () => loadGroveConfig(groveId),
   });
 }
 
@@ -429,9 +496,9 @@ export async function handlePutMachineConfig(
   body: unknown,
 ): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
   return handlePutTierConfig<MachineConfig>(body, {
-    load: () => loadMachineConfig(),
-    save: (validated) => saveMachineConfig(validated),
-    validate: (merged) => MachineConfigSchema.parse(merged) as MachineConfig,
+    tier: 'machine',
+    target: { kind: 'machine' },
+    loadView: () => loadMachineConfig(),
     sanitizePatch: (patch) => {
       const { grove: _grove, ...rest } = patch;
       return rest;

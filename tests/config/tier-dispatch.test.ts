@@ -116,28 +116,32 @@ describe('Tier dispatch', () => {
     expect(groveDoc.daemon.update_channel).toBeUndefined();
   });
 
-  it('saveConfig strips Grove/Machine tier fields out of the project file (ProjectConfigSchema)', () => {
-    // Seed a sparse-but-valid project file so loadConfig succeeds.
+  it('saveConfig retains caller-set Grove-tier fields in myco.yaml while the project is UNBOUND', () => {
+    // Seed a sparse-but-valid project file so loadConfig succeeds. No
+    // project.toml → no Grove binding. RC-3 semantics: Grove-tier values on
+    // an unbound project are RETAINED in myco.yaml — there is no Grove file
+    // to migrate them into, so dropping them would silently destroy them.
+    // The next Grove-bound load lifts them into grove config and strips them.
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-'));
     try {
       const seedYaml = 'version: 3\n';
       fs.writeFileSync(path.join(projectDir, 'myco.yaml'), seedYaml, 'utf-8');
 
       const config = loadConfig(projectDir);
-      // Hand back a "full" MycoConfig with stray tier-foreign fields.
-      // saveConfig should drop them before persisting myco.yaml.
       saveConfig(projectDir, {
         ...config,
-        // Grove tier — should NOT survive into project file.
+        // Grove tier — retained until a Grove binds. Unknown keys
+        // (retention_days, github_repo, …) are still stripped by the schema.
         backup: { dir: '/tmp/bad', retention_days: 30 },
         team: { enabled: true, github_repo: 'acme/x', branch: 'main', api_token: 'secret' },
         appearance: { theme: 'plum', mode: 'light', font: 'jetbrains-mono', density: 'compact' },
       } as MycoConfig);
 
       const persisted = YAML.parse(fs.readFileSync(path.join(projectDir, 'myco.yaml'), 'utf-8'));
-      expect(persisted.backup).toBeUndefined();
-      expect(persisted.team).toBeUndefined();
-      expect(persisted.appearance).toBeUndefined();
+      expect(persisted.backup?.dir).toBe('/tmp/bad');
+      expect(persisted.team?.enabled).toBe(true);
+      expect(persisted.appearance?.theme).toBe('plum');
+      // Machine-tier + legacy fields still never survive in the project file.
       expect(persisted.daemon).toBeUndefined();
       expect(persisted.update).toBeUndefined();
       // Project-tier shape preserved.
