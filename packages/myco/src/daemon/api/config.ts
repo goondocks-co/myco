@@ -211,6 +211,9 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
       });
       return { body: updated };
     } catch (err) {
+      if (err instanceof TierConfigUnreadableError) {
+        return tierConfigUnreadableResponse(err);
+      }
       if (err instanceof z.ZodError) {
         return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
       }
@@ -231,11 +234,31 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     });
     return { body: updated };
   } catch (err) {
+    if (err instanceof TierConfigUnreadableError) {
+      return tierConfigUnreadableResponse(err);
+    }
     if (err instanceof z.ZodError) {
       return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
     }
     throw err;
   }
+}
+
+/**
+ * 422 envelope for a write refused because the on-disk tier file is
+ * unparseable. Shared by the local/project scoped-PUT branches; the
+ * machine/grove raw-writer path builds the same shape inline (it wraps the
+ * response in a touchedPaths envelope the scoped branches don't use).
+ */
+function tierConfigUnreadableResponse(err: TierConfigUnreadableError): RouteResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'tier_config_unreadable',
+      message: 'The on-disk config file is invalid — fix or remove it before writing.',
+      file: err.filePath,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

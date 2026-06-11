@@ -18,10 +18,13 @@ import YAML from 'yaml';
 import {
   loadConfig,
   updateConfig,
+  updateLocalConfig,
+  saveLocalConfig,
   loadMergedConfig,
   invalidateMergedConfigCache,
   loadMachineConfig,
   setTierParseFailureListener,
+  TierConfigUnreadableError,
 } from '@myco/config/loader';
 import { CURRENT_MIGRATION_VERSION } from '@myco/config/migrations';
 import { clearProjectManifestCache } from '@myco/config/project-manifest';
@@ -407,5 +410,128 @@ describe('RC-3: tier-parse-failure listener replay (boot ordering)', () => {
     fs.writeFileSync(machineFile(), ':\nnot yaml: [\n');
     loadMachineConfig(sandbox.mycoHome);
     expect(seen.length).toBe(2);
+  });
+});
+
+describe('F13 — local/project tier write paths refuse unparseable files', () => {
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
+  let vaultDir: string;
+
+  function configPath(): string {
+    return path.join(vaultDir, 'myco.yaml');
+  }
+  function localPath(): string {
+    return path.join(vaultDir, 'local.yaml');
+  }
+
+  beforeEach(() => {
+    sandbox = sandboxMycoHome('myco-f13-home-');
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-f13-vault-'));
+    fs.writeFileSync(configPath(), 'version: 3\n');
+    invalidateMergedConfigCache();
+    clearProjectManifestCache();
+  });
+
+  afterEach(() => {
+    setTierParseFailureListener(null);
+    sandbox.restore();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    invalidateMergedConfigCache();
+    clearProjectManifestCache();
+  });
+
+  it('updateLocalConfig throws TierConfigUnreadableError on corrupt local.yaml and leaves the file untouched', () => {
+    const corrupt = 'notifications: [unclosed\n  bad{{{\n';
+    fs.writeFileSync(localPath(), corrupt);
+    expect(() => updateLocalConfig(vaultDir, (local) => ({ ...local, maintenance: { auto_optimize: false } })))
+      .toThrow(TierConfigUnreadableError);
+    expect(fs.readFileSync(localPath(), 'utf-8')).toBe(corrupt);
+  });
+
+  it('saveLocalConfig throws on a non-mapping local.yaml root and leaves the file untouched', () => {
+    const corrupt = '- a\n- list\n';
+    fs.writeFileSync(localPath(), corrupt);
+    expect(() => saveLocalConfig(vaultDir, { maintenance: { auto_optimize: false } }))
+      .toThrow(TierConfigUnreadableError);
+    expect(fs.readFileSync(localPath(), 'utf-8')).toBe(corrupt);
+  });
+
+  it('saveLocalConfig still writes a missing or empty local.yaml (greenfield unaffected)', () => {
+    saveLocalConfig(vaultDir, { maintenance: { auto_optimize: false } });
+    expect(getAtPath(YAML.parse(fs.readFileSync(localPath(), 'utf-8')), 'maintenance.auto_optimize')).toBe(false);
+
+    fs.writeFileSync(localPath(), '');
+    saveLocalConfig(vaultDir, { maintenance: { auto_optimize: true } });
+    expect(getAtPath(YAML.parse(fs.readFileSync(localPath(), 'utf-8')), 'maintenance.auto_optimize')).toBe(true);
+  });
+
+  it('scoped PUT at local scope returns 422 and does not clobber a corrupt local.yaml', async () => {
+    const corrupt = 'notifications: [unclosed\n  bad{{{\n';
+    fs.writeFileSync(localPath(), corrupt);
+
+    const res = await handlePutScopedConfig(vaultDir, {
+      scope: 'local',
+      patch: { notifications: { domains: { skills: { enabled: false } } } },
+    });
+    expect(res.status).toBe(422);
+    expect((res.body as Record<string, unknown>).error).toBe('tier_config_unreadable');
+    expect((res.body as Record<string, unknown>).file).toBe(localPath());
+    expect(fs.readFileSync(localPath(), 'utf-8')).toBe(corrupt);
+  });
+
+  it('updateConfig throws on corrupt myco.yaml before writing (single project write gate)', () => {
+    const corrupt = 'cortex: {unclosed\n';
+    fs.writeFileSync(configPath(), corrupt);
+    expect(() => updateConfig(vaultDir, (c) => c)).toThrow(TierConfigUnreadableError);
+    expect(fs.readFileSync(configPath(), 'utf-8')).toBe(corrupt);
+  });
+
+  it('comments-only local.yaml stays writable (null root holds no values to lose)', () => {
+    fs.writeFileSync(localPath(), '# capture-only overrides\n');
+    saveLocalConfig(vaultDir, { maintenance: { auto_optimize: false } });
+    expect(getAtPath(YAML.parse(fs.readFileSync(localPath(), 'utf-8')), 'maintenance.auto_optimize')).toBe(false);
+  });
+
+  it('non-mapping myco.yaml roots surface as 422 tier_config_unreadable, not raw TypeErrors', async () => {
+    for (const corrupt of ['# just a comment\n', 'scalar-root\n', '- a\n- list\n']) {
+      fs.writeFileSync(configPath(), corrupt);
+      invalidateMergedConfigCache();
+      const res = await handlePutScopedConfig(vaultDir, {
+        scope: 'project',
+        patch: { cortex: { enabled: true } },
+      });
+      expect(res.status).toBe(422);
+      expect((res.body as Record<string, unknown>).error).toBe('tier_config_unreadable');
+      expect(fs.readFileSync(configPath(), 'utf-8')).toBe(corrupt);
+    }
+  });
+
+  it('scoped PUT at project scope returns 422 and does not clobber a corrupt myco.yaml', async () => {
+    const corrupt = 'cortex: {unclosed\n';
+    fs.writeFileSync(configPath(), corrupt);
+    setTierParseFailureListener(() => {});
+
+    const res = await handlePutScopedConfig(vaultDir, {
+      scope: 'project',
+      patch: { cortex: { enabled: true } },
+    });
+    expect(res.status).toBe(422);
+    expect((res.body as Record<string, unknown>).error).toBe('tier_config_unreadable');
+    expect(fs.readFileSync(configPath(), 'utf-8')).toBe(corrupt);
+  });
+
+  it('agent-tasks no-Grove fallback returns 422 on corrupt myco.yaml and leaves it untouched', async () => {
+    const corrupt = 'agent: [unterminated\n';
+    fs.writeFileSync(configPath(), corrupt);
+    setTierParseFailureListener(() => {});
+
+    const req = {
+      params: { id: 'vault-evolve' },
+      query: {},
+      body: { maxTurns: 9 },
+    } as unknown as RouteRequest;
+    const res = await handleUpdateTaskConfig(req, vaultDir, null);
+    expect(res.status).toBe(422);
+    expect(fs.readFileSync(configPath(), 'utf-8')).toBe(corrupt);
   });
 });
