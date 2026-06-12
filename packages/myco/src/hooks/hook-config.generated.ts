@@ -208,7 +208,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
               "payload.role": "user"
             }
           },
-          "textAt": "payload.content[0].text"
+          "textAt": "payload.content",
+          "textExtraction": "joined_text_parts"
         }
       ],
       "resetBoundaries": [

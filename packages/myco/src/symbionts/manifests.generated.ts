@@ -521,7 +521,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
                 "payload.role": "user"
               }
             },
-            "textAt": "payload.content[0].text"
+            "textAt": "payload.content",
+            "textExtraction": "joined_text_parts"
           }
         ],
         "resetBoundaries": [

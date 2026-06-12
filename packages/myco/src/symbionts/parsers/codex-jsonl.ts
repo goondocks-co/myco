@@ -62,6 +62,29 @@ function cleanCodexPromptText(text: string): string {
 }
 
 /**
+ * Canonical Codex `content[]` → prompt-text routine. Image prompts arrive as
+ * multipart content — `<image …>` wrapper `input_text` tags and `input_image`
+ * blocks interleaved with the user's real text (which sits LAST, not first).
+ * Strips the wrapper tags and joins every remaining text-bearing part.
+ *
+ * Shared by the transcript parser ({@link CodexJsonlParser.parseTurns}) and
+ * the manifest walker (`capture/prompt-kind.ts` via the codex manifest's
+ * `textExtraction: joined_text_parts` shape) so both derive IDENTICAL text
+ * from the same turn — `populateBatchResponses` prefix-matches walker-stored
+ * prompts against parser turns, so any divergence breaks response attribution.
+ */
+export function extractCodexPromptText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const parts = (content as Array<{ type?: unknown; text?: unknown }>)
+    .filter((b): b is { type: string; text: string } =>
+      !!b && typeof b === 'object' && b.type === 'input_text'
+      && typeof b.text === 'string' && b.text.trim().length > 0)
+    .map((b) => cleanCodexPromptText(b.text))
+    .filter((t) => t.trim());
+  return parts.join('\n').trim();
+}
+
+/**
  * Parses Codex's nested-payload JSONL transcript format.
  *
  * Codex JSONL entries have the structure:
@@ -127,16 +150,12 @@ export class CodexJsonlParser implements TranscriptParser {
         : [];
 
       if (role === 'user') {
-        const textParts = blocks
-          .filter((b) => b.type === 'input_text' && b.text?.trim())
-          .map((b) => cleanCodexPromptText(b.text!))
-          .filter((t) => t.trim());
-
-        if (textParts.length === 0) continue;
+        const fullPrompt = extractCodexPromptText(blocks);
+        if (!fullPrompt) continue;
 
         if (current) turns.push(current);
 
-        const promptText = textParts.join('\n').trim().slice(0, PROMPT_PREVIEW_CHARS);
+        const promptText = fullPrompt.slice(0, PROMPT_PREVIEW_CHARS);
 
         // Extract images from input_image blocks (data URL format: data:<mime>;base64,<data>)
         const images: TranscriptImage[] = [];

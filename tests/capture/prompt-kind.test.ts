@@ -5,6 +5,7 @@ import {
   extractUserPromptKinds,
   extractUserPromptRecords,
 } from '@myco/capture/prompt-kind.js';
+import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 
 // Regression: Claude Code writes real user prompts with `message.content` as a
 // plain string, and tool_result entries with content as an array. The walker
@@ -652,6 +653,103 @@ describe('walker tags origin per capture rule (K3 classify action)', () => {
       },
     ];
     expect(extractUserPromptRecords('claude-code', events)).toHaveLength(0);
+  });
+});
+
+describe('walker Codex multipart image-prompt extraction (textExtraction: joined_text_parts)', () => {
+  // Codex image prompts arrive as multipart content: `<image name=…>` wrapper
+  // input_text tags and input_image blocks come FIRST, the user's real text is
+  // the LAST input_text part. A shape reading `payload.content[0].text` would
+  // extract the wrapper tag as the user prompt (tag-only batches live, real
+  // prompt text lost on re-mining). The codex manifest's user_message shape
+  // points `textAt` at the content ARRAY with `textExtraction:
+  // joined_text_parts`, routing extraction through the parser's canonical
+  // routine: wrapper tags stripped, remaining text parts joined.
+  const wrapperTriplet = (n: number) => [
+    { type: 'input_text', text: `<image name=[Image #${n}] path="/var/folders/x/codex-clipboard-abc${n}.png">` },
+    { type: 'input_image', image_url: 'data:image/png;base64,AAAA' },
+    { type: 'input_text', text: '</image>' },
+  ];
+
+  const REAL_PROMPT = 'Everything is enabled under Privacy and Security';
+
+  const imagePromptEvent = {
+    type: 'response_item',
+    payload: {
+      type: 'message',
+      role: 'user',
+      content: [
+        ...wrapperTriplet(1),
+        ...wrapperTriplet(2),
+        ...wrapperTriplet(3),
+        { type: 'input_text', text: REAL_PROMPT },
+      ],
+    },
+  };
+
+  it('extracts the real prompt text, not the image wrapper tag', () => {
+    const records = extractUserPromptRecords('codex', [imagePromptEvent], '/tmp/codex-rollout.jsonl');
+    expect(records).toHaveLength(1);
+    expect(records[0]?.text).toBe(REAL_PROMPT);
+    expect(records[0]?.kind).toBe('initial');
+    expect(records[0]?.origin).toBe('human');
+  });
+
+  // THE contract: walker-extracted text and parser-turn prompt must be
+  // identical for the same transcript line — populateBatchResponses
+  // prefix-matches one against the other, and any divergence NULLs the
+  // batch's response_summary.
+  it('derives the same text as the transcript parser for the same line', () => {
+    const walkerText = extractUserPromptRecords(
+      'codex',
+      [imagePromptEvent],
+      '/tmp/codex-rollout.jsonl',
+    )[0]?.text;
+    const turns = new CodexJsonlParser().parseTurns(`${JSON.stringify(imagePromptEvent)}\n`);
+    expect(turns).toHaveLength(1);
+    expect(walkerText).toBe(turns[0]!.prompt);
+  });
+
+  it('leaves a single-input_text codex prompt unchanged (no images)', () => {
+    const event = {
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'what has changed in this branch?' }],
+      },
+    };
+    const records = extractUserPromptRecords('codex', [event], '/tmp/codex-rollout.jsonl');
+    expect(records).toHaveLength(1);
+    expect(records[0]?.text).toBe('what has changed in this branch?');
+    expect(records[0]?.kind).toBe('initial');
+  });
+
+  it('emits no record for a wrapper-tags-only event carrying no real text', () => {
+    const event = {
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: wrapperTriplet(1) },
+    };
+    expect(extractUserPromptRecords('codex', [event], '/tmp/codex-rollout.jsonl')).toHaveLength(0);
+  });
+
+  it('keeps first-text behavior for shapes without textExtraction (Claude Code typed blocks)', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'p1',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'first block' },
+            { type: 'text', text: 'second block' },
+          ],
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.text).toBe('first block');
   });
 });
 
