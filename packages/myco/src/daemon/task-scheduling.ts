@@ -240,18 +240,19 @@ export async function registerScheduledTasks(
     taskAgentMap.set(task.name, task.agent);
   }
 
-  // Per-project-visit memo: the scheduler loop calls getTaskConfig and
-  // getTaskScheduleEnabled for each task in the same per-project iteration.
-  // Memoizing the last-resolved scope avoids redundant loadMergedConfig calls
-  // within a single project's task fan-out. The slot persists across ticks —
-  // one tick of stale config across a tick boundary is benign at minute-scale
-  // intervals.
-  let lastResolvedKey = '';
-  let lastResolvedConfig: MycoConfig | null = null;
-
+  // No scheduler-side memo, deliberately. A previous single-slot memo
+  // (keyed on the last-resolved project) only ever invalidated when a
+  // DIFFERENT project resolved between calls — on a single-project install
+  // the key never changed, so Settings changes (scheduled_tasks_enabled,
+  // cold_project_threshold_days, capability gates) were served from boot
+  // values until a daemon restart, and a config-load error was latched as
+  // permanent. loadMergedConfig carries its own mtime+size-fingerprinted
+  // cache, so resolving per call costs a handful of stat()s on the hot
+  // path — negligible at tick cadence, and config edits (and error
+  // recovery) take effect on the next evaluation, as the gate comment
+  // above promises.
   function resolveProjectConfig(scope: RegisteredProjectScope): MycoConfig | null {
     const key = `${scope.grove.id}:${scope.projectId}`;
-    if (key === lastResolvedKey) return lastResolvedConfig;
     try {
       const config = loadMergedConfig(scope.projectVaultDir, {
         groveId: scope.grove.id,
@@ -264,8 +265,6 @@ export async function registerScheduledTasks(
         });
         lastConfigErrorByProject.delete(key);
       }
-      lastResolvedKey = key;
-      lastResolvedConfig = config;
       return config;
     } catch (err) {
       const message = errorMessage(err);
@@ -277,8 +276,6 @@ export async function registerScheduledTasks(
         });
         lastConfigErrorByProject.set(key, message);
       }
-      lastResolvedKey = key;
-      lastResolvedConfig = null;
       return null;
     }
   }
