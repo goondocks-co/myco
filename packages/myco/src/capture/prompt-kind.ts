@@ -6,6 +6,7 @@
 import { getAtPath } from '../utils/dot-path.js';
 import { evaluateUserPromptRules, type PromptOrigin, type UserPromptDecision } from '../hooks/capture-rules.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import { extractCodexPromptText } from '../symbionts/parsers/codex-jsonl.js';
 import type {
   CapturePrompts,
   MatchExpression,
@@ -165,7 +166,7 @@ function walkTranscript(
       seenDedupe.add(key);
     }
 
-    const rawText = extractText(event, shape.textAt);
+    const rawText = extractText(event, shape);
     if (!rawText) continue;
 
     // Apply manifest capture.rules identically to the live hook path. A
@@ -208,7 +209,7 @@ function findMatchingShape(
     // that share every top-level field with a teammate-message) are excluded
     // by inspecting the resolved text. Falls through to the next shape so the
     // generic user_prompt shape still claims those entries.
-    if (shape.textStartsWith && !extractText(event, shape.textAt).startsWith(shape.textStartsWith)) {
+    if (shape.textStartsWith && !extractText(event, shape).startsWith(shape.textStartsWith)) {
       continue;
     }
     return shape;
@@ -256,13 +257,20 @@ function matchExpression(match: MatchExpression, event: Record<string, unknown>)
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve `path` against `event` and coerce to text. Handles plain strings
- * and Claude's typed-block arrays by returning the first `{type:"text"}` block.
+ * Resolve the shape's `textAt` path against `event` and coerce to text.
+ * Plain strings pass through. Arrays follow the shape's `textExtraction`
+ * mode: `joined_text_parts` delegates to the canonical Codex routine shared
+ * with the transcript parser (wrapper-tag strip + join — walker and parser
+ * must derive identical text for response prefix-matching); the default
+ * `first_text` returns the first `{type:"text"}` block (Claude Code shape).
  */
-function extractText(event: Record<string, unknown>, path: string): string {
-  const value = getAtPath(event, path);
+function extractText(event: Record<string, unknown>, shape: PromptShape): string {
+  const value = getAtPath(event, shape.textAt);
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) {
+    if (shape.textExtraction === 'joined_text_parts') {
+      return extractCodexPromptText(value);
+    }
     const textBlock = value.find(
       (b) => b && typeof b === 'object' && (b as Record<string, unknown>).type === 'text',
     ) as { text?: unknown } | undefined;
