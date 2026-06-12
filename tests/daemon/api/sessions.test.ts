@@ -6,6 +6,7 @@ import os from 'node:os';
 import { initDatabase, closeDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
+import { insertBatch, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches';
 import { getSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
 import { createSessionMutationHandlers, createGetSessionHandler, handleListSessions } from '@myco/daemon/api/sessions';
@@ -151,7 +152,7 @@ describe('handleCompleteSession', () => {
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
       reconciler: { clearSession: vi.fn() },
-      registry: { unregister: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
     });
   }
 
@@ -239,7 +240,7 @@ describe('handleCompleteSession', () => {
       },
     };
     const reconcilerStub = { clearSession: vi.fn() };
-    const registryStub = { unregister: vi.fn() };
+    const registryStub = { unregister: vi.fn(), getSession: vi.fn(() => undefined) };
     const handlers = createSessionMutationHandlers({
       embeddingManager: makeEmbeddingManagerStub() as never,
       resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
@@ -287,10 +288,221 @@ describe('handleCompleteSession', () => {
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
-      registry: { unregister: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
     });
     await handlers.handleDeleteSession(makeRequest({ params: { id: 'sess-cleanup-scope' } }));
     expect(seen).toBe(TEST_REQUEST_CONTEXT);
+  });
+});
+
+describe('handleDeleteSession — live-session guard', () => {
+  // RC-A: deleting a session with a live agent connection silently raced
+  // the event stream (the next event resurrected the id). The handler now
+  // refuses with 409 session_live unless the caller re-sends {force: true}
+  // — the handleDeletePlan force_remote precedent.
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sessions-live-'));
+    const dbPath = path.join(tmpDir, 'myco.db');
+    const db = initDatabase(dbPath);
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeHandlers(registryStub: { unregister: ReturnType<typeof vi.fn>; getSession: ReturnType<typeof vi.fn> }) {
+    return createSessionMutationHandlers({
+      embeddingManager: makeEmbeddingManagerStub() as never,
+      resolveEmbeddingManager: () => makeEmbeddingManagerStub() as never,
+      vaultDir: tmpDir,
+      logger: makeLogger() as never,
+      liveConfig: { current: { agent: { summary_batch_interval: 5, event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
+      registry: registryStub,
+    });
+  }
+
+  it('refuses to delete a registered (live) session with 409 session_live and leaves the row intact', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-live-guard', agent: 'test-agent', started_at: now, created_at: now, status: 'active' });
+    const registryStub = {
+      unregister: vi.fn(),
+      getSession: vi.fn(() => ({ startedAt: new Date().toISOString() })),
+    };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({ params: { id: 'sess-live-guard' } }));
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: 'session_live' });
+    expect(getSession('sess-live-guard', ALL_PROJECTS_SCOPE)).not.toBeNull();
+    expect(getSessionTombstone('sess-live-guard')).toBeNull();
+    expect(registryStub.unregister).not.toHaveBeenCalled();
+  });
+
+  it('deletes a live session when the caller re-sends {force: true} — tombstone written, registry cleared', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-live-forced', agent: 'test-agent', started_at: now, created_at: now, status: 'active' });
+    const registryStub = {
+      unregister: vi.fn(),
+      getSession: vi.fn(() => ({ startedAt: new Date().toISOString() })),
+    };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-live-forced' },
+      body: { force: true },
+    }));
+
+    expect(res.status).toBeUndefined();
+    expect(res.body).toMatchObject({ ok: true });
+    expect(getSession('sess-live-forced', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-live-forced')?.source).toBe('api_delete');
+    expect(registryStub.unregister).toHaveBeenCalledWith('sess-live-forced');
+  });
+
+  it('deletes a non-registered session without force (unchanged behavior)', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-not-live', agent: 'test-agent', started_at: now, created_at: now, status: 'completed' });
+    const registryStub = { unregister: vi.fn(), getSession: vi.fn(() => undefined) };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({ params: { id: 'sess-not-live' } }));
+
+    expect(res.status).toBeUndefined();
+    expect(res.body).toMatchObject({ ok: true });
+    expect(getSession('sess-not-live', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-not-live')?.source).toBe('api_delete');
+  });
+
+  // -- RC-G: expect_empty phantom-delete contract -----------------------------
+  // The hook's drop-path cleanup sends {expect_empty: true}. Emptiness (zero
+  // human-origin batches) is the gate: an empty just-registered phantom
+  // deletes even though it is registry-live; a session with real content
+  // refuses regardless of force — the phantom-cleanup caller must never
+  // destroy captured work (the codex parent-id/child-transcript confusion).
+
+  function seedHumanBatch(sessionId: string): void {
+    const now = epochNow();
+    insertBatch({
+      session_id: sessionId,
+      origin: PROMPT_BATCH_ORIGIN.HUMAN,
+      prompt_number: 1,
+      user_prompt: 'a real captured user prompt',
+      started_at: now,
+      created_at: now,
+    });
+  }
+
+  it('expect_empty deletes an empty just-registered session even though it is registry-live', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-phantom-empty', agent: 'codex', started_at: now, created_at: now, status: 'active' });
+    const registryStub = {
+      unregister: vi.fn(),
+      getSession: vi.fn(() => ({ startedAt: new Date().toISOString() })),
+    };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-phantom-empty' },
+      body: { expect_empty: true },
+    }));
+
+    expect(res.status).toBeUndefined();
+    expect(res.body).toMatchObject({ ok: true });
+    expect(getSession('sess-phantom-empty', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-phantom-empty')?.source).toBe('api_delete');
+  });
+
+  it('expect_empty deletes a session whose only batch is SYSTEM-origin — non-human batches carry no user intent', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-phantom-system', agent: 'codex', started_at: now, created_at: now, status: 'active' });
+    insertBatch({
+      session_id: 'sess-phantom-system',
+      origin: PROMPT_BATCH_ORIGIN.SYSTEM,
+      prompt_number: 1,
+      user_prompt: '<skill> envelope injected by the agent',
+      started_at: now,
+      created_at: now,
+    });
+    const registryStub = {
+      unregister: vi.fn(),
+      getSession: vi.fn(() => ({ startedAt: new Date().toISOString() })),
+    };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-phantom-system' },
+      body: { expect_empty: true },
+    }));
+
+    expect(res.status).toBeUndefined();
+    expect(res.body).toMatchObject({ ok: true });
+    expect(getSession('sess-phantom-system', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-phantom-system')?.source).toBe('api_delete');
+  });
+
+  it('expect_empty refuses a session WITH human batches — 409 session_not_empty, row intact, no tombstone', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-phantom-mistaken', agent: 'codex', started_at: now, created_at: now, status: 'active' });
+    seedHumanBatch('sess-phantom-mistaken');
+    const registryStub = { unregister: vi.fn(), getSession: vi.fn(() => undefined) };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-phantom-mistaken' },
+      body: { expect_empty: true },
+    }));
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: 'session_not_empty' });
+    expect(getSession('sess-phantom-mistaken', ALL_PROJECTS_SCOPE)).not.toBeNull();
+    expect(getSessionTombstone('sess-phantom-mistaken')).toBeNull();
+    expect(registryStub.unregister).not.toHaveBeenCalled();
+  });
+
+  it('expect_empty + force still refuses when non-empty — force does not override emptiness', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-phantom-forced', agent: 'codex', started_at: now, created_at: now, status: 'active' });
+    seedHumanBatch('sess-phantom-forced');
+    const registryStub = { unregister: vi.fn(), getSession: vi.fn(() => undefined) };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-phantom-forced' },
+      body: { expect_empty: true, force: true },
+    }));
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: 'session_not_empty' });
+    expect(getSession('sess-phantom-forced', ALL_PROJECTS_SCOPE)).not.toBeNull();
+    expect(getSessionTombstone('sess-phantom-forced')).toBeNull();
+  });
+
+  it('plain force delete on a non-empty live session still works (operator path)', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-operator-force', agent: 'test-agent', started_at: now, created_at: now, status: 'active' });
+    seedHumanBatch('sess-operator-force');
+    const registryStub = {
+      unregister: vi.fn(),
+      getSession: vi.fn(() => ({ startedAt: new Date().toISOString() })),
+    };
+
+    const { handleDeleteSession } = makeHandlers(registryStub);
+    const res = await handleDeleteSession(makeRequest({
+      params: { id: 'sess-operator-force' },
+      body: { force: true },
+    }));
+
+    expect(res.status).toBeUndefined();
+    expect(res.body).toMatchObject({ ok: true });
+    expect(getSession('sess-operator-force', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getSessionTombstone('sess-operator-force')?.source).toBe('api_delete');
+    expect(registryStub.unregister).toHaveBeenCalledWith('sess-operator-force');
   });
 });
 
@@ -319,7 +531,7 @@ describe('handleDeletePlan', () => {
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
-      registry: { unregister: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
     });
   }
 
@@ -415,7 +627,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
       reconciler: { clearSession: vi.fn() },
-      registry: { unregister: vi.fn() },
+      registry: { unregister: vi.fn(), getSession: vi.fn(() => undefined) },
     });
   }
 

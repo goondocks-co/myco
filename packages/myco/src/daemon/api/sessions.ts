@@ -1,5 +1,5 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, closeSession } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
+import { listBatchesBySession, countBatchesBySession, countBatchesBySessions, getBatchById, hasHumanBatch, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities, countActivitiesBySessions } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
@@ -189,8 +189,16 @@ export interface SessionMutationDeps {
    *  this, a stale registry entry from the deleted session causes the
    *  dispatcher to skip reconcile entirely, the defensive
    *  `ensureSessionRowExists` materializes an empty row, and the
-   *  buffered prompts are orphaned forever. */
-  registry: { unregister(sessionId: string): void };
+   *  buffered prompts are orphaned forever.
+   *
+   *  `getSession` powers the live-session delete refusal: a registry hit
+   *  means an agent connection is actively feeding this session, so an
+   *  un-forced DELETE gets a 409 instead of silently racing the live
+   *  event stream. */
+  registry: {
+    unregister(sessionId: string): void;
+    getSession(sessionId: string): unknown;
+  };
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
@@ -201,6 +209,56 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     const sessionId = req.params.id;
     const scope = projectScopeFromRequestContext(req.requestContext);
     if (!getSession(sessionId, scope)) return { status: 404, body: { error: 'Session not found' } };
+
+    const body = (req.body ?? {}) as { force?: boolean; expect_empty?: boolean };
+    // Caller provenance on every delete-path log line. The RC-G hunt was
+    // slowed by six anonymous deletes in the prod log — flags + request
+    // context make the caller identifiable from the log alone.
+    const callerFields = {
+      expect_empty: body.expect_empty === true,
+      force: body.force === true,
+      machine_id: req.requestContext?.machineId ?? null,
+      project_id: req.requestContext?.projectId ?? null,
+    };
+
+    // Phantom-delete contract (evaluated FIRST). A hook cleaning up a
+    // session a drop rule just rejected sends {expect_empty: true}: the
+    // delete proceeds only when the session holds ZERO human-origin
+    // batches. If it has real content, the caller mis-identified the
+    // session (the codex parent-id/child-transcript confusion) — refuse
+    // regardless of force; the phantom-cleanup caller must never force.
+    //
+    // Interplay with the live-session guard below: a just-registered
+    // phantom IS registry-live, so expect_empty deletes bypass the
+    // session_live 409 — emptiness is the stronger, correct guard for
+    // this caller.
+    if (body.expect_empty === true) {
+      if (hasHumanBatch(sessionId)) {
+        logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session delete refused — expect_empty but session has human content', {
+          session_id: sessionId,
+          ...callerFields,
+        });
+        return { status: 409, body: {
+          error: 'session_not_empty',
+          message: 'expect_empty delete refused: this session has captured human prompts. The caller likely mis-identified a phantom session.',
+        } };
+      }
+    } else if (registry.getSession(sessionId) && body.force !== true) {
+      // Refusal-with-override, not a persistence gate: the in-memory registry
+      // stays a cache (the session-lifecycle.ts invariant is untouched) — here
+      // a cache hit only signals "an agent connection is live right now", so
+      // we refuse the destructive delete unless the caller re-sends with
+      // `{force: true}` (the handleDeletePlan force_remote precedent).
+      logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session delete refused — live agent connection (re-send with force)', {
+        session_id: sessionId,
+        ...callerFields,
+      });
+      return { status: 409, body: {
+        error: 'session_live',
+        message: 'This session has a live agent connection. Deleting now permanently discards the rest of the session as it happens. Re-send with force to delete anyway.',
+      } };
+    }
+
     const result = deleteSessionCascade(sessionId, SESSION_TOMBSTONE_SOURCE.API_DELETE);
     if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
 
@@ -253,6 +311,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
       session_id: sessionId,
       counts: result.counts,
+      ...callerFields,
     });
     return { body: { ok: true, counts: result.counts } };
   }

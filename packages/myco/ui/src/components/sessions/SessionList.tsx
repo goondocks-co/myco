@@ -7,6 +7,7 @@ import { Pagination } from '../ui/pagination';
 import { StatusDot, type StatusTone } from '../ui/status-dot';
 import { ActivitySparkline } from '../ui/sparkline';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
+import { ApiError } from '../../lib/api';
 import { useSymbionts } from '../../hooks/use-symbionts';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession, formatEpochAgo } from '../../lib/format';
@@ -170,6 +171,9 @@ export function SessionList({
   const navigate = useNavigate();
   const location = useLocation();
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
+  // Second-stage confirm: set when the daemon refused the delete with 409
+  // session_live; the next confirm retries with force.
+  const [liveConfirm, setLiveConfirm] = useState(false);
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
   const { data: symbiontsData } = useSymbionts();
@@ -199,8 +203,20 @@ export function SessionList({
 
   function handleDeleteConfirm() {
     if (!deleteTarget) return;
-    deleteSession.mutate(deleteTarget.id, {
-      onSuccess: () => setDeleteTarget(null),
+    deleteSession.mutate({ id: deleteTarget.id, force: liveConfirm }, {
+      onSuccess: () => {
+        setDeleteTarget(null);
+        setLiveConfirm(false);
+      },
+      onError: (err) => {
+        if (
+          err instanceof ApiError &&
+          err.status === 409 &&
+          (err.body as { error?: string } | null)?.error === 'session_live'
+        ) {
+          setLiveConfirm(true);
+        }
+      },
     });
   }
 
@@ -363,9 +379,11 @@ export function SessionList({
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onOpenChange={(open) => { if (!open) { setDeleteTarget(null); setLiveConfirm(false); } }}
         title="Delete Session"
-        description="This will permanently remove this session and all related data. This action cannot be undone."
+        description={liveConfirm
+          ? 'Session appears live — the agent is still running. Deleting now permanently discards the rest of the session as it happens. Delete anyway?'
+          : 'This will permanently remove this session and all related data. This action cannot be undone.'}
         icon={<Trash2 className="h-4 w-4 text-terracotta" />}
         meta={deleteTarget ? [
           { label: 'ID', value: shortSession(deleteTarget.id) },
@@ -377,7 +395,7 @@ export function SessionList({
           { label: 'Attachments', value: impact.attachmentCount },
           { label: 'Graph Edges', value: impact.graphEdgeCount },
         ] : []}
-        confirmLabel="Delete Session"
+        confirmLabel={liveConfirm ? 'Delete Anyway' : 'Delete Session'}
         variant="destructive"
         onConfirm={handleDeleteConfirm}
         isPending={deleteSession.isPending}

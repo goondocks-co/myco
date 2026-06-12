@@ -1071,6 +1071,22 @@ export function hasAnyBatch(sessionId: string): boolean {
 }
 
 /**
+ * True if the session has at least one human-origin batch.
+ *
+ * Emptiness check behind the API's `expect_empty` phantom-delete contract:
+ * a hook cleaning up a phantom registration must only delete sessions that
+ * captured no real user content. Non-human batches (system envelopes,
+ * agent_dispatch returns) don't count — they carry no user intent.
+ */
+export function hasHumanBatch(sessionId: string): boolean {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT 1 AS hit FROM prompt_batches WHERE session_id = ? AND origin = ? LIMIT 1`,
+  ).get(sessionId, PROMPT_BATCH_ORIGIN.HUMAN) as { hit: number } | undefined;
+  return !!row;
+}
+
+/**
  * Count prompt batches for a session — authoritative prompt count.
  *
  * Pass `origins` to restrict the count (e.g. `['human']` to match the

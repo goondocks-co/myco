@@ -7,6 +7,8 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { createStopProcessor } from '@myco/daemon/stop-processing.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
+import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
+import { getDatabase } from '@myco/db/client.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
@@ -240,6 +242,43 @@ describe('createStopProcessor session capture rules', () => {
         created_at: epochNow(),
       });
     }).not.toThrow();
+  });
+
+  // RC-A: a deleted live session's next per-turn Stop used to re-register
+  // the row through the first-sight branch — the silent resurrection path.
+  // A deletion tombstone must make the Stop a no-op; only an explicit
+  // /sessions/register (same-id reload) deliberately supersedes.
+  it('ignores a first-sight Stop for a tombstoned session and creates no row', async () => {
+    const sessionId = 'tombstoned-stop-first-sight-001';
+    insertSessionTombstone(getDatabase(), {
+      sessionId,
+      projectId: null,
+      source: SESSION_TOMBSTONE_SOURCE.API_DELETE,
+    });
+    // Real transcript so the ephemeral-sub-invocation guard isn't the
+    // reason the event drops — the tombstone gate must be.
+    const transcriptPath = (() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tomb-stop-'));
+      const file = path.join(dir, `rollout-${sessionId}.jsonl`);
+      fs.writeFileSync(
+        file,
+        `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId } })}\n`,
+      );
+      return file;
+    })();
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'codex',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'ok',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true, ignored: 'session_tombstoned' });
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeFalsy();
   });
 
   // Regression: Cursor's stop payload doesn't carry `last_assistant_message`

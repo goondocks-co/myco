@@ -71,6 +71,7 @@ import type { Logger } from './logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
+import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import type { SessionRegistry } from './lifecycle.js';
 
@@ -209,6 +210,18 @@ export function ensureSessionRowExists(params: EnsureSessionRowExistsParams): bo
   // PK lookup — cheap, returns null if the row is missing.
   const existing = getSession(params.sessionId, ALL_PROJECTS_SCOPE);
   if (existing) return false;
+
+  // A missing row with a deletion tombstone is deleted-on-purpose, not an
+  // upstream gap — the defensive insert must not passively resurrect it.
+  // Explicit lifecycle paths (ensureSession via /sessions/register, the
+  // reconciler) own their own gating and deliberately supersede.
+  if (hasSessionTombstone(params.sessionId)) {
+    params.logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'ensureSessionRowExists skipped — session tombstoned', {
+      session_id: params.sessionId,
+      source: params.source,
+    });
+    return false;
+  }
 
   // The row is missing. Upstream auto-register didn't run (or threw). Log
   // loudly so the gap doesn't repeat silently, then persist a minimal
