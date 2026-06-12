@@ -45,6 +45,12 @@ export function NumberField({
   }, [value]);
 
   function commit() {
+    // An emptied input is not a zero: Number('') === 0, which would commit
+    // a value the user never typed. Treat it like NaN and snap back.
+    if (draft.trim() === '') {
+      setDraft(String(value));
+      return;
+    }
     const parsed = Number(draft);
     if (Number.isNaN(parsed)) {
       setDraft(String(value));

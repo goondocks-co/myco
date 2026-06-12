@@ -18,6 +18,12 @@ export type MachineConfigPatch = {
   machine_id?: string;
 };
 
+export interface MachineConfigWrite {
+  patch?: MachineConfigPatch;
+  /** Dot-paths removed from the machine file (server clears before patching). */
+  clear?: string[];
+}
+
 const MACHINE_CONFIG_QUERY_KEY = ['machine-config'] as const;
 
 /** GET /api/machine-config — returns the current machine config (always present). */
@@ -43,8 +49,8 @@ export function useMachineConfig() {
  */
 export function useUpdateMachineConfig() {
   const queryClient = useQueryClient();
-  return useMutation<MachineConfig, Error, MachineConfigPatch>({
-    mutationFn: (patch) => putJson<MachineConfig>('/machine-config', { patch }),
+  return useMutation<MachineConfig, Error, MachineConfigWrite>({
+    mutationFn: ({ patch, clear }) => putJson<MachineConfig>('/machine-config', { patch, clear }),
     onSuccess: (config) => {
       queryClient.setQueryData<MachineConfigResponse>(
         [...MACHINE_CONFIG_QUERY_KEY],

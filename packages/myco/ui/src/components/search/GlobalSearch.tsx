@@ -15,6 +15,7 @@ import { SearchResults } from './SearchResults';
 import {
   useSearch,
   useCanopySearch,
+  meetsSearchMinLength,
   type AnySearchResult,
   type CanopySearchResult,
   type SearchResult,
@@ -218,8 +219,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     [results, highlightedIndex, handleSelect],
   );
 
-  const showEmpty = debouncedQuery.length > 2 && !isLoading && results.length === 0;
-  const showPrompt = debouncedQuery.length <= 2 && !isLoading;
+  const showEmpty = meetsSearchMinLength(debouncedQuery) && !isLoading && results.length === 0;
+  const showPrompt = !meetsSearchMinLength(debouncedQuery) && !isLoading;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -312,7 +313,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
 
         {/* Results area */}
         <div className="max-h-96 overflow-y-auto">
-          {isLoading && debouncedQuery.length > 2 && (
+          {isLoading && meetsSearchMinLength(debouncedQuery) && (
             <div className="px-4 py-8 text-center">
               <div className="flex flex-col items-center gap-2 text-on-surface-variant">
                 <div className="h-4 w-32 rounded bg-muted animate-pulse" />

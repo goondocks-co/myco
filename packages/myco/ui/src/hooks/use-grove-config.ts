@@ -30,6 +30,12 @@ export function useGroveConfig() {
   });
 }
 
+export interface GroveConfigWrite {
+  patch?: Partial<GroveConfig>;
+  /** Dot-paths removed from the Grove file (server clears before patching). */
+  clear?: string[];
+}
+
 export function useUpdateGroveConfig() {
   const qc = useQueryClient();
   const selection = useActiveProjectSelection();
@@ -37,8 +43,8 @@ export function useUpdateGroveConfig() {
   const headers = requestContextHeadersForSelection(selection);
 
   return useMutation({
-    mutationFn: (patch: Partial<GroveConfig>) =>
-      putJson<GroveConfig>('/grove-config', { patch }, { headers }),
+    mutationFn: ({ patch, clear }: GroveConfigWrite) =>
+      putJson<GroveConfig>('/grove-config', { patch, clear }, { headers }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: groveConfigQueryKey(groveId) });
       // The merged-config view depends on Grove tier values, so bust it.

@@ -597,9 +597,14 @@ function FieldRow({ field, hasProject, unified }: FieldRowProps) {
   })();
   const disabled = scopeDisabled || dependsOnDisabled;
 
+  const [writeError, setWriteError] = useState<string | null>(null);
   const onChange = useCallback(
     (next: unknown) => {
+      setWriteError(null);
       void unified.writeField(field, next).catch((err) => {
+        // Surface the failure inline — a swallowed write looks identical
+        // to a successful no-op from the user's side.
+        setWriteError(err instanceof Error ? err.message : String(err));
         console.error(`[settings] writeField failed: ${field.key}`, err);
       });
     },
@@ -644,6 +649,9 @@ function FieldRow({ field, hasProject, unified }: FieldRowProps) {
           onAdd={onAdd}
           onRemove={onRemove}
         />
+        {writeError && (
+          <p role="alert" className="mt-1 font-sans text-xs text-tertiary">{writeError}</p>
+        )}
       </div>
     </div>
   );
@@ -715,11 +723,13 @@ function FieldControl({ inputId, field, value, onChange, disabled, onAdd, onRemo
           id={inputId}
           value={typeof value === 'string' ? value : ''}
           onChange={(next) => {
-            // `nullableEmpty: true` lets a field clear its override by writing
-            // `null` for an empty string (pre-merge convention for backup.dir).
+            // `nullableEmpty: true` lets a field clear its value with an
+            // empty string. Committed as `undefined`, which the write layer
+            // routes through the tier PUT's `clear` list — the API's only
+            // supported way to unset a field.
             const trimmed = typeof next === 'string' ? next : '';
             if (field.nullableEmpty && trimmed.length === 0) {
-              onChange(null);
+              onChange(undefined);
             } else {
               onChange(next);
             }

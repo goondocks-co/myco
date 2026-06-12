@@ -27,15 +27,17 @@ export function PlanCaptureCard() {
   const [symbiont, setSymbiont] = useState<Record<string, string[]>>({});
   const [newDir, setNewDir] = useState('');
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const addToList = useAddToMachineConfigList();
   const removeFromList = useRemoveFromMachineConfigList();
 
   // Symbiont-managed plan dirs come from a separate read-only endpoint
-  // (manifest-derived, not from myco.yaml).
+  // (manifest-derived, not from myco.yaml). A failed fetch must read as an
+  // error, not as "no agent directories configured".
   useEffect(() => {
     fetchJson<PlanDirsAgentResponse>('/config/plan-dirs')
       .then((data) => setSymbiont(data.symbiont))
-      .catch(() => {})
+      .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -59,7 +61,11 @@ export function PlanCaptureCard() {
             <p className="font-sans text-xs text-on-surface-variant">
               Directories monitored by connected agents. Managed by symbiont manifests.
             </p>
-            {symbiontEntries.length === 0 ? (
+            {loadError ? (
+              <p role="alert" className="font-sans text-xs text-tertiary">
+                Failed to load agent directories: {loadError}
+              </p>
+            ) : symbiontEntries.length === 0 ? (
               <p className="font-sans text-xs text-on-surface-variant italic">No agent directories configured.</p>
             ) : (
               <div className="space-y-3">

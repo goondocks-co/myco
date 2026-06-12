@@ -59,11 +59,11 @@ describe('UI API request context', () => {
     expect(headers?.get('x-myco-project-id')).toBeUndefined();
   });
 
-  it('adds selected project identity inside query keys while preserving namespace invalidation', () => {
+  it('appends project identity to query keys so positional prefix invalidation still matches', () => {
     expect(projectScopedQueryKey(selection, ['sessions', { status: 'active' }])).toEqual([
       'sessions',
-      { projectSelection: 'grove-a:project-a' },
       { status: 'active' },
+      { projectSelection: 'grove-a:project-a' },
     ]);
     expect(projectScopedQueryKey(null, ['sessions'])).toEqual(['sessions']);
   });
