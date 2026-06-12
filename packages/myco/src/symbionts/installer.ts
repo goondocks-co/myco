@@ -1768,7 +1768,9 @@ export class SymbiontInstaller {
       // directly under the agent's globalSkillsTarget.
       fs.mkdirSync(agentSkillsDir, { recursive: true });
       for (const name of skillNames) {
-        ensureSymlink(path.join(agentSkillsDir, name), path.join(skillsSrc, name));
+        if (ensureSymlink(path.join(agentSkillsDir, name), path.join(skillsSrc, name)) === 'kept-real-path') {
+          process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${path.join(agentSkillsDir, name)}\n`);
+        }
       }
       return true;
     }
@@ -1782,7 +1784,9 @@ export class SymbiontInstaller {
     for (const name of skillNames) {
       const canonicalLink = path.join(canonicalDir, name);
       const target = path.join(skillsSrc, name);
-      ensureSymlink(canonicalLink, target);
+      if (ensureSymlink(canonicalLink, target) === 'kept-real-path') {
+        process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${canonicalLink}\n`);
+      }
     }
 
     // Create agent-specific symlinks if skillsTarget differs from canonical
@@ -1793,7 +1797,9 @@ export class SymbiontInstaller {
       for (const name of skillNames) {
         const agentLink = path.join(agentSkillsDir, name);
         const relTarget = path.join(canonicalRel, name);
-        ensureSymlink(agentLink, relTarget);
+        if (ensureSymlink(agentLink, relTarget) === 'kept-real-path') {
+          process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${agentLink}\n`);
+        }
       }
       ensureLocalSkillsGitignore(agentSkillsDir);
     }
@@ -2230,13 +2236,36 @@ export class SymbiontInstaller {
     return true;
   }
 
-  /** Remove skill symlinks (canonical + agent-specific). */
+  /** Remove skill symlinks (flat-global, canonical, and agent-specific). */
   uninstallSkills(): boolean {
     const reg = this.manifest.registration;
-    if (!reg?.skillsTarget) return false;
 
     const skillNames = this.listSkillDirs();
     if (skillNames.length === 0) return false;
+
+    // Global scope installs flat symlinks under globalSkillsTarget with no
+    // canonical layer (see installSkills). Uninstall must mirror that or
+    // every globally-installed agent keeps orphaned skill links forever.
+    // Only symlinks are removed — a real file or directory under the same
+    // name is user content.
+    if (this.capabilities.flatSkills) {
+      if (!reg?.globalSkillsTarget) return false;
+      const agentSkillsDir = this.resolveAbsoluteTarget("skills")!;
+      let removedFlat = false;
+      for (const name of skillNames) {
+        const link = path.join(agentSkillsDir, name);
+        try {
+          if (fs.lstatSync(link).isSymbolicLink()) {
+            fs.unlinkSync(link);
+            removedFlat = true;
+          }
+        } catch { /* doesn't exist */ }
+      }
+      try { fs.rmdirSync(agentSkillsDir); } catch { /* not empty or missing */ }
+      return removedFlat;
+    }
+
+    if (!reg?.skillsTarget) return false;
 
     let removed = false;
 
@@ -2244,7 +2273,9 @@ export class SymbiontInstaller {
     if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
       for (const name of skillNames) {
         const link = path.join(this.resolveAbsoluteTarget("skills")!, name);
-        try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
+        try {
+          if (fs.lstatSync(link).isSymbolicLink()) { fs.unlinkSync(link); removed = true; }
+        } catch { /* doesn't exist */ }
       }
       // Remove agent skills dir if now empty (rmdirSync fails atomically if non-empty)
       try { fs.rmdirSync(this.resolveAbsoluteTarget("skills")!); } catch { /* not empty or missing */ }
@@ -2254,7 +2285,9 @@ export class SymbiontInstaller {
     const canonicalDir = path.join(this.projectRoot, CANONICAL_SKILLS_DIR);
     for (const name of skillNames) {
       const link = path.join(canonicalDir, name);
-      try { fs.unlinkSync(link); removed = true; } catch { /* doesn't exist */ }
+      try {
+        if (fs.lstatSync(link).isSymbolicLink()) { fs.unlinkSync(link); removed = true; }
+      } catch { /* doesn't exist */ }
     }
     // Remove empty dirs (rmdirSync fails atomically if non-empty)
     try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
