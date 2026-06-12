@@ -173,7 +173,7 @@ describe('useUnifiedSettings', () => {
       await result.current.writeField(GROVE_FIELD, 30);
     });
     expect(updateGroveMutateMock).toHaveBeenCalledWith({
-      maintenance: { auto_optimize_interval_hours: 30 },
+      patch: { maintenance: { auto_optimize_interval_hours: 30 } },
     });
   });
 
@@ -183,8 +183,40 @@ describe('useUnifiedSettings', () => {
       await result.current.writeField(MACHINE_FIELD, 'debug');
     });
     expect(updateMachineMutateMock).toHaveBeenCalledWith({
-      daemon: { log_level: 'debug' },
+      patch: { daemon: { log_level: 'debug' } },
     });
+  });
+
+  it('writeField(grove) with undefined routes through the clear list', async () => {
+    const { result } = renderHook(() => useUnifiedSettings());
+    await act(async () => {
+      await result.current.writeField(GROVE_FIELD, undefined);
+    });
+    expect(updateGroveMutateMock).toHaveBeenCalledWith({
+      clear: ['maintenance.auto_optimize_interval_hours'],
+    });
+  });
+
+  it('writeField(machine) with undefined routes through the clear list', async () => {
+    const { result } = renderHook(() => useUnifiedSettings());
+    await act(async () => {
+      await result.current.writeField(MACHINE_FIELD, undefined);
+    });
+    expect(updateMachineMutateMock).toHaveBeenCalledWith({
+      clear: ['daemon.log_level'],
+    });
+  });
+
+  it('writeField(project) with undefined delegates a clear to setField', async () => {
+    const { result } = renderHook(() => useUnifiedSettings());
+    await act(async () => {
+      await result.current.writeField(PROJECT_FIELD, undefined);
+    });
+    expect(setFieldMock).toHaveBeenCalledWith(
+      'release_provenance.enabled',
+      undefined,
+      'project',
+    );
   });
 
   it('isLoading aggregates across scopes', () => {

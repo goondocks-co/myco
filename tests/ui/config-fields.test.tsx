@@ -36,6 +36,21 @@ describe('config field controls', () => {
     expect(onChange.mock.calls[0][0]).toBe(10);
   });
 
+  it('NumberField does not commit when the input is emptied (no spurious 0)', () => {
+    const onChange = mock((_next: number) => {});
+    render(
+      <NumberField id="num" value={5} min={0} max={10} onChange={onChange} />,
+    );
+
+    const input = screen.getByRole('spinbutton') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+
+    expect(onChange).not.toHaveBeenCalled();
+    // The draft snaps back to the last good value.
+    expect(input.value).toBe('5');
+  });
+
   it('TextField commits a trimmed value on blur', () => {
     const onChange = mock((_next: string) => {});
     render(<TextField id="text" value="" onChange={onChange} />);

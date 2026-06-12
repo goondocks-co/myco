@@ -92,13 +92,20 @@ export function useProjectPathBuilder(): (suffix?: string) => string {
   ), [selection]);
 }
 
+/**
+ * Append the project-selection marker to a query key so per-project caches
+ * stay distinct. The marker goes at the END of the key: TanStack's partial
+ * key matching is positional, so `invalidateQueries({ queryKey: ['ns', id] })`
+ * only matches keys whose leading elements are `'ns', id`. Marker-last keeps
+ * every namespace-shaped invalidation working; marker-at-index-1 silently
+ * no-ops them.
+ */
 export function projectScopedQueryKey(
   selection: ProjectSelection | null,
   queryKey: QueryKey,
 ): QueryKey {
   if (!selection) return queryKey;
-  const [namespace, ...rest] = queryKey;
-  return [namespace, { projectSelection: selectionKey(selection) }, ...rest];
+  return [...queryKey, { projectSelection: selectionKey(selection) }];
 }
 
 export function useProjectScopedQueryKey(queryKey: QueryKey): QueryKey {

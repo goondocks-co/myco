@@ -332,9 +332,9 @@ describe('Unified Settings page', () => {
     await waitFor(() => {
       expect(updateGroveMock).toHaveBeenCalled();
     });
-    // Patch shape should be { maintenance: { auto_optimize: <toggled> } }
+    // Write shape should be { patch: { maintenance: { auto_optimize: <toggled> } } }
     expect(updateGroveMock.mock.calls[0][0]).toEqual({
-      maintenance: { auto_optimize: expect.any(Boolean) as unknown as boolean },
+      patch: { maintenance: { auto_optimize: expect.any(Boolean) as unknown as boolean } },
     });
   });
 

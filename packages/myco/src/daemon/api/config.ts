@@ -288,6 +288,8 @@ export async function handleGetGroveConfig(
 
 interface TierPutBody {
   patch?: Record<string, unknown>;
+  /** Dot-paths removed from the tier file (same contract as the scoped PUT). */
+  clear?: string[];
   /** Add values to the named array path (deduped, server-side read-modify-write). */
   addToList?: ListDeltaEntry[];
   /** Remove values from the named array path (server-side read-modify-write). */
@@ -381,9 +383,10 @@ interface TierPutOptions<TConfig> {
  *
  * Request body may contain any combination of:
  *   patch          — deep-merged into the current config
+ *   clear          — dot-paths removed from the raw tier file
  *   addToList      — [{ path, values }] set-union additions (deduped)
  *   removeFromList — [{ path, values }] set-difference removals
- * At least one of the three must be non-empty.
+ * At least one of the four must be non-empty.
  */
 async function handlePutTierConfig<TConfig>(
   body: unknown,
@@ -399,6 +402,8 @@ async function handlePutTierConfig<TConfig>(
     };
   }
 
+  const clearListOrError = validateClearList(payload.clear);
+  if (!Array.isArray(clearListOrError)) return { response: clearListOrError, touchedPaths: [] };
   const addOpsRaw = validateListDeltaOps(payload.addToList);
   if (!Array.isArray(addOpsRaw)) return { response: addOpsRaw, touchedPaths: [] };
   const removeOpsRaw = validateListDeltaOps(payload.removeFromList);
@@ -407,8 +412,11 @@ async function handlePutTierConfig<TConfig>(
   const patch = options.sanitizePatch
     ? options.sanitizePatch(incoming as Record<string, unknown>)
     : (incoming as Record<string, unknown>);
-  // Drop list-delta ops targeting protected paths, mirroring how
+  // Drop list-delta ops and clears targeting protected paths, mirroring how
   // `sanitizePatch` strips the same field from `patch`.
+  const clearList = options.isProtectedPath
+    ? clearListOrError.filter((p) => !options.isProtectedPath!(p))
+    : clearListOrError;
   const addOps = options.isProtectedPath
     ? addOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
     : addOpsRaw;
@@ -416,11 +424,20 @@ async function handlePutTierConfig<TConfig>(
     ? removeOpsRaw.filter((op) => !options.isProtectedPath!(op.path))
     : removeOpsRaw;
   const patchLeaves = enumerateLeafPaths(patch);
+  const hasClear = clearList.length > 0;
   const hasListOps = addOps.length > 0 || removeOps.length > 0;
 
-  if (patchLeaves.length === 0 && !hasListOps) {
+  if (patchLeaves.length === 0 && !hasClear && !hasListOps) {
     return {
-      response: { status: 400, body: { error: 'patch, addToList, or removeFromList required' } },
+      response: { status: 400, body: { error: 'patch, clear, addToList, or removeFromList required' } },
+      touchedPaths: [],
+    };
+  }
+
+  const overlap = patchLeaves.filter((leaf) => clearList.some((clearPath) => pathsOverlap(leaf, clearPath)));
+  if (overlap.length > 0) {
+    return {
+      response: { status: 400, body: { error: 'patch_clear_overlap', keys: overlap } },
       touchedPaths: [],
     };
   }
@@ -447,6 +464,9 @@ async function handlePutTierConfig<TConfig>(
     const listTouched = applyListDeltas(working, addOps, removeOps);
 
     const validated = updateTierConfigRaw(options.target, (rawDoc) => {
+      // Clears apply first (same order as the scoped handler) so a clear of
+      // a stale subtree can't erase the values the patch introduces.
+      for (const key of clearList) unsetAtPath(rawDoc, key);
       const next = deepMergeConfig(rawDoc, patch);
       for (const opPath of listTouched) {
         setAtPath(next, opPath, getAtPath(working, opPath));
@@ -454,7 +474,10 @@ async function handlePutTierConfig<TConfig>(
       return next;
     }) as TConfig;
 
-    return { response: { body: validated }, touchedPaths: [...patchLeaves, ...listTouched] };
+    return {
+      response: { body: validated },
+      touchedPaths: [...patchLeaves, ...clearList, ...listTouched],
+    };
   } catch (err) {
     if (err instanceof TierConfigUnreadableError) {
       return {
@@ -481,7 +504,8 @@ async function handlePutTierConfig<TConfig>(
 
 /**
  * PUT /api/grove-config — patch the current Grove's config.
- * Request body: `{ patch: Partial<GroveConfig> }`. 404 when no Grove is bound.
+ * Request body: `{ patch?: Partial<GroveConfig>, clear?: string[] }`.
+ * 404 when no Grove is bound.
  */
 export async function handlePutGroveConfig(
   groveId: string | null | undefined,

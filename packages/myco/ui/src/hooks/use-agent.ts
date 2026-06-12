@@ -557,11 +557,20 @@ export function useTriggerRun() {
 
 export function useResumeRun() {
   const queryClient = useQueryClient();
+  const selection = useProjectSelection();
 
   return useMutation<ResumeRunResponse, Error, { runId: string; mode?: 'manual' | 'scheduled' }>({
     mutationFn: ({ runId, mode }) =>
       postJson<ResumeRunResponse>(`/agent/runs/${runId}/resume`, mode ? { mode } : {}),
     onSuccess: (_data, variables) => {
+      // Optimistically flip the cached detail to 'running': `useAgentRun`
+      // stops polling at a terminal status, so the resumed run must become
+      // non-terminal in the cache for detail polling to restart immediately
+      // rather than waiting on the invalidation refetch to observe it.
+      const detailKey = projectScopedQueryKey(selection, ['agent-run', variables.runId]);
+      queryClient.setQueryData<RunDetailResponse>(detailKey, (prev) =>
+        prev ? { ...prev, run: { ...prev.run, status: 'running' } } : prev,
+      );
       void queryClient.invalidateQueries({ queryKey: ['agent-runs'] });
       void queryClient.invalidateQueries({ queryKey: ['agent-run', variables.runId] });
     },
