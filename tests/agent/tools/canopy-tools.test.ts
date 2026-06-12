@@ -22,6 +22,7 @@ function seedSchema(db: Database) {
       llm_updated_at INTEGER,
       mechanical_updated_at INTEGER NOT NULL,
       embedded INTEGER DEFAULT 0,
+      describe_attempts INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, path)
     );
   `;

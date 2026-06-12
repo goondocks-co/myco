@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { epochSeconds } from '@myco/constants.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { ProviderType, ReasoningLevel, HarnessId } from '@myco/agent/types.js';
 import type { CostSource } from '@myco/agent/cost/types.js';
@@ -42,6 +43,15 @@ export const RESUME_STATUS_READY = 'ready';
  */
 export const RESUME_STATUS_SESSION_EXPIRED = 'session_expired';
 
+/**
+ * Resume status used when a run has burned through the scheduler's resume
+ * retry budget (`resume_attempts` >= cap). Terminal like `session_expired`:
+ * `resumable=0` is what actually stops the scheduler loop —
+ * `getLatestResumableRunForTask` filters on `resumable = 1` and never reads
+ * `resume_status` — but the status tells operators why the run is final.
+ */
+export const RESUME_STATUS_EXHAUSTED = 'exhausted';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -61,6 +71,8 @@ export interface RunInsert {
   resume_status?: string | null;
   resume_mode?: string | null;
   resumed_at?: number | null;
+  /** Scheduled resume retries consumed so far. Defaults to 0. */
+  resume_attempts?: number | null;
   checkpoints?: string | null;
   usage_data?: string | null;
   started_at?: number | null;
@@ -73,6 +85,8 @@ export interface RunInsert {
   cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
+  /** RunOptions.runContext serialized as JSON. Null when the run had none. */
+  run_context?: string | null;
   /** Whether this run was executed in dry-run mode (intercepted writes). */
   dryRun?: boolean;
   /**
@@ -103,6 +117,8 @@ export interface RunRow {
   resume_status: string | null;
   resume_mode: string | null;
   resumed_at: number | null;
+  /** Scheduled resume retries consumed so far. */
+  resume_attempts: number;
   checkpoints: string | null;
   usage_data: string | null;
   started_at: number | null;
@@ -115,6 +131,8 @@ export interface RunRow {
   cost_data: string | null;
   actions_taken: string | null;
   error: string | null;
+  /** RunOptions.runContext serialized as JSON. Null when the run had none. */
+  run_context: string | null;
   /** True when the run was executed in dry-run mode. */
   dry_run: boolean;
   /** Reasoning level applied to this run, or null if unset. */
@@ -139,6 +157,7 @@ export interface RunUpdate {
   resume_status?: string | null;
   resume_mode?: string | null;
   resumed_at?: number | null;
+  resume_attempts?: number;
   checkpoints?: string | null;
   usage_data?: string | null;
   completed_at?: number | null;
@@ -150,6 +169,7 @@ export interface RunUpdate {
   cost_data?: string | null;
   actions_taken?: string | null;
   error?: string | null;
+  run_context?: string | null;
   dryRun?: boolean;
   reasoningLevel?: ReasoningLevel | null;
   executionOverrides?: Record<string, unknown> | null;
@@ -184,6 +204,7 @@ const RUN_COLUMNS = [
   'resume_status',
   'resume_mode',
   'resumed_at',
+  'resume_attempts',
   'checkpoints',
   'usage_data',
   'started_at',
@@ -196,6 +217,7 @@ const RUN_COLUMNS = [
   'cost_data',
   'actions_taken',
   'error',
+  'run_context',
   'dry_run',
   'reasoning_level',
   'execution_overrides',
@@ -274,6 +296,7 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     resume_status: (row.resume_status as string) ?? null,
     resume_mode: (row.resume_mode as string) ?? null,
     resumed_at: (row.resumed_at as number) ?? null,
+    resume_attempts: Number(row.resume_attempts ?? 0),
     checkpoints: (row.checkpoints as string) ?? null,
     usage_data: (row.usage_data as string) ?? null,
     started_at: (row.started_at as number) ?? null,
@@ -286,6 +309,7 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     cost_data: (row.cost_data as string) ?? null,
     actions_taken: (row.actions_taken as string) ?? null,
     error: (row.error as string) ?? null,
+    run_context: (row.run_context as string) ?? null,
     dry_run: Boolean(Number(row.dry_run ?? 0)),
     reasoning_level: toReasoningLevelOrNull(row.reasoning_level),
     execution_overrides: parseJsonObjectColumn(row.execution_overrides),
@@ -342,6 +366,7 @@ const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'resume_status',
   'resume_mode',
   'resumed_at',
+  'resume_attempts',
   'checkpoints',
   'usage_data',
   'completed_at',
@@ -353,6 +378,7 @@ const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'cost_data',
   'actions_taken',
   'error',
+  'run_context',
 ];
 
 function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: unknown[] } {
@@ -390,18 +416,18 @@ export function insertRun(data: RunInsert): RunRow {
     `INSERT INTO agent_runs (
        id, project_id, agent_id, task, instruction, status,
        harness, provider, model, session_ref, resumable,
-       resume_status, resume_mode, resumed_at, checkpoints, usage_data,
+       resume_status, resume_mode, resumed_at, resume_attempts, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
        actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
-       actions_taken, error, dry_run,
+       actions_taken, error, run_context, dry_run,
        reasoning_level, execution_overrides
      ) VALUES (
        ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?, ?,
+       ?, ?, ?, ?,
        ?, ?
      )`,
   ).run(
@@ -419,6 +445,7 @@ export function insertRun(data: RunInsert): RunRow {
     data.resume_status ?? null,
     data.resume_mode ?? null,
     data.resumed_at ?? null,
+    data.resume_attempts ?? 0,
     data.checkpoints ?? null,
     data.usage_data ?? null,
     data.started_at ?? null,
@@ -431,6 +458,7 @@ export function insertRun(data: RunInsert): RunRow {
     data.cost_data ?? null,
     data.actions_taken ?? null,
     data.error ?? null,
+    data.run_context ?? null,
     data.dryRun ? 1 : 0,
     data.reasoningLevel ?? null,
     serializeExecutionOverrides(data.executionOverrides),
@@ -530,21 +558,78 @@ export function getRunningRun(agentId: string, scope: ProjectScope): RunRow | nu
   return row ? toRunRow(row) : null;
 }
 
+export interface RunningRunRef {
+  id: string;
+  started_at: number | null;
+  /**
+   * True when `maxAgeSeconds` was given and the row's `started_at` exceeds
+   * the cutoff — a 'running' row no run loop is still driving (e.g. an
+   * update killed the process between boot-recovery sweeps). Callers treat
+   * a stale ref as not-running and log it; the row itself is NOT mutated
+   * here (boot recovery's `markRunningRunsInterrupted` owns that).
+   */
+  stale: boolean;
+}
+
 export function getRunningRunForTask(
   agentId: string,
   taskName: string,
   scope: ProjectScope,
-): string | null {
+  maxAgeSeconds?: number,
+): RunningRunRef | null {
   const db = getDatabase();
   const conditions = ['agent_id = ?', 'task = ?', 'status = ?'];
   const params: unknown[] = [agentId, taskName, STATUS_RUNNING];
   appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT id FROM agent_runs
+    `SELECT id, started_at FROM agent_runs
      WHERE ${conditions.join(' AND ')}
+     ORDER BY started_at DESC NULLS LAST
      LIMIT 1`,
-  ).get(...params) as { id: string } | undefined;
-  return row?.id ?? null;
+  ).get(...params) as { id: string; started_at: number | null } | undefined;
+  if (!row) return null;
+  const stale = maxAgeSeconds !== undefined
+    && row.started_at !== null
+    && epochSeconds() - row.started_at > maxAgeSeconds;
+  return { id: row.id, started_at: row.started_at ?? null, stale };
+}
+
+/**
+ * Atomically bump `resume_attempts` for a run. Used by the scheduler before
+ * each resume dispatch so the retry budget survives daemon restarts.
+ * Returns the number of changed rows.
+ */
+export function incrementRunResumeAttempts(id: string, scope: ProjectScope): number {
+  const db = getDatabase();
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(
+    `UPDATE agent_runs
+     SET resume_attempts = resume_attempts + 1
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
+  return info.changes;
+}
+
+/**
+ * Refund one resume attempt, flooring at 0. Only dispatches that actually
+ * START a resume consume budget — a dispatch the executor skips
+ * (already_running, e.g. a long manual run of the same task) must hand its
+ * attempt back, or ticks during that run would exhaust the budget with
+ * zero resumes executed. Returns the number of changed rows.
+ */
+export function refundRunResumeAttempt(id: string, scope: ProjectScope): number {
+  const db = getDatabase();
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(
+    `UPDATE agent_runs
+     SET resume_attempts = MAX(resume_attempts - 1, 0)
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
+  return info.changes;
 }
 
 export function getLatestRunId(

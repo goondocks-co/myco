@@ -425,9 +425,14 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     const writeAfterThrowPart = mapResult.writeAfterThrow > 0
       ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
       : '';
+    // An all-poisoned batch (items fetched, nothing written) is a failure,
+    // not a quiet completion — every item either threw, was rejected by the
+    // sink, or never reached a terminal tool call. Surfacing it as 'failed'
+    // lets required map phases fail the run and fire the failure notify.
+    const allPoisoned = mapResult.itemCount > 0 && mapResult.written === 0;
     return buildPhaseResult({
       name: phase.name,
-      status: 'completed',
+      status: allPoisoned ? 'failed' : 'completed',
       summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
       usage: mapResult.usage,
       costData,
@@ -582,7 +587,12 @@ export async function executePhasedQuery(
   const phases = config.phases!;
   const state = ctx.checkpointState;
   const phaseResults: PhaseResult[] = checkpointResultsForResume(config, state);
-  let runningTurnCount = phaseResults.reduce((sum, phase) => sum + phase.turnsUsed, 0);
+  // Allocation-based audit offsets: the running base advances by each wave's
+  // total ALLOCATED turns (sum of resolved maxTurns), never by actual turns
+  // used, so every phase owns the same disjoint [offset, offset + maxTurns)
+  // turn-index range across fresh runs and resumes — audit indices can
+  // never collide.
+  let runningTurnCount = 0;
   const completedPhaseNames = new Set(phaseResults.map((phase) => phase.name));
 
   // -------------------------------------------------------------------------
@@ -645,18 +655,18 @@ export async function executePhasedQuery(
   const waves = computeWaves(effectivePhases);
 
   for (const wave of waves) {
-    const runnableWave = wave.filter((phase) => !completedPhaseNames.has(phase.name));
-    if (runnableWave.length === 0) {
-      continue;
-    }
-
-    const waveInputs = runnableWave.map((phase, indexInWave) => {
-      // Resolve execution config FIRST so the prompt can be templated
-      // with the resolved `maxTurns` (and future per-phase harness
-      // knobs). Single canonical precedence resolution — covers run
-      // overrides, phase YAML, myco.yaml per-phase overrides, top-level
-      // run override, and the task default. See `resolvePhaseExecution`
-      // JSDoc for the full precedence table.
+    // Resolve execution config for EVERY phase in the wave (not just the
+    // runnable ones) so each phase's offset is the prefix sum of its
+    // preceding siblings' resolved maxTurns — stable across resume, where
+    // completed phases are filtered out but still occupy their allocated
+    // turn-index range. Single canonical precedence resolution — covers run
+    // overrides, phase YAML, myco.yaml per-phase overrides, top-level run
+    // override, and the task default. See `resolvePhaseExecution` JSDoc for
+    // the full precedence table.
+    const resolvedByName = new Map<string, ReturnType<typeof resolvePhaseExecution>>();
+    const offsetByName = new Map<string, number>();
+    let waveAllocatedTurns = 0;
+    for (const phase of wave) {
       const resolved = resolvePhaseExecution(
         phase,
         ctx.options,
@@ -665,6 +675,19 @@ export async function executePhasedQuery(
         ctx.phaseProviderOverrides,
         ctx.options?.logger,
       );
+      resolvedByName.set(phase.name, resolved);
+      offsetByName.set(phase.name, runningTurnCount + waveAllocatedTurns);
+      waveAllocatedTurns += resolved.maxTurns;
+    }
+
+    const runnableWave = wave.filter((phase) => !completedPhaseNames.has(phase.name));
+    if (runnableWave.length === 0) {
+      runningTurnCount += waveAllocatedTurns;
+      continue;
+    }
+
+    const waveInputs = runnableWave.map((phase) => {
+      const resolved = resolvedByName.get(phase.name)!;
       const phaseProvider = resolved.provider;
       const effectiveMaxTurns = resolved.maxTurns;
       const phaseModel = resolved.model;
@@ -728,7 +751,7 @@ export async function executePhasedQuery(
           agentId,
           runId,
           toolNames: phase.tools,
-          turnOffset: runningTurnCount + (indexInWave * effectiveMaxTurns),
+          turnOffset: offsetByName.get(phase.name)!,
           projectRoot: ctx.projectRoot,
           vaultDir: ctx.vaultDir,
           requestContext: ctx.requestContext,
@@ -826,8 +849,8 @@ export async function executePhasedQuery(
         completedPhaseNames.add(result.name);
       }
       phaseResults.push(result);
-      runningTurnCount += result.turnsUsed;
     }
+    runningTurnCount += waveAllocatedTurns;
 
     if (ctx.persistCheckpoints) {
       await ctx.persistCheckpoints(state, phaseResults);

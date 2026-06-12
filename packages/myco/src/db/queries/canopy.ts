@@ -377,18 +377,43 @@ export function describedCanopyEntriesPredicate(
 }
 
 /**
+ * Default canopy-describe retry budget per row. Mirrors the
+ * `params.max_attempts` default in canopy-describe.yaml; a per-project
+ * override of that param must be threaded through to every consumer of
+ * `PENDING_CANOPY_DESCRIBE_PREDICATE` so fetch and count agree.
+ */
+export const DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS = 2;
+
+/**
+ * Canonical "needs an llm_description" predicate for canopy_entries:
+ * description NULL or stale relative to mechanical_updated_at, AND the row
+ * has not exhausted its describe retry budget (one `?` placeholder for
+ * maxAttempts). Shared verbatim by the fetch (SELECT_PENDING_SQL in
+ * agent/tools/canopy-tools.ts) and the scheduler count below so the two
+ * can never disagree about what is pending. Attempts reset to 0 whenever
+ * the mechanical scanner updates the row (canopy/scanner/upsert.ts).
+ */
+export const PENDING_CANOPY_DESCRIBE_PREDICATE = `(
+      llm_updated_at IS NULL
+      OR llm_updated_at < mechanical_updated_at
+    )
+    AND describe_attempts < ?`;
+
+/**
  * Count canopy_entries rows that need an llm_description (NULL or stale
- * relative to mechanical_updated_at). Owned by the canopy domain — the
- * predicate must stay in lock-step with SELECT_PENDING_SQL in
- * agent/tools/canopy-tools.ts and the boolean has-pending-canopy-rows
- * precondition in daemon/task-scheduling.ts. Co-located with the rest of
- * the canopy queries so the scheduler doesn't have to import schema
- * knowledge it doesn't own.
+ * relative to mechanical_updated_at, with describe_attempts under the
+ * retry budget). Owned by the canopy domain — the predicate is literally
+ * shared with SELECT_PENDING_SQL in agent/tools/canopy-tools.ts and the
+ * boolean has-pending-canopy-rows precondition in
+ * daemon/task-scheduling.ts. Co-located with the rest of the canopy
+ * queries so the scheduler doesn't have to import schema knowledge it
+ * doesn't own.
  */
 export function countPendingCanopyDescribe(
   db: Database | null,
   projectId: string,
   limit?: number,
+  maxAttempts: number = DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS,
 ): number {
   const conn = db ?? getDatabase();
   if (limit !== undefined) {
@@ -397,23 +422,17 @@ export function countPendingCanopyDescribe(
       `SELECT COUNT(*) AS n FROM (
         SELECT 1 FROM canopy_entries
         WHERE project_id = ?
-          AND (
-            llm_updated_at IS NULL
-            OR llm_updated_at < mechanical_updated_at
-          )
+          AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}
         LIMIT ?
       )`,
-    ).get(projectId, boundedLimit) as { n: number } | undefined;
+    ).get(projectId, maxAttempts, boundedLimit) as { n: number } | undefined;
     return row?.n ?? 0;
   }
   const row = conn.prepare(
     `SELECT COUNT(*) AS n FROM canopy_entries
       WHERE project_id = ?
-        AND (
-          llm_updated_at IS NULL
-          OR llm_updated_at < mechanical_updated_at
-        )`,
-  ).get(projectId) as { n: number } | undefined;
+        AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}`,
+  ).get(projectId, maxAttempts) as { n: number } | undefined;
   return row?.n ?? 0;
 }
 
@@ -430,18 +449,29 @@ export interface CanopyDescribeBacklogOptions {
    * (which no scribe run will ever service) don't inflate the backlog.
    */
   projectIds?: readonly string[];
+  /**
+   * Per-row describe retry budget (the task's `params.max_attempts`).
+   * Callers without a resolved config take the yaml default so the backlog
+   * applies the same serviceability bar as the fetch/count predicate.
+   */
+  maxAttempts?: number;
 }
 
 /**
  * Count the upstream Canopy scribe backlog. This is deliberately separate
  * from embedding queue depth: changed files keep their old vector until the
  * describe task refreshes llm_description and re-queues embedding.
+ *
+ * Every bucket shares the fetch predicate's describe_attempts cap — rows a
+ * poisoned tail has exhausted are work no scribe run will ever service, so
+ * they must not inflate the backlog (`pending` stays `undescribed + stale`).
  */
 export function getCanopyDescribeBacklog(
   db: Database,
   scope: ProjectScope,
   options: CanopyDescribeBacklogOptions = {},
 ): CanopyDescribeBacklog {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
   const { sql: projectSql, params } = projectScopeClause(scope);
   let restrictSql = '';
   if (options.projectIds) {
@@ -450,12 +480,12 @@ export function getCanopyDescribeBacklog(
   }
   const row = db.prepare(
     `SELECT
-       SUM(CASE WHEN llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS pending,
-       SUM(CASE WHEN llm_updated_at IS NULL THEN 1 ELSE 0 END) AS undescribed,
-       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at THEN 1 ELSE 0 END) AS stale
+       SUM(CASE WHEN ${PENDING_CANOPY_DESCRIBE_PREDICATE} THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN llm_updated_at IS NULL AND describe_attempts < ? THEN 1 ELSE 0 END) AS undescribed,
+       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at AND describe_attempts < ? THEN 1 ELSE 0 END) AS stale
        FROM canopy_entries
       WHERE 1 = 1${projectSql}${restrictSql}`,
-  ).get(...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
+  ).get(maxAttempts, maxAttempts, maxAttempts, ...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
   return {
     pending: Number(row?.pending ?? 0),
     undescribed: Number(row?.undescribed ?? 0),

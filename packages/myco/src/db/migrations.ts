@@ -118,6 +118,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 57, migrate: (db) => migrateV56ToV57(db) },
   { version: 58, migrate: (db) => migrateV57ToV58(db) },
   { version: 59, migrate: (db) => migrateV58ToV59(db) },
+  { version: 60, migrate: (db) => migrateV59ToV60(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3727,6 +3728,58 @@ function migrateV58ToV59(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(59, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Frozen at the v60 revision: run-lifecycle bookkeeping columns. Per the
+ * frozen-DDL rules above, these must never reference the live
+ * AGENT_RUNS_TABLE / CANOPY_ENTRIES_TABLE constants — later edits to the
+ * live DDL would silently change this migration's semantics.
+ */
+const V60_AGENT_RUNS_RESUME_ATTEMPTS =
+  'ALTER TABLE agent_runs ADD COLUMN resume_attempts INTEGER NOT NULL DEFAULT 0';
+
+const V60_AGENT_RUNS_RUN_CONTEXT =
+  'ALTER TABLE agent_runs ADD COLUMN run_context TEXT';
+
+const V60_CANOPY_ENTRIES_DESCRIBE_ATTEMPTS =
+  'ALTER TABLE canopy_entries ADD COLUMN describe_attempts INTEGER NOT NULL DEFAULT 0';
+
+/**
+ * v59 -> v60: run-lifecycle bookkeeping.
+ *
+ * - `agent_runs.resume_attempts` counts scheduled resume retries so the
+ *   scheduler can stop re-enqueueing a run that keeps failing (cap +
+ *   `resume_status = 'exhausted'`).
+ * - `agent_runs.run_context` persists RunOptions.runContext as JSON so a
+ *   resume restores the structured metadata the original dispatch carried.
+ * - `canopy_entries.describe_attempts` counts canopy-describe fetches per
+ *   row so a poisoned tail (rows the model can never describe) ages out of
+ *   the pending predicate instead of re-running forever.
+ */
+function migrateV59ToV60(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const runCols = getTableColumnSet(db, 'agent_runs');
+    if (!runCols.has('resume_attempts')) {
+      db.prepare(V60_AGENT_RUNS_RESUME_ATTEMPTS).run();
+    }
+    if (!runCols.has('run_context')) {
+      db.prepare(V60_AGENT_RUNS_RUN_CONTEXT).run();
+    }
+    const canopyCols = getTableColumnSet(db, 'canopy_entries');
+    if (!canopyCols.has('describe_attempts')) {
+      db.prepare(V60_CANOPY_ENTRIES_DESCRIBE_ATTEMPTS).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(60, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
