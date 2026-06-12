@@ -88,6 +88,20 @@ const PromptShapeSchema = z.object({
    */
   textAt: z.string(),
   /**
+   * How text is derived when the `textAt` value resolves to an ARRAY of
+   * content blocks (strings always pass through unchanged):
+   *
+   *   first_text        — (default) the first `{type:"text"}` block's `text`
+   *                       field. Matches the Claude Code typed-block shape.
+   *   joined_text_parts — all text-bearing parts cleaned and joined via the
+   *                       canonical Codex routine (`extractCodexPromptText`),
+   *                       which strips `<image …>` wrapper tags. Required for
+   *                       Codex multipart image prompts, where the user's
+   *                       real text is the LAST part, not the first. `textAt`
+   *                       must point at the content ARRAY itself.
+   */
+  textExtraction: z.enum(['first_text', 'joined_text_parts']).optional(),
+  /**
    * Optional content-prefix guard. When set, the shape only matches when the
    * resolved `textAt` value starts with this literal. Use to disambiguate
    * entries that are STRUCTURALLY identical but semantically distinct — e.g.
