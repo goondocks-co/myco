@@ -188,6 +188,7 @@ import { EventDedupCache } from './event-dedup-cache.js';
 import { reEnrichSessionFromTranscript } from './session-reenrich.js';
 import { runPendingMigrationTasks } from './migration-tasks.js';
 import { createStopProcessor } from './stop-processing.js';
+import { captureBatchImages } from './capture-images.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createLiveReconcile } from './live-reconcile.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
@@ -1109,6 +1110,14 @@ export async function main(): Promise<void> {
     additionalAdapters: config.capture.transcript_paths.map((p) =>
       createPerProjectAdapter(p, claudeCodeAdapter.parseTurns),
     ),
+    logger,
+    // Manifest plan tags — the miner strips plan envelopes from every
+    // response it persists (plan extraction reads raw turns, so Plan
+    // records survive intact).
+    planTags: symbiontPlanTags,
+    // Mining-path image capture: the same shared routine the Stop and
+    // plugin paths use; tenancy comes from the matched batch's project_id.
+    captureImages: (input) => captureBatchImages({ ...input, logger }),
   });
 
   const sessionBuffers = new Map<string, EventBuffer>();
@@ -1127,7 +1136,7 @@ export async function main(): Promise<void> {
     bufferDirs: () => listAllProjectBufferDirs(),
     logger,
     projectRoot,
-    onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger }),
+    onSessionReconciled: (sessionId) => reEnrichSessionFromTranscript(sessionId, { transcriptMiner, logger, planTags: symbiontPlanTags }),
     eventDedupCache,
     registry,
     machineId,

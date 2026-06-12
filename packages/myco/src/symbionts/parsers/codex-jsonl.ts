@@ -61,6 +61,21 @@ function cleanCodexPromptText(text: string): string {
   return text;
 }
 
+/** Construction options for {@link CodexJsonlParser}. */
+export interface CodexJsonlParserOptions {
+  /**
+   * User-message prefixes that mark runtime-synthesized system envelopes
+   * (manifest-derived — see `symbionts/envelope-prefixes.ts`). An envelope
+   * user message folds into the CURRENT turn: it neither replaces the
+   * turn's prompt nor starts a new one, so the assistant output that
+   * follows it stays attached to the prompt that opened the turn. Without
+   * this, a `$skill` expansion (a second user-role response_item) opened a
+   * fresh turn that absorbed the real prompt's response, stranding the
+   * human batch without a summary.
+   */
+  envelopePrefixes?: readonly string[];
+}
+
 /**
  * Canonical Codex `content[]` → prompt-text routine. Image prompts arrive as
  * multipart content — `<image …>` wrapper `input_text` tags and `input_image`
@@ -98,8 +113,15 @@ export function extractCodexPromptText(content: unknown): string {
  * - Images are data URLs in "input_image" blocks (data:<mime>;base64,<data>), not structured source objects
  * - Codex Desktop wraps prompts with file-mention preambles and <image> tags when screenshots are attached — these are stripped
  * - Non-conversation entries (event_msg, session_meta, turn_context, reasoning) are skipped
+ * - System-envelope user messages (manifest-declared prefixes) fold into the current turn
  */
 export class CodexJsonlParser implements TranscriptParser {
+  private readonly envelopePrefixes: readonly string[];
+
+  constructor(options: CodexJsonlParserOptions = {}) {
+    this.envelopePrefixes = options.envelopePrefixes ?? [];
+  }
+
   parseTurns(content: string): TranscriptTurn[] {
     const lines = content.split('\n').filter(Boolean);
     const turns: TranscriptTurn[] = [];
@@ -152,6 +174,15 @@ export class CodexJsonlParser implements TranscriptParser {
       if (role === 'user') {
         const fullPrompt = extractCodexPromptText(blocks);
         if (!fullPrompt) continue;
+
+        // System envelopes are not turn boundaries. Match against the RAW
+        // text of the first text block — the same view the live hook and
+        // the transcript walker evaluate `prompt_starts_with` rules on.
+        // The envelope's text is dropped here (the walker records it as a
+        // system-origin batch separately); the turn stays open so the
+        // assistant output that follows lands on the prompt that opened it.
+        const firstRawText = blocks.find((b) => b.type === 'input_text' && b.text?.trim())?.text ?? '';
+        if (this.envelopePrefixes.some((p) => firstRawText.startsWith(p))) continue;
 
         if (current) turns.push(current);
 

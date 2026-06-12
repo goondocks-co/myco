@@ -24,6 +24,7 @@ import {
   normalizePlanSourcePath,
   TRANSCRIPT_SOURCE_PREFIX,
 } from '@myco/plans/identity.js';
+import { planTagEnvelopeRegex } from '@myco/plans/tag-envelopes.js';
 
 // ---------------------------------------------------------------------------
 // Transcript-based plan extraction
@@ -51,7 +52,10 @@ export function extractTaggedPlans(
   if (origin !== PROMPT_BATCH_ORIGIN.HUMAN) return [];
   const results: Array<{ tag: string; content: string }> = [];
   for (const tag of tags) {
-    const regex = new RegExp(`<${tag}>\\n?([\\s\\S]*?)\\n?</${tag}>`, 'g');
+    // Shared envelope shape — `stripPlanTagEnvelopes` removes exactly what
+    // this extracts, so persisted summaries can never retain an envelope
+    // that extraction recognized (or vice versa).
+    const regex = planTagEnvelopeRegex(tag);
     let match;
     while ((match = regex.exec(text)) !== null) {
       const content = match[1].trim();

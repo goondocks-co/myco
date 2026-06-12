@@ -591,6 +591,27 @@ describe('prompt batch query helpers', () => {
       expect(summaryOf(human.id)).toBe('human answer\n\nmid-turn system note');
       expect(summaryOf(system.id)).toBeNull(); // cleared — rolled into the anchor
     });
+
+    it('codex skill-expansion shape: the human batch receives the response, the envelope batch stays NULL (RC-B)', () => {
+      // Production shape: the live hook captured a human prompt batch and a
+      // <skill> envelope system batch. The fixed parser folds the envelope
+      // into the human turn, so the transcript yields ONE turn keyed on the
+      // HUMAN prompt. The response must land on the human batch; the
+      // envelope batch matches nothing — NULL is correct for an envelope.
+      const human = insertBatch(makeBatch(sessionId, {
+        user_prompt: 'Run the review skill on this diff', origin: 'human', prompt_number: 1,
+      }));
+      const envelope = insertBatch(makeBatch(sessionId, {
+        user_prompt: '<skill>\n# Review skill\nDo the steps…\n</skill>', origin: 'system', prompt_number: 2,
+      }));
+
+      populateBatchResponses(sessionId, [
+        { prompt: 'Run the review skill on this diff', response: 'Review complete: two findings.' },
+      ]);
+
+      expect(summaryOf(human.id)).toBe('Review complete: two findings.');
+      expect(summaryOf(envelope.id)).toBeNull();
+    });
   });
 
   describe('getLatestBatch — origin filter', () => {

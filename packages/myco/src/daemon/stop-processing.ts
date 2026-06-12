@@ -52,6 +52,7 @@ import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
+import { stripPlanTagEnvelopes } from '@myco/plans/tag-envelopes.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
 import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
@@ -383,8 +384,16 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       // the matched case; this is the per-turn-transcript fallback
       // (Cursor), so target the human anchor.
       const summaryTarget = resolveResponseSummaryTarget(sessionId, latestBatch);
-      if (resolvedResponse && summaryTarget) {
-        try { setResponseSummary(summaryTarget.id, resolvedResponse); }
+      // Strip plan-tag envelopes at the persist point: the transcript-turn
+      // fallback above is parser-derived and can carry synthesized
+      // `<update_plan>` payloads (plan extraction below reads the raw turns,
+      // so it loses nothing). An envelope-only response strips to '' and is
+      // not persisted. Idempotent no-op for envelope-free text.
+      const persistableResponse = resolvedResponse
+        ? stripPlanTagEnvelopes(resolvedResponse, deps.planTags)
+        : undefined;
+      if (persistableResponse && summaryTarget) {
+        try { setResponseSummary(summaryTarget.id, persistableResponse); }
         catch (err) { logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to set response_summary on latest batch', { error: String(err) }); }
       }
 
@@ -483,10 +492,14 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // turn order doesn't align with batch insertion order (Cursor starts its
     // transcript mid-session, daemon restarts renumber prompts, etc.).
     // Gated on transcript phase — allTurns is empty until Phase 1 runs.
+    // Plan-tag envelopes are stripped at this persist point too — the plan
+    // extraction pass below reads the UNSTRIPPED `allTurns`, so Plan records
+    // still capture every envelope while summaries carry only prose.
     const transcriptResponses = runTranscriptPhase
       ? allTurns
           .filter((t) => t.prompt && t.aiResponse)
-          .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }))
+          .map((t) => ({ prompt: t.prompt, response: stripPlanTagEnvelopes(t.aiResponse!, deps.planTags) }))
+          .filter((r) => r.response.trim().length > 0)
       : [];
     if (transcriptResponses.length > 0) {
       try { populateBatchResponses(sessionId, transcriptResponses); }
