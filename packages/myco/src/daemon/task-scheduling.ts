@@ -17,11 +17,18 @@ import {
 } from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
-import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
+import { countPendingCanopyDescribe, DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches, INTELLIGENCE_DEFAULT_ORIGINS } from '@myco/db/queries/batches.js';
 import { countTaskRunsSince, getLastCompletedRunsForProject } from '@myco/db/queries/project-activity.js';
 import { withDatabase } from '@myco/db/client.js';
-import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
+import {
+  applyRunUpdate,
+  getLatestResumableRunForTask,
+  incrementRunResumeAttempts,
+  refundRunResumeAttempt,
+  RESUME_STATUS_EXHAUSTED,
+  type RunRow,
+} from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { loadAllTasks } from '@myco/agent/registry.js';
@@ -62,6 +69,18 @@ export interface CanopyPendingProbeDeps {
   daemonStateDir: string;
 }
 
+// Per-row describe retry budget from the task's params, falling back to the
+// canopy-describe.yaml default. Threaded into every pending count so the
+// scheduler precondition/accelerator/probe agree with the fetch predicate
+// even when a project overrides params.max_attempts.
+function canopyDescribeMaxAttempts(config: MycoConfig | null): number {
+  const raw = config?.agent.tasks?.['canopy-describe']?.params?.max_attempts;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1
+    ? Math.floor(parsed)
+    : DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+}
+
 // Holds the daemon awake only when canopy-describe will actually drain the
 // pending rows. canopy-describe defaults to `schedule.enabled: false` while
 // canopy-background-scan ALWAYS populates pending rows — so an ungated hold
@@ -84,7 +103,12 @@ export function makeTotalCanopyPendingProbe(deps: CanopyPendingProbeDeps): () =>
           mycoHome,
         });
         if (!effectiveTaskScheduleEnabled(config, 'canopy-describe', false)) continue;
-        grovePending += countPendingCanopyDescribe(null, project.project_id, CANOPY_PROBE_COUNT_CAP);
+        grovePending += countPendingCanopyDescribe(
+          null,
+          project.project_id,
+          CANOPY_PROBE_COUNT_CAP,
+          canopyDescribeMaxAttempts(config),
+        );
         if (grovePending > 0) break;
       }
       return grovePending;
@@ -134,6 +158,61 @@ export function decideColdProjectGate(input: ColdProjectGateInput): ColdProjectG
 // a failed run would collapse history onto a single agent_runs row and
 // erase the failure signal we use to tune turn budgets. Always start fresh.
 const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canopy-map']);
+
+/**
+ * Scheduled resume retry budget per run. A run that fails this many resumes
+ * is terminal-marked (`resumable=0`, `resume_status='exhausted'`) and the
+ * scheduler starts a fresh run in the same tick instead of re-attaching to
+ * the failing checkpoint forever. Manual resumes (the API endpoint) do not
+ * consume the budget — only scheduler-driven retries count.
+ */
+export const RESUME_MAX_ATTEMPTS = 3;
+
+export interface ScheduledResumeGateInput {
+  run: RunRow;
+  taskName: string;
+  scope: ProjectScope;
+  projectVaultDir: string;
+  projectId: GroveProjectId;
+  config: MycoConfig;
+  logger: DaemonLogger;
+}
+
+/**
+ * Decide whether a resumable run may consume another scheduled resume.
+ *
+ * - Under the cap: increments `resume_attempts` (before dispatch, so a
+ *   crash mid-resume still counts) and returns 'resume'.
+ * - At the cap: terminal-marks the run (`resumable=0` +
+ *   `resume_status='exhausted'`), emits the agent.task.failure
+ *   notification, and returns 'exhausted' — the caller falls through to a
+ *   fresh dispatch in the same tick.
+ */
+export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' | 'exhausted' {
+  const { run, taskName, scope, projectVaultDir, projectId, config, logger } = input;
+  if (run.resume_attempts < RESUME_MAX_ATTEMPTS) {
+    incrementRunResumeAttempts(run.id, scope);
+    return 'resume';
+  }
+  applyRunUpdate(run.id, {
+    resumable: 0,
+    resume_status: RESUME_STATUS_EXHAUSTED,
+  }, scope);
+  logger.warn(LOG_KINDS.AGENT_ERROR, `Scheduled task ${taskName} resume retries exhausted — starting fresh`, {
+    project_id: projectId,
+    runId: run.id,
+    attempts: run.resume_attempts,
+  });
+  notify(projectVaultDir, {
+    domain: 'agents',
+    type: 'agent.task.failure',
+    title: `Task failed: ${taskName}`,
+    message: `Resume retries exhausted after ${run.resume_attempts} attempts; starting a fresh run`,
+    link: `/agent?run=${run.id}`,
+    metadata: { taskName, runId: run.id },
+  }, config, { projectId });
+  return 'exhausted';
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -305,21 +384,42 @@ export async function registerScheduledTasks(
       : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, readScope);
 
     if (resumableRun) {
-      const resumed = await dispatchAgentRun(projectVaultDir, {
-        agentId: DEFAULT_AGENT_ID,
-        task: taskName,
-        resumeRunId: resumableRun.id,
-        resumeMode: 'scheduled',
-        embeddingManager,
-        requestContext,
+      const gate = gateScheduledResume({
+        run: resumableRun,
+        taskName,
+        scope: readScope,
+        projectVaultDir,
+        projectId,
+        config,
         logger,
       });
-      logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
-        project_id: projectId,
-        status: resumed.status,
-        runId: resumed.runId,
-      });
-      return;
+      if (gate === 'resume') {
+        const resumed = await dispatchAgentRun(projectVaultDir, {
+          agentId: DEFAULT_AGENT_ID,
+          task: taskName,
+          resumeRunId: resumableRun.id,
+          resumeMode: 'scheduled',
+          embeddingManager,
+          requestContext,
+          logger,
+        });
+        if (resumed.status === 'skipped') {
+          // The executor never started the resume (another run of the task
+          // is active — e.g. a long manual run; the runningTasks set only
+          // covers scheduler dispatches). Only dispatches that actually
+          // start a resume consume budget, so hand the attempt back —
+          // otherwise ticks during that run would exhaust the budget with
+          // zero resumes executed.
+          refundRunResumeAttempt(resumableRun.id, readScope);
+        }
+        logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
+          project_id: projectId,
+          status: resumed.status,
+          runId: resumed.runId,
+        });
+        return;
+      }
+      // 'exhausted' — fall through to a fresh run in the same tick.
     }
 
     const taskConfig = config.agent.tasks?.[taskName];
@@ -514,7 +614,12 @@ export async function registerScheduledTasks(
           origins: INTELLIGENCE_DEFAULT_ORIGINS,
         }) > 0,
       'has-pending-canopy-rows': (scope) =>
-        countPendingCanopyDescribe(null, scope.projectId) > 0,
+        countPendingCanopyDescribe(
+          null,
+          scope.projectId,
+          undefined,
+          canopyDescribeMaxAttempts(resolveProjectConfig(scope)),
+        ) > 0,
       'has-active-skills': (scope) =>
         countSkillRecords({ status: 'active', scope: toProjectScope(scope.projectId) }) > 0,
       'has-approved-candidates': (scope) =>
@@ -527,7 +632,12 @@ export async function registerScheduledTasks(
     },
     accelerators: {
       'canopy-pending-describe': (scope, limit) =>
-        countPendingCanopyDescribe(null, scope.projectId, limit),
+        countPendingCanopyDescribe(
+          null,
+          scope.projectId,
+          limit,
+          canopyDescribeMaxAttempts(resolveProjectConfig(scope)),
+        ),
       'unprocessed-settled-batches': (scope, limit) =>
         countUnprocessedSettledBatches(toProjectScope(scope.projectId), {
           limit,

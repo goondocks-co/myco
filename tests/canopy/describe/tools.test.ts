@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
+import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
 import { upsertCanopyEntry } from '@myco/canopy/scanner/upsert';
 import { createVaultTools } from '@myco/agent/tools.js';
 import type { CanopyEntry } from '@myco/db/schema';
@@ -153,6 +154,115 @@ describe('canopy_describe_next', () => {
     const tool = findTool(createTools(), 'canopy_describe_next');
     const out = parseResult(await tool.handler({}, {} as any));
     expect(out.entries).toEqual([]);
+  });
+});
+
+describe('canopy_describe_next — describe_attempts budget', () => {
+  function getAttempts(entryPath: string): number {
+    const row = getDatabase()
+      .prepare('SELECT describe_attempts FROM canopy_entries WHERE path = ?')
+      .get(entryPath) as { describe_attempts: number };
+    return row.describe_attempts;
+  }
+
+  it('increments describe_attempts for every row a pending fetch returns', async () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/bar.ts' }));
+
+    const tool = findTool(createTools(), 'canopy_describe_next');
+    const out = parseResult(await tool.handler({ limit: 5 }, {} as any));
+    expect(out.entries).toHaveLength(2);
+
+    expect(getAttempts('src/foo.ts')).toBe(1);
+    expect(getAttempts('src/bar.ts')).toBe(1);
+  });
+
+  it('excludes rows at the attempts cap from pending fetches', async () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/poisoned.ts' }));
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+    getDatabase()
+      .prepare('UPDATE canopy_entries SET describe_attempts = 2 WHERE path = ?')
+      .run('src/poisoned.ts');
+
+    const tool = findTool(createTools(), 'canopy_describe_next');
+    const out = parseResult(await tool.handler({ limit: 5, max_attempts: 2 }, {} as any));
+    const paths = out.entries.map((e: { path: string }) => e.path);
+    expect(paths).toEqual(['src/foo.ts']);
+    // The excluded row never accrues further attempts.
+    expect(getAttempts('src/poisoned.ts')).toBe(2);
+  });
+
+  it('drains a poisoned row out of the pending pool across fetches', async () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+
+    // Each fetch needs a fresh tool instance (one-call-per-run gate).
+    const first = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
+    expect(first.entries).toHaveLength(1);
+    const second = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
+    expect(second.entries).toHaveLength(1);
+    expect(getAttempts('src/foo.ts')).toBe(2);
+
+    const third = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
+    expect(third.entries).toEqual([]);
+    expect(getAttempts('src/foo.ts')).toBe(2);
+  });
+
+  it('honors a larger max_attempts from task params', async () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+    getDatabase()
+      .prepare('UPDATE canopy_entries SET describe_attempts = 2 WHERE path = ?')
+      .run('src/foo.ts');
+
+    const out = parseResult(
+      await findTool(createTools(), 'canopy_describe_next').handler({ max_attempts: 4 }, {} as any),
+    );
+    expect(out.entries).toHaveLength(1);
+    expect(getAttempts('src/foo.ts')).toBe(3);
+  });
+
+  it('a mechanical update resets describe_attempts so the row is describable again', async () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+    getDatabase()
+      .prepare('UPDATE canopy_entries SET describe_attempts = 2 WHERE path = ?')
+      .run('src/foo.ts');
+
+    // Content changed → the scanner upserts with new mechanical fields.
+    upsertCanopyEntry(getDatabase(), makeEntry({
+      path: 'src/foo.ts',
+      content_hash: 'b'.repeat(64),
+      mechanical_updated_at: 1_700_000_999,
+    }));
+    expect(getAttempts('src/foo.ts')).toBe(0);
+
+    const out = parseResult(
+      await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any),
+    );
+    expect(out.entries.map((e: { path: string }) => e.path)).toEqual(['src/foo.ts']);
+  });
+});
+
+describe('countPendingCanopyDescribe — describe_attempts budget', () => {
+  it('excludes rows at the attempts cap, matching the fetch predicate', () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/poisoned.ts' }));
+    getDatabase()
+      .prepare('UPDATE canopy_entries SET describe_attempts = 2 WHERE path = ?')
+      .run('src/poisoned.ts');
+
+    expect(countPendingCanopyDescribe(getDatabase(), projectId)).toBe(1);
+    // The capped (limit) variant applies the same exclusion.
+    expect(countPendingCanopyDescribe(getDatabase(), projectId, 50)).toBe(1);
+    // A larger per-project budget brings the row back into the count.
+    expect(countPendingCanopyDescribe(getDatabase(), projectId, undefined, 4)).toBe(2);
+  });
+
+  it('returns 0 against a fully-poisoned tail so the scheduler stops dispatching no-op runs', () => {
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/a.ts' }));
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/b.ts' }));
+    getDatabase().prepare('UPDATE canopy_entries SET describe_attempts = 2').run();
+
+    expect(countPendingCanopyDescribe(getDatabase(), projectId)).toBe(0);
+    expect(countPendingCanopyDescribe(getDatabase(), projectId, 50)).toBe(0);
   });
 });
 

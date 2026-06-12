@@ -21,7 +21,12 @@ import type { CanopyEntry } from '@myco/db/schema.js';
 import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
-import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
+import {
+  describedCanopyEntriesPredicate,
+  CANOPY_ENTRIES_ORDER_BY,
+  PENDING_CANOPY_DESCRIBE_PREDICATE,
+  DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS,
+} from '@myco/db/queries/canopy.js';
 import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
@@ -58,12 +63,21 @@ const SELECT_PENDING_SQL = `
   SELECT *
   FROM canopy_entries
   WHERE project_id = ?
-    AND (
-      llm_updated_at IS NULL
-      OR llm_updated_at < mechanical_updated_at
-    )
+    AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}
   ORDER BY (llm_updated_at IS NULL) DESC, mechanical_updated_at ASC
   LIMIT ?
+`;
+
+// Increment-at-fetch: every row a pending fetch hands to the harness counts
+// one attempt, whether the model later fails, the sink rejects the write, or
+// the row is filtered as sensitive. Rows at the cap fall out of
+// SELECT_PENDING_SQL until the mechanical scanner touches them again
+// (canopy/scanner/upsert.ts resets describe_attempts to 0).
+const INCREMENT_ATTEMPTS_SQL = `
+  UPDATE canopy_entries
+  SET describe_attempts = describe_attempts + 1
+  WHERE project_id = ?
+    AND path IN (SELECT value FROM json_each(?))
 `;
 
 const SELECT_BY_PATH_SQL = `
@@ -123,6 +137,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
     {
       limit: z.number().int().positive().optional().describe(`Max rows to return (default ${DEFAULT_BATCH_LIMIT}, ceiling ${MAX_BATCH_LIMIT}).`),
       canopy_entry_path: z.string().optional().describe('When set, fetch this one row by path bypassing the pending predicate (single-row mode).'),
+      max_attempts: z.number().int().positive().optional().describe(`Per-row describe retry budget; rows fetched this many times without a description are excluded from pending mode (default ${DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS}). Sourced from the task's params.max_attempts.`),
     },
     async (args) => {
       if (describeNextIssued) {
@@ -153,7 +168,21 @@ export function createCanopyTools(deps: VaultToolDeps) {
       } else {
         const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
         const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
-        rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+        const maxAttempts = args.max_attempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+        // Fetch + attempt-increment in one transaction so a crash between
+        // the two can't hand out a batch that never accrued an attempt.
+        const db = getDatabase();
+        const fetchBatch = db.transaction(() => {
+          const batch = db.prepare(SELECT_PENDING_SQL).all(projectId, maxAttempts, limit) as CanopyEntry[];
+          if (batch.length > 0) {
+            db.prepare(INCREMENT_ATTEMPTS_SQL).run(
+              projectId,
+              JSON.stringify(batch.map((row) => row.path)),
+            );
+          }
+          return batch;
+        });
+        rows = fetchBatch();
       }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 

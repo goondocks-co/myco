@@ -16,6 +16,9 @@ import {
   updateRun,
   updateRunStatus,
   getRunningRun,
+  getRunningRunForTask,
+  incrementRunResumeAttempts,
+  refundRunResumeAttempt,
 } from '@myco/db/queries/runs.js';
 import type { RunInsert } from '@myco/db/queries/runs.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -481,6 +484,96 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-dry-default' }));
       const row = getRun('run-dry-default', ALL_PROJECTS_SCOPE);
       expect(row!.dry_run).toBe(false);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // resume_attempts + run_context (v60)
+  // ---------------------------------------------------------------------------
+
+  describe('resume_attempts + run_context columns', () => {
+    it('defaults resume_attempts to 0 and run_context to null when omitted', () => {
+      const row = insertRun(makeRun({ id: 'run-v60-default' }));
+      expect(row.resume_attempts).toBe(0);
+      expect(row.run_context).toBeNull();
+    });
+
+    it('round-trips run_context JSON', () => {
+      const context = JSON.stringify({ candidate_id: 'cand-1', skill_survey_watermark: 42 });
+      const row = insertRun(makeRun({ id: 'run-ctx', run_context: context }));
+      expect(row.run_context).toBe(context);
+
+      const fetched = getRun('run-ctx', ALL_PROJECTS_SCOPE)!;
+      expect(fetched.run_context).toBe(context);
+    });
+
+    it('incrementRunResumeAttempts bumps the counter atomically', () => {
+      insertRun(makeRun({ id: 'run-attempts' }));
+
+      expect(incrementRunResumeAttempts('run-attempts', ALL_PROJECTS_SCOPE)).toBe(1);
+      expect(incrementRunResumeAttempts('run-attempts', ALL_PROJECTS_SCOPE)).toBe(1);
+      expect(getRun('run-attempts', ALL_PROJECTS_SCOPE)!.resume_attempts).toBe(2);
+    });
+
+    it('incrementRunResumeAttempts returns 0 for a missing run', () => {
+      expect(incrementRunResumeAttempts('does-not-exist', ALL_PROJECTS_SCOPE)).toBe(0);
+    });
+
+    it('refundRunResumeAttempt decrements and floors at 0', () => {
+      insertRun(makeRun({ id: 'run-refund' }));
+      incrementRunResumeAttempts('run-refund', ALL_PROJECTS_SCOPE);
+      incrementRunResumeAttempts('run-refund', ALL_PROJECTS_SCOPE);
+
+      expect(refundRunResumeAttempt('run-refund', ALL_PROJECTS_SCOPE)).toBe(1);
+      expect(getRun('run-refund', ALL_PROJECTS_SCOPE)!.resume_attempts).toBe(1);
+
+      refundRunResumeAttempt('run-refund', ALL_PROJECTS_SCOPE);
+      refundRunResumeAttempt('run-refund', ALL_PROJECTS_SCOPE);
+      expect(getRun('run-refund', ALL_PROJECTS_SCOPE)!.resume_attempts).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getRunningRunForTask staleness
+  // ---------------------------------------------------------------------------
+
+  describe('getRunningRunForTask', () => {
+    it('returns the newest running run for the task with stale=false when no cutoff given', () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-old', task: 'digest', status: 'running', started_at: now - 100 }));
+      insertRun(makeRun({ id: 'run-new', task: 'digest', status: 'running', started_at: now }));
+
+      const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE);
+      expect(running).not.toBeNull();
+      expect(running!.id).toBe('run-new');
+      expect(running!.stale).toBe(false);
+    });
+
+    it('returns null when no run is running for the task', () => {
+      insertRun(makeRun({ id: 'run-done', task: 'digest', status: 'completed', started_at: epochNow() }));
+      expect(getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE)).toBeNull();
+    });
+
+    it('flags a running row older than maxAgeSeconds as stale without mutating it', () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-stale', task: 'digest', status: 'running', started_at: now - 10_000 }));
+
+      const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE, 600);
+      expect(running).not.toBeNull();
+      expect(running!.id).toBe('run-stale');
+      expect(running!.stale).toBe(true);
+
+      // Boot recovery owns marking orphans — the read must not mutate.
+      const row = getRun('run-stale', ALL_PROJECTS_SCOPE)!;
+      expect(row.status).toBe('running');
+    });
+
+    it('keeps a recent running row fresh under the same cutoff', () => {
+      const now = epochNow();
+      insertRun(makeRun({ id: 'run-fresh', task: 'digest', status: 'running', started_at: now - 30 }));
+
+      const running = getRunningRunForTask(TEST_AGENT_ID, 'digest', ALL_PROJECTS_SCOPE, 600);
+      expect(running!.stale).toBe(false);
     });
   });
 });

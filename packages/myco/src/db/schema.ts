@@ -20,7 +20,7 @@ import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES, TEAM_DELETE_TRIGGERS } from 
 import { MIGRATIONS } from './migrations.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 59;
+export const SCHEMA_VERSION = 60;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };
@@ -51,6 +51,12 @@ export interface CanopyEntry {
   llm_description: string | null;
   llm_updated_at: number | null;
   embedded: number;
+  /**
+   * canopy-describe fetch attempts since the last mechanical update.
+   * Optional because scanner-constructed entries omit it (the column
+   * defaults to 0 and the mechanical upsert resets it).
+   */
+  describe_attempts?: number;
 }
 
 // ---------------------------------------------------------------------------
