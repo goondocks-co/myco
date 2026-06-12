@@ -357,6 +357,48 @@ describe('team outbox query helpers', () => {
     });
   });
 
+  describe('backfillUnsynced — sent-entry masking (RC-12)', () => {
+    it('re-enqueues an unsynced row whose only outbox trace is sent-but-unpruned', () => {
+      const db = getDatabase();
+      const now = epochNow();
+      // An unsynced local row (synced_at NULL) — e.g. reset by the
+      // JOIN/drop path — whose prior outbox entry was sent and is inside
+      // the 24h retention window.
+      db.prepare(
+        `INSERT INTO sessions (
+          id, agent, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, NULL)`,
+      ).run('session-masked', 'codex', now, now, 'machine-a');
+      const stale = enqueueOutbox(makeOutbox({
+        table_name: 'sessions', row_id: 'session-masked', machine_id: 'machine-a',
+      }));
+      markSent([stale.id], now - 60);
+
+      // Pre-fix: the sent entry masked the row — backfill found nothing and
+      // the row stayed absent from D1 while the UI showed 0 pending.
+      expect(backfillUnsynced('machine-a')).toBe(1);
+      expect(listPending()).toHaveLength(1);
+      expect(listPending()[0].row_id).toBe('session-masked');
+    });
+
+    it('still skips rows that already have a PENDING outbox entry', () => {
+      const db = getDatabase();
+      const now = epochNow();
+      db.prepare(
+        `INSERT INTO sessions (
+          id, agent, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, NULL)`,
+      ).run('session-pending', 'codex', now, now, 'machine-a');
+      enqueueOutbox(makeOutbox({
+        table_name: 'sessions', row_id: 'session-pending', machine_id: 'machine-a',
+      }));
+
+      // Already handed off — the sweep must not double-queue it.
+      expect(backfillUnsynced('machine-a')).toBe(0);
+      expect(listPending()).toHaveLength(1);
+    });
+  });
+
   describe('backfillAll', () => {
     it('re-enqueues previously synced Grove rows', () => {
       const db = getDatabase();
