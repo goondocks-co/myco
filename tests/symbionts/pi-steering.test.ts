@@ -161,6 +161,44 @@ describe('Pi plugin', () => {
     expect(source).toMatch(/const launcher = join\(resolveMycoHome\(\), "launcher\.cjs"\)/);
   });
 
+  describe('per-prompt context injection (before_agent_start)', () => {
+    // The handler block runs from the before_agent_start subscription to the
+    // next subscription (`input`). Pinning against this slice keeps the
+    // assertions scoped to the handler rather than the whole file.
+    function beforeAgentStartBlock(): string {
+      const source = pluginSource();
+      const start = source.indexOf('pi.on("before_agent_start"');
+      const end = source.indexOf('pi.on("input"');
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      return source.slice(start, end);
+    }
+
+    it('fetches per-prompt context via POST /context/prompt', () => {
+      expect(beforeAgentStartBlock()).toContain('postJson(currentCwd, "/context/prompt"');
+    });
+
+    it('captures the prompt BEFORE fetching context — the daemon attaches the injection record to the batch the /events POST creates', () => {
+      // Sequential ordering, not Promise.all: parallelizing would attach the
+      // injection record to the previous turn's batch.
+      expect(beforeAgentStartBlock()).toMatch(/mycoPostUserPrompt\([\s\S]*?"\/context\/prompt"/);
+    });
+
+    it('delivers context via the message result field (persistent custom message), not a systemPrompt mutation', () => {
+      const block = beforeAgentStartBlock();
+      expect(block).toMatch(/return\s*\{\s*message:\s*\{\s*customType:\s*"myco-prompt-context"/);
+      // No systemPrompt field in the result — pi resets systemPrompt every
+      // turn, which would evict the injected spores from history.
+      expect(block).not.toMatch(/systemPrompt\s*:/);
+    });
+
+    it('does NOT call the session /context endpoint from before_agent_start — that injection belongs to session_start', () => {
+      // `"/context"` with the closing quote distinguishes the session
+      // endpoint from `"/context/prompt"`.
+      expect(beforeAgentStartBlock()).not.toMatch(/postJson\([^)]*"\/context"/);
+    });
+  });
+
   it('does not call any /api/mcp/* endpoint (those routes were deleted)', () => {
     // Match actual HTTP call sites, not doc-comment mentions of the retired
     // surface. The plugin's header comment narrates the migration and is

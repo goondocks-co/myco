@@ -29,8 +29,11 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   // and Stop. There is no user-prompt-submit equivalent in the live hooks
   // contract at https://antigravity.google/docs/hooks — `prompt: false`.
   antigravity: { session: true, prompt: false },
-  opencode: { session: true, prompt: false },
-  pi: { session: true, prompt: false },
+  // opencode + pi deliver per-prompt context via their plugin templates'
+  // POST /context/prompt call (opencode: chat.message output.parts push;
+  // pi: before_agent_start custom message), detected via PROMPT_SUBMIT_SIGNALS.
+  opencode: { session: true, prompt: true },
+  pi: { session: true, prompt: true },
   copilot: { session: true, prompt: true },
   windsurf: { session: false, prompt: true },
 };
