@@ -33,7 +33,7 @@ import {
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
-import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
+import { SESSION_TOMBSTONE_SOURCE, hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import { listSessionFileActivities } from '@myco/db/queries/activities.js';
 import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.js';
@@ -754,6 +754,15 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           session_id: sessionId,
         });
       } else {
+        // Deletion is final against passive Stop-driven recreation: a
+        // deleted live session's next per-turn Stop must not re-register
+        // the row (an explicit /sessions/register deliberately supersedes).
+        if (hasSessionTombstone(sessionId)) {
+          logger.info(LOG_KINDS.HOOKS_STOP, 'Ignored Stop for deleted (tombstoned) session', {
+            session_id: sessionId,
+          });
+          return { body: { ok: true, ignored: 'session_tombstoned' } };
+        }
         // First-sight session — Stop is its registration event. Persist
         // the row before adding to the registry so future prompt/tool
         // events find an existing sessions.id when they reference it via
@@ -770,7 +779,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           logger,
           source: ENSURE_SESSION_SOURCE.STOP,
         });
-        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', {
+        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', {
           session_id: sessionId,
         });
       }

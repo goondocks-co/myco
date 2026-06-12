@@ -184,13 +184,20 @@ capture:
     # preamble diverges, add a separate rule keyed on its specific marker.
   prompts:
     shapes:
+      # Image prompts are multipart: `<image …>` wrapper input_text tags and
+      # input_image blocks come FIRST, the user's real text is the LAST
+      # input_text part. joined_text_parts routes extraction through the
+      # canonical Codex routine (shared with the transcript parser): wrapper
+      # tags stripped, all remaining text parts joined. textAt points at the
+      # content ARRAY, not [0].text.
       - name: user_message
         match:
           type: response_item
           fieldEquals:
             payload.type: message
             payload.role: user
-        textAt: payload.content[0].text
+        textAt: payload.content
+        textExtraction: joined_text_parts
     resetBoundaries:
       # Codex emits `turn_context` events whenever the agent enters a new
       # turn. Reset only fires when `payload.turn_id` changes from the
