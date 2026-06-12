@@ -47,10 +47,11 @@ export function extractUserPromptRecords(
   agent: string,
   events: ReadonlyArray<Record<string, unknown>>,
   transcriptPath?: string,
+  transcriptMeta?: Record<string, unknown>,
 ): UserPromptRecord[] {
   const config = HOOK_CONFIG[agent]?.capturePrompts;
   if (!config) return [];
-  return walkTranscript(config, agent, events, transcriptPath).records;
+  return walkTranscript(config, agent, events, transcriptPath, transcriptMeta).records;
 }
 
 /**
@@ -64,10 +65,11 @@ export function extractUserPromptRecordsWithDrops(
   agent: string,
   events: ReadonlyArray<Record<string, unknown>>,
   transcriptPath?: string,
+  transcriptMeta?: Record<string, unknown>,
 ): { records: UserPromptRecord[]; droppedText: string[] } {
   const config = HOOK_CONFIG[agent]?.capturePrompts;
   if (!config) return { records: [], droppedText: [] };
-  const result = walkTranscript(config, agent, events, transcriptPath);
+  const result = walkTranscript(config, agent, events, transcriptPath, transcriptMeta);
   return { records: result.records, droppedText: result.droppedText };
 }
 
@@ -141,6 +143,7 @@ function walkTranscript(
   agent: string,
   events: ReadonlyArray<Record<string, unknown>>,
   transcriptPath: string | undefined,
+  transcriptMeta?: Record<string, unknown>,
 ): WalkResult {
   const seenDedupe = new Set<string>();
   const records: UserPromptRecord[] = [];
@@ -172,11 +175,19 @@ function walkTranscript(
     // Apply manifest capture.rules identically to the live hook path. A
     // synthetic transcriptPath is used when none was supplied so structural
     // rules keyed on `transcript_path_missing` don't mis-fire during mining.
+    // `transcriptMeta` (the transcript's session_meta payload, when the
+    // caller read it) makes `transcript_meta_*` rules fire at mining time
+    // exactly as they do at hook time — without it every such rule was
+    // structurally inert on this path (capture-rules requires meta present).
     // evaluateUserPromptRules now reads from the generated hook-config by
     // default — no loadManifests() call on the mining path either.
     const decision = evaluateUserPromptRules(
       agent,
-      { prompt: rawText, transcriptPath: transcriptPath ?? '<transcript-walker>' },
+      {
+        prompt: rawText,
+        transcriptPath: transcriptPath ?? '<transcript-walker>',
+        transcriptMeta,
+      },
     );
     if (decision.action === 'drop') {
       droppedText.push(rawText);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
+import { systemEnvelopePrefixes } from '@myco/symbionts/envelope-prefixes.js';
 
 /**
  * Build a JSONL string from an array of entry objects.
@@ -389,5 +390,95 @@ describe('CodexJsonlParser', () => {
 
     expect(turns).toHaveLength(1);
     expect(turns[0].toolCount).toBe(0); // function_call before user message is ignored
+  });
+});
+
+describe('CodexJsonlParser — system envelope folding (RC-B)', () => {
+  const envelopeParser = new CodexJsonlParser({
+    envelopePrefixes: systemEnvelopePrefixes('codex'),
+  });
+
+  it('manifest-derived prefixes cover the codex envelope set', () => {
+    const prefixes = systemEnvelopePrefixes('codex');
+    expect(prefixes).toContain('<skill>');
+    expect(prefixes).toContain('<subagent_notification>');
+    expect(prefixes).toContain('<environment_context>');
+  });
+
+  it('folds a skill-expansion user message into the current turn (production shape)', () => {
+    // Production shape from session 019ebc34: real prompt → $skill expansion
+    // (second user-role response_item) → assistant output. Pre-fix the
+    // expansion opened a NEW turn that absorbed the assistant text, closing
+    // the real prompt's turn responseless.
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Run the review skill on this diff' }], '2026-06-12T10:00:00Z'),
+      messageItem('user', [{ type: 'input_text', text: '<skill>\n# Review skill\nDo the steps…\n</skill>' }], '2026-06-12T10:00:01Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Review complete: two findings.' }], '2026-06-12T10:00:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Run the review skill on this diff');
+    expect(turns[0].aiResponse).toBe('Review complete: two findings.');
+  });
+
+  it('folds subagent_notification and environment_context envelopes mid-turn', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Parallelize the build' }], '2026-06-12T10:00:00Z'),
+      messageItem('user', [{ type: 'input_text', text: '<environment_context>\ncwd: /repo\n</environment_context>' }], '2026-06-12T10:00:05Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Spawning workers.' }], '2026-06-12T10:00:10Z'),
+      messageItem('user', [{ type: 'input_text', text: '<subagent_notification>worker 1 done</subagent_notification>' }], '2026-06-12T10:01:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'All workers finished.' }], '2026-06-12T10:01:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Parallelize the build');
+    expect(turns[0].aiResponse).toBe('Spawning workers.\n\nAll workers finished.');
+  });
+
+  it('non-envelope second user message still starts a new turn (regression)', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'First question' }], '2026-06-12T10:00:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'First answer' }], '2026-06-12T10:00:30Z'),
+      messageItem('user', [{ type: 'input_text', text: 'Second question' }], '2026-06-12T10:01:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Second answer' }], '2026-06-12T10:01:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0].prompt).toBe('First question');
+    expect(turns[0].aiResponse).toBe('First answer');
+    expect(turns[1].prompt).toBe('Second question');
+    expect(turns[1].aiResponse).toBe('Second answer');
+  });
+
+  it('an envelope before any turn does not open one', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: '<environment_context>\ncwd: /repo\n</environment_context>' }], '2026-06-12T09:59:59Z'),
+      messageItem('user', [{ type: 'input_text', text: 'Real first prompt' }], '2026-06-12T10:00:00Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Answer' }], '2026-06-12T10:00:30Z'),
+    ]);
+
+    const turns = envelopeParser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].prompt).toBe('Real first prompt');
+    expect(turns[0].aiResponse).toBe('Answer');
+  });
+
+  it('without configured prefixes, envelope folding is off (default construction)', () => {
+    const bare = new CodexJsonlParser();
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Real prompt' }], '2026-06-12T10:00:00Z'),
+      messageItem('user', [{ type: 'input_text', text: '<skill>\nexpansion\n</skill>' }], '2026-06-12T10:00:01Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'Answer' }], '2026-06-12T10:00:30Z'),
+    ]);
+
+    const turns = bare.parseTurns(content);
+    expect(turns).toHaveLength(2); // legacy behavior preserved when unconfigured
   });
 });
