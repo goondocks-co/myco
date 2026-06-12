@@ -73,3 +73,101 @@ describe('DaemonLogger', () => {
     }
   });
 });
+
+describe('DaemonLogger — never-throw write path (RC-8)', () => {
+  let logDir: string;
+
+  beforeEach(() => {
+    logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-log-rc8-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(logDir, { recursive: true, force: true });
+  });
+
+  /** Reach into the private fd to simulate a dead descriptor (EBADF class). */
+  function breakSink(logger: DaemonLogger): void {
+    const fd = (logger as unknown as { fd: number | null }).fd;
+    if (fd !== null) fs.closeSync(fd);
+  }
+
+  it('a dead sink fd does not throw; lines drop through the backoff window, then recovery logs the gap', () => {
+    let clock = 1_000_000;
+    const logger = new DaemonLogger(logDir, { maxSize: 1024 * 1024, now: () => clock });
+    logger.info('daemon', 'before failure');
+
+    breakSink(logger);
+    // Hits EBADF internally — must not propagate; the line is dropped and
+    // the dead fd is abandoned.
+    expect(() => logger.info('daemon', 'dropped line')).not.toThrow();
+    // Still inside the retry backoff: dropped without touching the sink.
+    logger.info('daemon', 'backoff drop');
+
+    // Past the window the next write re-opens the sink, lands, and the
+    // recovery note records BOTH dropped lines.
+    clock += 6_000;
+    logger.info('daemon', 'after recovery');
+    logger.close();
+
+    const contents = fs.readFileSync(path.join(logDir, 'daemon.log'), 'utf-8');
+    expect(contents).toContain('before failure');
+    expect(contents).toContain('after recovery');
+    expect(contents).not.toContain('dropped line');
+    expect(contents).not.toContain('backoff drop');
+    const recovery = contents.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      .find((e: Record<string, unknown>) => e.kind === 'daemon.logger');
+    expect(recovery).toBeDefined();
+    expect(recovery.dropped_lines).toBe(2);
+  });
+
+  it('circular metadata falls back to core fields instead of throwing', () => {
+    const logger = new DaemonLogger(logDir, { maxSize: 1024 * 1024 });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    expect(() => logger.info('daemon', 'circular payload', { circular })).not.toThrow();
+    logger.close();
+
+    const entry = JSON.parse(fs.readFileSync(path.join(logDir, 'daemon.log'), 'utf-8').trim());
+    expect(entry.message).toBe('circular payload');
+    expect(entry.metadata_unserializable).toBe(true);
+  });
+
+  it('close() on an already-dead fd does not throw', () => {
+    const logger = new DaemonLogger(logDir, { maxSize: 1024 * 1024 });
+    breakSink(logger);
+    expect(() => logger.close()).not.toThrow();
+  });
+});
+
+describe('DaemonLogger — degraded mode vs level filter (RC-8)', () => {
+  it('below-threshold writes during degraded mode neither count as dropped nor declare recovery', () => {
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-log-lvl-'));
+    try {
+      let clock = 1_000_000;
+      const logger = new DaemonLogger(logDir, { maxSize: 1024 * 1024, level: 'info', now: () => clock });
+      logger.info('daemon', 'before failure');
+      const fd = (logger as unknown as { fd: number | null }).fd;
+      if (fd !== null) fs.closeSync(fd);
+      logger.info('daemon', 'dropped line');
+
+      // Filtered debug calls — past the backoff window, these must not
+      // falsely complete a recovery pass (nothing landed).
+      clock += 6_000;
+      logger.debug('daemon', 'filtered one');
+      logger.debug('daemon', 'filtered two');
+
+      logger.info('daemon', 'after recovery');
+      logger.close();
+
+      const contents = fs.readFileSync(path.join(logDir, 'daemon.log'), 'utf-8');
+      expect(contents).toContain('after recovery');
+      const recovery = contents.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        .find((e: Record<string, unknown>) => e.kind === 'daemon.logger');
+      expect(recovery).toBeDefined();
+      expect(recovery.dropped_lines).toBe(1);
+    } finally {
+      fs.rmSync(logDir, { recursive: true, force: true });
+    }
+  });
+});

@@ -32,6 +32,7 @@ import {
   createPlanDirHandlers,
 } from './api/config.js';
 import { registerConfigRoutes } from './api/register-config-routes.js';
+import { installProcessGuards } from './process-guards.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
@@ -549,6 +550,12 @@ export async function runInitialCanopyPopulateAcrossProjects(
 }
 
 export async function main(): Promise<void> {
+  // Last-resort process guards go in BEFORE any async work: Bun exits on
+  // the first unhandled rejection, and everything below this line schedules
+  // background promises. The daemon logger doesn't exist yet — the guards
+  // fall back to stderr until `bindLogger` below.
+  const processGuards = installProcessGuards();
+
   // `bootstrapVaultDir` is a *transitional* concept.
   //
   // In the Grove world, the daemon serves many projects and the per-request
@@ -688,6 +695,9 @@ export async function main(): Promise<void> {
   }), {
     level: config.daemon.log_level,
   });
+  // Process guards installed at the top of main() were stderr-only until
+  // now; route them through the real (never-throw) logger.
+  processGuards.bindLogger(logger);
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
   if (bootstrapIsPhantom && isGlobalDaemon) {
     logger.info(LOG_KINDS.DAEMON_START, 'Global daemon home resolved (MYCO_HOME); serving tenants by request context', {

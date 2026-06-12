@@ -253,6 +253,17 @@ function spawnDetachedScript(namePrefix: string, content: string): string {
     detached: true,
     stdio: 'ignore',
   });
+  // A spawn-class failure (EAGAIN/EMFILE under fork pressure) emits 'error'
+  // asynchronously; with no listener that's an uncaught exception — process
+  // exit. Leave the trace where the update UI already looks for failures.
+  child.on('error', (err) => {
+    try {
+      fs.writeFileSync(UPDATE_ERROR_PATH, `update script spawn failed: ${err.message}\n`, 'utf-8');
+    } catch { /* best-effort */ }
+    try {
+      process.stderr.write(`[myco] update script spawn failed: ${err.message}\n`);
+    } catch { /* best-effort */ }
+  });
   child.unref();
 
   return scriptPath;

@@ -176,30 +176,41 @@ export class JobRunner {
     const unsubscribe = probe?.addTickListener((lag) => {
       if (lag > peakLagDuringMs) peakLagDuringMs = lag;
     });
+    // settle is structurally never-throw: it runs as the terminal .then
+    // handler of a fire-and-forget promise, so anything it lets escape is an
+    // unhandled rejection — AND a throw before cleanup() would strand the
+    // job in inFlight forever (the single-flight filter would skip it until
+    // restart). Logging is best-effort; the inFlight/backoff bookkeeping in
+    // cleanup() must run unconditionally.
     const settle = async (err?: unknown, outcome?: JobOutcome | void): Promise<void> => {
-      // Yield once to libuv's timer phase so any probe tick deferred by a
-      // sync-heavy job fires and reaches the listener before unsubscribe.
-      if (probe) {
-        await new Promise<void>((r) => setTimeout(r, 0));
-      }
-      unsubscribe?.();
-      const durationMs = performance.now() - startMs;
-      this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Power job completed', {
-        job_name: job.name,
-        duration_ms: durationMs,
-        event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
-        status: err === undefined ? 'ok' : 'error',
-      });
-      if (job.kind === 'drain' && err === undefined && outcome != null && typeof outcome === 'object') {
-        this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Drain slice', {
-          drain_record: true,
-          job: job.name,
-          processed: (outcome as JobOutcome).processed,
-          remaining: (outcome as JobOutcome).remaining,
-          slice: job.drain?.slice,
+      try {
+        // Yield once to libuv's timer phase so any probe tick deferred by a
+        // sync-heavy job fires and reaches the listener before unsubscribe.
+        if (probe) {
+          await new Promise<void>((r) => setTimeout(r, 0));
+        }
+        unsubscribe?.();
+        const durationMs = performance.now() - startMs;
+        this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Power job completed', {
+          job_name: job.name,
+          duration_ms: durationMs,
+          event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
+          status: err === undefined ? 'ok' : 'error',
         });
+        if (job.kind === 'drain' && err === undefined && outcome != null && typeof outcome === 'object') {
+          this.opts.logger.info(LOG_KINDS.POWER_JOB, 'Drain slice', {
+            drain_record: true,
+            job: job.name,
+            processed: (outcome as JobOutcome).processed,
+            remaining: (outcome as JobOutcome).remaining,
+            slice: job.drain?.slice,
+          });
+        }
+      } catch { /* logging/probe teardown is best-effort */ } finally {
+        try {
+          cleanup(err);
+        } catch { /* cleanup calls opts.onError (a logger in prod) — best-effort */ }
       }
-      cleanup(err);
     };
     void job.fn(ctx).then((outcome) => settle(undefined, outcome), (err) => settle(err));
   }

@@ -80,6 +80,9 @@ export const LOG_KINDS = {
   DAEMON_RECONCILE: 'daemon.reconcile',
   DAEMON_LAG: 'daemon.lag',
   DAEMON_STATE_MUTATION: 'daemon.state-mutation',
+  DAEMON_UNHANDLED_REJECTION: 'daemon.unhandled_rejection',
+  DAEMON_UNCAUGHT_EXCEPTION: 'daemon.uncaught_exception',
+  DAEMON_LOGGER: 'daemon.logger',
   TENANCY_VIOLATION: 'tenancy.violation',
 
   // Provider-level fetch instrumentation (cross-runtime: anything that
