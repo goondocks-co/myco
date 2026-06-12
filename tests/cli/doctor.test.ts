@@ -148,6 +148,74 @@ describe('doctor exit codes', () => {
   });
 });
 
+describe('doctor fix registry dispatch', () => {
+  let vaultDir: string;
+  let mycoHome: string;
+  let savedMycoHome: string | undefined;
+
+  beforeEach(() => {
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-registry-'));
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-registry-home-'));
+    savedMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+    if (savedMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedMycoHome;
+  });
+
+  it('takes no action for a fixable check that carries no fixId — the registry is the only dispatch path', async () => {
+    const actions = await fix(vaultDir, [{
+      name: 'Daemon',
+      status: 'warn',
+      detail: 'Stale daemon.json (PID 424242 not running)',
+      fixable: true,
+    }]);
+    expect(actions).toEqual([]);
+  });
+
+  it('reports a daemon state with no PID as not fixable (restart rewrites it)', async () => {
+    const statePath = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ pid: 0, port: 12345 }), 'utf-8');
+
+    const checks = await runChecks(vaultDir);
+    const daemon = checks.find((c) => c.name === 'Daemon');
+    expect(daemon).toBeDefined();
+    expect(daemon!.status).toBe('warn');
+    expect(daemon!.fixable).toBe(false);
+    expect(daemon!.fixId).toBeUndefined();
+    expect(daemon!.detail).toContain('records no PID');
+  });
+
+  it('daemon-stale fixer deletes via fixData.stalePid even when the detail omits the PID text', async () => {
+    const statePath = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ pid: 424242, port: 1 }), 'utf-8');
+
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const actions = await fix(vaultDir, [{
+        name: 'Daemon',
+        status: 'warn',
+        // Deliberately no "PID <n> not running" text — proves the fixer
+        // reads structured fixData, not a detail regex.
+        detail: 'Stale daemon state',
+        fixable: true,
+        fixId: 'daemon-stale',
+        fixData: { stalePid: 424242 },
+      }]);
+      expect(actions).toContain('Removed stale daemon state (PID 424242)');
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(fs.existsSync(statePath)).toBe(false);
+  });
+});
+
 describe('Edge-case detector (R4.7)', () => {
   async function withFakeHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-edge-'));
@@ -213,6 +281,54 @@ describe('Edge-case detector (R4.7)', () => {
       const rows = await checkSymbiontEdgeCases();
       const warnings = rows.filter((c) => c.status === 'warn');
       expect(warnings.some((c) => c.fixable && c.detail.includes('Stale escaped smoke-launcher hooks'))).toBe(true);
+    });
+  });
+
+  it('keeps the cursor shell-cd row non-fixable (legacy settings.json — the global refresh writes hooks.json)', async () => {
+    await withFakeHome(async (home) => {
+      const cursor = path.join(home, '.cursor', 'settings.json');
+      fs.mkdirSync(path.dirname(cursor), { recursive: true });
+      fs.writeFileSync(cursor, JSON.stringify({
+        hooks: { sessionStart: [{ command: 'cd "${CURSOR_PROJECT_DIR:-.}" && node /Users/me/.myco/launcher.cjs hook session-start --symbiont cursor' }] },
+      }), 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const row = rows.find((c) => c.detail.includes('shell-cd prefix'));
+      expect(row).toBeDefined();
+      expect(row!.fixable).toBe(false);
+      expect(row!.fixId).toBeUndefined();
+      expect(row!.detail).not.toContain('--fix');
+      expect(row!.detail).toContain('legacy file — current installs use hooks.json');
+    });
+  });
+
+  it('marks the claude matcher row fixable and notes foreign groups need manual edits', async () => {
+    await withFakeHome(async (home) => {
+      const claude = path.join(home, '.claude', 'settings.json');
+      fs.mkdirSync(path.dirname(claude), { recursive: true });
+      fs.writeFileSync(claude, JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ command: 'node x' }] }] }, // missing matcher
+      }), 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const row = rows.find((c) => c.detail.includes('missing `matcher`'));
+      expect(row).toBeDefined();
+      expect(row!.fixable).toBe(true);
+      expect(row!.fixId).toBe('symbiont-global-refresh');
+      expect(row!.detail).toContain('foreign groups need manual edits');
+    });
+  });
+
+  it('keeps the hybrid-TOML codex row non-fixable and no longer suggests doctor --fix', async () => {
+    await withFakeHome(async (home) => {
+      const codex = path.join(home, '.codex', 'config.toml');
+      fs.mkdirSync(path.dirname(codex), { recursive: true });
+      fs.writeFileSync(codex, '{\n  "hooks": {}\n}\n', 'utf-8');
+      const rows = await checkSymbiontEdgeCases();
+      const row = rows.find((c) => c.detail.includes('starts with JSON'));
+      expect(row).toBeDefined();
+      expect(row!.fixable).toBe(false);
+      expect(row!.fixId).toBeUndefined();
+      expect(row!.detail).not.toContain('doctor --fix');
+      expect(row!.detail).toContain('Restore valid TOML by hand');
     });
   });
 
@@ -342,6 +458,7 @@ describe('doctor --fix stale smoke-launcher scrub', () => {
         status: 'warn',
         detail: `Stale escaped smoke-launcher hooks in ${claude} (1 group(s)). Run \`myco doctor --fix\` to scrub them.`,
         fixable: true,
+        fixId: 'smoke-launcher-scrub',
       }]);
 
       expect(actions.some((action) => action.includes('Scrubbed 1 stale smoke-launcher hook group'))).toBe(true);
@@ -430,6 +547,8 @@ describe('doctor --fix migration retry', () => {
         status: 'warn',
         detail: `Migration failed for project ${projectRoot}: EBUSY: resource busy (transient). Retry with \`myco doctor --fix\`.`,
         fixable: true,
+        fixId: 'migration-retry',
+        fixData: { projectRoot },
       };
 
       const actions = await fix(path.join(projectRoot, '.myco'), [stuckCheck]);
