@@ -522,10 +522,12 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
           const rejectedKeys = new Set(enqueueResult.rejected.map((e) => rejectionKey(e.table, e.id)));
           const rejectedOutboxIds: number[] = [];
+          const rejectedRows: OutboxRow[] = [];
           const handedOff: OutboxRow[] = [];
           for (const row of rows) {
             if (rejectedKeys.has(rejectionKey(row.table_name, row.row_id))) {
               rejectedOutboxIds.push(row.id);
+              rejectedRows.push(row);
             } else {
               handedOff.push(row);
             }
@@ -537,6 +539,14 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
               rejected: enqueueResult.rejected.slice(0, 5),
             });
             discardRows(rejectedOutboxIds);
+            // A rejection is the worker's permanent verdict on this payload.
+            // The outbox row is discarded above; the SOURCE row must be
+            // stamped too, or backfillUnsynced re-enqueues it on every
+            // reconcile and the reject/discard cycle repeats forever.
+            // synced_at means "sync fate resolved" (the hand-off semantics
+            // documented on markSourceRowsSynced); the rejection itself
+            // stays visible in the warn log above.
+            markSourceRowsSynced(rejectedRows, now);
             result.rejected += rejectedOutboxIds.length;
             clearedThisTick += rejectedOutboxIds.length;
           }

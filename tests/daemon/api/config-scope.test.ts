@@ -139,6 +139,21 @@ describe('scoped config HTTP handlers', () => {
     expect(groveYaml).toContain('moss');
   });
 
+  it('PUT /grove-config clearing the last leaf prunes the empty parent map', async () => {
+    await handlePutGroveConfig(groveId, { patch: { backup: { dir: '/tmp/backups' } } });
+    await handlePutGroveConfig(groveId, { clear: ['backup.dir'] });
+    const groveYaml = fs.readFileSync(path.join(mycoHome, 'groves', groveId, 'grove.yaml'), 'utf-8');
+    // Without pruneEmptyParents the clear leaves `backup: {}` residue.
+    expect(groveYaml).not.toContain('backup');
+  });
+
+  it('PUT /scoped scope=local clearing the last leaf prunes the empty parent map', async () => {
+    await handlePutScopedConfig(tmpDir, { scope: 'local', patch: { notifications: { enabled: false } } });
+    await handlePutScopedConfig(tmpDir, { scope: 'local', clear: ['notifications.enabled'] });
+    const localYaml = fs.readFileSync(path.join(tmpDir, 'local.yaml'), 'utf-8');
+    expect(localYaml).not.toContain('notifications');
+  });
+
   it('PUT /grove-config rejects 400 when patch and clear overlap', async () => {
     const res = await handlePutGroveConfig(groveId, {
       patch: { backup: { dir: '/tmp/backups' } },

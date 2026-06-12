@@ -7,6 +7,7 @@
  */
 
 import { unlink, glob } from 'node:fs/promises';
+import { removeBufferLockCompanion } from '@myco/capture/buffer.js';
 import type { DeleteCascadeResult } from '../../db/queries/sessions.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 
@@ -63,5 +64,6 @@ export async function cleanupAfterSessionCascade(
   // the real dir or passes null (skip, tombstone keeps it inert).
   if (bufferDir) {
     try { await unlink(`${bufferDir}/${sessionId}.jsonl`); } catch { /* best-effort */ }
+    removeBufferLockCompanion(bufferDir, sessionId);
   }
 }

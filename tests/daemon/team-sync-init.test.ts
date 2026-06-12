@@ -354,6 +354,11 @@ describe('initTeamSync.reconcileClient', () => {
     expect(discardRowsMock).toHaveBeenCalledWith([1]);
     expect(markSentMock).toHaveBeenCalledWith([2], expect.any(Number));
     expect(markSourceRowsSyncedMock).toHaveBeenCalledWith([pending[1]], expect.any(Number));
+    // The rejected row's SOURCE is stamped too — a rejection is the
+    // worker's permanent verdict, and an unstamped source row would be
+    // re-enqueued by backfillUnsynced on every reconcile, repeating the
+    // reject/discard cycle forever.
+    expect(markSourceRowsSyncedMock).toHaveBeenCalledWith([pending[0]], expect.any(Number));
   });
 
   it('registry membership exposes a read client even when legacy config is disabled', async () => {
