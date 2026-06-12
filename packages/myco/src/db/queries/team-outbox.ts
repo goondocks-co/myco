@@ -613,8 +613,15 @@ function backfillRows(
     // pending entry is safe: the worker upsert is keyed by the composite PK
     // (id, machine_id) and is idempotent, so the row simply pushes twice.
     //
-    // 'unsynced' mode (routine startup sweep) must still dedup against ALL
-    // existing outbox entries so it never re-queues a row already handed off.
+    // 'unsynced' mode (routine startup sweep) dedups against PENDING outbox
+    // entries only (sent_at IS NULL). A SENT-but-unpruned entry (retained
+    // 24h for diagnostics) must not mask an unsynced row: drop-path resets
+    // and JOIN-second-team both leave rows with synced_at NULL whose only
+    // outbox trace is a sent entry — deduping against those left the row
+    // absent from D1 (while the UI showed 0 pending) until the prune
+    // window expired. Re-enqueuing beside a sent entry is safe for the
+    // same reason 'all' mode tolerates duplicates: the worker upsert is
+    // keyed by composite PK and idempotent.
     const rows = mode === 'all'
       ? db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]
       : db.prepare(
@@ -623,6 +630,7 @@ function backfillRows(
            AND NOT EXISTS (
              SELECT 1 FROM team_outbox
              WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
+               AND team_outbox.sent_at IS NULL
            )`,
         ).all(table) as Record<string, unknown>[];
 
