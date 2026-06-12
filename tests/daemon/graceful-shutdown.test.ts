@@ -33,6 +33,7 @@ async function startServer(): Promise<RunningServer & { hung: HungSignal }> {
   const arrived = new Promise<void>((resolve) => {
     signalArrived = resolve;
   });
+  const hung: HungSignal = { arrived };
 
   const server = http.createServer((req, res) => {
     if (req.url === '/health') {
@@ -60,7 +61,7 @@ async function startServer(): Promise<RunningServer & { hung: HungSignal }> {
   server.headersTimeout = 65_000;
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as { port: number };
-  return { server, port: address.port, hung: { arrived } };
+  return { server, port: address.port, hung };
 }
 
 describe('gracefullyCloseHttpServer', () => {
@@ -119,8 +120,11 @@ describe('gracefullyCloseHttpServer', () => {
     expect(elapsed).toBeLessThan(2_000);
   });
 
-  it('force-closes hung connections after the grace window', async () => {
-    running = await startServer();
+  /**
+   * Opens a hung /long-poll request against `target` and resolves once
+   * the server has it registered with the connection in hand.
+   */
+  async function openHungConnection(target: RunningServer & { hung: HungSignal }) {
     const agent = new http.Agent({ keepAlive: true });
     // Fire-and-forget request to /long-poll — the server-side handler
     // never calls `res.end()`. We do NOT await any client-side
@@ -129,29 +133,70 @@ describe('gracefullyCloseHttpServer', () => {
     // is registered with the server before we ask it to shut down.
     const req = http.request({
       host: '127.0.0.1',
-      port: running.port,
+      port: target.port,
       path: '/long-poll',
       agent,
     });
     req.on('error', () => { /* expected when the socket is force-closed */ });
     req.end();
-    await running.hung!.arrived;
+    await target.hung.arrived;
+    return { agent };
+  }
+
+  it('grants in-flight connections the grace window instead of yanking them immediately', async () => {
+    running = await startServer();
+    const { agent } = await openHungConnection(running as RunningServer & { hung: HungSignal });
+
+    // With a 60s grace and a hung connection, the helper can only
+    // resolve early through a regression: either `close()` reported
+    // completion despite the open socket, or the force-close fired
+    // without waiting for the grace window. A healthy helper is still
+    // pending whenever we look, no matter how slow the runner — so
+    // unlike a wall-clock lower bound on a short grace, this cannot
+    // flake on timer quantization or CI load.
+    let resolved = false;
+    void gracefullyCloseHttpServer(running.server, { gracePeriodMs: 60_000 })
+      .then(() => { resolved = true; });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(resolved).toBe(false);
+
+    // Sever everything ourselves so afterEach's close() can finish.
+    agent.destroy();
+    running.server.closeAllConnections();
+  });
+
+  it('force-closes hung connections after the grace window', async () => {
+    running = await startServer();
+    const { agent } = await openHungConnection(running as RunningServer & { hung: HungSignal });
+
+    // bun's node:http `closeAllConnections()` does not sever in-flight
+    // sockets the way Node's does (under Node the client sees an
+    // immediate "socket hang up"; under bun 1.3.14 the client observes
+    // nothing), so client-side severance cannot be the success signal
+    // when this suite runs under bun. Record the force-close call
+    // itself instead: with a hung connection the helper can only
+    // resolve through the grace-window force-close path.
+    let forceCloseFired = false;
+    const closeAll = running.server.closeAllConnections.bind(running.server);
+    running.server.closeAllConnections = () => {
+      forceCloseFired = true;
+      closeAll();
+    };
 
     const start = Date.now();
     await gracefullyCloseHttpServer(running.server, { gracePeriodMs: 200 });
     const elapsed = Date.now() - start;
     agent.destroy();
-    // Lower bound proves the force-close waited the full grace window
-    // (it did NOT yank the socket early). Upper bound proves it resolved
-    // well under the 60s keep-alive timeout configured above — i.e. the
-    // force-close fired rather than blocking on the dangling /long-poll
-    // socket until the client-side keep-alive expired. The 5s ceiling is
-    // 25× the 200ms grace yet 12× below the 60s keep-alive, so it still
-    // unambiguously distinguishes "force-closed" from "waited for the
-    // keep-alive" while tolerating event-loop/force-close scheduling
+
+    expect(forceCloseFired).toBe(true);
+    // Upper bound proves resolution came from the force-close, not from
+    // waiting out the 60s keep-alive timeout configured above. The 5s
+    // ceiling is 25× the 200ms grace yet 12× below the keep-alive, so
+    // it unambiguously distinguishes the two while tolerating scheduling
     // jitter on a loaded CI runner. It is deliberately NOT a tight perf
-    // assertion.
-    expect(elapsed).toBeGreaterThanOrEqual(200);
+    // assertion. (The grace-window lower bound is pinned by the
+    // companion test above via a still-pending check, not a wall-clock
+    // measurement.)
     expect(elapsed).toBeLessThan(5_000);
   });
 });
