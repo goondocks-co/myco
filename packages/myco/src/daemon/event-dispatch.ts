@@ -45,6 +45,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch, toPromptBatchOrigin, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
+import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { ensureSession, ensureSessionRowExists, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
@@ -309,6 +310,19 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         if (shouldReevaluate) {
           droppedSessions.delete(event.session_id);
         }
+        if (hasSessionTombstone(event.session_id)) {
+          // Deletion is final against passive event-driven recreation (an
+          // explicit /sessions/register deliberately supersedes — same-id
+          // reload is a supported flow). hadTranscriptMeta: true makes the
+          // cached drop permanent: a later transcript_path must not reopen
+          // resurrection for a deliberately deleted session.
+          rememberDropped(event.session_id, 'session_tombstoned', true);
+          logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Ignored event for deleted (tombstoned) session', {
+            session_id: event.session_id,
+            type: event.type,
+          });
+          return { body: { ok: true, ignored: 'session_tombstoned', persisted: false } };
+        }
         const { decision, hadTranscriptMeta } = evaluateAutoRegistration(event);
         if (decision.action === 'drop') {
           rememberDropped(event.session_id, decision.reason, hadTranscriptMeta);
@@ -334,7 +348,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           logger,
           source: event.type === 'user_prompt' ? ENSURE_SESSION_SOURCE.USER_PROMPT : ENSURE_SESSION_SOURCE.TOOL_USE,
         });
-        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
+        logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
         const autoRegisterScope = projectScopeFromRequestContext(req.requestContext);
         deferGitProvenance(
           {

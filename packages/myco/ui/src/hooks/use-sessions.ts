@@ -258,8 +258,13 @@ export function useSessionAttachments(sessionId: string | undefined) {
 export function useDeleteSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (sessionId: string) =>
-      deleteJson<{ ok: boolean; counts: Record<string, number> }>(`/sessions/${sessionId}`),
+    // `force: true` overrides the daemon's live-session refusal (409
+    // `session_live`) — callers re-send it from a second-stage confirm.
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) =>
+      deleteJson<{ ok: boolean; counts: Record<string, number> }>(
+        `/sessions/${id}`,
+        force ? { force: true } : undefined,
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
