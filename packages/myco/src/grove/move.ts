@@ -11,21 +11,25 @@
  *
  * The marker is the source of truth for resumability. A marker for the
  * same (project, from, to) tuple is resumed; any other open marker
- * refuses to proceed.
+ * refuses to proceed. A failure before the commit phase rolls the
+ * target back, records the marker as 'failed' (terminal — the next
+ * call starts a fresh move op), and releases the source pause.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
-import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
 import { EMBEDDABLE_TABLES } from '@myco/db/queries/embeddings.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
+import { createBackup } from '@myco/backup/engine.js';
 import {
-  BACKUP_TABLES,
-  createBackup,
-  restoreBackup,
-} from '@myco/backup/engine.js';
+  MOVE_COPY_TABLES,
+  copyProjectBetweenGroveDbs,
+  deleteProjectRowsForMove,
+  findOrphanRemappedRows,
+  isMissingTableError,
+} from './move-copy.js';
 import { getMachineId } from '@myco/machine-id.js';
 import {
   assertGroveProjectId,
@@ -57,7 +61,8 @@ type MovePhase =
   | 'verified'
   | 'committed'
   | 'cleaned'
-  | 'completed';
+  | 'completed'
+  | 'failed';
 
 interface MoveMarker {
   move_op_id: string;
@@ -71,6 +76,7 @@ interface MoveMarker {
   snapshot_path?: string;
   table_counts?: Record<string, number>;
   new_binding_id?: string;
+  error?: string;
 }
 
 export interface MoveResult {
@@ -80,16 +86,6 @@ export interface MoveResult {
   snapshot_path: string;
   table_counts: Record<string, number>;
 }
-
-const PROJECT_SCOPED_TABLE_SET = new Set<string>(GROVE_PROJECT_SCOPED_TABLES);
-
-/**
- * Tables iterated for the verify/clean phases. Drawn from BACKUP_TABLES
- * intersected with the project-scoped set so `team_members` (grove-
- * scoped, not project-scoped) is not deleted from the source — moves
- * only relocate project data.
- */
-const MOVE_SCOPED_TABLES = BACKUP_TABLES.filter((t) => PROJECT_SCOPED_TABLE_SET.has(t));
 
 export interface MoveProjectOptions {
   /**
@@ -219,140 +215,256 @@ export function moveProjectBetweenGroves(
     pauseProject(sourceGroveId, projectId, 'grove-move', moveOpId, mycoHome);
   }
 
-  if (!fs.existsSync(markerPath)) writeMarker(markerPath, marker);
-
   const sourceDbPath = resolveGroveDbPath(sourceGroveId, mycoHome);
   const targetDbPath = resolveGroveDbPath(targetGroveId, mycoHome);
 
-  const machineId = getMachineId();
-  const snapshotsRoot = resolveBackupsRoot(options.snapshotsRoot);
-  const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
-  fs.mkdirSync(snapshotDir, { recursive: true });
+  // The pause is held from here on. Every exit path below either
+  // completes the move (the pause dies with the deregistered source
+  // entry) or flows through the catch, which rolls back and releases
+  // the pause — a failed move must never leave the source refusing
+  // writes.
+  try {
+    if (!fs.existsSync(markerPath)) writeMarker(markerPath, marker);
 
-  if (orderOf(marker.phase) <= orderOf('snapshot')) {
-    const snapshotPath = withDb(sourceDbPath, (sourceDb) => {
-      return createBackup(
-        sourceDb,
-        snapshotDir,
-        machineId,
-        projectScope(brandedProjectId),
-        projectSlug,
+    const machineId = getMachineId();
+    const snapshotsRoot = resolveBackupsRoot(options.snapshotsRoot);
+    const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
+    fs.mkdirSync(snapshotDir, { recursive: true });
+
+    if (orderOf(marker.phase) <= orderOf('snapshot')) {
+      const snapshotPath = withDb(sourceDbPath, (sourceDb) => {
+        return createBackup(
+          sourceDb,
+          snapshotDir,
+          machineId,
+          projectScope(brandedProjectId),
+          projectSlug,
+        );
+      });
+      marker = { ...marker, phase: 'snapshot_complete', snapshot_path: snapshotPath };
+      writeMarker(markerPath, marker);
+    }
+
+    const snapshotPath = marker.snapshot_path;
+    if (!snapshotPath) {
+      throw new Error('move marker advanced past snapshot but recorded no snapshot_path');
+    }
+
+    if (orderOf(marker.phase) <= orderOf('snapshot_complete')) {
+      // Target DB may be uninitialized (Grove registered but never
+      // activated). `openDatabase` only creates an empty file; the copy
+      // needs the schema present before its INSERT statements run.
+      ensureGroveDatabase(targetGroveId, mycoHome);
+      // Rekey copy straight from the live source DB — the snapshot taken
+      // above is a recovery artifact, not the transfer medium. Integer
+      // ids are reallocated in the target so a non-empty target Grove
+      // cannot collide with (and silently swallow) the moved rows.
+      withDbs(sourceDbPath, targetDbPath, (sourceDb, targetDb) => {
+        copyAgents(sourceDb, targetDb);
+        copyProjectBetweenGroveDbs(sourceDb, targetDb, projectId);
+        resetTargetEmbeddingFlags(targetDb, projectId);
+      });
+      marker = { ...marker, phase: 'restored' };
+      writeMarker(markerPath, marker);
+    }
+
+    let tableCounts: Record<string, number> = marker.table_counts ?? {};
+
+    if (orderOf(marker.phase) <= orderOf('restored')) {
+      const sourceCounts = withDb(sourceDbPath, (sourceDb) =>
+        countProjectRows(sourceDb, projectId),
       );
-    });
-    marker = { ...marker, phase: 'snapshot_complete', snapshot_path: snapshotPath };
-    writeMarker(markerPath, marker);
-  }
+      const targetCounts = withDb(targetDbPath, (targetDb) =>
+        countProjectRows(targetDb, projectId),
+      );
 
-  const snapshotPath = marker.snapshot_path;
-  if (!snapshotPath) {
-    throw new Error('move marker advanced past snapshot but recorded no snapshot_path');
-  }
-
-  if (orderOf(marker.phase) <= orderOf('snapshot_complete')) {
-    // Target DB may be uninitialized (Grove registered but never activated).
-    // `openDatabase` only creates an empty file; restoreBackup needs the
-    // schema present before its INSERT OR IGNORE statements run.
-    ensureGroveDatabase(targetGroveId, mycoHome);
-    withDbs(sourceDbPath, targetDbPath, (sourceDb, targetDb) => {
-      copyAgents(sourceDb, targetDb);
-      restoreBackup(targetDb, snapshotPath);
-      resetTargetEmbeddingFlags(targetDb, projectId);
-    });
-    marker = { ...marker, phase: 'restored' };
-    writeMarker(markerPath, marker);
-  }
-
-  let tableCounts: Record<string, number> = marker.table_counts ?? {};
-
-  if (orderOf(marker.phase) <= orderOf('restored')) {
-    const sourceCounts = withDb(sourceDbPath, (sourceDb) =>
-      countProjectRows(sourceDb, projectId),
-    );
-    const targetCounts = withDb(targetDbPath, (targetDb) =>
-      countProjectRows(targetDb, projectId),
-    );
-
-    const mismatches: string[] = [];
-    for (const table of MOVE_SCOPED_TABLES) {
-      const src = sourceCounts[table] ?? 0;
-      const tgt = targetCounts[table] ?? 0;
-      if (src !== tgt) {
-        mismatches.push(`${table}: source=${src}, target=${tgt}`);
+      const mismatches: string[] = [];
+      for (const table of MOVE_COPY_TABLES) {
+        const src = sourceCounts[table] ?? 0;
+        const tgt = targetCounts[table] ?? 0;
+        if (src !== tgt) {
+          mismatches.push(`${table}: source=${src}, target=${tgt}`);
+        }
       }
-    }
-    if (mismatches.length > 0) {
-      throw new Error(
-        `move verification failed for project ${projectId}: ${mismatches.join('; ')}`,
+      if (mismatches.length > 0) {
+        throw new Error(
+          `move verification failed for project ${projectId}: ${mismatches.join('; ')}`,
+        );
+      }
+
+      // Remapped foreign keys must resolve to parents of the moved
+      // project. Structurally guaranteed by the rekey copy; checked
+      // anyway because a violation here means cross-project corruption.
+      const orphans = withDb(targetDbPath, (targetDb) =>
+        findOrphanRemappedRows(targetDb, projectId),
       );
+      if (orphans.length > 0) {
+        throw new Error(
+          `move verification failed for project ${projectId}: orphaned rows after rekey: `
+          + orphans.join('; '),
+        );
+      }
+
+      // TEXT foreign keys are copied verbatim (only integer ids are
+      // rekeyed), so a source row pointing at another project's parent —
+      // e.g. spores.session_id at a sibling project's session — arrives
+      // dangling, and count-compare cannot see it. The copy runs with
+      // foreign keys deferred; this is where they are enforced. Any
+      // violation fails the move before commit, including pre-existing
+      // ones in other projects' rows — a target with broken references
+      // must surface, not absorb more data.
+      const fkViolations = withDb(targetDbPath, (targetDb) =>
+        targetDb.prepare('PRAGMA foreign_key_check').all() as Array<{
+          table: string;
+          rowid: number | bigint | null;
+          parent: string;
+          fkid: number;
+        }>,
+      );
+      if (fkViolations.length > 0) {
+        const listed = fkViolations.slice(0, 20)
+          .map((v) => `${v.table}(rowid=${v.rowid}) -> ${v.parent}`)
+          .join('; ');
+        throw new Error(
+          `move verification failed for project ${projectId}: ${fkViolations.length} foreign key `
+          + `violation(s) in target after copy: ${listed}`,
+        );
+      }
+
+      tableCounts = {};
+      for (const [table, count] of Object.entries(sourceCounts)) {
+        if (count > 0) tableCounts[table] = count;
+      }
+
+      marker = { ...marker, phase: 'verified', table_counts: tableCounts };
+      writeMarker(markerPath, marker);
     }
 
-    tableCounts = {};
-    for (const [table, count] of Object.entries(sourceCounts)) {
-      if (count > 0) tableCounts[table] = count;
-    }
-
-    marker = { ...marker, phase: 'verified', table_counts: tableCounts };
-    writeMarker(markerPath, marker);
-  }
-
-  if (orderOf(marker.phase) <= orderOf('verified')) {
-    const newBindingId = marker.new_binding_id ?? createGroveBindingId();
-    // registerProjectInGrove merges with any existing entry (preserves
-    // created_at, refreshes updated_at), so a resume after a partial
-    // commit is idempotent on the target side.
-    registerProjectInGrove(targetGroveId, {
-      projectId,
-      projectName,
-      projectRoot,
-      bindingId: newBindingId,
-    }, mycoHome);
-    // force: idempotent on resume after a partial commit
-    deregisterProjectInGrove(sourceGroveId, projectId, mycoHome, { force: true });
-    // Move commit: atomic write of both manifests + gitignore refresh
-    // via ProjectVault. The new Grove identity carries the freshly
-    // minted binding_id (newBindingId) generated for this move.
-    new ProjectVault(projectRoot).writeIdentity({
-      manifest: {
-        project: { id: projectId, name: projectName },
-        grove: {
-          id: targetGroveId,
-          slug: targetGrove.slug,
-          name: targetGrove.name,
-          mode: 'local',
+    if (orderOf(marker.phase) <= orderOf('verified')) {
+      const newBindingId = marker.new_binding_id ?? createGroveBindingId();
+      // registerProjectInGrove merges with any existing entry (preserves
+      // created_at, refreshes updated_at), so a resume after a partial
+      // commit is idempotent on the target side.
+      registerProjectInGrove(targetGroveId, {
+        projectId,
+        projectName,
+        projectRoot,
+        bindingId: newBindingId,
+      }, mycoHome);
+      // force: idempotent on resume after a partial commit
+      deregisterProjectInGrove(sourceGroveId, projectId, mycoHome, { force: true });
+      // Move commit: atomic write of both manifests + gitignore refresh
+      // via ProjectVault. The new Grove identity carries the freshly
+      // minted binding_id (newBindingId) generated for this move.
+      new ProjectVault(projectRoot).writeIdentity({
+        manifest: {
+          project: { id: projectId, name: projectName },
+          grove: {
+            id: targetGroveId,
+            slug: targetGrove.slug,
+            name: targetGrove.name,
+            mode: 'local',
+          },
         },
-      },
-      localManifest: {
-        grove_binding: { binding_id: newBindingId, mode: 'local' },
-      },
+        localManifest: {
+          grove_binding: { binding_id: newBindingId, mode: 'local' },
+        },
+      });
+      marker = { ...marker, phase: 'committed', new_binding_id: newBindingId };
+      writeMarker(markerPath, marker);
+    }
+
+    if (orderOf(marker.phase) <= orderOf('committed')) {
+      // Source cleanup deletes the MOVED project id only. Rows under
+      // sibling legacy project ids sharing the same project_root were
+      // never copied to the target, so deleting them here would be
+      // unrecoverable data loss — they stay in the source Grove.
+      withDb(sourceDbPath, (sourceDb) => {
+        deleteProjectRowsForMove(sourceDb, projectId);
+      });
+      marker = { ...marker, phase: 'cleaned' };
+      writeMarker(markerPath, marker);
+    }
+
+    if (orderOf(marker.phase) <= orderOf('cleaned')) {
+      // Pause was on source's projects.toml entry; deregister already
+      // dropped the entry. resumeProject on target is a no-op-on-unpaused
+      // path, included for symmetry so future ops see a clean slate.
+      resumeProject(targetGroveId, projectId, moveOpId, mycoHome);
+      marker = { ...marker, phase: 'completed' };
+      writeMarker(markerPath, marker);
+    }
+
+    return {
+      from_grove_id: sourceGroveId,
+      to_grove_id: targetGroveId,
+      project_id: projectId,
+      snapshot_path: snapshotPath,
+      table_counts: marker.table_counts ?? tableCounts,
+    };
+  } catch (err) {
+    handleMoveFailure({
+      marker,
+      markerPath,
+      targetDbPath,
+      sourceGroveId,
+      projectId,
+      moveOpId,
+      mycoHome,
+      cause: err,
     });
-    marker = { ...marker, phase: 'committed', new_binding_id: newBindingId };
-    writeMarker(markerPath, marker);
+    throw err;
   }
+}
 
-  if (orderOf(marker.phase) <= orderOf('committed')) {
-    withDb(sourceDbPath, (sourceDb) => {
-      deleteProjectRows(sourceDb, projectIdsForCleanup(sourceDb, projectId, projectRoot));
-    });
-    marker = { ...marker, phase: 'cleaned' };
-    writeMarker(markerPath, marker);
+interface MoveFailureContext {
+  marker: MoveMarker;
+  markerPath: string;
+  targetDbPath: string;
+  sourceGroveId: string;
+  projectId: string;
+  moveOpId: string;
+  mycoHome: string;
+  cause: unknown;
+}
+
+/**
+ * Failure path for a move that threw mid-flight.
+ *
+ * Before the commit phase the target is not yet authoritative: wipe the
+ * moved project's rows from it and record the marker as 'failed' so the
+ * next call starts a fresh move op. From 'committed' onward the target
+ * owns the data — the marker is left resumable and nothing is wiped.
+ * The source pause is released on every failure; rollback steps are
+ * best-effort so the original error always propagates.
+ */
+function handleMoveFailure(ctx: MoveFailureContext): void {
+  if (orderOf(ctx.marker.phase) < orderOf('committed')) {
+    try {
+      withDb(ctx.targetDbPath, (targetDb) =>
+        deleteProjectRowsForMove(targetDb, ctx.projectId),
+      );
+    } catch {
+      // Target wipe is best-effort: the wipe-before-copy at the start of
+      // the next move's transfer clears any rows left behind here.
+    }
+    try {
+      writeMarker(ctx.markerPath, {
+        ...ctx.marker,
+        phase: 'failed',
+        error: ctx.cause instanceof Error ? ctx.cause.message : String(ctx.cause),
+      });
+    } catch {
+      // A stuck non-failed marker resumes at its recorded phase, which
+      // re-runs the (re-entrant) copy rather than corrupting anything.
+    }
   }
-
-  if (orderOf(marker.phase) <= orderOf('cleaned')) {
-    // Pause was on source's projects.toml entry; deregister already
-    // dropped the entry. resumeProject on target is a no-op-on-unpaused
-    // path, included for symmetry so future ops see a clean slate.
-    resumeProject(targetGroveId, projectId, moveOpId, mycoHome);
-    marker = { ...marker, phase: 'completed' };
-    writeMarker(markerPath, marker);
+  try {
+    resumeProject(ctx.sourceGroveId, ctx.projectId, ctx.moveOpId, ctx.mycoHome);
+  } catch {
+    // No-op when the source entry is already deregistered; an owner
+    // conflict cannot mask the original failure.
   }
-
-  return {
-    from_grove_id: sourceGroveId,
-    to_grove_id: targetGroveId,
-    project_id: projectId,
-    snapshot_path: snapshotPath,
-    table_counts: marker.table_counts ?? tableCounts,
-  };
 }
 
 const PHASE_ORDER: MovePhase[] = [
@@ -364,6 +476,14 @@ const PHASE_ORDER: MovePhase[] = [
   'cleaned',
   'completed',
 ];
+
+/**
+ * Phases a marker may legitimately record. 'failed' is terminal and
+ * deliberately outside PHASE_ORDER — it never participates in resume
+ * ordering; both terminal phases mean "this op is over".
+ */
+const TERMINAL_PHASES = new Set<MovePhase>(['completed', 'failed']);
+const VALID_MARKER_PHASES = new Set<MovePhase>([...PHASE_ORDER, 'failed']);
 
 function orderOf(phase: MovePhase): number {
   return PHASE_ORDER.indexOf(phase);
@@ -383,7 +503,7 @@ function validateMarker(raw: unknown): MoveMarker | null {
     || typeof parsed.project_id !== 'string'
     || typeof parsed.started_at !== 'string'
     || typeof parsed.phase !== 'string'
-    || !PHASE_ORDER.includes(parsed.phase as MovePhase)
+    || !VALID_MARKER_PHASES.has(parsed.phase as MovePhase)
   ) {
     return null;
   }
@@ -399,6 +519,7 @@ function validateMarker(raw: unknown): MoveMarker | null {
     ...(typeof parsed.snapshot_path === 'string' ? { snapshot_path: parsed.snapshot_path } : {}),
     ...(parsed.table_counts ? { table_counts: parsed.table_counts as Record<string, number> } : {}),
     ...(typeof parsed.new_binding_id === 'string' ? { new_binding_id: parsed.new_binding_id } : {}),
+    ...(typeof parsed.error === 'string' ? { error: parsed.error } : {}),
   };
 }
 
@@ -406,10 +527,16 @@ function readMarker(markerPath: string): MoveMarker | null {
   return readMarkerJson<MoveMarker>(markerPath, validateMarker);
 }
 
+/**
+ * Find a resumable (non-terminal) marker for the project. A 'failed'
+ * marker is terminal: the failed op already rolled the target back and
+ * released the pause, so the next call must start a fresh move op
+ * rather than resume at the failed op's recorded phase.
+ */
 function findExistingMarkerForProject(migrationDir: string, projectId: string): MoveMarker | null {
   for (const full of findMarkerFiles(migrationDir, () => true)) {
     const parsed = readMarker(full);
-    if (parsed && parsed.project_id === projectId && parsed.phase !== 'completed') {
+    if (parsed && parsed.project_id === projectId && !TERMINAL_PHASES.has(parsed.phase)) {
       return parsed;
     }
   }
@@ -434,7 +561,7 @@ function findCompletedMarkerForProject(migrationDir: string, projectId: string):
 function findMarkerForOtherProject(migrationDir: string, projectId: string): MoveMarker | null {
   for (const full of findMarkerFiles(migrationDir, () => true)) {
     const parsed = readMarker(full);
-    if (parsed && parsed.project_id !== projectId && parsed.phase !== 'completed') {
+    if (parsed && parsed.project_id !== projectId && !TERMINAL_PHASES.has(parsed.phase)) {
       return parsed;
     }
   }
@@ -519,13 +646,22 @@ function copyAgents(sourceDb: Database, targetDb: Database): void {
 
 function countProjectRows(db: Database, projectId: string): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const table of MOVE_SCOPED_TABLES) {
+  for (const table of MOVE_COPY_TABLES) {
     try {
       const row = db.prepare(
         `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`,
       ).get(projectId) as { n: number } | undefined;
       counts[table] = row?.n ?? 0;
-    } catch {
+    } catch (err) {
+      // A missing table counts as zero rows. Any other error must fail
+      // the move — the same error swallowed on BOTH sides would let a
+      // skipped table verify as 0 == 0 and cleanup delete the only copy.
+      if (!isMissingTableError(err)) {
+        throw new Error(
+          `failed to count ${table} rows for project ${projectId}: `
+          + (err instanceof Error ? err.message : String(err)),
+        );
+      }
       counts[table] = 0;
     }
   }
@@ -545,60 +681,3 @@ function resetTargetEmbeddingFlags(db: Database, projectId: string): void {
   tx();
 }
 
-function projectIdsForCleanup(
-  db: Database,
-  projectId: string,
-  projectRoot: string,
-): string[] {
-  const ids = new Set<string>([projectId]);
-  try {
-    const rows = db.prepare(
-      `SELECT DISTINCT project_id
-       FROM sessions
-       WHERE project_root = ?
-         AND project_id IS NOT NULL
-         AND project_id <> ''`,
-    ).all(projectRoot) as Array<{ project_id: string }>;
-    for (const row of rows) {
-      if (typeof row.project_id === 'string') ids.add(row.project_id);
-    }
-  } catch {
-    // Older schemas may not have project_root/project_id; fall back to the
-    // project id from the active registry entry.
-  }
-  return [...ids];
-}
-
-function deleteProjectRows(db: Database, projectIds: string[]): void {
-  const uniqueProjectIds = [...new Set(projectIds)].filter((id) => id.length > 0);
-  if (uniqueProjectIds.length === 0) return;
-
-  db.run('PRAGMA foreign_keys = OFF');
-  try {
-    const tx = db.transaction(() => {
-      for (const table of MOVE_SCOPED_TABLES) {
-        try {
-          const stmt = db.prepare(`DELETE FROM ${table} WHERE project_id = ?`);
-          for (const id of uniqueProjectIds) stmt.run(id);
-        } catch {
-          // Table may not exist on a brand-new target Grove DB; skip.
-        }
-      }
-      // `entity_mentions` is project-scoped but excluded from BACKUP_TABLES
-      // (no `id` column makes it incompatible with the INSERT OR IGNORE
-      // round-trip; see gotcha_entity_mentions_not_synced.md). Its rows
-      // are not snapshotted and not restored on the target, so we delete
-      // them from source explicitly here — the moved project must leave
-      // no orphans behind.
-      try {
-        const stmt = db.prepare(`DELETE FROM entity_mentions WHERE project_id = ?`);
-        for (const id of uniqueProjectIds) stmt.run(id);
-      } catch {
-        // Table may not exist on older schemas; skip.
-      }
-    });
-    tx();
-  } finally {
-    db.run('PRAGMA foreign_keys = ON');
-  }
-}
