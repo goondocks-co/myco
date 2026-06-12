@@ -5,6 +5,13 @@ import { useProjectScopedQueryKey } from './use-project-selection';
 /** Minimum query length before a search request is issued. */
 const SEARCH_MIN_LENGTH = 2;
 
+/** Single gate for "is this query long enough to search?" — shared by the
+ *  fetch hooks and the search UI's loading/empty states so they can't drift
+ *  (a 2-character query must both fire AND render its states). */
+export function meetsSearchMinLength(query: string): boolean {
+  return query.length >= SEARCH_MIN_LENGTH;
+}
+
 /** How long search results remain fresh in the cache (ms). */
 const SEARCH_STALE_TIME = 30_000;
 
@@ -133,7 +140,7 @@ export function useSearch(
         buildSearchPath(query, mode, filters),
         { signal },
       ),
-    enabled: query.length > SEARCH_MIN_LENGTH,
+    enabled: meetsSearchMinLength(query),
     staleTime: SEARCH_STALE_TIME,
   });
 }
@@ -162,7 +169,7 @@ export function useCanopySearch(
         provider_unavailable: raw.provider_unavailable,
       };
     },
-    enabled: enabled && query.length > SEARCH_MIN_LENGTH,
+    enabled: enabled && meetsSearchMinLength(query),
     staleTime: SEARCH_STALE_TIME,
   });
 }

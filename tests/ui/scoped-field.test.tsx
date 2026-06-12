@@ -204,3 +204,47 @@ describe('ScopedField — registry locks the field (embedding.model: overridable
     expect(pillTrigger).toBeUndefined();
   });
 });
+
+describe('ScopedField — empty-string commit routes through clear (RC-11)', () => {
+  beforeEach(() => {
+    setFieldMock.mockReset().mockResolvedValue(undefined);
+    resetFieldMock.mockReset().mockResolvedValue(undefined);
+    promoteFieldMock.mockReset().mockResolvedValue(undefined);
+    hookState.effective = { embedding: { base_url: 'http://localhost:11434' } };
+    hookState.local = {};
+  });
+
+  it("commits '' as undefined so the write layer issues a clear, not a dead patch", async () => {
+    render(
+      createElement(
+        ScopedField,
+        {
+          path: 'embedding.base_url',
+          label: 'Base URL',
+          commitOn: 'blur',
+          parse: (v: unknown) => (v === '' ? (undefined as unknown as string) : v),
+          children: ({ value, onChange, onBlur }: {
+            value: unknown;
+            onChange: (v: unknown) => void;
+            onBlur: () => void;
+          }) =>
+            createElement('input', {
+              'data-testid': 'clearable-input',
+              value: String(value ?? ''),
+              onChange: (e: { target: { value: string } }) => onChange(e.target.value),
+              onBlur,
+            }),
+        } as unknown as Parameters<typeof ScopedField>[0],
+      ),
+      { wrapper: makeWrapper() },
+    );
+
+    const input = screen.getByTestId('clearable-input');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(setFieldMock).toHaveBeenCalledWith('embedding.base_url', undefined, 'grove');
+    });
+  });
+});

@@ -91,13 +91,30 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
 
   const setField = useCallback(
     async <T,>(path: ConfigPath, value: T, scope: Scope): Promise<void> => {
+      // `undefined` means "clear this field" — every tier PUT accepts a
+      // `clear` list, so empty-string commits route through it instead of
+      // the dead-end conventions (undefined vanishes from JSON → 400
+      // "patch or clear required"; explicit null fails Zod validation).
+      if (value === undefined) {
+        if (scope === 'grove') {
+          await updateGroveConfig.mutateAsync({ clear: [path] });
+          invalidateNotifications();
+        } else if (scope === 'machine') {
+          await updateMachineConfig.mutateAsync({ clear: [path] });
+          invalidateNotifications();
+        } else {
+          await writeScopedConfig(scope, {}, [path], contextHeaders);
+          invalidateForScope(scope);
+        }
+        return;
+      }
       const patch: Record<string, unknown> = {};
       setAtPath(patch, path, value);
       if (scope === 'grove') {
-        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        await updateGroveConfig.mutateAsync({ patch: patch as Partial<GroveConfig> });
         invalidateNotifications();
       } else if (scope === 'machine') {
-        await updateMachineConfig.mutateAsync(patch as MachineConfigPatch);
+        await updateMachineConfig.mutateAsync({ patch: patch as MachineConfigPatch });
         invalidateNotifications();
       } else {
         await writeScopedConfig(scope, patch, undefined, contextHeaders);
@@ -111,10 +128,9 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
    * Atomic write to the chosen scope. Applies a patch (field -> value pairs)
    * and optionally clears a set of dot-paths — both in a single PUT so
    * coupled transitions can't tear (e.g. Clear Provider unsets the provider
-   * and disables the tied task toggles together).
-   *
-   * For grove scope, `clearPaths` is not supported (Grove config has no
-   * local-override layer to clear); any provided clear paths are ignored.
+   * and disables the tied task toggles together). Fields whose value is
+   * `undefined` are treated as clears (same convention as `setField`).
+   * Every tier PUT (scoped, grove, machine) accepts the clear list.
    */
   const setFields = useCallback(
     async (
@@ -123,19 +139,25 @@ export function useScopedConfigForSelection(selection: ProjectSelection | null) 
       clearPaths?: ConfigPath[],
     ): Promise<void> => {
       const patch: Record<string, unknown> = {};
+      const clears: string[] = [...(clearPaths ?? [])];
       for (const { path, value } of fields) {
-        setAtPath(patch, path, value);
+        if (value === undefined) clears.push(path);
+        else setAtPath(patch, path, value);
       }
       if (scope === 'grove') {
-        await updateGroveConfig.mutateAsync(patch as Parameters<typeof updateGroveConfig.mutateAsync>[0]);
+        await updateGroveConfig.mutateAsync({
+          patch: patch as Partial<GroveConfig>,
+          clear: clears.length > 0 ? clears : undefined,
+        });
         invalidateNotifications();
       } else if (scope === 'machine') {
-        // Machine config has no local-override layer; clearPaths is ignored
-        // (mirrors the grove branch's clearPaths contract).
-        await updateMachineConfig.mutateAsync(patch as MachineConfigPatch);
+        await updateMachineConfig.mutateAsync({
+          patch: patch as MachineConfigPatch,
+          clear: clears.length > 0 ? clears : undefined,
+        });
         invalidateNotifications();
       } else {
-        await writeScopedConfig(scope, patch, clearPaths as string[] | undefined, contextHeaders);
+        await writeScopedConfig(scope, patch, clears.length > 0 ? clears : undefined, contextHeaders);
         invalidateForScope(scope);
       }
     },

@@ -116,6 +116,45 @@ describe('scoped config HTTP handlers', () => {
     expect((merged.body as any).appearance.density).toBe('compact');
   });
 
+  it('PUT /grove-config with clear only removes the field from grove.yaml', async () => {
+    await handlePutGroveConfig(groveId, { patch: { backup: { dir: '/tmp/backups' } } });
+    const res = await handlePutGroveConfig(groveId, { clear: ['backup.dir'] });
+    expect(res.response.status).toBeUndefined();
+    expect(res.touchedPaths).toEqual(['backup.dir']);
+    const groveYaml = fs.readFileSync(path.join(mycoHome, 'groves', groveId, 'grove.yaml'), 'utf-8');
+    expect(groveYaml).not.toContain('/tmp/backups');
+  });
+
+  it('PUT /grove-config applies patch and clear atomically', async () => {
+    await handlePutGroveConfig(groveId, {
+      patch: { backup: { dir: '/tmp/backups' }, appearance: { theme: 'plum' } },
+    });
+    const res = await handlePutGroveConfig(groveId, {
+      patch: { appearance: { theme: 'moss' } },
+      clear: ['backup.dir'],
+    });
+    expect(res.response.status).toBeUndefined();
+    const groveYaml = fs.readFileSync(path.join(mycoHome, 'groves', groveId, 'grove.yaml'), 'utf-8');
+    expect(groveYaml).not.toContain('/tmp/backups');
+    expect(groveYaml).toContain('moss');
+  });
+
+  it('PUT /grove-config rejects 400 when patch and clear overlap', async () => {
+    const res = await handlePutGroveConfig(groveId, {
+      patch: { backup: { dir: '/tmp/backups' } },
+      clear: ['backup.dir'],
+    });
+    expect(res.response.status).toBe(400);
+    expect((res.response.body as any).error).toBe('patch_clear_overlap');
+  });
+
+  it('PUT /grove-config rejects 400 when clear is not an array', async () => {
+    const res = await handlePutGroveConfig(groveId, {
+      clear: 'backup.dir' as unknown as string[],
+    });
+    expect(res.response.status).toBe(400);
+  });
+
   it('GET /local with Grove context lifts legacy local appearance before returning local overrides', async () => {
     fs.writeFileSync(
       path.join(tmpDir, 'local.yaml'),

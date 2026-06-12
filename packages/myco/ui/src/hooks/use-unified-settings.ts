@@ -77,6 +77,26 @@ export function useUnifiedSettings(): UnifiedSettings {
 
   const writeField = useCallback(
     async (field: SettingField, value: unknown): Promise<void> => {
+      // `undefined` means "clear this field": each tier PUT accepts a
+      // `clear` list, which is the only convention the API supports —
+      // undefined values vanish from JSON (400 empty patch) and explicit
+      // null fails Zod validation.
+      if (value === undefined) {
+        switch (field.scope) {
+          case 'project': {
+            await project.setField(field.key as ConfigPath, undefined, 'project');
+            return;
+          }
+          case 'grove': {
+            await updateGrove.mutateAsync({ clear: [field.key] });
+            return;
+          }
+          case 'machine': {
+            await updateMachine.mutateAsync({ clear: [field.key] });
+            return;
+          }
+        }
+      }
       switch (field.scope) {
         case 'project': {
           await project.setField(field.key as ConfigPath, value, 'project');
@@ -85,13 +105,13 @@ export function useUnifiedSettings(): UnifiedSettings {
         case 'grove': {
           const patch: Record<string, unknown> = {};
           setAtPath(patch, field.key, value);
-          await updateGrove.mutateAsync(patch as Partial<GroveConfig>);
+          await updateGrove.mutateAsync({ patch: patch as Partial<GroveConfig> });
           return;
         }
         case 'machine': {
           const patch: Record<string, unknown> = {};
           setAtPath(patch, field.key, value);
-          await updateMachine.mutateAsync(patch as MachineConfigPatch);
+          await updateMachine.mutateAsync({ patch: patch as MachineConfigPatch });
           return;
         }
       }

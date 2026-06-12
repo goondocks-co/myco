@@ -101,6 +101,9 @@ export function AgentProviderCard() {
   // unset value is the built-in `default` tier, so it displays as 'default'.
   const savedReasoningLevel = effective?.agent?.reasoningLevel;
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevelUi>(savedReasoningLevel ?? 'default');
+  // Save/clear failures surface inline; a swallowed write looks identical
+  // to a successful no-op from the user's side.
+  const [saveError, setSaveError] = useState<string | null>(null);
   useEffect(() => {
     setReasoningLevel(savedReasoningLevel ?? 'default');
   }, [savedReasoningLevel]);
@@ -142,7 +145,11 @@ export function AgentProviderCard() {
         { path: 'agent.event_tasks_enabled', value: true },
       );
     }
-    void setFields(fields, personal ? 'local' : 'grove');
+    setSaveError(null);
+    void setFields(fields, personal ? 'local' : 'grove').catch((err) => {
+      setSaveError(err instanceof Error ? err.message : String(err));
+      console.error('[agent-card] save provider failed', err);
+    });
   }, [personal, reasoningLevel, reasoningModels, setFields]);
 
   const handleClear = useCallback(() => {
@@ -159,6 +166,7 @@ export function AgentProviderCard() {
   const handleSaveProvider = useCallback(async () => {
     const isClearingProvider = draft.type === '';
     if (isClearingProvider) {
+      setSaveError(null);
       try {
         await setFields(
           [
@@ -169,6 +177,7 @@ export function AgentProviderCard() {
           ['agent.provider', 'agent.harness', 'agent.reasoningLevel'],
         );
       } catch (err) {
+        setSaveError(err instanceof Error ? err.message : String(err));
         console.error('[agent-card] clear provider failed', err);
       }
       return;
@@ -403,6 +412,13 @@ export function AgentProviderCard() {
               </>
             ) : null}
           </div>
+
+          {saveError && (
+            <p role="alert" className="flex items-center gap-1 font-sans text-sm text-tertiary">
+              <XCircle className="h-4 w-4" />
+              {saveError}
+            </p>
+          )}
 
           {draft.type !== '' || savedDraft.type !== '' ? (
             <Button
