@@ -13,9 +13,11 @@ import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import {
   ALL_PROJECTS_SCOPE,
   assertGroveProjectId,
+  isGroveEraId,
   projectScope,
   type ProjectScope,
 } from '@myco/grove/ids.js';
+import { groveIdFromDbPath } from '@myco/grove/paths.js';
 
 export { ALL_PROJECTS_SCOPE, projectScope, type ProjectScope };
 
@@ -187,6 +189,12 @@ export function createBackup(
   lines.push(`${BACKUP_HEADER_TEMPLATE}: machine_id=${machineId}, created_at=${timestamp}`);
   lines.push(`-- Protocol version: ${SYNC_PROTOCOL_VERSION}`);
   lines.push(`-- scope: ${scopeLabel}`);
+  // Grove lineage, when the source DB lives at a Grove path. Restore
+  // refuses to merge a Grove's dump into a DIFFERENT Grove's DB — the
+  // dump's literal AUTOINCREMENT ids only mean anything in their home
+  // Grove. Non-Grove DBs (tests, ad-hoc paths) emit no lineage line.
+  const sourceGroveId = groveIdFromDbPath(db.filename);
+  if (sourceGroveId) lines.push(`-- grove_id: ${sourceGroveId}`);
   lines.push('');
 
   for (const table of BACKUP_TABLES) {
@@ -423,6 +431,11 @@ export interface SnapshotHeader {
   created_at: number | null;
   protocol_version: number | null;
   scope: ProjectScope | null;
+  /**
+   * Grove the dump was taken from. `null` for legacy archives that
+   * predate lineage recording and for dumps of non-Grove DBs.
+   */
+  grove_id: string | null;
 }
 
 const HEADER_SCAN_LIMIT = 16;
@@ -447,6 +460,7 @@ export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
     created_at: null,
     protocol_version: null,
     scope: null,
+    grove_id: null,
   };
 
   const lines = raw.split('\n').slice(0, HEADER_SCAN_LIMIT);
@@ -466,6 +480,14 @@ export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
     const protocolMatch = /^Protocol version:\s*(\d+)/.exec(meta);
     if (protocolMatch) {
       header.protocol_version = Number(protocolMatch[1]);
+      continue;
+    }
+
+    const groveMatch = /^grove_id:\s*(\S+)$/.exec(meta);
+    if (groveMatch) {
+      // A malformed grove id is treated as absent lineage (kept `null`)
+      // rather than throwing — same posture as a malformed scope line.
+      header.grove_id = isGroveEraId(groveMatch[1], 'grove') ? groveMatch[1] : null;
       continue;
     }
 
@@ -621,6 +643,27 @@ function countTableInserts(content: string, table: string): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * Refusal raised when an archive carries Grove lineage that disagrees
+ * with the restore target. A dump's literal AUTOINCREMENT ids are only
+ * meaningful in the Grove they came from — merging them into another
+ * Grove's DB silently drops colliding rows and attaches children to the
+ * wrong project's parents.
+ */
+export class BackupGroveMismatchError extends Error {
+  constructor(
+    readonly backupGroveId: string,
+    readonly targetGroveId: string,
+  ) {
+    super(
+      `Backup was taken from Grove ${backupGroveId} but the restore target is `
+      + `Grove ${targetGroveId}; cross-Grove restore is refused. Use the move `
+      + `orchestrator to relocate a project between Groves.`,
+    );
+    this.name = 'BackupGroveMismatchError';
+  }
+}
+
+/**
  * Restore a backup by feeding the entire dump to SQLite's own parser as
  * one multi-statement script. SQLite's parser understands string literals
  * with embedded newlines, so multi-line text values round-trip byte-exact.
@@ -631,11 +674,29 @@ function countTableInserts(content: string, table: string): number {
  *
  * Uses `INSERT OR IGNORE` — existing records are skipped, new records
  * are inserted.
+ *
+ * Grove lineage gate: an archive whose header records a `grove_id`
+ * different from the target DB's Grove is refused (see
+ * BackupGroveMismatchError). Same-Grove restores — including the
+ * cross-machine merge restore of a teammate's dump of the same Grove —
+ * pass. Legacy archives without lineage restore with a warning.
  */
 export function restoreBackup(
   db: Database,
   backupPath: string,
 ): RestoreResult {
+  const header = readSnapshotHeader(backupPath);
+  const targetGroveId = groveIdFromDbPath(db.filename);
+  if (header.grove_id && targetGroveId && header.grove_id !== targetGroveId) {
+    throw new BackupGroveMismatchError(header.grove_id, targetGroveId);
+  }
+  if (!header.grove_id && targetGroveId) {
+    console.warn(
+      `[backup] archive ${path.basename(backupPath)} carries no grove_id lineage; `
+      + `cross-Grove guard skipped for restore into Grove ${targetGroveId}`,
+    );
+  }
+
   const content = fs.readFileSync(backupPath, 'utf-8');
   const tableNames = extractTableNames(content);
   const before = new Map<string, number>();

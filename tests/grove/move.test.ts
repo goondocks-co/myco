@@ -280,7 +280,7 @@ describe('moveProjectBetweenGroves', () => {
     expect(embeddedValue(target.id, 'spores', `spore-${projectId}-1`)).toBe(0);
   });
 
-  it('cleans stale source rows for the same project root after a successful move', () => {
+  it('cleans only the moved project id from the source; sibling legacy ids on the same root stay', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);
     ensureGroveDb(source.id);
@@ -289,7 +289,7 @@ describe('moveProjectBetweenGroves', () => {
     seedAgent(target.id);
 
     const currentProjectId = createProjectId();
-    const staleProjectId = createProjectId();
+    const siblingProjectId = createProjectId();
     const unrelatedProjectId = createProjectId();
     registerProjectInGrove(source.id, {
       projectId: currentProjectId,
@@ -297,7 +297,7 @@ describe('moveProjectBetweenGroves', () => {
       projectRoot,
     }, mycoHome);
     seedProjectRows(source.id, currentProjectId);
-    seedProjectRows(source.id, staleProjectId);
+    seedProjectRows(source.id, siblingProjectId);
     seedProjectRows(source.id, unrelatedProjectId, path.join(tmpDir, 'other-project'));
 
     moveProjectBetweenGroves(source.id, target.id, currentProjectId, mycoHome, { snapshotsRoot });
@@ -305,8 +305,11 @@ describe('moveProjectBetweenGroves', () => {
     expect(countRows(target.id, 'sessions', currentProjectId)).toBe(1);
     expect(countRows(source.id, 'sessions', currentProjectId)).toBe(0);
     expect(countRows(source.id, 'spores', currentProjectId)).toBe(0);
-    expect(countRows(source.id, 'sessions', staleProjectId)).toBe(0);
-    expect(countRows(source.id, 'spores', staleProjectId)).toBe(0);
+    // Rows under a sibling legacy project id sharing project_root were
+    // never copied to the target — deleting them would be data loss, so
+    // cleanup must leave them in place.
+    expect(countRows(source.id, 'sessions', siblingProjectId)).toBe(1);
+    expect(countRows(source.id, 'spores', siblingProjectId)).toBe(1);
     expect(countRows(source.id, 'sessions', unrelatedProjectId)).toBe(1);
     expect(countRows(source.id, 'spores', unrelatedProjectId)).toBe(1);
   });
@@ -607,7 +610,7 @@ describe('moveProjectBetweenGroves', () => {
     expect(finalMarker.snapshot_path).toBe(initial.snapshot_path);
   });
 
-  it('clean phase deletes entity_mentions from source for the moved project only', () => {
+  it('moves entity_mentions to the target and deletes them from source for the moved project only', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);
     ensureGroveDb(source.id);
@@ -626,8 +629,9 @@ describe('moveProjectBetweenGroves', () => {
 
     // Seed entity_mentions for both the moving project and an unrelated
     // project. entity_mentions is project-scoped but excluded from
-    // BACKUP_TABLES (no `id` column), so the orchestrator's clean phase
-    // must DELETE the moving project's rows without touching the rest.
+    // BACKUP_TABLES (no `id` column); the rekey copy carries it anyway,
+    // and the clean phase must DELETE the moving project's rows from the
+    // source without touching the rest.
     withGroveDb(source.id, (db) => {
       // entity_mentions schema: (project_id, entity_id, note_id, note_type,
       // agent_id, machine_id, synced_at) with FKs on entity_id → entities
@@ -675,14 +679,14 @@ describe('moveProjectBetweenGroves', () => {
     expect(sourceAfter.moving).toBe(0);
     expect(sourceAfter.other).toBe(1);
 
-    // Target: entity_mentions intentionally not transported (excluded
-    // from BACKUP_TABLES), so the moving project's rows are not present.
+    // Target: the rekey copy transports entity_mentions (the dump format
+    // never could — no `id` column), so the moving project's rows arrive.
     const targetMoving = withGroveDb(target.id, (db) =>
       (db.prepare(
         `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
       ).get(movingProjectId) as { n: number }).n,
     );
-    expect(targetMoving).toBe(0);
+    expect(targetMoving).toBe(2);
   });
 
   it('moves a multi-line spore body through snapshot+restore without truncation', () => {
@@ -753,7 +757,7 @@ describe('moveProjectBetweenGroves', () => {
     expect(restored.crlf.content).toBe(crlfBody);
   });
 
-  it('verify phase counts source and target from live DBs (catches truncated snapshots)', () => {
+  it('restore phase copies from the live source DB; a truncated snapshot cannot corrupt the move', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);
     ensureGroveDb(source.id);
@@ -790,7 +794,9 @@ describe('moveProjectBetweenGroves', () => {
     });
 
     // Take a snapshot ourselves and corrupt it (drop one spore INSERT)
-    // before letting moveProjectBetweenGroves resume from it.
+    // before letting moveProjectBetweenGroves resume past it. The
+    // snapshot is a recovery artifact only — the transfer reads the
+    // live source DB, so the tampering must not affect the move.
     const moveOpId = `grove-move-${projectId}-fault-${Date.now()}`;
     const projectSlug = projectUrlSlug('Demo', projectId);
     const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
@@ -805,8 +811,7 @@ describe('moveProjectBetweenGroves', () => {
       ),
     );
     // Remove every INSERT line for the second spore — simulates a
-    // truncated/broken dump where the source/target row counts must
-    // diverge.
+    // truncated/broken dump.
     const dump = fs.readFileSync(snapshotPath, 'utf-8');
     const tampered = dump
       .split('\n')
@@ -834,12 +839,15 @@ describe('moveProjectBetweenGroves', () => {
       }),
     );
 
-    expect(() =>
-      moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot }),
-    ).toThrow(/move verification failed/);
+    const result = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
 
-    // Source data was never modified (verify aborted before commit).
-    expect(countRows(source.id, 'spores', projectId)).toBe(2);
+    // Both spores arrived — the copy read the live source rows, not the
+    // tampered dump.
+    expect(result.table_counts.spores).toBe(2);
+    expect(countRows(target.id, 'spores', projectId)).toBe(2);
+    expect(countRows(source.id, 'spores', projectId)).toBe(0);
   });
 
   it('pauses the source project after entry, before snapshot completes', () => {
