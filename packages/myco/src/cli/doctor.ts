@@ -23,6 +23,7 @@ import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { manifestToolTransport } from '../symbionts/capabilities.js';
 import { expandHome } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
+import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -50,6 +51,18 @@ export interface DoctorCheck {
   status: 'ok' | 'fail' | 'warn';
   detail: string;
   fixable: boolean;
+  fixId?: import('./doctor-fixes.js').DoctorFixerId;
+  fixData?: Record<string, unknown>;
+}
+
+/** Build a fixable check bound to its registry fixer. The only way a check
+ *  becomes fixable — `fix()` dispatches on `fixId`, never on detail text. */
+function fixableCheck(
+  base: Omit<DoctorCheck, 'fixable' | 'fixId'>,
+  fixId: DoctorFixerId,
+  fixData?: Record<string, unknown>,
+): DoctorCheck {
+  return { ...base, fixable: true, fixId, ...(fixData ? { fixData } : {}) };
 }
 
 // --- Checks ---
@@ -446,19 +459,18 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
     if (!state) {
       // readDaemonState returns null (it never throws) when the file is
       // unreadable, unparseable, or fails shape validation — the
-      // malformed-state case `fix()` repairs via deleteIfMalformed. The
-      // 'parse error' wording is the contract fix() keys on.
-      return { name: 'Daemon', status: 'fail', detail: 'daemon state parse error: daemon.json exists but is unreadable or malformed', fixable: true };
+      // malformed-state case the registry repairs via deleteIfMalformed.
+      return fixableCheck({ name: 'Daemon', status: 'fail', detail: 'daemon state parse error: daemon.json exists but is unreadable or malformed' }, 'daemon-malformed');
     }
     if (!state.pid) {
-      return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but no PID', fixable: true };
+      return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but records no PID — restart the daemon (`myco restart`) to rewrite it', fixable: false };
     }
     if (isProcessAlive(state.pid)) {
       return { name: 'Daemon', status: 'ok', detail: `PID ${state.pid}, port ${state.port ?? 'unknown'}`, fixable: false };
     }
-    return { name: 'Daemon', status: 'warn', detail: `Stale daemon.json (PID ${state.pid} not running)`, fixable: true };
+    return fixableCheck({ name: 'Daemon', status: 'warn', detail: `Stale daemon.json (PID ${state.pid} not running)` }, 'daemon-stale', { stalePid: state.pid });
   } catch (err) {
-    return { name: 'Daemon', status: 'fail', detail: `daemon state parse error: ${(err as Error).message}`, fixable: true };
+    return fixableCheck({ name: 'Daemon', status: 'fail', detail: `daemon state parse error: ${(err as Error).message}` }, 'daemon-malformed');
   }
 }
 
@@ -469,20 +481,18 @@ export function evaluateServiceCheck(
   expectedExecutable: string,
 ): DoctorCheck {
   if (!status.installed) {
-    return {
+    return fixableCheck({
       name: 'Service',
       status: 'warn',
       detail: `${label} not installed — run \`myco service install\` to auto-start at login`,
-      fixable: true,
-    };
+    }, 'service-reinstall');
   }
   if (!fs.existsSync(expectedExecutable)) {
-    return {
+    return fixableCheck({
       name: 'Service',
       status: 'fail',
       detail: `${label} executable not found: ${expectedExecutable} (last exit code ${status.lastExitCode ?? 'unknown'} — EX_CONFIG=78 means stale path) — run \`myco service install\` to repair`,
-      fixable: true,
-    };
+    }, 'service-reinstall');
   }
   if (status.lastExitCode !== null && status.lastExitCode !== 0) {
     return {
@@ -639,8 +649,9 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const home = process.env.HOME ?? '/';
   let isFirst = true;
-  const emit = (status: DoctorCheck['status'], detail: string, fixable = false): void => {
-    checks.push({ name: isFirst ? 'Edge cases' : '', status, detail, fixable });
+  const emit = (status: DoctorCheck['status'], detail: string, fix?: { id: DoctorFixerId; data?: Record<string, unknown> }): void => {
+    const base = { name: isFirst ? 'Edge cases' : '', status, detail };
+    checks.push(fix ? fixableCheck(base, fix.id, fix.data) : { ...base, fixable: false });
     isFirst = false;
   };
 
@@ -659,7 +670,11 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
       }
     }
     if (commands.some((cmd) => /cd\s+"\$\{[A-Z_]+:-\.\}"\s*&&/.test(cmd))) {
-      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Run \`myco doctor --fix\` to rewrite.`);
+      // Not fixable: this flags the LEGACY ~/.cursor/settings.json target,
+      // but current installs write ~/.cursor/hooks.json — the global
+      // symbiont refresh leaves settings.json untouched, so advertising
+      // --fix here would report "Fixed:" against a still-failing recheck.
+      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Remove the Myco hook groups from ~/.cursor/settings.json by hand (legacy file — current installs use hooks.json), then run \`myco update\`.`);
     }
   } catch { /* file absent or malformed */ }
 
@@ -675,7 +690,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
       }
     }
     if (missing.length > 0) {
-      emit('fail', `Claude hook groups missing \`matcher\` field (Cursor cross-parser rejects whole file): ${missing.join(', ')}. Run \`myco doctor --fix\` to rewrite.`);
+      emit('fail', `Claude hook groups missing \`matcher\` field (Cursor cross-parser rejects whole file): ${missing.join(', ')}. Run \`myco doctor --fix\` to rewrite. Myco-owned groups are rewritten by --fix; foreign groups need manual edits.`, { id: 'symbiont-global-refresh' });
     }
   } catch { /* missing or malformed — checkAgents covers parse failure */ }
 
@@ -685,7 +700,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
     for (const target of listEscapedSmokeLauncherTargets(home)) {
       const outcome = scrubEscapedSmokeLaunchers(target, { apply: false });
       if (outcome.error || outcome.entriesRemoved === 0) continue;
-      emit('warn', `Stale escaped smoke-launcher hooks in ${target} (${outcome.entriesRemoved} group(s)). Run \`myco doctor --fix\` to scrub them.`, true);
+      emit('warn', `Stale escaped smoke-launcher hooks in ${target} (${outcome.entriesRemoved} group(s)). Run \`myco doctor --fix\` to scrub them.`, { id: 'smoke-launcher-scrub' });
     }
   } catch { /* best effort */ }
 
@@ -694,7 +709,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   try {
     const raw = fs.readFileSync(codexConfig, 'utf-8').trim();
     if (raw.startsWith('{')) {
-      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Run \`myco doctor --fix\` to rewrite.`);
+      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Restore valid TOML by hand (the installer never converts JSON to TOML), then run \`myco update\`.`);
     }
   } catch { /* absent — fine */ }
 
@@ -777,12 +792,11 @@ export async function checkMigrationStatus(vaultDir: string): Promise<DoctorChec
             message = parsed.error;
           }
         } catch { /* malformed row — fall through with default message */ }
-        out.push({
+        out.push(fixableCheck({
           name: isFirst ? 'Migration' : '',
           status: 'warn',
           detail: `Migration failed for project ${root}: ${message}. Retry with \`myco doctor --fix\`.`,
-          fixable: true,
-        });
+        }, 'migration-retry', { projectRoot: root }));
         isFirst = false;
       }
       return out;
@@ -808,115 +822,30 @@ export async function checkMigrationStatus(vaultDir: string): Promise<DoctorChec
   }
 }
 
-/** Auto-repair fixable issues. Returns descriptions of actions taken. */
+/** Auto-repair fixable issues. Returns descriptions of actions taken.
+ *
+ * Dispatch is registry-driven: every non-ok check carrying a `fixId` is
+ * grouped under its fixer, and each present fixer runs exactly once with
+ * its matched checks. Checks without a `fixId` are never dispatched —
+ * there is no detail-text matching here.
+ */
 export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<string[]> {
-  const actions: string[] = [];
   const service = resolveDaemonServiceState(vaultDir, { env: process.env });
   const authority = createDaemonStateAuthority(service, doctorLogger());
+  const ctx: DoctorFixContext = { vaultDir, authority };
 
+  const byId = new Map<DoctorFixerId, DoctorCheck[]>();
   for (const check of checks) {
-    if (!check.fixable || check.status === 'ok') continue;
-
-    // Fix stale daemon.json — re-read under the authority and only
-    // unlink if the recorded pid still matches the pid we observed as
-    // dead. If a concurrent successor wrote into the gap, the unlink
-    // is a no-op and the file is preserved.
-    if (check.name === 'Daemon' && check.detail.includes('Stale')) {
-      const staleMatch = check.detail.match(/PID (\d+) not running/);
-      const stalePid = staleMatch ? Number(staleMatch[1]) : NaN;
-      if (Number.isFinite(stalePid)) {
-        const outcome = authority.deleteIfOwnedBy(stalePid, { reason: 'doctor:stale' });
-        actions.push(
-          outcome === 'deleted'
-            ? `Removed stale daemon state (PID ${stalePid})`
-            : `Daemon state already refreshed by a successor (was PID ${stalePid}) — no action`,
-        );
-      }
-    }
-
-    // Fix malformed daemon.json — by definition the file was unparseable
-    // when the check ran. The authority re-reads under the same
-    // discipline: if a successor refreshed the file between detection
-    // and fix, leave it alone.
-    if (check.name === 'Daemon' && check.detail.includes('parse error')) {
-      const outcome = authority.deleteIfMalformed({ reason: 'doctor:malformed' });
-      actions.push(
-        outcome === 'deleted'
-          ? 'Removed malformed daemon state'
-          : 'Daemon state already refreshed by a successor — no action',
-      );
-    }
-
-    // Advise on database issues — the daemon initializes the DB on
-    // first start, so restarting it is the canonical recovery path.
-    if (check.name === 'Database' && check.status === 'fail') {
-      actions.push('Start the Myco daemon (`myco service start`) to initialize the database');
-    }
+    if (check.status === 'ok' || !check.fixId) continue;
+    const matched = byId.get(check.fixId);
+    if (matched) matched.push(check);
+    else byId.set(check.fixId, [check]);
   }
 
-  // Migration retry — re-run the project-local → global walker. The
-  // walker is the same code path the daemon's first-start bootstrap
-  // uses; the audit-log writer deduplicates so previously-erroring
-  // projects that now succeed have their error rows dropped, and
-  // projects still failing get their error rows refreshed in place.
-  //
-  // Driven by the presence of any fixable Migration check (surfaced by
-  // checkMigrationStatus). Walks the full set rather than per-project
-  // so the audit log stays consistent — a project that succeeds this
-  // pass has its prior error row removed, not preserved alongside the
-  // new outcome.
-  const staleSmokeChecks = checks.filter(
-    (c) => c.fixable && c.detail.includes('Stale escaped smoke-launcher hooks'),
-  );
-  if (staleSmokeChecks.length > 0) {
-    try {
-      const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
-      const result = runGlobalConfigMigration();
-      const repaired = result.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
-      const failed = result.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
-      for (const outcome of repaired) {
-        actions.push(`Scrubbed ${outcome.entriesRemoved} stale smoke-launcher hook group(s) from ${outcome.filePath}`);
-      }
-      for (const outcome of failed) {
-        actions.push(`Failed to scrub stale smoke-launcher hooks from ${outcome.filePath}: ${outcome.error}`);
-      }
-      if (repaired.length === 0 && failed.length === 0) {
-        actions.push('No stale smoke-launcher hooks remained to scrub');
-      }
-    } catch (err) {
-      actions.push(`Smoke-launcher scrub failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  const actions: string[] = [];
+  for (const [fixId, matched] of byId) {
+    actions.push(...await DOCTOR_FIXERS[fixId](ctx, matched));
   }
-
-  const migrationChecks = checks.filter((c) => c.name === 'Migration' && c.fixable);
-  if (migrationChecks.length > 0) {
-    try {
-      const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
-      const { recordMigrationPass } = await import('../db/queries/migration-log.js');
-      const { getDatabase } = await import('../db/client.js');
-      const beforeRoots = new Set<string>();
-      for (const c of migrationChecks) {
-        const match = c.detail.match(/project ([^:]+):/);
-        if (match) beforeRoots.add(match[1]!);
-      }
-      const result = runGlobalInstallMigrationPass();
-      recordMigrationPass(getDatabase(), result);
-      const errorsByRoot = new Map<string, string>();
-      for (const outcome of result.outcomes) {
-        if (outcome.error) errorsByRoot.set(outcome.projectRoot, outcome.error);
-      }
-      for (const root of beforeRoots) {
-        if (errorsByRoot.has(root)) {
-          actions.push(`Retried migration for ${root}: still failing: ${errorsByRoot.get(root)}`);
-        } else {
-          actions.push(`Retried migration for ${root}: succeeded`);
-        }
-      }
-    } catch (err) {
-      actions.push(`Migration retry failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   return actions;
 }
 
