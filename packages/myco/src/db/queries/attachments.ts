@@ -185,6 +185,62 @@ export function insertAttachment(data: AttachmentInsert): AttachmentRow | undefi
 }
 
 /**
+ * Find an attachment within a session by its content hash — the
+ * content-keyed dedup identity for captured images. Returns metadata only
+ * (no BLOB); callers use this to decide whether the same bytes were
+ * already persisted for the session, regardless of which prompt_number
+ * they were first captured under.
+ */
+export function findAttachmentBySessionContentHash(
+  sessionId: string,
+  contentHash: string,
+): AttachmentListRow | null {
+  const db = getDatabase();
+
+  const row = db.prepare(
+    `SELECT ${SELECT_LIST_COLUMNS} FROM attachments
+      WHERE session_id = ? AND content_hash = ? LIMIT 1`,
+  ).get(sessionId, contentHash) as Record<string, unknown> | undefined;
+
+  return row ? toAttachmentListRow(row) : null;
+}
+
+/**
+ * List a session's attachments that predate content-hash stamping (BLOB
+ * present, `content_hash` NULL). The image-capture path lazily backfills
+ * these so legacy rows participate in content-keyed dedup without a
+ * schema migration: once stamped, a row never reappears here.
+ */
+export function listAttachmentsMissingContentHash(sessionId: string): AttachmentRow[] {
+  const db = getDatabase();
+
+  const rows = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM attachments
+      WHERE session_id = ? AND content_hash IS NULL AND data IS NOT NULL`,
+  ).all(sessionId) as Record<string, unknown>[];
+
+  return rows.map(toAttachmentRow);
+}
+
+/** Stamp a computed content hash onto an existing attachment row. */
+export function setAttachmentContentHash(id: string, contentHash: string): void {
+  getDatabase().prepare(
+    `UPDATE attachments SET content_hash = ? WHERE id = ?`,
+  ).run(contentHash, id);
+}
+
+/**
+ * Link an attachment to a prompt batch ONLY when it has no linkage yet.
+ * Used on content-dedup hits: a row first captured before its batch was
+ * known gains the linkage on re-capture instead of staying orphaned.
+ */
+export function linkAttachmentToBatchIfUnlinked(id: string, promptBatchId: number): void {
+  getDatabase().prepare(
+    `UPDATE attachments SET prompt_batch_id = ? WHERE id = ? AND prompt_batch_id IS NULL`,
+  ).run(promptBatchId, id);
+}
+
+/**
  * List all attachments for a given session, ordered by created_at ASC.
  *
  * The `data` BLOB column is intentionally excluded — use getAttachmentByFilePath

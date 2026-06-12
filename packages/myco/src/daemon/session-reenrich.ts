@@ -24,10 +24,13 @@ import { ALL_PROJECTS_SCOPE } from '../grove/ids.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
 import { classifyNextPromptOrigin } from '../capture/prompt-kind.js';
+import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
 
 export interface ReEnrichDeps {
   transcriptMiner: TranscriptMiner;
   logger: DaemonLogger;
+  /** Manifest plan tags stripped from any response this path persists. */
+  planTags?: string[];
 }
 
 export interface ReEnrichResult {
@@ -101,7 +104,13 @@ export function reEnrichSessionFromTranscript(
   }
 
   const lastBatch = batches[batches.length - 1];
-  const lastTurnReply = turns[turns.length - 1]?.aiResponse?.trim();
+  // Parser-derived response — strip plan-tag envelopes at the persist point
+  // (same contract as the miner and stop paths; plan extraction never reads
+  // persisted summaries, so nothing is lost).
+  const lastTurnReplyRaw = turns[turns.length - 1]?.aiResponse?.trim();
+  const lastTurnReply = lastTurnReplyRaw
+    ? stripPlanTagEnvelopes(lastTurnReplyRaw, deps.planTags ?? [])
+    : undefined;
   if (lastBatch && lastTurnReply && !lastBatch.response_summary) {
     setResponseSummary(lastBatch.id, lastTurnReply);
     summarySet = true;

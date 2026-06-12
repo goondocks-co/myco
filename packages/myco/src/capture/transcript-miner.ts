@@ -17,9 +17,13 @@ import {
 } from '../db/queries/batches.js';
 import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
-import { assertGroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import { getTeamMachineId } from '@myco/team/context.js';
+import { readTranscriptMeta } from '../hooks/transcript-meta.js';
+import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
+import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
 
 function promptPrefix(text: string | null | undefined): string {
   return (text ?? '').slice(0, PROMPT_PREFIX_MATCH_CHARS);
@@ -54,11 +58,42 @@ function buildPrefixBuckets(batches: ReadonlyArray<BatchRow>): {
 
 // Re-export TranscriptTurn from its canonical home in symbionts/adapter.ts
 export type { TranscriptTurn } from '../symbionts/adapter.js';
-import type { TranscriptTurn } from '../symbionts/adapter.js';
+import type { TranscriptTurn, TranscriptImage } from '../symbionts/adapter.js';
+
+/** Minimal logger surface the miner needs. `DaemonLogger` satisfies it. */
+export interface MinerLogger {
+  info(kind: string, message: string, data?: Record<string, unknown>): void;
+  warn(kind: string, message: string, data?: Record<string, unknown>): void;
+}
+
+/** A matched turn's images, attributed to a batch during mining. */
+export interface MinedImageCapture {
+  sessionId: string;
+  promptBatchId: number;
+  promptNumber: number;
+  images: TranscriptImage[];
+  projectId: GroveProjectId;
+}
 
 interface TranscriptConfig {
   /** Additional symbiont adapters to register (useful for testing or custom symbionts) */
   additionalAdapters?: SymbiontAdapter[];
+  /** Logger for mining observability (skip decisions, image-capture failures). */
+  logger?: MinerLogger;
+  /**
+   * Plan tag names (merged manifest `capture.planTags`). Plan envelopes are
+   * machine-readable payloads the parser synthesizes for plan extraction;
+   * they are stripped from every response the miner persists so they never
+   * leak into user-facing summaries.
+   */
+  planTags?: string[];
+  /**
+   * Sink invoked for each transcript turn whose images were matched to a
+   * batch during `reconcileAndAttributeResponses`. The daemon wires this to
+   * the shared `captureBatchImages` routine; without it the mining path
+   * silently never captured images (Stop was the only entry point).
+   */
+  captureImages?: (input: MinedImageCapture) => void;
 }
 
 export interface ReconcileInput {
@@ -71,6 +106,14 @@ export interface ReconcileResult {
   /** Batches created during reconciliation to recover prompts the hook dropped. */
   inserted: number;
   errors: string[];
+  /**
+   * Set when the entire mining pass was skipped because a transcript-level
+   * drop rule fired on the transcript's session_meta (e.g. a Codex
+   * sub-agent thread whose tool events carry the PARENT session_id with
+   * the CHILD transcript_path — mining it would graft the child rollout
+   * onto the parent session).
+   */
+  skippedReason?: string;
 }
 
 /** Head-bytes sampled to detect in-place overwrite with same inode + size. */
@@ -100,17 +143,82 @@ interface ParseCacheEntry {
   reconciledSize: number;
 }
 
+/**
+ * Bound on the transcript-meta memo. Entries hold the parsed session_meta
+ * payload (Codex meta can embed multi-KB base_instructions), so the cap is
+ * kept small and the map is cleared wholesale on overflow — the memo is a
+ * re-read suppressor, not a correctness mechanism.
+ */
+const META_MEMO_MAX_ENTRIES = 64;
+
+interface TranscriptMetaMemoEntry {
+  agent: string;
+  meta: Record<string, unknown> | undefined;
+  /** Drop reason from transcript-level rules, or null when mining may proceed. */
+  dropReason: string | null;
+}
+
 export class TranscriptMiner {
   private registry: SymbiontRegistry;
+  private logger?: MinerLogger;
+  private planTags: string[];
+  private captureImages?: (input: MinedImageCapture) => void;
   /**
    * Append-read cache keyed by path; avoids re-parsing the whole transcript
    * per Stop. Bounded LRU: insertion order preserved via Map semantics,
    * touch-on-access moves the entry to the end, eviction pops the head.
    */
   private parseCache = new Map<string, ParseCacheEntry>();
+  /**
+   * Per-path memo of the transcript's session_meta + transcript-level drop
+   * decision. A rollout's session_meta is its immutable first line, so the
+   * decision is stable per file; memoizing also keeps the skip log to one
+   * line per transcript instead of one per throttled reconcile tick. Only
+   * populated when the meta line was actually readable — a not-yet-flushed
+   * file must be re-checked on the next pass.
+   */
+  private metaMemo = new Map<string, TranscriptMetaMemoEntry>();
 
   constructor(config?: TranscriptConfig) {
     this.registry = new SymbiontRegistry(config?.additionalAdapters);
+    this.logger = config?.logger;
+    this.planTags = config?.planTags ?? [];
+    this.captureImages = config?.captureImages;
+  }
+
+  /**
+   * Evaluate the manifest's transcript-level drop rules for this transcript
+   * (session_start rules keyed on transcript meta — e.g. Codex's
+   * `source.subagent` thread-spawn filter and `source: exec` filter).
+   * Returns the memoized entry; `dropReason` non-null means the entire
+   * mining pass must be skipped for this file.
+   */
+  private transcriptGate(sessionId: string, input: ReconcileInput): TranscriptMetaMemoEntry {
+    const memo = this.metaMemo.get(input.transcriptPath);
+    if (memo && memo.agent === input.agent) return memo;
+
+    const meta = readTranscriptMeta(input.transcriptPath) ?? undefined;
+    const decision = evaluateSessionCaptureRules(input.agent, {
+      transcriptPath: input.transcriptPath,
+      transcriptMeta: meta,
+    });
+    const dropReason = decision.action === 'drop' ? (decision.reason ?? 'transcript-drop-rule') : null;
+    const entry: TranscriptMetaMemoEntry = { agent: input.agent, meta, dropReason };
+
+    // Only memoize once the meta line is readable — before the agent
+    // flushes the file, a pass decision would be premature and sticky.
+    if (meta !== undefined) {
+      if (this.metaMemo.size >= META_MEMO_MAX_ENTRIES) this.metaMemo.clear();
+      this.metaMemo.set(input.transcriptPath, entry);
+      if (dropReason) {
+        this.logger?.info(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Mining skipped — transcript belongs to a dropped class (e.g. subagent thread)', {
+          session_id: sessionId,
+          transcript_path: input.transcriptPath,
+          reason: dropReason,
+        });
+      }
+    }
+    return entry;
   }
 
   /**
@@ -144,6 +252,17 @@ export class TranscriptMiner {
    * prompts the hook dropped (e.g., Claude's queued mid-turn prompts).
    */
   public reconcileBatchKinds(sessionId: string, input: ReconcileInput): ReconcileResult {
+    // Transcript-level drop gate — BEFORE any parsing or DB work. Codex
+    // sub-agent tool events carry the parent session_id with the CHILD
+    // rollout's transcript_path; without this gate the child transcript was
+    // mined INTO the parent session (foreign kickoff prompts materialized
+    // as human batches). The gate kills that class wholesale: a transcript
+    // whose session_meta matches a manifest drop rule is never mined.
+    const gate = this.transcriptGate(sessionId, input);
+    if (gate.dropReason) {
+      return { reclassified: 0, inserted: 0, errors: [], skippedReason: gate.dropReason };
+    }
+
     // Short-circuit: if we've already reconciled this transcript at its
     // current size, nothing new to do. The cached `reconciledSize` is only
     // set after a full reconcile pass at that size, so the DB state is
@@ -169,10 +288,13 @@ export class TranscriptMiner {
       // statSync failure falls through to parseAllEvents, which handles it.
     }
 
+    // The walker receives the transcript meta so per-prompt
+    // `transcript_meta_*` rules fire at mining time exactly as at hook time.
     const { records, droppedText } = extractUserPromptRecordsWithDrops(
       input.agent,
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
+      gate.meta,
     );
     const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
 
@@ -374,10 +496,21 @@ export class TranscriptMiner {
     input: ReconcileInput,
   ): ReconcileResult {
     const result = this.reconcileBatchKinds(sessionId, input);
+    // A transcript-level drop skips the WHOLE mining pass — attributing
+    // responses or images from a dropped-class transcript would graft its
+    // content onto the session exactly like the reconcile would have.
+    if (result.skippedReason) return result;
+
     const { turns } = this.getAllTurnsWithSource(sessionId, input.transcriptPath);
+    // Plan envelopes have had their extraction chance by the time a summary
+    // is persisted (extraction reads raw parser turns, never persisted
+    // summaries) — strip them here so machine-readable plan payloads never
+    // reach user-facing response_summary values. Envelope-only responses
+    // strip to '' and are filtered, leaving the batch summary untouched.
     const responses = turns
       .filter((t) => t.prompt && t.aiResponse)
-      .map((t) => ({ prompt: t.prompt, response: t.aiResponse! }));
+      .map((t) => ({ prompt: t.prompt, response: stripPlanTagEnvelopes(t.aiResponse!, this.planTags) }))
+      .filter((r) => r.response.trim().length > 0);
     if (responses.length > 0) {
       populateBatchResponses(sessionId, responses);
     }
@@ -386,7 +519,44 @@ export class TranscriptMiner {
     // races). The live path attributes correctly by construction; this keeps
     // re-mined/older sessions consistent so the myco agent sees the tool calls.
     rehomeSystemActivitiesToHumanAnchor(sessionId);
+    this.captureTurnImages(sessionId, turns);
     return result;
+  }
+
+  /**
+   * Mining-path image capture: match each image-bearing turn to its batch by
+   * prompt prefix (the same matching `populateBatchResponses` uses) and hand
+   * the images to the injected sink. Tenancy comes from the matched batch's
+   * own project_id — never from ambient daemon state. Best-effort: a sink
+   * failure is logged and never blocks reconciliation.
+   */
+  private captureTurnImages(sessionId: string, turns: TranscriptTurn[]): void {
+    if (!this.captureImages) return;
+    const imageTurns = turns.filter((t) => t.images?.length && t.prompt);
+    if (imageTurns.length === 0) return;
+
+    const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+    const buckets = buildPrefixBuckets(batches);
+    for (let i = 0; i < imageTurns.length; i++) {
+      const turn = imageTurns[i]!;
+      const match = buckets.consume(turn.prompt);
+      if (!match?.project_id) continue;
+      try {
+        this.captureImages({
+          sessionId,
+          promptBatchId: match.id,
+          promptNumber: match.prompt_number ?? i + 1,
+          images: turn.images!,
+          projectId: assertGroveProjectId(match.project_id),
+        });
+      } catch (err) {
+        this.logger?.warn(LOG_KINDS.PROCESSOR_TRANSCRIPT, 'Mining-path image capture failed', {
+          session_id: sessionId,
+          batch_id: match.id,
+          error: (err as Error).message,
+        });
+      }
+    }
   }
 
   private parseAllEvents(transcriptPath: string): Array<Record<string, unknown>> {
