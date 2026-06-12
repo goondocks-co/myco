@@ -2802,3 +2802,90 @@ describe('opencode (plugin-file hooks)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// RC-14 — symlink stewardship: never destroy user content; symmetric uninstall
+// ---------------------------------------------------------------------------
+
+describe('RC-14 — ensureSymlink never destroys real paths', () => {
+  it('a REAL directory at the canonical link path survives install (other skills still link)', () => {
+    const canonicalDir = path.join(projectRoot, '.agents/skills');
+    fs.mkdirSync(path.join(canonicalDir, 'myco'), { recursive: true });
+    fs.writeFileSync(path.join(canonicalDir, 'myco', 'SKILL.md'), 'hand-authored content\n');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installSkills();
+    expect(result).toBe(true);
+
+    // The user's real directory is untouched.
+    const kept = path.join(canonicalDir, 'myco');
+    expect(fs.lstatSync(kept).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(kept, 'SKILL.md'), 'utf-8')).toBe('hand-authored content\n');
+  });
+
+  it('a REAL file at the agent link path survives install', () => {
+    const agentSkillsDir = path.join(projectRoot, '.claude/skills');
+    fs.mkdirSync(agentSkillsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentSkillsDir, 'myco'), 'not a symlink\n');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSkills();
+
+    expect(fs.lstatSync(path.join(agentSkillsDir, 'myco')).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(agentSkillsDir, 'myco'), 'utf-8')).toBe('not a symlink\n');
+    // The canonical layer still linked normally.
+    expect(fs.lstatSync(path.join(projectRoot, '.agents/skills/myco')).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
+  it('uninstallSkills removes flat global skill symlinks installed under globalSkillsTarget', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-rc14-'));
+    const origHome = process.env.HOME;
+    const origSandbox = process.env.MYCO_SANDBOX_ROOT;
+    process.env.HOME = home;
+    process.env.MYCO_SANDBOX_ROOT = home;
+    try {
+      const globalClaude = {
+        ...CLAUDE_MANIFEST,
+        registration: {
+          ...CLAUDE_MANIFEST.registration,
+          globalSkillsTarget: '~/.claude/skills',
+        },
+      };
+      const installer = new SymbiontInstaller(globalClaude, '/', packageRoot, false, undefined, null, 'global');
+      expect(installer.installSkills()).toBe(true);
+
+      const link = path.join(home, '.claude/skills/myco');
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+
+      // A real user skill beside ours must survive the uninstall.
+      const userSkill = path.join(home, '.claude/skills/my-own-skill');
+      fs.mkdirSync(userSkill, { recursive: true });
+
+      expect(installer.uninstallSkills()).toBe(true);
+      expect(fs.existsSync(link)).toBe(false);
+      expect(fs.existsSync(userSkill)).toBe(true);
+    } finally {
+      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+      if (origSandbox === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = origSandbox;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uninstallSkills leaves a REAL directory named like a skill untouched (project scope)', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installSkills();
+
+    // Replace the agent link with a real dir (user vendored a copy).
+    const agentLink = path.join(projectRoot, '.claude/skills/myco');
+    fs.unlinkSync(agentLink);
+    fs.mkdirSync(agentLink);
+    fs.writeFileSync(path.join(agentLink, 'SKILL.md'), 'vendored\n');
+
+    installer.uninstallSkills();
+    expect(fs.existsSync(path.join(agentLink, 'SKILL.md'))).toBe(true);
+    // The canonical symlink (ours) is gone.
+    expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
+  });
+});

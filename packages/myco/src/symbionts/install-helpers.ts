@@ -127,10 +127,32 @@ export function ensureAgentsMd(projectRoot: string): void {
   );
 }
 
-export function ensureSymlink(linkPath: string, target: string): void {
+/**
+ * Outcome of an {@link ensureSymlink} call. 'kept-real-path' means a real
+ * file or directory (NOT a symlink) occupies the link path — user content
+ * the installer must never destroy; the caller decides how to surface it.
+ */
+export type EnsureSymlinkResult = 'linked' | 'unchanged' | 'kept-real-path';
+
+/**
+ * Point `linkPath` at `target`, replacing only things this installer could
+ * have created: an existing symlink (wherever it points) or nothing at all.
+ * A REAL file or directory at the link path is user content — a
+ * hand-authored skill dir, a vendored copy — and is left untouched. This
+ * runs from hourly detection ticks, so a destructive replace here turns a
+ * naming overlap into silent data loss.
+ */
+export function ensureSymlink(linkPath: string, target: string): EnsureSymlinkResult {
+  let existing: fs.Stats | undefined;
   try {
-    if (fs.readlinkSync(linkPath) === target) return;
-  } catch { /* does not exist or is not a symlink — proceed */ }
-  try { fs.rmSync(linkPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    existing = fs.lstatSync(linkPath);
+  } catch { /* absent — create below */ }
+
+  if (existing !== undefined) {
+    if (!existing.isSymbolicLink()) return 'kept-real-path';
+    if (fs.readlinkSync(linkPath) === target) return 'unchanged';
+    fs.unlinkSync(linkPath);
+  }
   fs.symlinkSync(target, linkPath);
+  return 'linked';
 }
