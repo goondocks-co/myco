@@ -5,6 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { reconcileExistingDaemon, isHealthyMycoSibling } from '@myco/daemon/main';
+import { probeMycoDaemon } from '@myco/daemon/eviction.js';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { getPluginVersion } from '@myco/version';
 import type { DaemonServiceState } from '@myco/daemon/service-state';
@@ -378,5 +379,34 @@ describe('isHealthyMycoSibling', () => {
   it('returns false when the port is not listening', async () => {
     // Port 1 refuses connections under normal userspace permissions.
     expect(await isHealthyMycoSibling(1)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// probeMycoDaemon — version-aware sibling probe (RC-13)
+// ---------------------------------------------------------------------------
+
+describe('probeMycoDaemon', () => {
+  it('returns the heartbeat (version included) for a myco daemon', async () => {
+    await withHealthServer(
+      { status: 200, body: { myco: true, version: '9.9.9', pid: 4242 } },
+      async (port) => {
+        const probe = await probeMycoDaemon(port);
+        expect(probe).toEqual({ myco: true, version: '9.9.9', pid: 4242 });
+      },
+    );
+  });
+
+  it('returns null for a non-myco listener', async () => {
+    await withHealthServer(
+      { status: 200, body: { some: 'other service' } },
+      async (port) => {
+        expect(await probeMycoDaemon(port)).toBe(null);
+      },
+    );
+  });
+
+  it('returns null when nothing is listening', async () => {
+    expect(await probeMycoDaemon(1)).toBe(null);
   });
 });

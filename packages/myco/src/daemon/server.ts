@@ -7,7 +7,7 @@ import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
-import { evictDaemonsForVault } from './eviction.js';
+import { evictDaemons } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   ForeignGroveError,
@@ -649,16 +649,27 @@ export class DaemonServer {
   }
 
   /**
-   * Kill any existing daemon for this vault before taking over.
-   * Prevents orphaned daemons when spawned from worktrees or plugin upgrades.
-   * Must be called BEFORE `server.start()` so the old daemon releases the
-   * canonical port.
+   * Kill any existing daemon competing for this daemon's identity before
+   * taking over. Prevents orphaned daemons when spawned from worktrees or
+   * plugin upgrades. Must be called BEFORE `server.start()` so the old
+   * daemon releases the canonical port.
    *
-   * Delegates to `evictDaemonsForVault`, which also handles orphans that
-   * hold the canonical port but aren't recorded in daemon.json.
+   * The eviction scope comes from the SERVICE state (where daemon.json
+   * actually lives and where the canonical port derives from), not the
+   * bootstrap vault — global daemons keep no state under the vault, so a
+   * vault-derived sweep finds nothing. The vault is passed along only for
+   * the legacy per-vault identity check.
    */
   async evictExistingDaemon(): Promise<void> {
-    await evictDaemonsForVault(this.vaultDir, { logger: this.logger });
+    const service = resolveDaemonServiceState(this.vaultDir, { env: process.env });
+    await evictDaemons(
+      {
+        stateDir: service.stateDir,
+        canonicalPort: service.canonicalPort,
+        vaultDir: this.vaultDir,
+      },
+      { logger: this.logger },
+    );
   }
 
   private writeDaemonJson(): void {

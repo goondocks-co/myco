@@ -213,6 +213,8 @@ import { LOG_KINDS } from '../constants/log-kinds.js';
 import { MS_PER_DAY } from '../constants.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import {
+  DAEMON_EVICT_POLL_MS,
+  DAEMON_EVICT_TIMEOUT_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_STALE_GRACE_PERIOD_MS,
   RECONCILE_POLL_MS,
@@ -221,6 +223,7 @@ import {
 } from '../constants.js';
 import { isProcessAlive, waitForProcessExit, readProcessCommandLine } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
+import { probeMycoDaemon, findPidsListeningOn, terminateProcess } from './eviction.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -233,18 +236,15 @@ import path from 'node:path';
  * True when `127.0.0.1:<port>/health` responds with a myco daemon heartbeat.
  * Used during startup to distinguish a concurrent sibling (step-aside
  * candidate) from an unrelated port squatter.
+ *
+ * Version discipline lives at the call site: only a SAME-version sibling is
+ * a step-aside candidate. A myco daemon on a different version is a stale
+ * orphan (e.g. an old binary image that survived a package replacement) —
+ * stepping aside from it would leave the old version serving forever while
+ * every new boot exits 0.
  */
 export async function isHealthyMycoSibling(port: number): Promise<boolean> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
-    });
-    if (!res.ok) return false;
-    const data = await res.json() as { myco?: boolean };
-    return data.myco === true;
-  } catch {
-    return false;
-  }
+  return (await probeMycoDaemon(port)) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2112,28 +2112,54 @@ export async function main(): Promise<void> {
   await server.evictExistingDaemon();
   const canonicalPort = daemonService.canonicalPort;
 
-  try {
-    await server.start(canonicalPort);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== 'EADDRINUSE') throw err;
+  // One evict-and-retry round for the stale-orphan case below; anything
+  // still holding the port after that fails loudly.
+  let bindAttemptsLeft = 2;
+  while (true) {
+    try {
+      await server.start(canonicalPort);
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EADDRINUSE') throw err;
+      bindAttemptsLeft--;
 
-    if (await isHealthyMycoSibling(canonicalPort)) {
-      logger.info(LOG_KINDS.DAEMON_START, 'Sibling claimed canonical port during startup — stepping aside', {
+      const sibling = await probeMycoDaemon(canonicalPort);
+      if (sibling !== null && sibling.version === getPluginVersion()) {
+        // A same-version sibling won a concurrent-startup race — its serving
+        // is indistinguishable from ours. Step aside.
+        logger.info(LOG_KINDS.DAEMON_START, 'Sibling claimed canonical port during startup — stepping aside', {
+          port: canonicalPort,
+          sibling_version: sibling.version ?? null,
+        });
+        process.exit(0);
+      }
+
+      if (sibling !== null && bindAttemptsLeft > 0) {
+        // A myco daemon on a DIFFERENT version is a stale orphan — e.g. an
+        // old binary image that survived a package replacement. Stepping
+        // aside would leave the old version serving forever while every new
+        // boot exits 0. Evict it and retry the bind once.
+        logger.warn(LOG_KINDS.DAEMON_PORT, 'Stale myco daemon (version mismatch) holds the canonical port — evicting', {
+          port: canonicalPort,
+          orphan_version: sibling.version ?? null,
+          our_version: getPluginVersion(),
+        });
+        const squatters = findPidsListeningOn([canonicalPort]).filter((s) => s.pid !== process.pid);
+        await Promise.all(squatters.map((s) => terminateProcess(s.pid, { graceMs: DAEMON_EVICT_TIMEOUT_MS, pollMs: DAEMON_EVICT_POLL_MS, logger })));
+        continue;
+      }
+
+      logger.error(LOG_KINDS.DAEMON_PORT, 'Canonical port is held by another process — cannot start', {
         port: canonicalPort,
+        hint: `Run \`lsof -iTCP:${canonicalPort}\` to identify the owner and stop it.`,
       });
-      process.exit(0);
+      process.stderr.write(
+        `Myco daemon cannot bind port ${canonicalPort} (held by another process). ` +
+          `Run \`lsof -iTCP:${canonicalPort}\` to investigate.\n`,
+      );
+      process.exit(1);
     }
-
-    logger.error(LOG_KINDS.DAEMON_PORT, 'Canonical port is held by another process — cannot start', {
-      port: canonicalPort,
-      hint: `Run \`lsof -iTCP:${canonicalPort}\` to identify the owner and stop it.`,
-    });
-    process.stderr.write(
-      `Myco daemon cannot bind port ${canonicalPort} (held by another process). ` +
-        `Run \`lsof -iTCP:${canonicalPort}\` to investigate.\n`,
-    );
-    process.exit(1);
   }
   daemonLifecycleLock?.update({
     port: server.port,

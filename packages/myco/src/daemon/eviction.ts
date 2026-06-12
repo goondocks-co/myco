@@ -1,33 +1,36 @@
 /**
  * Unified daemon-eviction helpers.
  *
- * One source of truth for "find every myco daemon running for this vault and
- * make them go away so we can take the canonical port." Callers:
- *   - `server.evictExistingDaemon` (daemon startup)
- *   - `cli/restart.ts` (user-triggered restart)
+ * One source of truth for "find every myco daemon competing for this
+ * daemon's identity and make them go away so we can take the canonical
+ * port." Sole caller: `server.evictExistingDaemon` (daemon startup).
  *
- * The prior eviction logic looked only at the PID recorded in `daemon.json`.
- * That missed two real failure modes:
- *   - An orphan daemon holding the canonical port whose JSON registration got
- *     lost (racing update-apply, unclean shutdown, stale-JSON SIGTERM that
- *     the target process ignored).
- *   - A "current" daemon that fell back to `canonical+1` because an orphan was
- *     squatting the canonical port; subsequent restarts keep using the wrong
- *     port forever because daemon.json points at the fallback.
+ * Identity is an explicit {@link EvictionScope} — the service state dir
+ * (where daemon.json actually lives) plus the canonical port the daemon
+ * will bind. The prior shape derived BOTH from `vaultDir`, which is the
+ * legacy per-vault protocol: the global daemon keeps its state under the
+ * service dir (`~/.myco/service` or `service-dev`) and derives its port
+ * from that dir, so a
+ * vault-derived sweep scanned a port nobody uses, read a daemon.json that
+ * doesn't exist there, and the cwd-based identity probe could not even
+ * recognize a launchd-spawned daemon (cwd never resolves to the bootstrap
+ * vault). The orphan sweep was a structural no-op in every current config.
  *
- * This module scans a small port range around the canonical port (which was
- * the fallback-retry range before we dropped silent fallback) to catch any
- * historical fallback-bound myco daemons, identifies them via `ps` argv
- * matching, and evicts them all.
+ * Port squatters are identified as myco daemons via, in order:
+ *   1. the pid recorded in the scope's daemon.json (healthy case),
+ *   2. a `/health` probe on the squatted port answering `{myco: true}` —
+ *      a listener that speaks the myco heartbeat IS a myco daemon,
+ *      regardless of how it was spawned or what its cwd looks like,
+ *   3. the legacy cwd→vault check, kept for per-vault daemons.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { derivePort } from './port.js';
 import {
   DAEMON_EVICT_POLL_MS,
   DAEMON_EVICT_TIMEOUT_MS,
+  DAEMON_HEALTH_CHECK_TIMEOUT_MS,
 } from '../constants.js';
 import {
   cleanStaleDaemonJson,
@@ -73,6 +76,39 @@ export interface EvictionTarget {
   source: PidSource;
 }
 
+/**
+ * The identity this eviction acts for. `stateDir` is where the daemon's
+ * `daemon.json` lives (the SERVICE dir for global daemons — e.g.
+ * `~/.myco/service/` — not the project vault); `canonicalPort` is the port
+ * the caller is about to bind. `vaultDir` enables the legacy cwd→vault
+ * identity check for per-vault daemons and is optional.
+ */
+export interface EvictionScope {
+  stateDir: string;
+  canonicalPort: number;
+  vaultDir?: string;
+}
+
+/**
+ * Probe `/health` on a local port. Returns the parsed heartbeat for a myco
+ * daemon, null for anything else (non-myco listener, timeout, no listener).
+ */
+export async function probeMycoDaemon(
+  port: number,
+  timeoutMs = DAEMON_HEALTH_CHECK_TIMEOUT_MS,
+): Promise<{ myco: boolean; version?: string; pid?: number } | null> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { myco?: boolean; version?: string; pid?: number };
+    return data.myco === true ? { myco: true, version: data.version, pid: data.pid } : null;
+  } catch {
+    return null;
+  }
+}
+
 const LOG_KIND = 'daemon.eviction';
 
 // ---------------------------------------------------------------------------
@@ -80,30 +116,29 @@ const LOG_KIND = 'daemon.eviction';
 // ---------------------------------------------------------------------------
 
 /**
- * Evict every myco daemon running for `vaultDir`.
+ * Evict every myco daemon competing for the scope's identity.
  *
- * Looks at both the PID in `daemon.json` and any myco daemon holding a port
- * in the canonical range derived from `vaultDir`. SIGTERMs with a grace
- * period, escalates to SIGKILL, then waits for the process to exit.
+ * Looks at both the PID recorded in the scope's `daemon.json` and any myco
+ * daemon holding a port in the scope's canonical range. SIGTERMs with a
+ * grace period, escalates to SIGKILL, then waits for the process to exit.
  *
  * Safe to call before the caller has bound its own port (the current process
  * is excluded from the kill list).
  */
-export async function evictDaemonsForVault(
-  vaultDir: string,
+export async function evictDaemons(
+  scope: EvictionScope,
   opts: EvictOptions = {},
 ): Promise<EvictionTarget[]> {
   const logger = opts.logger;
   const graceMs = opts.graceMs ?? DAEMON_EVICT_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DAEMON_EVICT_POLL_MS;
-  const canonicalPort = derivePort(vaultDir);
 
-  const targets = findDaemonTargetsForVault(vaultDir, canonicalPort);
+  const targets = await findDaemonTargets(scope);
   if (targets.length === 0) return [];
 
-  logger?.info(LOG_KIND, 'Evicting daemons for vault', {
-    vault: vaultDir,
-    canonical_port: canonicalPort,
+  logger?.info(LOG_KIND, 'Evicting daemons for scope', {
+    state_dir: scope.stateDir,
+    canonical_port: scope.canonicalPort,
     targets: targets.map((t) => ({ pid: t.pid, source: t.source })),
   });
 
@@ -114,36 +149,38 @@ export async function evictDaemonsForVault(
   // Best-effort: unlink daemon.json if it still points at one of the evicted
   // PIDs. Leaving it can cause subsequent startups to "step aside" from a
   // process we just killed.
-  cleanStaleDaemonJson(vaultDir, targets.map((t) => t.pid));
+  cleanStaleDaemonJson(scope.stateDir, targets.map((t) => t.pid));
   return targets;
 }
 
 /**
- * Return the union of (daemon.json PID, canonical-port squatters) for a vault.
+ * Return the union of (daemon.json PID, canonical-port squatters) for the
+ * scope.
  *
  * Filtered to myco daemons only, deduplicated, and excluding the current
- * process. Port squatters that are NOT myco daemons for this vault are
- * ignored — we don't want to kill an unrelated service just because it
- * grabbed our preferred port.
+ * process. Port squatters that are NOT myco daemons are ignored — we don't
+ * want to kill an unrelated service just because it grabbed our preferred
+ * port. Async because squatter identity may require a `/health` probe.
  */
-export function findDaemonTargetsForVault(
-  vaultDir: string,
-  canonicalPort: number,
-): EvictionTarget[] {
+export async function findDaemonTargets(scope: EvictionScope): Promise<EvictionTarget[]> {
   const seen = new Map<number, EvictionTarget>();
 
-  const jsonPid = readDaemonJsonPid(vaultDir);
+  const jsonPid = readDaemonJsonPid(scope.stateDir);
   if (jsonPid !== undefined && jsonPid !== process.pid && isProcessAlive(jsonPid)) {
     seen.set(jsonPid, { pid: jsonPid, source: 'daemon.json' });
   }
 
-  const portsToScan = rangeInclusive(canonicalPort, canonicalPort + EVICT_PORT_SCAN_RANGE - 1)
+  const portsToScan = rangeInclusive(scope.canonicalPort, scope.canonicalPort + EVICT_PORT_SCAN_RANGE - 1)
     .filter((p) => p <= 65535);
   const squatters = findPidsListeningOn(portsToScan);
   for (const { port, pid } of squatters) {
     if (pid === process.pid) continue;
     if (seen.has(pid)) continue;
-    if (!isMycoDaemonForVault(pid, vaultDir)) continue;
+    if (pid === jsonPid) { seen.set(pid, { pid, source: `port:${port}` }); continue; }
+    const isMyco =
+      (await probeMycoDaemon(port)) !== null ||
+      (scope.vaultDir !== undefined && isMycoDaemonForVault(pid, scope.vaultDir));
+    if (!isMyco) continue;
     seen.set(pid, { pid, source: `port:${port}` });
   }
 
@@ -154,9 +191,9 @@ export function findDaemonTargetsForVault(
 // Discovery
 // ---------------------------------------------------------------------------
 
-function readDaemonJsonPid(vaultDir: string): number | undefined {
+function readDaemonJsonPid(stateDir: string): number | undefined {
   try {
-    const jsonPath = path.join(vaultDir, 'daemon.json');
+    const jsonPath = path.join(stateDir, 'daemon.json');
     const raw = fs.readFileSync(jsonPath, 'utf-8');
     const info = JSON.parse(raw) as { pid?: unknown };
     return typeof info.pid === 'number' ? info.pid : undefined;
