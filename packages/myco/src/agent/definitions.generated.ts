@@ -74,7 +74,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "tool": "canopy_describe_next",
           "args": {
             "canopy_entry_path": "{{ params.canopy_entry_path | default(null) }}",
-            "limit": "{{ params.batch_size | default(10) }}"
+            "limit": "{{ params.batch_size | default(10) }}",
+            "max_attempts": "{{ params.max_attempts | default(2) }}"
           },
           "itemsPath": "entries"
         },
