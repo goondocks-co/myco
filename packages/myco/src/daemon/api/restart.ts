@@ -144,6 +144,14 @@ export async function handleRestart(
     stdio: 'ignore',
     cwd: projectRoot,
   });
+  // No listener = a spawn-class 'error' is an uncaught exception (process
+  // exit) — precisely during a restart request, when dying without the
+  // child running means no daemon comes back.
+  child.on('error', (err) => {
+    try {
+      process.stderr.write(`[myco] restart child spawn failed: ${err.message}\n`);
+    } catch { /* best-effort */ }
+  });
   child.unref();
 
   // Self-termination scheduling:

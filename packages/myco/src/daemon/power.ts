@@ -112,17 +112,36 @@ export class PowerManager {
   private async tick(): Promise<void> {
     if (!this.running) return;
 
-    this.evaluateState();
+    // The power loop is the daemon's heartbeat — a throw from state
+    // evaluation, a job dispatch, or the logger must neither become an
+    // unhandled rejection (timer-invoked: nothing awaits this) nor kill the
+    // loop. Failures are logged and the next tick still schedules; the
+    // deep_sleep stop is the one deliberate non-reschedule and the finally
+    // is gated to preserve it.
+    let enteredDeepSleep = false;
+    try {
+      this.evaluateState();
 
-    if (this.state === 'deep_sleep') {
-      this.logger.info(LOG_KINDS.POWER_STATE, 'Entering deep sleep — timer stopped');
-      this.timer = null;
-      return;
+      if (this.state === 'deep_sleep') {
+        enteredDeepSleep = true;
+        this.timer = null;
+        this.logger.info(LOG_KINDS.POWER_STATE, 'Entering deep sleep — timer stopped');
+        return;
+      }
+
+      this.config.onTick(this.state);
+    } catch (err) {
+      // DaemonLogger never throws, but this class accepts injected Logger
+      // substitutes — the heartbeat must not depend on their discipline.
+      try {
+        this.logger.error(LOG_KINDS.POWER_STATE, 'Power tick failed — loop continues', {
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? (err.stack ?? null) : null,
+        });
+      } catch { /* logging best-effort */ }
+    } finally {
+      if (!enteredDeepSleep) this.scheduleNextTick();
     }
-
-    this.config.onTick(this.state);
-
-    this.scheduleNextTick();
   }
 
   /**

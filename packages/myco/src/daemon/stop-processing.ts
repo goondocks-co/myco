@@ -201,6 +201,10 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     phases: z.array(z.enum(['response', 'transcript'])).optional(),
   });
 
+  // Both call sites (the stop path below and event-dispatch's prompt
+  // boundary) fire this without awaiting, and the shared trigger does real
+  // work (tenant config + sqlite reads) BEFORE its internal try — so the
+  // catch lives here, where every fire-and-forget invocation funnels.
   const triggerTitleSummary = (
     sessionId: string,
     requestContext: MycoRequestContext | undefined,
@@ -210,7 +214,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionId,
       { vaultDir, resolveEmbeddingManager, liveConfig, logger, requestContext },
       trigger,
-    );
+    ).catch((err) => {
+      logger.warn(LOG_KINDS.AGENT_ERROR, 'Title-summary trigger failed', {
+        session_id: sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
     registry.unregister(sessionId);
@@ -230,7 +239,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         project_id: result.projectId,
       });
     }
-    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir).catch(() => {});
+    cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir, bufferDir).catch((err) => {
+      logger.warn(LOG_KINDS.HOOKS_STOP, 'Invalid-session cascade cleanup failed', {
+        session_id: sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     return true;
   }
 
