@@ -406,7 +406,9 @@ const AGENT_RUNS_TABLE = `
     error          TEXT,
     dry_run        INTEGER NOT NULL DEFAULT 0,
     reasoning_level      TEXT,
-    execution_overrides  TEXT
+    execution_overrides  TEXT,
+    resume_attempts INTEGER NOT NULL DEFAULT 0,
+    run_context    TEXT
   )`;
 
 const AGENT_REPORTS_TABLE = `
@@ -734,6 +736,7 @@ export const CANOPY_ENTRIES_TABLE = `
     llm_description        TEXT,
     llm_updated_at         INTEGER,
     embedded               INTEGER DEFAULT 0,
+    describe_attempts      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (project_id, path)
   ) WITHOUT ROWID`;
 

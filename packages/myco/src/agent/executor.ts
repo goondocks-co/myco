@@ -58,6 +58,7 @@ import {
   serializeCheckpointState,
 } from './executor-state.js';
 import { getAgentHarness } from './harness/index.js';
+import { HarnessExecutionError } from './harness/types.js';
 import {
   analyzeRuntimeTokenBudget,
   buildRunAccountingUpdate,
@@ -92,6 +93,14 @@ const STATUS_SKIPPED = 'skipped';
 
 /** Reason string when skipping due to concurrency guard. */
 const SKIP_REASON_ALREADY_RUNNING = 'already_running';
+
+/**
+ * Grace added to the task timeout when judging whether a 'running' row is
+ * stale. A run loop enforces its own timeout abort, so a 'running' row older
+ * than timeout + margin has no live driver (e.g. the process died between
+ * boot-recovery sweeps) and must not block scheduling forever.
+ */
+const STALE_RUNNING_RUN_MARGIN_SECONDS = 300;
 
 /** Report action emitted by the Cortex instructions task. */
 const CORTEX_INSTRUCTIONS_REPORT_ACTION = 'cortex_instructions';
@@ -153,22 +162,25 @@ export async function runAgent(
     };
   }
 
-  // Block duplicate runs of the SAME task — different tasks may run concurrently.
-  const requestedTask = options?.task ?? resumedRun?.task ?? undefined;
-  {
-    const effectiveTask = requestedTask
-      ?? getDefaultTask(agentId)?.id;
-    if (effectiveTask) {
-      const runningId = getRunningRunForTask(agentId, effectiveTask, scope);
-      if (runningId) {
-        return {
-          runId: runningId,
-          status: STATUS_SKIPPED,
-          reason: SKIP_REASON_ALREADY_RUNNING,
-        };
-      }
-    }
+  if (resumedRun) {
+    // Restore any input the caller omitted from the resumed row so every
+    // resume path (scheduler and manual endpoint) executes with the original
+    // dispatch's inputs. dry_run is the load-bearing one: a resumed dry-run
+    // must never perform real writes. Caller-supplied values still win.
+    options = {
+      ...options,
+      instruction: options?.instruction ?? resumedRun.instruction ?? undefined,
+      runContext: options?.runContext ?? parseStoredRunContext(resumedRun.run_context),
+      dryRun: options?.dryRun ?? resumedRun.dry_run,
+      executionOverrides: options?.executionOverrides
+        ?? (resumedRun.execution_overrides as RunOptions['executionOverrides'])
+        ?? (resumedRun.reasoning_level
+          ? { reasoningLevel: resumedRun.reasoning_level }
+          : undefined),
+    };
   }
+
+  const requestedTask = options?.task ?? resumedRun?.task ?? undefined;
 
   const {
     config: resolvedConfig,
@@ -177,6 +189,36 @@ export async function runAgent(
     phaseProviderOverrides: resolvedPhaseOverrides,
     taskParams: resolvedTaskParams,
   } = resolveRunConfig(agentId, requestedTask, vaultDir, options?.requestContext?.groveId ?? null);
+
+  // Block duplicate runs of the SAME task — different tasks may run
+  // concurrently. A 'running' row older than the task timeout (+ margin)
+  // is treated as not-running: log it and proceed (boot recovery owns
+  // mutating the orphaned row).
+  {
+    const effectiveTask = requestedTask
+      ?? getDefaultTask(agentId)?.id;
+    if (effectiveTask) {
+      const running = getRunningRunForTask(
+        agentId,
+        effectiveTask,
+        scope,
+        resolvedConfig.timeoutSeconds + STALE_RUNNING_RUN_MARGIN_SECONDS,
+      );
+      if (running?.stale) {
+        options?.logger?.warn('agent.run.stale-running-row', `Ignoring stale running row for task ${effectiveTask}`, {
+          taskName: effectiveTask,
+          staleRunId: running.id,
+          startedAt: running.started_at,
+        });
+      } else if (running) {
+        return {
+          runId: running.id,
+          status: STATUS_SKIPPED,
+          reason: SKIP_REASON_ALREADY_RUNNING,
+        };
+      }
+    }
+  }
 
   // Build an effective config for this run by layering per-run overrides
   // on top of the resolved config WITHOUT mutating the resolveRunConfig
@@ -240,7 +282,6 @@ export async function runAgent(
     ?? taskProviderOverride
     ?? config.execution?.provider;
   const runId = options?.resumeRunId ?? crypto.randomUUID();
-  const now = epochSeconds();
   let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
@@ -278,50 +319,6 @@ export async function runAgent(
     checkpointState.provider = checkpointState.provider ?? effectiveProvider?.type;
     checkpointState.providerConfig = checkpointState.providerConfig ?? effectiveProvider;
     checkpointState.model = checkpointState.model ?? effectiveModel;
-  }
-
-  const runStart = {
-    status: STATUS_RUNNING,
-    harness: harnessId,
-    model: effectiveModel,
-    checkpoints: serializeCheckpointState(checkpointState),
-    started_at: now,
-  } as const;
-  if (!resumedRun) {
-    insertRun({
-      id: runId,
-      project_id: projectId,
-      agent_id: agentId,
-      task: config.taskName,
-      instruction: options?.instruction ?? null,
-      ...runStart,
-      provider: effectiveProvider?.type ?? null,
-      usage_data: buildUsageData({}),
-      dryRun: options?.dryRun ?? false,
-      reasoningLevel:
-        options?.executionOverrides?.reasoningLevel
-        ?? config.reasoningLevel
-        ?? config.execution?.reasoningLevel
-        ?? null,
-      executionOverrides: options?.executionOverrides ?? null,
-    });
-  } else {
-    applyRunUpdate(runId, {
-      ...runStart,
-      provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
-      completed_at: null,
-      resumable: 0,
-      resume_status: null,
-      resume_mode: options?.resumeMode ?? resumedRun.resume_mode ?? null,
-      resumed_at: now,
-      usage_data: resumedRun.usage_data,
-      cost_usd: resumedRun.cost_usd,
-      actual_cost_usd: resumedRun.actual_cost_usd,
-      estimated_cost_usd: resumedRun.estimated_cost_usd,
-      cost_source: resumedRun.cost_source,
-      cost_data: resumedRun.cost_data,
-      error: null,
-    }, scope);
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
@@ -389,6 +386,77 @@ export async function runAgent(
     taskAbortController.abort(new Error(`Agent run timed out after ${config.timeoutSeconds} seconds`));
   }, timeoutMs);
   timeoutId.unref?.();
+
+  // Re-check the duplicate-run guard synchronously, immediately before row
+  // creation. The early guard alone is not single-flight anymore: the
+  // resolver awaits above let two same-tick dispatches both pass it before
+  // either inserts. This check and the insert below run with no await
+  // between them, so the second dispatch always sees the first one's row.
+  {
+    const running = getRunningRunForTask(
+      agentId,
+      config.taskName,
+      scope,
+      config.timeoutSeconds + STALE_RUNNING_RUN_MARGIN_SECONDS,
+    );
+    if (running && !running.stale) {
+      clearTimeout(timeoutId);
+      return {
+        runId: running.id,
+        status: STATUS_SKIPPED,
+        reason: SKIP_REASON_ALREADY_RUNNING,
+      };
+    }
+  }
+
+  // Run-row creation sits immediately before the try so nothing throwable
+  // (prompt loading, vault context, provider resolution above) can leave an
+  // orphaned 'running' row that the catch below never marks failed.
+  const now = epochSeconds();
+  const runStart = {
+    status: STATUS_RUNNING,
+    harness: harnessId,
+    model: effectiveModel,
+    checkpoints: serializeCheckpointState(checkpointState),
+    started_at: now,
+  } as const;
+  if (!resumedRun) {
+    insertRun({
+      id: runId,
+      project_id: projectId,
+      agent_id: agentId,
+      task: config.taskName,
+      instruction: options?.instruction ?? null,
+      ...runStart,
+      provider: effectiveProvider?.type ?? null,
+      usage_data: buildUsageData({}),
+      run_context: options?.runContext ? JSON.stringify(options.runContext) : null,
+      dryRun: options?.dryRun ?? false,
+      reasoningLevel:
+        options?.executionOverrides?.reasoningLevel
+        ?? config.reasoningLevel
+        ?? config.execution?.reasoningLevel
+        ?? null,
+      executionOverrides: options?.executionOverrides ?? null,
+    });
+  } else {
+    applyRunUpdate(runId, {
+      ...runStart,
+      provider: effectiveProvider?.type ?? resumedRun.provider ?? null,
+      completed_at: null,
+      resumable: 0,
+      resume_status: null,
+      resume_mode: options?.resumeMode ?? resumedRun.resume_mode ?? null,
+      resumed_at: now,
+      usage_data: resumedRun.usage_data,
+      cost_usd: resumedRun.cost_usd,
+      actual_cost_usd: resumedRun.actual_cost_usd,
+      estimated_cost_usd: resumedRun.estimated_cost_usd,
+      cost_source: resumedRun.cost_source,
+      cost_data: resumedRun.cost_data,
+      error: null,
+    }, scope);
+  }
 
   let phaseResults: PhaseResult[] | undefined;
   try {
@@ -565,7 +633,13 @@ export async function runAgent(
     });
 
     try {
-      const usage = aggregateUsage(phaseResults?.map((phase) => phase.usage) ?? []);
+      // Non-phased failures carry their usage on HarnessExecutionError
+      // telemetry — without it a failed single-query records zero
+      // tokens/cost even though the requests were billed.
+      const failureTelemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
+      const usage = phaseResults
+        ? aggregateUsage(phaseResults.map((phase) => phase.usage))
+        : failureTelemetry?.usage ?? aggregateUsage([]);
       logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
       const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
         harness: harnessId,
@@ -823,4 +897,23 @@ function fallbackInstructionHash(instruction: string | undefined): string {
     .createHash(CONTENT_HASH_ALGORITHM)
     .update(instruction ?? '')
     .digest('hex');
+}
+
+/**
+ * Parse a persisted `agent_runs.run_context` JSON column back into
+ * RunOptions.runContext. Null, non-object, and unparseable payloads all
+ * degrade to undefined (corruption tolerance — a resume must not fail on a
+ * bad column).
+ */
+function parseStoredRunContext(raw: string | null): RunOptions['runContext'] {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as RunOptions['runContext'];
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }

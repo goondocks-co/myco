@@ -6,6 +6,8 @@ import * as __orig__myco_db_queries_reports_js_3__ns from '@myco/db/queries/repo
 const __orig__myco_db_queries_reports_js_3 = { ...__orig__myco_db_queries_reports_js_3__ns };
 import * as __orig__myco_db_client_js_4__ns from '@myco/db/client.js';
 const __orig__myco_db_client_js_4 = { ...__orig__myco_db_client_js_4__ns };
+import * as __orig__myco_agent_lmstudio_context_js_5__ns from '@myco/agent/lmstudio-context.js';
+const __orig__myco_agent_lmstudio_context_js_5 = { ...__orig__myco_agent_lmstudio_context_js_5__ns };
 /**
  * Tests for the agent executor.
  *
@@ -50,14 +52,16 @@ let allQueryCalls: Array<{ prompt: string; options?: Record<string, unknown> }> 
 /** Captured arguments from the last query() call (backward compat). */
 let capturedQueryArgs: { prompt: string; options?: Record<string, unknown> } | null = null;
 
+type MockQueryBehavior = 'success' | 'error' | 'error-after-usage' | 'empty' | 'abort';
+
 /**
  * Per-call behaviors. Each query() call shifts the next behavior.
  * Falls back to mockQueryBehavior when exhausted.
  */
-let mockQueryBehaviors: Array<'success' | 'error' | 'empty' | 'abort'> = [];
+let mockQueryBehaviors: MockQueryBehavior[] = [];
 
 /** Default behavior when mockQueryBehaviors is empty. */
-let mockQueryBehavior: 'success' | 'error' | 'empty' | 'abort' = 'success';
+let mockQueryBehavior: MockQueryBehavior = 'success';
 
 /** Custom error message for the 'error' behavior. */
 let mockErrorMessage = 'SDK exploded';
@@ -94,6 +98,32 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => {
       return {
         [Symbol.asyncIterator]: async function* () {
           if (behavior === 'error') {
+            throw new Error(mockErrorMessage);
+          }
+
+          if (behavior === 'error-after-usage') {
+            // Usage lands on a result message before the stream blows up —
+            // the adapter wraps the throw in HarnessExecutionError telemetry.
+            yield {
+              type: 'result' as const,
+              subtype: 'error_during_execution' as const,
+              total_cost_usd: 0.0042,
+              usage: {
+                input_tokens: 1500,
+                output_tokens: 350,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+              },
+              num_turns: 3,
+              duration_ms: 5000,
+              duration_api_ms: 4500,
+              is_error: true,
+              stop_reason: 'end_turn',
+              modelUsage: {},
+              permission_denials: [],
+              uuid: '00000000-0000-0000-0000-000000000001',
+              session_id: 'test-session',
+            };
             throw new Error(mockErrorMessage);
           }
 
@@ -189,6 +219,9 @@ let mockOrchestratorConfig: OrchestratorConfig | undefined;
 /** Top-level task reasoning level from the registry mock. Set per-test. */
 let mockTaskReasoningLevel: 'low' | 'default' | 'high' | undefined;
 
+/** When set, loadSystemPrompt throws this error. Set per-test. */
+let mockLoadSystemPromptError: Error | null = null;
+
 mock.module('@myco/agent/loader.js', () => {
   const original = __orig__myco_agent_loader_js_1;
   return {
@@ -226,7 +259,10 @@ mock.module('@myco/agent/loader.js', () => {
         isDefault: true,
       }];
     },
-    loadSystemPrompt: () => TEST_SYSTEM_PROMPT,
+    loadSystemPrompt: () => {
+      if (mockLoadSystemPromptError) throw mockLoadSystemPromptError;
+      return TEST_SYSTEM_PROMPT;
+    },
     // Keep resolveEffectiveConfig from the original module
   };
 });
@@ -304,6 +340,28 @@ mock.module('@myco/db/queries/reports.js', () => {
   return {
     ...original,
     listReports: () => mockRunReports,
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Mock: lmstudio context resolver — passthrough by default; a test can park
+// dispatches inside this await by setting the gate, forcing the same-tick
+// concurrency window between the early duplicate-run guard and row creation.
+// ---------------------------------------------------------------------------
+
+/** When set, resolveLmStudioContextLoads awaits this before resolving. */
+let mockLmStudioResolverGate: Promise<void> | null = null;
+
+mock.module('@myco/agent/lmstudio-context.js', () => {
+  const original = __orig__myco_agent_lmstudio_context_js_5;
+  return {
+    ...original,
+    resolveLmStudioContextLoads: async (
+      ...args: Parameters<typeof original.resolveLmStudioContextLoads>
+    ) => {
+      if (mockLmStudioResolverGate) await mockLmStudioResolverGate;
+      return original.resolveLmStudioContextLoads(...args);
+    },
   };
 });
 
@@ -392,6 +450,8 @@ function resetMockState(): void {
   mockExecution = undefined;
   mockOrchestratorConfig = undefined;
   mockTaskReasoningLevel = undefined;
+  mockLoadSystemPromptError = null;
+  mockLmStudioResolverGate = null;
   mockAssistantCount = 0;
   mockToolCallCounts = {};
   mockRunReports = [];
@@ -1942,5 +2002,250 @@ describe('computeWaves', () => {
     const waves = computeWaves([]);
 
     expect(waves).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: runAgent — run lifecycle (RC-9): resume input restoration, insert
+// window, stale running rows, failed-run telemetry.
+// ---------------------------------------------------------------------------
+
+describe('runAgent — run lifecycle', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(async () => {
+    resetMockState();
+    cleanTestDb();
+    await createTestAgent(TEST_AGENT_ID);
+    await createTestTask();
+  });
+
+  function insertResumableRun(overrides: Partial<Parameters<typeof insertRun>[0]> = {}): string {
+    const id = crypto.randomUUID();
+    insertRun({
+      id,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'failed',
+      resumable: 1,
+      resume_status: 'ready',
+      checkpoints: JSON.stringify({ harness: 'claude-sdk', phases: {} }),
+      started_at: epochSeconds() - 120,
+      completed_at: epochSeconds() - 60,
+      error: 'boom',
+      ...overrides,
+    });
+    return id;
+  }
+
+  it('restores instruction and run_context from the resumed row when the caller omits them', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const { getState } = await import('@myco/db/queries/agent-state.js');
+    const { SKILL_SURVEY_WATERMARK_KEY } = await import('@myco/agent/instruction-builders.js');
+
+    await createTask('skill-survey');
+    const runId = insertResumableRun({
+      task: 'skill-survey',
+      instruction: 'Original survey instruction',
+      run_context: JSON.stringify({ skill_survey_watermark: 777 }),
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: runId,
+      resumeMode: 'scheduled',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(capturedQueryArgs!.prompt).toContain('Original survey instruction');
+    // runContext restoration is observable through the skill-survey success
+    // hook, which persists the watermark carried on runContext.
+    const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId!, SKILL_SURVEY_WATERMARK_KEY);
+    expect(state?.value).toBe('777');
+  });
+
+  it('restores dry_run from the resumed row — a resumed dry-run skips success hooks', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const { getState } = await import('@myco/db/queries/agent-state.js');
+    const { SKILL_SURVEY_WATERMARK_KEY } = await import('@myco/agent/instruction-builders.js');
+
+    await createTask('skill-survey');
+    const runId = insertResumableRun({
+      task: 'skill-survey',
+      instruction: 'Original survey instruction',
+      run_context: JSON.stringify({ skill_survey_watermark: 888 }),
+      dryRun: true,
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: runId,
+      resumeMode: 'scheduled',
+    });
+
+    expect(result.status).toBe('completed');
+    // dry-run restored from the row → finalizeOnTaskSuccess early-returns,
+    // so the watermark must NOT be written.
+    expect(getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId!, SKILL_SURVEY_WATERMARK_KEY)).toBeNull();
+    expect(getRun(runId, ALL_PROJECTS_SCOPE)!.dry_run).toBe(true);
+  });
+
+  it('prefers caller-supplied values over the resumed row', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const runId = insertResumableRun({ instruction: 'Row instruction A' });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: runId,
+      instruction: 'Caller instruction B',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(capturedQueryArgs!.prompt).toContain('Caller instruction B');
+    expect(capturedQueryArgs!.prompt).not.toContain('Row instruction A');
+  });
+
+  it('restores executionOverrides (reasoning tier) from the resumed row', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockExecution = {
+      provider: {
+        type: 'anthropic',
+        reasoningMap: { high: 'claude-high-tier', low: 'claude-low-tier' },
+      },
+    } as ExecutionConfig;
+    const runId = insertResumableRun({
+      reasoningLevel: 'high',
+      executionOverrides: { reasoningLevel: 'high' },
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: runId,
+    });
+
+    expect(result.status).toBe('completed');
+    expect((capturedQueryArgs!.options as Record<string, unknown>).model).toBe('claude-high-tier');
+  });
+
+  it('tolerates unparseable run_context on resume', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const runId = insertResumableRun({ run_context: 'not-json{' });
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      resumeRunId: runId,
+    });
+    expect(result.status).toBe('completed');
+  });
+
+  it('persists runContext to the run_context column on insert', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const result = await runAgent(TEST_VAULT_DIR, {
+      requestContext: TEST_REQUEST_CONTEXT,
+      runContext: { skill_survey_watermark: 5 },
+    });
+
+    expect(result.status).toBe('completed');
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE)!;
+    expect(JSON.parse(run.run_context!)).toEqual({ skill_survey_watermark: 5 });
+  });
+
+  it('does not create a run row when pre-run setup throws', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockLoadSystemPromptError = new Error('definitions dir unreadable');
+
+    await expect(runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT }))
+      .rejects.toThrow('definitions dir unreadable');
+
+    // No orphaned 'running' row: the row is created immediately before the
+    // try whose catch marks it failed, so a setup throw leaves nothing.
+    const count = getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_runs').get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
+  it('does not let a stale running row block a new dispatch', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const staleId = crypto.randomUUID();
+    insertRun({
+      id: staleId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'running',
+      started_at: epochSeconds() - 7200,
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: TEST_TASK_NAME });
+
+    expect(result.status).toBe('completed');
+    expect(result.runId).not.toBe(staleId);
+    // The guard is read-only: boot recovery owns marking the orphan.
+    expect(getRun(staleId, ALL_PROJECTS_SCOPE)!.status).toBe('running');
+  });
+
+  it('still skips when a fresh running row exists for the task', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    const freshId = crypto.randomUUID();
+    insertRun({
+      id: freshId,
+      agent_id: TEST_AGENT_ID,
+      task: TEST_TASK_NAME,
+      status: 'running',
+      started_at: epochSeconds() - 10,
+    });
+
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: TEST_TASK_NAME });
+
+    expect(result.status).toBe('skipped');
+    expect(result.runId).toBe(freshId);
+  });
+
+  it('single-flights two same-tick concurrent dispatches of the same task', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    // Park both dispatches inside the resolver await — past the early
+    // duplicate-run guard, before row creation — then release them
+    // together. This is the window where the early guard alone admits both.
+    let release!: () => void;
+    mockLmStudioResolverGate = new Promise<void>((resolve) => { release = resolve; });
+
+    const first = runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: TEST_TASK_NAME });
+    const second = runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: TEST_TASK_NAME });
+    release();
+    const [r1, r2] = await Promise.all([first, second]);
+
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual(['completed', 'skipped']);
+    const completed = r1.status === 'completed' ? r1 : r2;
+    const skipped = r1.status === 'skipped' ? r1 : r2;
+    expect(skipped.reason).toBe('already_running');
+    expect(skipped.runId).toBe(completed.runId);
+
+    // Exactly one agent_runs row — the loser never inserted.
+    const count = getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_runs').get() as { n: number };
+    expect(count.n).toBe(1);
+    expect(getRun(completed.runId, ALL_PROJECTS_SCOPE)!.status).toBe('completed');
+  });
+
+  it('records telemetry usage and cost on a failed single-query', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+
+    mockQueryBehavior = 'error-after-usage';
+    mockErrorMessage = 'stream exploded mid-run';
+
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
+
+    expect(result.status).toBe('failed');
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE)!;
+    expect(run.status).toBe('failed');
+    expect(run.tokens_used).toBe(1850);
+    expect(run.cost_usd).toBe(0.0042);
+    expect(run.cost_source).toBe('actual');
   });
 });

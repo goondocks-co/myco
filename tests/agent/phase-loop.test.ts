@@ -7,6 +7,8 @@
  * a programmable fake instead of a real SDK.
  */
 
+import * as __orig__myco_agent_map_phase_js__ns from '@myco/agent/map-phase.js';
+const __orig__myco_agent_map_phase_js = { ...__orig__myco_agent_map_phase_js__ns };
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
@@ -15,6 +17,7 @@ import path from 'node:path';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type {
   EffectiveConfig,
+  MapPhaseResult,
   PhaseDefinition,
   RuntimeUsage,
   HarnessId,
@@ -104,6 +107,20 @@ const fakeRuntime: AgentHarness = {
 
 mock.module('@myco/agent/harness/index.js', () => ({
   getAgentHarness: () => fakeRuntime,
+}));
+
+// Map-phase executor — passthrough by default, programmable per test so the
+// adapter's status mapping (all-poisoned batch → failed) can be exercised
+// without wiring real source/sink tools.
+let mapPhaseResultOverride: MapPhaseResult | null = null;
+mock.module('@myco/agent/map-phase.js', () => ({
+  ...__orig__myco_agent_map_phase_js,
+  executeMapPhase: async (
+    input: Parameters<typeof __orig__myco_agent_map_phase_js.executeMapPhase>[0],
+  ) => {
+    if (mapPhaseResultOverride) return mapPhaseResultOverride;
+    return __orig__myco_agent_map_phase_js.executeMapPhase(input);
+  },
 }));
 
 // Per-phase preCondition resolver — programmable per test.
@@ -215,6 +232,7 @@ beforeEach(() => {
   capturedExecuteInputs = [];
   runtimeSupportsSessionResume = false;
   phasePreConditionResult = { passed: true, reason: 'default-pass' };
+  mapPhaseResultOverride = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -258,6 +276,68 @@ describe('executePhase', () => {
 
     expect(result.status).toBe('failed');
     expect(result.summary).toMatch(/source tool|nonexistent/i);
+  });
+
+  describe('map-phase batch status', () => {
+    const mapPhase: PhaseDefinition = {
+      name: 'describe', prompt: '', tools: [], maxTurns: 1, required: true,
+      mode: 'map',
+      perItemMaxTurns: 1,
+      source: { tool: 'stub_source', args: {}, itemsPath: 'entries' },
+      item: { prompt: 'x' },
+      sink: { tool: 'stub_sink', argMap: {} },
+    };
+
+    function mapResult(overrides: Partial<MapPhaseResult>): MapPhaseResult {
+      return {
+        itemCount: 0,
+        written: 0,
+        skipped: 0,
+        failed: 0,
+        abandoned: 0,
+        skipReasons: {},
+        writeAfterThrow: 0,
+        usage: {},
+        ...overrides,
+      };
+    }
+
+    async function runMapPhase() {
+      return executePhase({
+        ctx: baseContext(),
+        phasePrompt: 'p',
+        phaseModel: 'm',
+        phase: mapPhase,
+        toolSurface: { agentId: 'a', runId: 'r' },
+      });
+    }
+
+    it('fails the phase when items were fetched but nothing was written (all-poisoned batch)', async () => {
+      mapPhaseResultOverride = mapResult({ itemCount: 3, skipped: 3, skipReasons: { boilerplate: 3 } });
+      const result = await runMapPhase();
+      expect(result.status).toBe('failed');
+      expect(result.summary).toContain('written=0 skipped=3');
+    });
+
+    it('fails the phase when every item failed in the harness', async () => {
+      mapPhaseResultOverride = mapResult({ itemCount: 2, failed: 2 });
+      const result = await runMapPhase();
+      expect(result.status).toBe('failed');
+      expect(result.summary).toContain('failed=2');
+    });
+
+    it('completes when at least one item was written, even with mixed failures', async () => {
+      mapPhaseResultOverride = mapResult({ itemCount: 3, written: 1, skipped: 1, failed: 1 });
+      const result = await runMapPhase();
+      expect(result.status).toBe('completed');
+      expect(result.summary).toContain('written=1');
+    });
+
+    it('completes an empty batch (nothing fetched, nothing to write)', async () => {
+      mapPhaseResultOverride = mapResult({});
+      const result = await runMapPhase();
+      expect(result.status).toBe('completed');
+    });
   });
 
   it('returns a completed PhaseResult on runtime success', async () => {
@@ -653,5 +733,92 @@ describe('executePhasedQuery', () => {
     const ctx = baseContext({ config: baseConfig(phases), checkpointState });
     await executePhasedQuery(ctx);
     expect(capturedExecuteInputs[0].sessionRef).toBe('recoverable-session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executePhasedQuery — allocation-based turnOffset
+// ---------------------------------------------------------------------------
+
+describe('executePhasedQuery turnOffset allocation', () => {
+  function offsetsByPrompt(): Map<string, number | undefined> {
+    const out = new Map<string, number | undefined>();
+    for (const input of capturedExecuteInputs) {
+      const match = input.prompt.match(/## Current Phase: (\S+)/);
+      if (match) out.set(match[1], input.toolSurface?.turnOffset);
+    }
+    return out;
+  }
+
+  it('within a wave, each phase offset is the prefix sum of preceding siblings maxTurns', async () => {
+    const phases = [
+      phase('a', { maxTurns: 3 }),
+      phase('b', { maxTurns: 10 }),
+    ];
+    const ctx = baseContext({ config: baseConfig(phases) });
+    await executePhasedQuery(ctx);
+
+    const offsets = offsetsByPrompt();
+    expect(offsets.get('a')).toBe(0);
+    expect(offsets.get('b')).toBe(3);
+  });
+
+  it('advances the cross-wave base by the wave\'s total ALLOCATED turns, not turns used', async () => {
+    // Each phase actually uses 1 turn (DEFAULT_USAGE.requests = 1); the
+    // second wave must still start at 3 + 10 = 13.
+    const phases = [
+      phase('a', { maxTurns: 3 }),
+      phase('b', { maxTurns: 10 }),
+      phase('c', { maxTurns: 4, dependsOn: ['a', 'b'] }),
+    ];
+    const ctx = baseContext({ config: baseConfig(phases) });
+    await executePhasedQuery(ctx);
+
+    const offsets = offsetsByPrompt();
+    expect(offsets.get('a')).toBe(0);
+    expect(offsets.get('b')).toBe(3);
+    expect(offsets.get('c')).toBe(13);
+  });
+
+  it('keeps the same offsets on resume — completed phases still occupy their allocated range', async () => {
+    const phases = [
+      phase('a', { maxTurns: 3 }),
+      phase('b', { maxTurns: 10 }),
+      phase('c', { maxTurns: 4, dependsOn: ['a', 'b'] }),
+    ];
+    const checkpointState: RunCheckpointState = {
+      harness: 'claude-sdk',
+      phases: {
+        a: { name: 'a', status: 'completed', summary: 'done', turnsUsed: 1, updatedAt: 0 },
+      },
+    };
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+
+    const offsets = offsetsByPrompt();
+    expect(offsets.has('a')).toBe(false);
+    expect(offsets.get('b')).toBe(3);
+    expect(offsets.get('c')).toBe(13);
+  });
+
+  it('starts a later wave at the full allocation even when the entire first wave was restored', async () => {
+    const phases = [
+      phase('a', { maxTurns: 3 }),
+      phase('b', { maxTurns: 10 }),
+      phase('c', { maxTurns: 4, dependsOn: ['a', 'b'] }),
+    ];
+    const checkpointState: RunCheckpointState = {
+      harness: 'claude-sdk',
+      phases: {
+        a: { name: 'a', status: 'completed', summary: 'done', turnsUsed: 1, updatedAt: 0 },
+        b: { name: 'b', status: 'completed', summary: 'done', turnsUsed: 2, updatedAt: 0 },
+      },
+    };
+    const ctx = baseContext({ config: baseConfig(phases), checkpointState });
+    await executePhasedQuery(ctx);
+
+    const offsets = offsetsByPrompt();
+    expect(capturedExecuteInputs).toHaveLength(1);
+    expect(offsets.get('c')).toBe(13);
   });
 });

@@ -13,6 +13,7 @@ import {
   registerProjectInGrove,
 } from '@myco/grove/registry';
 import { createCanopyDescribeBacklogReader } from '@myco/canopy/describe-backlog';
+import { getCanopyDescribeBacklog } from '@myco/db/queries/canopy';
 
 let home: string;
 let db: Database;
@@ -88,5 +89,46 @@ describe('canopy describe backlog reader', () => {
     );
 
     expect(backlog.undescribed).toBe(1);
+  });
+});
+
+describe('getCanopyDescribeBacklog — describe_attempts budget', () => {
+  function insertStaleEntry(projectId: string, filePath: string): void {
+    db.prepare(
+      `INSERT INTO canopy_entries (
+        project_id, path, content_hash, size_bytes, token_estimate,
+        line_count, mechanical_updated_at, llm_description, llm_updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(projectId, filePath, `hash-${filePath}`, 10, 5, 1, 200, 'old description', 100);
+  }
+
+  it('excludes capped rows from every bucket — no phantom backlog from a poisoned tail', () => {
+    insertUndescribedEntry('proj_a', 'fresh.ts');
+    insertUndescribedEntry('proj_a', 'poisoned.ts');
+    insertStaleEntry('proj_a', 'stale-poisoned.ts');
+    db.prepare(
+      `UPDATE canopy_entries SET describe_attempts = 2 WHERE path IN ('poisoned.ts', 'stale-poisoned.ts')`,
+    ).run();
+
+    const backlog = getCanopyDescribeBacklog(db, projectScope('proj_a'));
+    expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0 });
+  });
+
+  it('reports zero against a fully-poisoned tail, matching the scheduler count', () => {
+    insertUndescribedEntry('proj_a', 'a.ts');
+    insertStaleEntry('proj_a', 'b.ts');
+    db.prepare('UPDATE canopy_entries SET describe_attempts = 2').run();
+
+    expect(getCanopyDescribeBacklog(db, projectScope('proj_a')))
+      .toEqual({ pending: 0, undescribed: 0, stale: 0 });
+  });
+
+  it('honors a larger per-project maxAttempts', () => {
+    insertUndescribedEntry('proj_a', 'a.ts');
+    insertStaleEntry('proj_a', 'b.ts');
+    db.prepare('UPDATE canopy_entries SET describe_attempts = 2').run();
+
+    expect(getCanopyDescribeBacklog(db, projectScope('proj_a'), { maxAttempts: 4 }))
+      .toEqual({ pending: 2, undescribed: 1, stale: 1 });
   });
 });

@@ -26,6 +26,11 @@ const COL_LIST = COLUMNS.join(', ');
  * `llm_description` and `llm_updated_at` are deliberately untouched here so
  * a Tier 2 description survives subsequent mechanical rescans; the
  * `canopy-describe` task is the only writer of those columns.
+ *
+ * `describe_attempts` resets to 0 on conflict: callers only upsert when
+ * content actually changed (scanners skip unchanged hashes), and changed
+ * content makes the row describable again even if the previous content
+ * exhausted its retry budget.
  */
 export function upsertCanopyEntry(db: Database, entry: CanopyEntry): void {
   db.prepare(
@@ -41,7 +46,8 @@ export function upsertCanopyEntry(db: Database, entry: CanopyEntry): void {
        exports_json          = EXCLUDED.exports_json,
        imports_json          = EXCLUDED.imports_json,
        top_comment           = EXCLUDED.top_comment,
-       mechanical_updated_at = EXCLUDED.mechanical_updated_at`,
+       mechanical_updated_at = EXCLUDED.mechanical_updated_at,
+       describe_attempts     = 0`,
   ).run(
     entry.project_id,
     entry.machine_id,

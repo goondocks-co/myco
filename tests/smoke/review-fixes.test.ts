@@ -57,14 +57,14 @@ describe('P1 #2: Concurrency guard query helpers', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); seedAgent(); });
 
-  it('getRunningRunForTask returns running task ID', () => {
+  it('getRunningRunForTask returns the running run ref', () => {
     insertRun({
       id: 'run-1', agent_id: AGENT_ID, task: 'vault-evolve',
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
     const result = getRunningRunForTask(AGENT_ID, 'vault-evolve', ALL_PROJECTS_SCOPE);
-    expect(result).toBe('run-1');
+    expect(result).toMatchObject({ id: 'run-1', stale: false });
   });
 
   it('getRunningRunForTask returns null for different task', () => {
