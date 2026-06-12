@@ -285,6 +285,167 @@ describe('opencode plugin runtime hooks', () => {
     ]);
   });
 
+  describe('per-prompt context injection (chat.message)', () => {
+    function makeClient() {
+      return { app: { log: vi.fn().mockResolvedValue(undefined) }, session: { messages: vi.fn(), prompt: vi.fn() } };
+    }
+
+    function userOutput() {
+      return {
+        parts: [
+          {
+            id: 'prt_0123456789abcdefghijklmn',
+            messageID: 'msg_user_1',
+            sessionID: 'ses-prompt-ctx',
+            type: 'text',
+            text: 'how does the outbox drain work?',
+          },
+        ],
+      };
+    }
+
+    it('posts capture (/events) then context (/context/prompt) with {prompt, session_id}, in that order', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.endsWith('/context/prompt')) {
+          return new Response(JSON.stringify({ text: 'Relevant spores' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      await plugin['chat.message']({ sessionID: 'ses-prompt-ctx' }, userOutput());
+
+      const urls = fetchMock.mock.calls.map((call) => call[0]);
+      expect(urls).toEqual([
+        'http://localhost:32123/events',
+        'http://localhost:32123/context/prompt',
+      ]);
+      expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toMatchObject({
+        prompt: 'how does the outbox drain work?',
+        session_id: 'ses-prompt-ctx',
+      });
+    });
+
+    it('pushes one myco-marked text part mirroring the user part identity fields when context is non-empty', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.endsWith('/context/prompt')) {
+          return new Response(JSON.stringify({ text: 'Relevant spores' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      const output = userOutput();
+      const originalParts = output.parts;
+      await plugin['chat.message']({ sessionID: 'ses-prompt-ctx' }, output);
+
+      // In-place push — the original array binding must gain the part.
+      expect(output.parts).toBe(originalParts);
+      expect(output.parts).toHaveLength(2);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const injected = output.parts[1] as any;
+      expect(injected).toMatchObject({
+        type: 'text',
+        text: 'Relevant spores',
+        synthetic: true,
+        metadata: { myco: true },
+        messageID: 'msg_user_1',
+        sessionID: 'ses-prompt-ctx',
+      });
+      expect(injected.id).toMatch(/^prt_/);
+      expect(injected.id).not.toBe('prt_0123456789abcdefghijklmn');
+    });
+
+    it('leaves output.parts unchanged when the daemon returns empty context text', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.endsWith('/context/prompt')) {
+          return new Response(JSON.stringify({ text: '' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      const output = userOutput();
+      await plugin['chat.message']({ sessionID: 'ses-prompt-ctx' }, output);
+
+      expect(output.parts).toHaveLength(1);
+    });
+
+    it('skips capture AND context fetch for a pure-myco synthetic message', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      await plugin['chat.message'](
+        { sessionID: 'ses-prompt-ctx' },
+        { parts: [{ type: 'text', text: 'Session digest', synthetic: true, metadata: { myco: true } }] },
+      );
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('captures and fetches context for a MIXED message (real user text alongside a myco part)', async () => {
+      // Tightened re-entrancy guard: the old guard skipped the whole message
+      // when ANY part carried the myco marker, silently dropping real user
+      // prompts in messages that also contained an injected part. Only the
+      // absence of non-myco user text skips now.
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.endsWith('/context/prompt')) {
+          return new Response(JSON.stringify({ text: '' }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      await plugin['chat.message'](
+        { sessionID: 'ses-prompt-ctx' },
+        {
+          parts: [
+            { type: 'text', text: 'Session digest', synthetic: true, metadata: { myco: true } },
+            { id: 'prt_zzzz', messageID: 'msg_user_2', sessionID: 'ses-prompt-ctx', type: 'text', text: 'real question' },
+          ],
+        },
+      );
+
+      const urls = fetchMock.mock.calls.map((call) => call[0]);
+      expect(urls).toEqual([
+        'http://localhost:32123/events',
+        'http://localhost:32123/context/prompt',
+      ]);
+      // The myco part is excluded from the captured prompt text.
+      expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toMatchObject({
+        type: 'user_prompt',
+        prompt: 'real question',
+      });
+    });
+
+    it('does not throw or mutate output.parts when the /context/prompt fetch fails', async () => {
+      const directory = createProjectDir();
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.endsWith('/context/prompt')) {
+          throw new Error('connection refused');
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const plugin = await MycoPlugin({ client: makeClient(), directory, worktree: directory });
+      const output = userOutput();
+      await plugin['chat.message']({ sessionID: 'ses-prompt-ctx' }, output);
+
+      expect(output.parts).toHaveLength(1);
+    });
+  });
+
   describe('server-side drop buffering', () => {
     // The plugin's buffer fallback (`shouldBufferPluginFallback`) mirrors
     // the hook CLI's contract: a deliberate `ignored` is never buffered in

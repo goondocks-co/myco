@@ -7,8 +7,9 @@
 // the local Myco daemon over HTTP — no subprocess spawns, no hook CLI, no stdin piping.
 //
 //   Capture: POST /sessions/register, /sessions/unregister, /events, /events/stop
-//   Context: POST /context, /context/resume
-//   Inject:  before_agent_start → systemPrompt augmentation
+//   Context: POST /context, /context/resume, /context/prompt
+//   Inject:  session_start → persistent custom message;
+//            before_agent_start → per-prompt custom message (/context/prompt)
 //
 // See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md
 //
@@ -965,14 +966,29 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // Session context is injected once, by the session_start hook above
-    // (every entry path — fresh, resume, fork — fetches there). The
-    // daemon's per-session dedup gate suppresses any repeat /context
-    // call, so re-fetching here delivers nothing and only produced a
-    // duplicate context.session serve. Known trade: if session_start's
-    // fetch failed transiently, there is no per-turn retry. Per-prompt
-    // spore/cortex context (POST /context/prompt) is the future occupant
-    // of this slot.
+    // Per-prompt spore/cortex context. Sequential after capture on purpose:
+    // the daemon attaches the injection record to the batch the /events
+    // POST above just created. Delivered as a custom message (not a
+    // systemPrompt mutation, which pi resets every turn) so the injected
+    // spores stay in the session history — the daemon excludes
+    // already-injected spores for the rest of the session.
+    if (prompt) {
+      const result = await postJson(currentCwd, "/context/prompt", {
+        prompt,
+        session_id: currentSessionId,
+      });
+      const data = result.ok ? (result.data as { text?: string } | undefined) : undefined;
+      const text = data?.text?.trim() ?? "";
+      if (text) {
+        return {
+          message: {
+            customType: "myco-prompt-context",
+            content: text,
+            display: false,
+          },
+        };
+      }
+    }
     return undefined;
   });
 

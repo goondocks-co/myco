@@ -983,21 +983,28 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
     },
 
     /**
-     * Chat message: capture the user prompt + any image attachments.
+     * Chat message: capture the user prompt + any image attachments, then
+     * append per-prompt spore/cortex context (POST /context/prompt) to the
+     * CURRENT turn by pushing a synthetic text part onto `output.parts`.
      *
-     * Per-turn spore injection is intentionally not done here. A previous iteration
-     * injected spores via session.prompt({ noReply: true }) inside this handler, but
-     * opencode re-fires chat.message for the synthetic turn and the first real user
-     * message landed during the re-entrancy window. Agents can fetch context on
-     * demand via the myco_cortex and myco_search MCP tools.
+     * Delivery is an in-place `output.parts.push` — never a reassignment
+     * (opencode's pipeline keeps the original array binding and validates/
+     * saves it before the model call) and never a re-entrant
+     * `client.session.prompt` / injectSyntheticContext call: a previous
+     * iteration injected spores via session.prompt({ noReply: true }) inside
+     * this handler, but opencode re-fires chat.message for the synthetic turn
+     * and the first real user message landed during the re-entrancy window.
      *
-     * Re-entrancy guard: we check for `metadata.myco === true` on any part to
-     * detect our session-start digest injection coming back around. Opencode
-     * itself sets `synthetic: true` for many internal purposes (plan-mode
-     * prompts, build-switch transitions, subagent task summaries), so the
-     * `synthetic` flag alone is NOT reliable as a re-entrancy signal — it
-     * would silently drop any user prompt that opencode touched for one of
-     * those internal reasons.
+     * Re-entrancy guard: parts carrying `metadata.myco === true` are our own
+     * injections (session-start digest, per-prompt context) coming back
+     * around — they are excluded from the prompt text, and a message with NO
+     * non-myco user text is skipped entirely. A mixed message (real user text
+     * alongside a myco part) IS captured. Opencode itself sets
+     * `synthetic: true` for many internal purposes (plan-mode prompts,
+     * build-switch transitions, subagent task summaries), so the `synthetic`
+     * flag alone is NOT reliable as a re-entrancy signal — it would silently
+     * drop any user prompt that opencode touched for one of those internal
+     * reasons.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     "chat.message": async (input: any, output: any) => {
@@ -1009,6 +1016,9 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       // `data:<mime>;base64,<data>` per
       // packages/app/src/components/prompt-input/attachments.ts in opencode).
       const allParts = (output?.parts ?? []) as Array<{
+        id?: string;
+        messageID?: string;
+        sessionID?: string;
         type?: string;
         text?: string;
         mime?: string;
@@ -1016,9 +1026,6 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
         synthetic?: boolean;
         metadata?: { [key: string]: unknown };
       }>;
-      // Skip if any part carries the Myco metadata marker — that means
-      // chat.message is firing for our own injectSyntheticContext call.
-      if (allParts.some((p) => p.metadata?.[MYCO_METADATA_MARKER] === true)) return;
 
       // Prompt text = user's real text only. opencode emits `synthetic: true`
       // text parts for internal scaffolding when the message contains file
@@ -1026,11 +1033,19 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       // packages/opencode/src/session/prompt.ts. Those parts include full
       // file contents, tool-call scaffolding, plan instructions, etc. Joining
       // them into prompt_text would bloat every captured user prompt with
-      // system-level content that the user never typed.
-      const textParts = allParts
-        .filter((p) => p.type === "text" && p.text && p.synthetic !== true)
-        .map((p) => p.text as string);
-      const prompt = textParts.join("\n");
+      // system-level content that the user never typed. Parts carrying the
+      // Myco metadata marker are our own injections re-firing through
+      // chat.message and are likewise excluded; when NO non-myco user text
+      // remains (pure-myco synthetic message), the early return below skips
+      // capture and context fetch entirely.
+      const userTextParts = allParts.filter(
+        (p) =>
+          p.type === "text" &&
+          p.text &&
+          p.synthetic !== true &&
+          p.metadata?.[MYCO_METADATA_MARKER] !== true,
+      );
+      const prompt = userTextParts.map((p) => p.text as string).join("\n");
       if (!prompt) return;
 
       // Extract any image attachments from FilePart data URLs. Non-image file
@@ -1053,6 +1068,40 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
       }
 
       await mycoPostUserPrompt(directory, sessionId, prompt, images);
+
+      // Per-prompt spore/cortex context. Sequential after capture on
+      // purpose: the daemon attaches the injection record to the batch the
+      // /events POST above just created. postJson swallows network failures
+      // ({ ok: false }), so a down daemon degrades to no injection.
+      const ctx = await postJson(directory, "/context/prompt", {
+        prompt,
+        session_id: sessionId,
+      });
+      const ctxData = ctx.ok ? (ctx.data as { text?: string } | undefined) : undefined;
+      const ctxText = ctxData?.text?.trim() ?? "";
+      if (ctxText) {
+        // Mirror the identity fields (messageID/sessionID) of a real user
+        // text part — opencode zod-validates parts before save (log-only on
+        // failure, but a storable shape keeps the context durable in the
+        // message). Part ids follow opencode's `prt_<entropy>` convention;
+        // the plugin has no id helper, so derive the prefix from the
+        // mirrored part and append a unique suffix.
+        const template = userTextParts[0];
+        const idPrefix =
+          typeof template?.id === "string" && template.id.includes("_")
+            ? template.id.slice(0, template.id.indexOf("_") + 1)
+            : "prt_";
+        const ctxId = `${idPrefix}myco${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        output.parts.push({
+          id: ctxId,
+          ...(template?.messageID !== undefined ? { messageID: template.messageID } : {}),
+          ...(template?.sessionID !== undefined ? { sessionID: template.sessionID } : {}),
+          type: "text",
+          text: ctxText,
+          synthetic: true,
+          metadata: { [MYCO_METADATA_MARKER]: true },
+        });
+      }
     },
 
     /**
