@@ -12,6 +12,7 @@ import {
   listBufferSessionIds,
   cleanStaleBuffers,
   pruneQuarantinedBuffers,
+  removeBufferLockCompanion,
   type BufferCleanupDecision,
 } from '@myco/capture/buffer.js';
 import { bufferDirCurrentRegistration, bufferDirIdentity } from '@myco/capture/buffer-location.js';
@@ -568,6 +569,7 @@ export function createReconciler({ bufferDirs, logger, projectRoot, onSessionRec
       });
       return;
     }
+    removeBufferLockCompanion(path.dirname(bufferPath), sessionId);
     reconciledSessions.delete(sessionId);
     logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Reconciliation: buffer discarded without replay', {
       session_id: sessionId,

@@ -13,6 +13,7 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { closeSession, deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { SESSION_TOMBSTONE_SOURCE, pruneSessionTombstones } from '@myco/db/queries/session-tombstones.js';
+import { removeBufferLockCompanion } from '@myco/capture/buffer.js';
 import { resolveBufferDirForProjectId } from '@myco/capture/buffer-location.js';
 import {
   epochSeconds,
@@ -225,6 +226,7 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
       try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
       if (bufferDir) {
         try { fs.unlinkSync(path.join(bufferDir, `${sessionId}.jsonl`)); } catch { /* best-effort */ }
+        removeBufferLockCompanion(bufferDir, sessionId);
       }
     }
 
