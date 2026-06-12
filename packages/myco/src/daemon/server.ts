@@ -176,11 +176,37 @@ export class DaemonServer {
     this.rawRoutes.set(routePath, handler);
   }
 
+  /** Last-resort trace for a transport handler rejection (see start()). */
+  private logUnhandledTransportFailure(surface: 'request' | 'upgrade', err: unknown): void {
+    try {
+      this.logger.error(LOG_KINDS.SERVER_REQUEST, 'Transport handler failed outside its route guard', {
+        surface,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? (err.stack ?? null) : null,
+      });
+    } catch { /* logging best-effort */ }
+  }
+
   async start(port: number = 0): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => this.handleRequest(req, res));
+      // Both handlers run async work that begins BEFORE their internal try
+      // blocks (URL parse, route match) — a throw there would otherwise be
+      // an unhandled rejection, which exits the process under Bun. Refuse
+      // the one request, never the daemon.
+      this.server = http.createServer((req, res) => {
+        this.handleRequest(req, res).catch((err) => {
+          this.logUnhandledTransportFailure('request', err);
+          try {
+            if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'internal_error' }));
+          } catch { /* socket already gone */ }
+        });
+      });
       this.server.on('upgrade', (req, socket, head) => {
-        void this.handleUpgrade(req, socket, head);
+        this.handleUpgrade(req, socket, head).catch((err) => {
+          this.logUnhandledTransportFailure('upgrade', err);
+          try { socket.destroy(); } catch { /* already destroyed */ }
+        });
       });
       this.server.on('error', reject);
 

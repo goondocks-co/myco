@@ -243,7 +243,12 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       resolveEmbeddingManager(req.requestContext),
       req.requestContext?.projectVaultDir ?? vaultDir,
       bufferDir,
-    ).catch(() => {});
+    ).catch((err) => {
+      logger.warn(LOG_KINDS.API_SESSION_DELETE, 'Post-delete cascade cleanup failed', {
+        session_id: sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {
       session_id: sessionId,
