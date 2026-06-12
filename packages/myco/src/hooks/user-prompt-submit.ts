@@ -31,10 +31,22 @@ export async function main() {
     await client.ensureRunning();
 
     if (decision.action === 'drop') {
-      // Drop rule fired — cascade-delete the session row SessionStart registered.
-      // Session-maintenance sweep catches any stragglers if this request fails.
+      // Drop rule fired — cascade-delete the session row SessionStart
+      // registered, under the phantom-delete contract: {expect_empty: true}
+      // makes the daemon refuse unless the session captured zero human
+      // prompts. Guards against the codex subagent-spawn confusion where
+      // the hook receives the PARENT session_id with the CHILD's transcript
+      // — the drop rule fires correctly but sessionId names a real session.
+      // Session-maintenance sweep catches any stragglers if this request
+      // fails or is refused.
       process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
-      await client.delete(`/api/sessions/${sessionId}`);
+      const deleteResult = await client.delete(`/api/sessions/${sessionId}`, { expect_empty: true });
+      if (!deleteResult.ok) {
+        const refusedNotEmpty = (deleteResult.data as { error?: string } | undefined)?.error === 'session_not_empty';
+        process.stderr.write(refusedNotEmpty
+          ? '[myco] user-prompt-submit: drop-delete refused (session has captured content) — leaving cleanup to the maintenance sweep\n'
+          : '[myco] user-prompt-submit: drop-delete did not complete (transport or lookup failure) — leaving cleanup to the maintenance sweep\n');
+      }
       writeHookResponse(symbiont, 'user-prompt-submit');
       return;
     }

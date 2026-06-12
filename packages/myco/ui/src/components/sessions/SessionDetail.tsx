@@ -17,6 +17,7 @@ import { CanopyEfficiencyTile } from './CanopyEfficiencyTile';
 import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
+import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 
 /* ---------- Helpers ---------- */
@@ -109,6 +110,9 @@ export function SessionDetail({ id }: SessionDetailProps) {
   const completeSession = useCompleteSession();
   const [summaryStatus, setSummaryStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Second-stage confirm: set when the daemon refused the delete with 409
+  // session_live; the next confirm retries with force.
+  const [liveConfirm, setLiveConfirm] = useState(false);
 
   // Read initial tab and plan from URL query params (e.g., ?tab=plans&plan=123)
   const [activeTab, setActiveTab] = useState<TabValue>(() => {
@@ -320,9 +324,11 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
       <ConfirmDialog
         open={deleteOpen}
-        onOpenChange={setDeleteOpen}
+        onOpenChange={(open) => { setDeleteOpen(open); if (!open) setLiveConfirm(false); }}
         title="Delete Session"
-        description="This will permanently remove this session and all related data. This action cannot be undone."
+        description={liveConfirm
+          ? 'Session appears live — the agent is still running. Deleting now permanently discards the rest of the session as it happens. Delete anyway?'
+          : 'This will permanently remove this session and all related data. This action cannot be undone.'}
         icon={<Trash2 className="h-4 w-4 text-tertiary" />}
         meta={session ? [
           { label: 'ID', value: shortSession(session.id) },
@@ -334,13 +340,23 @@ export function SessionDetail({ id }: SessionDetailProps) {
           { label: 'Attachments', value: impact.attachmentCount },
           { label: 'Graph Edges', value: impact.graphEdgeCount },
         ] : []}
-        confirmLabel="Delete Session"
+        confirmLabel={liveConfirm ? 'Delete Anyway' : 'Delete Session'}
         variant="destructive"
         onConfirm={() => {
-          deleteSession.mutate(session!.id, {
+          deleteSession.mutate({ id: session!.id, force: liveConfirm }, {
             onSuccess: () => {
               setDeleteOpen(false);
+              setLiveConfirm(false);
               navigate('/sessions');
+            },
+            onError: (err) => {
+              if (
+                err instanceof ApiError &&
+                err.status === 409 &&
+                (err.body as { error?: string } | null)?.error === 'session_live'
+              ) {
+                setLiveConfirm(true);
+              }
             },
           });
         }}

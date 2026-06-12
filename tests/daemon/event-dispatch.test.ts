@@ -15,6 +15,7 @@ import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
 import { getDatabase } from '@myco/db/client.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
+import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 function makeHandler(opts: {
@@ -673,6 +674,150 @@ describe('createEventDispatcher', () => {
       logger.close();
       fs.rmSync(vaultDir, { recursive: true, force: true });
       fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('tombstone gate — deleted sessions are not passively resurrected', () => {
+    // RC-A: DELETE /api/sessions/:id on a live session used to be silently
+    // resurrected by the very next agent event (the unknown-session branch
+    // auto-registered a fresh row). A deletion tombstone makes the drop
+    // final against PASSIVE event-driven recreation; an explicit
+    // /sessions/register (same-id reload) deliberately supersedes.
+
+    function tombstone(sessionId: string): void {
+      insertSessionTombstone(getDatabase(), {
+        sessionId,
+        projectId: null,
+        source: SESSION_TOMBSTONE_SOURCE.API_DELETE,
+      });
+    }
+
+    it('ignores an event for a tombstoned unknown session and creates no row', async () => {
+      const { handler, registry, sessionBuffers, logger, vaultDir } = makeHandler();
+      const sessionId = 'tombstoned-event-001';
+      tombstone(sessionId);
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tomb-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          prompt: 'a prompt arriving after the session was deleted',
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(res.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(registry.getSession(sessionId)).toBeUndefined();
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+      expect(sessionBuffers.has(sessionId)).toBe(false);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('serves subsequent events from the drop cache with the same tombstone reason', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'tombstoned-event-cached-002';
+      tombstone(sessionId);
+
+      const first = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'first event after delete' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      // Different type + content so the dedup cache can't be the reason.
+      const second = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'tool_use', session_id: sessionId, agent: 'claude-code', tool_name: 'Bash', tool_input: { command: 'pwd' } },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(first.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(second.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('keeps the drop permanent when a later event newly supplies a transcript_path (no re-evaluation bypass)', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'tombstoned-event-transcript-003';
+      tombstone(sessionId);
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tomb-tx-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      // First sight WITHOUT transcript meta — caches the drop.
+      await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'no transcript yet' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      // A transcript_path showing up later re-opens capture-rule drops, but
+      // must NOT re-open a deliberate deletion (hadTranscriptMeta: true).
+      const withTranscript = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'claude-code',
+          transcript_path: transcriptPath,
+          prompt: 'now I have a transcript, let me back in',
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(withTranscript.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('flows events again after an explicit register recreates the row (rehydrate branch — gate not consulted)', async () => {
+      const { handler, registry, logger, vaultDir } = makeHandler();
+      const sessionId = 'tombstoned-then-registered-004';
+      tombstone(sessionId);
+
+      const ignored = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'blocked while deleted' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(ignored.body).toEqual({ ok: true, ignored: 'session_tombstoned', persisted: false });
+
+      // Explicit POST /sessions/register recreates the row — the supported
+      // same-id-reload flow. Simulated here by the row upsert it performs.
+      const { upsertSession } = await import('@myco/db/queries/sessions.js');
+      const now = Math.floor(Date.now() / 1000);
+      upsertSession({ id: sessionId, agent: 'claude-code', status: 'active', started_at: now, created_at: now, machine_id: 'local' });
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'user_prompt', session_id: sessionId, agent: 'claude-code', prompt: 'second life after explicit register' },
+        query: {}, params: {}, pathname: '/events',
+      });
+
+      expect(res.body).toMatchObject({ ok: true, persisted: true });
+      expect(res.body).toHaveProperty('batchId');
+      expect(registry.getSession(sessionId)).toBeDefined();
+      const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+      expect(batches).toHaveLength(1);
+      expect(batches[0].user_prompt).toBe('second life after explicit register');
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
     });
   });
 
