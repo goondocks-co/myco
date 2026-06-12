@@ -61,11 +61,31 @@ export class EventBuffer {
     if (fs.existsSync(this.filePath)) {
       fs.unlinkSync(this.filePath);
     }
+    removeBufferLockCompanion(this.bufferDir, this.sessionId);
   }
 
   getFilePath(): string {
     return this.filePath;
   }
+}
+
+/**
+ * Best-effort removal of the `.{sessionId}.lock` companion that
+ * `EventBuffer.append`'s flock leaves beside the buffer file. Every site
+ * that unlinks or quarantines a buffer must also call this — the lock is
+ * meaningless without its buffer and otherwise accumulates forever.
+ *
+ * Unlinking a lock another process currently flocks lets a subsequent
+ * appender create a fresh inode at the same path and acquire instantly
+ * (flock binds to the inode, not the path). Accepted: every caller is
+ * removing a buffer that is condemned (stale, tombstoned, quarantined,
+ * or cascade-deleted), and the reconciler tolerates a torn trailing
+ * line by excluding it with a WARN.
+ */
+export function removeBufferLockCompanion(bufferDir: string, sessionId: string): void {
+  try {
+    fs.unlinkSync(path.join(bufferDir, `.${sessionId}.lock`));
+  } catch { /* already gone or never created */ }
 }
 
 /**
@@ -137,6 +157,9 @@ export function quarantineBufferFile(bufferDir: string, file: string): string {
     target = path.join(quarantineDir, `${base}.${n}${ext}`);
   }
   fs.renameSync(path.join(bufferDir, file), target);
+  // The lock companion stays in the buffer dir on purpose (quarantined
+  // files are never appended to again) — drop it with the move.
+  removeBufferLockCompanion(bufferDir, base);
   return target;
 }
 
@@ -211,11 +234,34 @@ export function cleanStaleBuffers(
       }
       if (decision === 'age-gated' && identity.mtimeMs >= cutoff) continue;
       fs.unlinkSync(filePath);
+      removeBufferLockCompanion(bufferDir, sessionId);
       removed++;
       onRemoved?.(sessionId);
     }
+    reapOrphanedBufferLocks(bufferDir, cutoff);
   } catch { /* buffer dir may not exist */ }
   return removed;
+}
+
+/**
+ * Remove `.{sessionId}.lock` files whose buffer no longer exists. Covers
+ * locks stranded by historical deletion sites (before lock cleanup was
+ * paired with buffer removal) and by crashes between unlink and lock
+ * cleanup. Age-gated by the same cutoff as buffer deletion: a freshly
+ * created lock can precede its buffer's first append, so a young orphan
+ * is left for the next pass.
+ */
+function reapOrphanedBufferLocks(bufferDir: string, cutoff: number): void {
+  for (const file of fs.readdirSync(bufferDir)) {
+    if (!file.startsWith('.') || !file.endsWith('.lock')) continue;
+    const sessionId = file.slice(1, -'.lock'.length);
+    if (!sessionId) continue;
+    if (fs.existsSync(path.join(bufferDir, `${sessionId}.jsonl`))) continue;
+    try {
+      if (fs.statSync(path.join(bufferDir, file)).mtimeMs >= cutoff) continue;
+      fs.unlinkSync(path.join(bufferDir, file));
+    } catch { /* concurrent removal — skip */ }
+  }
 }
 
 /**

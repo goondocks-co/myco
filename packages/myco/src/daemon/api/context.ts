@@ -130,7 +130,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
           cortexContent = snapshot.content;
           sourceRunId = snapshot.sourceRunId;
         } else {
-          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for session start', {
+          logger.info(LOG_KINDS.CONTEXT_SESSION, 'Session context: no stored Cortex instructions available', {
             session_id,
           });
         }
@@ -144,13 +144,18 @@ export function createSessionContextHandler(deps: ContextDeps) {
       );
 
       if (digestEnabled && !composed.parts.some((p) => p.kind === 'digest')) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Session context: no preferred digest extract available', {
           session_id,
           preferred_tier: config.cortex.digest.tier,
         });
       }
 
       if (textParts.length === 0) {
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Session context skipped — no content parts to inject', {
+          session_id,
+          cortex_enabled: capabilityEnabled(config, 'cortex'),
+          digest_enabled: digestEnabled,
+        });
         return { body: { text: '' } };
       }
 
@@ -162,18 +167,6 @@ export function createSessionContextHandler(deps: ContextDeps) {
       const source = sourceParts.join('+');
       const contextText = textParts.join('\n\n');
       const estimatedTokens = estimateTokens(contextText);
-      logger.info(
-        LOG_KINDS.CONTEXT_SESSION,
-        `Session context: ${estimatedTokens} est. tokens, source=${source}`,
-        {
-          session_id,
-          source,
-          branch,
-          source_run_id: sourceRunId,
-          text_length: contextText.length,
-          estimated_tokens: estimatedTokens,
-        },
-      );
 
       // Per-(session) dedup gate. UNIQUE on
       // `myco:inject:cortex:<sessionId>` blocks re-entry within the same
@@ -206,8 +199,29 @@ export function createSessionContextHandler(deps: ContextDeps) {
           trigger: { metadata: { source, branch } },
           fetchContent: async () => ({ text: contextText, metadata: { source } }),
         });
-        if (suppress) return { body: { text: '' } };
+        if (suppress) {
+          logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session context suppressed — already injected this session', {
+            session_id,
+            source,
+          });
+          return { body: { text: '' } };
+        }
       }
+
+      // Served-log AFTER the dedup gate: a suppressed duplicate call must
+      // not log as if context was delivered.
+      logger.info(
+        LOG_KINDS.CONTEXT_SESSION,
+        `Session context: ${estimatedTokens} est. tokens, source=${source}`,
+        {
+          session_id,
+          source,
+          branch,
+          source_run_id: sourceRunId,
+          text_length: contextText.length,
+          estimated_tokens: estimatedTokens,
+        },
+      );
 
       return {
         body: {
@@ -243,9 +257,16 @@ export function createSubagentContextHandler(deps: ContextDeps) {
     });
 
     try {
-      if (!session_id) return { body: { text: '' } };
+      if (!session_id) {
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context skipped — request carried no session_id', {
+          agent,
+          agent_id,
+          agent_type,
+        });
+        return { body: { text: '' } };
+      }
       if (!capabilityEnabled(config, 'cortex') || !config.cortex.instructions.inject_on_subagent_start) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Subagent context disabled', { session_id, agent });
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context disabled by config', { session_id, agent });
         return { body: { text: '' } };
       }
       if (!symbiontHasCapability(agent, 'subagentStartInjection')) {
@@ -265,7 +286,7 @@ export function createSubagentContextHandler(deps: ContextDeps) {
         cliToolTransport: symbiontToolTransport(agent) === 'cli',
       });
       if (!composed) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No stored Cortex instructions available for subagent start', {
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context skipped — no stored Cortex instructions', {
           session_id,
           agent,
         });
@@ -308,7 +329,14 @@ export function createSubagentContextHandler(deps: ContextDeps) {
           },
         }),
       });
-      if (suppress) return { body: { text: '' } };
+      if (suppress) {
+        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Subagent context suppressed — already injected for this subagent', {
+          session_id,
+          agent,
+          discriminator,
+        });
+        return { body: { text: '' } };
+      }
 
       logger.info(LOG_KINDS.CONTEXT_SESSION, 'Subagent context injected', {
         session_id,
@@ -384,7 +412,10 @@ export function createResumeContextHandler(deps: ContextDeps) {
       }
 
       if (parts.length === 0) {
-        logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No resume context available', { session_id, parent_session_id });
+        logger.info(LOG_KINDS.CONTEXT_SESSION, 'Resume context skipped — parent session has no title or summary', {
+          session_id,
+          parent_session_id,
+        });
         return { body: { text: '' } };
       }
 
@@ -555,7 +586,13 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const hydrated = hydrateSearchResults(selectedResults, { scope });
     const spores = hydrated.filter((r) => r.type === 'spore');
 
-    if (spores.length === 0) return respond('');
+    if (spores.length === 0) {
+      logger.debug(LOG_KINDS.CONTEXT_FILTER, 'Hydration yielded no spores for selected results', {
+        session_id,
+        selected: selectedResults.length,
+      });
+      return respond('');
+    }
 
     const text = formatSporeContext(spores);
 
@@ -591,7 +628,13 @@ export function createPromptContextHandler(deps: ContextDeps) {
         },
         fetchContent: async () => ({ text, metadata: { spore_count: spores.length } }),
       });
-      if (suppress) return respond('');
+      if (suppress) {
+        logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt spore injection suppressed — already injected for this prompt', {
+          session_id,
+          spore_count: spores.length,
+        });
+        return respond('');
+      }
     }
 
     return respond(text);

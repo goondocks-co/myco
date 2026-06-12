@@ -890,20 +890,27 @@ export default function (pi: ExtensionAPI) {
     // Register with the daemon
     await mycoRegisterSession(currentCwd, sessionId);
 
-    // Fetch and inject context as a persistent custom message.
-    // Pi's before_agent_start hook augments the system prompt each turn,
-    // but this initial injection ensures context is visible in the session
-    // history and survives compaction.
-    let contextText: string | null = null;
+    // Fetch and inject context as a persistent custom message — the one
+    // session-context injection for this session id (the daemon's
+    // per-session dedup gate suppresses any repeat /context call).
+    // Persisting it in session history means it survives compaction.
+    // Resumed and forked sessions are NEW session ids to the daemon —
+    // /context/resume records no cortex injection and a fork inherits
+    // only the parent's (possibly stale, possibly compacted-away)
+    // context message — so every entry path fetches the full session
+    // context here; the resume recap rides in front of it.
+    const contextParts: string[] = [];
 
     if (isResume && event.previousSessionFile) {
       const previousSessionId = deriveSessionId(event.previousSessionFile);
       if (previousSessionId) {
-        contextText = await fetchMycoResumeContext(currentCwd, sessionId, previousSessionId);
+        const recap = await fetchMycoResumeContext(currentCwd, sessionId, previousSessionId);
+        if (recap) contextParts.push(recap);
       }
-    } else if (!isFork) {
-      contextText = await fetchMycoSessionContext(currentCwd, sessionId);
     }
+    const sessionContext = await fetchMycoSessionContext(currentCwd, sessionId);
+    if (sessionContext) contextParts.push(sessionContext);
+    const contextText = contextParts.length > 0 ? contextParts.join("\n\n") : null;
 
     if (contextText) {
       pi.sendMessage({
@@ -958,10 +965,14 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    const contextText = await fetchMycoSessionContext(currentCwd, currentSessionId);
-    if (contextText) {
-      return { systemPrompt: event.systemPrompt + "\n\n" + contextText };
-    }
+    // Session context is injected once, by the session_start hook above
+    // (every entry path — fresh, resume, fork — fetches there). The
+    // daemon's per-session dedup gate suppresses any repeat /context
+    // call, so re-fetching here delivers nothing and only produced a
+    // duplicate context.session serve. Known trade: if session_start's
+    // fetch failed transiently, there is no per-turn retry. Per-prompt
+    // spore/cortex context (POST /context/prompt) is the future occupant
+    // of this slot.
     return undefined;
   });
 

@@ -191,7 +191,7 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
       const project = loadConfig(vaultDir);
       const updated = updateLocalConfig(vaultDir, (local) => {
         const working = structuredClone(local) as Record<string, unknown>;
-        for (const key of clearList) unsetAtPath(working, key);
+        for (const key of clearList) unsetAtPath(working, key, { pruneEmptyParents: true });
         const withPatch = deepMergeConfig(
           working,
           patch as Record<string, unknown>,
@@ -227,7 +227,7 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     // shape raises a ZodError that we convert to a 400 below.
     const updated = updateConfig(vaultDir, (current) => {
       const working = structuredClone(current) as Record<string, unknown>;
-      for (const key of clearList) unsetAtPath(working, key);
+      for (const key of clearList) unsetAtPath(working, key, { pruneEmptyParents: true });
       const withPatch = deepMergeConfig(working, patch as Record<string, unknown>) as Record<string, unknown>;
       applyListDeltas(withPatch, addOpsOrError, removeOpsOrError);
       return withPatch as MycoConfig;
@@ -466,7 +466,7 @@ async function handlePutTierConfig<TConfig>(
     const validated = updateTierConfigRaw(options.target, (rawDoc) => {
       // Clears apply first (same order as the scoped handler) so a clear of
       // a stale subtree can't erase the values the patch introduces.
-      for (const key of clearList) unsetAtPath(rawDoc, key);
+      for (const key of clearList) unsetAtPath(rawDoc, key, { pruneEmptyParents: true });
       const next = deepMergeConfig(rawDoc, patch);
       for (const opPath of listTouched) {
         setAtPath(next, opPath, getAtPath(working, opPath));

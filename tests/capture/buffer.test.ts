@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { EventBuffer, resolveSessionFromBuffer } from '@myco/capture/buffer';
+import {
+  EventBuffer,
+  resolveSessionFromBuffer,
+  cleanStaleBuffers,
+  quarantineBufferFile,
+  BUFFER_QUARANTINE_DIRNAME,
+} from '@myco/capture/buffer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -46,6 +52,76 @@ describe('EventBuffer', () => {
     expect(buffer.exists()).toBe(true);
     buffer.delete();
     expect(buffer.exists()).toBe(false);
+  });
+
+  it('delete() removes the .lock companion alongside the buffer', () => {
+    const buffer = new EventBuffer(bufferDir, 'session-abc');
+    buffer.append({ type: 'tool_use', tool: 'Read' });
+    const lockPath = path.join(bufferDir, '.session-abc.lock');
+    expect(fs.existsSync(lockPath)).toBe(true);
+    buffer.delete();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe('buffer lock companion cleanup', () => {
+  let tmpDir: string;
+  let bufferDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lock-'));
+    bufferDir = path.join(tmpDir, 'buffer');
+    fs.mkdirSync(bufferDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeBufferWithLock(sessionId: string, ageMs: number): void {
+    const old = new Date(Date.now() - ageMs);
+    const jsonlPath = path.join(bufferDir, `${sessionId}.jsonl`);
+    const lockPath = path.join(bufferDir, `.${sessionId}.lock`);
+    fs.writeFileSync(jsonlPath, '{"type":"tool_use"}\n');
+    fs.writeFileSync(lockPath, '');
+    fs.utimesSync(jsonlPath, old, old);
+    fs.utimesSync(lockPath, old, old);
+  }
+
+  it('cleanStaleBuffers removes the lock companion with each stale buffer', () => {
+    makeBufferWithLock('stale-1', 60_000);
+    const removed = cleanStaleBuffers(bufferDir, { maxAgeMs: 1_000 });
+    expect(removed).toBe(1);
+    expect(fs.existsSync(path.join(bufferDir, '.stale-1.lock'))).toBe(false);
+  });
+
+  it('cleanStaleBuffers reaps old orphaned locks but spares young ones and live pairs', () => {
+    // Orphan past the age gate — reaped.
+    const oldOrphan = path.join(bufferDir, '.gone-session.lock');
+    fs.writeFileSync(oldOrphan, '');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(oldOrphan, old, old);
+    // Fresh orphan — a lock can precede its buffer's first append; spared.
+    const youngOrphan = path.join(bufferDir, '.brand-new.lock');
+    fs.writeFileSync(youngOrphan, '');
+    // Live pair, fresh — both spared.
+    const live = new EventBuffer(bufferDir, 'live-session');
+    live.append({ type: 'tool_use' });
+
+    cleanStaleBuffers(bufferDir, { maxAgeMs: 1_000 });
+
+    expect(fs.existsSync(oldOrphan)).toBe(false);
+    expect(fs.existsSync(youngOrphan)).toBe(true);
+    expect(fs.existsSync(path.join(bufferDir, '.live-session.lock'))).toBe(true);
+    expect(fs.existsSync(path.join(bufferDir, 'live-session.jsonl'))).toBe(true);
+  });
+
+  it('quarantineBufferFile drops the lock companion when moving the buffer', () => {
+    makeBufferWithLock('diverging', 60_000);
+    const target = quarantineBufferFile(bufferDir, 'diverging.jsonl');
+    expect(target).toContain(BUFFER_QUARANTINE_DIRNAME);
+    expect(fs.existsSync(target)).toBe(true);
+    expect(fs.existsSync(path.join(bufferDir, '.diverging.lock'))).toBe(false);
   });
 });
 
