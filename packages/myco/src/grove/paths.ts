@@ -7,7 +7,7 @@ import {
   MACHINE_RUNTIME_DIRNAME,
   MACHINE_RUNTIME_TMP_DIRNAME,
 } from '../constants/update.js';
-import { assertGroveEraId } from './ids.js';
+import { assertGroveEraId, isGroveEraId } from './ids.js';
 import type { DaemonVariant } from './registry.js';
 
 /**
@@ -230,6 +230,20 @@ export function resolveGroveConfigPath(groveId: string, mycoHome = resolveMycoHo
 
 export function resolveGroveDbPath(groveId: string, mycoHome = resolveMycoHome()): string {
   return path.join(resolveGroveDir(groveId, mycoHome), GROVE_DB_FILENAME);
+}
+
+/**
+ * Inverse of `resolveGroveDbPath`: the Grove id a DB file belongs to,
+ * read off its path (`.../groves/<groveId>/myco.db`). Same derivation
+ * the daemon's cross-Grove ownership gate uses (db/client.ts
+ * `assertOwnsDatabase`). Returns null for non-Grove DBs (in-memory,
+ * test fixtures, arbitrary paths) so callers can treat Grove identity
+ * as unknown rather than wrong.
+ */
+export function groveIdFromDbPath(dbPath: string): string | null {
+  if (path.basename(dbPath) !== GROVE_DB_FILENAME) return null;
+  const candidate = path.basename(path.dirname(dbPath));
+  return isGroveEraId(candidate, 'grove') ? candidate : null;
 }
 
 export function resolveGroveVectorsPath(groveId: string, mycoHome = resolveMycoHome()): string {

@@ -353,11 +353,17 @@ export class DaemonServer {
         // Long-running ops (move, vacuum) take a per-project pause in
         // `projects.toml`; while set, every writer for that project must
         // be refused. Reads stay open so the UI can still surface "this
-        // project is paused (reason)".
+        // project is paused (reason)". One owner-op-scoped exception: the
+        // move endpoint itself passes a 'grove-move' pause, because the
+        // retry that resumes a crash-orphaned move (releasing or re-taking
+        // its own pause) arrives through this very gate.
         if (isWriteMethod(req.method) && requestContext.groveId && requestContext.projectId) {
           const projectId = requestContext.projectId;
           const paused = isProjectPaused(projectId);
-          if (paused.paused) {
+          if (
+            paused.paused
+            && !isMoveRetryRequest(req.method, match.pathname, match.params, paused.reason, projectId)
+          ) {
             const response = pausedErrorResponse(projectId, paused);
             res.writeHead(response.status, { 'Content-Type': 'application/json', ...versionHeader });
             res.end(JSON.stringify(response.body));
@@ -701,6 +707,31 @@ function isWriteMethod(method: string | undefined): boolean {
   if (!method) return false;
   const upper = method.toUpperCase();
   return upper === 'POST' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE';
+}
+
+/**
+ * True when a write hitting the pause gate is the move POST for the very
+ * project a 'grove-move' pause is guarding. A move that crashed mid-op
+ * leaves its pause held; the only HTTP path that resumes (or fresh-starts)
+ * that move is POST /api/groves/:id/projects/:projectId, and
+ * `moveProjectBetweenGroves` arbitrates the pause itself — it re-takes
+ * the same owner_op idempotently and surfaces a real owner conflict.
+ * Matched on the pause's reason plus the exact route shape for the same
+ * project, never a blanket exemption: every other write for the paused
+ * project (including the /archive and /unarchive siblings, which carry a
+ * trailing segment) stays refused.
+ */
+function isMoveRetryRequest(
+  method: string | undefined,
+  pathname: string,
+  params: Record<string, string>,
+  pauseReason: string,
+  projectId: string,
+): boolean {
+  if (method?.toUpperCase() !== 'POST') return false;
+  if (pauseReason !== 'grove-move') return false;
+  if (!params.id || params.projectId !== projectId) return false;
+  return pathname === `/api/groves/${params.id}/projects/${params.projectId}`;
 }
 
 /**

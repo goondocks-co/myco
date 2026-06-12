@@ -66,6 +66,7 @@ import {
   type SourceSporeRow,
   type SourceSessionRow,
 } from './importer/source-rows.js';
+import { sortRowsByParentChain } from './importer/parent-chain-sort.js';
 
 export interface ImportProjectCoreInput {
   migrationId: string;
@@ -2239,61 +2240,21 @@ function requireMapping(
 }
 
 function sortPromptBatchesForImport(rows: readonly SourcePromptBatchRow[]): SourcePromptBatchRow[] {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const visited = new Set<number>();
-  const visiting = new Set<number>();
-  const ordered: SourcePromptBatchRow[] = [];
-
-  function visit(row: SourcePromptBatchRow): void {
-    if (visited.has(row.id)) return;
-    if (visiting.has(row.id)) {
-      throw new Error(`Cycle in prompt_batches parent chain at ${row.id}`);
-    }
-
-    visiting.add(row.id);
-    if (row.parent_prompt_batch_id != null) {
-      const parent = byId.get(row.parent_prompt_batch_id);
-      if (!parent) {
-        throw new Error(`Missing source prompt_batches parent ${row.parent_prompt_batch_id} for ${row.id}`);
-      }
-      visit(parent);
-    }
-    visiting.delete(row.id);
-    visited.add(row.id);
-    ordered.push(row);
-  }
-
-  for (const row of rows) visit(row);
-  return ordered;
+  return sortRowsByParentChain(
+    rows,
+    'prompt_batches',
+    (row) => row.id,
+    (row) => row.parent_prompt_batch_id,
+  );
 }
 
 function sortDigestExtractRevisionsForImport(rows: readonly SourceDigestExtractRevisionRow[]): SourceDigestExtractRevisionRow[] {
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const visited = new Set<number>();
-  const visiting = new Set<number>();
-  const ordered: SourceDigestExtractRevisionRow[] = [];
-
-  function visit(row: SourceDigestExtractRevisionRow): void {
-    if (visited.has(row.id)) return;
-    if (visiting.has(row.id)) {
-      throw new Error(`Cycle in digest_extract_revisions parent chain at ${row.id}`);
-    }
-
-    visiting.add(row.id);
-    if (row.parent_revision_id != null) {
-      const parent = byId.get(row.parent_revision_id);
-      if (!parent) {
-        throw new Error(`Missing source digest_extract_revisions parent ${row.parent_revision_id} for ${row.id}`);
-      }
-      visit(parent);
-    }
-    visiting.delete(row.id);
-    visited.add(row.id);
-    ordered.push(row);
-  }
-
-  for (const row of rows) visit(row);
-  return ordered;
+  return sortRowsByParentChain(
+    rows,
+    'digest_extract_revisions',
+    (row) => row.id,
+    (row) => row.parent_revision_id,
+  );
 }
 
 function markImported(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number): void {
