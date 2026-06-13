@@ -373,17 +373,26 @@ HAVING COUNT(*) > 1;"
 ### Architecture Context
 Double-fire hooks are **normal and expected**. Symbionts and agents consume hook configuration from multiple sources. The system must accommodate this architecturally.
 
-### Solution Pattern (Post-v0.27.17)
-```typescript
-// Shared fingerprint in packages/myco/src/capture/dedup.ts
-// Dedup window defined by EVENT_DEDUP_WINDOW_MS
-// Both live dispatcher (event-dispatch.ts) and reconciliation.ts use same key
+### RC-7 Content-Keyed Convergence Model (PRs #472–#475)
+Buffer replay was rebuilt from count-based divergence to **content-keyed convergence**: buffered events are matched against existing DB records using a stable fingerprint key. Replay is idempotent — replaying the same event twice produces one record, not two.
 
-const key = eventDedupKey(event); // stable fingerprint for dedup
-// Both dispatch and reconcile paths check this key against a seen-set
+```typescript
+// packages/myco/src/capture/dedup.ts
+export const EVENT_DEDUP_WINDOW_MS = 10_000;
+
+// eventDedupKey produces a stable fingerprint for both live dispatch and replay
+export function eventDedupKey(event): string { ... }
+
+// Both live dispatcher (packages/myco/src/daemon/event-dispatch.ts) and
+// buffer replay (packages/myco/src/daemon/reconciliation.ts) use the same key.
+// Replay = convergence, not appending: match-and-consume, not slice-and-insert.
+const key = eventDedupKey(event);
 ```
 
-**Test coverage:** See `tests/capture/dedup.test.ts` for regression tests covering the dedup key contract.
+**Key facts:**
+- Both live dispatch and buffer replay paths use the same `eventDedupKey`
+- The dedup window is `EVENT_DEDUP_WINDOW_MS = 10_000` (10 seconds)
+- `TOMBSTONE_RETENTION_MS` (14 days, `packages/myco/src/constants.ts`) — deleted sessions produce tombstones; buffer files for tombstoned sessions are quarantined and pruned at tombstone expiry
 
 ## Cross-Cutting Gotchas
 
@@ -401,6 +410,14 @@ const key = eventDedupKey(event); // stable fingerprint for dedup
 **Three-tier daemon.lock discovery:** The three-tier pattern allows daemon.lock to be discovered from explicit paths, grove directories, or global machine scan. Understand which tier applies to your setup when debugging location mismatches.
 
 **Self-reconcile is independent:** Self-reconciliation no longer depends on PowerManager scheduling. It runs continuously on its own interval (`SELF_RECONCILE_INTERVAL_MS = 30_000`), even when PowerManager tasks are suspended.
+
+**`closeSession` is the completion chokepoint:** `closeSession()` in `packages/myco/src/daemon/jobs/session-maintenance.ts` is the single gate that flips session status and records the completion timestamp. All session-finalizing code paths (stale session sweeper, stop route, reconciliation) must route through it — never set session status directly.
+
+**Buffer tombstones prevent resurrection:** Deleted sessions produce tombstones (`TOMBSTONE_RETENTION_MS = 14 days` in `packages/myco/src/constants.ts`). Quarantined buffer files for deleted sessions are pruned at tombstone expiry. Do not attempt to replay buffer events for tombstoned sessions — the replay will be silently dropped.
+
+**Three-tier recovery probe before forced restart:** `DaemonClient.daemonConfirmedAlive()` in `packages/myco/src/hooks/client.ts` probes `DAEMON_RECOVERY_PROBE_ATTEMPTS = 3` times across three tiers — daemon.json state file, daemon.lock lifecycle lock (alternate port check), and health-endpoint discovery — before concluding a service manager restart is needed. A genuinely dead daemon fails each probe with immediate connection refusal; `DAEMON_RECOVERY_PROBE_DELAY_MS` pauses absorb momentarily-busy daemons. Don't treat a delayed restart decision as evidence that recovery failed.
+
+**No-protocol-skew contract:** Hook buffer-fallback logic in `packages/myco/src/hooks/send-event.ts` is vintage-blind — it does not inspect hook or daemon version numbers. This is safe because the update installer rewrites every hook and plugin file synchronously before restarting the daemon, ensuring hooks and daemon always co-ship at the same version. The only skew window is seconds-long during an in-flight update, and content-keyed convergence collapses any duplicate buffered events on replay.
 
 **Silent Failure Patterns:**
 - **Multiple simultaneous bugs:** The May 15 incident had three independent failures. Fix one layer, then re-test the full pipeline.
