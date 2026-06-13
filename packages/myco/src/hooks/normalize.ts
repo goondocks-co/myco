@@ -8,6 +8,7 @@
  */
 
 import { loadManifests } from '../symbionts/detect.js';
+import type { HookFieldPath } from '../symbionts/adapter.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { getAtPath } from '../utils/dot-path.js';
 import path from 'node:path';
@@ -177,15 +178,24 @@ function deriveSessionIdFromTranscriptPath(
   return undefined;
 }
 
+function getFirstAtPath(input: Record<string, unknown>, field: HookFieldPath): unknown {
+  const paths = Array.isArray(field) ? field : [field];
+  for (const candidate of paths) {
+    const value = getAtPath(input, candidate);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 export function normalizeHookInput(input: Record<string, unknown>): NormalizedHookInput {
   const manifest = detectManifest(input);
   const fields = manifest?.hookFields ?? DEFAULT_HOOK_FIELDS;
-  const transcriptPath = getAtPath(input, fields.transcriptPath) as string | undefined;
+  const transcriptPath = getFirstAtPath(input, fields.transcriptPath) as string | undefined;
 
   // Resolve session ID: try the mapped field, then explicit transcript-path parsing
   // for known symbionts, then env var fallback, then MYCO_SESSION_ID.
   // Do NOT fabricate synthetic session IDs for symbiont hooks with missing payloads.
-  const sessionIdFromInput = getAtPath(input, fields.sessionId) as string | undefined;
+  const sessionIdFromInput = getFirstAtPath(input, fields.sessionId) as string | undefined;
   const sessionIdFromTranscriptPath = deriveSessionIdFromTranscriptPath(manifest, transcriptPath);
   const sessionIdFromEnv = 'sessionIdEnv' in fields && fields.sessionIdEnv
     ? process.env[fields.sessionIdEnv]
@@ -199,11 +209,11 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     agent: manifest?.name ?? DEFAULT_AGENT_NAME,
     sessionId,
     transcriptPath,
-    lastResponse: getAtPath(input, fields.lastResponse) as string | undefined,
-    prompt: getAtPath(input, fields.prompt) as string | undefined,
-    toolName: getAtPath(input, fields.toolName) as string | undefined,
-    toolInput: getAtPath(input, fields.toolInput),
-    toolOutput: getAtPath(input, fields.toolOutput),
+    lastResponse: getFirstAtPath(input, fields.lastResponse) as string | undefined,
+    prompt: getFirstAtPath(input, fields.prompt) as string | undefined,
+    toolName: getFirstAtPath(input, fields.toolName) as string | undefined,
+    toolInput: getFirstAtPath(input, fields.toolInput),
+    toolOutput: getFirstAtPath(input, fields.toolOutput),
     raw: input,
   };
 }

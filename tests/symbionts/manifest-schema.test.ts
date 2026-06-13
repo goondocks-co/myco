@@ -62,6 +62,22 @@ describe('symbiont manifests', () => {
     expect(manifest.registration?.skillsTarget).toBe('.test/skills');
   });
 
+  it('accepts ordered hook field aliases', () => {
+    const manifest = SymbiontManifestSchema.parse({
+      name: 'test-agent',
+      displayName: 'Test Agent',
+      binary: 'test',
+      configDir: '.test',
+      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: ['conversation_id', 'session_id'],
+        transcriptPath: 'tp',
+        lastResponse: 'lr',
+      },
+    });
+    expect(manifest.hookFields.sessionId).toEqual(['conversation_id', 'session_id']);
+  });
+
   it('allows manifest without registration block', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',

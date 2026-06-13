@@ -878,7 +878,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
     "settingsPath": ".cursor/mcp.json",
     "hookFields": {
-      "sessionId": "conversation_id",
+      "sessionId": [
+        "conversation_id",
+        "session_id"
+      ],
       "transcriptPath": "transcript_path",
       "lastResponse": "last_assistant_message",
       "prompt": "prompt",
