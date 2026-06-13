@@ -6,6 +6,7 @@ import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { createStopProcessor } from '@myco/daemon/stop-processing.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';
+import { TranscriptMiner } from '@myco/capture/transcript-miner.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -13,6 +14,11 @@ import { insertBatch, listBatchesBySession, PROMPT_BATCH_ORIGIN } from '@myco/db
 import { insertActivity } from '@myco/db/queries/activities.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import {
+  buildCopilotSourcedUserMessageTranscript,
+  COPILOT_SOURCED_USER_MESSAGE_PROMPT,
+  COPILOT_SOURCED_USER_MESSAGE_RESPONSE,
+} from '../helpers/copilot-transcript.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -92,6 +98,14 @@ function writeCodexExecTranscript(sessionId: string): string {
     }),
   ];
   fs.writeFileSync(transcriptPath, `${lines.join('\n')}\n`);
+  return transcriptPath;
+}
+
+function writeCopilotSourcedUserMessageTranscript(rootDir: string, sessionId: string): string {
+  const dir = path.join(rootDir, 'copilot-transcripts');
+  fs.mkdirSync(dir, { recursive: true });
+  const transcriptPath = path.join(dir, 'events.jsonl');
+  fs.writeFileSync(transcriptPath, `${buildCopilotSourcedUserMessageTranscript(sessionId)}\n`);
   return transcriptPath;
 }
 
@@ -446,6 +460,50 @@ describe('createStopProcessor session capture rules', () => {
     expect(b1.response_summary).toBe('Hello.');
     expect(b2.response_summary).toBe('Concise branch summary.');
     expect(b3.response_summary).toBe('Here is a practical slicing.');
+  });
+
+  it('captures Copilot final response when sourced user.message events appear mid-turn', async () => {
+    const sessionId = 'copilot-sourced-user-message-stop-001';
+    const now = epochNow();
+    const transcriptPath = writeCopilotSourcedUserMessageTranscript(vaultDir, sessionId);
+    upsertSession({
+      id: sessionId,
+      agent: 'copilot',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: sessionId,
+      prompt_number: 1,
+      user_prompt: COPILOT_SOURCED_USER_MESSAGE_PROMPT,
+      started_at: now,
+      created_at: now,
+    });
+
+    const stopProcessor = createStopProcessor({
+      registry: new SessionRegistry({ gracePeriod: 1, onEmpty: () => {} }),
+      sessionBuffers: new Map(),
+      transcriptMiner: new TranscriptMiner(),
+      embeddingManager: { onRemoved: vi.fn() } as never,
+      resolveEmbeddingManager: () => ({ onRemoved: vi.fn() } as never),
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
+      liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      vaultDir,
+      planTags: [],
+      planWatchConfig: { watchDirs: [], projectRoot: vaultDir },
+    });
+
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'copilot',
+        transcript_path: transcriptPath,
+      },
+    } as never);
+
+    const [batch] = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batch.response_summary).toBe(COPILOT_SOURCED_USER_MESSAGE_RESPONSE);
   });
 
   it('ignores a sub-agent transcript before any session row exists', async () => {

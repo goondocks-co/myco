@@ -9,6 +9,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import {
+  buildCopilotSourcedUserMessageTranscript,
+  COPILOT_SOURCED_USER_MESSAGE_PROMPT,
+  COPILOT_SOURCED_USER_MESSAGE_RESPONSE,
+} from '../helpers/copilot-transcript.js';
 
 describe('TranscriptMiner.reconcileBatchKinds', () => {
   let tmpDir: string;
@@ -167,6 +172,19 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(after[2].kind).toBe('initial');
     expect(after[2].parent_prompt_batch_id).toBeNull();
     expect(after[3].kind).toBe('initial');
+  });
+
+  it('attributes Copilot responses across sourced user.message records', () => {
+    const sessionId = 's-copilot-sourced-user-message';
+    seedSession({ id: sessionId, agent: 'copilot' });
+    handleUserPrompt(sessionId, COPILOT_SOURCED_USER_MESSAGE_PROMPT, { kind: 'initial' });
+    fs.writeFileSync(transcriptPath, `${buildCopilotSourcedUserMessageTranscript(sessionId)}\n`);
+
+    const miner = new TranscriptMiner();
+    miner.reconcileAndAttributeResponses(sessionId, { agent: 'copilot', transcriptPath });
+
+    const [batch] = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batch.response_summary).toBe(COPILOT_SOURCED_USER_MESSAGE_RESPONSE);
   });
 
   // Reconciliation runs at every Stop, so it must be idempotent. Earlier

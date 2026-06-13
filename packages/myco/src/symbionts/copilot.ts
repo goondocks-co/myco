@@ -36,7 +36,7 @@ export const copilotAdapter: SymbiontAdapter = {
   displayName: 'GitHub Copilot',
   pluginRootEnvVar: 'COPILOT_PLUGIN_ROOT',
   hookFields: {
-    sessionId: 'sessionId',
+    sessionId: 'session_id',
     transcriptPath: 'transcript_path',
     lastResponse: 'last_assistant_message',
     prompt: 'prompt',
@@ -51,6 +51,14 @@ export const copilotAdapter: SymbiontAdapter = {
 
   parseTurns: (content) => parseCopilotEventLog(content),
 };
+
+const COPILOT_EVENT_TYPES = {
+  USER_MESSAGE: 'user.message',
+  ASSISTANT_MESSAGE: 'assistant.message',
+  TOOL_EXECUTION_START: 'tool.execution_start',
+} as const;
+
+const COPILOT_USER_MESSAGE_SOURCE_FIELD = 'source';
 
 /**
  * Parse Copilot's chronological event-log JSONL transcript and emit
@@ -85,7 +93,8 @@ function parseCopilotEventLog(content: string): TranscriptTurn[] {
     }
     const data = event.data ?? {};
     switch (event.type) {
-      case 'user.message': {
+      case COPILOT_EVENT_TYPES.USER_MESSAGE: {
+        if (isSourcedUserMessage(data)) break;
         flush();
         const promptText = typeof data.content === 'string' ? data.content : '';
         current = {
@@ -96,7 +105,7 @@ function parseCopilotEventLog(content: string): TranscriptTurn[] {
         };
         break;
       }
-      case 'assistant.message': {
+      case COPILOT_EVENT_TYPES.ASSISTANT_MESSAGE: {
         if (!current) break;
         const text = typeof data.content === 'string' ? data.content.trim() : '';
         if (text) {
@@ -105,7 +114,7 @@ function parseCopilotEventLog(content: string): TranscriptTurn[] {
         }
         break;
       }
-      case 'tool.execution_start': {
+      case COPILOT_EVENT_TYPES.TOOL_EXECUTION_START: {
         if (current) current.toolCount += 1;
         break;
       }
@@ -119,6 +128,10 @@ function parseCopilotEventLog(content: string): TranscriptTurn[] {
   return turns;
 }
 
+function isSourcedUserMessage(data: CopilotEventData): boolean {
+  return data[COPILOT_USER_MESSAGE_SOURCE_FIELD] !== undefined;
+}
+
 // --- Types ---
 
 interface CopilotEvent {
@@ -126,5 +139,10 @@ interface CopilotEvent {
   parentId?: string;
   timestamp?: string;
   type: string;
-  data?: { content?: unknown; [key: string]: unknown };
+  data?: CopilotEventData;
+}
+
+interface CopilotEventData {
+  content?: unknown;
+  [key: string]: unknown;
 }
