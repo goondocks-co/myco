@@ -216,6 +216,21 @@ const SOLO_NODE_FILES = [
   'tests/deploy/shared.test.ts',
 ];
 
+const SOLO_NODE_REASON_LISTED_FILE = 'listed-solo-node-file';
+const SOLO_NODE_REASON_MODULE_MOCK = 'mock.module';
+const SOLO_NODE_REASON_DISPATCHER_SHARED_TEST_DB = 'dispatcher-with-shared-test-db';
+
+const PROCESS_DIRTY_FIXTURE_RULES = [
+  {
+    reason: SOLO_NODE_REASON_DISPATCHER_SHARED_TEST_DB,
+    patterns: [
+      /\bcreateEventDispatcher\(/,
+      /\bsetupTestDb\(/,
+      /\bteardownTestDb\(/,
+    ],
+  },
+];
+
 const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-agent-stable',
@@ -548,6 +563,46 @@ function fileHasModuleMock(file) {
   return moduleMockCache.get(file);
 }
 
+const processDirtyFixtureCache = new Map();
+function processDirtyFixtureReason(file) {
+  if (!processDirtyFixtureCache.has(file)) {
+    let matchingReason = null;
+    try {
+      const source = fs.readFileSync(path.resolve(REPO, file), 'utf-8');
+      matchingReason = PROCESS_DIRTY_FIXTURE_RULES.find((rule) => (
+        rule.patterns.every((pattern) => pattern.test(source))
+      ))?.reason ?? null;
+    } catch { /* unreadable file — let bun surface it */ }
+    processDirtyFixtureCache.set(file, matchingReason);
+  }
+  return processDirtyFixtureCache.get(file);
+}
+
+function soloNodeProcessReason(file) {
+  if (fileHasModuleMock(file)) return SOLO_NODE_REASON_MODULE_MOCK;
+  return processDirtyFixtureReason(file);
+}
+
+function fileRequiresSoloNodeProcess(file) {
+  return soloNodeProcessReason(file) !== null;
+}
+
+function listedSoloNodeReason(file) {
+  return soloNodeProcessReason(file) ?? SOLO_NODE_REASON_LISTED_FILE;
+}
+
+function formatSoloNodeReasonSummary(files) {
+  const reasonCounts = new Map();
+  for (const file of files) {
+    const reason = listedSoloNodeReason(file);
+    reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+  }
+  return [...reasonCounts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([reason, count]) => `${count} ${reason}`)
+    .join(', ');
+}
+
 function assertNoModuleMocksInSharedFiles(sharedFiles) {
   const offenders = sharedFiles.filter(fileHasModuleMock);
   if (offenders.length === 0) return;
@@ -610,6 +665,14 @@ function noIsolatePhaseForGroup(group, options) {
   return {
     label: `node env shared ${group.label}`,
     args: noIsolateArgsForGroup(group, options),
+    isolate: false,
+  };
+}
+
+function soloNodePhaseForFile(file, options) {
+  return {
+    label: `node env solo ${bundleSlug(file.replace(/^tests\//, '').replace(/\.test\.ts$/, ''))}`,
+    args: [...options, file, "--path-ignore-patterns=**/*.test.tsx"],
     isolate: false,
   };
 }
@@ -722,14 +785,18 @@ function buildArgs() {
     }
 
     const nonDomTargets = [...expanded.nonDom, ...expanded.passthrough];
+    const soloTargets = nonDomTargets.filter((file) => fileRequiresSoloNodeProcess(file));
+    const soloTargetSet = new Set(soloTargets);
+    const isolatedTargets = nonDomTargets.filter((file) => !soloTargetSet.has(file));
     return {
-      nonDomPhases: nonDomTargets.length > 0
-        ? [{
-            label: 'node env',
-            args: [...options, ...nonDomTargets, "--path-ignore-patterns=**/*.test.tsx"],
-            isolate: true,
-          }]
-        : [],
+      nonDomPhases: [
+        ...soloTargets.map((file) => soloNodePhaseForFile(file, options)),
+        ...(isolatedTargets.length > 0 ? [{
+          label: 'node env',
+          args: [...options, ...isolatedTargets, "--path-ignore-patterns=**/*.test.tsx"],
+          isolate: true,
+        }] : []),
+      ],
       dom: expanded.dom.length > 0 ? [...options, ...expanded.dom] : null,
     };
   }
@@ -739,10 +806,14 @@ function buildArgs() {
     const nonDomFiles = allTests
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file));
-    const sharedFiles = nonDomFiles.filter(isCoveredByNoIsolateTarget);
-    const soloFiles = SOLO_NODE_FILES.filter((file) => nonDomFiles.includes(file));
+    const soloFiles = relativeUnique([
+      ...SOLO_NODE_FILES,
+      ...nonDomFiles.filter(fileRequiresSoloNodeProcess),
+    ]).filter((file) => nonDomFiles.includes(file));
+    const soloFileSet = new Set(soloFiles);
+    const sharedFiles = nonDomFiles.filter((file) => !soloFileSet.has(file) && isCoveredByNoIsolateTarget(file));
     const isolatedFiles = nonDomFiles.filter(
-      (file) => !isCoveredByNoIsolateTarget(file) && !soloFiles.includes(file),
+      (file) => !isCoveredByNoIsolateTarget(file) && !soloFileSet.has(file),
     );
     assertNoModuleMocksInSharedFiles(sharedFiles);
 
@@ -753,7 +824,7 @@ function buildArgs() {
 
     if (soloFiles.length > 0) {
       console.log(
-        `[run-bun-tests] solo node env: ${soloFiles.length} mock.module() files run as single-file processes`,
+        `[run-bun-tests] solo node env: ${soloFiles.length} process-sensitive files run as single-file processes (${formatSoloNodeReasonSummary(soloFiles)})`,
       );
     }
 
@@ -768,11 +839,7 @@ function buildArgs() {
     return {
       nonDomPhases: [
         ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
-        ...soloFiles.map((file) => ({
-          label: `node env solo ${bundleSlug(file.replace(/^tests\//, '').replace(/\.test\.ts$/, ''))}`,
-          args: [...options, file, "--path-ignore-patterns=**/*.test.tsx"],
-          isolate: false,
-        })),
+        ...soloFiles.map((file) => soloNodePhaseForFile(file, options)),
         ...buildIsolatedNodePhases(isolatedTargets, options),
       ],
       dom: tsxFiles.length > 0 ? [...options, ...tsxFiles] : null,
