@@ -115,7 +115,7 @@ describe('codexAdapter', () => {
       expect(turns[0].prompt).toBe('Valid line');
     });
 
-    it('synthesizes an <update_plan> envelope from the update_plan function-call tool', () => {
+    it('does not synthesize an <update_plan> envelope from the transient update_plan function-call tool', () => {
       const updatePlanArgs = JSON.stringify({
         plan: [
           { step: 'Investigate the bug', status: 'completed' },
@@ -130,17 +130,12 @@ describe('codexAdapter', () => {
       ]);
       const turns = codexAdapter.parseTurns(content);
       expect(turns).toHaveLength(1);
-      expect(turns[0].aiResponse).toContain('<update_plan>');
-      expect(turns[0].aiResponse).toContain('## Plan');
-      expect(turns[0].aiResponse).toContain('- [x] Investigate the bug');
-      expect(turns[0].aiResponse).toContain('- [~] Write a failing test');
-      expect(turns[0].aiResponse).toContain('- [ ] Land the fix');
-      expect(turns[0].aiResponse).toContain('</update_plan>');
+      expect(turns[0].aiResponse).toBe('Here is the plan.');
       // toolCount still increments — update_plan IS a tool call.
       expect(turns[0].toolCount).toBe(1);
     });
 
-    it('does not synthesize an envelope when update_plan args are empty or malformed', () => {
+    it('ignores update_plan content even when update_plan args are empty or malformed', () => {
       const content = toJsonl([
         messageItem('user', [{ type: 'input_text', text: 'X' }], '2026-05-25T10:00:00Z'),
         messageItem('assistant', [{ type: 'output_text', text: 'AI reply' }]),
@@ -153,7 +148,7 @@ describe('codexAdapter', () => {
       expect(turns[0].aiResponse).not.toContain('<update_plan>');
     });
 
-    it('ignores other function calls (only update_plan synthesizes a plan envelope)', () => {
+    it('ignores function calls as assistant response content', () => {
       const content = toJsonl([
         messageItem('user', [{ type: 'input_text', text: 'X' }], '2026-05-25T10:00:00Z'),
         messageItem('assistant', [{ type: 'output_text', text: 'AI reply' }]),

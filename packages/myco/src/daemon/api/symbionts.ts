@@ -117,10 +117,7 @@ export function listSymbiontInfos(vaultDir: string, groveId?: string | null): Sy
       && ((manifest.capabilities?.canopyReadTools?.length ?? 0) > 0);
     const supportsSubagentStartInjection = manifest.capabilities?.subagentStartInjection ?? false;
     // Plans surface counts either mechanism: filesystem watch (`planDirs`)
-    // or transcript tag extraction (`planTags`). Codex emits no on-disk
-    // plans but ships an `update_plan` function-call tool whose JSON args
-    // the Codex parser synthesizes into a `<update_plan>` envelope —
-    // captured via the `planTags` path.
+    // or transcript tag extraction (`planTags`).
     const supportsPlanCapture =
       (manifest.capture?.planDirs?.length ?? 0) > 0
       || (manifest.capture?.planTags?.length ?? 0) > 0;

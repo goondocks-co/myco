@@ -268,10 +268,10 @@ describe('symbiont manifests', () => {
     expect(result.capture?.planTags).toEqual(['proposed_plan']);
   });
 
-  it('codex manifest has planTags with update_plan (synthesized by the parser from the function-call tool)', () => {
+  it('codex manifest captures only proposed_plan Plan Mode artifacts', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.capture?.planTags).toEqual(['update_plan']);
+    expect(manifest.capture?.planTags).toEqual(['proposed_plan']);
   });
 
   it('claude-code manifest has planTags with ultraplan', () => {
