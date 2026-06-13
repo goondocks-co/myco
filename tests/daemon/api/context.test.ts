@@ -19,6 +19,7 @@ import type { RouteRequest } from '@myco/daemon/router';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 import type { DaemonLogger } from '@myco/daemon/logger';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { listActivities } from '@myco/db/queries/activities';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids';
 
@@ -483,6 +484,30 @@ describe('createPromptContextHandler', () => {
     const result = await handler(makeReq({ prompt: 'please plan the migration', session_id: 'sess-cortex-master-off-prompt' }));
 
     expect((result.body as { text: string }).text).toBe('');
+  });
+
+  it('logs the first capability-off prompt skip per session at info, then repeats at debug', async () => {
+    const cfg = MycoConfigSchema.parse({ version: 3 });
+    cfg.cortex.enabled = false;
+    const logger = mockLogger();
+    const handler = createPromptContextHandler(makeDeps({ config: cfg, logger }));
+
+    await handler(makeReq({ prompt: 'please plan the migration', session_id: 'sess-cortex-master-off-visible' }));
+    await handler(makeReq({ prompt: 'please plan the migration again', session_id: 'sess-cortex-master-off-visible' }));
+    await handler(makeReq({ prompt: 'please plan this other migration', session_id: 'sess-cortex-master-off-visible-2' }));
+
+    expect(logger.info).toHaveBeenCalledTimes(2);
+    expect(logger.debug).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      LOG_KINDS.CONTEXT_PROMPT,
+      'Prompt context disabled (cortex capability off)',
+      { session_id: 'sess-cortex-master-off-visible', reason: 'cortex_capability_off' },
+    );
+    expect(logger.debug).toHaveBeenCalledWith(
+      LOG_KINDS.CONTEXT_PROMPT,
+      'Prompt context disabled (cortex capability off)',
+      { session_id: 'sess-cortex-master-off-visible', reason: 'cortex_capability_off' },
+    );
   });
 
   it('injects the nudge at most once per session', async () => {

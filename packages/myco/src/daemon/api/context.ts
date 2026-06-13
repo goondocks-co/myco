@@ -30,6 +30,7 @@ import { symbiontHasCapability, symbiontToolTransport } from '@myco/symbionts/ca
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { recordInjectionAndShouldSuppress, getSessionInjectedSporeIds } from '../injection-records.js';
+import { createBoundedFirstOccurrenceTracker, sessionLogScopeKey } from '../first-occurrence-tracker.js';
 import { resolvePlanIntentNudge } from './plan-intent.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -80,6 +81,14 @@ const PromptContextBody = z.object({
   prompt: z.string(),
   session_id: z.string().optional(),
 });
+
+const PROMPT_CONTEXT_SKIP_REASONS = {
+  CORTEX_CAPABILITY_OFF: 'cortex_capability_off',
+} as const;
+
+const PROMPT_CONTEXT_LOG_MESSAGES = {
+  CORTEX_CAPABILITY_OFF: 'Prompt context disabled (cortex capability off)',
+} as const;
 
 const SubagentContextBody = z.object({
   session_id: z.string().optional(),
@@ -460,6 +469,8 @@ export function createResumeContextHandler(deps: ContextDeps) {
  * Create a handler that searches spore embeddings for prompt-relevant observations.
  */
 export function createPromptContextHandler(deps: ContextDeps) {
+  const capabilityOffSkipLogTracker = createBoundedFirstOccurrenceTracker();
+
   return async function handlePromptContext(req: RouteRequest): Promise<RouteResponse> {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig } = deps;
@@ -472,7 +483,12 @@ export function createPromptContextHandler(deps: ContextDeps) {
     // Coarse master gate at the handler boundary. Suppresses spore search and
     // plan-intent nudge when the cortex capability is off.
     if (!capabilityEnabled(config, 'cortex')) {
-      logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt context disabled (cortex capability off)', { session_id });
+      const logPayload = { session_id, reason: PROMPT_CONTEXT_SKIP_REASONS.CORTEX_CAPABILITY_OFF };
+      if (capabilityOffSkipLogTracker.mark(sessionLogScopeKey(session_id)) === 'repeat') {
+        logger.debug(LOG_KINDS.CONTEXT_PROMPT, PROMPT_CONTEXT_LOG_MESSAGES.CORTEX_CAPABILITY_OFF, logPayload);
+      } else {
+        logger.info(LOG_KINDS.CONTEXT_PROMPT, PROMPT_CONTEXT_LOG_MESSAGES.CORTEX_CAPABILITY_OFF, logPayload);
+      }
       return { body: { text: '' } };
     }
 
