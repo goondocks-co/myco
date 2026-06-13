@@ -9,7 +9,7 @@ import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { getDatabase } from '@myco/db/client.js';
-import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
+import { insertBatch, listBatchesBySession, PROMPT_BATCH_ORIGIN } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
@@ -481,8 +481,9 @@ describe('createStopProcessor session capture rules', () => {
     });
     insertBatch({
       session_id: sessionId,
+      origin: PROMPT_BATCH_ORIGIN.SYSTEM,
       prompt_number: 1,
-      user_prompt: 'stale prompt',
+      user_prompt: 'stale system prompt',
       started_at: now,
       created_at: now,
     });
@@ -504,6 +505,42 @@ describe('createStopProcessor session capture rules', () => {
     expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
+  it('refuses invalid Stop cleanup when a child transcript is reported against a parent session with human work', async () => {
+    const parentSessionId = 'codex-parent-stop-protected-001';
+    const childSessionId = 'codex-child-stop-protected-001';
+    const now = epochNow();
+    const transcriptPath = writeCodexSubagentTranscript(childSessionId);
+    const stopProcessor = makeStopProcessor(vaultDir);
+
+    upsertSession({
+      id: parentSessionId,
+      agent: 'codex',
+      status: 'active',
+      started_at: now,
+      created_at: now,
+    });
+    insertBatch({
+      session_id: parentSessionId,
+      prompt_number: 1,
+      user_prompt: 'real parent prompt',
+      started_at: now,
+      created_at: now,
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: parentSessionId,
+        agent: 'codex',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'done',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
+    expect(getSession(parentSessionId, ALL_PROJECTS_SCOPE)).not.toBeNull();
+    expect(listBatchesBySession(parentSessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+  });
+
   it('ignores and deletes a leaked noninteractive exec session row', async () => {
     const sessionId = 'codex-exec-stop-001';
     const now = epochNow();
@@ -519,6 +556,7 @@ describe('createStopProcessor session capture rules', () => {
     });
     insertBatch({
       session_id: sessionId,
+      origin: PROMPT_BATCH_ORIGIN.SYSTEM,
       prompt_number: 1,
       user_prompt: 'reply with exactly ok',
       started_at: now,
