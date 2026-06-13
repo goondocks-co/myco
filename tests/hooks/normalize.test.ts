@@ -213,7 +213,7 @@ describe('normalizeHookInput', () => {
       expect(result.sessionId).toBe('input-sid');
     });
 
-    it('maps Copilot camelCase sessionId', () => {
+    it('maps Copilot snake_case session_id', () => {
       const copilotManifest = {
         name: 'copilot',
         displayName: 'GitHub Copilot',
@@ -221,7 +221,7 @@ describe('normalizeHookInput', () => {
         configDir: '.vscode',
         pluginRootEnvVar: 'COPILOT_PLUGIN_ROOT',
         hookFields: {
-          sessionId: 'sessionId',
+          sessionId: 'session_id',
           transcriptPath: 'transcript_path',
           lastResponse: 'last_assistant_message',
           prompt: 'prompt',
@@ -232,7 +232,7 @@ describe('normalizeHookInput', () => {
       };
       mockLoadManifests.mockReturnValue([copilotManifest]);
       process.env.COPILOT_PLUGIN_ROOT = '/some/path';
-      const result = normalizeHookInput({ sessionId: 'copilot-session-1' });
+      const result = normalizeHookInput({ session_id: 'copilot-session-1' });
       expect(result.sessionId).toBe('copilot-session-1');
     });
   });

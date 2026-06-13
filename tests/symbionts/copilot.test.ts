@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import { copilotAdapter } from '@myco/symbionts/copilot.js';
+import {
+  buildCopilotSourcedUserMessageTranscript,
+  COPILOT_SOURCED_USER_MESSAGE_PROMPT,
+  COPILOT_SOURCED_USER_MESSAGE_RESPONSE,
+} from '../helpers/copilot-transcript.js';
 
 /**
  * Build a Copilot event-log JSONL transcript string.
@@ -87,7 +92,7 @@ describe('copilotAdapter', () => {
     expect(copilotAdapter.name).toBe('copilot');
     expect(copilotAdapter.displayName).toBe('GitHub Copilot');
     expect(copilotAdapter.pluginRootEnvVar).toBe('COPILOT_PLUGIN_ROOT');
-    expect(copilotAdapter.hookFields.sessionId).toBe('sessionId');
+    expect(copilotAdapter.hookFields.sessionId).toBe('session_id');
   });
 
   it('findTranscript always returns null', () => {
@@ -157,6 +162,16 @@ describe('copilotAdapter', () => {
       expect(turns[0].aiResponse).toBe('First answer.');
       expect(turns[1].prompt).toBe('Second question');
       expect(turns[1].toolCount).toBe(1);
+    });
+
+    it('keeps sourced user.message records inside the active human turn', () => {
+      const content = buildCopilotSourcedUserMessageTranscript('test-session');
+
+      const turns = copilotAdapter.parseTurns(content);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].prompt).toBe(COPILOT_SOURCED_USER_MESSAGE_PROMPT);
+      expect(turns[0].toolCount).toBe(1);
+      expect(turns[0].aiResponse).toBe(COPILOT_SOURCED_USER_MESSAGE_RESPONSE);
     });
 
     it('attributes tool calls to the in-flight user turn', () => {
