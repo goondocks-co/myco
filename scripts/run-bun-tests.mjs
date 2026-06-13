@@ -93,11 +93,10 @@ const forwardedArgs = process.argv.slice(2);
 // Isolated files are bundled into chunks to amortize bun's `--isolate`
 // startup cost. Capped at 4 (was 8): the bun 1.3.14 `--isolate` runtime spin
 // emerges from the multi-file isolate/SQLite-teardown churn, and an 8-file
-// chunk of SQLite-heavy tests triggers it reliably under load (≤3-file groups
-// verified clean). 4 keeps the per-chunk startup amortization while staying
-// below the spin threshold; the phase-kill + wedge-retry above remain the
-// safety net for any chunk that still spins. Env-tunable for CI.
-const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_SIZE ?? 4);
+// chunk of SQLite-heavy tests triggers it reliably under load. Three-file
+// groups are the verified-clean default; the phase-kill + wedge-retry above
+// remain the safety net for any chunk that still spins. Env-tunable for CI.
+const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_SIZE ?? 3);
 
 // Bun's `--isolate` mode pays a large per-file startup cost. These groups
 // have been validated to run correctly when imported through one generated
