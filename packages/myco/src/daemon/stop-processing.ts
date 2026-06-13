@@ -30,6 +30,7 @@ import {
   closeOpenBatches,
   listBatchesBySession,
   findBatchByPromptPrefix,
+  hasHumanBatch,
   type PromptBatchOrigin,
 } from '@myco/db/queries/batches.js';
 import { deleteSessionCascade, getSession, updateSession } from '@myco/db/queries/sessions.js';
@@ -223,6 +224,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     });
 
   function cleanupInvalidCapturedSession(sessionId: string): boolean {
+    if (hasHumanBatch(sessionId)) {
+      logger.info(LOG_KINDS.HOOKS_STOP, 'Invalid-session cleanup refused — session has human content', {
+        session_id: sessionId,
+      });
+      return false;
+    }
+
     registry.unregister(sessionId);
     sessionBuffers.delete(sessionId);
     sessionTitleCache.delete(sessionId);
