@@ -452,6 +452,11 @@ export type StopPhase = z.infer<typeof StopPhaseSchema>;
 export type HookEventDeclaration = z.infer<typeof HookEventDeclarationSchema>;
 export type HooksManifest = z.infer<typeof HooksManifestSchema>;
 
+const HookFieldPathSchema = z.union([
+  z.string().min(1),
+  z.array(z.string().min(1)).min(1),
+]);
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -472,20 +477,20 @@ export const SymbiontManifestSchema = z.object({
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({
-    sessionId: z.string(),
-    transcriptPath: z.string(),
+    sessionId: HookFieldPathSchema,
+    transcriptPath: HookFieldPathSchema,
     /** Symbiont's hook payload key for the final assistant response text.
      * Defaults to `last_assistant_message`. Symbionts that deliver the response
      * only through the transcript file (e.g., Antigravity) can keep the default
      * — the payload won't carry that field and the normalized value stays
      * undefined. */
-    lastResponse: z.string().default('last_assistant_message'),
-    prompt: z.string().default('prompt'),
-    toolName: z.string().default('tool_name'),
-    toolInput: z.string().default('tool_input'),
+    lastResponse: HookFieldPathSchema.default('last_assistant_message'),
+    prompt: HookFieldPathSchema.default('prompt'),
+    toolName: HookFieldPathSchema.default('tool_name'),
+    toolInput: HookFieldPathSchema.default('tool_input'),
     /** Symbiont's hook payload key for tool output. Defaults to `tool_output`.
      * Same transcript-only caveat applies as `lastResponse`. */
-    toolOutput: z.string().default('tool_output'),
+    toolOutput: HookFieldPathSchema.default('tool_output'),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
   }),

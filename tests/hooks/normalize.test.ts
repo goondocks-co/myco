@@ -356,6 +356,22 @@ describe('normalizeHookInput', () => {
         toolOutput: 'tool_output',
       },
     };
+    const cursorManifest = {
+      name: 'cursor',
+      displayName: 'Cursor',
+      binary: 'cursor',
+      configDir: '.cursor',
+      pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: ['conversation_id', 'session_id'],
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
 
     afterEach(() => {
       process.argv = originalArgv;
@@ -386,6 +402,32 @@ describe('normalizeHookInput', () => {
         transcript_path: '/Users/me/.claude/projects/foo/abc.jsonl',
       });
       expect(result.agent).toBe('codex');
+    });
+
+    it('uses Cursor argv attribution while accepting embedded Claude-style session_id payloads', () => {
+      mockLoadManifests.mockReturnValue([claudeManifest, cursorManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
+      const result = normalizeHookInput({
+        session_id: 'cursor-embedded-runtime-session',
+        transcript_path: '/Users/me/.claude/projects/foo/cursor-embedded-runtime-session.jsonl',
+        tool_name: 'Read',
+        tool_input: { file_path: '/repo/src/file.ts' },
+      });
+      expect(result.agent).toBe('cursor');
+      expect(result.sessionId).toBe('cursor-embedded-runtime-session');
+      expect(result.toolName).toBe('Read');
+      expect(result.toolInput).toEqual({ file_path: '/repo/src/file.ts' });
+    });
+
+    it('prefers the primary field when a manifest declares ordered aliases', () => {
+      mockLoadManifests.mockReturnValue([cursorManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
+      const result = normalizeHookInput({
+        conversation_id: 'cursor-native-session',
+        session_id: 'embedded-runtime-session',
+      });
+      expect(result.agent).toBe('cursor');
+      expect(result.sessionId).toBe('cursor-native-session');
     });
 
     it('unknown --symbiont value falls through to heuristic detection', () => {
