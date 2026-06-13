@@ -722,6 +722,8 @@ done
 - **Tree-shaking fragility**: Value imports of type helpers contaminate package bundles and break platform boundaries - use type-only imports
 - **Platform boundary contamination**: Cross-package value imports break tree-shaking and create platform-specific build failures
 - **Fast profile assumptions**: Remember `make build` now uses fast profile by default - use `make build-all` for comprehensive CI validation
+- **`make dev-build` requires daemon restart**: `make dev-build` compiles the Bun binary to `packages/myco-$(HOST_TARGET)/bin/` but does not reload the running daemon. After a rebuild, run `myco-dev restart` to pick up the new binary.
+- **Cross-variant artifact thrash**: `make build-all` compiles all platform targets. During development iteration, use `make dev-build` (host target only) to avoid building artifacts for platforms that cannot run on the local machine.
 
 ### Release Workflow Traps
 - **npm global installations in CI**: Never `npm install -g npm@latest` - corrupts npm's dependencies
@@ -734,6 +736,9 @@ done
 - **Audit fix mutations**: `npm audit fix` can introduce unexpected dependency changes - track with git status
 - **Build order dependencies**: Shared packages must build before consumers - verify workspace build sequence
 - **Dependabot PR accumulation**: Batch multiple Dependabot PRs to reduce testing overhead and merge conflicts
+
+### Test Isolation Hazards
+- **MYCO_HOME isolation required**: Any test that touches MYCO_HOME (config loading, grove paths, service directories) must use `sandboxMycoHome()` from `tests/helpers/myco-home-sandbox.ts`. Without isolation, tests write to the real developer home directory and can corrupt live daemon state or config.
 
 ### Grove Multi-Tenant Hazards
 - **Tenant isolation failures**: Build artifacts must not leak data between projects - validate scoping

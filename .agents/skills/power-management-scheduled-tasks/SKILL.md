@@ -446,3 +446,13 @@ const projectId = path.basename(projectPath);
 const projectConfig = await readProjectConfig(projectPath);
 const projectId = projectConfig.binding_id;
 ```
+
+### Scheduler Config Changes Take Effect on the Next Tick — No Restart Required
+
+The scheduler has no per-project config memo (removed in RC-4). Each tick calls `loadMergedConfig(projectVaultDir, { groveId })` directly per project. `loadMergedConfig` carries its own mtime+size-fingerprinted stat cache — negligible overhead at tick cadence. Practical implications:
+- `scheduled_tasks_enabled`, `cold_project_threshold_days`, and capability gates take effect on the next scheduler evaluation after the file is saved — no daemon restart required.
+- A config-load error from malformed YAML is not latched; it recovers automatically once the file is corrected, within one tick interval.
+
+### Session Closure Is a Two-Mode Pattern, Not a Bug
+
+Symbionts without exit signals (codex, antigravity, pi, opencode, windsurf) complete their sessions via the 60-minute stale sweep, not via a stop event. This is intentional design — the stale sweep is the exit mechanism for tools that never send a session-end signal. Do not treat sessions that close via stale sweep as defects requiring a stop-event fix; these two session closure modes coexist by design.
