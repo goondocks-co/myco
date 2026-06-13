@@ -32,24 +32,31 @@ export interface TranscriptTurn {
 }
 
 /**
+ * Dot-path for an agent hook payload field. An ordered list means "try each
+ * path in order and use the first one present"; useful for hosts whose outer
+ * integration is stable but whose embedded runtime can emit alternate shapes.
+ */
+export type HookFieldPath = string | readonly string[];
+
+/**
  * Maps agent-specific hook field names to normalized names.
  * Each agent's hook system uses different field names for the same data.
  */
 export interface HookFieldNames {
   /** Field name for the session ID (e.g., 'session_id', 'sessionId', 'trajectory_id') */
-  sessionId: string;
+  sessionId: HookFieldPath;
   /** Field name for the transcript file path (e.g., 'transcript_path') */
-  transcriptPath: string;
+  transcriptPath: HookFieldPath;
   /** Field name for the last AI response text (e.g., 'last_assistant_message') */
-  lastResponse: string;
+  lastResponse: HookFieldPath;
   /** Field name for the user prompt (e.g., 'prompt') */
-  prompt: string;
+  prompt: HookFieldPath;
   /** Field name for the tool name (e.g., 'tool_name') */
-  toolName: string;
+  toolName: HookFieldPath;
   /** Field name for the tool input (e.g., 'tool_input'). Supports dot notation for nested objects. */
-  toolInput: string;
+  toolInput: HookFieldPath;
   /** Field name for the tool output (e.g., 'tool_output'). Supports dot notation for nested objects. */
-  toolOutput: string;
+  toolOutput: HookFieldPath;
   /** Env var fallback for session ID (e.g., 'GEMINI_SESSION_ID'). */
   sessionIdEnv?: string;
 }
