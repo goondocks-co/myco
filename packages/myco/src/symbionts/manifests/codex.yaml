@@ -13,15 +13,11 @@ hookFields:
 capture:
   planDirs: []
   planTags:
-    # Codex's plan mode does not write markdown files to disk; instead
-    # it emits structured plan updates via the `update_plan` function-call
-    # tool (response_item / function_call / name=update_plan with a JSON
-    # `plan` array in `arguments`). The Codex transcript parser
-    # (`packages/myco/src/symbionts/parsers/codex-jsonl.ts`) synthesizes
-    # an `<update_plan>...</update_plan>` envelope from the tool call's
-    # JSON args at parse time, appended to the assistant turn's
-    # aiResponse, so this shared tag-extraction path captures it.
-    - update_plan
+    # Codex Plan Mode emits the approved plan as assistant text wrapped in
+    # `<proposed_plan>...</proposed_plan>`. The `update_plan` function-call
+    # tool is only transient checklist/progress state and must not be
+    # persisted as a Myco plan.
+    - proposed_plan
   rules:
     # Ephemeral sub-invocation filter (structural, two-layer defense).
     #

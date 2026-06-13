@@ -385,10 +385,10 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       // (Cursor), so target the human anchor.
       const summaryTarget = resolveResponseSummaryTarget(sessionId, latestBatch);
       // Strip plan-tag envelopes at the persist point: the transcript-turn
-      // fallback above is parser-derived and can carry synthesized
-      // `<update_plan>` payloads (plan extraction below reads the raw turns,
-      // so it loses nothing). An envelope-only response strips to '' and is
-      // not persisted. Idempotent no-op for envelope-free text.
+      // fallback above is parser-derived and can carry machine-readable plan
+      // tags (plan extraction below reads the raw turns, so it loses nothing).
+      // An envelope-only response strips to '' and is not persisted.
+      // Idempotent no-op for envelope-free text.
       const persistableResponse = resolvedResponse
         ? stripPlanTagEnvelopes(resolvedResponse, deps.planTags)
         : undefined;

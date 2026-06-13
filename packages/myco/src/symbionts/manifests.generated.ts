@@ -386,7 +386,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capture": {
       "planDirs": [],
       "planTags": [
-        "update_plan"
+        "proposed_plan"
       ],
       "rules": [
         {
