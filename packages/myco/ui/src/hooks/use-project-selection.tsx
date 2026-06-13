@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useLayoutEffect, useState, type
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import {
   projectPath,
-  defaultSelection,
+  mostRecentSelection,
   selectionFromLast,
   selectionKey,
   setCurrentRequestSelection,
@@ -10,14 +10,17 @@ import {
   type ProjectSelection,
 } from '../lib/selection';
 import { useGroves } from './use-groves';
+import { useProjectsActivity } from './use-maintenance-summary';
 
 const ProjectSelectionContext = createContext<ProjectSelection | null>(null);
 
 export function ProjectSelectionBoundary({
   selection,
+  persist = true,
   children,
 }: {
   selection: ProjectSelection;
+  persist?: boolean;
   children: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -26,12 +29,12 @@ export function ProjectSelectionBoundary({
 
   useLayoutEffect(() => {
     setCurrentRequestSelection(selection);
-    writeLastSelection(selection);
+    if (persist) writeLastSelection(selection);
     queryClient.removeQueries({
       predicate: (query) => query.queryKey[0] !== 'groves',
     });
     setActiveKey(key);
-  }, [key, queryClient]);
+  }, [key, persist, queryClient]);
 
   if (activeKey !== key) {
     return (
@@ -75,9 +78,10 @@ export function useProjectSelection(): ProjectSelection | null {
 export function useActiveProjectSelection(): ProjectSelection | null {
   const ctx = useContext(ProjectSelectionContext);
   const groves = useGroves();
+  const activity = useProjectsActivity();
   if (ctx) return ctx;
   const list = groves.data?.groves ?? [];
-  return selectionFromLast(list) ?? defaultSelection(list);
+  return selectionFromLast(list) ?? mostRecentSelection(list, activity.data?.projects);
 }
 
 export function useProjectPath(suffix = ''): string {
