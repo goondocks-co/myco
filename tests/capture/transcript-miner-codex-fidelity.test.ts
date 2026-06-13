@@ -5,9 +5,9 @@
  *  - RC-B: a `$skill` expansion (second user-role response_item) folds into
  *    the human turn, so the assistant's answer lands on the HUMAN batch and
  *    the envelope system batch keeps a NULL summary.
- *  - RC-F: the parser-synthesized `<update_plan>` envelope is stripped from
- *    the persisted response_summary, while plan extraction (raw turns) still
- *    receives it.
+ *  - RC-F: Codex `update_plan` calls remain transient task progress. They
+ *    count as tool calls but never become persisted response_summary content
+ *    or captured Plan rows.
  *  - RC-D(2): images carried on the turn reach the injected mining-path
  *    capture sink, attributed to the matched batch with the batch's own
  *    project tenancy.
@@ -112,7 +112,7 @@ describe('TranscriptMiner — codex fidelity (RC-B / RC-F / RC-D mining path)', 
     const { human, envelope } = seedLiveBatches();
     const sinkCalls: MinedImageCapture[] = [];
     const miner = new TranscriptMiner({
-      planTags: ['update_plan'],
+      planTags: ['proposed_plan'],
       captureImages: (input) => sinkCalls.push(input),
     });
 
@@ -128,7 +128,7 @@ describe('TranscriptMiner — codex fidelity (RC-B / RC-F / RC-D mining path)', 
 
     // RC-B: the human prompt's turn owns the assistant output.
     expect(humanRow.response_summary).toContain(PROSE);
-    // RC-F: no machine-readable plan payload in the user-facing summary.
+    // RC-F: no transient task-progress payload in the user-facing summary.
     expect(humanRow.response_summary).not.toContain('<update_plan>');
     expect(humanRow.response_summary).not.toContain('</update_plan>');
     // RC-B: an envelope batch matches no transcript turn — NULL is correct.
@@ -144,21 +144,17 @@ describe('TranscriptMiner — codex fidelity (RC-B / RC-F / RC-D mining path)', 
     expect(sinkCalls[0].images).toEqual([{ mediaType: 'image/png', data: PNG_1x1 }]);
   });
 
-  it('plan extraction still receives the envelopes the persisted summary loses', () => {
+  it('update_plan task progress does not synthesize a durable transcript plan', () => {
     seedLiveBatches();
-    const miner = new TranscriptMiner({ planTags: ['update_plan'] });
+    const miner = new TranscriptMiner({ planTags: ['proposed_plan'] });
     miner.reconcileAndAttributeResponses(sessionId, { agent: 'codex', transcriptPath });
 
-    // The extraction channel reads RAW parser turns (the Stop pipeline's
-    // input), not persisted summaries — so the Plan record pipeline keeps
-    // seeing the envelope after mining stripped it from the summary.
     const turns = codexAdapter.parseTurns(fs.readFileSync(transcriptPath, 'utf-8'));
     expect(turns).toHaveLength(1); // RC-B: envelope folded, single turn
-    const plans = extractTaggedPlans(turns[0].aiResponse!, ['update_plan']);
-    expect(plans).toHaveLength(1);
-    expect(plans[0].tag).toBe('update_plan');
-    expect(plans[0].content).toContain('- [x] Fix finding one');
-    expect(plans[0].content).toContain('- [~] Fix finding two');
+    expect(turns[0].toolCount).toBe(1);
+    expect(turns[0].aiResponse).toBe(PROSE);
+    expect(turns[0].aiResponse).not.toContain('<update_plan>');
+    expect(extractTaggedPlans(turns[0].aiResponse!, ['proposed_plan'])).toEqual([]);
   });
 
   it('an envelope-only assistant turn persists no summary at all', () => {
@@ -187,7 +183,7 @@ describe('TranscriptMiner — codex fidelity (RC-B / RC-F / RC-D mining path)', 
       origin: 'human', started_at: now, created_at: now,
     });
 
-    const miner = new TranscriptMiner({ planTags: ['update_plan'] });
+    const miner = new TranscriptMiner({ planTags: ['proposed_plan'] });
     miner.reconcileAndAttributeResponses(sessionId, { agent: 'codex', transcriptPath });
 
     const row = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).find((b) => b.id === batch.id)!;

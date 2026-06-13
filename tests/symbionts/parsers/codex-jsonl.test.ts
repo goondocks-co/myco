@@ -60,6 +60,26 @@ describe('CodexJsonlParser', () => {
     expect(turns[0].aiResponse).toBe('Done.');
   });
 
+  it('treats update_plan function calls as transient task progress, not assistant plan content', () => {
+    const content = toJsonl([
+      messageItem('user', [{ type: 'input_text', text: 'Fix the bug' }], '2026-04-12T10:00:00Z'),
+      functionCallItem('update_plan', JSON.stringify({
+        plan: [
+          { step: 'Inspect failing path', status: 'completed' },
+          { step: 'Patch implementation', status: 'in_progress' },
+        ],
+      }), '2026-04-12T10:00:10Z'),
+      messageItem('assistant', [{ type: 'output_text', text: 'I found the issue.' }], '2026-04-12T10:00:30Z'),
+    ]);
+
+    const turns = parser.parseTurns(content);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].toolCount).toBe(1);
+    expect(turns[0].aiResponse).toBe('I found the issue.');
+    expect(turns[0].aiResponse).not.toContain('<update_plan>');
+  });
+
   it('skips developer messages', () => {
     const content = toJsonl([
       messageItem('developer', [{ type: 'input_text', text: 'System instructions here' }], '2026-04-12T09:59:00Z'),
@@ -133,9 +153,7 @@ describe('CodexJsonlParser', () => {
   // Surfaced 2026-05-28 alongside the StandardJsonlParser fix: a multi-step
   // turn emits a sequence of message items, each carrying part of the
   // assistant text. The pre-fix `current.aiResponse = text` overwrote with
-  // each entry, leaving only the final fragment in response_summary. Matches
-  // the existing `update_plan` envelope path in this parser which already
-  // appends rather than overwrites.
+  // each entry, leaving only the final fragment in response_summary.
   it('concatenates text across multiple assistant message items in one turn', () => {
     const content = toJsonl([
       messageItem('user', [{ type: 'input_text', text: 'Multi-step task' }], '2026-04-12T10:00:00Z'),
