@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useLayoutEffect, useState, type
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import {
   projectPath,
-  mostRecentSelection,
+  defaultSelection,
   selectionFromLast,
   selectionKey,
   setCurrentRequestSelection,
@@ -10,7 +10,6 @@ import {
   type ProjectSelection,
 } from '../lib/selection';
 import { useGroves } from './use-groves';
-import { useProjectsActivity } from './use-maintenance-summary';
 
 const ProjectSelectionContext = createContext<ProjectSelection | null>(null);
 
@@ -78,10 +77,9 @@ export function useProjectSelection(): ProjectSelection | null {
 export function useActiveProjectSelection(): ProjectSelection | null {
   const ctx = useContext(ProjectSelectionContext);
   const groves = useGroves();
-  const activity = useProjectsActivity();
   if (ctx) return ctx;
   const list = groves.data?.groves ?? [];
-  return selectionFromLast(list) ?? mostRecentSelection(list, activity.data?.projects);
+  return selectionFromLast(list) ?? defaultSelection(list);
 }
 
 export function useProjectPath(suffix = ''): string {
