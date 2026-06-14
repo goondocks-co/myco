@@ -137,7 +137,7 @@ process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 
 'windows-x64')")
 
 dev-build:
-	@# myco-team and myco-collective stay on tsup/Node.
+	@# myco-team and myco-collective build via bun build (Node ESM, not standalone binaries).
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
 	@# myco is now a Bun-compiled binary. Steps in order:

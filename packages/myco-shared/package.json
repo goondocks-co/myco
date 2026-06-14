@@ -34,13 +34,12 @@
     "directory": "packages/myco-shared"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun scripts/build.mjs && tsc --emitDeclarationOnly --declaration --declarationMap false --outDir dist",
     "lint": "tsc --noEmit",
     "test": "echo 'myco-shared tests run from repo root'"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",
-    "tsup": "^8.0.0",
     "typescript": "^6.0.3"
   }
 }

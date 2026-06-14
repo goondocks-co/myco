@@ -28,7 +28,7 @@ jobs:
       - run: npm ci --prefix packages/myco-team/worker
       - run: npm ci --prefix packages/myco-collective/worker
       - run: npm run lint
-      # Build the still-tsup-based sibling packages first so their dist/ is
+      # Build the sibling packages (bun build) first so their dist/ is
       # available for anything that imports them.
       - run: npm run build -w @goondocks/myco-team
       - run: npm run build -w @goondocks/myco-collective
