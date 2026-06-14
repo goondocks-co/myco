@@ -122,7 +122,18 @@ function SkillTableRow({
 /* ---------- Component ---------- */
 
 export function SkillList({ onSelectSkill }: { onSelectSkill: (name: string) => void }) {
-  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } =
+  const {
+    searchInput,
+    debouncedSearch,
+    filterValues,
+    offset,
+    setOffset,
+    handleSearchChange,
+    handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
+    activeFilter,
+  } =
     useListFilters({ initialFilters: { status: FILTER_ALL } });
 
   const activeStatus = activeFilter('status');
@@ -154,6 +165,8 @@ export function SkillList({ onSelectSkill }: { onSelectSkill: (name: string) => 
       filters={SKILL_FILTERS}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
+      onClear={handleClearFilters}
+      hasActiveFilters={hasActiveFilters}
       count={total > 0 ? `${total} ${total === 1 ? 'skill' : 'skills'}` : undefined}
     />
   );

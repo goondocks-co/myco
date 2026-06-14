@@ -143,4 +143,15 @@ describe('useScopedConfig.setField', () => {
     });
     expect(writeScopedConfigMock).not.toHaveBeenCalled();
   });
+
+  it("scope 'machine' sends a correctly nested notifications retention patch", async () => {
+    const { result } = renderHook(() => useScopedConfig(), { wrapper: makeWrapper() });
+    await act(async () => {
+      await result.current.setField('notifications.retention_days', 7, 'machine');
+    });
+    expect(putJsonMock).toHaveBeenCalledWith('/machine-config', {
+      patch: { notifications: { retention_days: 7 } },
+    });
+    expect(writeScopedConfigMock).not.toHaveBeenCalled();
+  });
 });

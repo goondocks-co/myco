@@ -50,7 +50,7 @@ export interface Notification {
   message: string | null;
   mode: NotificationMode;
   status: NotificationStatus;
-  /** Link to navigate to when clicked (e.g. '/agent?run=abc'). */
+  /** Link to navigate to when clicked (e.g. '/agent/abc'). */
   link: string | null;
   /** Arbitrary JSON metadata for domain-specific data. */
   metadata: Record<string, unknown> | null;

@@ -33,6 +33,7 @@ import { countToolCallsByRun } from '@myco/db/queries/turns.js';
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { loadAllTasks } from '@myco/agent/registry.js';
 import { notify } from '@myco/notifications/notify.js';
+import { agentRunNotificationLink } from '@myco/notifications/links.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -208,7 +209,7 @@ export function gateScheduledResume(input: ScheduledResumeGateInput): 'resume' |
     type: 'agent.task.failure',
     title: `Task failed: ${taskName}`,
     message: `Resume retries exhausted after ${run.resume_attempts} attempts; starting a fresh run`,
-    link: `/agent?run=${run.id}`,
+    link: agentRunNotificationLink(run.id),
     metadata: { taskName, runId: run.id },
   }, config, { projectId });
   return 'exhausted';
@@ -465,7 +466,7 @@ export async function registerScheduledTasks(
         type: 'agent.task.failure',
         title: `Task failed: ${taskName}`,
         message: result.error ?? 'Unknown error',
-        link: `/agent?run=${result.runId}`,
+        link: agentRunNotificationLink(result.runId),
         metadata: { taskName, runId: result.runId },
       }, config, { projectId });
     } else if (result.status === 'completed') {
@@ -473,7 +474,7 @@ export async function registerScheduledTasks(
         domain: 'agents',
         type: 'agent.task.success',
         title: `Task completed: ${taskName}`,
-        link: `/agent?run=${result.runId}`,
+        link: agentRunNotificationLink(result.runId),
         metadata: { taskName, runId: result.runId },
       }, config, { projectId });
 

@@ -14,7 +14,7 @@ import { GroveRuntimeCache, type EmbeddingRuntimeFactory } from '@myco/daemon/gr
 import { createGrove, registerProjectInGrove, clearGroveRegistryCaches, type GroveRecord } from '@myco/grove/registry.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { loadGroveConfig, saveGroveConfig } from '@myco/config/loader.js';
+import { loadGroveConfig, loadMachineConfig, saveGroveConfig, saveMachineConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
 // ---------------------------------------------------------------------------
@@ -165,6 +165,13 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
         },
       },
       embedding: { run_in_deep_sleep: true },
+      notifications: {
+        enabled: true,
+        system_notifications: false,
+        default_mode: 'summary',
+        retention_days: 30,
+        domains: {},
+      },
       ...(overrides.config as Record<string, unknown> ?? {}),
     },
   };
@@ -541,6 +548,94 @@ describe('log-retention power job', () => {
       ).get() as { n: number },
     );
     expect(surviving.n).toBe(0);
+  });
+});
+
+describe('notification-retention power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  function seedNotification(id: string, status: string, daysAgo: number): void {
+    const createdAt = Math.floor((Date.now() - daysAgo * 24 * 60 * 60 * 1000) / 1000);
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      getDatabase().prepare(
+        `INSERT INTO notifications (
+          id, project_id, domain, type, level, title, message, mode, status, link, metadata, created_at
+        ) VALUES (?, NULL, 'agents', 'agent.task.success', 'info', ?, NULL, 'summary', ?, NULL, NULL, ?)`,
+      ).run(id, id, status, createdAt);
+    });
+  }
+
+  function notificationCount(id: string): number {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      (getDatabase().prepare(
+        `SELECT COUNT(*) AS n FROM notifications WHERE id = ?`,
+      ).get(id) as { n: number }).n,
+    );
+  }
+
+  function saveMachineRetention(days: number): void {
+    const config = loadMachineConfig(fx.mycoHome);
+    saveMachineConfig({
+      ...config,
+      notifications: {
+        ...config.notifications,
+        retention_days: days,
+      },
+    }, fx.mycoHome);
+  }
+
+  it('registers as idle/sleep housekeeping', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('notification-retention');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('reads notifications.retention_days from machine config on each run', async () => {
+    const deps = buildDeps(fx);
+    deps.liveConfig.current = {
+      ...deps.liveConfig.current,
+      notifications: { ...deps.liveConfig.current.notifications, retention_days: 0 },
+    };
+    registerPowerJobs(pm as never, deps);
+
+    seedNotification('fourteen-days-old', 'dismissed', 14);
+
+    await pm.find('notification-retention').fn();
+
+    expect(notificationCount('fourteen-days-old')).toBe(1);
+
+    saveMachineRetention(7);
+
+    await pm.find('notification-retention').fn();
+
+    expect(notificationCount('fourteen-days-old')).toBe(0);
+  });
+
+  it('deletes old acknowledged notifications and preserves unread/new rows', async () => {
+    const deps = buildDeps(fx);
+    saveMachineRetention(7);
+    registerPowerJobs(pm as never, deps);
+
+    seedNotification('old-read', 'read', 14);
+    seedNotification('old-dismissed', 'dismissed', 14);
+    seedNotification('old-unread', 'unread', 14);
+    seedNotification('new-read', 'read', 1);
+
+    await pm.find('notification-retention').fn();
+
+    expect(notificationCount('old-read')).toBe(0);
+    expect(notificationCount('old-dismissed')).toBe(0);
+    expect(notificationCount('old-unread')).toBe(1);
+    expect(notificationCount('new-read')).toBe(1);
   });
 });
 

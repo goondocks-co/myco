@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useDebounce } from './use-debounce';
 
 /** Sentinel value for "show all" in filter dropdowns. */
@@ -17,6 +17,8 @@ export interface UseListFiltersResult {
   setOffset: (offset: number) => void;
   handleSearchChange: (value: string) => void;
   handleFilterChange: (key: string, value: string) => void;
+  handleClearFilters: () => void;
+  hasActiveFilters: boolean;
   /** Get the active value for a filter key (returns undefined if set to FILTER_ALL). */
   activeFilter: (key: string) => string | undefined;
 }
@@ -37,6 +39,18 @@ export function useListFilters({ initialFilters }: UseListFiltersOptions): UseLi
     setOffset(0);
   }, []);
 
+  const handleClearFilters = useCallback(() => {
+    setSearchInput('');
+    setFilterValues(initialFilters);
+    setOffset(0);
+  }, [initialFilters]);
+
+  const hasActiveFilters = useMemo(() => (
+    searchInput.trim().length > 0
+    || offset > 0
+    || Object.entries(filterValues).some(([key, value]) => value !== (initialFilters[key] ?? FILTER_ALL))
+  ), [filterValues, initialFilters, offset, searchInput]);
+
   const activeFilter = useCallback((key: string): string | undefined => {
     const val = filterValues[key];
     return val && val !== FILTER_ALL ? val : undefined;
@@ -50,6 +64,8 @@ export function useListFilters({ initialFilters }: UseListFiltersOptions): UseLi
     setOffset,
     handleSearchChange,
     handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
     activeFilter,
   };
 }

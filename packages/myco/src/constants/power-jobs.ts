@@ -7,6 +7,7 @@ export const POWER_JOB_NAMES = {
   EMBEDDING_RECONCILE: 'embedding-reconcile',
   SESSION_MAINTENANCE: 'session-maintenance',
   LOG_RETENTION: 'log-retention',
+  NOTIFICATION_RETENTION: 'notification-retention',
   AUTO_BACKUP: 'auto-backup',
   DATABASE_OPTIMIZE: 'database-optimize',
   DATABASE_INTEGRITY_CHECK: 'database-integrity-check',

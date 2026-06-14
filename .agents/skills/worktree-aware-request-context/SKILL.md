@@ -92,6 +92,24 @@ For each filesystem operation, determine the correct root using this decision tr
    - Session records: use `context.projectId`
    - **Never use filesystem roots for DB identity**
 
+4. **Body-scope/URL-channel grove ownership enforcement**:
+   Some routes accept a grove ID via the request body or URL path rather than through the standard context-switching headers (which flow through `buildRegisteredRequestContext`). These routes bypass the normal `enforceGroveOwnership` funnel and must call `assertOwnedGrove(groveId)` explicitly before touching any grove resource:
+   ```typescript
+   import { assertOwnedGrove, ForeignGroveError } from '../grove/registry';
+
+   // In a route handler that receives groveId from body/URL:
+   try {
+     assertOwnedGrove(groveId); // throws ForeignGroveError if served by another daemon
+   } catch (err) {
+     if (err instanceof ForeignGroveError) {
+       return reply.code(403).send({ error: 'foreign_grove', grove_id: err.groveId, served_by: err.servedBy });
+     }
+     throw err;
+   }
+   // Safe to open grove DB or perform grove-scoped work below
+   ```
+   `assertOwnedGrove` is defined in `packages/myco/src/grove/registry.ts` and throws `ForeignGroveError` (which carries `.groveId` and `.servedBy`) when the grove is registered but owned by a different daemon variant.
+
 ## Procedure C: Handle Canopy-Specific Root Requirements
 
 Canopy operations require careful separation of file path canonicalization from project identity:
@@ -253,3 +271,7 @@ When adding new filesystem operations:
 **`use-git-identity` hook missing tenancy headers produces 404, not 400**: The `use-git-identity` hook doesn't attach tenancy headers, so `resolveScopedRoot` silently falls back to the non-git root. This produces a 404 (resource not found at fallback root) instead of the expected 400 (missing tenancy). Unexplained 404s from git-identity flows are a fingerprint of this tenancy-invariant violation — check tenancy header population in the hook invocation.
 
 **`make dev-link-worktree` must not be run in isolated programmatic scenarios**: The `dev-link-worktree` Makefile target writes `.myco/runtime.command` and shares the same vault as the main checkout. Running it in programmatic or CI scenarios causes the shared vault's schema migrations to be driven by the worktree's binary version, which may be ahead of the main checkout. This can permanently migrate the shared vault to a schema version the main checkout cannot read. Use only in manual developer worktree setups where vault sharing is intentional and understood.
+
+**`enforceGroveOwnership` is OPT-IN — never assume it fires by default**: `buildRegisteredRequestContext` and related helpers accept `enforceGroveOwnership?: boolean` which defaults to `false`. `resolveRegisteredRequestContext` runs client-side in hooks/client.ts paths; making it default-on would silently drop capture headers for all normal requests. Only the handful of routes that explicitly pass `enforceGroveOwnership: true` get the guard. Routes that receive a grove ID via body or URL (outside the header funnel) MUST call `assertOwnedGrove(groveId)` themselves — they cannot rely on the header-level enforcement.
+
+**`assertOwnedGrove` vs `enforceGroveOwnership` — two different enforcement seams**: `enforceGroveOwnership` operates inside `buildRegisteredRequestContext` on grove IDs supplied via context-switching *headers*. `assertOwnedGrove(groveId)` (from `packages/myco/src/grove/registry.ts`) is the primitive for routes that receive a grove ID via *body or URL path*. They are complementary, not interchangeable. Throwing on a foreign grove returns `ForeignGroveError` carrying `.groveId` and `.servedBy` — surface these as a 403 `{error: 'foreign_grove', grove_id, served_by}` so the caller can redirect to the correct daemon.
