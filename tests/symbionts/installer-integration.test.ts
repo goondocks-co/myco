@@ -206,31 +206,34 @@ const KNOWN_REVERSIBILITY_GAPS = new Set<string>();
 
 describe('symbiont installer integration matrix (global scope)', () => {
   /**
-   * Post-install command-line scope check.
+   * Post-install command-line scope check (direct-binary form).
    *
-   * The regression this guards: a global-scope install whose hook
-   * commands still reference `.agents/myco-run.cjs` (the project-local
-   * launcher). When the project doesn't ship that file, capture dies
-   * silently. The fix is the `{{mycoLauncher}}` placeholder, substituted
-   * to `node "$HOME/.myco/launcher.cjs"` at install time. This assertion
-   * walks the actual on-disk hook files after install and proves the
-   * launcher path landed correctly.
+   * The regression this guards: a global-scope install whose hook commands
+   * still reference `.agents/myco-run.cjs` (the project-local launcher) or
+   * leave the literal `{{mycoLauncher}}` placeholder unsubstituted — either
+   * one kills capture silently. After the launcher-unification flip, hook
+   * commands invoke the self-contained binary directly (no `node`, no `.cjs`)
+   * and carry the `--myco-managed` ownership marker. A pinned
+   * `runtime.command` makes the resolved binary path deterministic so the
+   * assertion can prove it landed in the command line.
    */
-  describe('post-install hooks file references the global launcher', () => {
+  describe('post-install hooks file uses the direct binary with the ownership marker', () => {
+    const PINNED_BINARY = '/opt/myco/bin/myco';
     for (const manifest of manifests) {
       const reg = manifest.registration;
       if (!reg?.globalHooksTarget) continue;
       // Plugin-file format (opencode, pi) wires hooks through TypeScript
-      // plugin source that dispatches tool calls to the project-local
-      // launcher from inside an active project context — different
-      // dispatch model than JSON hook command lines. Excluded here; the
-      // JSON-format symbionts are what this assertion guards.
+      // plugin source — a different dispatch model than JSON hook command
+      // lines. Antigravity's JSON plugin-file template still substitutes
+      // commands, so it stays in scope.
       if (reg.hooksFormat === 'plugin-file' && reg.hooksTemplateFile !== 'hooks.json') continue;
       const skip = SKIP_REASONS[manifest.name];
       const test = skip ? it.skip : it;
-      test(`${manifest.name}: hook command lines reference ~/.myco/launcher.cjs, not .agents/myco-run.cjs`, () => {
+      test(`${manifest.name}: hook command lines invoke the binary directly with --myco-managed`, () => {
         const fake = setupFakeHome();
         try {
+          fs.mkdirSync(path.join(fake.tmpHome, '.myco'), { recursive: true });
+          fs.writeFileSync(path.join(fake.tmpHome, '.myco', 'runtime.command'), `${PINNED_BINARY}\n`, 'utf-8');
           ensureDetectionDir(manifest, fake.tmpHome);
           const installer = newInstaller(manifest, fake.tmpHome);
           installer.install();
@@ -238,10 +241,11 @@ describe('symbiont installer integration matrix (global scope)', () => {
           const hooksPath = (installer as any).resolveAbsoluteTarget('hooks') as string | null;
           if (!hooksPath || !fs.existsSync(hooksPath)) return;
           const content = fs.readFileSync(hooksPath, 'utf-8');
-          // Substituted file must reference the global launcher and
-          // must NOT contain the project-local launcher reference.
-          expect(content.includes('.myco/launcher.cjs')).toBe(true);
+          // Direct binary invocation, marker present, no trampoline.
+          expect(content.includes(PINNED_BINARY)).toBe(true);
+          expect(content.includes('--myco-managed')).toBe(true);
           expect(content.includes('.agents/myco-run.cjs')).toBe(false);
+          expect(content.includes('.cjs')).toBe(false);
           // The placeholder must be gone — leaving it literal would
           // be worse than the bug we're guarding against.
           expect(content.includes('{{mycoLauncher}}')).toBe(false);
@@ -427,9 +431,10 @@ describe('symbiont installer integration matrix (global scope)', () => {
         expect(installer.isConfigured()).toBe(true);
         const post = fs.readFileSync(hooksPath, 'utf-8');
         // Even though we overwrite the file with merged JSON, the
-        // post-install file must still contain a hook entry that
-        // references the launcher — that's the detection contract.
-        expect(/\bmyco-run\.cjs\b|\blauncher\.cjs\b/.test(post)).toBe(true);
+        // post-install file must still carry a Myco hook ownership signal —
+        // the `--myco-managed` marker is that signal for the direct-binary
+        // hook form. That's the detection contract.
+        expect(post.includes('--myco-managed')).toBe(true);
       } finally {
         fake.cleanup();
       }

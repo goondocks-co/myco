@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  hasMycoManagedMarker,
   isMycoHookCommand,
   isMycoHookGroup,
   MYCO_MANAGED_MARKER,
@@ -96,6 +97,47 @@ describe('Myco hook ownership — canonical launcher-path detection', () => {
       // marker nor a canonical launcher path is NOT Myco's — claiming it
       // would strip user-authored wrappers and escaped-smoke entries.
       expect(isMycoHookCommand('/some/build/myco-cli hook stop --symbiont claude-code')).toBe(false);
+    });
+
+    it('does NOT claim a command where the marker text is part of a longer flag or prose', () => {
+      // Anchored match: the marker is a standalone trailing flag. A user file
+      // containing `--myco-managed-strategy` or prose mentioning the marker
+      // must NOT be claimed — and in uninstallPluginHookFile that match gates
+      // DELETION of the user's file, so the precision is data-safety-critical.
+      expect(isMycoHookCommand('/some/bin hook stop --symbiont claude-code --myco-managed-strategy')).toBe(false);
+      expect(isMycoHookCommand('# comment: this was myco-managed by us')).toBe(false);
+    });
+
+    it('claims a command where the marker is followed by another flag (space-separated)', () => {
+      // The marker need not be the very last token — only a standalone one.
+      expect(isMycoHookCommand('/build/myco hook stop --symbiont claude-code --myco-managed --extra')).toBe(true);
+    });
+  });
+
+  describe('hasMycoManagedMarker — anchored standalone-flag match', () => {
+    it('matches the marker as a trailing flag', () => {
+      expect(hasMycoManagedMarker('/build/myco hook stop --symbiont claude-code --myco-managed')).toBe(true);
+    });
+
+    it('matches the marker followed by another flag', () => {
+      expect(hasMycoManagedMarker('/build/myco hook stop --myco-managed --extra')).toBe(true);
+    });
+
+    it('does NOT match the marker text embedded in a longer token', () => {
+      expect(hasMycoManagedMarker('--myco-managed-strategy')).toBe(false);
+    });
+
+    it('does NOT match the marker text appearing in prose without a leading dash boundary', () => {
+      expect(hasMycoManagedMarker('this was --myco-managedby us')).toBe(false);
+      expect(hasMycoManagedMarker('myco-managed text')).toBe(false);
+    });
+
+    it('matches the marker when it is immediately followed by a JSON closing quote', () => {
+      // rawHasMycoOwnershipSignal scans the serialized config file, where the
+      // marker sits at the end of a JSON string value: `...--myco-managed"`.
+      // A whitespace-only right anchor would miss this — the boundary must
+      // admit the quote. (Regression: antigravity isConfigured() false-negative.)
+      expect(hasMycoManagedMarker('{"command": "/bin hook stop --symbiont antigravity --myco-managed"}')).toBe(true);
     });
   });
 
