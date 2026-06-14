@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
 import { backfillAll, backfillAllForRebuild, countPending } from '@myco/db/queries/team-outbox.js';
 
 describe('rebuildFromLocal local half: backfillAll re-enqueues the Grove', () => {
@@ -12,6 +12,7 @@ describe('rebuildFromLocal local half: backfillAll re-enqueues the Grove', () =>
   it('backfillAll enqueues a sync-eligible row even when already marked synced', () => {
     const db = getDatabase();
     setTeamSyncEnabled(true, db);
+    setProjectSyncMembership(['proj_x'], db);
     // agents row required by spores.agent_id FK
     db.prepare(
       `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
@@ -50,14 +51,15 @@ describe('backfillAllForRebuild: includes skill_usage; backfillAll does not', ()
        VALUES ('sr_su', 'user', 'local', 'test-skill', 'Test Skill', 'desc', 'active', '/tmp/test.md', 1, 1)`,
     ).run();
     db.prepare(
-      `INSERT INTO skill_usage (id, skill_id, session_id, machine_id, detected_at)
-       VALUES ('su_1', 'sr_su', 'sess_su', 'local', 1)`,
+      `INSERT INTO skill_usage (id, project_id, skill_id, session_id, machine_id, detected_at)
+       VALUES ('su_1', 'proj_su', 'sr_su', 'sess_su', 'local', 1)`,
     ).run();
   }
 
   it('backfillAllForRebuild enqueues skill_usage rows', () => {
     const db = getDatabase();
     setTeamSyncEnabled(true, db);
+    setProjectSyncMembership(['proj_su'], db);
     seedSkillUsage(db);
 
     const enqueued = backfillAllForRebuild('local');
@@ -73,6 +75,7 @@ describe('backfillAllForRebuild: includes skill_usage; backfillAll does not', ()
   it('backfillAll does NOT enqueue skill_usage rows', () => {
     const db = getDatabase();
     setTeamSyncEnabled(true, db);
+    setProjectSyncMembership(['proj_su'], db);
     seedSkillUsage(db);
 
     backfillAll('local');

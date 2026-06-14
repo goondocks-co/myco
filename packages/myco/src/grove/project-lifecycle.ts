@@ -4,7 +4,8 @@ import { openDatabase } from '@myco/db/client.js';
 import { createGroveBackup } from '@myco/backup/service.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { loadGroveConfig } from '@myco/config/loader.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
+import { memberProjectIdsForGrove } from './project-tenancy.js';
 import fs from 'node:fs';
 import { ensureGroveDatabase } from './database.js';
 import {
@@ -96,6 +97,11 @@ export function deleteProjectPermanently(
     // triggers would silently skip journaling. Reconciling here guarantees the
     // trigger gate reflects the Grove's intent regardless of tick timing.
     setTeamSyncEnabled(groveConfig.team.enabled, db);
+    // The delete triggers are also membership-gated (a delete journals only when
+    // OLD.project_id is a member), so the per-project member set must be present
+    // on this freshly-opened handle too — otherwise a member project's delete
+    // would silently skip journaling.
+    setProjectSyncMembership(memberProjectIdsForGrove(groveId), db);
     // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
     // fires that table's `_team_ad` trigger, which journals the delete to
     // team_outbox when this Grove's team_sync_state.enabled = 1. No manual

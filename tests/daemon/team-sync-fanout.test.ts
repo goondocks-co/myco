@@ -60,6 +60,7 @@ import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { createGrove, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
 import { enqueueOutbox, listPending } from '@myco/db/queries/team-outbox.js';
+import { getSyncableProjectIds } from '@myco/db/queries/team-sync-state.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import { createTeamId, createProjectId } from '@myco/grove/ids.js';
 
@@ -160,6 +161,28 @@ describe('team-sync flush fan-out across Groves', () => {
     const dbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
     const db = cache.getDatabase(dbPath);
     return withDatabase(db, () => listPending().length);
+  }
+
+  /** Seed an UNSYNCED source spore (synced_at NULL) so reconcile's backfill picks it up. */
+  function seedUnsyncedSpore(grove: GroveRecord, cache: GroveRuntimeCache, id: string): void {
+    const dbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
+    const db = cache.getDatabase(dbPath);
+    const projectId = projectByGrove.get(grove.id)!;
+    withDatabase(db, () => {
+      db.prepare(
+        `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
+         VALUES (?, ?, 'user', 'decision', 'x', 1, 'machine-1')`,
+      ).run(id, projectId);
+    });
+  }
+
+  function syncableProjects(grove: GroveRecord, cache: GroveRuntimeCache): string[] {
+    const dbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
+    const db = cache.getDatabase(dbPath);
+    return withDatabase(db, () => getSyncableProjectIds());
   }
 
   function buildGroveCtx(grove: GroveRecord) {
@@ -324,6 +347,110 @@ describe('team-sync flush fan-out across Groves', () => {
       batches: 0,
       errors: 0,
     });
+
+    cache.closeAll();
+  });
+
+  // --- reconcileGrove: the affected-grove immediate reconcile (Task 4b) ---
+
+  it('reconcileGrove reconciles + backfills + flushes ONLY the affected grove', async () => {
+    const affected = createGroveWithTeamConfig('Affected');
+    const sibling = createGroveWithTeamConfig('Sibling');
+    const cache = new GroveRuntimeCache();
+
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: false, worker_url: undefined } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir: bootVaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
+
+    // Both groves own a member project (assigned by createGroveWithTeamConfig),
+    // and each has an unsynced source spore. Reconciling only the affected grove
+    // must backfill + flush its row to its worker while leaving the sibling's
+    // row pending (untouched until its own reconcile / next flush tick).
+    seedUnsyncedSpore(affected, cache, 'sp-affected');
+    seedUnsyncedSpore(sibling, cache, 'sp-sibling');
+
+    await teamSync.reconcileGrove(cache, affected.id);
+
+    // Affected grove: membership table populated, its spore backfilled + flushed.
+    expect(syncableProjects(affected, cache)).toEqual([projectByGrove.get(affected.id)!]);
+    expect(pendingCount(affected, cache)).toBe(0);
+    expect(enqueueBatchByGrove.get(affected.id)?.[0]?.count).toBe(1);
+
+    // Sibling grove untouched by this reconcile — its row never reached a worker.
+    expect(enqueueBatchByGrove.has(sibling.id)).toBe(false);
+    expect(pendingCount(sibling, cache)).toBe(0);
+
+    cache.closeAll();
+  });
+
+  it('reconcileGrove on a grove with no member projects clears membership and purges its outbox', async () => {
+    // A grove whose only project is NOT a team member (a removed/never-assigned
+    // project). reconcileGrove must set empty membership and purge the
+    // project-scoped outbox rows, while the machine HAS joined a team elsewhere.
+    const elsewhere = createGroveWithTeamConfig('Elsewhere');   // owns a member project
+    const orphan = createGroveWithTeamConfig('Orphan');
+    // Strip Orphan's project from its team so the grove owns no member project.
+    const orphanTeam = teamRegistry
+      .list(mycoHome)
+      .find((t) => t.projects.some((p) => p.grove_id === orphan.id))!;
+    teamRegistry.save(
+      { ...orphanTeam, projects: orphanTeam.projects.filter((p) => p.grove_id !== orphan.id) },
+      mycoHome,
+    );
+
+    const cache = new GroveRuntimeCache();
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: false, worker_url: undefined } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir: bootVaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
+
+    // Pre-seed an orphan outbox row for the now-non-member project.
+    seedOutbox(orphan, cache, ['stale-1']);
+    expect(pendingCount(orphan, cache)).toBe(1);
+
+    await teamSync.reconcileGrove(cache, orphan.id);
+
+    expect(syncableProjects(orphan, cache)).toEqual([]);
+    // The project-scoped stale row is purged by purgeNonMemberOutbox.
+    expect(pendingCount(orphan, cache)).toBe(0);
+    // The elsewhere grove (a different served grove) is NOT touched by a
+    // single-grove reconcile.
+    expect(enqueueBatchByGrove.has(elsewhere.id)).toBe(false);
+
+    cache.closeAll();
+  });
+
+  it('reconcileGrove for an unknown grove id is a no-op (served-by / not-found scoping)', async () => {
+    createGroveWithTeamConfig('Present');
+    const cache = new GroveRuntimeCache();
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: false, worker_url: undefined } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir: bootVaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
+
+    // No throw, no enqueue — a grove not served here is silently skipped and
+    // the owning daemon's flush-tick backstop covers it.
+    await teamSync.reconcileGrove(cache, 'grove_ffffffffffffffffffffffffffffffff');
+    expect(enqueueBatchByGrove.size).toBe(0);
 
     cache.closeAll();
   });

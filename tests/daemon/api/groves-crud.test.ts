@@ -17,7 +17,8 @@ import {
   listGroveSummaries,
 } from '@myco/daemon/api/groves.js';
 import { initTeamContext, resetTeamContext } from '@myco/team/context.js';
-import { createProjectId } from '@myco/grove/ids.js';
+import { teamRegistry } from '@myco/team/registry.js';
+import { createProjectId, createTeamId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveGroveDir, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   clearGroveRegistryCaches,
@@ -336,6 +337,25 @@ describe('Grove CRUD API', () => {
       // team_sync_state from this config on its own DB handle, so the AFTER
       // DELETE triggers journal regardless of daemon tick timing.
       updateGroveConfig(grove.id, (c) => ({ ...c, team: { ...c.team, enabled: true } }));
+      // Assign both projects to a team so the authority resolves them as members.
+      // deleteProjectPermanently projects this registry membership into
+      // team_sync_membership on its own DB handle, arming the membership-gated
+      // delete triggers for both projects' rows.
+      teamRegistry.save(
+        {
+          team_id: createTeamId(),
+          name: 'Work Team',
+          worker_url: 'https://team.example.workers.dev',
+          domain: null,
+          mcp_endpoint: null,
+          created_at: new Date().toISOString(),
+          projects: [
+            { grove_id: grove.id, project_id: projectId },
+            { grove_id: grove.id, project_id: siblingProjectId },
+          ],
+        },
+        mycoHome,
+      );
       const dbPath = ensureGroveDb(grove.id);
       const db = openDatabase(dbPath);
       try {

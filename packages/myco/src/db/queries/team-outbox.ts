@@ -12,7 +12,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { TEAM_SYNC_OBSERVED_TABLES, type TeamSyncObservedTable } from '@myco/db/schema-ddl.js';
-import { getTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { isProjectSyncable } from '@myco/db/queries/team-sync-state.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { epochSeconds } from '@myco/constants.js';
 
@@ -214,11 +214,13 @@ export function syncRow(
   tableName: string,
   row: object & { id: string | number; created_at?: number },
 ): void {
-  if (!getTeamSyncEnabled()) return;
-  // Project-scoped rows carry `project_id`; machine-scoped rows (e.g.
-  // team_members) don't, so this resolves to null — which is correct for
-  // later per-team routing.
   const projectId = (row as { project_id?: string }).project_id ?? null;
+  // Project-scoped tenancy gate: a row syncs iff its project is an explicit
+  // team member. (Machine-scoped self-rows never flow through syncRow — they are
+  // enqueued by the daemon's reconcileSelfMember / backfill paths.) Membership
+  // is only populated when the grove participates, so this subsumes the prior
+  // grove-level getTeamSyncEnabled check.
+  if (!isProjectSyncable(projectId)) return;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
@@ -375,6 +377,23 @@ export function dropPendingForProjects(projectIds: string[]): number {
     `DELETE FROM team_outbox WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
   ).run(...projectIds);
   return result.changes;
+}
+
+/**
+ * Delete outbox rows (sent OR pending) for project-scoped rows whose project is
+ * not in the given member set. Self-rows (project_id IS NULL) are never touched.
+ * This both stops the re-enqueue loop and self-heals historical bloat for groves
+ * that were incorrectly enqueued before the membership gate existed.
+ */
+export function purgeNonMemberOutbox(memberProjectIds: string[]): number {
+  const db = getDatabase();
+  if (memberProjectIds.length === 0) {
+    return db.prepare('DELETE FROM team_outbox WHERE project_id IS NOT NULL').run().changes;
+  }
+  const placeholders = memberProjectIds.map(() => '?').join(', ');
+  return db.prepare(
+    `DELETE FROM team_outbox WHERE project_id IS NOT NULL AND project_id NOT IN (${placeholders})`,
+  ).run(...memberProjectIds).changes;
 }
 
 /**
@@ -622,11 +641,18 @@ function backfillRows(
     // window expired. Re-enqueuing beside a sent entry is safe for the
     // same reason 'all' mode tolerates duplicates: the worker upsert is
     // keyed by composite PK and idempotent.
+    // Project-scoped tenancy gate: exclude rows whose project is not a team
+    // member. The machine-scoped team_members self-row table has no project_id
+    // and is exempt — it must always backfill so the roster reaches the outbox.
+    const isMachineScoped = table === 'team_members';
+    const memberFilter = isMachineScoped
+      ? ''
+      : ' AND project_id IN (SELECT project_id FROM team_sync_membership)';
     const rows = mode === 'all'
-      ? db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[]
+      ? db.prepare(`SELECT * FROM ${table} WHERE 1=1${memberFilter}`).all() as Record<string, unknown>[]
       : db.prepare(
           `SELECT * FROM ${table}
-           WHERE synced_at IS NULL
+           WHERE synced_at IS NULL${memberFilter}
            AND NOT EXISTS (
              SELECT 1 FROM team_outbox
              WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)

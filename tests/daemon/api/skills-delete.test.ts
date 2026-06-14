@@ -99,8 +99,12 @@ describe('skill record API deletion', () => {
     });
     initTeamContext('machine-a');
     // The delete tombstone is now journaled by the skill_records_team_ad
-    // trigger, which gates on this Grove's per-Grove team_sync_state flag.
+    // trigger, which gates on this Grove's per-Grove team_sync_state flag and
+    // the project's membership in team_sync_membership.
     setTeamSyncEnabled(true);
+    getDatabase().prepare(
+      'INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)',
+    ).run(PROJECT_ID);
 
     const response = await handleDeleteSkillRecord(
       { params: { id: 'skill-scoped' }, requestContext: REQUEST_CONTEXT } as never,
