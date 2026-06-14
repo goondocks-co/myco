@@ -82,7 +82,10 @@ export function defaultSelection(groves: GroveSummary[]): ProjectSelection | nul
 function activityMsByProject(activity: ProjectActivityRow[] | undefined): Map<string, number> {
   const map = new Map<string, number>();
   for (const row of activity ?? []) {
-    map.set(row.project_id, row.last_activity_at ? Date.parse(row.last_activity_at) : 0);
+    // Normalize a missing or unparseable timestamp to 0 so NaN never reaches a
+    // comparator (NaN makes Array.sort order undefined and `>` always false).
+    const parsed = row.last_activity_at ? Date.parse(row.last_activity_at) : 0;
+    map.set(row.project_id, Number.isNaN(parsed) ? 0 : parsed);
   }
   return map;
 }
@@ -96,10 +99,15 @@ export function mostRecentSelection(
   groves: GroveSummary[],
   activity: ProjectActivityRow[] | undefined,
 ): ProjectSelection | null {
-  if (!activity || activity.length === 0) return defaultSelection(groves);
+  const fallback = defaultSelection(groves);
+  if (!activity || activity.length === 0) return fallback;
   const ms = activityMsByProject(activity);
-  let best: ProjectSelection | null = null;
-  let bestMs = -1;
+  // Seed with the default selection so a project only displaces it when it has
+  // STRICTLY greater activity. This keeps the is_default grove preference on
+  // ties (e.g. right after install when every project's activity is 0), instead
+  // of silently landing on whichever grove happens to be first in the array.
+  let best = fallback;
+  let bestMs = fallback ? (ms.get(fallback.project.project_id) ?? 0) : -1;
   for (const grove of groves) {
     for (const project of grove.projects) {
       const value = ms.get(project.project_id) ?? 0;
@@ -109,7 +117,7 @@ export function mostRecentSelection(
       }
     }
   }
-  return best ?? defaultSelection(groves);
+  return best;
 }
 
 /** Most-recently-active project within a single grove (first project if no activity). */
