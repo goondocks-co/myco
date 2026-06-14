@@ -56,11 +56,20 @@ describe('buildServiceSpec', () => {
     })).toThrow(/Cellar/);
   });
 
-  test('PATH always includes /opt/homebrew/bin and /usr/local/bin so GUI-launched daemon finds tools', () => {
+  test('darwin service PATH includes Homebrew bin + /usr/local/bin', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
     const bin = makeFakeBinary();
-    const spec = buildServiceSpec({ variant: 'prod', mycoHome: home, executable: bin });
+    const spec = buildServiceSpec({ variant: 'prod', mycoHome: home, executable: bin, platform: 'darwin' });
     expect(spec.env.PATH).toContain('/opt/homebrew/bin');
+    expect(spec.env.PATH).toContain('/usr/local/bin');
+  });
+
+  test('linux service PATH omits Homebrew bin', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const bin = makeFakeBinary();
+    const spec = buildServiceSpec({ variant: 'prod', mycoHome: home, executable: bin, platform: 'linux' });
+    expect(spec.env.PATH).not.toContain('/opt/homebrew');
+    expect(spec.env.PATH).toContain('/usr/bin');
     expect(spec.env.PATH).toContain('/usr/local/bin');
   });
 
