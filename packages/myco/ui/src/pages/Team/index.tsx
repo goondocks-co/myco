@@ -11,6 +11,8 @@ import { StatusTab } from './StatusTab';
 import { SyncTab } from './SyncTab';
 import { MembersTab } from './MembersTab';
 import { NotConnectedView } from './NotConnectedView';
+import { SelectTeamView } from './SelectTeamView';
+import { resolveDefaultSelectedTeamId } from './select-default';
 
 type TabId = 'teams' | 'status' | 'sync' | 'members';
 
@@ -60,7 +62,7 @@ export function TeamPage() {
   const [params, setParams] = useSearchParams();
   const { data: registry, isLoading: registryLoading } = useTeamRegistry();
   const teams = registry?.teams ?? [];
-  const selectedTeamId = params.get('team') ?? teams[0]?.team_id ?? undefined;
+  const selectedTeamId = resolveDefaultSelectedTeamId(params.get('team'), teams);
   const { data: status, isLoading: statusLoading } = useTeamStatus(
     registryLoading ? undefined : selectedTeamId,
   );
@@ -83,6 +85,10 @@ export function TeamPage() {
     // The Teams selection tab is always available — it manages registry
     // membership independent of the legacy per-Grove connection.
     if (tab === 'teams') return <TeamSelection />;
+    // The team-scoped tabs must NOT render against an arbitrary team: without an
+    // explicit selection the Sync tab would compare the ambient context's cloud
+    // and surface a phantom delta. Require an explicit pick first.
+    if (!selectedTeamId) return <SelectTeamView hasTeams={teams.length > 0} />;
     if (!isConnected) return <NotConnectedView scopeName={scopeName} />;
     if (tab === 'sync') return <SyncTab status={status!} teamId={selectedTeamId} />;
     if (tab === 'members') return <MembersTab teamId={selectedTeamId} />;
@@ -109,6 +115,7 @@ export function TeamPage() {
           }, { replace: true })
         }
       >
+        {!selectedTeamId && <option value="" disabled>Select a team…</option>}
         {teams.map((t) => (
           <option key={t.team_id} value={t.team_id}>{t.name}</option>
         ))}

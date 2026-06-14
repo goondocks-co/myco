@@ -150,38 +150,53 @@ describe('TeamPage tabs', () => {
     await waitFor(() => expect(screen.getByText('Registered teams')).toBeInTheDocument());
     expect(screen.getByText('Team A')).toBeInTheDocument();
   });
-  it('renders Status tab when ?tab=status', async () => {
-    render(wrap('/g/foo/team?tab=status'));
+  it('renders Status tab when a team is selected (?tab=status&team=)', async () => {
+    render(wrap('/g/foo/team?tab=status&team=team_a'));
     await waitFor(() => expect(screen.getByText(/Team Credentials/i)).toBeInTheDocument());
   });
-  it('renders Sync tab when ?tab=sync', async () => {
-    render(wrap('/g/foo/team?tab=sync'));
+  it('renders Sync tab when a team is selected (?tab=sync&team=)', async () => {
+    render(wrap('/g/foo/team?tab=sync&team=team_a'));
     await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
   });
-  it('renders Members roster when ?tab=members', async () => {
-    render(wrap('/g/foo/team?tab=members'));
+  it('renders Members roster when a team is selected (?tab=members&team=)', async () => {
+    render(wrap('/g/foo/team?tab=members&team=team_a'));
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     expect(screen.getByText('owner')).toBeInTheDocument();
     expect(screen.getByText('machine-1')).toBeInTheDocument();
   });
   it('flags the local machine and hides the inbound-sync chip for self', async () => {
-    render(wrap('/g/foo/team?tab=members'));
+    render(wrap('/g/foo/team?tab=members&team=team_a'));
     await waitFor(() => expect(screen.getByText('this machine')).toBeInTheDocument());
     // Peer row still shows "last received <ago>"; self row must not.
     const lastReceived = screen.queryAllByText(/last received/);
     expect(lastReceived).toHaveLength(1);
   });
-  it('redirects /team/maintenance → /team?tab=sync', async () => {
-    render(wrapWithRoutes('/g/foo/team/maintenance'));
-    // After the redirect resolves, the Sync tab body is mounted —
-    // assert on its "Remote store" section header.
-    await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
+  it('shows the select-a-team empty state on a team-scoped tab when no team is chosen', async () => {
+    render(wrap('/g/foo/team?tab=sync'));
+    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
+    // The team-scoped content must NOT render against an arbitrary team.
+    expect(screen.queryByText(/Remote store/i)).not.toBeInTheDocument();
   });
-  it('renders a team selector that scopes status to the selected team', async () => {
+  it('does not fetch a per-team status when no team is selected', async () => {
+    lastStatusTeamId = 'sentinel';
+    render(wrap('/g/foo/team?tab=sync'));
+    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
+    // useTeamStatus is called with undefined (ambient context), never an
+    // auto-picked teams[0] — the regression that produced the phantom delta.
+    expect(lastStatusTeamId).toBeUndefined();
+  });
+  it('redirects /team/maintenance → /team?tab=sync (empty state, no auto-selected team)', async () => {
+    render(wrapWithRoutes('/g/foo/team/maintenance'));
+    // The redirect lands on the Sync tab with no team selected, so the
+    // select-a-team empty state is shown rather than an arbitrary team's delta.
+    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
+  });
+  it('does not auto-select a team; honors an explicit selection', async () => {
     render(wrap('/g/foo/team?tab=status'));
     const selector = await screen.findByLabelText('Selected team');
-    expect((selector as HTMLSelectElement).value).toBe('team_a');
-    expect(lastStatusTeamId).toBe('team_a');
+    // No ?team= → nothing auto-picked (the bug was defaulting to teams[0]).
+    expect((selector as HTMLSelectElement).value).toBe('');
+    expect(lastStatusTeamId).toBeUndefined();
     fireEvent.change(selector, { target: { value: 'team_b' } });
     await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
   });
