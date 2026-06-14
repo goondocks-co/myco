@@ -44,6 +44,7 @@ const DELETE_TABLES = [
   'team_members',
   'team_outbox',
   'team_sync_state',
+  'team_sync_membership',
   'notifications',
   'session_tombstones',
   'sessions',
