@@ -89,6 +89,7 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     db.exec('PRAGMA foreign_keys = OFF'); // FK-free fixture insert
     createSchema(db);
     setTeamSyncEnabled(true, db);
+    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES ('proj_del')`).run();
 
     // Insert a project-scoped spore, then delete it. The recreated team-sync
     // delete trigger must journal a 'delete' row into team_outbox carrying the
@@ -167,6 +168,7 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
 
     // (b) the trigger now captures project_id through a real delete.
     setTeamSyncEnabled(true, db);
+    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES ('proj_mig')`).run();
     db.prepare(`
       INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
       VALUES ('sp_mig', 'proj_mig', 'agent-x', 'note', 'gone', 1000, 'local')

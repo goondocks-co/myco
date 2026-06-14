@@ -347,6 +347,11 @@ describe('Grove CRUD API', () => {
           `INSERT INTO sessions (id, agent, project_root, project_id, started_at, created_at, machine_id)
            VALUES ('sess-sibling', 'codex', ?, ?, 1, 1, 'machine_test')`,
         ).run(siblingRoot, siblingProjectId);
+        // Both projects are team members, so the membership-gated delete trigger
+        // journals tombstones for their rows.
+        const member = db.prepare('INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)');
+        member.run(projectId);
+        member.run(siblingProjectId);
       } finally {
         db.close();
       }
