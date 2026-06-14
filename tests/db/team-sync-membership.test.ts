@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
+import { withDatabase } from '@myco/db/client.js';
+import {
+  setProjectSyncMembership,
+  getSyncableProjectIds,
+  isProjectSyncable,
+} from '@myco/db/queries/team-sync-state.js';
 
 function freshDb(): Database {
   const db = new Database(':memory:');
@@ -72,5 +78,25 @@ describe('team_sync_membership schema', () => {
       .prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'spores_team_ad'`)
       .get() as { sql: string } | undefined;
     expect(trigger?.sql).toContain('OLD.project_id IN (SELECT project_id FROM team_sync_membership)');
+  });
+});
+
+describe('team_sync_membership accessors', () => {
+  it('replaces the membership set and answers membership queries', () => {
+    const db = freshDb();
+    withDatabase(db, () => {
+      setProjectSyncMembership(['p1', 'p2']);
+      expect(new Set(getSyncableProjectIds())).toEqual(new Set(['p1', 'p2']));
+      expect(isProjectSyncable('p1')).toBe(true);
+      expect(isProjectSyncable('p3')).toBe(false);
+      expect(isProjectSyncable(null)).toBe(false);
+
+      setProjectSyncMembership(['p2']);
+      expect(getSyncableProjectIds()).toEqual(['p2']);
+      expect(isProjectSyncable('p1')).toBe(false);
+
+      setProjectSyncMembership([]);
+      expect(getSyncableProjectIds()).toEqual([]);
+    });
   });
 });
