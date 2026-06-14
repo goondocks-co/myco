@@ -41,7 +41,7 @@
     "yaml": "^2.4.0"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "bun scripts/build.mjs",
     "lint": "tsc --noEmit",
     "test": "echo 'myco-team tests run from repo root'"
   }

@@ -290,7 +290,7 @@ jobs:
       - name: Run test suite under Bun
         run: npm test
 
-      # For team/collective tags, run the normal build (tsup-based). For
+      # For team/collective tags, run the normal build (bun build). For
       # myco tags, the binaries arrive from the cross-compile matrix —
       # downloaded in the next step. Run only the UI build locally.
       - name: Build target package (team/collective)
