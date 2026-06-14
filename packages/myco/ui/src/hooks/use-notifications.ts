@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchJson, postJson } from '../lib/api';
+import { fetchJson } from '../lib/api';
 import { usePowerQuery, type PollCategory } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
+import { useActiveProjectSelection } from './use-project-selection';
+import { requestContextHeadersForSelection, selectionKey } from '../lib/selection';
 
 // ---------------------------------------------------------------------------
 // Types (mirror backend)
@@ -75,17 +77,36 @@ interface NotificationQueryOptions {
 const UNREAD_COUNT_POLL_MS = POLL_INTERVALS.LOGS;
 
 // ---------------------------------------------------------------------------
+// Pinned scope — project headers independent of ambient request context
+// ---------------------------------------------------------------------------
+
+/**
+ * Headers and cache key that pin every notification request to the active
+ * selected project, independent of the page's ambient request context. Keeps
+ * the bell, panel, and banner showing the selected project's notifications
+ * even on machine-scoped pages (which otherwise carry no project header).
+ */
+function usePinnedNotificationScope() {
+  const selection = useActiveProjectSelection();
+  return {
+    headers: requestContextHeadersForSelection(selection),
+    key: selection ? selectionKey(selection) : 'none',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
 
 /** Poll for unread notification count (lightweight endpoint). */
 export function useUnreadCount(opts?: { includeDaemon?: boolean }) {
+  const { headers, key } = usePinnedNotificationScope();
   const path = opts?.includeDaemon
     ? '/notifications/unread-count?include_daemon=1'
     : '/notifications/unread-count';
   return usePowerQuery<UnreadCountResponse>({
-    queryKey: ['notifications', 'unread-count', { includeDaemon: !!opts?.includeDaemon }],
-    queryFn: ({ signal }) => fetchJson<UnreadCountResponse>(path, { signal }),
+    queryKey: ['notifications', 'unread-count', { includeDaemon: !!opts?.includeDaemon }, key],
+    queryFn: ({ signal }) => fetchJson<UnreadCountResponse>(path, { signal, headers }),
     refetchInterval: UNREAD_COUNT_POLL_MS,
     pollCategory: 'standard',
   });
@@ -93,6 +114,7 @@ export function useUnreadCount(opts?: { includeDaemon?: boolean }) {
 
 /** Fetch notifications with optional filters. */
 export function useNotifications(opts?: NotificationQueryOptions) {
+  const { headers, key } = usePinnedNotificationScope();
   const params = new URLSearchParams();
   if (opts?.status) params.set('status', opts.status);
   if (opts?.domain) params.set('domain', opts.domain);
@@ -103,8 +125,8 @@ export function useNotifications(opts?: NotificationQueryOptions) {
   const path = qs ? `/notifications?${qs}` : '/notifications';
 
   return usePowerQuery<NotificationListResponse>({
-    queryKey: ['notifications', 'list', opts],
-    queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal }),
+    queryKey: ['notifications', 'list', opts, key],
+    queryFn: ({ signal }) => fetchJson<NotificationListResponse>(path, { signal, headers }),
     enabled: opts?.enabled,
     pollCategory: opts?.pollCategory ?? 'standard',
     refetchInterval: opts?.refetchInterval ?? false,
@@ -123,12 +145,13 @@ export function useNotificationRegistry() {
 /** Mark a single notification as read or dismissed. */
 export function useUpdateNotification() {
   const qc = useQueryClient();
+  const { headers } = usePinnedNotificationScope();
   return useMutation({
     mutationFn: ({ id, status }: { id: string; status: 'read' | 'dismissed' }) =>
       fetchJson(`/notifications/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ status }),
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...headers },
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['notifications'] });
@@ -139,9 +162,14 @@ export function useUpdateNotification() {
 /** Dismiss all notifications (optionally per domain). */
 export function useDismissAll() {
   const qc = useQueryClient();
+  const { headers } = usePinnedNotificationScope();
   return useMutation({
     mutationFn: (domain?: string) =>
-      postJson('/notifications/dismiss-all', domain ? { domain } : {}),
+      fetchJson('/notifications/dismiss-all', {
+        method: 'POST',
+        body: JSON.stringify(domain ? { domain } : {}),
+        headers: { 'Content-Type': 'application/json', ...headers },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['notifications'] });
     },
@@ -151,9 +179,14 @@ export function useDismissAll() {
 /** Mark all unread as read. */
 export function useMarkAllRead() {
   const qc = useQueryClient();
+  const { headers } = usePinnedNotificationScope();
   return useMutation({
     mutationFn: (domain?: string) =>
-      postJson('/notifications/mark-all-read', domain ? { domain } : {}),
+      fetchJson('/notifications/mark-all-read', {
+        method: 'POST',
+        body: JSON.stringify(domain ? { domain } : {}),
+        headers: { 'Content-Type': 'application/json', ...headers },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['notifications'] });
     },
