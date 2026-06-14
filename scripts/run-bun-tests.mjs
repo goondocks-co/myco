@@ -212,24 +212,17 @@ const SOLO_NODE_FILES = [
   'tests/daemon/api/providers-ssrf.test.ts',
   'tests/daemon/api/restart.test.ts',
   'tests/daemon/api/stats.test.ts',
+  // These dispatcher fixtures share the ambient test DB and dispatcher
+  // lifecycle heavily enough that they stay cheaper and less flaky as
+  // explicit single-file processes than as hidden source-pattern matches.
+  'tests/daemon/event-contract-recovery.test.ts',
+  'tests/daemon/event-dispatch.test.ts',
   'tests/daemon/team-sync.test.ts',
   'tests/deploy/shared.test.ts',
 ];
 
 const SOLO_NODE_REASON_LISTED_FILE = 'listed-solo-node-file';
 const SOLO_NODE_REASON_MODULE_MOCK = 'mock.module';
-const SOLO_NODE_REASON_DISPATCHER_SHARED_TEST_DB = 'dispatcher-with-shared-test-db';
-
-const PROCESS_DIRTY_FIXTURE_RULES = [
-  {
-    reason: SOLO_NODE_REASON_DISPATCHER_SHARED_TEST_DB,
-    patterns: [
-      /\bcreateEventDispatcher\(/,
-      /\bsetupTestDb\(/,
-      /\bteardownTestDb\(/,
-    ],
-  },
-];
 
 const NO_ISOLATE_NODE_GROUPS = [
   {
@@ -563,24 +556,9 @@ function fileHasModuleMock(file) {
   return moduleMockCache.get(file);
 }
 
-const processDirtyFixtureCache = new Map();
-function processDirtyFixtureReason(file) {
-  if (!processDirtyFixtureCache.has(file)) {
-    let matchingReason = null;
-    try {
-      const source = fs.readFileSync(path.resolve(REPO, file), 'utf-8');
-      matchingReason = PROCESS_DIRTY_FIXTURE_RULES.find((rule) => (
-        rule.patterns.every((pattern) => pattern.test(source))
-      ))?.reason ?? null;
-    } catch { /* unreadable file — let bun surface it */ }
-    processDirtyFixtureCache.set(file, matchingReason);
-  }
-  return processDirtyFixtureCache.get(file);
-}
-
 function soloNodeProcessReason(file) {
   if (fileHasModuleMock(file)) return SOLO_NODE_REASON_MODULE_MOCK;
-  return processDirtyFixtureReason(file);
+  return null;
 }
 
 function fileRequiresSoloNodeProcess(file) {

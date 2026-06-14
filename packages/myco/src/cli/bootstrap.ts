@@ -3,15 +3,15 @@
  *
  * Two functions, split by *when* migration runs:
  *
- *   - `runGlobalBootstrap()` — write launchers, run a detection pass,
- *     AND walk every registered project for legacy per-project install
- *     artifacts. Migration is fire-once-per-project: it runs at daemon
- *     first-start and on auto-Grove-create when a fresh project
- *     registers. Explicit retry happens via `myco doctor --fix`. This
- *     entry MUST NOT be called on the hourly tick — re-running the
- *     migration walker every hour normalizes failure as ongoing
- *     operational state. Failures land in the bounded migration audit
- *     log and surface as doctor warnings.
+ *   - `runGlobalBootstrap()` — ensure this variant's default Grove,
+ *     write launchers, run a detection pass, AND walk every registered
+ *     project for legacy per-project install artifacts. Migration is
+ *     fire-once-per-project: it runs at daemon first-start and on
+ *     auto-Grove-create when a fresh project registers. Explicit retry
+ *     happens via `myco doctor --fix`. This entry MUST NOT be called on
+ *     the hourly tick — re-running the migration walker every hour
+ *     normalizes failure as ongoing operational state. Failures land in
+ *     the bounded migration audit log and surface as doctor warnings.
  *   - `runSymbiontDetection()` — walk the manifest registry, install
  *     the global Myco config into each agent whose `detectionDir`
  *     exists. Idempotent: a symbiont already installed (settings-merge
@@ -26,16 +26,28 @@
  * is the structural enforcement; this module reports.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, type InstallResult } from '../symbionts/installer.js';
-import { installGlobalLaunchers, type InstalledLauncherReport } from '../grove/launcher-install.js';
+import {
+  GLOBAL_HOOK_LAUNCHER_FILENAME,
+  installGlobalLaunchers,
+  type InstalledLauncherReport,
+} from '../grove/launcher-install.js';
 import { runGlobalInstallMigrationPass, type MigrationPassResult } from '../grove/global-install-migration.js';
 import {
   runGlobalConfigMigration,
   type GlobalConfigMigrationResult,
 } from '../grove/global-config-migration.js';
-import { ensureDefaultGrove, type GroveRecord } from '../grove/registry.js';
-import { daemonVariantFromEnvValue } from '../grove/paths.js';
+import {
+  ensureDefaultGrove,
+  resolveDefaultGroveForVariant,
+  type DaemonVariant,
+  type GroveRecord,
+} from '../grove/registry.js';
+import { daemonVariantFromEnvValue, resolveMycoHome } from '../grove/paths.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -67,6 +79,36 @@ export interface BootstrapResult {
   migration: MigrationPassResult;
   /** Per-pass global-config scrub outcomes (e.g. legacy ~/.gemini state). */
   globalConfigMigration: GlobalConfigMigrationResult;
+}
+
+export interface GlobalBootstrapStartupDecision {
+  shouldRun: boolean;
+  launchersAbsent: boolean;
+  defaultGroveAbsent: boolean;
+  servedBy: DaemonVariant;
+  mycoHome: string;
+}
+
+/**
+ * Startup bootstrap is needed when either shared launchers are missing
+ * or this daemon variant lacks its default Grove. The second condition is
+ * load-bearing for dogfood: production may already have created
+ * `launcher.cjs`, while service-dev still needs to create `default-dev`
+ * before hooks can auto-register projects into the dev Grove.
+ */
+export function shouldRunGlobalBootstrap(
+  mycoHome: string = resolveMycoHome(),
+  servedBy: DaemonVariant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT),
+): GlobalBootstrapStartupDecision {
+  const launchersAbsent = !fs.existsSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME));
+  const defaultGroveAbsent = resolveDefaultGroveForVariant(mycoHome, { servedBy }) === null;
+  return {
+    shouldRun: launchersAbsent || defaultGroveAbsent,
+    launchersAbsent,
+    defaultGroveAbsent,
+    servedBy,
+    mycoHome,
+  };
 }
 
 /**

@@ -20,7 +20,7 @@ import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
-import { runGlobalBootstrap } from '../cli/bootstrap.js';
+import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
 import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -1158,18 +1158,20 @@ export async function main(): Promise<void> {
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
 
-  // First-start auto-bootstrap. Signal: the global launcher is absent
-  // from `~/.myco/`. When fired, write the launchers and run a symbiont
-  // detection pass so every installed agent on the machine gets Myco
-  // wired into its user-global config without the user touching the
-  // CLI. Idempotent — subsequent daemon starts skip immediately.
-  // PowerManager tick (Step 7) handles re-detection thereafter.
+  // First-start auto-bootstrap. Runs when shared launchers are missing
+  // or this daemon variant lacks its default Grove. The second condition
+  // matters for service-dev: production may already have created
+  // `launcher.cjs`, while dogfood still needs `default-dev` before hooks
+  // can auto-register projects into the dev Grove. PowerManager tick
+  // handles re-detection thereafter.
   try {
-    const mycoHome = resolveMycoHome();
-    const launcherPath = path.join(mycoHome, 'launcher.cjs');
-    if (!fs.existsSync(launcherPath)) {
-      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap — launchers absent', {
-        myco_home: mycoHome,
+    const decision = shouldRunGlobalBootstrap(resolveMycoHome());
+    if (decision.shouldRun) {
+      logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap required', {
+        myco_home: decision.mycoHome,
+        served_by: decision.servedBy,
+        launchers_absent: decision.launchersAbsent,
+        default_grove_absent: decision.defaultGroveAbsent,
       });
       const result = runGlobalBootstrap();
       const installed = result.symbionts.filter((r) => r.status === 'installed');
