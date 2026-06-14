@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test'
 import { Database } from 'bun:sqlite';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { syncRow, listPending, backfillAll } from '@myco/db/queries/team-outbox.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 
@@ -25,6 +25,7 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
 
   it('carries project_id from a project-scoped row into the outbox', () => {
     setTeamSyncEnabled(true);
+    setProjectSyncMembership(['proj_y']);
 
     syncRow('spores', { id: 'spore_x', project_id: 'proj_y', created_at: 1 });
 
@@ -34,16 +35,15 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     expect(pending[0].project_id).toBe('proj_y');
   });
 
-  it('leaves project_id null for a machine-scoped row (no project_id)', () => {
+  it('does not enqueue a machine-scoped row through syncRow (no project_id)', () => {
     setTeamSyncEnabled(true);
 
-    // team_members is machine-scoped — it has no project_id column.
+    // team_members is machine-scoped — it has no project_id, so the membership
+    // gate (project_id IS NULL → not syncable) skips it. Machine-scoped self-rows
+    // reach the outbox via reconcileSelfMember / backfill, not syncRow.
     syncRow('team_members', { id: 'tm', created_at: 1 });
 
-    const pending = listPending();
-    expect(pending).toHaveLength(1);
-    expect(pending[0].row_id).toBe('tm');
-    expect(pending[0].project_id).toBeNull();
+    expect(listPending()).toHaveLength(0);
   });
 
   it('backfill carries project_id from the source row into the outbox', () => {
@@ -53,6 +53,7 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     // instead of routing to its owning team.
     const db = getDatabase();
     setTeamSyncEnabled(true, db);
+    setProjectSyncMembership(['proj_bf'], db);
     db.prepare(
       `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
     ).run();
