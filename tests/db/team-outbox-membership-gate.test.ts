@@ -101,4 +101,23 @@ describe('outbox membership gate', () => {
       expect(left).toEqual([1, 4]); // member row + self-row survive
     });
   });
+
+  it('does not re-enqueue non-member rows across repeated backfills (the flood)', () => {
+    withDatabase(db(), () => {
+      setTeamSyncEnabled(true);
+      setProjectSyncMembership([]); // grove owns no member project
+      const conn = getDatabase();
+      for (let i = 0; i < 50; i++) seedSpore(conn, `x${i}`, 'outsider');
+      // Reproduce the original flood loop: backfill, mark every pending row sent
+      // (no route exists, so synced_at on the source row is never set), backfill
+      // again. Without the membership filter each round would re-enqueue all 50
+      // rows (the dedup only checks pending rows), leaving 5 × 50 = 250 rows. The
+      // gate keeps the non-member rows out entirely, so nothing ever enqueues.
+      for (let round = 0; round < 5; round++) {
+        backfillUnsynced('m');
+        conn.prepare('UPDATE team_outbox SET sent_at = 9 WHERE sent_at IS NULL').run();
+      }
+      expect((conn.prepare('SELECT COUNT(*) c FROM team_outbox').get() as { c: number }).c).toBe(0);
+    });
+  });
 });
