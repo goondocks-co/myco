@@ -371,7 +371,6 @@ const NO_ISOLATE_NODE_GROUPS = [
   {
     label: 'tests-daemon-capture-backup',
     targets: [
-      'tests/daemon/event-dispatch.test.ts',
       'tests/daemon/backup-canopy-roundtrip.test.ts',
       'tests/daemon/capture.test.ts',
       'tests/daemon/backup.test.ts',
@@ -622,10 +621,10 @@ function noIsolateArgsForTarget(target, options) {
   ];
 }
 
-function noIsolateArgsForGroup(group, options) {
+function noIsolateArgsForFiles(files, options) {
   return [
     ...options,
-    ...group.targets,
+    ...files,
     "--path-ignore-patterns=**/*.test.tsx",
     ...(profile === 'fast' ? fastIgnoreArgs() : []),
   ];
@@ -639,10 +638,15 @@ function noIsolatePhaseForTarget(target, options) {
   };
 }
 
-function noIsolatePhaseForGroup(group, options) {
+// Emit the files the group actually covers within `sharedFiles` rather than the
+// literal target list. `group.targets` is a *selector*; `sharedFiles` has
+// already excluded solo / process-sensitive files, so a file listed in both a
+// group and SOLO_NODE_FILES can never leak back into a shared (no-isolate)
+// process. Keeps the emitted set identical to the partition accounting.
+function noIsolatePhaseForGroup(group, sharedFiles, options) {
   return {
     label: `node env shared ${group.label}`,
-    args: noIsolateArgsForGroup(group, options),
+    args: noIsolateArgsForFiles(sharedGroupFiles(group, sharedFiles), options),
     isolate: false,
   };
 }
@@ -682,10 +686,10 @@ function findSharedGroups(files) {
   return NO_ISOLATE_NODE_GROUPS.filter((group) => groupHasFiles(group, files));
 }
 
-function buildNoIsolatePhases(targets, groups, options) {
+function buildNoIsolatePhases(targets, groups, sharedFiles, options) {
   return [
     ...targets.map((target) => noIsolatePhaseForTarget(target, options)),
-    ...groups.map((group) => noIsolatePhaseForGroup(group, options)),
+    ...groups.map((group) => noIsolatePhaseForGroup(group, sharedFiles, options)),
   ];
 }
 
@@ -816,7 +820,7 @@ function buildArgs() {
 
     return {
       nonDomPhases: [
-        ...buildNoIsolatePhases(sharedTargets, sharedGroups, options),
+        ...buildNoIsolatePhases(sharedTargets, sharedGroups, sharedFiles, options),
         ...soloFiles.map((file) => soloNodePhaseForFile(file, options)),
         ...buildIsolatedNodePhases(isolatedTargets, options),
       ],
@@ -1287,6 +1291,34 @@ function stripDuplicateReact() {
 }
 
 const { nonDomPhases, dom } = buildArgs();
+
+// Audit the computed phase plan without executing. Lets a reviewer (or a CI
+// guard) confirm every test file lands in exactly one phase — catching a file
+// listed in both SOLO_NODE_FILES and a NO_ISOLATE group, which would otherwise
+// run twice (once solo, once in the shared no-isolate process it was moved out
+// of).
+if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
+  const seen = new Map();
+  for (const phase of [...nonDomPhases, ...(dom ? [{ label: 'jsdom', args: dom, isolate: true }] : [])]) {
+    const files = phase.args.filter(
+      (arg) => !arg.startsWith('-') && (arg.endsWith('.test.ts') || arg.endsWith('.test.tsx')),
+    );
+    console.log(`[dry-run] ${phase.isolate ? 'isolate' : 'shared '} ${phase.label}: ${files.length} file(s)`);
+    for (const file of files) {
+      console.log(`           ${file}`);
+      seen.set(file, (seen.get(file) ?? 0) + 1);
+    }
+  }
+  const duplicated = [...seen.entries()].filter(([, count]) => count > 1);
+  if (duplicated.length > 0) {
+    console.error(`[dry-run] FAIL — files scheduled in more than one phase:`);
+    for (const [file, count] of duplicated) console.error(`  ${count}× ${file}`);
+    process.exit(1);
+  }
+  console.log('[dry-run] OK — no file scheduled in more than one phase');
+  process.exit(0);
+}
+
 const phaseReports = [];
 resetReportDir();
 

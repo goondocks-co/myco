@@ -430,6 +430,17 @@ describe('normalizeHookInput', () => {
       expect(result.sessionId).toBe('cursor-native-session');
     });
 
+    it('falls through an empty primary alias to a populated secondary alias', () => {
+      mockLoadManifests.mockReturnValue([cursorManifest]);
+      process.argv = ['node', 'myco-run', 'hook', 'post-tool-use', '--symbiont', 'cursor'];
+      const result = normalizeHookInput({
+        conversation_id: '',
+        session_id: 'embedded-runtime-session',
+      });
+      expect(result.agent).toBe('cursor');
+      expect(result.sessionId).toBe('embedded-runtime-session');
+    });
+
     it('unknown --symbiont value falls through to heuristic detection', () => {
       mockLoadManifests.mockReturnValue([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'bogus'];

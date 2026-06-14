@@ -117,10 +117,15 @@ export default function App() {
 function RootRedirect() {
   const { data, isLoading, error } = useGroves();
   const { data: activity, isLoading: activityLoading } = useProjectsActivity();
-  if (isLoading || activityLoading) return <RouteLoading text="Loading projects..." />;
+  if (isLoading) return <RouteLoading text="Loading projects..." />;
   if (error) return <RouteLoading text={error.message} />;
   const groves = data?.groves ?? [];
-  const selection = selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects);
+  // Only the most-recent fallback needs activity data; a stored selection
+  // resolves immediately, so returning users never wait on the (per-project)
+  // activity query just to land on the project they already had selected.
+  const remembered = selectionFromLast(groves);
+  if (!remembered && activityLoading) return <RouteLoading text="Loading projects..." />;
+  const selection = remembered ?? mostRecentSelection(groves, activity?.projects);
   return selection
     ? <Navigate to={projectPath(selection)} replace />
     : <Navigate to="/onboarding" replace />;
