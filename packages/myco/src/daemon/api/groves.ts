@@ -25,6 +25,7 @@ import {
   unarchiveProject,
 } from '@myco/grove/project-lifecycle.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
+import { ProjectGroveMissingError, resolveProjectTenancy } from '@myco/grove/project-tenancy.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
 import { errorBody } from './error-envelope.js';
 
@@ -61,6 +62,62 @@ export interface GrovesResponse {
   groves: GroveSummary[];
 }
 
+/** Grove tenancy projection exposed via the opt-in `include=grove`. */
+export interface ProjectTenancyGrove {
+  id: string;
+  name: string;
+  slug: string;
+  served_by: DaemonVariant;
+}
+
+/** Tenancy keys added to a project summary when requested via `include`. */
+export interface ProjectTenancyMetadata {
+  grove?: ProjectTenancyGrove;
+  team?: { team_id: string } | null;
+}
+
+type TenancyInclude = 'grove' | 'team';
+
+function parseTenancyInclude(raw: string | undefined): Set<TenancyInclude> {
+  const includes = new Set<TenancyInclude>();
+  if (!raw) return includes;
+  for (const part of raw.split(',')) {
+    const token = part.trim();
+    if (token === 'grove' || token === 'team') includes.add(token);
+  }
+  return includes;
+}
+
+/**
+ * Source the requested tenancy keys for a project from the single tenancy
+ * authority (`resolveProjectTenancy`) rather than re-deriving from the registry.
+ * A grove-less project (the authority throws `ProjectGroveMissingError`) yields
+ * no tenancy keys for that row instead of failing the whole list response.
+ */
+function tenancyMetadata(
+  projectId: string,
+  includes: Set<TenancyInclude>,
+): ProjectTenancyMetadata {
+  if (includes.size === 0) return {};
+  try {
+    const tenancy = resolveProjectTenancy(projectId);
+    const metadata: ProjectTenancyMetadata = {};
+    if (includes.has('grove')) {
+      metadata.grove = {
+        id: tenancy.grove.id,
+        name: tenancy.grove.name,
+        slug: tenancy.grove.slug,
+        served_by: tenancy.grove.served_by,
+      };
+    }
+    if (includes.has('team')) metadata.team = tenancy.team;
+    return metadata;
+  } catch (err) {
+    if (err instanceof ProjectGroveMissingError) return {};
+    throw err;
+  }
+}
+
 export interface ServedGroveScope {
   /**
    * Grove ids this daemon should advertise. `null` means "every Grove
@@ -87,7 +144,13 @@ export function createListGroveProjectsHandler(scope: ServedGroveScope, daemonSt
     const summaries = listGroveSummaries(scope, daemonVariant(daemonStateDir));
     const grove = summaries.groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
-    return { body: { projects: grove.projects } };
+    const includes = parseTenancyInclude(req.query.include);
+    if (includes.size === 0) return { body: { projects: grove.projects } };
+    const projects = grove.projects.map((project) => ({
+      ...project,
+      ...tenancyMetadata(project.project_id, includes),
+    }));
+    return { body: { projects } };
   };
 }
 
