@@ -2,6 +2,7 @@
 import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { activateDevBuildModeIfDetected } from './daemon/update-checker.js';
+import { runLaunchPreamble } from './cli/launch-preamble.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -107,8 +108,12 @@ async function main(): Promise<void> {
     console.log(getPluginVersion());
     return;
   }
-  if (cmd === 'mcp') return (await import('./mcp/stdio-bridge.js')).main();
+  if (cmd === 'mcp') {
+    runLaunchPreamble('mcp', args);
+    return (await import('./mcp/stdio-bridge.js')).main();
+  }
   if (cmd === 'hook') {
+    runLaunchPreamble('hook', args);
     const hookName = args[0];
     const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
       'session-start': () => import('./hooks/session-start.js'),
@@ -147,6 +152,11 @@ async function main(): Promise<void> {
 
   if (cmd === 'update') return (await import('./cli/update.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
+
+  // Honor the runtime pin before the myco.yaml gate so a pinned binary is
+  // re-exec'd even on a host with no project vault; the pinned binary owns the
+  // gate decision after re-exec.
+  if (cmd === 'tool') runLaunchPreamble('tool', args);
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
