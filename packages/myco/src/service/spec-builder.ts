@@ -11,6 +11,8 @@ export interface BuildSpecOptions {
   executable: string;
   /** Override MYCO_HOME (defaults to the live resolver). */
   mycoHome?: string;
+  /** Platform to build the spec for; defaults to process.platform. Injected mainly for tests. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -46,6 +48,7 @@ export function looksLikeDevBuildExecutable(executable: string): boolean {
 
 export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
+  const platform = opts.platform ?? process.platform;
   const executable = path.resolve(opts.executable);
 
   if (!fs.existsSync(executable)) {
@@ -89,7 +92,9 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
   const env: Record<string, string> = {
     MYCO_HOME: mycoHome,
     MYCO_SERVICE_VARIANT: opts.variant,
-    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    PATH: platform === 'darwin'
+      ? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+      : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   };
   // Propagate the sandbox unit-dir override into the plist so a supervisor-
   // spawned child daemon does NOT fall back to `~/Library/LaunchAgents/` and
