@@ -13,8 +13,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runGlobalBootstrap, runSymbiontDetection } from '@myco/cli/bootstrap.js';
+import {
+  runGlobalBootstrap,
+  runSymbiontDetection,
+  shouldRunGlobalBootstrap,
+} from '@myco/cli/bootstrap.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import {
+  GLOBAL_HOOK_LAUNCHER_FILENAME,
+  GLOBAL_MCP_LAUNCHER_FILENAME,
+} from '@myco/grove/launcher-install.js';
 import {
   createGrove,
   registerProjectInGrove,
@@ -230,6 +238,48 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
 
     expect(result.defaultGrove.served_by).toBe('service-dev');
     expect(result.defaultGrove.slug).toBe('default-dev');
+  });
+
+  it('startup bootstrap still runs for service-dev when prod launchers exist but default-dev is missing', () => {
+    const mycoHome = path.join(tmpHome, '.myco');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// prod-owned launcher\n', 'utf-8');
+    createGrove('default', mycoHome, { servedBy: 'service' });
+    clearGroveRegistryCaches();
+
+    const decision = shouldRunGlobalBootstrap(mycoHome, 'service-dev');
+
+    expect(decision.shouldRun).toBe(true);
+    expect(decision.launchersAbsent).toBe(false);
+    expect(decision.defaultGroveAbsent).toBe(true);
+    expect(decision.servedBy).toBe('service-dev');
+  });
+
+  it('startup bootstrap skips when the shared launcher and this variant default Grove already exist', () => {
+    const mycoHome = path.join(tmpHome, '.myco');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// prod-owned launcher\n', 'utf-8');
+    createGrove('default', mycoHome, { servedBy: 'service' });
+    createGrove('default-dev', mycoHome, { servedBy: 'service-dev' });
+    clearGroveRegistryCaches();
+
+    const decision = shouldRunGlobalBootstrap(mycoHome, 'service-dev');
+
+    expect(decision.shouldRun).toBe(false);
+    expect(decision.launchersAbsent).toBe(false);
+    expect(decision.defaultGroveAbsent).toBe(false);
+  });
+
+  it('startup bootstrap runs when the shared launcher is missing even if the default Grove exists', () => {
+    const mycoHome = path.join(tmpHome, '.myco');
+    createGrove('default', mycoHome, { servedBy: 'service' });
+    clearGroveRegistryCaches();
+
+    const decision = shouldRunGlobalBootstrap(mycoHome, 'service');
+
+    expect(decision.shouldRun).toBe(true);
+    expect(decision.launchersAbsent).toBe(true);
+    expect(decision.defaultGroveAbsent).toBe(false);
   });
 
   it('is idempotent — second bootstrap returns the same default Grove without creating a duplicate', () => {

@@ -39,7 +39,12 @@ import type { DaemonServiceState } from '../daemon/service-state.js';
 const LAUNCHER_TEMPLATE_KEY = '_shared/global-launcher.cjs';
 
 /** Filenames the launcher is installed under (mode is encoded in the basename). */
-const LAUNCHER_FILENAMES = ['launcher.cjs', 'mcp-launcher.cjs'] as const;
+export const GLOBAL_HOOK_LAUNCHER_FILENAME = 'launcher.cjs';
+export const GLOBAL_MCP_LAUNCHER_FILENAME = 'mcp-launcher.cjs';
+const LAUNCHER_FILENAMES = [
+  GLOBAL_HOOK_LAUNCHER_FILENAME,
+  GLOBAL_MCP_LAUNCHER_FILENAME,
+] as const;
 
 /**
  * When the daemon is the active process, all launcher refreshes flow
@@ -62,7 +67,7 @@ export function unbindDaemonForLauncherRefresh(): void {
 }
 
 export interface InstalledLauncherReport {
-  /** Absolute paths actually written this call (skipped paths are absent). */
+  /** Absolute paths actually written this call. */
   written: string[];
   /** Absolute paths whose content matched the template already (no write). */
   unchanged: string[];
@@ -84,6 +89,7 @@ export function installGlobalLaunchers(
   mycoHome = resolveMycoHome(),
   options: { skipIntent?: boolean } = {},
 ): InstalledLauncherReport {
+  const targets = LAUNCHER_FILENAMES.map((filename) => path.join(mycoHome, filename));
   const template = BUNDLED_TEMPLATES[LAUNCHER_TEMPLATE_KEY];
   if (!template) {
     throw new Error(`Global launcher template missing from bundled assets: ${LAUNCHER_TEMPLATE_KEY}`);
@@ -94,8 +100,7 @@ export function installGlobalLaunchers(
   fs.mkdirSync(mycoHome, { recursive: true });
   const report: InstalledLauncherReport = { written: [], unchanged: [] };
   const needsWrite: string[] = [];
-  for (const filename of LAUNCHER_FILENAMES) {
-    const target = path.join(mycoHome, filename);
+  for (const target of targets) {
     if (readFileQuiet(target) === template) {
       report.unchanged.push(target);
       continue;

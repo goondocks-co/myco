@@ -2,7 +2,10 @@ import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { installGlobalLaunchers } from '../grove/launcher-install.js';
+import {
+  GLOBAL_HOOK_LAUNCHER_FILENAME,
+  installGlobalLaunchers,
+} from '../grove/launcher-install.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -157,7 +160,7 @@ const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
  */
 function resolveLauncherCmd(scope: InstallScope, mycoHome: string): string {
   if (scope === 'project') return PROJECT_LAUNCHER_CMD;
-  const launcherPath = path.join(mycoHome, 'launcher.cjs');
+  const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
   assertSafeHomeForUnquotedPath(launcherPath);
   return `node ${launcherPath}`;
 }
@@ -212,6 +215,18 @@ export interface InstallResult {
    * runtime dependency declaration.
    */
   pluginManifest: boolean;
+}
+
+function emptyInstallResult(): InstallResult {
+  return {
+    hooks: false,
+    mcp: false,
+    skills: false,
+    settings: false,
+    instructions: false,
+    pluginPackage: false,
+    pluginManifest: false,
+  };
 }
 
 export interface ManagedProjectFilesResult {
@@ -593,10 +608,7 @@ export class SymbiontInstaller {
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
       // Agent isn't installed on this machine — skip silently, never
       // create the agent's config dir on its behalf.
-      return {
-        hooks: false, mcp: false, skills: false, settings: false,
-        instructions: false, pluginPackage: false, pluginManifest: false,
-      };
+      return emptyInstallResult();
     }
     // Project-content surfaces (AGENTS.md, .gitignore, instruction stubs)
     // are intentionally project-scope-only — they live in the repo tree.

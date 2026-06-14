@@ -4,6 +4,7 @@ import { parseStrictFlags, type ParsedFlags } from './args.js';
 import { confirmDestructive } from './confirm.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
+import { GLOBAL_HOOK_LAUNCHER_FILENAME, GLOBAL_MCP_LAUNCHER_FILENAME } from '../grove/launcher-install.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { updateConfig, TierConfigUnreadableError } from '../config/loader.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
@@ -143,7 +144,7 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
 
   // --- Delete the global launchers. lstat + unlink so we never follow a
   //     symlink and accidentally clobber an unrelated target. ---
-  for (const filename of ['launcher.cjs', 'mcp-launcher.cjs']) {
+  for (const filename of [GLOBAL_HOOK_LAUNCHER_FILENAME, GLOBAL_MCP_LAUNCHER_FILENAME]) {
     const target = path.join(mycoHome, filename);
     try {
       fs.lstatSync(target);
