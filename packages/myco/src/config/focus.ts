@@ -213,6 +213,7 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   [AGENT_PATHS.scheduledTasksEnabled]: 'Scheduled Tasks',
   [AGENT_PATHS.eventTasksEnabled]: 'Event-Driven Tasks',
   [AGENT_PATHS.summaryBatchInterval]: 'Title & Summary Batch Interval',
+  [AGENT_PATHS.runRetentionDays]: 'Agent Run Retention (days)',
   'maintenance.auto_optimize': 'Auto-optimize',
   'maintenance.auto_optimize_interval_hours': 'Auto-optimize Interval',
   'backup.dir': 'Backup Directory',

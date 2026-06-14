@@ -30,6 +30,9 @@ export const STATUS_COMPLETED = 'completed';
 /** Run status for a run that encountered an error. */
 export const STATUS_FAILED = 'failed';
 
+/** Run status for a run skipped by gating or preconditions. */
+export const STATUS_SKIPPED = 'skipped';
+
 /** Resume status used when a failed/interrupted run can be resumed. */
 export const RESUME_STATUS_READY = 'ready';
 
@@ -405,6 +408,12 @@ function buildUpdateClauses(update: RunUpdate): { setClauses: string[]; params: 
   return { setClauses, params };
 }
 
+function forEachChunk<T>(items: T[], size: number, fn: (chunk: T[]) => void): void {
+  for (let i = 0; i < items.length; i += size) {
+    fn(items.slice(i, i + size));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -693,4 +702,63 @@ export function markRunningRunsInterrupted(message: string, scope: ProjectScope)
      WHERE ${conditions.join(' AND ')}`,
   ).run(STATUS_FAILED, RESUME_STATUS_READY, message, ...params);
   return info.changes;
+}
+
+/**
+ * Prune old terminal agent runs. Active, pending, and resumable failed runs are
+ * preserved; derived durable artifacts keep their content with run references
+ * nulled where those references are soft links.
+ */
+export function pruneOldAgentRuns(
+  retentionSeconds: number,
+  scope: ProjectScope,
+  nowSeconds = epochSeconds(),
+): number {
+  const db = getDatabase();
+  const cutoff = nowSeconds - Math.max(0, retentionSeconds);
+  const conditions = [
+    'status IN (?, ?, ?)',
+    'COALESCE(resumable, 0) = 0',
+    'COALESCE(completed_at, started_at) IS NOT NULL',
+    'COALESCE(completed_at, started_at) < ?',
+  ];
+  const params: unknown[] = [STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED, cutoff];
+  appendProjectCondition(conditions, params, scope);
+
+  const ids = db.prepare(
+    `SELECT id FROM agent_runs WHERE ${conditions.join(' AND ')}`,
+  ).all(...params).map((row) => (row as { id: string }).id);
+  if (ids.length === 0) return 0;
+
+  let deleted = 0;
+  db.exec('BEGIN');
+  try {
+    forEachChunk(ids, 500, (chunk) => {
+      const placeholders = chunk.map(() => '?').join(', ');
+      db.prepare(
+        `UPDATE digest_extract_revisions SET run_id = NULL WHERE run_id IN (${placeholders})`,
+      ).run(...chunk);
+      db.prepare(
+        `UPDATE cortex_instructions SET source_run_id = NULL WHERE source_run_id IN (${placeholders})`,
+      ).run(...chunk);
+      db.prepare(
+        `UPDATE canopy_maps SET generated_by_run_id = NULL WHERE generated_by_run_id IN (${placeholders})`,
+      ).run(...chunk);
+      db.prepare(
+        `DELETE FROM agent_reports WHERE run_id IN (${placeholders})`,
+      ).run(...chunk);
+      db.prepare(
+        `DELETE FROM agent_turns WHERE run_id IN (${placeholders})`,
+      ).run(...chunk);
+      db.prepare(
+        `DELETE FROM agent_runs WHERE id IN (${placeholders})`,
+      ).run(...chunk);
+      deleted += chunk.length;
+    });
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return deleted;
 }

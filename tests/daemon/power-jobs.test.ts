@@ -7,6 +7,8 @@ import os from 'node:os';
 import { initDatabase, closeDatabase, getDatabase, withDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { insertLogEntry } from '@myco/db/queries/logs';
+import { registerAgent } from '@myco/db/queries/agents.js';
+import { insertRun } from '@myco/db/queries/runs.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { registerPowerJobs, type PowerJobDeps } from '@myco/daemon/power-jobs.js';
 import { writeStagedSkill, stagingRoot } from '@myco/agent/tools/skill-staging.js';
@@ -636,6 +638,108 @@ describe('notification-retention power job', () => {
     expect(notificationCount('old-dismissed')).toBe(0);
     expect(notificationCount('old-unread')).toBe(1);
     expect(notificationCount('new-read')).toBe(1);
+  });
+});
+
+describe('agent-run-retention power job', () => {
+  let fx: GroveFixture;
+  let pm: FakeJobRunner;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakeJobRunner();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  function ensureAgent(): void {
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      registerAgent({
+        id: 'agent-retention-test',
+        name: 'Agent Retention Test',
+        created_at: Math.floor(Date.now() / 1000),
+      });
+    });
+  }
+
+  function seedRun(id: string, status: string, daysAgo: number, resumable = 0): void {
+    const completedAt = Math.floor((Date.now() - daysAgo * 24 * 60 * 60 * 1000) / 1000);
+    withDatabase(fx.cache.getDatabase(fx.databasePath), () => {
+      insertRun({
+        id,
+        agent_id: 'agent-retention-test',
+        task: 'retention-test',
+        status,
+        resumable,
+        started_at: completedAt - 5,
+        completed_at: status === 'running' || status === 'pending' ? null : completedAt,
+      });
+    });
+  }
+
+  function runCount(id: string): number {
+    return withDatabase(fx.cache.getDatabase(fx.databasePath), () =>
+      (getDatabase().prepare(
+        `SELECT COUNT(*) AS n FROM agent_runs WHERE id = ?`,
+      ).get(id) as { n: number }).n,
+    );
+  }
+
+  function saveRunRetention(days: number): void {
+    const config = loadGroveConfig(fx.grove.id, fx.mycoHome);
+    saveGroveConfig(fx.grove.id, {
+      ...config,
+      agent: {
+        ...config.agent,
+        run_retention_days: days,
+      },
+    }, fx.mycoHome);
+  }
+
+  it('registers as idle/sleep housekeeping', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('agent-run-retention');
+    expect(job.runIn).toEqual(['idle', 'sleep']);
+    expect(job.kind).toBe('housekeeping');
+  });
+
+  it('reads agent.run_retention_days from Grove config on each run', async () => {
+    ensureAgent();
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    seedRun('fourteen-days-old', 'completed', 14);
+
+    await pm.find('agent-run-retention').fn();
+
+    expect(runCount('fourteen-days-old')).toBe(1);
+
+    saveRunRetention(7);
+
+    await pm.find('agent-run-retention').fn();
+
+    expect(runCount('fourteen-days-old')).toBe(0);
+  });
+
+  it('deletes old terminal non-resumable runs and preserves active or resumable rows', async () => {
+    ensureAgent();
+    saveRunRetention(7);
+    registerPowerJobs(pm as never, buildDeps(fx));
+
+    seedRun('old-completed', 'completed', 14);
+    seedRun('old-failed', 'failed', 14);
+    seedRun('old-skipped', 'skipped', 14);
+    seedRun('old-resumable', 'failed', 14, 1);
+    seedRun('old-running', 'running', 14);
+    seedRun('new-completed', 'completed', 1);
+
+    await pm.find('agent-run-retention').fn();
+
+    expect(runCount('old-completed')).toBe(0);
+    expect(runCount('old-failed')).toBe(0);
+    expect(runCount('old-skipped')).toBe(0);
+    expect(runCount('old-resumable')).toBe(1);
+    expect(runCount('old-running')).toBe(1);
+    expect(runCount('new-completed')).toBe(1);
   });
 });
 

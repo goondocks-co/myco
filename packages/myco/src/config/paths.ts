@@ -51,6 +51,7 @@ export const AGENT_PATHS = {
   scheduledTasksEnabled: 'agent.scheduled_tasks_enabled',
   eventTasksEnabled: 'agent.event_tasks_enabled',
   summaryBatchInterval: 'agent.summary_batch_interval',
+  runRetentionDays: 'agent.run_retention_days',
 } as const;
 
 export const NOTIFICATIONS_PATHS = {

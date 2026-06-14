@@ -3,7 +3,7 @@ import type { JobRunner } from './job-runner.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMachineConfig, loadMergedConfig } from '@myco/config/loader.js';
+import { loadGroveConfig, loadMachineConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import {
@@ -14,6 +14,7 @@ import {
 import { isAutoBackupDue, createGroveBackup } from '@myco/backup/service.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { pruneOldNotifications } from '@myco/db/queries/notifications.js';
+import { pruneOldAgentRuns } from '@myco/db/queries/runs.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
 import { notify } from '@myco/notifications/notify.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -380,6 +381,28 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         logger.info(
           LOG_KINDS.LOG_RETENTION,
           `Deleted ${deleted} log entries older than ${retentionDays} days`,
+          {
+            deleted,
+            retention_days: retentionDays,
+            grove_id: scope.grove.id,
+            grove_slug: scope.grove.slug,
+          },
+        );
+      }
+    }),
+  });
+
+  runner.register({
+    name: POWER_JOB_NAMES.AGENT_RUN_RETENTION,
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: fanOutGroves(POWER_JOB_NAMES.AGENT_RUN_RETENTION, async (scope) => {
+      const retentionDays = loadGroveConfig(scope.grove.id, mycoHome).agent.run_retention_days;
+      const deleted = pruneOldAgentRuns(retentionDays * MS_PER_DAY / 1000, ALL_PROJECTS_SCOPE);
+      if (deleted > 0) {
+        logger.info(
+          LOG_KINDS.AGENT_RUN_RETENTION,
+          `Deleted ${deleted} terminal agent runs older than ${retentionDays} days`,
           {
             deleted,
             retention_days: retentionDays,

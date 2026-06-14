@@ -195,6 +195,12 @@ const AgentBaseSchema = z.object({
    * (Storage tier: Grove. See GroveConfigSchema.)
    */
   scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
+  /**
+   * Retention window for completed, skipped, and non-resumable failed agent
+   * runs. The PowerManager retention job prunes matching runs from each Grove
+   * database and preserves active/resumable runs.
+   */
+  run_retention_days: z.number().int().min(1).max(365).default(30),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
   /** Global default harness — applies to all tasks unless overridden per-task. */
@@ -571,6 +577,7 @@ const GroveAgentSchema = rejectLegacyRuntimeKey(z.object({
    * cold-project gating.
    */
   scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
+  run_retention_days: z.number().int().min(1).max(365).default(30),
   summary_batch_interval: z.number().int().min(0).default(5),
   scheduled_tasks_enabled: z.boolean().default(true),
   event_tasks_enabled: z.boolean().default(true),
@@ -678,6 +685,7 @@ export const GROVE_TIER_FIELDS: ReadonlyArray<readonly string[]> = [
   ['maintenance'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
+  ['agent', 'run_retention_days'],
   ['appearance'],
   ['team'],
   ...GROVE_PROMOTED_FIELDS,
@@ -698,6 +706,7 @@ export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
   ['team'],
   ['embedding', 'run_in_deep_sleep'],
   ['agent', 'scheduled_tasks_active_window_days'],
+  ['agent', 'run_retention_days'],
   ['appearance'],
   ...GROVE_PROMOTED_FIELDS,
   // 2026-06 settings-scope correction.

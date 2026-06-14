@@ -119,6 +119,7 @@ export const LOG_KINDS = {
 
   // Log retention
   LOG_RETENTION: 'log.retention',
+  AGENT_RUN_RETENTION: 'agent_run.retention',
   NOTIFICATION_RETENTION: 'notification.retention',
 
   // Backup
