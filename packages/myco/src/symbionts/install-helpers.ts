@@ -40,6 +40,17 @@ export const MYCO_LAUNCHER_SUBSTRINGS = [
 ] as const;
 
 /**
+ * Marker appended to every Myco-emitted hook command. The robust ownership
+ * signal for the direct-binary hook form, whose binary path varies by build
+ * (dogfood / prod / worktree) and so can't be matched by a stable path
+ * substring. Any hook command carrying this flag is Myco-owned regardless of
+ * which binary it invokes; user-authored wrappers never carry it. Detection
+ * lands here ahead of the emit-side change so a config written by a newer
+ * install is recognized — and collapsed — by this version.
+ */
+export const MYCO_MANAGED_MARKER = '--myco-managed';
+
+/**
  * Whether `content` references one of Myco's launcher paths. Operates
  * on any string — a hook command line or an entire plugin source file.
  *
@@ -63,8 +74,15 @@ export const MYCO_LAUNCHER_SUBSTRINGS = [
  * user-content territory.
  */
 export function containsMycoLauncherReference(content: string): boolean {
-  if (MYCO_LAUNCHER_SUBSTRINGS.some((s) => content.includes(s))) return true;
-  if (content.includes('mcp-launcher.cjs')) return true;
+  // Canonical launcher paths are written forward-slash, but on Windows the
+  // wild hook commands carry backslash paths (`...\.myco\launcher.cjs`).
+  // Normalize separators before the scan so Myco recognizes its own Windows
+  // entries — otherwise they go unclaimed and accumulate (the 6× duplicate
+  // stack). The normalization is scoped to canonical Myco filenames only, so
+  // it can't newly claim a user wrapper at a non-canonical path.
+  const normalized = content.replaceAll('\\', '/');
+  if (MYCO_LAUNCHER_SUBSTRINGS.some((s) => normalized.includes(s))) return true;
+  if (normalized.includes('mcp-launcher.cjs')) return true;
   return false;
 }
 
@@ -72,18 +90,25 @@ export function containsMycoLauncherReference(content: string): boolean {
  * Check if a hook command string belongs to Myco.
  *
  * Matches:
- *   1. Any canonical launcher-substring reference (project-local guard,
+ *   1. The `--myco-managed` marker — the ownership signal for the
+ *      direct-binary hook form, where the binary path varies by build
+ *      and so can't be matched by a stable substring.
+ *   2. Any canonical launcher-substring reference (project-local guard,
  *      legacy guard, or user-global launcher).
- *   2. The bare `myco-run` prefix used by the published MCP entry
+ *   3. The bare `myco-run` prefix used by the published MCP entry
  *      point and the old shell shim.
  *
- * The launcher paths are exclusive to Myco — third-party tenants have
- * no reason to call them — so a substring match is the authoritative
- * ownership signal. Earlier installs stamped a parallel `_meta.owner`
- * marker but that broke strict-schema agents; the marker is retired
- * and ownership is identified by the command alone.
+ * Both the marker and the launcher paths are exclusive to Myco —
+ * third-party tenants have no reason to carry them — so either is an
+ * authoritative ownership signal. Detection stays strict: a generic
+ * `hook <event> --symbiont <agent>` shape WITHOUT the marker or a
+ * canonical path is NOT claimed, so user-authored wrappers and
+ * escaped-smoke entries are left alone. Earlier installs stamped a
+ * parallel `_meta.owner` marker but that broke strict-schema agents;
+ * that marker is retired and ownership is identified by the command alone.
  */
 export function isMycoHookCommand(command: string): boolean {
+  if (command.includes(MYCO_MANAGED_MARKER)) return true;
   if (containsMycoLauncherReference(command)) return true;
   if (command.startsWith('myco-run')) return true;
   return false;

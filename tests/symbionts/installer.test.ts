@@ -2889,3 +2889,88 @@ describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
     expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Windows backslash-path collapse — the 6× duplicate-stack regression
+// ---------------------------------------------------------------------------
+
+describe('Windows backslash hook entries collapse on merge (both merge sites)', () => {
+  // The wild Windows config carried six Myco hook groups whose commands used a
+  // BACKSLASH canonical path. The pre-fix substring scan (forward-slash only)
+  // never matched them, so they went unclaimed and re-accumulated on each
+  // merge. With separator normalization in `containsMycoLauncherReference`,
+  // both merge sites recognize and strip the six, replacing them with one
+  // clean template group, while a genuine user hook is preserved.
+
+  /** Six Myco hook groups in the wild Windows backslash form. */
+  function sixBackslashMycoGroups(event: string): Array<Record<string, unknown>> {
+    return Array.from({ length: 6 }, () => ({
+      hooks: [{
+        type: 'command',
+        command: `node C:\\Users\\chris\\.myco\\launcher.cjs hook ${event} --symbiont claude-code`,
+        timeout: 30,
+      }],
+    }));
+  }
+
+  it('unbatched merge site (installHooks): collapses 6 backslash duplicates to 1, preserves the user hook', () => {
+    // CLAUDE_MANIFEST has separate hooks/mcp/settings targets, so install()
+    // routes through installHooks() — the unbatched merge site (~1354).
+    const userGroup = { hooks: [{ type: 'command', command: 'my-other-tool start', timeout: 5 }] };
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [...sixBackslashMycoGroups('session-start'), userGroup],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(settingsPath);
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).SessionStart;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Exactly one Myco-owned group remains (the six backslash duplicates collapsed).
+    const mycoCount = commands.filter((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs') || c.includes('--myco-managed')).length;
+    expect(mycoCount).toBe(1);
+    // The user's genuine hook is preserved.
+    expect(commands).toContain('my-other-tool start');
+    // No backslash canonical entry survived.
+    expect(commands.some((c) => c.includes('C:\\Users\\chris\\.myco\\launcher.cjs'))).toBe(false);
+  });
+
+  it('batched merge site (installBatchedJson): collapses 6 backslash duplicates to 1, preserves the user hook', () => {
+    // CLI_BATCHED_MANIFEST colocates hooks/mcp/settings into one JSON file, so
+    // install() routes through installBatchedJson() — the batched merge site
+    // (~878). Plant the templates that path reads.
+    const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont cli-batched', timeout: 30 }] }],
+    });
+    writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
+    writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
+
+    const userGroup = { hooks: [{ type: 'command', command: 'my-other-tool stop', timeout: 5 }] };
+    const sharedFile = path.join(projectRoot, '.clibatched/config.json');
+    writeJson(sharedFile, {
+      hooks: {
+        Stop: [...sixBackslashMycoGroups('stop'), userGroup],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const config = readJson(sharedFile);
+    const groups = (config.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).Stop;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Exactly one Myco-owned group remains.
+    const mycoCount = commands.filter((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs') || c.includes('--myco-managed')).length;
+    expect(mycoCount).toBe(1);
+    // The user's genuine hook is preserved.
+    expect(commands).toContain('my-other-tool stop');
+    // No backslash canonical entry survived.
+    expect(commands.some((c) => c.includes('C:\\Users\\chris\\.myco\\launcher.cjs'))).toBe(false);
+  });
+});
