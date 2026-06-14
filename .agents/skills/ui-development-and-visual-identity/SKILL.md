@@ -55,6 +55,23 @@ function ProjectSwitcher() {
 }
 ```
 
+### Durable Project Selection Model
+
+Myco uses a two-notion project selection model. Pages that need a project context must use the durable selection hook and appropriate boundary:
+
+- **`useActiveProjectSelection()`** — reads the durable selection across all pages, including machine-scoped pages. Import from `packages/myco/ui/src/hooks/use-project-selection.tsx`. Returns `ProjectSelection | null`.
+- **`ProjectSelectionBoundary`** — context provider that sets the selection for its subtree. The `persist` prop controls whether entering this boundary calls `writeLastSelection()`:
+  - `persist` (default `true`) — saves the selection as the durable last-known project. Use for normal project-scoped pages.
+  - `persist={false}` — does NOT update the durable selection. Use for read-only route params (e.g. redirect targets, machine-scoped pages viewing a specific project) where you must not clobber the user's intentional selection.
+- **`GlobalSelectionBoundary`** — wraps machine-scoped pages (e.g. machine settings, global operations). Deliberately sends **no** project context headers so those pages operate machine-wide without leaking a stale project scope.
+- **`requestContextHeadersFromSelection()`** — called by `packages/myco/ui/src/lib/api.ts` on every API request to inject `x-myco-grove-id` / `x-myco-project-id` from the active selection. Never suppress this; it is the sole mechanism for scoping requests to the correct project.
+- **`OperationsScopePill`** — visual affordance showing the current operations scope (grove / project / machine). Lives in `packages/myco/ui/src/components/operations/OperationsScopePill.tsx`. Render it in headers of pages where scope is user-selectable.
+
+**Two common bug patterns to avoid:**
+
+1. **Component reads page route params instead of durable selection**: The page re-renders with the route's project but the durable selection holds a different project, causing request headers to diverge from the visible UI. Fix: call `useActiveProjectSelection()` explicitly and let the boundary wire the selection.
+2. **Route write fires persist=true on a non-user-facing selection**: A redirect or background route entry triggers `writeLastSelection()`, clobbering the user's durable project. Fix: always pass `persist={false}` on boundaries that are not driven by an explicit user project-pick action.
+
 ### Enhanced TabSwitcher for Phase 6 Team Consolidation
 
 **Critical update**: Queue-aware TabSwitcher with error state handling:
@@ -390,3 +407,6 @@ function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChec
 
 ### Attachment Routes Are Auth-Gated
 **Never render attachment images with bare `<img src>`**. Attachment routes (`/api/g/:groveId/p/:projectId/attachments/:file`) require the `x-myco-auth` bearer token, which a standard `<img>` element cannot send. Use `AttachmentImage` from `packages/myco/ui/src/components/ui/attachment-image.tsx` for all attachment display. Use `useAttachmentObjectUrls` when raw blob URLs are needed (e.g. lightboxes). Using a bare image tag silently renders a broken image or an auth error response as binary garbage.
+
+### Durable Selection vs Route Selection
+**Do not confuse the durable selection (via `useActiveProjectSelection()`) with route params**. Route params change on every navigation; the durable selection persists until the user explicitly picks a new project. A boundary with `persist={false}` exposes a specific project to its subtree without overwriting the durable selection. Machine-scoped pages must wrap with `GlobalSelectionBoundary` — never with a project `ProjectSelectionBoundary` — so `requestContextHeadersFromSelection()` injects no project headers and the request is correctly machine-wide.
