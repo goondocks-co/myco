@@ -235,7 +235,7 @@ const HOOKS_TEMPLATE = {
 const MCP_TEMPLATE = {
   myco: {
     type: 'stdio',
-    command: 'myco-run', args: ['mcp'],
+    command: '{{mycoBinary}}', args: ['mcp'],
   },
 };
 
@@ -319,7 +319,7 @@ function setupPackageRoot(): void {
     Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
-    myco: { command: 'myco-run', args: ['mcp'] },
+    myco: { command: '{{mycoBinary}}', args: ['mcp'] },
   });
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { hooks: true },
@@ -341,7 +341,7 @@ function setupPackageRoot(): void {
     PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: '{{mycoLauncher}} hook pre-compact --symbiont gemini', timeout: 5000 }] }],
   });
   writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
-    myco: { command: 'myco-run', args: ['mcp'] },
+    myco: { command: '{{mycoBinary}}', args: ['mcp'] },
   });
   writeJson(path.join(geminiTemplateDir, 'settings.json'), {
     coreTools: ['ShellTool(myco *)', 'ShellTool(myco-dev *)'],
@@ -360,7 +360,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['myco-run', 'mcp'] },
+    myco: { type: 'local', command: ['{{mycoBinary}}', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -726,8 +726,26 @@ describe('installMcp', () => {
     const config = readJson(mcpPath);
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers.myco).toBeDefined();
-    expect((servers.myco as Record<string, unknown>).command).toBe('myco-run');
+    // MCP command points at the resolved self-contained binary's `mcp`
+    // subcommand — the pinned runtime.command path, forward-slashed — not the
+    // `myco-run` node shim (which fails on a native Windows agent with no node).
+    expect((servers.myco as Record<string, unknown>).command).toBe(PINNED_BINARY);
     expect((servers.myco as Record<string, unknown>).args).toEqual(['mcp']);
+    expect(JSON.stringify(servers.myco)).not.toContain('myco-run');
+  });
+
+  it('substitutes a whitespace-free, forward-slashed binary path into the MCP command', () => {
+    // Reuse the hook-path invariant: the embedded binary path must contain no
+    // whitespace (breaks argv-split spawn) and no backslashes (forward-slashed
+    // so the unquoted command is portable across bash / argv / cmd).
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const command = (config.mcpServers as Record<string, Record<string, unknown>>).myco.command as string;
+    expect(command).toBe(PINNED_BINARY);
+    expect(command).not.toMatch(/\s/);
+    expect(command).not.toContain('\\');
   });
 
   it('writes MCP server to .cursor/mcp.json for Cursor', () => {
@@ -791,7 +809,7 @@ describe('installMcp', () => {
     expect(servers?.['other-tool']).toBeDefined();
   });
 
-  it('writes the stdio bridge for mcp-transport Copilot (myco-run, no url)', () => {
+  it('writes the stdio bridge for mcp-transport Copilot (resolved binary, no url)', () => {
     const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
 
@@ -802,24 +820,27 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     const myco = servers.myco as Record<string, unknown>;
     expect(myco).toBeDefined();
-    expect(myco.command).toBe('myco-run');
+    expect(myco.command).toBe(PINNED_BINARY);
     expect(myco.args).toEqual(['mcp']);
     expect(myco.url).toBeUndefined();
+    expect(JSON.stringify(myco)).not.toContain('myco-run');
   });
 
-  it('writes the local-array stdio bridge for mcp-transport OpenCode (myco-run, no url)', () => {
+  it('writes the local-array stdio bridge for mcp-transport OpenCode (resolved binary, no url)', () => {
     const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
 
     expect(result).toBe(true);
     const config = readJson(path.join(projectRoot, 'opencode.json'));
-    // opencode hosts MCP under the non-standard `mcp` key.
+    // opencode hosts MCP under the non-standard `mcp` key. Its command is an
+    // ARRAY — only element 0 (the launcher) carries the binary substitution.
     const servers = config.mcp as Record<string, unknown>;
     const myco = servers.myco as Record<string, unknown>;
     expect(myco).toBeDefined();
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual([PINNED_BINARY, 'mcp']);
     expect(myco.url).toBeUndefined();
+    expect(JSON.stringify(myco)).not.toContain('myco-run');
   });
 });
 
@@ -1332,8 +1353,9 @@ describe('installMcp (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).toContain('args = ["mcp"]');
+    expect(content).not.toContain('myco-run');
     expect(content).not.toContain('cwd = "."');
     expect(content).not.toContain('[mcp_servers.myco.env]');
   });
@@ -1361,7 +1383,7 @@ describe('installMcp (TOML)', () => {
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).not.toContain('old-command');
   });
 
@@ -1455,7 +1477,11 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+    // The MCP command resolves to the MACHINE runtime pin (PINNED_BINARY), not
+    // the project-local `.myco/runtime.command` — `resolveManagedBinaryPath`
+    // reads `resolveRuntimeCommand()` with no vaultDir, so the project pin (and
+    // its `myco-dev` value) never leak into the installed config.
+    expect(servers.myco.command).toEqual([PINNED_BINARY, 'mcp']);
     expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
@@ -1469,7 +1495,9 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, '.mcp.json'));
     const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
-    expect(servers.myco.command).toBe('myco-run');
+    // Same isolation as the array form: the MCP command is the MACHINE pin,
+    // so the project-local `myco-dev` runtime never lands in the config.
+    expect(servers.myco.command).toBe(PINNED_BINARY);
     expect(servers.myco.args).toEqual(['mcp']);
     expect(JSON.stringify(servers.myco)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco)).not.toContain('myco-dev');
@@ -1549,7 +1577,7 @@ describe('installSettings (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).toContain('[features]');
     expect(content).toContain('hooks = true');
   });
@@ -1761,9 +1789,12 @@ describe('uninstallSettings (TOML)', () => {
     installer.install();
 
     const result = readJson(openCodeJsonPath);
-    // Exec argv array preserved verbatim (not filtered token-by-token).
+    // Exec argv array stays a clean 2-element argv (not filtered token-by-token
+    // down to `['mcp']`). install() rewrites the `myco` server, so element 0 is
+    // now the resolved binary path; the structural invariant — `command` is a
+    // preserved exec argv array — is what this test guards.
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['myco-run', 'mcp']);
+      .toEqual([PINNED_BINARY, 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -2699,9 +2730,10 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["<binary>", "mcp"] }
+    // — element 0 is the resolved binary path (the machine runtime pin).
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual([PINNED_BINARY, 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
