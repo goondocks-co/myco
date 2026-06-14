@@ -51,6 +51,26 @@ export const MYCO_LAUNCHER_SUBSTRINGS = [
 export const MYCO_MANAGED_MARKER = '--myco-managed';
 
 /**
+ * Whether `s` carries the `--myco-managed` ownership marker as a standalone
+ * CLI flag. Matched on a token boundary (`[\w-]` on neither side) rather than
+ * by a bare substring, because the latter would falsely claim a user file that
+ * merely contains the marker text inside a longer token (`--myco-managed-foo`)
+ * or word — and in `uninstallPluginHookFile` that match gates DELETION of the
+ * user's plugin file, so the precision is data-safety-critical.
+ *
+ * The right boundary deliberately admits more than whitespace: this runs over
+ * both a parsed argv command string (marker followed by a space or end) AND a
+ * serialized config file, where the marker sits inside a JSON/TOML string and
+ * is immediately followed by a closing quote (`...--myco-managed"`). A
+ * whitespace-only right anchor would miss that file-scan case. Excluding only
+ * `[\w-]` keeps `--myco-managed-strategy` unclaimed while still matching the
+ * quoted form.
+ */
+export function hasMycoManagedMarker(s: string): boolean {
+  return /(?<![\w-])--myco-managed(?![\w-])/.test(s);
+}
+
+/**
  * Whether `content` references one of Myco's launcher paths. Operates
  * on any string — a hook command line or an entire plugin source file.
  *
@@ -108,7 +128,7 @@ export function containsMycoLauncherReference(content: string): boolean {
  * that marker is retired and ownership is identified by the command alone.
  */
 export function isMycoHookCommand(command: string): boolean {
-  if (command.includes(MYCO_MANAGED_MARKER)) return true;
+  if (hasMycoManagedMarker(command)) return true;
   if (containsMycoLauncherReference(command)) return true;
   if (command.startsWith('myco-run')) return true;
   return false;

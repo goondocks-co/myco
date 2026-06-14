@@ -2,10 +2,7 @@ import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  GLOBAL_HOOK_LAUNCHER_FILENAME,
-  installGlobalLaunchers,
-} from '../grove/launcher-install.js';
+import { installGlobalLaunchers } from '../grove/launcher-install.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -19,7 +16,8 @@ import {
 } from './settings-merge.js';
 import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference } from './install-helpers.js';
+import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
+import { resolveRuntimeCommand } from '../daemon/update-checker.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import {
@@ -117,68 +115,74 @@ const CURSOR_PROJECT_ROOT_CD =
 
 /**
  * Placeholder substituted into every hook template's `command` field at
- * install time. Resolves to the launcher binary that should handle hooks
- * for the active `installScope`:
+ * install time. Resolves to a direct invocation of the self-contained Myco
+ * binary that handles hooks — no `node`, no `.cjs` trampoline:
  *
- *   - `'project'`: `node .agents/myco-run.cjs` — invokes the project-local
- *     guard that historical templates hard-coded. Project scope survives
- *     only for the migration's marker-bounded strip and `.gitignore`
- *     reconciliation; Myco no longer installs project-local launchers.
- *   - `'global'`: `node "<home>/.myco/launcher.cjs"` — invokes the shared
- *     absolute-path launcher installed by `installGlobalLaunchers`. The
- *     launcher itself layers a project-local override (`<projectRoot>/.agents/
- *     myco-run.cjs`) before falling through to runtime resolution, so a
- *     project that happens to ship a dev pin still wins.
+ *     <binaryPath> hook <event> --symbiont <agent>
  *
- * Centralizing the placeholder here means a single edit per scope rewrites
- * every hook in every template. The legacy "global install writes
- * project-local launcher path into a global file" bug class is impossible
- * once every template path runs through this substitution.
+ * The binary path comes from the machine `runtime.command` pin
+ * (`resolveRuntimeCommand()`), falling back to `process.execPath` — the
+ * running compiled binary, since the installer executes in-daemon. The
+ * `--myco-managed` ownership marker is appended by `substituteMycoLauncher`,
+ * not baked into the placeholder, so it lands exactly once per command.
+ *
+ * Centralizing the placeholder here means a single edit rewrites every hook
+ * in every template. The legacy "global install writes project-local
+ * launcher path into a global file" bug class is impossible once every
+ * template path runs through this substitution.
  */
 const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
-const PROJECT_LAUNCHER_CMD = 'node .agents/myco-run.cjs';
 
 /**
- * Resolve `{{mycoLauncher}}` to the absolute launcher command for the
- * given scope. `mycoHome` is the directory `installGlobalLaunchers()`
- * writes the launcher to (i.e. `resolveMycoHome()` — honors `MYCO_HOME`),
- * not the OS home dir. Two are aligned so the hook command always
- * points to a real file: in tests that override `MYCO_HOME`, in
- * production deployments that override `MYCO_HOME`, and in the default
- * case where both fall back to `os.homedir() + '/.myco'`.
+ * Resolve `{{mycoLauncher}}` to a direct binary invocation. `binaryPath` is
+ * the forward-slashed path to the Myco binary the emitted hook command should
+ * exec.
  *
- * The path is emitted UNQUOTED. Symbionts diverge in how they spawn
- * hook commands: claude-code / codex / antigravity / copilot
- * route through a shell (their templates prefix with `cd ... &&` or
- * the symbiont's runtime defaults to shell), while cursor / windsurf /
- * pi spawn the command via direct argv split. A quoted path survives
- * the shell flavor (quotes get stripped) but breaks direct-argv: the
- * literal `"` characters end up in the file-path argument, and `node`
- * fails to find a file at `'"/Users/.../launcher.cjs"'`. Unquoted
- * works in both worlds — provided the home path has no whitespace,
- * which `assertSafeHomeForUnquotedPath` enforces at install time.
+ * The path is emitted UNQUOTED. Symbionts diverge in how they spawn hook
+ * commands: claude-code / codex / antigravity / copilot route through a shell,
+ * while cursor / windsurf / pi spawn the command via direct argv split. A
+ * quoted path survives the shell flavor (quotes get stripped) but breaks
+ * direct-argv: the literal `"` characters end up in the binary-path argument
+ * and the exec fails to find a file at `'"/opt/.../myco"'`. Unquoted works in
+ * both worlds — provided the path has no whitespace, which
+ * `assertSafeBinaryPathForUnquoted` enforces at install time.
+ *
+ * The launcher command is scope-independent now: the binary path is the same
+ * whether installed project- or globally. Project-local install was retired in
+ * #385 — the project scope survives only for the marker-bounded strip and
+ * `.gitignore` reconciliation — so the dead `node .agents/myco-run.cjs` branch
+ * is gone and both scopes resolve to the binary path.
  */
-function resolveLauncherCmd(scope: InstallScope, mycoHome: string): string {
-  if (scope === 'project') return PROJECT_LAUNCHER_CMD;
-  const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
-  assertSafeHomeForUnquotedPath(launcherPath);
-  return `node ${launcherPath}`;
+function resolveLauncherCmd(_scope: InstallScope, binaryPath: string): string {
+  assertSafeBinaryPathForUnquoted(binaryPath);
+  return binaryPath;
 }
 
 /**
- * Refuse to emit a hook command whose launcher path contains whitespace.
+ * Refuse to emit a hook command whose binary path contains whitespace.
  * Quoting would survive shell symbionts but break direct-argv symbionts
  * (cursor / windsurf / pi). Failing loudly at install time beats silent
  * capture failure after the agent's next launch.
  */
-function assertSafeHomeForUnquotedPath(launcherPath: string): void {
-  if (!/\s/.test(launcherPath)) return;
+function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
+  if (!/\s/.test(binaryPath)) return;
   throw new Error(
-    `Refusing to install global symbiont hooks: launcher path "${launcherPath}" ` +
+    `Refusing to install symbiont hooks: binary path "${binaryPath}" ` +
     `contains whitespace, which breaks direct-argv hook spawn for cursor / windsurf / pi. ` +
-    `Move Myco out of a path with spaces, or commit Myco config to the repo ` +
-    `via the dashboard's Symbionts page to use the project-local launcher instead.`,
+    `Move Myco out of a path with spaces.`,
   );
+}
+
+/**
+ * Whether a raw config file carries any Myco hook-ownership signal — either
+ * the `--myco-managed` marker (direct-binary form, whose binary path varies
+ * by build) or a canonical launcher-path reference (legacy/global launcher).
+ * Used by `isConfigured()` for the non-strict-JSON detection paths (Codex's
+ * TOML-footer hooks.json, antigravity's JSON plugin-file) where a structured
+ * group walk isn't possible.
+ */
+function rawHasMycoOwnershipSignal(raw: string): boolean {
+  return hasMycoManagedMarker(raw) || containsMycoLauncherReference(raw);
 }
 
 /** Marker text used to identify unmodified instruction stubs. */
@@ -432,10 +436,10 @@ export class SymbiontInstaller {
     // Plugin-file targets: prefer the bundle marker (opencode/pi
     // ship it inline). For plugin-file targets whose template is JSON
     // (antigravity's hooks.json), the marker comment isn't present;
-    // fall through to the launcher-command substring scan below.
+    // fall through to the ownership-signal scan below.
     if (reg.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
       if (raw.includes(MYCO_PLUGIN_FILE_MARKER)) return true;
-      return containsMycoLauncherReference(raw);
+      return rawHasMycoOwnershipSignal(raw);
     }
     // JSON path: prefer the structured walk (catches a Myco-marked
     // group even if the command field gets renamed in a future
@@ -456,7 +460,7 @@ export class SymbiontInstaller {
     } catch {
       /* fall through to substring scan */
     }
-    return containsMycoLauncherReference(raw);
+    return rawHasMycoOwnershipSignal(raw);
   }
 
   /**
@@ -1380,23 +1384,27 @@ export class SymbiontInstaller {
   /**
    * Single substitution pass for the `{{mycoLauncher}}` placeholder.
    * Both the JSON-template walker below and the plugin-file install
-   * path go through this — one source of truth for scope→launcher
-   * resolution means the two install paths can't drift apart.
+   * path go through this — one source of truth for launcher resolution
+   * means the two install paths can't drift apart.
+   *
+   * The placeholder appears ONLY in hook command strings, so each call
+   * receives exactly one command. After substituting the binary path, the
+   * `--myco-managed` ownership marker is appended once to the END of the
+   * command — the single place it's added, so templates stay marker-free
+   * and the marker lands exactly once regardless of any command prefix
+   * (e.g. cursor's `cd ... &&`).
    */
   private substituteMycoLauncher(content: string): string {
     if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
-    // Use `resolveMycoHome()` rather than `os.homedir()` so the embedded
-    // hook command points at the SAME path `installGlobalLaunchers()` wrote
-    // the launcher to. Two cases this aligns:
-    //   - Tests that override `MYCO_HOME` to a tmp vault (Bun's
-    //     `os.homedir()` ignores in-process changes to `$HOME`, so the
-    //     previous `os.homedir()` path embedded the developer's real
-    //     `~/.myco/launcher.cjs` and only passed by accident on machines
-    //     where Myco was dogfooded into that directory).
-    //   - Production users who point `MYCO_HOME` at a custom location —
-    //     the launcher writes there, the hook command should too.
-    const launcherCmd = resolveLauncherCmd(this.installScope, resolveMycoHome());
-    return content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
+    // The binary path is the machine `runtime.command` pin, falling back to
+    // `process.execPath` — the running compiled binary, since the installer
+    // executes in-daemon. Forward-slashed so the unquoted command is safe for
+    // bash, argv-split, and cmd alike on every platform.
+    const binaryPath = (resolveRuntimeCommand() ?? process.execPath).replaceAll('\\', '/');
+    const launcherCmd = resolveLauncherCmd(this.installScope, binaryPath);
+    const substituted = content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
+    if (substituted.includes(MYCO_MANAGED_MARKER)) return substituted;
+    return `${substituted} ${MYCO_MANAGED_MARKER}`;
   }
 
   /**
@@ -1537,12 +1545,14 @@ export class SymbiontInstaller {
     let content: string;
     try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
 
-    // A plugin file counts as Myco-owned when it carries the marker
-    // or references a Myco launcher path. The launcher-name list
-    // lives in `install-helpers.ts` so detection and deletion can't
-    // drift apart on a future rename.
+    // A plugin file counts as Myco-owned when it carries the plugin-file
+    // marker comment, the `--myco-managed` hook marker, or a Myco launcher
+    // path. The signal definitions live in `install-helpers.ts` /
+    // `rawHasMycoOwnershipSignal` so detection and deletion can't drift
+    // apart on a future rename. Mirrors `isConfigured()`'s plugin-file
+    // branch so install/uninstall agree on ownership.
     const hasMarker = content.includes(MYCO_PLUGIN_FILE_MARKER);
-    if (!hasMarker && !containsMycoLauncherReference(content)) return false;
+    if (!hasMarker && !rawHasMycoOwnershipSignal(content)) return false;
 
     try {
       fs.unlinkSync(targetPath);

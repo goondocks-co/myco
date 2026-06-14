@@ -430,37 +430,31 @@ describe('symbiont installer invariants', () => {
   });
 
   /**
-   * Project-dir resolution lives in the global launcher, NOT in shell-cd
-   * prefixes. R4.4 surfaced that Cursor's hook spawn drops stdin entirely
-   * when the command contains a shell operator (`cd "$X" && node …`), so
+   * Project-dir resolution lives in the binary's launch preamble, NOT in
+   * shell-cd prefixes. R4.4 surfaced that Cursor's hook spawn drops stdin
+   * entirely when the command contains a shell operator (`cd "$X" && …`), so
    * the JSON payload never reaches our handlers and capture goes silent.
    *
-   * Fix: launcher reads the per-agent project-dir env var (or AGY's
-   * `workspacePaths[0]` from stdin) and calls `process.chdir()` inside
-   * node before delegating. Templates carry plain command lines.
+   * Fix: the binary reads the per-agent project-dir env var (or AGY's
+   * `workspacePaths[0]` from stdin) and anchors cwd in-process before
+   * delegating. Templates carry plain command lines.
    *
-   * Anti-regression: every hook template EXCEPT claude-code must be free of
-   * the `cd "${...}" && ` pattern. Claude-code keeps the prefix because its
-   * spawn handles it correctly and historical commands depend on it; the
-   * launcher env-var fallback covers it as belt-and-suspenders.
+   * Anti-regression: NO hook template may carry the `cd "${...}" && ` prefix.
+   * claude-code dropped its prefix in the launcher-unification flip (D5) — the
+   * in-process cwd anchor makes the shell `cd` redundant.
    */
   describe('shell-cd prefix is absent (cursor stdin-drop anti-regression)', () => {
     const SHELL_CD_PATTERN = /cd\s+"\$\{[A-Z_]+:-\.\}"\s*&&/;
-    const ALLOWED_WITH_CD = new Set(['claude-code']);
     const TEMPLATE_DIRS = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf', 'antigravity'];
     for (const dir of TEMPLATE_DIRS) {
       const tplPath = path.join(TEMPLATES_DIR, dir, 'hooks.json');
       if (!fs.existsSync(tplPath)) continue;
-      it(`${dir}/hooks.json: ${ALLOWED_WITH_CD.has(dir) ? 'keeps' : 'must not introduce'} a shell-cd prefix`, () => {
+      it(`${dir}/hooks.json: must not introduce a shell-cd prefix`, () => {
         const parsed = JSON.parse(fs.readFileSync(tplPath, 'utf-8'));
         const commands = collectHookCommands(parsed);
         expect(commands.length).toBeGreaterThan(0);
         for (const cmd of commands) {
-          if (ALLOWED_WITH_CD.has(dir)) {
-            expect(cmd, `${dir} command lost its shell-cd prefix: ${cmd}`).toMatch(SHELL_CD_PATTERN);
-          } else {
-            expect(cmd, `${dir} command grew a shell-cd prefix (Cursor stdin-drop risk): ${cmd}`).not.toMatch(SHELL_CD_PATTERN);
-          }
+          expect(cmd, `${dir} command grew a shell-cd prefix (Cursor stdin-drop risk): ${cmd}`).not.toMatch(SHELL_CD_PATTERN);
         }
       });
     }
