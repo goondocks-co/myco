@@ -18,14 +18,16 @@
  * needs to design for that — a stale silent acquisition would defeat
  * the single-instance guarantee.
  *
- * Windows: `LockFileEx` is the equivalent primitive. Not yet wired —
- * `acquire` throws with a clear error on Windows so the caller can
- * choose to refuse-to-start rather than race.
+ * Windows: `LockFileEx`/`UnlockFileEx` via Bun FFI (kernel32) are the
+ * equivalent primitive. The lock is held on a high-offset sentinel byte
+ * (LockFileEx is mandatory, not advisory like flock, so the metadata at
+ * offset 0 stays readable) and auto-releases when the handle closes on
+ * process death.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { dlopen, FFIType, suffix } from 'bun:ffi';
+import { dlopen, FFIType, suffix, ptr } from 'bun:ffi';
 
 // `flock(2)` operation flags. Linux and macOS agree on these values.
 const LOCK_EX = 2;
@@ -74,6 +76,151 @@ function loadFlock(): { flock: (fd: number, op: number) => number } {
     `LifecycleLock: failed to bind libc.flock — refusing to start. Tried: ${errors.join('; ')}`,
   );
   throw flockBindingError;
+}
+
+// ---------------------------------------------------------------------------
+// Windows: LockFileEx via kernel32 — the equivalent of flock on POSIX.
+// ---------------------------------------------------------------------------
+
+// FILE_GENERIC_READ | FILE_GENERIC_WRITE. We deliberately use the SPECIFIC
+// rights (bit 31 clear) rather than GENERIC_READ|GENERIC_WRITE (0xC0000000):
+// bun:ffi marshals a u32 argument with the high bit set incorrectly, so
+// 0xC0000000 reaches CreateFileW as the wrong access mask and the file opens
+// without real read/write access (every later op returns ACCESS_DENIED).
+const WIN_FILE_ACCESS = 0x0012_019f;
+const WIN_FILE_SHARE_RW = 0x3; // FILE_SHARE_READ | FILE_SHARE_WRITE
+const WIN_OPEN_ALWAYS = 0x4;
+const WIN_FILE_ATTRIBUTE_NORMAL = 0x80;
+const WIN_INVALID_HANDLE = 0xffff_ffff_ffff_ffffn;
+const WIN_LOCKFILE_FAIL_IMMEDIATELY = 0x1;
+const WIN_LOCKFILE_EXCLUSIVE_LOCK = 0x2;
+// Lock a single sentinel byte far past EOF. flock on POSIX is advisory and
+// locks the whole file; LockFileEx is MANDATORY (blocks reads/writes to the
+// locked range), so locking the metadata bytes would stop `readLockHolder`
+// from reading the holder record. A high-offset sentinel keeps the metadata
+// at offset 0 free for node:fs read/write.
+const WIN_SENTINEL_OFFSET = 0x1000_0000; // 256 MiB
+
+interface Kernel32 {
+  CreateFileW: (
+    lpFileName: number, dwAccess: number, dwShare: number, lpSecurity: bigint,
+    dwCreation: number, dwFlags: number, hTemplate: bigint,
+  ) => number | bigint;
+  LockFileEx: (
+    hFile: bigint, dwFlags: number, dwReserved: number,
+    nLow: number, nHigh: number, lpOverlapped: number,
+  ) => number;
+  UnlockFileEx: (
+    hFile: bigint, dwReserved: number, nLow: number, nHigh: number, lpOverlapped: number,
+  ) => number;
+  CloseHandle: (hFile: bigint) => number;
+  GetLastError: () => number;
+}
+
+let kernel32Binding: Kernel32 | null = null;
+let kernel32BindingError: Error | null = null;
+
+function loadKernel32(): Kernel32 {
+  if (kernel32Binding) return kernel32Binding;
+  if (kernel32BindingError) throw kernel32BindingError;
+  try {
+    const lib = dlopen('kernel32.dll', {
+      CreateFileW: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u64], returns: FFIType.u64 },
+      LockFileEx: { args: [FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
+      UnlockFileEx: { args: [FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], returns: FFIType.i32 },
+      CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
+      GetLastError: { args: [], returns: FFIType.u32 },
+    });
+    kernel32Binding = lib.symbols as unknown as Kernel32;
+    return kernel32Binding;
+  } catch (err) {
+    kernel32BindingError = new Error(
+      `LifecycleLock: failed to bind kernel32 (LockFileEx) — refusing to start: ${(err as Error).message}`,
+    );
+    throw kernel32BindingError;
+  }
+}
+
+function winOverlapped(): Uint8Array {
+  const buf = new Uint8Array(32);
+  new DataView(buf.buffer).setUint32(16, WIN_SENTINEL_OFFSET, true); // OVERLAPPED.Offset
+  return buf;
+}
+
+function winOpenLockHandle(k: Kernel32, lockPath: string): bigint {
+  const pathBuf = Buffer.from(lockPath + '\0', 'utf16le');
+  const handle = BigInt(
+    k.CreateFileW(ptr(pathBuf), WIN_FILE_ACCESS, WIN_FILE_SHARE_RW, 0n, WIN_OPEN_ALWAYS, WIN_FILE_ATTRIBUTE_NORMAL, 0n),
+  );
+  if (handle === WIN_INVALID_HANDLE) {
+    throw new Error(`LifecycleLock: CreateFileW failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
+  }
+  return handle;
+}
+
+function writeHolderFile(lockPath: string, info: LockHolder): void {
+  fs.writeFileSync(lockPath, JSON.stringify(info, null, 2) + '\n');
+}
+
+function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
+  const k = loadKernel32();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const handle = winOpenLockHandle(k, lockPath);
+  const rc = k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(winOverlapped()));
+  if (rc === 0) {
+    const holder = readLockHolder(lockPath);
+    k.CloseHandle(handle);
+    return { acquired: false, holder, holderPid: holder?.pid ?? null };
+  }
+
+  const command = opts.command ?? process.argv.join(' ');
+  const current: LockHolder = {
+    pid: process.pid,
+    startedAt: Math.floor(Date.now() / 1000),
+    command,
+  };
+  // Metadata is written via node:fs (a separate handle): the lock is held on a
+  // high-offset sentinel byte, so the metadata region at offset 0 is free. Only
+  // the lock holder writes after acquiring — the same convention the advisory
+  // flock path relies on.
+  writeHolderFile(lockPath, current);
+
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    // Truncate so a fresh hook process doesn't read a dead holder's record.
+    try { fs.writeFileSync(lockPath, ''); } catch { /* best-effort */ }
+    try { k.UnlockFileEx(handle, 0, 1, 0, ptr(winOverlapped())); } catch { /* idem */ }
+    try { k.CloseHandle(handle); } catch { /* idem */ }
+  };
+  process.on('exit', release);
+
+  const update = (metadata: Partial<LockHolder>): void => {
+    if (released) return;
+    Object.assign(current, metadata);
+    writeHolderFile(lockPath, current);
+  };
+
+  return {
+    acquired: true,
+    lock: { release, update, path: lockPath, pid: process.pid },
+  };
+}
+
+function winWithFileLockSync<T>(lockPath: string, fn: () => T): T {
+  const k = loadKernel32();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const handle = winOpenLockHandle(k, lockPath);
+  try {
+    if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(winOverlapped())) === 0) {
+      throw new Error(`winWithFileLockSync: LockFileEx failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
+    }
+    return fn();
+  } finally {
+    try { k.UnlockFileEx(handle, 0, 1, 0, ptr(winOverlapped())); } catch { /* idem */ }
+    try { k.CloseHandle(handle); } catch { /* idem */ }
+  }
 }
 
 export interface LockHolder {
@@ -126,6 +273,7 @@ export interface AcquireOptions {
 
 export const LifecycleLock = {
   acquire(lockPath: string, opts: AcquireOptions = {}): AcquireResult {
+    if (process.platform === 'win32') return winAcquire(lockPath, opts);
     const flockApi = loadFlock();
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
@@ -185,6 +333,8 @@ export const LifecycleLock = {
   __resetForTests(): void {
     flockBinding = null;
     flockBindingError = null;
+    kernel32Binding = null;
+    kernel32BindingError = null;
   },
 };
 
@@ -202,6 +352,7 @@ export const LifecycleLock = {
  * path.
  */
 export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
+  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn);
   const flockApi = loadFlock();
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
