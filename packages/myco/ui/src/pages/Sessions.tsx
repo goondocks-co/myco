@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useCallback, useMemo, useRef } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { EmptyDetailHint } from '../components/ui/empty-detail-hint';
 import { ListFilterBar, type FilterDefinition } from '../components/ui/list-filter-bar';
 import { SessionList } from '../components/sessions/SessionList';
 import { SessionDetail } from '../components/sessions/SessionDetail';
 import { useSymbionts } from '../hooks/use-symbionts';
-import { useListFilters, FILTER_ALL } from '../hooks/use-list-filters';
+import { FILTER_ALL } from '../hooks/use-list-filters';
+import { useUrlListState } from '../hooks/use-url-list-state';
+import { pathnameWithSearchHash } from '../lib/url-state';
 
 const STATUS_FILTER: FilterDefinition = {
   key: 'status',
@@ -30,20 +32,8 @@ const PLAN_FILTER: FilterDefinition = {
 export default function Sessions() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const location = useLocation();
   const filterInputRef = useRef<HTMLInputElement>(null);
-
-  // Filter values are derived from URL query params on EVERY render —
-  // not seeded once. That keeps the dropdown in sync when the user
-  // deep-links to /sessions?agent=X from one chip, then clicks another
-  // chip (e.g. switches to /sessions?agent=Y) while the page is still
-  // mounted. Earlier useMemo([]) approach captured initialFilters once
-  // and went stale on intra-mount URL changes.
-  const urlFilters = useMemo(() => ({
-    status: searchParams.get('status') ?? FILTER_ALL,
-    agent: searchParams.get('agent') ?? FILTER_ALL,
-    has_plan: searchParams.get('has_plan') === 'true' ? 'true' : FILTER_ALL,
-  }), [searchParams]);
 
   const {
     searchInput,
@@ -54,17 +44,13 @@ export default function Sessions() {
     handleSearchChange,
     handleFilterChange,
     activeFilter,
-  } = useListFilters({ initialFilters: urlFilters });
-
-  // Keep in-component filter state in sync when the URL changes.
-  // Without this, useListFilters' local state diverges from the URL
-  // after the first mount and same-route URL transitions.
-  useEffect(() => {
-    for (const [key, value] of Object.entries(urlFilters)) {
-      if (filterValues[key] !== value) handleFilterChange(key, value);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlFilters]);
+  } = useUrlListState({
+    filters: [
+      { key: 'status', defaultValue: FILTER_ALL },
+      { key: 'agent', defaultValue: FILTER_ALL },
+      { key: 'has_plan', defaultValue: FILTER_ALL },
+    ],
+  });
 
   const { data: symbiontsData } = useSymbionts();
 
@@ -87,6 +73,21 @@ export default function Sessions() {
   const activeStatus = activeFilter('status');
   const activeAgent = activeFilter('agent');
   const activeHasPlan = activeFilter('has_plan') === 'true';
+  const sessionsBasePath = useMemo(() => {
+    if (!id) return location.pathname;
+    const suffix = `/${id}`;
+    return location.pathname.endsWith(suffix) ? location.pathname.slice(0, -suffix.length) : location.pathname;
+  }, [id, location.pathname]);
+
+  const selectSession = useCallback((sessionId: string, options?: { replace?: boolean }) => {
+    const params = new URLSearchParams(location.search);
+    navigate(pathnameWithSearchHash(`${sessionsBasePath}/${sessionId}`, params, location.hash), options);
+  }, [location.hash, location.search, navigate, sessionsBasePath]);
+
+  const closeDetail = useCallback(() => {
+    const params = new URLSearchParams(location.search);
+    navigate(pathnameWithSearchHash(sessionsBasePath, params, location.hash));
+  }, [location.hash, location.search, navigate, sessionsBasePath]);
 
   return (
     <div className="flex flex-col h-full gap-4 p-4">
@@ -102,7 +103,7 @@ export default function Sessions() {
       <div className="flex-1 min-h-0">
         <MasterDetailSplit
           hasSelection={!!id}
-          onCloseMobileDetail={() => navigate('..')}
+          onCloseMobileDetail={closeDetail}
           masterAriaLabel="Sessions"
           detailAriaLabel="Session details"
           master={
@@ -115,6 +116,7 @@ export default function Sessions() {
               offset={offset}
               onOffsetChange={setOffset}
               filterInputRef={filterInputRef}
+              onSelectSession={selectSession}
             />
           }
           detail={

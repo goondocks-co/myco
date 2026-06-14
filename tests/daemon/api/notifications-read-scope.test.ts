@@ -24,12 +24,14 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { getDatabase } from '@myco/db/client.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
 import {
   handleListNotifications,
   handleUnreadCount,
   handleDismissAll,
   handleMarkAllRead,
+  handleUpdateNotification,
 } from '@myco/daemon/api/notifications.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
@@ -221,6 +223,35 @@ describe('notification read/mutate routes — global, no-context poll (unwrapped
       expect(titles).not.toContain('anchor row');
     });
 
+    it('PATCH /api/notifications/:id can acknowledge a merged daemon row and prune stale daemon rows', async () => {
+      const db = getDatabase();
+      seedNotification(PROJECT_ANCHOR, 'anchor row');
+      const daemonId = seedNotification(null, 'daemon row');
+      const staleDaemonId = seedNotification(null, 'stale daemon row');
+      db.prepare("UPDATE notifications SET status = 'read', created_at = 1 WHERE id = ?").run(staleDaemonId);
+
+      const res = await handleUpdateNotification(makeReq({
+        params: { id: daemonId },
+        body: { status: 'read' },
+      }));
+
+      expect(res.status ?? 200).toBe(200);
+      const rows = db.prepare(
+        `SELECT id, status FROM notifications
+         WHERE id IN (?, ?)
+         ORDER BY id`,
+      ).all(daemonId, staleDaemonId) as Array<{ id: string; status: string }>;
+      expect(rows).toEqual([{ id: daemonId, status: 'read' }]);
+
+      const anchorCount = await handleUnreadCount(makeReq({
+        requestContext: {
+          ...callerContextB(),
+          projectId: PROJECT_ANCHOR,
+        } as RouteRequest['requestContext'],
+      }));
+      expect((anchorCount.body as { count: number }).count).toBe(1);
+    });
+
     it('GET /api/notifications/unread-count counts only B (+ daemon when include_daemon)', async () => {
       seedNotification(PROJECT_ANCHOR, 'anchor row');
       seedNotification(PROJECT_B, 'B row 1');
@@ -234,13 +265,14 @@ describe('notification read/mutate routes — global, no-context poll (unwrapped
       expect((withDaemon.body as { count: number }).count).toBe(3);
     });
 
-    it('POST /api/notifications/dismiss-all only touches B rows, never the anchor', async () => {
+    it('POST /api/notifications/dismiss-all touches B and daemon rows, never the anchor', async () => {
       seedNotification(PROJECT_ANCHOR, 'anchor row');
       seedNotification(PROJECT_B, 'B row 1');
       seedNotification(PROJECT_B, 'B row 2');
+      seedNotification(null, 'daemon row');
 
       const res = await handleDismissAll(makeReq({ body: {} }));
-      expect((res.body as { dismissed: number }).dismissed).toBe(2);
+      expect((res.body as { dismissed: number }).dismissed).toBe(3);
 
       // The anchor's row is untouched (still unread) — read it back with an
       // anchor-scoped caller context.
@@ -252,12 +284,13 @@ describe('notification read/mutate routes — global, no-context poll (unwrapped
       expect((anchorCount.body as { count: number }).count).toBe(1);
     });
 
-    it('POST /api/notifications/mark-all-read only marks B rows', async () => {
+    it('POST /api/notifications/mark-all-read marks B and daemon rows', async () => {
       seedNotification(PROJECT_ANCHOR, 'anchor row');
       seedNotification(PROJECT_B, 'B row 1');
+      seedNotification(null, 'daemon row');
 
       const res = await handleMarkAllRead(makeReq({ body: {} }));
-      expect((res.body as { marked: number }).marked).toBe(1);
+      expect((res.body as { marked: number }).marked).toBe(2);
     });
   });
 });

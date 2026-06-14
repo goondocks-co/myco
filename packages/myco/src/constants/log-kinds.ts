@@ -119,6 +119,7 @@ export const LOG_KINDS = {
 
   // Log retention
   LOG_RETENTION: 'log.retention',
+  NOTIFICATION_RETENTION: 'notification.retention',
 
   // Backup
   BACKUP_START: 'backup.start',

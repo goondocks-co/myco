@@ -14,13 +14,17 @@ import {
   updateNotificationStatus,
   dismissAllNotifications,
   markAllRead,
+  pruneOldNotifications,
 } from '../../db/queries/notifications.js';
 import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
-import { loadMergedConfig } from '../../config/loader.js';
+import { loadMachineConfig, loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
 import { projectScopeFromRequestContext } from '../../grove/request-context.js';
 import { projectScope, type GroveProjectId, type ProjectScope } from '../../grove/ids.js';
+
+const DEFAULT_NOTIFICATION_RETENTION_DAYS = 30;
+const SECONDS_PER_DAY = 24 * 60 * 60;
 
 /**
  * Tenant scope for the CREATE route, which runs through `tenantRoute`. The
@@ -37,6 +41,19 @@ import { projectScope, type GroveProjectId, type ProjectScope } from '../../grov
  */
 function tenantProjectScope(principal: RequestPrincipal): ProjectScope {
   return projectScope(principal.tenancy.projectId as GroveProjectId);
+}
+
+function retentionSecondsForRequest(): number {
+  const config = loadMachineConfig();
+  return (config.notifications.retention_days ?? DEFAULT_NOTIFICATION_RETENTION_DAYS) * SECONDS_PER_DAY;
+}
+
+function pruneAcknowledgedForRequest(
+  _req: RouteRequest,
+  scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): void {
+  pruneOldNotifications(retentionSecondsForRequest(), scope, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,14 +208,17 @@ export async function handleUpdateNotification(
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
+  const scope = projectScopeFromRequestContext(req.requestContext);
   const updated = updateNotificationStatus(
     req.params.id,
     parsed.data.status,
-    projectScopeFromRequestContext(req.requestContext),
+    scope,
+    { includeDaemonScope: true },
   );
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
+  pruneAcknowledgedForRequest(req, scope, { includeDaemonScope: true });
 
   return { body: { ok: true } };
 }
@@ -214,7 +234,9 @@ export async function handleDismissAll(
   req: RouteRequest,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain, projectScopeFromRequestContext(req.requestContext));
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  const count = dismissAllNotifications(domain, scope, { includeDaemonScope: true });
+  pruneAcknowledgedForRequest(req, scope, { includeDaemonScope: true });
   return { body: { ok: true, dismissed: count } };
 }
 
@@ -229,7 +251,9 @@ export async function handleMarkAllRead(
   req: RouteRequest,
 ): Promise<RouteResponse> {
   const domain = (req.body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain, projectScopeFromRequestContext(req.requestContext));
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  const count = markAllRead(domain, scope, { includeDaemonScope: true });
+  pruneAcknowledgedForRequest(req, scope, { includeDaemonScope: true });
   return { body: { ok: true, marked: count } };
 }
 

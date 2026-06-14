@@ -171,6 +171,7 @@ import {
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
+import { agentRunNotificationLink } from '../notifications/links.js';
 import { PowerManager } from './power.js';
 import { JobRunner } from './job-runner.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
@@ -998,7 +999,7 @@ export async function main(): Promise<void> {
           type: 'agent.task.failure',
           title: `Task failed: ${row.task ?? 'agent run'}`,
           message: 'Daemon restarted while run was in progress',
-          link: `/agent?run=${row.id}`,
+          link: agentRunNotificationLink(row.id),
           metadata: { taskName: row.task, runId: row.id, reason: 'daemon_restart' },
         }, liveConfig.current);
       }

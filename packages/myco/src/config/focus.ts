@@ -205,6 +205,7 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   'notifications.enabled': 'Notifications',
   'notifications.default_mode': 'Default Display',
   'notifications.system_notifications': 'Browser Notifications',
+  'notifications.retention_days': 'Notification Retention (days)',
   'capture.ignore_plan_dirs_in_git': 'Ignore Custom Plan Dirs In Git',
   'capture.plan_dirs': 'Custom Directories',
   'daemon.log_level': 'Log Level',

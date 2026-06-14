@@ -57,6 +57,7 @@ export const NOTIFICATIONS_PATHS = {
   enabled: 'notifications.enabled',
   systemNotifications: 'notifications.system_notifications',
   defaultMode: 'notifications.default_mode',
+  retentionDays: 'notifications.retention_days',
 } as const;
 
 export const SKILLS_PATHS = {
