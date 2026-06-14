@@ -134,6 +134,19 @@ const CURSOR_PROJECT_ROOT_CD =
 const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
 
 /**
+ * Placeholder substituted into every MCP template's command field at install
+ * time. Resolves to the forward-slashed path of the self-contained Myco binary
+ * — the same resolution hooks use (`resolveManagedBinaryPath`). The MCP server
+ * is launched as `<binaryPath> mcp`, so a native Windows agent with no `node`
+ * on PATH can still spawn the bridge — the gap the `myco-run` node shim left.
+ *
+ * Unlike the hook placeholder, no `--myco-managed` marker is appended: MCP
+ * ownership is keyed by the `myco` server name (see `installMcpJson`'s sweep),
+ * not the command string, so the command value can change freely across builds.
+ */
+const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
+
+/**
  * Resolve `{{mycoLauncher}}` to a direct binary invocation. `binaryPath` is
  * the forward-slashed path to the Myco binary the emitted hook command should
  * exec.
@@ -156,6 +169,22 @@ const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
 function resolveLauncherCmd(_scope: InstallScope, binaryPath: string): string {
   assertSafeBinaryPathForUnquoted(binaryPath);
   return binaryPath;
+}
+
+/**
+ * Resolve the path to the managed Myco binary the installer should embed into
+ * emitted commands (hook commands and the MCP server command alike).
+ *
+ * The path is the machine `runtime.command` pin (`resolveRuntimeCommand()`),
+ * falling back to `process.execPath` — the running compiled binary, since the
+ * installer executes in-daemon. Forward-slashed so the unquoted command is safe
+ * for bash, argv-split, and cmd alike on every platform.
+ *
+ * Shared by the hook path (`substituteMycoLauncher`) and the MCP path
+ * (`resolveMcpTemplate`) so the two can't drift onto different binaries.
+ */
+function resolveManagedBinaryPath(): string {
+  return (resolveRuntimeCommand() ?? process.execPath).replaceAll('\\', '/');
 }
 
 /**
@@ -534,7 +563,8 @@ export class SymbiontInstaller {
    * `myco-run.cjs` is the capture launcher for lifecycle hooks.
    * `myco-cli.cjs` is the project-local launcher for CLI/tool calls.
    * Both use the same template and resolve runtime scope from filename.
-   * MCP server spawn continues to use the published `myco-run` binary.
+   * The MCP server spawns the resolved binary directly (`<binary> mcp`),
+   * not a launcher shim — see `loadMcpTemplate`.
    * Returns true if any file was written (or updated); false if skipped
    * or N/A.
    */
@@ -588,6 +618,37 @@ export class SymbiontInstaller {
   uninstallHookGuard(): boolean {
     if (this.capabilities.globalLauncher) return false;
     return removeProjectLaunchers(this.projectRoot).length > 0;
+  }
+
+  /**
+   * Load the MCP template and substitute the `{{mycoBinary}}` placeholder with
+   * the resolved managed binary path. Returns null when the symbiont ships no
+   * MCP template.
+   *
+   * Both MCP install paths — the unbatched `installMcp()` and the batched-JSON
+   * `installBatchedJson()` — go through this single helper so they can't drift
+   * onto a stale `myco-run` shim or a different binary. The walk mirrors
+   * `resolveHookTemplatePlaceholders` but for the MCP placeholder: it descends
+   * into arrays (opencode's `command: ["{{mycoBinary}}", "mcp"]`) and nested
+   * objects, replacing the placeholder in every string value.
+   */
+  loadMcpTemplate(): Record<string, unknown> | null {
+    const template = this.loadTemplate('mcp');
+    if (!template) return null;
+    const binaryPath = resolveManagedBinaryPath();
+    const substitute = (value: unknown): unknown => {
+      if (typeof value === 'string') {
+        return value.split(MYCO_BINARY_PLACEHOLDER).join(binaryPath);
+      }
+      if (Array.isArray(value)) return value.map(substitute);
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, substitute(v)]),
+        );
+      }
+      return value;
+    };
+    return substitute(template) as Record<string, unknown>;
   }
 
   /** Load a JSON template file for this symbiont. Returns null if not found. */
@@ -898,7 +959,7 @@ export class SymbiontInstaller {
     // shape migration (mcpServersKey rename) doesn't leave behind a
     // duplicate `myco` registration under the old key.
     const provision = this.shouldProvisionMcpServer();
-    const mcpTemplate = reg.mcpTarget && provision ? this.loadTemplate('mcp') : null;
+    const mcpTemplate = reg.mcpTarget && provision ? this.loadMcpTemplate() : null;
     if (mcpTemplate) {
       const serversKey = reg.mcpServersKey ?? 'mcpServers';
       for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
@@ -1396,11 +1457,7 @@ export class SymbiontInstaller {
    */
   private substituteMycoLauncher(content: string): string {
     if (!content.includes(MYCO_LAUNCHER_PLACEHOLDER)) return content;
-    // The binary path is the machine `runtime.command` pin, falling back to
-    // `process.execPath` — the running compiled binary, since the installer
-    // executes in-daemon. Forward-slashed so the unquoted command is safe for
-    // bash, argv-split, and cmd alike on every platform.
-    const binaryPath = (resolveRuntimeCommand() ?? process.execPath).replaceAll('\\', '/');
+    const binaryPath = resolveManagedBinaryPath();
     const launcherCmd = resolveLauncherCmd(this.installScope, binaryPath);
     const substituted = content.split(MYCO_LAUNCHER_PLACEHOLDER).join(launcherCmd);
     if (substituted.includes(MYCO_MANAGED_MARKER)) return substituted;
@@ -1705,7 +1762,7 @@ export class SymbiontInstaller {
     const targets = this.resolveAbsoluteMcpTargets();
     if (targets.length === 0) return false;
 
-    const template = this.loadTemplate('mcp');
+    const template = this.loadMcpTemplate();
     if (!template) return false;
 
     let anyWritten = false;
