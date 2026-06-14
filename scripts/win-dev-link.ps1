@@ -7,6 +7,10 @@
 # Windows-specific wiring here — the daemon's first start runs the same
 # `runGlobalBootstrap` (Grove + launchers + symbionts) as every platform.
 $ErrorActionPreference = "Stop"
+# Stop any running daemon first — Windows locks a running .exe, so the binary
+# can't be replaced while a prior dev daemon holds it open.
+Get-Process myco -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 600
 $userHome = $env:USERPROFILE
 $base = Join-Path $userHome "myco-dev"
 $platBin = Join-Path $base "packages\myco-windows-x64\bin"
