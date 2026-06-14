@@ -6,8 +6,8 @@ description: |
   cross-channel deduplication strategies, unified capture helper architecture, plan
   lineage tracking, and search integration. Use when implementing plan capture systems,
   designing logical-key strategies, building MCP capture tools, or resolving plan
-  deduplication conflicts, even if the user doesn't explicitly ask for plan
-  persistence architecture.
+  deduplication conflicts, even if the user doesn't explicitly ask for
+  plan persistence architecture.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -114,6 +114,8 @@ export async function handleMycoPlans(
 - **Reactive planning**: Agent saves plans during problem-solving sessions via `myco_plans` with `op: "save"`
 - **Proactive archival**: Agent identifies reusable patterns and persists them with explicit `plan_key`
 - **Cross-session persistence**: Agent maintains plan continuity by referencing prior plans through logical keys
+
+**Codex Plan Mode distinction:** Codex's `update_plan` function call is transient checklist/progress state — it does NOT represent Plan Mode output and should not be treated as a durable plan. Durable Codex Plan Mode output is emitted as assistant text wrapped in `<proposed_plan>...</proposed_plan>` XML. The Codex manifest (in `packages/myco/src/symbionts/manifests.generated.ts`) correctly declares `planTags: ["proposed_plan"]` inside its `capture` block. Do not change this to `update_plan`. See `packages/myco/src/symbionts/parsers/codex-jsonl.ts` for the code comment that documents this distinction.
 
 ### Payload Structure
 
@@ -262,3 +264,9 @@ const planResults = await vault_search_semantic({
 **Authorship-gating via `selectAuthoredPlanWrites`**: Plan capture on session stop does not blindly scan all file-write activities — `selectAuthoredPlanWrites()` in `packages/myco/src/daemon/plan-capture.ts` filters to write events the agent itself authored (cross-referenced with `isPlanWriteEvent()`). This prevents captures of files modified by third parties during a session. When adding new capture paths, use `selectAuthoredPlanWrites()` rather than raw `listSessionFileActivities()` from `packages/myco/src/db/queries/activities.ts`.
 
 **Cross-symbiont path normalization mismatch**: `relativizeToolPath()` in `packages/myco/src/daemon/event-handlers.ts` stores activity `file_path` values relative to the project root. `normalizePlanSourcePath()` in `packages/myco/src/plans/identity.ts` also expects a project-relative path. If you match activity file paths to plan source paths across symbionts, ensure both sides use the same root — passing an absolute path to `normalizePlanSourcePath()` produces a non-matching logical key and silently creates a duplicate plan instead of deduplicating.
+
+**Files written outside watchDirs are NOT auto-captured**: `isPlanWriteEvent()` in `packages/myco/src/daemon/plan-capture.ts` gates capture on `isInPlanDirectory()` — only writes to configured plan watch directories trigger automatic capture. Files the agent writes to locations like `docs/`, `reports/`, or any directory outside the plan watch dirs are silently skipped. If an agent produces a plan-like artifact outside the watch dirs, it must call `myco_plans` with `op: "save"` explicitly to persist it — file-system capture will not pick it up.
+
+**Codex `proposed_plan` vs `update_plan`**: These are distinct Codex signals. `update_plan` is a transient checklist/progress function — Codex 0.139+ documents it as a non-Plan-Mode tool. Durable Plan Mode output is always assistant text wrapped in `<proposed_plan>...</proposed_plan>`. The Codex manifest `planTags` must remain `["proposed_plan"]`. Setting it to `["update_plan"]` causes plan capture to miss all real Codex plans while capturing transient checklist state as false positives. (See the regression arc documented in bug_fix-4a2907e4 / 4c6d6fe4.)
+
+**Per-manifest planTags discipline**: Agent-specific capture configuration (plan tags, plan dirs) must be declared in each symbiont's manifest and consumed by shared dispatcher code. Never hardcode agent-specific tag names in shared capture code. When adding a new agent that uses plan envelopes, add the envelope tag name to that agent's manifest `planTags` array inside the `capture` block — do not add agent-detection branches to `packages/myco/src/daemon/plan-capture.ts` or the transcript miner.
