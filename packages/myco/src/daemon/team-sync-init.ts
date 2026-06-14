@@ -44,11 +44,12 @@ import {
   backfillAllForRebuild,
   discardRows,
   countPending,
-  countPendingByTable,
   purgePendingOutbox,
+  purgeNonMemberOutbox,
 } from '@myco/db/queries/team-outbox.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
+import { memberProjectIdsForGrove, machineHasAnyTeam } from '@myco/grove/project-tenancy.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -163,16 +164,9 @@ export function planConfigSeed(
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   const { machineId, logger, daemonStateDir, requestContext: defaultRequestContext } = deps;
 
-  /**
-   * The team registry — not the legacy grove-config `enabled` flag — is the
-   * push-side participation gate: a Grove syncs iff ≥1 of its projects is a
-   * member of some team. Used by the write-path gate (setTeamSyncEnabled), the
-   * stale-outbox purge, and the deep-sleep predicate so they all agree with the
-   * registry-driven drain (flushPending). The grove-config flag is now only the
-   * read/rebuild client's concern.
-   */
+  /** Boolean convenience over `memberProjectIdsForGrove`, used by the deep-sleep `pending` probe. */
   function groveParticipates(groveId: string | null): boolean {
-    return participatingTeamIds(groveId).length > 0;
+    return memberProjectIdsForGrove(groveId).length > 0;
   }
 
   function participatingTeamIds(groveId: string | null): string[] {
@@ -398,13 +392,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
     const groveId = requestContext?.groveId ?? null;
     const teams = teamRegistry.list();
-    const participates = groveParticipates(groveId);
+    const memberProjectIds = memberProjectIdsForGrove(groveId);
     // The registry is now the write-path gate: keep delete triggers + syncRow
     // in lockstep with whether this Grove feeds any team via project membership,
-    // every tick. (Machine-scoped self rows reach the outbox through
-    // backfillUnsynced, which bypasses this flag, so a joined-no-project Grove
-    // still queues its self row.)
-    setTeamSyncEnabled(participates);
+    // every tick. The per-project member set + non-member purge self-correct on
+    // every served Grove regardless of which entry point last reconciled them.
+    // (Machine-scoped self rows reach the outbox through backfillUnsynced, which
+    // bypasses this flag, so a joined-no-project Grove still queues its self row.)
+    setTeamSyncEnabled(memberProjectIds.length > 0);
+    setProjectSyncMembership(memberProjectIds);
+    purgeNonMemberOutbox(memberProjectIds);
     // Short-circuit only when this machine has joined no team at all — there is
     // nowhere to route any row. With ≥1 registered team we must still drain
     // machine-scoped rows even if no project participates.
@@ -668,49 +665,57 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
-    const participates = groveParticipates(requestContext?.groveId ?? null);
+    const groveId = requestContext?.groveId ?? null;
+    const memberProjectIds = memberProjectIdsForGrove(groveId);
+    const participates = memberProjectIds.length > 0;
+
+    // (1) Reconcile the per-Grove gate state read by syncRow / backfillRows /
+    //     delete triggers: the enablement flag AND the per-project member set.
     setTeamSyncEnabled(participates);
+    setProjectSyncMembership(memberProjectIds);
 
-    // The participation gate (delete triggers / live syncRow) tracks project
-    // membership, but the self-member re-push and drain are gated on the
-    // machine having joined ANY team: a joined-no-project Grove must still
-    // enqueue and drain its machine-scoped self row so the teammate appears in
-    // the roster before assigning a project. Only when this machine has joined
-    // no team at all do we treat the Grove as fully non-participating.
-    const joinedAnyTeam = teamRegistry.list().length > 0;
+    // (2) Drop outbox rows for non-member projects (sent or pending). Always
+    //     runs — self-heals historical bloat and prevents the re-enqueue loop.
+    try {
+      const purged = purgeNonMemberOutbox(memberProjectIds);
+      if (purged > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
+          grove_id: groveId,
+          purged,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Non-member outbox purge failed', {
+        grove_id: groveId,
+        error: (err as Error).message,
+      });
+    }
 
-    if (!joinedAnyTeam) {
-      // If this machine is in no registry Team but the outbox still
-      // carries pending rows (from a previous sync-enabled period that was
-      // later turned off), drop them. Without this sweep, `countPending()`
-      // keeps reporting stale rows that will never drain — which the Team
-      // page UI then surfaces as "N pending failures" against a Grove that
-      // is not in a Team. Source records are untouched; selecting a Team
-      // re-enqueues from current state via `handleBackfill`.
+    // (3) Machine in NO team: also clear leftover machine-scoped (self-row)
+    //     pending rows that the project-scoped purge above leaves behind, then
+    //     stop — there is nowhere to route. Without this the Team page would
+    //     keep surfacing "N pending failures" against a Grove in no Team.
+    if (!machineHasAnyTeam()) {
       try {
-        // One scan, not two: derive the total from the per-table breakdown
-        // so we don't COUNT(*) the same predicate twice.
-        const byTable = countPendingByTable();
-        const total = Object.values(byTable).reduce((sum, n) => sum + n, 0);
-        if (total > 0) {
-          const purged = purgePendingOutbox();
-          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged stale outbox rows for non-participating Grove', {
-            grove_id: requestContext?.groveId ?? null,
-            purged,
-            by_table: byTable,
-          });
-        }
+        purgePendingOutbox();
       } catch (err) {
-        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Stale outbox sweep failed', {
-          grove_id: requestContext?.groveId ?? null,
+        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Self-row sweep failed', {
+          grove_id: groveId,
           error: (err as Error).message,
         });
       }
       return;
     }
 
+    // (4) Roster: publish this machine's self-row even for a joined-no-project
+    //     Grove, so a just-joined teammate appears before assigning a project.
     reconcileSelfMember();
 
+    // (5) Backfill runs whenever the machine joined a team: the machine-scoped
+    //     self-row reaches the outbox ONLY via backfillUnsynced, so gating it on
+    //     `participates` would drop a joined-no-project Grove off the roster.
+    //     backfillRows filters project-scoped rows to members internally, so a
+    //     no-member Grove enqueues only the self-row.
     try {
       const backfilled = backfillUnsynced(machineId);
       if (backfilled > 0) {
@@ -808,7 +813,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       logger,
       async ({ grove, databasePath, db, groveHome }) => {
         await withDatabase(db, async () => {
-          setTeamSyncEnabled(groveParticipates(grove.id));
+          const memberProjectIds = memberProjectIdsForGrove(grove.id);
+          setTeamSyncEnabled(memberProjectIds.length > 0);
+          setProjectSyncMembership(memberProjectIds);
+          purgeNonMemberOutbox(memberProjectIds);
         });
       },
       { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
