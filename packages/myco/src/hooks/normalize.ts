@@ -182,7 +182,10 @@ function getFirstAtPath(input: Record<string, unknown>, field: HookFieldPath): u
   const paths = Array.isArray(field) ? field : [field];
   for (const candidate of paths) {
     const value = getAtPath(input, candidate);
-    if (value !== undefined) return value;
+    // Treat blank/nullish as absent so a present-but-empty primary field (e.g. a
+    // host that emits `conversation_id: ''`) doesn't shadow a populated alias
+    // later in the list. Non-string payloads (tool_input objects) pass through.
+    if (value !== undefined && value !== null && value !== '') return value;
   }
   return undefined;
 }

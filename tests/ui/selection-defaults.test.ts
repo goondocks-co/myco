@@ -47,6 +47,27 @@ describe('mostRecentSelection', () => {
     ]));
     expect(sel?.project.project_id).toBe('p-first');
   });
+  it('prefers the is_default grove on an all-equal-activity tie, not the array-first grove', () => {
+    const nonDefaultFirst: GroveSummary = {
+      ...groveA, id: 'grove-z', name: 'Other', slug: 'other', is_default: false,
+      projects: [project('z-first', 'z-first-1')],
+    };
+    // Both projects share the same (null) activity → a tie. The default grove
+    // (second in the array) must still win.
+    const sel = mostRecentSelection([nonDefaultFirst, groveA], activity([
+      ['z-first', null],
+      ['p-first', null],
+    ]));
+    expect(sel?.grove.id).toBe('grove-a');
+    expect(sel?.project.project_id).toBe('p-first');
+  });
+  it('ignores a malformed timestamp rather than letting NaN poison the comparison', () => {
+    const sel = mostRecentSelection([groveA], activity([
+      ['p-first', 'not-a-date'],
+      ['p-second', '2026-06-10T00:00:00.000Z'],
+    ]));
+    expect(sel?.project.project_id).toBe('p-second');
+  });
 });
 
 describe('mostRecentProjectInGrove', () => {
