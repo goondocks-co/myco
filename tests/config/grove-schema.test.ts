@@ -112,10 +112,11 @@ describe('Machine capture + notifications scope (2026-06 correction)', () => {
 
   test('accepts notifications config at the Machine tier', () => {
     const parsed = MachineConfigSchema.parse({
-      notifications: { enabled: false, default_mode: 'banner' },
+      notifications: { enabled: false, default_mode: 'banner', retention_days: 7 },
     });
     expect(parsed.notifications.enabled).toBe(false);
     expect(parsed.notifications.default_mode).toBe('banner');
+    expect(parsed.notifications.retention_days).toBe(7);
   });
 
   test('capture + notifications carry their defaults', () => {
@@ -123,6 +124,7 @@ describe('Machine capture + notifications scope (2026-06 correction)', () => {
     expect(parsed.capture.buffer_max_events).toBe(500);
     expect(parsed.notifications.enabled).toBe(true);
     expect(parsed.notifications.default_mode).toBe('summary');
+    expect(parsed.notifications.retention_days).toBe(30);
   });
 });
 

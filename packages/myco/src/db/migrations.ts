@@ -49,6 +49,7 @@ import {
   deriveStoredPlanLogicalKey,
 } from '@myco/plans/identity.js';
 import { resolveMycoToolIdentity } from '@myco/db/queries/myco-tool-identity.js';
+import { agentRunNotificationLink } from '@myco/notifications/links.js';
 
 // ---------------------------------------------------------------------------
 // Migration interface + registry
@@ -119,6 +120,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 58, migrate: (db) => migrateV57ToV58(db) },
   { version: 59, migrate: (db) => migrateV58ToV59(db) },
   { version: 60, migrate: (db) => migrateV59ToV60(db) },
+  { version: 61, migrate: (db) => migrateV60ToV61(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3780,6 +3782,50 @@ function migrateV59ToV60(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(60, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+function canonicalAgentNotificationLink(link: string | null): string | null {
+  if (!link?.startsWith('/agent?')) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(link, 'http://myco.local');
+  } catch {
+    return null;
+  }
+  if (parsed.pathname !== '/agent') return null;
+  const runId = parsed.searchParams.get('run') ?? parsed.searchParams.get('runId');
+  if (!runId) return null;
+  return agentRunNotificationLink(runId);
+}
+
+/**
+ * v60 -> v61: canonicalize stored agent-run notification links.
+ *
+ * Runtime no longer supports the old `/agent?run=` or `/agent?runId=` detail
+ * selection shape. Stored notification rows are cheap to migrate once, keeping
+ * router code canonical without permanent compatibility branches.
+ */
+function migrateV60ToV61(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const rows = db.prepare(
+      `SELECT id, link FROM notifications
+       WHERE link LIKE '/agent?%'`,
+    ).all() as Array<{ id: string; link: string | null }>;
+    const update = db.prepare(`UPDATE notifications SET link = ? WHERE id = ?`);
+    for (const row of rows) {
+      const canonical = canonicalAgentNotificationLink(row.link);
+      if (canonical) update.run(canonical, row.id);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(61, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

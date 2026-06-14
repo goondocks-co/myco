@@ -16,7 +16,9 @@ import { TaskDetail } from '../components/agent/TaskDetail';
 import { AgentConfig } from '../components/agent/AgentConfig';
 import { ComparisonView } from '../components/agent/ComparisonView';
 import { useAgentTasks, useRunsByIds } from '../hooks/use-agent';
-import { useListFilters, FILTER_ALL } from '../hooks/use-list-filters';
+import { FILTER_ALL } from '../hooks/use-list-filters';
+import { useUrlListState } from '../hooks/use-url-list-state';
+import { pathnameWithSearchHash, updateQueryValues } from '../lib/url-state';
 
 type AgentTab = 'runs' | 'tasks' | 'config' | 'comparisons';
 
@@ -161,8 +163,15 @@ export default function Agent() {
     setOffset,
     handleSearchChange,
     handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
     activeFilter,
-  } = useListFilters({ initialFilters: { status: FILTER_ALL, task: FILTER_ALL } });
+  } = useUrlListState({
+    filters: [
+      { key: 'status', defaultValue: FILTER_ALL },
+      { key: 'task', defaultValue: FILTER_ALL },
+    ],
+  });
 
   /** Base path of the Agent page (`/g/<grove>/p/<project>/agent`), with any
    *  trailing `/<runId>` stripped. Used to build sibling URLs for tab/comparison
@@ -177,25 +186,14 @@ export default function Agent() {
     return location.pathname;
   }, [location.pathname, selectedRunId]);
 
-  // mount-only canonicalization for legacy URL shapes:
-  //   - `?run=<id>` -> path-based `/agent/<id>` selection
-  //   - `?tab=evaluations` (and other legacy tab ids) -> current tab id
-  // Resolved together so a URL like `/agent?run=<id>&tab=evaluations`
-  // applies both transforms atomically in a single replace.
+  // Mount-only canonicalization for legacy tab ids. Old `?run=`/`?runId=`
+  // agent-run links are handled by a DB migration, not runtime compatibility.
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const legacyRunId = params.get('run');
     const rawTab = params.get(PARAM_TAB);
     const redirectedTab = rawTab ? TAB_REDIRECTS[rawTab] : undefined;
 
-    let nextPath = location.pathname;
     let mutated = false;
-
-    if (legacyRunId && !selectedRunId) {
-      params.delete('run');
-      nextPath = `${agentBasePath}/${legacyRunId}`;
-      mutated = true;
-    }
 
     if (redirectedTab) {
       if (redirectedTab === 'runs') params.delete(PARAM_TAB);
@@ -205,7 +203,7 @@ export default function Agent() {
 
     if (mutated) {
       const search = params.toString();
-      navigate(`${nextPath}${search ? `?${search}` : ''}`, { replace: true });
+      navigate(`${location.pathname}${search ? `?${search}` : ''}${location.hash}`, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -222,15 +220,20 @@ export default function Agent() {
       taskId: nextTaskId,
       compareRunIds: nextCompareRunIds,
     });
-    const search = params.toString();
-    navigate(search ? `${agentBasePath}?${search}` : agentBasePath);
-  }, [agentBasePath, navigate]);
+    navigate(pathnameWithSearchHash(agentBasePath, params, location.hash));
+  }, [agentBasePath, location.hash, navigate]);
 
-  /** Select a run by navigating to the path-based `/agent/<id>` URL. Clears
-   *  any tab/comparison query state. */
+  /** Select a run by navigating to the path-based `/agent/<id>` URL. Runs-tab
+   * list params survive; task/comparison detail params are dropped. */
   const selectRun = useCallback((runId: string, options?: { replace?: boolean }) => {
-    navigate(`${agentBasePath}/${runId}`, options);
-  }, [agentBasePath, navigate]);
+    const params = tab === 'runs'
+      ? updateQueryValues(location.search, {
+        [PARAM_TAB]: { value: undefined },
+        [PARAM_RUNS]: { value: undefined },
+      })
+      : new URLSearchParams();
+    navigate(pathnameWithSearchHash(`${agentBasePath}/${runId}`, params, location.hash), options);
+  }, [agentBasePath, location.hash, location.search, navigate, tab]);
 
   const switchTab = useCallback((id: string) => {
     const t = id as AgentTab;
@@ -289,6 +292,8 @@ export default function Agent() {
             filters={runFilters}
             filterValues={filterValues}
             onFilterChange={handleFilterChange}
+            onClear={handleClearFilters}
+            hasActiveFilters={hasActiveFilters}
             inputRef={filterInputRef}
           />
         )}
@@ -299,7 +304,10 @@ export default function Agent() {
         <div className="flex-1 min-h-0 mt-4">
           <MasterDetailSplit
             hasSelection={!!selectedRunId}
-            onCloseMobileDetail={() => navigate(agentBasePath)}
+            onCloseMobileDetail={() => {
+              const params = new URLSearchParams(location.search);
+              navigate(pathnameWithSearchHash(agentBasePath, params, location.hash));
+            }}
             masterAriaLabel="Agent runs"
             detailAriaLabel="Run details"
             master={
@@ -318,7 +326,10 @@ export default function Agent() {
             }
             detail={
               selectedRunId ? (
-                <RunDetail runId={selectedRunId} onBack={() => navigate(agentBasePath)} />
+                <RunDetail runId={selectedRunId} onBack={() => {
+                  const params = new URLSearchParams(location.search);
+                  navigate(pathnameWithSearchHash(agentBasePath, params, location.hash));
+                }} />
               ) : (
                 <EmptyDetailHint message="Select a run to see its details." />
               )

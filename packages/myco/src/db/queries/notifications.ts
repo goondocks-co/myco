@@ -17,7 +17,7 @@ import type { NotificationStatus, NotificationMode, NotificationLevel } from '@m
 /** Default number of notifications per list query. */
 const DEFAULT_LIMIT = 50;
 
-/** Max age for auto-pruning dismissed notifications (30 days). */
+/** Default retention for acknowledged notifications (30 days). */
 export const NOTIFICATION_PRUNE_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 // ---------------------------------------------------------------------------
@@ -156,11 +156,21 @@ export function getNotification(id: string, scope: ProjectScope): NotificationRo
 }
 
 /** Update notification status (read, dismissed). */
-export function updateNotificationStatus(id: string, status: NotificationStatus, scope: ProjectScope): boolean {
+export function updateNotificationStatus(
+  id: string,
+  status: NotificationStatus,
+  scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): boolean {
   const db = getDatabase();
   const conditions = ['id = ?'];
   const params: unknown[] = [id];
-  appendProjectCondition(conditions, params, scope);
+  if (options.includeDaemonScope && scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(scope.id);
+  } else {
+    appendProjectCondition(conditions, params, scope);
+  }
   const result = db.prepare(
     `UPDATE notifications SET status = ? WHERE ${conditions.join(' AND ')}`,
   ).run(status, ...params);
@@ -168,7 +178,11 @@ export function updateNotificationStatus(id: string, status: NotificationStatus,
 }
 
 /** Dismiss all notifications (or all within a domain). */
-export function dismissAllNotifications(domain: string | undefined, scope: ProjectScope): number {
+export function dismissAllNotifications(
+  domain: string | undefined,
+  scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): number {
   const db = getDatabase();
   const conditions = ["status != 'dismissed'"];
   const params: unknown[] = [];
@@ -176,7 +190,12 @@ export function dismissAllNotifications(domain: string | undefined, scope: Proje
     conditions.push('domain = ?');
     params.push(domain);
   }
-  appendProjectCondition(conditions, params, scope);
+  if (options.includeDaemonScope && scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(scope.id);
+  } else {
+    appendProjectCondition(conditions, params, scope);
+  }
   const result = db.prepare(
     `UPDATE notifications SET status = 'dismissed' WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
@@ -184,7 +203,11 @@ export function dismissAllNotifications(domain: string | undefined, scope: Proje
 }
 
 /** Mark all unread notifications as read (or within a domain). */
-export function markAllRead(domain: string | undefined, scope: ProjectScope): number {
+export function markAllRead(
+  domain: string | undefined,
+  scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): number {
   const db = getDatabase();
   const conditions = ["status = 'unread'"];
   const params: unknown[] = [];
@@ -192,23 +215,34 @@ export function markAllRead(domain: string | undefined, scope: ProjectScope): nu
     conditions.push('domain = ?');
     params.push(domain);
   }
-  appendProjectCondition(conditions, params, scope);
+  if (options.includeDaemonScope && scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(scope.id);
+  } else {
+    appendProjectCondition(conditions, params, scope);
+  }
   const result = db.prepare(
     `UPDATE notifications SET status = 'read' WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
   return result.changes;
 }
 
-/** Prune dismissed notifications older than the given threshold. */
+/** Prune read/dismissed notifications older than the given threshold. */
 export function pruneOldNotifications(
   maxAgeSeconds: number,
   scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
 ): number {
   const db = getDatabase();
   const cutoff = epochSeconds() - maxAgeSeconds;
-  const conditions = ["status = 'dismissed'", 'created_at < ?'];
+  const conditions = ["status IN ('read', 'dismissed')", 'created_at < ?'];
   const params: unknown[] = [cutoff];
-  appendProjectCondition(conditions, params, scope);
+  if (options.includeDaemonScope && scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(scope.id);
+  } else {
+    appendProjectCondition(conditions, params, scope);
+  }
   const result = db.prepare(`DELETE FROM notifications WHERE ${conditions.join(' AND ')}`).run(...params);
   return result.changes;
 }

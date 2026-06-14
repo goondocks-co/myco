@@ -28,6 +28,7 @@ import {
   selectionFromLast,
 } from './lib/selection';
 import { useProjectsActivity } from './hooks/use-maintenance-summary';
+import { appendSearchHash } from './lib/url-state';
 
 export default function App() {
   return (
@@ -146,7 +147,8 @@ function LegacyProjectRedirect({
   const groves = data?.groves ?? [];
   const selection = selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects);
   if (!selection) return <Navigate to="/onboarding" replace />;
-  return <Navigate to={projectPath(selection, suffixFromPath ? location.pathname : suffix)} replace />;
+  const target = projectPath(selection, suffixFromPath ? location.pathname : suffix);
+  return <Navigate to={appendSearchHash(target, location.search, location.hash)} replace />;
 }
 
 /**
@@ -155,6 +157,7 @@ function LegacyProjectRedirect({
  * P8 lifted from project-scoped to Grove-scoped (Operations).
  */
 function LegacyGroveRedirect({ suffix }: { suffix: string }) {
+  const location = useLocation();
   const { data, isLoading, error } = useGroves();
   if (isLoading) return <RouteLoading text="Loading Grove..." />;
   if (error) return <RouteLoading text={error.message} />;
@@ -166,7 +169,7 @@ function LegacyGroveRedirect({ suffix }: { suffix: string }) {
   const grove = selection?.grove ?? groves[0];
   if (!grove) return <Navigate to="/onboarding" replace />;
   const normalizedSuffix = suffix.startsWith('/') ? suffix : `/${suffix}`;
-  return <Navigate to={`/g/${grove.slug}${normalizedSuffix}`} replace />;
+  return <Navigate to={appendSearchHash(`/g/${grove.slug}${normalizedSuffix}`, location.search, location.hash)} replace />;
 }
 
 /**
@@ -176,9 +179,10 @@ function LegacyGroveRedirect({ suffix }: { suffix: string }) {
  * that pre-date the Team-as-Grove-section move.
  */
 function LegacyTeamRedirect() {
+  const location = useLocation();
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/team`} replace />;
+  return <Navigate to={appendSearchHash(`/g/${groveSlug}/team`, location.search, location.hash)} replace />;
 }
 
 /**
@@ -197,9 +201,10 @@ function TeamMaintenanceRedirect() {
  * Operations is a Grove-tier surface; the project segment was vestigial.
  */
 function LegacyOperationsRedirect() {
+  const location = useLocation();
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/operations`} replace />;
+  return <Navigate to={appendSearchHash(`/g/${groveSlug}/operations`, location.search, location.hash)} replace />;
 }
 
 /**
@@ -208,9 +213,10 @@ function LegacyOperationsRedirect() {
  * forward to the new canonical URL.
  */
 function LegacyMaintenanceRedirect() {
+  const location = useLocation();
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/operations`} replace />;
+  return <Navigate to={appendSearchHash(`/g/${groveSlug}/operations`, location.search, location.hash)} replace />;
 }
 
 /**

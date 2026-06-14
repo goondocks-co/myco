@@ -8,6 +8,7 @@ import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { usePowerQuery } from '../hooks/use-power-query';
+import { useProjectPathBuilder } from '../hooks/use-project-selection';
 import { PageHeader } from '../components/ui/page-header';
 import { PageContainer } from '../components/ui/page-container';
 import { Surface } from '../components/ui/surface';
@@ -21,6 +22,7 @@ import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
 import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
 import { CanopyMapPanel } from '../components/canopy/CanopyMapPanel';
+import { agentRunSuffix } from '../lib/entity-routes';
 import { TileTabs } from '../components/ui/tile-tabs';
 import { SubtabPill } from '../components/ui/subtab-pill';
 import { Eyebrow } from '../components/ui/eyebrow';
@@ -232,6 +234,7 @@ function useCortexBuilderResult(runId: string | null) {
 export default function Cortex() {
   const location = useLocation();
   const navigate = useNavigate();
+  const projectPath = useProjectPathBuilder();
   const activeTab = resolveActiveTab(location.search);
   const canopySection = resolveCanopySection(location.search);
 
@@ -773,7 +776,7 @@ function BuilderTab() {
                       View Details
                     </Button>
                     <a
-                      href={`/agent?run=${run.id}`}
+                      href={projectPath(agentRunSuffix(run.id))}
                       className="inline-flex h-8 items-center justify-center rounded-md border border-[var(--ghost-border)] px-3 font-sans text-xs font-medium text-on-surface transition-all hover:bg-surface-container-high"
                     >
                       Open Run
@@ -884,7 +887,7 @@ function BuilderRunDetail({
             </Button>
           ) : null}
           <a
-            href={`/agent?run=${runId}`}
+            href={projectPath(agentRunSuffix(runId))}
             className="inline-flex h-8 items-center justify-center rounded-md border border-[var(--ghost-border)] px-3 font-sans text-xs font-medium text-on-surface transition-all hover:bg-surface-container-high"
           >
             Open Full Run

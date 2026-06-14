@@ -31,11 +31,15 @@ mock.module('../../packages/myco/ui/src/components/ui/list-filter-bar', () => {
       onSearchChange,
       filters,
       searchPlaceholder,
+      onClear,
+      hasActiveFilters,
     }: {
       searchValue: string;
       onSearchChange: (v: string) => void;
       filters?: Array<{ key: string; label: string }>;
       searchPlaceholder?: string;
+      onClear?: () => void;
+      hasActiveFilters?: boolean;
     }) => (
       <div data-testid="list-filter-bar" data-filter-count={filters?.length ?? 0}>
         <input
@@ -49,6 +53,7 @@ mock.module('../../packages/myco/ui/src/components/ui/list-filter-bar', () => {
             {f.label}
           </span>
         ))}
+        {hasActiveFilters && <button type="button" onClick={onClear}>Clear</button>}
       </div>
     ),
   };
@@ -136,5 +141,10 @@ describe('Sessions page-level filter bar (T12)', () => {
       const latest = calls[calls.length - 1]?.[0] as Record<string, unknown> | undefined;
       expect(latest?.search).toBe('onboarding');
     });
+  });
+
+  it('passes active clear state into the shared filter bar', async () => {
+    renderPage('/sessions?agent=codex');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Clear' })).toBeTruthy());
   });
 });

@@ -16,6 +16,7 @@ import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { Sparkline } from '../components/ui/sparkline';
 import { formatEpochAgo, basename } from '../lib/format';
 import { cn } from '../lib/cn';
+import { agentRunSuffix, sessionSuffix } from '../lib/entity-routes';
 
 // Daemon health renders in the topbar pill (DaemonStatusPill), not here.
 
@@ -294,7 +295,7 @@ function ActiveSessionsHero({
               key={s.id}
               session={s}
               accent={(['sage', 'ochre', 'terra'] as const)[i % 3]}
-              onClick={() => navigate(projectPath(`/sessions/${s.id}`))}
+              onClick={() => navigate(projectPath(sessionSuffix(s.id)))}
             />
           ))}
         </div>
@@ -398,7 +399,7 @@ function AgentRunsPanel({ runs }: { runs: RunRow[] }) {
             <RunMiniRow
               key={run.id}
               run={run}
-              onClick={() => navigate(projectPath(`/agent?runId=${run.id}`))}
+              onClick={() => navigate(projectPath(agentRunSuffix(run.id)))}
             />
           ))}
         </ul>

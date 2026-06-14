@@ -1,4 +1,4 @@
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { Row } from '../ui/row';
@@ -156,6 +156,7 @@ export interface SessionListProps {
   /** Search-input ref from the page filter bar — passed to keyboard nav so
    * the `/` shortcut focuses the page-level input. */
   filterInputRef?: RefObject<HTMLInputElement | null>;
+  onSelectSession: (id: string, options?: { replace?: boolean }) => void;
 }
 
 export function SessionList({
@@ -167,8 +168,8 @@ export function SessionList({
   offset,
   onOffsetChange,
   filterInputRef,
+  onSelectSession,
 }: SessionListProps) {
-  const navigate = useNavigate();
   const location = useLocation();
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   // Second-stage confirm: set when the daemon refused the delete with 409
@@ -245,15 +246,15 @@ export function SessionList({
     if (hasDeepLinkFilter) return;
     if (!selectedId && !isLoading && sessions.length > 0) {
       didAutoSelect.current = true;
-      navigate(`/sessions/${sessions[0].id}`, { replace: true });
+      onSelectSession(sessions[0].id, { replace: true });
     }
-  }, [selectedId, isLoading, sessions, navigate, location.search]);
+  }, [selectedId, isLoading, sessions, onSelectSession, location.search]);
 
   const nav = useListKeyboardNav({
     items: sessions,
     getId: (s) => s.id,
     selectedId,
-    onActivate: (id) => navigate(`/sessions/${id}`),
+    onActivate: (id) => onSelectSession(id),
     filterInputRef,
   });
 
@@ -358,7 +359,7 @@ export function SessionList({
                         symbiontDisplayName={symbiontDisplayName(session.agent)}
                         isSelected={selectedId === session.id}
                         isCursor={nav.cursorIndex === idx}
-                        onClick={() => navigate(`/sessions/${session.id}`)}
+                        onClick={() => onSelectSession(session.id)}
                         onDelete={() => setDeleteTarget(session)}
                       />
                     );

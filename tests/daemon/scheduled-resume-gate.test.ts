@@ -133,7 +133,7 @@ describe('gateScheduledResume', () => {
       domain: 'agents',
       type: 'agent.task.failure',
       title: `Task failed: ${TEST_TASK}`,
-      link: '/agent?run=run-at-cap',
+      link: '/agent/run-at-cap',
     });
     expect(String(notifyCalls[0].payload.message)).toContain(`${RESUME_MAX_ATTEMPTS} attempts`);
   });

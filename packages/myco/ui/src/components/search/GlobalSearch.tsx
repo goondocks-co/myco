@@ -21,6 +21,8 @@ import {
   type SearchResult,
   type SemanticRecentWindow,
 } from '../../hooks/use-search';
+import { useProjectPathBuilder } from '../../hooks/use-project-selection';
+import { canopyEntrySuffix, sessionSuffix, sporeSuffix } from '../../lib/entity-routes';
 
 /** Debounce delay (ms) before firing a search query. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -85,7 +87,7 @@ const SPORE_OBSERVATION_OPTIONS: Array<{ value: SporeObservationType; label: str
  */
 function getCanopyResultPath(result: CanopySearchResult): string {
   if (!result.path) return '/cortex?tab=canopy&section=entries';
-  return `/cortex?tab=canopy&section=entries&path=${encodeURIComponent(result.path)}`;
+  return canopyEntrySuffix(result.path);
 }
 
 function getResultPath(result: AnySearchResult): string {
@@ -95,17 +97,17 @@ function getResultPath(result: AnySearchResult): string {
   const r = result as SearchResult;
   switch (r.type) {
     case 'session':
-      return `/sessions/${r.id}`;
+      return sessionSuffix(r.id);
     case 'spore':
-      return `/mycelium?tab=spores&spore=${encodeURIComponent(r.id)}`;
+      return sporeSuffix(r.id);
     case 'plan':
       return r.session_id
-        ? `/sessions/${r.session_id}?tab=plans&plan=${encodeURIComponent(r.id)}`
+        ? `${sessionSuffix(r.session_id)}?tab=plans&plan=${encodeURIComponent(r.id)}`
         : '/sessions';
     case 'prompt_batch':
-      return r.session_id ? `/sessions/${r.session_id}` : '/sessions';
+      return r.session_id ? sessionSuffix(r.session_id) : '/sessions';
     case 'activity':
-      return r.session_id ? `/sessions/${r.session_id}` : '/sessions';
+      return r.session_id ? sessionSuffix(r.session_id) : '/sessions';
     case 'skill':
       return `/skills?skill=${encodeURIComponent(r.id)}`;
     default:
@@ -120,6 +122,7 @@ interface GlobalSearchProps {
 
 export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const navigate = useNavigate();
+  const projectPath = useProjectPathBuilder();
   const [inputValue, setInputValue] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [mode, setMode] = useState<SearchMode>('semantic');
@@ -195,9 +198,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     (result: AnySearchResult) => {
       const path = getResultPath(result);
       onOpenChange(false);
-      navigate(path);
+      navigate(projectPath(path));
     },
-    [navigate, onOpenChange],
+    [navigate, onOpenChange, projectPath],
   );
 
   const handleKeyDown = useCallback(

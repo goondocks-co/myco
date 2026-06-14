@@ -3,7 +3,7 @@ import type { JobRunner } from './job-runner.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { loadMergedConfig } from '@myco/config/loader.js';
+import { loadMachineConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import {
@@ -13,6 +13,7 @@ import {
 } from './jobs/canopy-scan.js';
 import { isAutoBackupDue, createGroveBackup } from '@myco/backup/service.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
+import { pruneOldNotifications } from '@myco/db/queries/notifications.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
 import { notify } from '@myco/notifications/notify.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -46,7 +47,7 @@ import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { withDatabase } from '@myco/db/client.js';
 import { makeGrovePendingProbe } from './grove-pending-probe.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
-import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
 import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
@@ -379,6 +380,28 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
         logger.info(
           LOG_KINDS.LOG_RETENTION,
           `Deleted ${deleted} log entries older than ${retentionDays} days`,
+          {
+            deleted,
+            retention_days: retentionDays,
+            grove_id: scope.grove.id,
+            grove_slug: scope.grove.slug,
+          },
+        );
+      }
+    }),
+  });
+
+  runner.register({
+    name: POWER_JOB_NAMES.NOTIFICATION_RETENTION,
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: fanOutGroves(POWER_JOB_NAMES.NOTIFICATION_RETENTION, async (scope) => {
+      const retentionDays = loadMachineConfig(mycoHome).notifications.retention_days;
+      const deleted = pruneOldNotifications(retentionDays * MS_PER_DAY / 1000, ALL_PROJECTS_SCOPE);
+      if (deleted > 0) {
+        logger.info(
+          LOG_KINDS.NOTIFICATION_RETENTION,
+          `Deleted ${deleted} acknowledged notifications older than ${retentionDays} days`,
           {
             deleted,
             retention_days: retentionDays,

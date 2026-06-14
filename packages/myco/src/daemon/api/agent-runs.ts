@@ -18,6 +18,7 @@ import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
+import { agentRunNotificationLink } from '@myco/notifications/links.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { ExecutionOverrideBody } from './schemas/execution-overrides.js';
 import { transformProviderOverrides } from './schemas/execution-overrides-traversal.js';
@@ -263,7 +264,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
             type: 'agent.task.failure',
             title: `Task failed: ${taskName}`,
             message: result.error ?? 'Unknown error',
-            link: `/agent?run=${result.runId}`,
+            link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
           }, mycoConfig);
           logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
@@ -276,7 +277,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
             domain: 'agents',
             type: 'agent.task.success',
             title: `Task completed: ${taskName}`,
-            link: `/agent?run=${result.runId}`,
+            link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
           }, mycoConfig);
           logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {

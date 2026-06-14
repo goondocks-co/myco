@@ -14,6 +14,7 @@ import {
 } from '../ui/select';
 import { ScopedField } from '../config/ScopedField';
 import { ScopePill } from '../config/ScopePill';
+import { NumberField } from '../config/NumberField';
 
 const MODE_LABELS = {
   banner: 'Banner',
@@ -118,6 +119,26 @@ export function NotificationSettings() {
             >
               {({ value, onChange }) => (
                 <Switch checked={value ?? false} onCheckedChange={onChange} disabled={controlsDisabled} />
+              )}
+            </ScopedField>
+          </SectionCard>
+
+          <SectionCard>
+            <ScopedField
+              path="notifications.retention_days"
+              label="Notification Retention"
+              hint="read and cleared notifications; unread notifications are preserved"
+            >
+              {({ value, onChange }) => (
+                <NumberField
+                  id="notifications-retention-days"
+                  value={value ?? 30}
+                  onChange={onChange}
+                  min={0}
+                  max={365}
+                  suffix="days"
+                  disabled={controlsDisabled}
+                />
               )}
             </ScopedField>
           </SectionCard>
