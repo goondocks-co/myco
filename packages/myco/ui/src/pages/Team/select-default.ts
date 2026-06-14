@@ -1,13 +1,17 @@
 /**
- * The Team page must NOT silently default to the first registered team:
- * comparing an arbitrary team's cloud against the current context produced a
- * phantom delta (and exposed a destructive "Rebuild from local" against a store
- * the user never chose). Only honor an explicit URL selection; otherwise show
- * an empty state prompting the user to pick a team.
+ * Resolve which team the Team page shows. Priority: an explicit URL `?team=`,
+ * then the persisted prior selection, then the first registered team. Auto-
+ * selecting the first team (rather than an empty state) keeps the page populated;
+ * persisting the choice keeps it stable across tab navigation within the section.
+ * Stale ids (a team since removed) fall through to the next valid candidate.
  */
 export function resolveDefaultSelectedTeamId(
   urlTeamParam: string | null,
-  _teams: Array<{ team_id: string }>,
+  teams: Array<{ team_id: string }>,
+  storedTeamId?: string | null,
 ): string | undefined {
-  return urlTeamParam ?? undefined;
+  const ids = new Set(teams.map((t) => t.team_id));
+  if (urlTeamParam && ids.has(urlTeamParam)) return urlTeamParam;
+  if (storedTeamId && ids.has(storedTeamId)) return storedTeamId;
+  return teams[0]?.team_id;
 }

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Activity, RefreshCw, Users, Network, AlertTriangle } from 'lucide-react';
 import { useTeamStatus, useTeamRegistry, type TeamStatusResponse } from '../../hooks/use-team';
@@ -58,11 +59,24 @@ function VersionBlockBanner({ status }: { status: TeamStatusResponse }) {
   );
 }
 
+const TEAM_SELECTION_KEY = 'myco.team.selectedTeamId';
+
 export function TeamPage() {
   const [params, setParams] = useSearchParams();
   const { data: registry, isLoading: registryLoading } = useTeamRegistry();
   const teams = registry?.teams ?? [];
-  const selectedTeamId = resolveDefaultSelectedTeamId(params.get('team'), teams);
+  const storedTeamId = typeof window !== 'undefined'
+    ? window.localStorage.getItem(TEAM_SELECTION_KEY)
+    : null;
+  const selectedTeamId = resolveDefaultSelectedTeamId(params.get('team'), teams, storedTeamId);
+
+  // Persist the resolved selection (including the auto-selected first team) so it
+  // survives tab navigation and revisits within the Team section.
+  useEffect(() => {
+    if (selectedTeamId && selectedTeamId !== storedTeamId) {
+      window.localStorage.setItem(TEAM_SELECTION_KEY, selectedTeamId);
+    }
+  }, [selectedTeamId, storedTeamId]);
   const { data: status, isLoading: statusLoading } = useTeamStatus(
     registryLoading ? undefined : selectedTeamId,
   );
@@ -85,9 +99,8 @@ export function TeamPage() {
     // The Teams selection tab is always available — it manages registry
     // membership independent of the legacy per-Grove connection.
     if (tab === 'teams') return <TeamSelection />;
-    // The team-scoped tabs must NOT render against an arbitrary team: without an
-    // explicit selection the Sync tab would compare the ambient context's cloud
-    // and surface a phantom delta. Require an explicit pick first.
+    // A team is auto-selected when any exist; this only renders when no teams are
+    // registered yet — point the user to the Teams tab to join one.
     if (!selectedTeamId) return <SelectTeamView hasTeams={teams.length > 0} />;
     if (!isConnected) return <NotConnectedView scopeName={scopeName} />;
     if (tab === 'sync') return <SyncTab status={status!} teamId={selectedTeamId} />;
@@ -107,13 +120,14 @@ export function TeamPage() {
         aria-label="Selected team"
         className="rounded-md border border-[var(--ghost-border)] bg-surface-container px-3 py-1.5 text-xs text-on-surface"
         value={selectedTeamId ?? ''}
-        onChange={(e) =>
+        onChange={(e) => {
+          window.localStorage.setItem(TEAM_SELECTION_KEY, e.target.value);
           setParams((prev) => {
             const next = new URLSearchParams(prev);
             next.set('team', e.target.value);
             return next;
-          }, { replace: true })
-        }
+          }, { replace: true });
+        }}
       >
         {!selectedTeamId && <option value="" disabled>Select a team…</option>}
         {teams.map((t) => (

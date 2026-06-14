@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -145,6 +145,10 @@ function wrapWithRoutes(initial: string) {
 }
 
 describe('TeamPage tabs', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    lastStatusTeamId = undefined;
+  });
   it('renders the Teams selection tab by default', async () => {
     render(wrap('/g/foo/team'));
     await waitFor(() => expect(screen.getByText('Registered teams')).toBeInTheDocument());
@@ -171,33 +175,38 @@ describe('TeamPage tabs', () => {
     const lastReceived = screen.queryAllByText(/last received/);
     expect(lastReceived).toHaveLength(1);
   });
-  it('shows the select-a-team empty state on a team-scoped tab when no team is chosen', async () => {
+  it('auto-selects the first team on a team-scoped tab when none is chosen', async () => {
     render(wrap('/g/foo/team?tab=sync'));
-    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
-    // The team-scoped content must NOT render against an arbitrary team.
-    expect(screen.queryByText(/Remote store/i)).not.toBeInTheDocument();
+    // No ?team= → the first team is auto-selected and its status is fetched;
+    // the empty state is NOT shown.
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
+    expect(screen.queryByText(/Select a team to view sync status/i)).not.toBeInTheDocument();
   });
-  it('does not fetch a per-team status when no team is selected', async () => {
-    lastStatusTeamId = 'sentinel';
-    render(wrap('/g/foo/team?tab=sync'));
-    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
-    // useTeamStatus is called with undefined (ambient context), never an
-    // auto-picked teams[0] — the regression that produced the phantom delta.
-    expect(lastStatusTeamId).toBeUndefined();
+  it('fetches status for the auto-selected first team', async () => {
+    render(wrap('/g/foo/team?tab=status'));
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
   });
-  it('redirects /team/maintenance → /team?tab=sync (empty state, no auto-selected team)', async () => {
+  it('redirects /team/maintenance → /team?tab=sync with the first team auto-selected', async () => {
     render(wrapWithRoutes('/g/foo/team/maintenance'));
-    // The redirect lands on the Sync tab with no team selected, so the
-    // select-a-team empty state is shown rather than an arbitrary team's delta.
-    await waitFor(() => expect(screen.getByText(/Select a team to view sync status/i)).toBeInTheDocument());
+    // The redirect lands on the Sync tab; the first team is auto-selected.
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
   });
-  it('does not auto-select a team; honors an explicit selection', async () => {
+  it('auto-selects the first team and honors an explicit change', async () => {
     render(wrap('/g/foo/team?tab=status'));
     const selector = await screen.findByLabelText('Selected team');
-    // No ?team= → nothing auto-picked (the bug was defaulting to teams[0]).
-    expect((selector as HTMLSelectElement).value).toBe('');
-    expect(lastStatusTeamId).toBeUndefined();
+    // No ?team= → first team auto-selected (populated, not an empty state).
+    expect((selector as HTMLSelectElement).value).toBe('team_a');
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
     fireEvent.change(selector, { target: { value: 'team_b' } });
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
+    // The explicit choice persists for the next visit within the section.
+    expect(window.localStorage.getItem('myco.team.selectedTeamId')).toBe('team_b');
+  });
+  it('restores the persisted selection over the first team', async () => {
+    window.localStorage.setItem('myco.team.selectedTeamId', 'team_b');
+    render(wrap('/g/foo/team?tab=status'));
+    const selector = await screen.findByLabelText('Selected team');
+    expect((selector as HTMLSelectElement).value).toBe('team_b');
     await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
   });
 });
