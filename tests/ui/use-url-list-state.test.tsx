@@ -63,4 +63,15 @@ describe('useUrlListState', () => {
     act(() => result.current.state.handleSearchChange('vault'));
     expect(result.current.location.search).toBe('?tab=plans&plan=p1&q=vault');
   });
+
+  it('clear removes list-owned search, filters, and offset while preserving detail params', () => {
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: wrapper('/sessions/s1?tab=plans&plan=p1&agent=codex&status=active&offset=20&q=vault'),
+    });
+    expect(result.current.state.hasActiveFilters).toBe(true);
+    act(() => result.current.state.handleClearFilters());
+    expect(result.current.location.pathname).toBe('/sessions/s1');
+    expect(result.current.location.search).toBe('?tab=plans&plan=p1');
+    expect(result.current.state.hasActiveFilters).toBe(false);
+  });
 });

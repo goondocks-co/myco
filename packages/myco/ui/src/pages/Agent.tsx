@@ -163,6 +163,8 @@ export default function Agent() {
     setOffset,
     handleSearchChange,
     handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
     activeFilter,
   } = useUrlListState({
     filters: [
@@ -290,6 +292,8 @@ export default function Agent() {
             filters={runFilters}
             filterValues={filterValues}
             onFilterChange={handleFilterChange}
+            onClear={handleClearFilters}
+            hasActiveFilters={hasActiveFilters}
             inputRef={filterInputRef}
           />
         )}

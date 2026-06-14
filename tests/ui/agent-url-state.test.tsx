@@ -8,7 +8,17 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 mock.module('../../packages/myco/ui/src/components/ui/list-filter-bar', () => ({
-  ListFilterBar: () => <div data-testid="list-filter-bar" />,
+  ListFilterBar: ({
+    onClear,
+    hasActiveFilters,
+  }: {
+    onClear: () => void;
+    hasActiveFilters: boolean;
+  }) => (
+    <div data-testid="list-filter-bar">
+      {hasActiveFilters && <button type="button" onClick={onClear}>Clear</button>}
+    </div>
+  ),
 }));
 
 mock.module('../../packages/myco/ui/src/components/agent/RunList', () => ({
@@ -84,6 +94,14 @@ describe('Agent URL state', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open compared run' }));
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toBe('/g/default/p/app/agent/run-2');
+    });
+  });
+
+  it('clears run-list search, filters, and pagination without dropping the selected run path', async () => {
+    renderPage('/g/default/p/app/agent/run-1?status=failed&task=vault-evolve&offset=20&q=canopy');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).toBe('/g/default/p/app/agent/run-1');
     });
   });
 });

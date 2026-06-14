@@ -10,11 +10,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 mock.module('../../packages/myco/ui/src/components/ui/list-filter-bar', () => ({
   ListFilterBar: ({
     onFilterChange,
+    onClear,
+    hasActiveFilters,
   }: {
     onFilterChange: (key: string, value: string) => void;
+    onClear: () => void;
+    hasActiveFilters: boolean;
   }) => (
     <div data-testid="list-filter-bar">
       <button type="button" onClick={() => onFilterChange('agent', 'all')}>All agents</button>
+      {hasActiveFilters && <button type="button" onClick={onClear}>Clear</button>}
     </div>
   ),
 }));
@@ -77,6 +82,15 @@ describe('Sessions URL state', () => {
   it('preserves detail params when list filters change', async () => {
     renderPage('/g/default/p/app/sessions/sess-1?tab=plans&plan=p1&agent=codex&offset=20');
     fireEvent.click(screen.getByRole('button', { name: 'All agents' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent)
+        .toBe('/g/default/p/app/sessions/sess-1?tab=plans&plan=p1');
+    });
+  });
+
+  it('clears search, filters, and pagination without dropping selected detail params', async () => {
+    renderPage('/g/default/p/app/sessions/sess-1?tab=plans&plan=p1&agent=codex&status=active&offset=20&q=plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent)
         .toBe('/g/default/p/app/sessions/sess-1?tab=plans&plan=p1');

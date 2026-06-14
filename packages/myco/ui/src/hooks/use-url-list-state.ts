@@ -84,6 +84,28 @@ export function useUrlListState({
     navigateWithParams(params);
   }, [filterDefaults, location.search, navigateWithParams, offsetParam]);
 
+  const handleClearFilters = useCallback(() => {
+    setSearchInput('');
+    const updates: Record<string, { value: string | number | undefined; defaultValue?: string | number }> = {
+      [searchParam]: { value: undefined },
+      [offsetParam]: { value: 0, defaultValue: 0 },
+    };
+    for (const spec of filters) {
+      const defaultValue = spec.defaultValue ?? FILTER_ALL;
+      updates[spec.key] = { value: defaultValue, defaultValue };
+    }
+    navigateWithParams(updateQueryValues(location.search, updates));
+  }, [filters, location.search, navigateWithParams, offsetParam, searchParam]);
+
+  const hasActiveFilters = useMemo(() => (
+    searchInput.trim().length > 0
+    || offset > 0
+    || filters.some((spec) => {
+      const defaultValue = spec.defaultValue ?? FILTER_ALL;
+      return filterValues[spec.key] !== defaultValue;
+    })
+  ), [filterValues, filters, offset, searchInput]);
+
   const activeFilter = useCallback((key: string): string | undefined => {
     const val = filterValues[key];
     const defaultValue = filterDefaults.get(key) ?? FILTER_ALL;
@@ -98,6 +120,8 @@ export function useUrlListState({
     setOffset,
     handleSearchChange,
     handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
     activeFilter,
   };
 }

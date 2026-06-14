@@ -1,7 +1,8 @@
 import { type RefObject } from 'react';
-import { Search } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Input } from './input';
+import { Button } from './button';
 import {
   Select,
   SelectContent,
@@ -29,6 +30,8 @@ export interface ListFilterBarProps {
   filters?: FilterDefinition[];
   filterValues?: Record<string, string>;
   onFilterChange?: (key: string, value: string) => void;
+  onClear?: () => void;
+  hasActiveFilters?: boolean;
   /** Forwarded to the underlying search input so callers can programmatically focus it. */
   inputRef?: RefObject<HTMLInputElement | null>;
   /** Optional result count rendered on the far right (e.g. "12 sessions"). */
@@ -43,10 +46,19 @@ export function ListFilterBar({
   filters = [],
   filterValues = {},
   onFilterChange,
+  onClear,
+  hasActiveFilters,
   inputRef,
   count,
   className,
 }: ListFilterBarProps) {
+  const computedHasActiveFilters = searchValue.trim().length > 0
+    || filters.some((filter) => {
+      const defaultValue = filter.options[0]?.value ?? 'all';
+      return (filterValues[filter.key] ?? defaultValue) !== defaultValue;
+    });
+  const showClear = onClear && (hasActiveFilters ?? computedHasActiveFilters);
+
   return (
     <div
       className={cn(
@@ -82,6 +94,19 @@ export function ListFilterBar({
           </Select>
         </div>
       ))}
+      {showClear && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="shrink-0 gap-1.5"
+          onClick={onClear}
+          aria-label="Clear search and filters"
+        >
+          <X className="h-3.5 w-3.5" />
+          Clear
+        </Button>
+      )}
       {count != null && (
         <span className="myco-eyebrow-sm shrink-0">{count}</span>
       )}

@@ -43,6 +43,8 @@ export default function Sessions() {
     setOffset,
     handleSearchChange,
     handleFilterChange,
+    handleClearFilters,
+    hasActiveFilters,
     activeFilter,
   } = useUrlListState({
     filters: [
@@ -98,6 +100,8 @@ export default function Sessions() {
         filters={sessionFilters}
         filterValues={filterValues}
         onFilterChange={handleFilterChange}
+        onClear={handleClearFilters}
+        hasActiveFilters={hasActiveFilters}
         inputRef={filterInputRef}
       />
       <div className="flex-1 min-h-0">
