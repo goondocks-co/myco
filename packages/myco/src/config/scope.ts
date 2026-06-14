@@ -57,6 +57,7 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   // over the `agent` block.
   'agent.scheduled_tasks_enabled': { home: 'grove', overridableBy: [] },
   'agent.event_tasks_enabled': { home: 'grove', overridableBy: [] },
+  'agent.run_retention_days': { home: 'grove', overridableBy: [] },
   'skills': { home: 'grove', overridableBy: ['local'], gate: 'skills' },
   // Vault-Evolution capability master gate. Grove-tier home, per-project
   // Personal override so a project can be promoted/demoted on this machine.
