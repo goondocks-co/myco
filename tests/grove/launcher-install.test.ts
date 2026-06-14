@@ -5,6 +5,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import {
+  GLOBAL_HOOK_LAUNCHER_FILENAME,
+  GLOBAL_MCP_LAUNCHER_FILENAME,
   installGlobalLaunchers,
   bindDaemonForLauncherRefresh,
   unbindDaemonForLauncherRefresh,
@@ -23,8 +25,8 @@ describe('installGlobalLaunchers', () => {
 
   it('writes both launcher files on a fresh home', () => {
     const report = installGlobalLaunchers(mycoHome);
-    const launcherPath = path.join(mycoHome, 'launcher.cjs');
-    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+    const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
+    const mcpLauncherPath = path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME);
 
     expect(report.written).toEqual([launcherPath, mcpLauncherPath]);
     expect(report.unchanged).toEqual([]);
@@ -47,7 +49,7 @@ describe('installGlobalLaunchers', () => {
   });
 
   it('rewrites a stale launcher whose content has drifted', () => {
-    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
     fs.writeFileSync(launcherPath, '#!/usr/bin/env node\n// stale\n', { mode: 0o755 });
 
     const report = installGlobalLaunchers(mycoHome);
@@ -57,12 +59,13 @@ describe('installGlobalLaunchers', () => {
 
   it('installs both files with executable bits set', () => {
     installGlobalLaunchers(mycoHome);
-    const launcherStat = fs.statSync(path.join(mycoHome, 'launcher.cjs'));
-    const mcpStat = fs.statSync(path.join(mycoHome, 'mcp-launcher.cjs'));
+    const launcherStat = fs.statSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME));
+    const mcpStat = fs.statSync(path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME));
     // User-exec bit set on both.
     expect(launcherStat.mode & 0o100).toBe(0o100);
     expect(mcpStat.mode & 0o100).toBe(0o100);
   });
+
 });
 
 describe('global launcher — runtime resolution', () => {
@@ -79,7 +82,10 @@ describe('global launcher — runtime resolution', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  function spawnLauncher(launcher: 'launcher.cjs' | 'mcp-launcher.cjs', args: string[]) {
+  function spawnLauncher(
+    launcher: typeof GLOBAL_HOOK_LAUNCHER_FILENAME | typeof GLOBAL_MCP_LAUNCHER_FILENAME,
+    args: string[],
+  ) {
     return spawnSync(
       process.execPath,
       [path.join(mycoHome, launcher), ...args],
@@ -111,7 +117,7 @@ describe('global launcher — runtime resolution', () => {
     );
     fs.chmodSync(fakeBin, 0o755);
 
-    const result = spawnLauncher('launcher.cjs', ['hook', 'stop']);
+    const result = spawnLauncher(GLOBAL_HOOK_LAUNCHER_FILENAME, ['hook', 'stop']);
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('pin:hook,stop');
   });
@@ -165,8 +171,8 @@ describe('installGlobalLaunchers — daemon-bound intent bypass', () => {
   it('skipIntent: true writes launchers directly even with daemonIntentContext bound', () => {
     const report = installGlobalLaunchers(mycoHome, { skipIntent: true });
 
-    const launcherPath = path.join(mycoHome, 'launcher.cjs');
-    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+    const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
+    const mcpLauncherPath = path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME);
     expect(report.written).toEqual([launcherPath, mcpLauncherPath]);
     expect(report.unchanged).toEqual([]);
 
@@ -188,8 +194,8 @@ describe('installGlobalLaunchers — daemon-bound intent bypass', () => {
   it('default (no skipIntent) raises the refresh-launchers intent and does NOT write the launchers', () => {
     const report = installGlobalLaunchers(mycoHome);
 
-    const launcherPath = path.join(mycoHome, 'launcher.cjs');
-    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+    const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
+    const mcpLauncherPath = path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME);
 
     // Both launchers reported as `unchanged` (pending the reconciler's
     // bypass-write pass — the contract documented in launcher-install.ts).
