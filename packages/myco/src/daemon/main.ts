@@ -1900,7 +1900,22 @@ export async function main(): Promise<void> {
   const teamSelectionHandlers = createTeamSelectionHandlers();
   server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
   server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));
-  server.registerRoute('POST', '/api/team/project-membership', async (req) => teamSelectionHandlers.handleSetProjectMembership(req));
+  server.registerRoute('POST', '/api/team/project-membership', async (req) => {
+    const result = teamSelectionHandlers.handleSetProjectMembership(req);
+    if (!result.status || result.status < 400) {
+      // Reconcile the Grove that actually owns the (re)assigned project, not the
+      // ambient request Grove — membership is machine-wide on the Team page, so a
+      // project can be assigned/removed from any Grove. reconcileGrove targets
+      // that Grove (a no-op when served by another daemon variant) and runs the
+      // full backfill + flush so an assigned project starts syncing immediately
+      // and a removed project's rows are purged immediately.
+      const groveId = (req.body as { grove_id?: string } | undefined)?.grove_id ?? null;
+      if (groveId) {
+        await teamSync.reconcileGrove(runtimeCache, groveId);
+      }
+    }
+    return result;
+  });
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {

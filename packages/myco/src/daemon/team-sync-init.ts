@@ -101,6 +101,13 @@ export interface TeamSyncResult {
    */
   flushAllGroves: (cache: GroveRuntimeCache) => Promise<TeamFlushAggregate>;
   /**
+   * Immediately reconcile a single Grove's team-sync membership (assign/remove
+   * reaction). Targets the Grove that owns the (re)assigned project — which may
+   * differ from the request-context Grove — and is a no-op for a Grove served by
+   * another daemon variant.
+   */
+  reconcileGrove: (cache: GroveRuntimeCache, groveId: string) => Promise<void>;
+  /**
    * Reconcile team_sync_state.enabled for every registered Grove at boot.
    * At boot only the boot Grove's flag is set (via reconcileClient()). Non-boot
    * Groves' flags stay at their persisted default until their first flush tick —
@@ -795,6 +802,35 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   /**
+   * Immediately reconcile a single named Grove — the affected-Grove reaction to
+   * a project being assigned to / removed from a team. A project can be (re)homed
+   * from ANY Grove machine-wide via the Team page, so the Grove that owns the
+   * (re)assigned project is `body.grove_id`, not the request-context Grove; this
+   * targets THAT Grove. Reuses the same forEachGrove fan-out as flushAllGroves
+   * (filtered to one Grove via `shouldVisitGrove`) so DB pinning + the served-by
+   * boundary are handled identically: a Grove served by another daemon variant
+   * is not in this daemon's `listGroves(servedBy)` set, so this is a no-op for it
+   * and the owning daemon's flush-tick backstop covers it (no cross-service write).
+   * Runs the full per-Grove `reconcileClient` (membership + non-member purge +
+   * self-row + backfill + flush) so an assigned project starts syncing — and a
+   * removed project's rows are purged — without waiting for the next flush tick.
+   */
+  async function reconcileGrove(cache: GroveRuntimeCache, groveId: string): Promise<void> {
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, databasePath, db, groveHome }) => {
+        await withDatabase(db, () => reconcileClient(groveSyncContext(grove.id, databasePath, groveHome)));
+      },
+      {
+        daemonStateDir,
+        jobName: 'team-sync-membership-reconcile',
+        shouldVisitGrove: (grove) => grove.id === groveId,
+      },
+    );
+  }
+
+  /**
    * Reconcile team_sync_state.enabled for every registered Grove without pushing.
    * Mirrors flushAllGroves's forEachGrove fan-out exactly (same groveSyncContext,
    * withDatabase, daemonStateDir, jobName pattern) but only writes the flag so
@@ -848,6 +884,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     flushPending,
     rebuildFromLocal,
     flushAllGroves,
+    reconcileGrove,
     reconcileAllGroveFlags,
     registerFlushJob: (runner, cache) => {
       // Registered unconditionally; registry participation is checked at run

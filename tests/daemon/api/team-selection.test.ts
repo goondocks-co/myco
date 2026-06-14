@@ -4,9 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createTeamId } from '@myco/grove/ids.js';
+import { createTeamId, createProjectId } from '@myco/grove/ids.js';
 import { teamRegistry, type TeamRecord } from '@myco/team/registry.js';
-import { clearGroveRegistryCaches } from '@myco/grove/registry.js';
+import {
+  clearGroveRegistryCaches,
+  createGrove,
+  registerProjectInGrove,
+  type GroveRecord,
+} from '@myco/grove/registry.js';
 import { createTeamSelectionHandlers } from '@myco/daemon/api/team-selection.js';
 import type { RouteRequest, RouteResponse } from '@myco/daemon/router.js';
 
@@ -38,6 +43,20 @@ describe('createTeamSelectionHandlers', () => {
   let originalMycoHome: string | undefined;
   let handlers: ReturnType<typeof createTeamSelectionHandlers>;
 
+  /**
+   * Register a real grove with a real project so the assignment-boundary
+   * check (`assertAssignableProject`) resolves it to a grove. Returns the
+   * grove + project id for use in membership bodies.
+   */
+  function seedGroveProject(name: string): { grove: GroveRecord; projectId: string } {
+    const grove = createGrove(name);
+    const projectId = createProjectId();
+    const projectRoot = path.join(tempDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(grove.id, { projectId, projectName: name, projectRoot });
+    return { grove, projectId };
+  }
+
   beforeEach(() => {
     originalMycoHome = process.env.MYCO_HOME;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-selection-'));
@@ -57,33 +76,29 @@ describe('createTeamSelectionHandlers', () => {
 
   it('adds a project to a team and reflects it via get()', () => {
     const team = seedTeam('Alpha');
+    const { grove, projectId } = seedGroveProject('alpha-project');
 
     const response = handlers.handleSetProjectMembership(
-      membershipBody(team.team_id, 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'add'),
+      membershipBody(team.team_id, grove.id, projectId, 'add'),
     );
 
     const body = response.body as { team: TeamRecord };
     expect(response.status).toBeUndefined();
-    expect(body.team.projects).toContainEqual({
-      grove_id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    });
+    expect(body.team.projects).toContainEqual({ grove_id: grove.id, project_id: projectId });
 
     const persisted = teamRegistry.get(team.team_id);
-    expect(persisted?.projects.some((p) => p.project_id === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(true);
+    expect(persisted?.projects.some((p) => p.project_id === projectId)).toBe(true);
   });
 
   it('rejects adding a project already owned by another team with 409', () => {
     const teamA = seedTeam('Alpha');
     const teamB = seedTeam('Beta');
-    const projectId = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const { grove, projectId } = seedGroveProject('beta-project');
 
-    handlers.handleSetProjectMembership(
-      membershipBody(teamA.team_id, 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', projectId, 'add'),
-    );
+    handlers.handleSetProjectMembership(membershipBody(teamA.team_id, grove.id, projectId, 'add'));
 
     const response = handlers.handleSetProjectMembership(
-      membershipBody(teamB.team_id, 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', projectId, 'add'),
+      membershipBody(teamB.team_id, grove.id, projectId, 'add'),
     );
 
     expect(response.status).toBe(409);
@@ -97,17 +112,62 @@ describe('createTeamSelectionHandlers', () => {
 
   it('removes a project from a team', () => {
     const team = seedTeam('Alpha');
-    const groveId = 'grove_cccccccccccccccccccccccccccccccc';
-    const projectId = 'proj_cccccccccccccccccccccccccccccccc';
+    const { grove, projectId } = seedGroveProject('gamma-project');
 
-    handlers.handleSetProjectMembership(membershipBody(team.team_id, groveId, projectId, 'add'));
+    handlers.handleSetProjectMembership(membershipBody(team.team_id, grove.id, projectId, 'add'));
     expect(teamRegistry.get(team.team_id)?.projects).toHaveLength(1);
 
-    const response = handlers.handleSetProjectMembership(membershipBody(team.team_id, groveId, projectId, 'remove'));
+    const response = handlers.handleSetProjectMembership(membershipBody(team.team_id, grove.id, projectId, 'remove'));
     const body = response.body as { team: TeamRecord };
 
     expect(response.status).toBeUndefined();
     expect(body.team.projects.some((p) => p.project_id === projectId)).toBe(false);
+    expect(teamRegistry.get(team.team_id)?.projects).toHaveLength(0);
+  });
+
+  it('rejects assigning a project that resolves to no grove with 400', () => {
+    const team = seedTeam('Alpha');
+    const ghost = createProjectId();
+
+    const response = handlers.handleSetProjectMembership(
+      membershipBody(team.team_id, 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ghost, 'add'),
+    );
+
+    expect(response.status).toBe(400);
+    expect((response.body as { error: string }).error).toBe('project_not_assignable');
+    // The grove-less project never reached the registry.
+    expect(teamRegistry.get(team.team_id)?.projects).toHaveLength(0);
+  });
+
+  it('rejects an add whose grove_id does not match the project\'s resolved grove with 400', () => {
+    const team = seedTeam('Alpha');
+    const { grove, projectId } = seedGroveProject('delta-project');
+    const otherGrove = createGrove('decoy');
+
+    const response = handlers.handleSetProjectMembership(
+      membershipBody(team.team_id, otherGrove.id, projectId, 'add'),
+    );
+
+    expect(response.status).toBe(400);
+    const body = response.body as { error: string; grove_id: string };
+    expect(body.error).toBe('grove_mismatch');
+    // The UI self-corrects using the project's ACTUAL resolved grove id.
+    expect(body.grove_id).toBe(grove.id);
+    expect(teamRegistry.get(team.team_id)?.projects).toHaveLength(0);
+  });
+
+  it('does NOT run the assignment check on remove (a removed project may already be grove-less)', () => {
+    const team = seedTeam('Alpha');
+    const { grove, projectId } = seedGroveProject('epsilon-project');
+    handlers.handleSetProjectMembership(membershipBody(team.team_id, grove.id, projectId, 'add'));
+
+    // Simulate the project's grove going away (deregistered) before removal.
+    clearGroveRegistryCaches();
+    fs.rmSync(path.join(process.env.MYCO_HOME!, 'groves'), { recursive: true, force: true });
+    clearGroveRegistryCaches();
+
+    const response = handlers.handleSetProjectMembership(membershipBody(team.team_id, grove.id, projectId, 'remove'));
+    expect(response.status).toBeUndefined();
     expect(teamRegistry.get(team.team_id)?.projects).toHaveLength(0);
   });
 
@@ -121,8 +181,9 @@ describe('createTeamSelectionHandlers', () => {
   });
 
   it('returns unknown_team (404) for an unregistered team id', () => {
+    const { grove, projectId } = seedGroveProject('zeta-project');
     const response = handlers.handleSetProjectMembership(
-      membershipBody(createTeamId(), 'grove_dddddddddddddddddddddddddddddddd', 'proj_dddddddddddddddddddddddddddddddd', 'add'),
+      membershipBody(createTeamId(), grove.id, projectId, 'add'),
     );
     expect(response.status).toBe(404);
     expect((response.body as { error: string }).error).toBe('unknown_team');
