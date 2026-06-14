@@ -43,6 +43,7 @@ import { cn } from '../lib/cn';
 import { monogramFor } from '../lib/selection';
 import { AppearanceSection } from './AppearanceSection';
 import { Topbar } from './Topbar';
+import { PageScopeBadge } from './PageScopeBadge';
 
 /* ---------- Constants ---------- */
 
@@ -521,6 +522,7 @@ export default function Layout() {
               {vaultName}
             </span>
           )}
+          <PageScopeBadge />
           <div className="ml-auto flex items-center gap-1">
             <button
               type="button"

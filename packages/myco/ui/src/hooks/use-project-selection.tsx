@@ -15,9 +15,11 @@ const ProjectSelectionContext = createContext<ProjectSelection | null>(null);
 
 export function ProjectSelectionBoundary({
   selection,
+  persist = true,
   children,
 }: {
   selection: ProjectSelection;
+  persist?: boolean;
   children: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -26,12 +28,12 @@ export function ProjectSelectionBoundary({
 
   useLayoutEffect(() => {
     setCurrentRequestSelection(selection);
-    writeLastSelection(selection);
+    if (persist) writeLastSelection(selection);
     queryClient.removeQueries({
       predicate: (query) => query.queryKey[0] !== 'groves',
     });
     setActiveKey(key);
-  }, [key, queryClient]);
+  }, [key, persist, queryClient]);
 
   if (activeKey !== key) {
     return (
