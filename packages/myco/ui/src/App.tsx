@@ -22,9 +22,12 @@ import { AppearanceProvider } from './providers/appearance';
 import {
   defaultSelection,
   findSelection,
+  mostRecentProjectInGrove,
+  mostRecentSelection,
   projectPath,
   selectionFromLast,
 } from './lib/selection';
+import { useProjectsActivity } from './hooks/use-maintenance-summary';
 
 export default function App() {
   return (
@@ -113,10 +116,11 @@ export default function App() {
 
 function RootRedirect() {
   const { data, isLoading, error } = useGroves();
-  if (isLoading) return <RouteLoading text="Loading projects..." />;
+  const { data: activity, isLoading: activityLoading } = useProjectsActivity();
+  if (isLoading || activityLoading) return <RouteLoading text="Loading projects..." />;
   if (error) return <RouteLoading text={error.message} />;
   const groves = data?.groves ?? [];
-  const selection = selectionFromLast(groves) ?? defaultSelection(groves);
+  const selection = selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects);
   return selection
     ? <Navigate to={projectPath(selection)} replace />
     : <Navigate to="/onboarding" replace />;
@@ -131,9 +135,11 @@ function LegacyProjectRedirect({
 }) {
   const location = useLocation();
   const { data, isLoading, error } = useGroves();
+  const { data: activity } = useProjectsActivity();
   if (isLoading) return <RouteLoading text="Loading projects..." />;
   if (error) return <RouteLoading text={error.message} />;
-  const selection = selectionFromLast(data?.groves ?? []) ?? defaultSelection(data?.groves ?? []);
+  const groves = data?.groves ?? [];
+  const selection = selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects);
   if (!selection) return <Navigate to="/onboarding" replace />;
   return <Navigate to={projectPath(selection, suffixFromPath ? location.pathname : suffix)} replace />;
 }
@@ -245,13 +251,14 @@ function LegacyProjectScopedSettingsRedirect() {
  */
 function SettingsRoute() {
   const { data, isLoading, error } = useGroves();
+  const { data: activity } = useProjectsActivity();
   if (isLoading) return <RouteLoading text="Loading settings..." />;
   if (error) return <RouteLoading text={error.message} />;
   const groves = data?.groves ?? [];
-  const selection = selectionFromLast(groves) ?? defaultSelection(groves);
+  const selection = selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects);
   if (selection) {
     return (
-      <ProjectSelectionBoundary selection={selection}>
+      <ProjectSelectionBoundary selection={selection} persist={false}>
         <AppearanceProvider>
           <Settings />
         </AppearanceProvider>
@@ -283,24 +290,26 @@ function ProjectScopedLayout() {
   );
 }
 
-/**
- * Grove-scoped routes (Grove Settings) — bind a ProjectSelection to the
- * Grove's first project so request headers carry x-myco-grove-id and the
- * page can render through ProjectSelectionBoundary. Grove-tier endpoints
- * only need groveId; the project binding is incidental.
- */
 function GroveScopedLayout() {
   const { groveSlug } = useParams();
   const { data, isLoading, error } = useGroves();
+  const { data: activity } = useProjectsActivity();
   if (isLoading) return <RouteLoading text="Loading Grove..." />;
   if (error) return <RouteLoading text={error.message} />;
   const groves = data?.groves ?? [];
   const grove = groves.find((g) => g.slug === groveSlug);
   if (!grove) return <Navigate to="/" replace />;
-  const project = grove.projects[0];
+  // Bind the user's remembered project when it lives in this grove so the
+  // switcher and request headers keep pointing at their selection. Grove-tier
+  // endpoints only need groveId; the project binding is incidental, so
+  // persist=false keeps it from clobbering the durable selection.
+  const remembered = selectionFromLast(groves);
+  const project =
+    (remembered && remembered.grove.id === grove.id ? remembered.project : null)
+    ?? mostRecentProjectInGrove(grove, activity?.projects);
   if (!project) return <Navigate to="/onboarding" replace />;
   return (
-    <ProjectSelectionBoundary selection={{ grove, project }}>
+    <ProjectSelectionBoundary selection={{ grove, project }} persist={false}>
       <AppearanceProvider>
         <Layout />
       </AppearanceProvider>

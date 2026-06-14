@@ -6,6 +6,7 @@ import { DaemonStatusPill } from '../components/ui/daemon-status-pill';
 import { CortexStatusPill } from '../components/ui/cortex-status-pill';
 import { useGitIdentity } from '../hooks/use-git-identity';
 import { useProjectPath } from '../hooks/use-project-selection';
+import { PageScopeBadge } from './PageScopeBadge';
 
 const ROUTE_LABELS: Record<string, string> = {
   '/': 'Dashboard',
@@ -74,6 +75,7 @@ export function Topbar({
           </span>
         ))}
       </nav>
+      <PageScopeBadge />
 
       <button
         type="button"

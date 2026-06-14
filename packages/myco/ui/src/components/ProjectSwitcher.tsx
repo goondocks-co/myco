@@ -7,6 +7,7 @@ import { useProjectSelection } from '../hooks/use-project-selection';
 import {
   colorForProjectId,
   monogramFor,
+  mostRecentSelection,
   projectPath,
   projectRouteSuffix,
   selectionFromLast,
@@ -29,8 +30,8 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
   const groves = data?.groves ?? [];
   const projectCount = groves.reduce((total, grove) => total + grove.projects.length, 0);
   const rememberedSelection = useMemo(
-    () => (contextSelection ? null : selectionFromLast(groves)),
-    [contextSelection, groves],
+    () => (contextSelection ? null : (selectionFromLast(groves) ?? mostRecentSelection(groves, activity?.projects))),
+    [contextSelection, groves, activity?.projects],
   );
   const selection = contextSelection ?? rememberedSelection;
 

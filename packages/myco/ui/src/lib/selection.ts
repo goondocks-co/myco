@@ -1,3 +1,5 @@
+import type { ProjectActivityRow } from '@myco/daemon/api/projects-activity';
+
 export interface GroveProjectSummary {
   project_id: string;
   name: string;
@@ -77,6 +79,52 @@ export function defaultSelection(groves: GroveSummary[]): ProjectSelection | nul
   return { grove, project: grove.projects[0] };
 }
 
+function activityMsByProject(activity: ProjectActivityRow[] | undefined): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of activity ?? []) {
+    map.set(row.project_id, row.last_activity_at ? Date.parse(row.last_activity_at) : 0);
+  }
+  return map;
+}
+
+/**
+ * Most-recently-active project across all groves, used as the landing default
+ * when there is no stored selection. Falls back to the default grove's first
+ * project when no activity data is available.
+ */
+export function mostRecentSelection(
+  groves: GroveSummary[],
+  activity: ProjectActivityRow[] | undefined,
+): ProjectSelection | null {
+  if (!activity || activity.length === 0) return defaultSelection(groves);
+  const ms = activityMsByProject(activity);
+  let best: ProjectSelection | null = null;
+  let bestMs = -1;
+  for (const grove of groves) {
+    for (const project of grove.projects) {
+      const value = ms.get(project.project_id) ?? 0;
+      if (value > bestMs) {
+        bestMs = value;
+        best = { grove, project };
+      }
+    }
+  }
+  return best ?? defaultSelection(groves);
+}
+
+/** Most-recently-active project within a single grove (first project if no activity). */
+export function mostRecentProjectInGrove(
+  grove: GroveSummary,
+  activity: ProjectActivityRow[] | undefined,
+): GroveProjectSummary | null {
+  if (grove.projects.length === 0) return null;
+  if (!activity || activity.length === 0) return grove.projects[0];
+  const ms = activityMsByProject(activity);
+  return [...grove.projects].sort(
+    (a, b) => (ms.get(b.project_id) ?? 0) - (ms.get(a.project_id) ?? 0),
+  )[0] ?? null;
+}
+
 export function projectPath(selection: ProjectSelection, suffix = ''): string {
   const normalizedSuffix = suffix && suffix !== '/' ? `/${suffix.replace(/^\/+/, '')}` : '';
   return `/g/${selection.grove.slug}/p/${selection.project.slug}${normalizedSuffix}`;
@@ -87,6 +135,15 @@ export function projectRouteSuffix(pathname: string): string {
   const suffix = match?.groups?.suffix ?? '/';
   if (/^\/sessions\/[^/]+/.test(suffix)) return '/sessions';
   return suffix;
+}
+
+export type NavScope = 'project' | 'grove' | 'machine';
+
+/** Page scope inferred from the URL: project (/g/<g>/p/<p>/…), grove (/g/<g>/…), else machine. */
+export function scopeForPath(pathname: string): NavScope {
+  if (/^\/g\/[^/]+\/p\/[^/]+/.test(pathname)) return 'project';
+  if (/^\/g\/[^/]+/.test(pathname)) return 'grove';
+  return 'machine';
 }
 
 export function selectionKey(selection: ProjectSelection | null): string {

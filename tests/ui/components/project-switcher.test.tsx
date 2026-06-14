@@ -62,10 +62,18 @@ mock.module('../../../packages/myco/ui/src/hooks/use-groves', () => ({
   useGroves: () => ({ data: grovesResponse }),
 }));
 
-// Switcher now reads per-project activity to sort recently-active first.
-// Mock it so the component renders deterministically without an async query.
+// Switcher reads per-project activity to sort recently-active first and to pick
+// the recency fallback. Beta is the non-first project but is most recent, so the
+// fallback tests prove the switcher uses recency rather than just the first project.
 mock.module('../../../packages/myco/ui/src/hooks/use-maintenance-summary', () => ({
-  useProjectsActivity: () => ({ data: { projects: [] } }),
+  useProjectsActivity: () => ({
+    data: {
+      projects: [
+        { project_id: 'project-a', last_activity_at: '2026-01-01T00:00:00.000Z' },
+        { project_id: 'project-b', last_activity_at: '2026-02-01T00:00:00.000Z' },
+      ],
+    },
+  }),
 }));
 
 import { ProjectSwitcher } from '../../../packages/myco/ui/src/components/ProjectSwitcher';
@@ -98,17 +106,19 @@ describe('ProjectSwitcher fallback on global routes', () => {
     expect(screen.getByText('Work')).toBeDefined();
   });
 
-  it('renders the placeholder when localStorage has no last-selection', () => {
+  it('falls back to the most-recently-active project when localStorage has no last-selection', () => {
     renderSwitcher();
-    expect(screen.getByText('Select project')).toBeDefined();
+    expect(screen.getByText('Beta')).toBeDefined();
+    expect(screen.getByText('Work')).toBeDefined();
   });
 
-  it('renders the placeholder when the remembered ids do not match any loaded grove/project', () => {
+  it('falls back to the most-recently-active project when the remembered ids do not match any loaded grove/project', () => {
     window.localStorage.setItem(
       'myco.lastSelectedProject',
       JSON.stringify({ groveId: 'grove-missing', projectId: 'project-missing' }),
     );
     renderSwitcher();
-    expect(screen.getByText('Select project')).toBeDefined();
+    expect(screen.getByText('Beta')).toBeDefined();
+    expect(screen.getByText('Work')).toBeDefined();
   });
 });
