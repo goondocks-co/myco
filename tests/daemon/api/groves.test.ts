@@ -8,6 +8,8 @@ import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveSco
 import type { GroveProjectSummary } from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { createTeamId } from '@myco/grove/ids.js';
+import { teamRegistry } from '@myco/team/registry.js';
 
 describe('Grove discovery API', () => {
   let testDir: string;
@@ -119,6 +121,120 @@ describe('Grove discovery API', () => {
     const body = response.body as { projects: Array<{ project_id: string }> };
 
     expect(body.projects.map((project) => project.project_id)).toEqual(['proj_a']);
+  });
+
+  it('omits tenancy metadata by default (legacy shape unchanged)', async () => {
+    const grove = createGrove('Work');
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_a',
+      projectName: 'Project A',
+      projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    });
+
+    const response = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: {},
+      params: { id: grove.id },
+      pathname: `/api/groves/${grove.id}/projects`,
+    });
+    const body = response.body as { projects: Array<Record<string, unknown>> };
+
+    expect(body.projects).toHaveLength(1);
+    expect(body.projects[0]).not.toHaveProperty('grove');
+    expect(body.projects[0]).not.toHaveProperty('team');
+  });
+
+  it('includes resolved grove + team membership when include=grove,team', async () => {
+    const grove = createGrove('Work');
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_a',
+      projectName: 'Project A',
+      projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    });
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Goondocks OSS',
+      worker_url: 'https://team.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: grove.id, project_id: 'proj_a' }],
+    });
+
+    const response = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: { include: 'grove,team' },
+      params: { id: grove.id },
+      pathname: `/api/groves/${grove.id}/projects`,
+    });
+    const body = response.body as {
+      projects: Array<{
+        project_id: string;
+        grove: { id: string; name: string; slug: string; served_by: string };
+        team: { team_id: string } | null;
+      }>;
+    };
+
+    expect(body.projects).toHaveLength(1);
+    expect(body.projects[0].grove).toEqual({
+      id: grove.id,
+      name: grove.name,
+      slug: grove.slug,
+      served_by: grove.served_by,
+    });
+    expect(body.projects[0].team).toEqual({ team_id: teamId });
+  });
+
+  it('returns team=null for a project that is in no team', async () => {
+    const grove = createGrove('Work');
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_a',
+      projectName: 'Project A',
+      projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    });
+
+    const response = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: { include: 'grove,team' },
+      params: { id: grove.id },
+      pathname: `/api/groves/${grove.id}/projects`,
+    });
+    const body = response.body as {
+      projects: Array<{ grove: { id: string }; team: { team_id: string } | null }>;
+    };
+
+    expect(body.projects[0].grove.id).toBe(grove.id);
+    expect(body.projects[0].team).toBeNull();
+  });
+
+  it('honors include=grove alone (team key omitted) and include=team alone (grove key omitted)', async () => {
+    const grove = createGrove('Work');
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_a',
+      projectName: 'Project A',
+      projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    });
+
+    const groveOnly = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: { include: 'grove' },
+      params: { id: grove.id },
+      pathname: `/api/groves/${grove.id}/projects`,
+    });
+    const groveBody = groveOnly.body as { projects: Array<Record<string, unknown>> };
+    expect(groveBody.projects[0]).toHaveProperty('grove');
+    expect(groveBody.projects[0]).not.toHaveProperty('team');
+
+    const teamOnly = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
+      body: undefined,
+      query: { include: 'team' },
+      params: { id: grove.id },
+      pathname: `/api/groves/${grove.id}/projects`,
+    });
+    const teamBody = teamOnly.body as { projects: Array<Record<string, unknown>> };
+    expect(teamBody.projects[0]).toHaveProperty('team');
+    expect(teamBody.projects[0]).not.toHaveProperty('grove');
   });
 
   it('returns capability gates per project; cortex=false when local.yaml disables it', async () => {

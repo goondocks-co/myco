@@ -85,12 +85,30 @@ checkout but didn't travel to the worktree. If `dev-build` fails on a missing
 vendor asset, copy/symlink it from the main checkout (or rebuild it in the
 worktree) and re-run `make dev-link-worktree`.
 
-### Daemon version vs. the pin
-The pin routes **hooks, MCP, and CLI** to the worktree binary, but the running
-daemon is whichever build started the global dev service. To exercise the
-worktree's **daemon-side** changes, restart the daemon so it respawns from the
-worktree binary; otherwise capture is still processed by the previously-running
-daemon build.
+### Daemon-side changes: dogfood from the MAIN checkout, never the worktree
+The worktree pin only routes **hooks, MCP, and CLI** to the worktree binary. The
+dev **daemon** always runs the **main dev binary** — its launchd service points at
+the main checkout's `packages/myco-<target>/bin/myco`, so a worktree pin does NOT
+change which code the daemon runs.
+
+To dogfood **daemon-side** changes (schema migrations, reconcile/daemon logic):
+check out the feature branch on the **main checkout** and rebuild + restart there —
+`make dev-build && myco-dev restart`. After a worktree teardown + rebase the
+`~/.local/bin/myco-dev` symlink already points at the main binary, so **no
+`make dev-link` is needed** — only re-link if the symlink was removed or you are
+switching which branch the daemon tracks. After any restart, verify
+`~/.myco/service-dev/daemon.json` is not still pointing at a stale worktree binary.
+
+**Never** `make dev-link` from a worktree, and **never** run the daemon or migrate
+the shared vault from a worktree — a worktree binary running a migration mutates the
+*shared* Grove vault and breaks the main/other builds (the rollup hazard above). The
+only isolated paths are `dogfood-grove-claim` (snapshot a Grove) or exercising the
+merged code against a **temp git repo with its own `MYCO_HOME`** — neither touches
+the shared vault.
+
+> Myco is the most active source of truth: search the vault ("worktree dogfood")
+> before trusting this skill if they disagree. See also the
+> `daemon-process-lifecycle-management` skill for the canonical build/restart commands.
 
 ## Related
 - `dogfood-grove-claim` — snapshot/rollback a Grove for risky (e.g. schema) testing

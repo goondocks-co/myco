@@ -484,6 +484,17 @@ export const TEAM_SYNC_STATE_TABLE = `
     enabled     INTEGER NOT NULL DEFAULT 0
   )`;
 
+/**
+ * Per-grove reconciled projection of which projects belong to a team. One row
+ * per syncable project. The live `syncRow` / `backfillRows` gates and the
+ * membership-aware delete triggers read this so a non-member project's rows are
+ * never enqueued. Local-only — never synced.
+ */
+export const TEAM_SYNC_MEMBERSHIP_TABLE = `
+  CREATE TABLE IF NOT EXISTS team_sync_membership (
+    project_id TEXT PRIMARY KEY
+  )`;
+
 // -- Logging Layer ----------------------------------------------------------
 
 export const LOG_ENTRIES_TABLE = `
@@ -989,6 +1000,7 @@ export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLE
   CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
   AFTER DELETE ON ${table}
   WHEN (SELECT enabled FROM team_sync_state) = 1
+    AND OLD.project_id IN (SELECT project_id FROM team_sync_membership)
   BEGIN
     INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
     VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
@@ -1202,6 +1214,7 @@ export const TABLE_DDLS = [
   // Sync layer
   TEAM_OUTBOX_TABLE,
   TEAM_SYNC_STATE_TABLE,
+  TEAM_SYNC_MEMBERSHIP_TABLE,
   // Logging layer
   LOG_ENTRIES_TABLE,
   // Notifications layer

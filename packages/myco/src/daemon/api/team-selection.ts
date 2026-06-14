@@ -15,6 +15,7 @@
 
 import { teamRegistry, withProjectAdded, withProjectRemoved } from '@myco/team/registry.js';
 import { listGroves } from '@myco/grove/registry.js';
+import { assertAssignableProject, ProjectGroveMissingError } from '@myco/grove/project-tenancy.js';
 import { listGroveSummaries } from './groves.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
@@ -92,6 +93,13 @@ export function createTeamSelectionHandlers() {
    * Enforces one-team-per-project on `add`: if the project already belongs
    * to a different team, the request is rejected with 409 rather than
    * silently re-homing it.
+   *
+   * On `add` the project is validated through the tenancy authority
+   * (`assertAssignableProject`): a team is a global construct, so it may only
+   * reference a project that resolves to a grove, and the caller's claimed
+   * `grove_id` must match that resolved grove. `remove` skips the check — a
+   * project being removed may already be grove-less (its grove was
+   * deregistered), and we must still let it leave the team.
    */
   function handleSetProjectMembership(req: RouteRequest): RouteResponse {
     const body = (req.body ?? {}) as SetProjectMembershipBody;
@@ -110,6 +118,19 @@ export function createTeamSelectionHandlers() {
     }
 
     if (action === 'add') {
+      let tenancy;
+      try {
+        tenancy = assertAssignableProject(projectId);
+      } catch (err) {
+        if (err instanceof ProjectGroveMissingError) {
+          return { status: 400, body: { error: 'project_not_assignable' } };
+        }
+        throw err;
+      }
+      if (tenancy.grove.id !== groveId) {
+        return { status: 400, body: { error: 'grove_mismatch', grove_id: tenancy.grove.id } };
+      }
+
       const existing = teamRegistry.membershipByProject().get(projectId);
       if (existing && existing !== teamId) {
         return { status: 409, body: { error: 'project_in_other_team', team_id: existing } };

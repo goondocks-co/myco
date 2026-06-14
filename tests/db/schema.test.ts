@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(61);
+      expect(SCHEMA_VERSION).toBe(62);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -168,9 +168,9 @@ describe('Database schema', () => {
           `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
         ).all() as Array<{ name: string }>;
 
-        // Infra/sync tables that carry project_id for routing — not Grove
-        // capture scoping — are deliberately excluded from the registry.
-        const PROJECT_ID_INFRA_TABLES = new Set<string>(['team_outbox']);
+        // Infra/sync tables that carry project_id for routing/membership — not
+        // Grove capture scoping — are deliberately excluded from the registry.
+        const PROJECT_ID_INFRA_TABLES = new Set<string>(['team_outbox', 'team_sync_membership']);
 
         const projectScoped = tables
           .map((t) => t.name)

@@ -225,8 +225,12 @@ describe('plan query helpers', () => {
       upsertPlan(data);
       initTeamContext('machine-a');
       // The delete tombstone is journaled by the plans_team_ad trigger, which
-      // gates on this Grove's per-Grove team_sync_state flag.
+      // gates on this Grove's per-Grove team_sync_state flag and the project's
+      // membership in team_sync_membership.
       setTeamSyncEnabled(true);
+      getDatabase().prepare(
+        'INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)',
+      ).run(projectId);
 
       deletePlan(data.id, projectScope(projectId as GroveProjectId));
 

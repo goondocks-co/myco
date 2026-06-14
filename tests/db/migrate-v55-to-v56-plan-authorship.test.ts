@@ -160,11 +160,15 @@ describe('migration v55 -> v56: authorship-gated plan cleanup', () => {
 
   it('enqueues a team-sync tombstone for each deleted plan row when team sync is enabled', () => {
     const db = seedV55Db();
-    // plans carries an AFTER DELETE team-sync trigger gated on team_sync_state.
+    // plans carries an AFTER DELETE team-sync trigger gated on team_sync_state
+    // and the project's membership in team_sync_membership.
     db.prepare(
       `INSERT INTO team_sync_state (rowid_guard, enabled) VALUES (1, 1)
          ON CONFLICT (rowid_guard) DO UPDATE SET enabled = 1`,
     ).run();
+    db.prepare(
+      `INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)`,
+    ).run(PROJECT);
 
     createSchema(db, LOCAL);
 

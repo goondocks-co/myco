@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
-import { getTeamSyncEnabled, setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { getTeamSyncEnabled, setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 describe('team_sync_state', () => {
@@ -24,20 +24,20 @@ describe('team_sync_state', () => {
   });
 });
 
-describe('syncRow gate reads team_sync_state (Grove-correct)', () => {
+describe('syncRow gate reads team_sync_membership (project-scoped)', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  it('does not enqueue when the Grove flag is disabled', () => {
-    setTeamSyncEnabled(false);
+  it('does not enqueue when the project is not a sync member', () => {
+    // No setProjectSyncMembership -> the project is absent from team_sync_membership.
     syncRow('spores', { id: 'sp_gate1', project_id: 'proj_x', created_at: 1 } as never);
     const n = getDatabase().prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE row_id='sp_gate1'`).get() as { n: number };
     expect(n.n).toBe(0);
   });
 
-  it('enqueues an upsert when the Grove flag is enabled', () => {
-    setTeamSyncEnabled(true);
+  it('enqueues an upsert when the project is a sync member', () => {
+    setProjectSyncMembership(['proj_x']);
     syncRow('spores', { id: 'sp_gate2', project_id: 'proj_x', created_at: 1 } as never);
     const rows = getDatabase().prepare(`SELECT operation, row_id FROM team_outbox WHERE row_id='sp_gate2'`).all() as Array<Record<string, unknown>>;
     expect(rows.length).toBe(1);

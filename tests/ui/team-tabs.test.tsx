@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -145,44 +145,68 @@ function wrapWithRoutes(initial: string) {
 }
 
 describe('TeamPage tabs', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    lastStatusTeamId = undefined;
+  });
   it('renders the Teams selection tab by default', async () => {
     render(wrap('/g/foo/team'));
     await waitFor(() => expect(screen.getByText('Registered teams')).toBeInTheDocument());
     expect(screen.getByText('Team A')).toBeInTheDocument();
   });
-  it('renders Status tab when ?tab=status', async () => {
-    render(wrap('/g/foo/team?tab=status'));
+  it('renders Status tab when a team is selected (?tab=status&team=)', async () => {
+    render(wrap('/g/foo/team?tab=status&team=team_a'));
     await waitFor(() => expect(screen.getByText(/Team Credentials/i)).toBeInTheDocument());
   });
-  it('renders Sync tab when ?tab=sync', async () => {
-    render(wrap('/g/foo/team?tab=sync'));
+  it('renders Sync tab when a team is selected (?tab=sync&team=)', async () => {
+    render(wrap('/g/foo/team?tab=sync&team=team_a'));
     await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
   });
-  it('renders Members roster when ?tab=members', async () => {
-    render(wrap('/g/foo/team?tab=members'));
+  it('renders Members roster when a team is selected (?tab=members&team=)', async () => {
+    render(wrap('/g/foo/team?tab=members&team=team_a'));
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     expect(screen.getByText('owner')).toBeInTheDocument();
     expect(screen.getByText('machine-1')).toBeInTheDocument();
   });
   it('flags the local machine and hides the inbound-sync chip for self', async () => {
-    render(wrap('/g/foo/team?tab=members'));
+    render(wrap('/g/foo/team?tab=members&team=team_a'));
     await waitFor(() => expect(screen.getByText('this machine')).toBeInTheDocument());
     // Peer row still shows "last received <ago>"; self row must not.
     const lastReceived = screen.queryAllByText(/last received/);
     expect(lastReceived).toHaveLength(1);
   });
-  it('redirects /team/maintenance → /team?tab=sync', async () => {
-    render(wrapWithRoutes('/g/foo/team/maintenance'));
-    // After the redirect resolves, the Sync tab body is mounted —
-    // assert on its "Remote store" section header.
-    await waitFor(() => expect(screen.getByText(/Remote store/i)).toBeInTheDocument());
+  it('auto-selects the first team on a team-scoped tab when none is chosen', async () => {
+    render(wrap('/g/foo/team?tab=sync'));
+    // No ?team= → the first team is auto-selected and its status is fetched;
+    // the empty state is NOT shown.
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
+    expect(screen.queryByText(/Select a team to view sync status/i)).not.toBeInTheDocument();
   });
-  it('renders a team selector that scopes status to the selected team', async () => {
+  it('fetches status for the auto-selected first team', async () => {
+    render(wrap('/g/foo/team?tab=status'));
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
+  });
+  it('redirects /team/maintenance → /team?tab=sync with the first team auto-selected', async () => {
+    render(wrapWithRoutes('/g/foo/team/maintenance'));
+    // The redirect lands on the Sync tab; the first team is auto-selected.
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
+  });
+  it('auto-selects the first team and honors an explicit change', async () => {
     render(wrap('/g/foo/team?tab=status'));
     const selector = await screen.findByLabelText('Selected team');
+    // No ?team= → first team auto-selected (populated, not an empty state).
     expect((selector as HTMLSelectElement).value).toBe('team_a');
-    expect(lastStatusTeamId).toBe('team_a');
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_a'));
     fireEvent.change(selector, { target: { value: 'team_b' } });
+    await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
+    // The explicit choice persists for the next visit within the section.
+    expect(window.localStorage.getItem('myco.team.selectedTeamId')).toBe('team_b');
+  });
+  it('restores the persisted selection over the first team', async () => {
+    window.localStorage.setItem('myco.team.selectedTeamId', 'team_b');
+    render(wrap('/g/foo/team?tab=status'));
+    const selector = await screen.findByLabelText('Selected team');
+    expect((selector as HTMLSelectElement).value).toBe('team_b');
     await waitFor(() => expect(lastStatusTeamId).toBe('team_b'));
   });
 });

@@ -121,6 +121,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 59, migrate: (db) => migrateV58ToV59(db) },
   { version: 60, migrate: (db) => migrateV59ToV60(db) },
   { version: 61, migrate: (db) => migrateV60ToV61(db) },
+  { version: 62, migrate: (db) => migrateV61ToV62(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3826,6 +3827,75 @@ function migrateV60ToV61(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(61, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Frozen at the v62 revision: the per-grove team-sync membership projection
+ * and the membership-gated delete triggers. Per the frozen-DDL rules above,
+ * these never reference the live TEAM_SYNC_MEMBERSHIP_TABLE /
+ * TEAM_DELETE_TRIGGERS constants — later edits to the live DDL would silently
+ * change this migration's semantics. The trigger snapshot must stay
+ * byte-equivalent (after whitespace normalization) to the live
+ * TEAM_DELETE_TRIGGERS so fresh and migrated vaults converge
+ * (tests/db/migration-matrix.test.ts).
+ *
+ * Later additions to the live TEAM_DELETE_TRIGGER_TABLES must NOT appear here:
+ * a CREATE TRIGGER on a table that does not exist yet at this point in the
+ * chain throws and bricks the upgrade (the v41 failure class).
+ */
+const V62_TEAM_SYNC_MEMBERSHIP_TABLE =
+  'CREATE TABLE IF NOT EXISTS team_sync_membership (project_id TEXT PRIMARY KEY)';
+
+const V62_TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+const V62_TEAM_DELETE_TRIGGERS: readonly string[] = V62_TEAM_DELETE_TRIGGER_TABLES.map(
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN (SELECT enabled FROM team_sync_state) = 1
+    AND OLD.project_id IN (SELECT project_id FROM team_sync_membership)
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
+/**
+ * v61 -> v62: per-project team-sync membership.
+ *
+ * Adds the `team_sync_membership` projection (one row per project a grove syncs
+ * to a team) and re-gates the per-table delete triggers on it. The triggers
+ * previously fired on the grove-level `team_sync_state.enabled` flag alone, so
+ * a mixed grove journaled deletes for non-member projects too. ALTER does not
+ * refresh trigger bodies, so DROP + recreate is required. The membership table
+ * is created before the triggers so the new WHEN subquery resolves.
+ */
+function migrateV61ToV62(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(V62_TEAM_SYNC_MEMBERSHIP_TABLE).run();
+
+    for (const table of V62_TEAM_DELETE_TRIGGER_TABLES) {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+    }
+    for (const trg of V62_TEAM_DELETE_TRIGGERS) {
+      db.exec(trg);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(62, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

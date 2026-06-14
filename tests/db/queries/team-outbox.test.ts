@@ -21,6 +21,7 @@ import {
   countTeamSyncRows,
 } from '@myco/db/queries/team-outbox.js';
 import { getDatabase } from '@myco/db/client.js';
+import { setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
 import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
 
 /** Epoch seconds helper. */
@@ -361,14 +362,15 @@ describe('team outbox query helpers', () => {
     it('re-enqueues an unsynced row whose only outbox trace is sent-but-unpruned', () => {
       const db = getDatabase();
       const now = epochNow();
+      setProjectSyncMembership(['proj-a']);
       // An unsynced local row (synced_at NULL) — e.g. reset by the
       // JOIN/drop path — whose prior outbox entry was sent and is inside
       // the 24h retention window.
       db.prepare(
         `INSERT INTO sessions (
-          id, agent, started_at, created_at, machine_id, synced_at
-        ) VALUES (?, ?, ?, ?, ?, NULL)`,
-      ).run('session-masked', 'codex', now, now, 'machine-a');
+          id, agent, project_id, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      ).run('session-masked', 'codex', 'proj-a', now, now, 'machine-a');
       const stale = enqueueOutbox(makeOutbox({
         table_name: 'sessions', row_id: 'session-masked', machine_id: 'machine-a',
       }));
@@ -384,11 +386,12 @@ describe('team outbox query helpers', () => {
     it('still skips rows that already have a PENDING outbox entry', () => {
       const db = getDatabase();
       const now = epochNow();
+      setProjectSyncMembership(['proj-a']);
       db.prepare(
         `INSERT INTO sessions (
-          id, agent, started_at, created_at, machine_id, synced_at
-        ) VALUES (?, ?, ?, ?, ?, NULL)`,
-      ).run('session-pending', 'codex', now, now, 'machine-a');
+          id, agent, project_id, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
+      ).run('session-pending', 'codex', 'proj-a', now, now, 'machine-a');
       enqueueOutbox(makeOutbox({
         table_name: 'sessions', row_id: 'session-pending', machine_id: 'machine-a',
       }));
@@ -403,11 +406,12 @@ describe('team outbox query helpers', () => {
     it('re-enqueues previously synced Grove rows', () => {
       const db = getDatabase();
       const now = epochNow();
+      setProjectSyncMembership(['proj-a']);
       db.prepare(
         `INSERT INTO sessions (
-          id, agent, started_at, created_at, machine_id, synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run('session-synced', 'codex', now, now, 'machine-a', now - 10);
+          id, agent, project_id, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run('session-synced', 'codex', 'proj-a', now, now, 'machine-a', now - 10);
 
       // Already-synced rows are invisible to the routine unsynced sweep.
       expect(backfillUnsynced('machine-a')).toBe(0);
@@ -443,6 +447,7 @@ describe('team outbox query helpers', () => {
 
     it('backfillAllForRebuild re-enqueues a row that already has a PENDING outbox entry (no skip)', () => {
       const db = getDatabase();
+      setProjectSyncMembership(['proj']);
       seedSyncedSpore(db, 'spore-pending', 'machine-a');
 
       // Pre-existing PENDING (sent_at IS NULL) outbox entry for that same row —
@@ -466,6 +471,7 @@ describe('team outbox query helpers', () => {
     it("'unsynced' mode STILL skips a row that already has an outbox entry (unchanged)", () => {
       const db = getDatabase();
       const now = epochNow();
+      setProjectSyncMembership(['proj']);
       // Source row is UNSYNCED so the only thing that can suppress it is the
       // existing outbox-entry dedup.
       db.prepare(
