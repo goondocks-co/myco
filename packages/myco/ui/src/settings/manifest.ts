@@ -191,6 +191,18 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         note: 'Runtime id (e.g. claude-sdk, openai-agents). Picked from the installed runtime registry.',
         customRender: 'card-owns',
       },
+      {
+        key: 'agent.run_retention_days',
+        label: 'Agent run retention',
+        scope: 'grove',
+        kind: 'number',
+        category: 'Agent',
+        icon: 'Bot',
+        min: 1,
+        max: 365,
+        suffix: 'days',
+        note: 'Deletes completed, skipped, and non-resumable failed agent runs older than this window.',
+      },
     ],
   },
   {

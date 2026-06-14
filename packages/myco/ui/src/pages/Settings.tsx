@@ -184,7 +184,16 @@ interface CustomGroupCtx {
 }
 
 const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Element> = {
-  agent: () => <AgentProviderCard />,
+  // Agent is hybrid: AgentProviderCard owns provider/model/runtime controls,
+  // and manifest rows below it own additional agent-domain settings.
+  agent: ({ fields, hasProject, unified }) => (
+    <div className="space-y-4">
+      <AgentProviderCard />
+      {fields.length > 0 && (
+        <FieldGroupBody fields={fields} hasProject={hasProject} unified={unified} />
+      )}
+    </div>
+  ),
   embedding: () => <EmbeddingCard />,
   // Capture is hybrid: PlanCaptureCard owns plan_dirs +
   // ignore_plan_dirs_in_git with rich glob-pattern help, and the manifest
