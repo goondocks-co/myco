@@ -504,11 +504,9 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
 
   // Periodic symbiont detection. Walks the manifest registry and installs
   // Myco's global config into any agent whose `detectionDir` appeared
-  // since the last tick. Also refreshes the global launchers (cheap,
-  // self-healing via the refresh-launchers intent when content drifts).
-  // Throttled to a 1-hour cadence so newly-installed agents land within
-  // the hour without burning ticks on a stable system. Newly-detected
-  // symbionts emit a notification.
+  // since the last tick. Throttled to a 1-hour cadence so newly-installed
+  // agents land within the hour without burning ticks on a stable system.
+  // Newly-detected symbionts emit a notification.
   //
   // NB: this tick does NOT run the project-local → global migration
   // walker. Migration is fire-once-per-project: daemon first-start
@@ -528,8 +526,6 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       lastSymbiontDetectionAt = now;
       try {
         const { runSymbiontDetection } = await import('../cli/bootstrap.js');
-        const { installGlobalLaunchers } = await import('../grove/launcher-install.js');
-        installGlobalLaunchers();
         const symbionts = runSymbiontDetection();
         const newlyInstalled = symbionts.filter((r) => r.status === 'installed');
         if (newlyInstalled.length > 0) {

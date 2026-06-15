@@ -574,36 +574,36 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
 }
 
 /**
- * Global launcher health: `~/.myco/launcher.cjs` and
- * `~/.myco/mcp-launcher.cjs` exist and are non-empty. Their absence is
- * the signal that drives daemon bootstrap for the shared launcher path;
- * once the daemon has come up at least once they must be present, so a
- * missing launcher here is a real failure mode (recover by restarting
- * the daemon, which re-runs bootstrap and rewrites them).
+ * Retired launcher health: the global launcher trampolines
+ * (`~/.myco/launcher.cjs` and `~/.myco/mcp-launcher.cjs`) were the node
+ * shims every symbiont's hook + MCP command used to invoke. The launcher
+ * unification flipped all agent-facing commands to invoke the binary
+ * directly, so these files should be ABSENT — bootstrap / `myco update`
+ * delete any that linger. A lingering file is inert (nothing executes it),
+ * so its presence is a non-fatal advisory, not a failure.
  */
 async function checkGlobalLaunchers(): Promise<DoctorCheck> {
   const { resolveMycoHome } = await import('../grove/paths.js');
   const {
     GLOBAL_HOOK_LAUNCHER_FILENAME,
     GLOBAL_MCP_LAUNCHER_FILENAME,
-  } = await import('../grove/launcher-install.js');
+  } = await import('../grove/launcher-cleanup.js');
   const mycoHome = resolveMycoHome();
   const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
   const mcpLauncherPath = path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME);
-  const launcherOk = fs.existsSync(launcherPath) && fs.statSync(launcherPath).size > 0;
-  const mcpOk = fs.existsSync(mcpLauncherPath) && fs.statSync(mcpLauncherPath).size > 0;
-  if (launcherOk && mcpOk) {
+  const present = [launcherPath, mcpLauncherPath].filter((p) => fs.existsSync(p));
+  if (present.length === 0) {
     return {
       name: 'Launchers',
       status: 'ok',
-      detail: `${launcherPath} + ${mcpLauncherPath}`,
+      detail: 'No retired launcher trampolines present',
       fixable: false,
     };
   }
   return {
     name: 'Launchers',
-    status: 'fail',
-    detail: 'Global launchers missing. Restart the daemon (`myco restart`) to re-write them.',
+    status: 'warn',
+    detail: `Retired launcher file(s) still present: ${present.join(', ')}. Run \`myco update\` to remove.`,
     fixable: false,
   };
 }

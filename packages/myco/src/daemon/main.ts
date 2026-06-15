@@ -685,12 +685,6 @@ export async function main(): Promise<void> {
     env: process.env,
   });
   setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
-  // Bind the daemon's service state so any in-process call to
-  // `installGlobalLaunchers` (from `runGlobalBootstrap`, /api/symbionts/
-  // detect, or the PowerManager tick) raises the `refresh-launchers`
-  // intent instead of writing directly. Single self-mutation thread.
-  const { bindDaemonForLauncherRefresh } = await import('../grove/launcher-install.js');
-  bindDaemonForLauncherRefresh(daemonService);
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -1159,19 +1153,17 @@ export async function main(): Promise<void> {
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
 
-  // First-start auto-bootstrap. Runs when shared launchers are missing
-  // or this daemon variant lacks its default Grove. The second condition
-  // matters for service-dev: production may already have created
-  // `launcher.cjs`, while dogfood still needs `default-dev` before hooks
-  // can auto-register projects into the dev Grove. PowerManager tick
-  // handles re-detection thereafter.
+  // First-start auto-bootstrap. Runs when this daemon variant lacks its
+  // default Grove — the durable "has this variant bootstrapped" signal.
+  // service-dev still bootstraps on a machine where prod already has,
+  // because each variant owns a distinct default Grove (`default-dev` vs
+  // `default`). PowerManager tick handles re-detection thereafter.
   try {
     const decision = shouldRunGlobalBootstrap(resolveMycoHome());
     if (decision.shouldRun) {
       logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap required', {
         myco_home: decision.mycoHome,
         served_by: decision.servedBy,
-        launchers_absent: decision.launchersAbsent,
         default_grove_absent: decision.defaultGroveAbsent,
       });
       const result = runGlobalBootstrap();
@@ -1179,7 +1171,7 @@ export async function main(): Promise<void> {
       const notDetected = result.symbionts.filter((r) => r.status === 'not-detected');
       const errored = result.symbionts.filter((r) => r.status === 'error');
       logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap complete', {
-        launchers_written: result.launchers.written.length,
+        launchers_removed: result.launchers.removed.length,
         symbionts_installed: installed.length,
         symbionts_not_detected: notDetected.length,
         symbionts_errored: errored.length,
