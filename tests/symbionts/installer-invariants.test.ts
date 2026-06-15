@@ -461,13 +461,6 @@ describe('symbiont installer invariants', () => {
   });
 
   /**
-   * Global launcher must list the per-agent project-dir env vars. Acts as a
-   * structural lock on the chdir-fallback chain — if a future change drops
-   * one of these names, the corresponding symbiont's hooks would silently
-   * run with the agent's cwd (e.g. `~/.cursor/`) instead of the workspace,
-   * and project-root resolution would return wrong roots.
-   */
-  /**
    * Copilot intentionally does NOT subscribe to PermissionRequest — that's
    * an interactive allow/deny hook; Myco is observational. A regression
    * adding the event without the explicit rationale review would risk
@@ -481,21 +474,4 @@ describe('symbiont installer invariants', () => {
     });
   });
 
-  describe('global launcher honors per-agent project-dir env vars', () => {
-    const LAUNCHER_PATH = path.join(TEMPLATES_DIR, '_shared', 'global-launcher.cjs');
-    const REQUIRED_ENV_VARS = ['CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR', 'WINDSURF_PROJECT_DIR', 'MYCO_PROJECT_ROOT'];
-    for (const name of REQUIRED_ENV_VARS) {
-      it(`global-launcher.cjs lists ${name} in its chdir chain`, () => {
-        const content = fs.readFileSync(LAUNCHER_PATH, 'utf-8');
-        expect(content).toContain(`'${name}'`);
-      });
-    }
-    it('global-launcher.cjs reads workspacePaths from stdin for Antigravity', () => {
-      const content = fs.readFileSync(LAUNCHER_PATH, 'utf-8');
-      // The AGY branch buffers stdin and pulls workspacePaths[0] out of the
-      // JSON payload — it's the only project-dir signal AGY provides.
-      expect(content).toContain('workspacePaths');
-      expect(content).toContain("'antigravity'");
-    });
-  });
 });

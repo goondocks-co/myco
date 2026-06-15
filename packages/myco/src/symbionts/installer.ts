@@ -2,7 +2,7 @@ import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { installGlobalLaunchers } from '../grove/launcher-install.js';
+import { removeRetiredGlobalLaunchers } from '../grove/launcher-cleanup.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -551,7 +551,7 @@ export class SymbiontInstaller {
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     // Atomic write so a torn write to a shared user-home agent config
     // (under `installScope: 'global'`) can never leave the file
-    // half-written. Same discipline as launcher-install.ts.
+    // half-written.
     atomicWriteFileSync(absPath, content);
     return true;
   }
@@ -573,14 +573,11 @@ export class SymbiontInstaller {
     if (!reg?.hooksTarget && !this.capabilities.globalLauncher) return false;
 
     if (this.capabilities.globalLauncher) {
-      // Global launcher path: the absolute-path launchers at
-      // `~/.myco/launcher.cjs` and `~/.myco/mcp-launcher.cjs` replace
-      // the project-local `.agents/myco-run.cjs` / `myco-cli.cjs`.
-      // `installGlobalLaunchers()` is idempotent and shared across every
-      // symbiont's global install — the first symbiont's install pass
-      // writes them; subsequent passes see content matches and skip.
-      const report = installGlobalLaunchers();
-      return report.written.length > 0;
+      // The binary is the launcher now — every hook command invokes it directly,
+      // so there is no trampoline guard to install. Clean up any retired
+      // launcher.cjs / mcp-launcher.cjs left by a previous release.
+      removeRetiredGlobalLaunchers();
+      return false;
     }
 
     const guardTemplate = this.readTemplateFile(HOOK_GUARD_TEMPLATE_FILENAME);
