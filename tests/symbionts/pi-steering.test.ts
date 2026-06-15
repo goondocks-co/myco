@@ -77,8 +77,8 @@ describe('Pi plugin', () => {
   });
 
   it('does not duplicate digest fallback logic — the in-process myco_cortex tool owns it', () => {
-    // After the /api/mcp/* retirement, all Pi tool wrappers delegate to
-    // `myco-run tool call`. The cortex tier-fallback logic now lives in the
+    // After the /api/mcp/* retirement, all Pi tool wrappers delegate to the
+    // Myco binary's `tool call`. The cortex tier-fallback logic now lives in the
     // in-daemon myco_cortex tool, so Pi's plugin should not contain its own
     // tiers/Array.isArray reasoning.
     const source = pluginSource();
@@ -126,12 +126,12 @@ describe('Pi plugin', () => {
     expect(source).not.toContain('name: "myco_observe"');
   });
 
-  it('routes all tool calls through the global Myco launcher; capture/lifecycle stays on HTTP', () => {
+  it('routes all tool calls through the Myco binary; capture/lifecycle stays on HTTP', () => {
     const source = pluginSource();
-    // Tool calls (myco_cortex, myco_spores, etc.) run the global launcher
-    // (`node ~/.myco/launcher.cjs tool call …`) — this is the standard
-    // non-MCP-symbiont pattern after the /api/mcp/* retirement. Each tool
-    // wrapper delegates via execMycoTool.
+    // Tool calls (myco_cortex, myco_spores, etc.) run the self-contained Myco
+    // binary directly (`<binary> tool call …`, no node/launcher.cjs) — the
+    // standard non-MCP-symbiont pattern after the /api/mcp/* retirement. Each
+    // tool wrapper delegates via execMycoTool.
     expect(source).toContain('execMycoTool(directory, "myco_cortex"');
     expect(source).toContain('execMycoTool(directory, "myco_spores"');
     expect(source).toContain('execMycoTool(directory, "myco_plans"');
@@ -146,19 +146,26 @@ describe('Pi plugin', () => {
     expect(source).toContain('postJson(directory, "/events"');
   });
 
-  it('dispatches Myco tools via the global launcher, never the retired project-local one', () => {
-    // Regression guard for the #355 global-install migration: the project-local
-    // launcher `<project>/.agents/myco-run.cjs` was retired and no longer
-    // exists, so every tool call ENOENTed and silently returned { ok: false }
-    // ("tool unavailable"). execMycoTool must resolve the GLOBAL launcher
-    // (`~/.myco/launcher.cjs`) through resolveMycoHome(), with `cwd: directory`
-    // carrying per-project tenancy.
+  it('dispatches Myco tools via the direct binary (runtime.command pin), never node + launcher.cjs or the retired project-local launcher', () => {
+    // Launcher unification: tool dispatch invokes the self-contained Myco binary
+    // directly — resolved via the runtime.command pin (project-scope upward walk,
+    // then machine pin, then bare `myco` on PATH) — with no `node` and no
+    // `launcher.cjs`. This is the form that works on a native, node-absent
+    // install and matches every other symbiont's hook/MCP transport. With
+    // `cwd: directory` carrying per-project tenancy.
     const source = pluginSource();
     // The retired project-local launcher path must not reappear.
     expect(source).not.toContain('.agents/myco-run.cjs');
     expect(source).not.toContain('.agents", "myco-run.cjs');
-    // The launcher must resolve through resolveMycoHome() + launcher.cjs.
-    expect(source).toMatch(/const launcher = join\(resolveMycoHome\(\), "launcher\.cjs"\)/);
+    // Dispatch must NOT shell out to node, nor resolve the retired global launcher.cjs.
+    expect(source).not.toMatch(/execFileP\(\s*"node"/);
+    expect(source).not.toMatch(/join\(resolveMycoHome\(\),\s*"launcher\.cjs"\)/);
+    // Dispatch resolves the binary via the runtime.command pin and execs it directly.
+    expect(source).toContain('runtime.command');
+    expect(source).toMatch(/const binary = resolveMycoBinary\(directory\)/);
+    expect(source).toMatch(/execFileP\(\s*binary,\s*\[\s*"tool",\s*"call"/);
+    // Tenancy still flows via the child process cwd.
+    expect(source).toMatch(/cwd: directory/);
   });
 
   describe('per-prompt context injection (before_agent_start)', () => {
