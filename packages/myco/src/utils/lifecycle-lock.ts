@@ -55,9 +55,11 @@ function loadFlock(): { flock: (fd: number, op: number) => number } {
   if (flockBinding) return flockBinding;
   if (flockBindingError) throw flockBindingError;
   if (process.platform === 'win32') {
-    flockBindingError = new Error(
-      'LifecycleLock: Windows (LockFileEx) is not yet supported; refusing to start.',
-    );
+    // Unreachable in practice: acquire()/withFileLockSync() route win32 to the
+    // LockFileEx path before calling loadFlock(). Kept as a fast-fail so a
+    // future caller that forgets the win32 guard surfaces here clearly instead
+    // of failing obscurely inside dlopen('libc').
+    flockBindingError = new Error('LifecycleLock: loadFlock() must not be reached on win32 (use the LockFileEx path)');
     throw flockBindingError;
   }
   const errors: string[] = [];
@@ -141,6 +143,10 @@ function loadKernel32(): Kernel32 {
   }
 }
 
+// Build a 32-byte OVERLAPPED with Offset at the high sentinel. Callers MUST hold
+// the returned buffer in a local across the FFI call: `ptr()` returns a plain
+// integer, so an inline `ptr(winOverlapped())` would let the backing buffer be
+// GC'd before the synchronous LockFileEx/UnlockFileEx dereferences it (Bun FFI).
 function winOverlapped(): Uint8Array {
   const buf = new Uint8Array(32);
   new DataView(buf.buffer).setUint32(16, WIN_SENTINEL_OFFSET, true); // OVERLAPPED.Offset
@@ -166,7 +172,8 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   const k = loadKernel32();
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const handle = winOpenLockHandle(k, lockPath);
-  const rc = k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(winOverlapped()));
+  const ov = winOverlapped();
+  const rc = k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(ov));
   if (rc === 0) {
     const holder = readLockHolder(lockPath);
     k.CloseHandle(handle);
@@ -191,7 +198,7 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
     released = true;
     // Truncate so a fresh hook process doesn't read a dead holder's record.
     try { fs.writeFileSync(lockPath, ''); } catch { /* best-effort */ }
-    try { k.UnlockFileEx(handle, 0, 1, 0, ptr(winOverlapped())); } catch { /* idem */ }
+    try { const ov = winOverlapped(); k.UnlockFileEx(handle, 0, 1, 0, ptr(ov)); } catch { /* idem */ }
     try { k.CloseHandle(handle); } catch { /* idem */ }
   };
   process.on('exit', release);
@@ -213,12 +220,13 @@ function winWithFileLockSync<T>(lockPath: string, fn: () => T): T {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const handle = winOpenLockHandle(k, lockPath);
   try {
-    if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(winOverlapped())) === 0) {
+    const ov = winOverlapped();
+    if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(ov)) === 0) {
       throw new Error(`winWithFileLockSync: LockFileEx failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
     }
     return fn();
   } finally {
-    try { k.UnlockFileEx(handle, 0, 1, 0, ptr(winOverlapped())); } catch { /* idem */ }
+    try { const ov = winOverlapped(); k.UnlockFileEx(handle, 0, 1, 0, ptr(ov)); } catch { /* idem */ }
     try { k.CloseHandle(handle); } catch { /* idem */ }
   }
 }
