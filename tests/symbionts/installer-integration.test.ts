@@ -256,6 +256,71 @@ describe('symbiont installer integration matrix (global scope)', () => {
     }
   });
 
+  /**
+   * Migration matrix — a config written by the PREVIOUS release (the
+   * `node ~/.myco/launcher.cjs` trampoline form, no `--myco-managed` marker)
+   * must be rewritten to the direct-binary form on the next `install()`.
+   *
+   * This is the gate for deleting `~/.myco/launcher.cjs`: the file can only
+   * be safely removed if `update` provably re-homes every symbiont's
+   * pre-existing old-form hook (and, for symbionts whose hooks + MCP share a
+   * settings file, the MCP server entry too) onto the binary. If migration
+   * silently left an old entry, the deleted launcher would ENOENT and capture
+   * would go dark — so the assertion is "no `launcher.cjs` survives".
+   *
+   * Method: clean-install (writes a structurally-valid new-form config),
+   * surgically downgrade the command back to the old launcher form (proving
+   * the simulated old state landed), then install again — the upgrade — and
+   * assert the binary form is restored with zero launcher.cjs residue. The
+   * downgrade is a pure string edit so the config shape always stays the one
+   * the installer itself produced, avoiding hand-rolled per-symbiont fixtures.
+   */
+  describe('migration: a pre-existing node launcher.cjs config is rewritten to the direct binary', () => {
+    const PINNED_BINARY = '/opt/myco/bin/myco';
+    const OLD_LAUNCHER = 'node /legacy-home/.myco/launcher.cjs';
+    for (const manifest of manifests) {
+      const reg = manifest.registration;
+      if (!reg?.globalHooksTarget) continue;
+      // Same scoping as the post-install command-line check: plugin-file
+      // symbionts (opencode, pi) dispatch through TypeScript source that the
+      // installer overwrites wholesale — there is no co-tenant old entry to
+      // recognize, so the migration risk class doesn't apply. Antigravity's
+      // JSON `hooks.json` plugin template substitutes commands, so it stays in.
+      if (reg.hooksFormat === 'plugin-file' && reg.hooksTemplateFile !== 'hooks.json') continue;
+      const skip = SKIP_REASONS[manifest.name];
+      const test = skip ? it.skip : it;
+      test(`${manifest.name}: old launcher.cjs hook (and any same-file MCP entry) is re-homed onto the binary`, () => {
+        const fake = setupFakeHome();
+        try {
+          fs.mkdirSync(path.join(fake.tmpHome, '.myco'), { recursive: true });
+          fs.writeFileSync(path.join(fake.tmpHome, '.myco', 'runtime.command'), `${PINNED_BINARY}\n`, 'utf-8');
+          ensureDetectionDir(manifest, fake.tmpHome);
+          // 1. Clean install → valid new-form config.
+          newInstaller(manifest, fake.tmpHome).install();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const hooksPath = (newInstaller(manifest, fake.tmpHome) as any).resolveAbsoluteTarget('hooks') as string | null;
+          if (!hooksPath || !fs.existsSync(hooksPath)) return;
+          // 2. Downgrade in place to the previous release's trampoline form:
+          //    swap the binary for `node …/launcher.cjs` and drop the marker.
+          const fresh = fs.readFileSync(hooksPath, 'utf-8');
+          const downgraded = fresh.split(PINNED_BINARY).join(OLD_LAUNCHER).split(' --myco-managed').join('');
+          fs.writeFileSync(hooksPath, downgraded, 'utf-8');
+          // Sanity: the simulated old state actually landed.
+          expect(fs.readFileSync(hooksPath, 'utf-8')).toContain('launcher.cjs');
+          // 3. The upgrade: a second install must re-home the old entry.
+          newInstaller(manifest, fake.tmpHome).install();
+          const after = fs.readFileSync(hooksPath, 'utf-8');
+          // No trampoline residue survives, and the binary form is restored.
+          expect(after.includes('launcher.cjs')).toBe(false);
+          expect(after.includes(PINNED_BINARY)).toBe(true);
+          expect(after.includes('--myco-managed')).toBe(true);
+        } finally {
+          fake.cleanup();
+        }
+      });
+    }
+  });
+
   describe('round-trip: install ⇒ isConfigured() = true', () => {
     for (const manifest of manifests) {
       const skip = SKIP_REASONS[manifest.name];
