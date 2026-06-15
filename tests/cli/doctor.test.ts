@@ -447,7 +447,9 @@ describe('doctor --fix stale smoke-launcher scrub', () => {
         hooks: {
           Stop: [
             { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-wave2-smoke-BBBB/home/launcher.cjs hook stop --symbiont claude-code' }] },
-            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/test/.myco/launcher.cjs hook stop --symbiont claude-code' }] },
+            // NEW marker-bearing binary form (no `.cjs`) — the current install,
+            // which the scrub must preserve.
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && /Users/test/.local/bin/myco hook stop --symbiont claude-code --myco-managed' }] },
             { matcher: '', hooks: [{ type: 'command', command: 'echo user-tenant' }] },
           ],
         },
@@ -464,7 +466,7 @@ describe('doctor --fix stale smoke-launcher scrub', () => {
       expect(actions.some((action) => action.includes('Scrubbed 1 stale smoke-launcher hook group'))).toBe(true);
       const after = JSON.parse(fs.readFileSync(claude, 'utf-8'));
       expect(after.hooks.Stop).toHaveLength(2);
-      expect(after.hooks.Stop[0].hooks[0].command).toContain('/Users/test/.myco/launcher.cjs');
+      expect(after.hooks.Stop[0].hooks[0].command).toContain('--myco-managed');
       expect(after.hooks.Stop[1].hooks[0].command).toBe('echo user-tenant');
     });
   });
