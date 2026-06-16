@@ -4,7 +4,7 @@ Myco runs a local background service that captures session activity, processes i
 
 ## Install and bootstrap
 
-The service is installed for the current user the first time the npm package lands on a machine. The supported path for the current release is macOS. Linux and Windows packages are available for early testing, but service behavior on those platforms is experimental.
+The service is installed for the current user the first time the npm package lands on a machine. The supported path is macOS, with Linux and Windows in beta. On Windows, only x64 is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 When the service starts:
 
