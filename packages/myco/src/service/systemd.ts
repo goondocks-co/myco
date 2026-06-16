@@ -111,6 +111,10 @@ export class SystemdUserServiceManager implements ServiceManager {
     return `systemctl --user restart ${label}.service`;
   }
 
+  isManagedDaemon(_label: string, status: ServiceStatus, myPid: number): boolean {
+    return status.running && status.pid === myPid;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const unitPath = this.unitPath(label);
     if (!fs.existsSync(unitPath)) {

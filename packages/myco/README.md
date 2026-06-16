@@ -10,7 +10,7 @@ curl -fsSL https://myco.sh/install.sh | sh
 
 Open a git project in any supported agent and Myco registers it automatically when the agent starts working there.
 
-macOS is the primary supported platform for the current release. Linux and Windows packages are published for early testing, but they are experimental.
+macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 ## What you can do
 

@@ -1,5 +1,6 @@
 import { LaunchdServiceManager } from './launchd.js';
 import { SystemdUserServiceManager } from './systemd.js';
+import { WindowsTaskServiceManager } from './windows.js';
 import { UnsupportedServiceManager } from './unsupported.js';
 import { resolveServiceUnitDir } from './paths.js';
 import type { ServiceManager } from './types.js';
@@ -15,6 +16,8 @@ export function getServiceManager(opts: GetServiceManagerOptions = {}): ServiceM
       return new LaunchdServiceManager({ agentsDir: resolveServiceUnitDir({ platform }) });
     case 'linux':
       return new SystemdUserServiceManager({ unitDir: resolveServiceUnitDir({ platform }) });
+    case 'win32':
+      return new WindowsTaskServiceManager({ scriptDir: resolveServiceUnitDir({ platform }) });
     default:
       return new UnsupportedServiceManager(platform);
   }

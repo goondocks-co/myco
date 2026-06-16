@@ -203,6 +203,33 @@ dev-link: dev-build
 		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
 	fi
 
+# Windows dogfood — the same shape as `dev-build` / `dev-link`, for a remote
+# Windows host (set WIN_HOST). The binary is cross-built here (the Windows box
+# only runs it). Wiring is NOT Windows-bespoke: pin `~/.myco/runtime.command`
+# to the binary (the launcher-resolution abstraction macOS dev-link also uses)
+# and let the daemon's first-start `runGlobalBootstrap` install launchers +
+# wire symbionts — identical on every platform. BASELINE=1 builds Bun's
+# no-AVX2 variant so it runs under Windows-on-ARM x64 emulation / older CPUs.
+WIN_HOST ?= chris@10.211.55.3
+WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPersist=3m -o StrictHostKeyChecking=accept-new
+
+dev-build-windows:
+	cd packages/myco && npx tsx scripts/gen-hook-config.ts && npx tsx scripts/gen-agent-definitions.ts && npx tsx scripts/gen-static-assets.ts && node scripts/gen-templates.mjs
+	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
+	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
+	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
+	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
+	@# UI bundle (served by the daemon) — parity with `dev-build`.
+	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
+
+dev-link-windows: dev-build-windows
+	tar -czf /tmp/myco-win-ui.tgz -C packages/myco/dist ui
+	scp $(WIN_SSH) packages/myco-windows-x64/bin/myco.exe $(WIN_HOST):myco.exe
+	scp $(WIN_SSH) /tmp/myco-win-ui.tgz $(WIN_HOST):ui.tgz
+	scp $(WIN_SSH) scripts/win-dev-link.ps1 $(WIN_HOST):win-dev-link.ps1
+	ssh $(WIN_SSH) $(WIN_HOST) 'powershell -NoProfile -ExecutionPolicy Bypass -File win-dev-link.ps1'
+	@echo "✓ wired on $(WIN_HOST) — daemon running + UI staged (see the printed port)."
+
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@rm -f $(HOME)/.local/bin/myco-team-dev

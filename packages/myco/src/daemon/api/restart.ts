@@ -12,8 +12,6 @@ import type { ServiceManager, ServiceStatus, ServiceVariant } from '../../servic
 const RestartBodySchema = z.object({
   force: z.boolean().optional(),
 }).optional();
-/** Delay before the child process starts — allows the parent to fully release the port. */
-const RESTART_CHILD_DELAY_SECONDS = 3;
 /** When service-managed, fall back to self-SIGTERM after this many ms in case
  *  the service-restart child fails silently. Longer than the non-service path
  *  so the kickstart-driven SIGTERM has a chance to land first. */
@@ -27,28 +25,26 @@ export interface RestartHandlerDeps {
 }
 
 /**
- * Build the shell command the detached child will run.
+ * Build the argv for the detached restart child, spawned against the binary
+ * directly on EVERY platform (no shell, no quoting, no POSIX `sleep`).
  *
- * - When service-managed, the child invokes `myco service restart [--dev]`
- *   which routes through the platform service manager (launchctl kickstart -k
- *   / systemctl --user restart). That primitive SIGTERMs us atomically and the
- *   service supervisor respawns us — preventing the thundering-herd race
- *   between a manually-spawned daemon and the supervisor's KeepAlive.
- * - When not service-managed, the child spawns a fresh `myco daemon` directly,
- *   as before.
+ * - Service-managed → `[…cliEntry] service restart [--dev]`, which routes
+ *   through the platform manager (launchctl kickstart -k / systemctl --user
+ *   restart / schtasks /end + /run). That primitive SIGTERMs us atomically and
+ *   the supervisor respawns us — no thundering-herd race with KeepAlive.
+ * - Not service-managed → `[…cliEntry] daemon`; the respawned daemon waits on
+ *   the lifecycle-lock release for the exiting one, so no startup delay needed.
  */
-export function buildRestartShellCommand(
+export function buildRestartArgv(
   serviceManagedLabel: string | null,
-  execPath: string,
   cliEntry: string | null,
-): string {
-  const entryPart = cliEntry !== null ? ` ${cliEntry}` : '';
+): string[] {
+  const base = cliEntry !== null ? [cliEntry] : [];
   if (serviceManagedLabel) {
-    const variantFlag = serviceManagedLabel.endsWith('-dev') ? ' --dev' : '';
-    // Short sleep so the HTTP response flushes before the service-restart fires.
-    return `sleep 0.5 && ${execPath}${entryPart} service restart${variantFlag}`;
+    const dev = serviceManagedLabel.endsWith('-dev') ? ['--dev'] : [];
+    return [...base, 'service', 'restart', ...dev];
   }
-  return `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon`;
+  return [...base, 'daemon'];
 }
 
 /** Find the first installed service across variants and return its label and
@@ -86,31 +82,13 @@ export async function detectServiceManagedLabel(
   mgr: ServiceManager,
   myPid: number = process.pid,
 ): Promise<string | null> {
+  // Platform-agnostic: the manager owns the "is this me?" decision
+  // (`isManagedDaemon`) — POSIX pid-matches, Windows reads its env marker.
   for (const variant of SERVICE_VARIANTS) {
     const found = await findInstalledServiceLabel(mgr, variant);
-    if (found?.status.running && found.status.pid === myPid) return found.label;
+    if (found && mgr.isManagedDaemon(found.label, found.status, myPid)) return found.label;
   }
   return null;
-}
-
-/**
- * Resolve the literal supervisor restart command to bake into a detached
- * update/restart script. Returns the platform-specific kickstart/systemctl
- * string when this process is the service-managed daemon, otherwise
- * undefined — meaning the detached script should respawn a daemon child
- * directly. Single source of truth for the /api/update/* and SELF_RECONCILE
- * install paths so they agree on the supervisor.
- */
-export async function resolveServiceRestartCommand(
-  mgr: ServiceManager,
-): Promise<string | undefined> {
-  const label = await detectServiceManagedLabel(mgr);
-  if (!label) return undefined;
-  try {
-    return mgr.restartShellCommand(label);
-  } catch {
-    return undefined;
-  }
 }
 
 export async function handleRestart(
@@ -136,13 +114,20 @@ export async function handleRestart(
   // launchctl kickstart -k / systemctl --user restart to atomically SIGTERM us
   // and respawn through the supervisor — no race with KeepAlive.
   const { execPath, cliEntry } = resolveCliEntryPath();
-  const shellCmd = buildRestartShellCommand(serviceManagedLabel, execPath, cliEntry);
-
   const projectRoot = resolveProjectRoot(deps.vaultDir);
-  const child = spawn('/bin/sh', ['-c', shellCmd], {
+
+  // Spawn the binary DIRECTLY (argv, no shell) on every platform — one code
+  // path, no `/bin/sh` (absent on Windows), no cmd.exe quoting, no POSIX
+  // `sleep`. Timing is handled downstream: a respawned `daemon` waits on the
+  // lifecycle-lock release, and `service restart` is atomic via the platform
+  // supervisor. (The prior `/bin/sh -c` ENOENT'd on Windows, so the restart
+  // child never ran and the daemon went down for good.) `windowsHide` is inert
+  // on POSIX.
+  const child = spawn(execPath, buildRestartArgv(serviceManagedLabel, cliEntry), {
     detached: true,
     stdio: 'ignore',
     cwd: projectRoot,
+    windowsHide: true,
   });
   // No listener = a spawn-class 'error' is an uncaught exception (process
   // exit) — precisely during a restart request, when dying without the

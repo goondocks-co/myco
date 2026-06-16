@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { derivePort } from '@myco/daemon/port.js';
+import { isMycoHookCommand, MYCO_MANAGED_MARKER } from '@myco/symbionts/install-helpers.js';
+import { readSymbiontFlag } from '@myco/hooks/normalize.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -195,32 +197,36 @@ const OPENCODE_PACKAGE_TEMPLATE_CONTENT = `{
 
 // --- Minimal hooks template for tests ---
 
+// Mirrors the real claude-code template: bare `{{mycoLauncher}}` placeholder,
+// no `cd` prefix (the binary's launch preamble anchors cwd in-process). The
+// installer substitutes the placeholder with the pinned binary path and
+// appends the `--myco-managed` ownership marker.
 const HOOKS_TEMPLATE = {
   SessionStart: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code', timeout: 10 },
+        { type: 'command', command: '{{mycoLauncher}} hook session-start --symbiont claude-code', timeout: 10 },
       ],
     },
   ],
   Stop: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont claude-code', timeout: 30 },
+        { type: 'command', command: '{{mycoLauncher}} hook stop --symbiont claude-code', timeout: 30 },
       ],
     },
   ],
   PreCompact: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont claude-code', timeout: 5 },
+        { type: 'command', command: '{{mycoLauncher}} hook pre-compact --symbiont claude-code', timeout: 5 },
       ],
     },
   ],
   PostCompact: [
     {
       hooks: [
-        { type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook post-compact --symbiont claude-code', timeout: 5 },
+        { type: 'command', command: '{{mycoLauncher}} hook post-compact --symbiont claude-code', timeout: 5 },
       ],
     },
   ],
@@ -229,7 +235,7 @@ const HOOKS_TEMPLATE = {
 const MCP_TEMPLATE = {
   myco: {
     type: 'stdio',
-    command: 'myco-run', args: ['mcp'],
+    command: '{{mycoBinary}}', args: ['mcp'],
   },
 };
 
@@ -246,6 +252,36 @@ function writeJson(filePath: string, data: unknown): void {
 
 function readJson(filePath: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+/**
+ * Deterministic, whitespace-free binary path pinned as the machine
+ * `runtime.command` in `beforeEach`, so every hook-command the installer emits
+ * resolves to a stable, assertable binary path instead of the test runner's
+ * own `process.execPath`. Shared across the installHooks and direct-binary
+ * suites.
+ */
+const PINNED_BINARY = '/opt/myco/bin/myco';
+
+/** Pin the machine runtime command so the emitted binary path is stable. */
+function pinRuntimeBinary(binary: string): void {
+  fs.writeFileSync(path.join(installerMycoHome, 'runtime.command'), `${binary}\n`, 'utf-8');
+}
+
+/**
+ * Per-command assertions for the direct-binary hook form the installer emits:
+ * the pinned binary path, `--symbiont <agent>`, the `--myco-managed` marker
+ * exactly once, and no `node`/`.cjs` trampoline.
+ */
+function assertDirectBinaryCommands(commands: string[], agent: string): void {
+  for (const cmd of commands) {
+    expect(cmd).toContain(PINNED_BINARY);
+    expect(cmd).toContain(`--symbiont ${agent}`);
+    expect(cmd).toContain(MYCO_MANAGED_MARKER);
+    expect(cmd.split(MYCO_MANAGED_MARKER).length - 1).toBe(1);
+    expect(cmd).not.toContain('node ');
+    expect(cmd).not.toContain('.cjs');
+  }
 }
 
 function setupPackageRoot(): void {
@@ -266,44 +302,46 @@ function setupPackageRoot(): void {
   writeJson(path.join(claudeTemplateDir, 'settings.json'), {
     permissions: { allow: ['Bash(myco *)', 'Bash(myco:*)', 'Bash(myco-dev *)', 'Bash(myco-dev:*)'] },
   });
-  // Cursor's real hooks.json uses the `{{projectRootCd}}` placeholder that the
-  // installer substitutes with the git-root cd prefix at install time. The
-  // fixture mirrors that shape so the substitution path is exercised.
+  // Cursor's real hooks.json carries the bare `{{mycoLauncher}}` placeholder
+  // (the cd prefix was dropped — the binary anchors cwd in-process). The
+  // installer substitutes the binary path and appends the ownership marker.
   writeJson(path.join(cursorTemplateDir, 'hooks.json'), {
-    sessionStart: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook session-start --symbiont cursor', type: 'command', timeout: 10 }],
-    stop: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook stop --symbiont cursor', type: 'command', timeout: 30 }],
-    preCompact: [{ command: '{{projectRootCd}} && node .agents/myco-run.cjs hook pre-compact --symbiont cursor', type: 'command', timeout: 5 }],
+    sessionStart: [{ command: '{{mycoLauncher}} hook session-start --symbiont cursor', type: 'command', timeout: 10 }],
+    stop: [{ command: '{{mycoLauncher}} hook stop --symbiont cursor', type: 'command', timeout: 30 }],
+    preCompact: [{ command: '{{mycoLauncher}} hook pre-compact --symbiont cursor', type: 'command', timeout: 5 }],
   });
   writeJson(path.join(cursorTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(cursorTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook session-start --symbiont codex', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook session-start --symbiont codex', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
-    myco: { command: 'myco-run', args: ['mcp'] },
+    myco: { command: '{{mycoBinary}}', args: ['mcp'] },
   });
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { hooks: true },
   });
   writeJson(path.join(copilotTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont copilot', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont copilot', timeout: 30 }] }],
-    PreCompact: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot', timeout: 5 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook session-start --symbiont copilot', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont copilot', timeout: 30 }] }],
+    PreCompact: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook pre-compact --symbiont copilot', timeout: 5 }] }],
   });
   writeJson(path.join(copilotTemplateDir, 'mcp.json'), MCP_TEMPLATE);
   writeJson(path.join(copilotTemplateDir, 'settings.json'), {
     'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
+  // Gemini is a test-only manifest (no production template); mirror the
+  // post-flip convention — bare `{{mycoLauncher}}`, no cd prefix.
   writeJson(path.join(geminiTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont gemini', timeout: 10000 }] }],
-    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook stop --symbiont gemini', timeout: 30000 }] }],
-    PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: 'cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont gemini', timeout: 5000 }] }],
+    SessionStart: [{ hooks: [{ name: 'myco-session-start', type: 'command', command: '{{mycoLauncher}} hook session-start --symbiont gemini', timeout: 10000 }] }],
+    AfterAgent: [{ hooks: [{ name: 'myco-stop', type: 'command', command: '{{mycoLauncher}} hook stop --symbiont gemini', timeout: 30000 }] }],
+    PreCompress: [{ hooks: [{ name: 'myco-pre-compact', type: 'command', command: '{{mycoLauncher}} hook pre-compact --symbiont gemini', timeout: 5000 }] }],
   });
   writeJson(path.join(geminiTemplateDir, 'mcp.json'), {
-    myco: { command: 'myco-run', args: ['mcp'] },
+    myco: { command: '{{mycoBinary}}', args: ['mcp'] },
   });
   writeJson(path.join(geminiTemplateDir, 'settings.json'), {
     coreTools: ['ShellTool(myco *)', 'ShellTool(myco-dev *)'],
@@ -312,8 +350,8 @@ function setupPackageRoot(): void {
   const windsurfTemplateDir = path.join(packageRoot, 'src/symbionts/templates/windsurf');
   fs.mkdirSync(windsurfTemplateDir, { recursive: true });
   writeJson(path.join(windsurfTemplateDir, 'hooks.json'), {
-    pre_user_prompt: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf' }],
-    post_cascade_response: [{ command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook stop --symbiont windsurf' }],
+    pre_user_prompt: [{ command: '{{mycoLauncher}} hook user-prompt-submit --symbiont windsurf' }],
+    post_cascade_response: [{ command: '{{mycoLauncher}} hook stop --symbiont windsurf' }],
   });
 
   // opencode uses plugin-file hooks + non-standard MCP key + a package.json for plugin deps
@@ -322,7 +360,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['myco-run', 'mcp'] },
+    myco: { type: 'local', command: ['{{mycoBinary}}', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -363,6 +401,10 @@ beforeEach(() => {
   // home still override process.env.MYCO_HOME locally.
   installerMycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
   process.env.MYCO_HOME = installerMycoHome;
+  // Pin a deterministic binary so every emitted hook command resolves to a
+  // stable path. Tests that need a different binary (whitespace / backslash)
+  // overwrite this pin locally.
+  pinRuntimeBinary(PINNED_BINARY);
   setupPackageRoot();
 });
 
@@ -463,7 +505,8 @@ describe('installHooks', () => {
       (g: unknown) => ((g as { hooks: Array<{ command: string }> }).hooks ?? []).map(h => h.command),
     );
     expect(commands).toContain('my-other-tool start');
-    expect(commands).toContain('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code');
+    const mycoCommands = commands.filter((c) => c !== 'my-other-tool start');
+    assertDirectBinaryCommands(mycoCommands, 'claude-code');
   });
 
   it('replaces stale Myco hooks on update', () => {
@@ -514,13 +557,13 @@ describe('installHooks', () => {
     expect(result).toBe(false);
   });
 
-  it('writes Myco-owned hook groups WITHOUT a _meta marker (ownership rides on launcher path)', () => {
+  it('writes Myco-owned hook groups WITHOUT a _meta marker (ownership rides on the --myco-managed flag)', () => {
     // Earlier installs stamped `_meta.owner: myco` on every group as a
-    // redundant identity signal alongside the launcher path. That field
-    // broke strict-schema agents (Windsurf silently rejects entries
-    // with unknown fields), so it's retired. Ownership is now identified
-    // by the canonical launcher path embedded in the command — the only
-    // signal that ever needed to exist.
+    // redundant identity signal. That field broke strict-schema agents
+    // (Windsurf silently rejects entries with unknown fields), so it's
+    // retired. Ownership is now identified by the `--myco-managed` marker
+    // appended to the direct-binary hook command — the only signal that
+    // needs to exist.
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHooks();
     const settings = readJson(path.join(projectRoot, '.claude/settings.json'));
@@ -528,21 +571,21 @@ describe('installHooks', () => {
     for (const groups of Object.values(hooks)) {
       for (const group of groups) {
         expect(group._meta).toBeUndefined();
-        // The command MUST carry a canonical Myco launcher reference so
-        // future reinstalls can find this entry by launcher-path scan.
+        // The command MUST carry the ownership marker so future reinstalls
+        // can find this entry by the marker scan.
         const commands: string[] = Array.isArray(group.hooks)
           ? (group.hooks as Array<{ command?: string }>).map((h) => h.command ?? '')
           : [typeof group.command === 'string' ? group.command : ''];
-        expect(commands.some((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs'))).toBe(true);
+        expect(commands.some((c) => c.includes(MYCO_MANAGED_MARKER))).toBe(true);
       }
     }
   });
 
-  it('strips a previous Myco install (canonical-path) and replaces with a clean group', () => {
-    // Previous install used the canonical launcher path convention.
-    // The launcher-path substring scan is the authoritative ownership
-    // signal — Myco's entries get replaced, third-party tenant entries
-    // are preserved untouched.
+  it('strips a previous Myco install (legacy launcher-path) and replaces with a clean direct-binary group', () => {
+    // Legacy-seed: a previous install wrote the canonical launcher-path
+    // form. The launcher-path substring scan still recognizes it as
+    // Myco-owned, so it gets swept and replaced with the direct-binary
+    // group; the third-party tenant entry is preserved untouched.
     const settingsPath = path.join(projectRoot, '.claude/settings.json');
     writeJson(settingsPath, {
       hooks: {
@@ -561,8 +604,10 @@ describe('installHooks', () => {
     const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
     // Third-party tenant entry survives.
     expect(commands.some((c) => c.includes('GitKrakenCLI'))).toBe(true);
-    // Myco's canonical entry is rewritten in place.
-    expect(commands.some((c) => c.includes('myco-run.cjs hook session-start --symbiont claude-code'))).toBe(true);
+    // The legacy launcher-path entry is gone, replaced by the direct-binary form.
+    expect(commands.some((c) => c.includes('node .agents/myco-run.cjs'))).toBe(false);
+    const mycoCommands = commands.filter((c) => !c.includes('GitKrakenCLI'));
+    assertDirectBinaryCommands(mycoCommands, 'claude-code');
     // No `_meta` field anywhere on the installed groups.
     for (const group of groups) {
       expect((group as Record<string, unknown>)._meta).toBeUndefined();
@@ -590,8 +635,8 @@ describe('installHooks', () => {
     const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
     // User's hook survives untouched.
     expect(commands.some((c) => c.includes('/opt/me/launcher.cjs'))).toBe(true);
-    // Myco's canonical hook is also added alongside.
-    expect(commands.some((c) => c.includes('.agents/myco-run.cjs hook session-start'))).toBe(true);
+    // Myco's direct-binary hook is also added alongside.
+    expect(commands.some((c) => c.includes(MYCO_MANAGED_MARKER) && c.includes('hook session-start'))).toBe(true);
   });
 
   it('reinstall after marker landed is idempotent — repeated installs do not accumulate groups', () => {
@@ -621,8 +666,8 @@ describe('installHooks', () => {
 
     expect(hooks.PreCompact).toHaveLength(1);
     expect(hooks.PostCompact).toHaveLength(1);
-    expect(hooks.PreCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont claude-code');
-    expect(hooks.PostCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook post-compact --symbiont claude-code');
+    expect(hooks.PreCompact[0]?.hooks[0]?.command).toBe(`${PINNED_BINARY} hook pre-compact --symbiont claude-code ${MYCO_MANAGED_MARKER}`);
+    expect(hooks.PostCompact[0]?.hooks[0]?.command).toBe(`${PINNED_BINARY} hook post-compact --symbiont claude-code ${MYCO_MANAGED_MARKER}`);
   });
 
   it('installs pre-compact hook for Cursor', () => {
@@ -633,12 +678,12 @@ describe('installHooks', () => {
     const preCompact = ((settings.hooks as Record<string, unknown[]>).preCompact as Array<{ command: string }>);
 
     expect(preCompact).toHaveLength(1);
-    // The installer expands `{{projectRootCd}}` into the canonical git-root
-    // cd prefix — keeping the cd logic in one place rather than duplicated
-    // across nine hook entries in the template.
-    expect(preCompact[0]?.command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo ${CURSOR_PROJECT_DIR:-.})" && node .agents/myco-run.cjs hook pre-compact --symbiont cursor');
-    // The raw placeholder must NOT leak through to the installed file.
-    expect(preCompact[0]?.command).not.toContain('{{projectRootCd}}');
+    // The installer substitutes `{{mycoLauncher}}` with the direct binary path
+    // and appends the ownership marker — no `cd` prefix (cwd is anchored
+    // in-process by the binary's launch preamble).
+    expect(preCompact[0]?.command).toBe(`${PINNED_BINARY} hook pre-compact --symbiont cursor ${MYCO_MANAGED_MARKER}`);
+    // No raw placeholder leaks through to the installed file.
+    expect(preCompact[0]?.command).not.toContain('{{mycoLauncher}}');
   });
 
   it('installs pre-compact hook for Gemini CLI', () => {
@@ -650,7 +695,7 @@ describe('installHooks', () => {
     const hooks = settings.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
 
     expect(hooks.PreCompress).toHaveLength(1);
-    expect(hooks.PreCompress[0]?.hooks[0]?.command).toBe('cd "${GEMINI_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont gemini');
+    expect(hooks.PreCompress[0]?.hooks[0]?.command).toBe(`${PINNED_BINARY} hook pre-compact --symbiont gemini ${MYCO_MANAGED_MARKER}`);
   });
 
   it('installs pre-compact hook for VS Code Copilot', () => {
@@ -661,7 +706,7 @@ describe('installHooks', () => {
     const preCompact = ((settings.hooks as Record<string, unknown[]>).PreCompact as Array<{ hooks: Array<{ command: string }> }>);
 
     expect(preCompact).toHaveLength(1);
-    expect(preCompact[0]?.hooks[0]?.command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook pre-compact --symbiont copilot');
+    expect(preCompact[0]?.hooks[0]?.command).toBe(`${PINNED_BINARY} hook pre-compact --symbiont copilot ${MYCO_MANAGED_MARKER}`);
   });
 });
 
@@ -681,8 +726,26 @@ describe('installMcp', () => {
     const config = readJson(mcpPath);
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers.myco).toBeDefined();
-    expect((servers.myco as Record<string, unknown>).command).toBe('myco-run');
+    // MCP command points at the resolved self-contained binary's `mcp`
+    // subcommand — the pinned runtime.command path, forward-slashed — not the
+    // `myco-run` node shim (which fails on a native Windows agent with no node).
+    expect((servers.myco as Record<string, unknown>).command).toBe(PINNED_BINARY);
     expect((servers.myco as Record<string, unknown>).args).toEqual(['mcp']);
+    expect(JSON.stringify(servers.myco)).not.toContain('myco-run');
+  });
+
+  it('substitutes a whitespace-free, forward-slashed binary path into the MCP command', () => {
+    // Reuse the hook-path invariant: the embedded binary path must contain no
+    // whitespace (breaks argv-split spawn) and no backslashes (forward-slashed
+    // so the unquoted command is portable across bash / argv / cmd).
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const command = (config.mcpServers as Record<string, Record<string, unknown>>).myco.command as string;
+    expect(command).toBe(PINNED_BINARY);
+    expect(command).not.toMatch(/\s/);
+    expect(command).not.toContain('\\');
   });
 
   it('writes MCP server to .cursor/mcp.json for Cursor', () => {
@@ -746,7 +809,7 @@ describe('installMcp', () => {
     expect(servers?.['other-tool']).toBeDefined();
   });
 
-  it('writes the stdio bridge for mcp-transport Copilot (myco-run, no url)', () => {
+  it('writes the stdio bridge for mcp-transport Copilot (resolved binary, no url)', () => {
     const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
 
@@ -757,24 +820,27 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     const myco = servers.myco as Record<string, unknown>;
     expect(myco).toBeDefined();
-    expect(myco.command).toBe('myco-run');
+    expect(myco.command).toBe(PINNED_BINARY);
     expect(myco.args).toEqual(['mcp']);
     expect(myco.url).toBeUndefined();
+    expect(JSON.stringify(myco)).not.toContain('myco-run');
   });
 
-  it('writes the local-array stdio bridge for mcp-transport OpenCode (myco-run, no url)', () => {
+  it('writes the local-array stdio bridge for mcp-transport OpenCode (resolved binary, no url)', () => {
     const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
 
     expect(result).toBe(true);
     const config = readJson(path.join(projectRoot, 'opencode.json'));
-    // opencode hosts MCP under the non-standard `mcp` key.
+    // opencode hosts MCP under the non-standard `mcp` key. Its command is an
+    // ARRAY — only element 0 (the launcher) carries the binary substitution.
     const servers = config.mcp as Record<string, unknown>;
     const myco = servers.myco as Record<string, unknown>;
     expect(myco).toBeDefined();
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual([PINNED_BINARY, 'mcp']);
     expect(myco.url).toBeUndefined();
+    expect(JSON.stringify(myco)).not.toContain('myco-run');
   });
 });
 
@@ -784,7 +850,7 @@ describe('installBatchedJson transport gate', () => {
     const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
     fs.mkdirSync(dir, { recursive: true });
     writeJson(path.join(dir, 'hooks.json'), {
-      Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont cli-batched', timeout: 30 }] }],
+      Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont cli-batched', timeout: 30 }] }],
     });
     writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
     writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
@@ -1287,8 +1353,9 @@ describe('installMcp (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).toContain('args = ["mcp"]');
+    expect(content).not.toContain('myco-run');
     expect(content).not.toContain('cwd = "."');
     expect(content).not.toContain('[mcp_servers.myco.env]');
   });
@@ -1316,7 +1383,7 @@ describe('installMcp (TOML)', () => {
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).not.toContain('old-command');
   });
 
@@ -1410,7 +1477,11 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+    // The MCP command resolves to the MACHINE runtime pin (PINNED_BINARY), not
+    // the project-local `.myco/runtime.command` — `resolveManagedBinaryPath`
+    // reads `resolveRuntimeCommand()` with no vaultDir, so the project pin (and
+    // its `myco-dev` value) never leak into the installed config.
+    expect(servers.myco.command).toEqual([PINNED_BINARY, 'mcp']);
     expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
@@ -1424,7 +1495,9 @@ describe('installMcp runtime command isolation', () => {
 
     const config = readJson(path.join(projectRoot, '.mcp.json'));
     const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
-    expect(servers.myco.command).toBe('myco-run');
+    // Same isolation as the array form: the MCP command is the MACHINE pin,
+    // so the project-local `myco-dev` runtime never lands in the config.
+    expect(servers.myco.command).toBe(PINNED_BINARY);
     expect(servers.myco.args).toEqual(['mcp']);
     expect(JSON.stringify(servers.myco)).not.toContain(runtime);
     expect(JSON.stringify(servers.myco)).not.toContain('myco-dev');
@@ -1504,7 +1577,7 @@ describe('installSettings (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain(`command = "${PINNED_BINARY}"`);
     expect(content).toContain('[features]');
     expect(content).toContain('hooks = true');
   });
@@ -1716,9 +1789,12 @@ describe('uninstallSettings (TOML)', () => {
     installer.install();
 
     const result = readJson(openCodeJsonPath);
-    // Exec argv array preserved verbatim (not filtered token-by-token).
+    // Exec argv array stays a clean 2-element argv (not filtered token-by-token
+    // down to `['mcp']`). install() rewrites the `myco` server, so element 0 is
+    // now the resolved binary path; the structural invariant — `command` is a
+    // preserved exec argv array — is what this test guards.
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['myco-run', 'mcp']);
+      .toEqual([PINNED_BINARY, 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -2041,7 +2117,7 @@ describe('Windsurf flat hook format', () => {
 
     const hooks = readJson(path.join(projectRoot, '.windsurf/hooks.json'));
     const groups = (hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>;
-    expect(groups[0].command).toBe('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
+    expect(groups[0].command).toBe(`${PINNED_BINARY} hook user-prompt-submit --symbiont windsurf ${MYCO_MANAGED_MARKER}`);
     // Should NOT have nested hooks array
     expect(groups[0].hooks).toBeUndefined();
   });
@@ -2062,7 +2138,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).toContain('other-tool check');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
+    expect(commands).toContain(`${PINNED_BINARY} hook user-prompt-submit --symbiont windsurf ${MYCO_MANAGED_MARKER}`);
   });
 
   it('replaces stale Myco flat hooks', () => {
@@ -2081,7 +2157,7 @@ describe('Windsurf flat hook format', () => {
     const commands = ((hooks.hooks as Record<string, unknown[]>).pre_user_prompt as Array<Record<string, unknown>>)
       .map((g) => g.command);
     expect(commands).not.toContain('myco-run hook old-event');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
+    expect(commands).toContain(`${PINNED_BINARY} hook user-prompt-submit --symbiont windsurf ${MYCO_MANAGED_MARKER}`);
   });
 
   it('uninstalls flat Myco hooks', () => {
@@ -2492,7 +2568,7 @@ describe('old-format hook backward compatibility', () => {
     // Old hooks replaced, not stacked
     expect(hooks.SessionStart).toHaveLength(1);
     const command = ((hooks.SessionStart[0] as { hooks: Array<{ command: string }> }).hooks[0]).command;
-    expect(command).toBe('cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont claude-code');
+    expect(command).toBe(`${PINNED_BINARY} hook session-start --symbiont claude-code ${MYCO_MANAGED_MARKER}`);
   });
 
   it('replaces old-format flat hooks in Windsurf', () => {
@@ -2512,7 +2588,7 @@ describe('old-format hook backward compatibility', () => {
       .map((g) => g.command);
     // Old format removed, new format added
     expect(commands).not.toContain('myco-run hook user-prompt-submit');
-    expect(commands).toContain('cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook user-prompt-submit --symbiont windsurf');
+    expect(commands).toContain(`${PINNED_BINARY} hook user-prompt-submit --symbiont windsurf ${MYCO_MANAGED_MARKER}`);
     // No duplication
     expect(commands).toHaveLength(1);
   });
@@ -2524,12 +2600,12 @@ describe('old-format hook backward compatibility', () => {
 
 describe('hook template validation', () => {
   it('all hook templates use the launcher placeholder', () => {
-    // Templates use `{{mycoLauncher}}`, which the installer substitutes
-    // at install time to either `node .agents/myco-run.cjs` (project) or
-    // `node ".../.myco/launcher.cjs"` (global). The legacy hard-coded
-    // `.agents/myco-run.cjs` form is the bug that caused global-install
-    // hook files to depend on a project-local file existing — the
-    // placeholder is what enforces the scope-correctness invariant.
+    // Templates use `{{mycoLauncher}}`, which the installer substitutes at
+    // install time with the direct binary path (plus the `--myco-managed`
+    // marker). The legacy hard-coded `.agents/myco-run.cjs` form is the bug
+    // that caused global-install hook files to depend on a project-local file
+    // existing — the placeholder is what enforces the scope-correctness
+    // invariant.
     const templateDirs = ['claude-code', 'codex', 'cursor', 'copilot', 'windsurf'];
     const launcherForm = /\{\{mycoLauncher\}\} /;
     for (const dir of templateDirs) {
@@ -2654,9 +2730,10 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["<binary>", "mcp"] }
+    // — element 0 is the resolved binary path (the machine runtime pin).
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual([PINNED_BINARY, 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
@@ -2887,5 +2964,327 @@ describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
     expect(fs.existsSync(path.join(agentLink, 'SKILL.md'))).toBe(true);
     // The canonical symlink (ours) is gone.
     expect(fs.existsSync(path.join(projectRoot, '.agents/skills/myco'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Windows backslash-path collapse — the 6× duplicate-stack regression
+// ---------------------------------------------------------------------------
+
+describe('Windows backslash hook entries collapse on merge (both merge sites)', () => {
+  // The wild Windows config carried six Myco hook groups whose commands used a
+  // BACKSLASH canonical path. The pre-fix substring scan (forward-slash only)
+  // never matched them, so they went unclaimed and re-accumulated on each
+  // merge. With separator normalization in `containsMycoLauncherReference`,
+  // both merge sites recognize and strip the six, replacing them with one
+  // clean template group, while a genuine user hook is preserved.
+
+  /** Six Myco hook groups in the wild Windows backslash form. */
+  function sixBackslashMycoGroups(event: string): Array<Record<string, unknown>> {
+    return Array.from({ length: 6 }, () => ({
+      hooks: [{
+        type: 'command',
+        command: `node C:\\Users\\chris\\.myco\\launcher.cjs hook ${event} --symbiont claude-code`,
+        timeout: 30,
+      }],
+    }));
+  }
+
+  it('unbatched merge site (installHooks): collapses 6 backslash duplicates to 1, preserves the user hook', () => {
+    // CLAUDE_MANIFEST has separate hooks/mcp/settings targets, so install()
+    // routes through installHooks() — the unbatched merge site (~1354).
+    const userGroup = { hooks: [{ type: 'command', command: 'my-other-tool start', timeout: 5 }] };
+    const settingsPath = path.join(projectRoot, '.claude/settings.json');
+    writeJson(settingsPath, {
+      hooks: {
+        SessionStart: [...sixBackslashMycoGroups('session-start'), userGroup],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const settings = readJson(settingsPath);
+    const groups = (settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).SessionStart;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Exactly one Myco-owned group remains (the six backslash duplicates collapsed).
+    const mycoCount = commands.filter((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs') || c.includes('--myco-managed')).length;
+    expect(mycoCount).toBe(1);
+    // The user's genuine hook is preserved.
+    expect(commands).toContain('my-other-tool start');
+    // No backslash canonical entry survived.
+    expect(commands.some((c) => c.includes('C:\\Users\\chris\\.myco\\launcher.cjs'))).toBe(false);
+  });
+
+  it('batched merge site (installBatchedJson): collapses 6 backslash duplicates to 1, preserves the user hook', () => {
+    // CLI_BATCHED_MANIFEST colocates hooks/mcp/settings into one JSON file, so
+    // install() routes through installBatchedJson() — the batched merge site
+    // (~878). Plant the templates that path reads.
+    const dir = path.join(packageRoot, 'src/symbionts/templates/cli-batched');
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont cli-batched', timeout: 30 }] }],
+    });
+    writeJson(path.join(dir, 'mcp.json'), MCP_TEMPLATE);
+    writeJson(path.join(dir, 'settings.json'), { features: { capture: true } });
+
+    const userGroup = { hooks: [{ type: 'command', command: 'my-other-tool stop', timeout: 5 }] };
+    const sharedFile = path.join(projectRoot, '.clibatched/config.json');
+    writeJson(sharedFile, {
+      hooks: {
+        Stop: [...sixBackslashMycoGroups('stop'), userGroup],
+      },
+    });
+
+    const installer = new SymbiontInstaller(CLI_BATCHED_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const config = readJson(sharedFile);
+    const groups = (config.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>).Stop;
+    const commands = groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    // Exactly one Myco-owned group remains.
+    const mycoCount = commands.filter((c) => c.includes('myco-run.cjs') || c.includes('.myco/launcher.cjs') || c.includes('--myco-managed')).length;
+    expect(mycoCount).toBe(1);
+    // The user's genuine hook is preserved.
+    expect(commands).toContain('my-other-tool stop');
+    // No backslash canonical entry survived.
+    expect(commands.some((c) => c.includes('C:\\Users\\chris\\.myco\\launcher.cjs'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct-binary hook commands (Launcher Unification Phase 2a)
+//
+// Hook commands invoke the self-contained binary directly — no `node`, no
+// `.cjs` trampoline — and carry the `--myco-managed` ownership marker. The
+// binary path resolves from the machine `runtime.command` pin (deterministic
+// here) falling back to `process.execPath` in production. The claude-code
+// template drops its `cd "${CLAUDE_PROJECT_DIR:-.}" &&` prefix; the binary's
+// launch preamble anchors cwd in-process.
+// ---------------------------------------------------------------------------
+
+describe('direct-binary hook commands', () => {
+  // PINNED_BINARY, pinRuntimeBinary, and assertDirectBinaryCommands are
+  // module-scope shared helpers (also used by the installHooks suite).
+
+  /**
+   * Per-symbiont hooks template using the `{{mycoLauncher}}` placeholder,
+   * mirroring the real (post-Phase-2a) template shapes: bare
+   * `{{mycoLauncher}} hook <event> --symbiont <agent>` with no `cd` prefix.
+   * The `cd`-prefix removal is verified directly against the bundled template
+   * and the generated bundle elsewhere in this suite.
+   */
+  function writeLauncherHooksTemplate(agent: string): void {
+    const dir = path.join(packageRoot, `src/symbionts/templates/${agent}`);
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      SessionStart: [
+        { hooks: [{ type: 'command', command: `{{mycoLauncher}} hook session-start --symbiont ${agent}`, timeout: 10 }] },
+      ],
+      Stop: [
+        { hooks: [{ type: 'command', command: `{{mycoLauncher}} hook stop --symbiont ${agent}`, timeout: 30 }] },
+      ],
+    });
+  }
+
+  /** Collect every hook command string written to a nested-format target. */
+  function readHookCommands(targetPath: string): string[] {
+    const settings = readJson(targetPath);
+    const hooks = settings.hooks as Record<string, Array<{ hooks?: Array<{ command: string }> }>>;
+    return Object.values(hooks).flatMap((groups) => groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command)));
+  }
+
+  // Each symbiont with a nested-format JSON hooks template. cursor and
+  // windsurf use flat-format / placeholder-prefixed templates exercised in
+  // dedicated suites above; here we cover the nested shape uniformly.
+  const NESTED_HOOK_SYMBIONTS: Array<{ name: string; manifest: SymbiontManifest; hooksTarget: string }> = [
+    { name: 'claude-code', manifest: CLAUDE_MANIFEST, hooksTarget: '.claude/settings.json' },
+    { name: 'codex', manifest: CODEX_MANIFEST, hooksTarget: '.codex/hooks.json' },
+    { name: 'copilot', manifest: COPILOT_MANIFEST, hooksTarget: '.github/hooks/myco-hooks.json' },
+  ];
+
+  for (const { name, manifest, hooksTarget } of NESTED_HOOK_SYMBIONTS) {
+    it(`${name}: emits a direct-binary command with the ownership marker and no node/.cjs`, () => {
+      pinRuntimeBinary(PINNED_BINARY);
+      writeLauncherHooksTemplate(name);
+
+      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
+      expect(installer.installHooks()).toBe(true);
+
+      const commands = readHookCommands(path.join(projectRoot, hooksTarget));
+      expect(commands.length).toBeGreaterThan(0);
+      assertDirectBinaryCommands(commands, name);
+    });
+  }
+
+  // cursor and windsurf use the FLAT hook shape (`{ command }`, no nested
+  // `hooks` array). Their real templates carry the bare placeholder too, so
+  // the same direct-binary assertions hold once the flat commands are read.
+  const FLAT_HOOK_SYMBIONTS: Array<{ name: string; manifest: SymbiontManifest; hooksTarget: string }> = [
+    { name: 'cursor', manifest: CURSOR_MANIFEST, hooksTarget: '.cursor/hooks.json' },
+    { name: 'windsurf', manifest: WINDSURF_MANIFEST, hooksTarget: '.windsurf/hooks.json' },
+  ];
+
+  /** Write a flat-format hooks template using the launcher placeholder. */
+  function writeFlatLauncherHooksTemplate(agent: string): void {
+    const dir = path.join(packageRoot, `src/symbionts/templates/${agent}`);
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      sessionStart: [{ command: `{{mycoLauncher}} hook session-start --symbiont ${agent}`, type: 'command', timeout: 10 }],
+      stop: [{ command: `{{mycoLauncher}} hook stop --symbiont ${agent}`, type: 'command', timeout: 30 }],
+    });
+  }
+
+  function readFlatHookCommands(targetPath: string): string[] {
+    const settings = readJson(targetPath);
+    const hooks = settings.hooks as Record<string, Array<{ command: string }>>;
+    return Object.values(hooks).flatMap((groups) => groups.map((g) => g.command));
+  }
+
+  for (const { name, manifest, hooksTarget } of FLAT_HOOK_SYMBIONTS) {
+    it(`${name}: emits a direct-binary command with the ownership marker and no node/.cjs (flat)`, () => {
+      pinRuntimeBinary(PINNED_BINARY);
+      writeFlatLauncherHooksTemplate(name);
+
+      const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
+      expect(installer.installHooks()).toBe(true);
+
+      const commands = readFlatHookCommands(path.join(projectRoot, hooksTarget));
+      expect(commands.length).toBeGreaterThan(0);
+      assertDirectBinaryCommands(commands, name);
+    });
+  }
+
+  it('antigravity: plugin-file JSON template emits direct-binary commands with the marker', () => {
+    pinRuntimeBinary(PINNED_BINARY);
+    const antigravity: SymbiontManifest = {
+      name: 'antigravity',
+      displayName: 'Antigravity',
+      binary: 'antigravity',
+      configDir: '.antigravity',
+      pluginRootEnvVar: 'ANTIGRAVITY_PLUGIN_ROOT',
+      hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+      registration: {
+        hooksTarget: '.agents/plugins/myco/hooks.json',
+        hooksFormat: 'plugin-file',
+        hooksTemplateFile: 'hooks.json',
+        skillsTarget: '.agents/skills',
+      },
+    };
+    // Antigravity's real template nests events under a `myco` wrapper key and
+    // mixes flat (`{ command }`) and nested (`{ hooks: [{ command }] }`) shapes.
+    const dir = path.join(packageRoot, 'src/symbionts/templates/antigravity');
+    fs.mkdirSync(dir, { recursive: true });
+    writeJson(path.join(dir, 'hooks.json'), {
+      myco: {
+        PreInvocation: [{ type: 'command', command: '{{mycoLauncher}} hook session-start --symbiont antigravity', timeout: 10 }],
+        PostToolUse: [{ matcher: '', hooks: [{ type: 'command', command: '{{mycoLauncher}} hook post-tool-use --symbiont antigravity', timeout: 5 }] }],
+      },
+    });
+
+    const installer = new SymbiontInstaller(antigravity, projectRoot, packageRoot);
+    expect(installer.installHooks()).toBe(true);
+
+    const written = readJson(path.join(projectRoot, '.agents/plugins/myco/hooks.json'));
+    const commands: string[] = [];
+    const collect = (v: unknown): void => {
+      if (typeof v === 'string') { if (v.includes('--symbiont antigravity')) commands.push(v); return; }
+      if (Array.isArray(v)) { v.forEach(collect); return; }
+      if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(collect);
+    };
+    collect(written);
+    expect(commands.length).toBe(2);
+    assertDirectBinaryCommands(commands, 'antigravity');
+  });
+
+  it('claude-code: the installed command starts with the binary and carries no cd prefix', () => {
+    pinRuntimeBinary(PINNED_BINARY);
+    writeLauncherHooksTemplate('claude-code');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const commands = readHookCommands(path.join(projectRoot, '.claude/settings.json'));
+    for (const cmd of commands) {
+      expect(cmd).not.toContain('cd ');
+      expect(cmd).not.toContain('CLAUDE_PROJECT_DIR');
+      expect(cmd.startsWith(PINNED_BINARY)).toBe(true);
+    }
+  });
+
+  it('the bundled claude-code template carries no cd prefix and uses the placeholder', () => {
+    const template = JSON.parse(
+      fs.readFileSync(path.resolve('packages/myco/src/symbionts/templates/claude-code/hooks.json'), 'utf-8'),
+    );
+    for (const groups of Object.values(template) as Array<Array<{ hooks?: Array<{ command: string }> }>>) {
+      for (const group of groups) {
+        for (const hook of group.hooks ?? []) {
+          expect(hook.command).not.toContain('cd ');
+          expect(hook.command).not.toContain('CLAUDE_PROJECT_DIR');
+          expect(hook.command).toMatch(/^\{\{mycoLauncher\}\} hook /);
+        }
+      }
+    }
+  });
+
+  it('the generated bundle reflects the cd-prefix removal', async () => {
+    const { BUNDLED_TEMPLATES } = await import('@myco/symbionts/templates.generated.js');
+    const generated = BUNDLED_TEMPLATES['claude-code/hooks.json'];
+    expect(generated).toBeDefined();
+    expect(generated).not.toContain('CLAUDE_PROJECT_DIR');
+    expect(generated).not.toContain('cd ');
+    expect(generated).toContain('{{mycoLauncher}} hook session-start --symbiont claude-code');
+  });
+
+  it('forward-slashes a backslash binary path so the command is argv-safe', () => {
+    pinRuntimeBinary('C:\\Program\\myco\\bin\\myco.exe');
+    writeLauncherHooksTemplate('claude-code');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const commands = readHookCommands(path.join(projectRoot, '.claude/settings.json'));
+    for (const cmd of commands) {
+      expect(cmd).toContain('C:/Program/myco/bin/myco.exe');
+      expect(cmd).not.toContain('\\');
+    }
+  });
+
+  it('refuses to install when the resolved binary path contains whitespace', () => {
+    pinRuntimeBinary('/Users/My Name/.myco/runtime/myco');
+    writeLauncherHooksTemplate('claude-code');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    expect(() => installer.installHooks()).toThrow(/whitespace/);
+  });
+
+  it('readSymbiontFlag tolerates the trailing --myco-managed marker', () => {
+    expect(readSymbiontFlag(['stop', '--symbiont', 'claude-code', '--myco-managed'])).toBe('claude-code');
+    expect(readSymbiontFlag(['hook', 'session-start', '--symbiont', 'codex', '--myco-managed'])).toBe('codex');
+    // Marker before the flag must not be mistaken for the symbiont value.
+    expect(readSymbiontFlag(['--myco-managed', '--symbiont', 'cursor'])).toBe('cursor');
+  });
+
+  it('a freshly-emitted command is recognized as Myco-owned and install is idempotent', () => {
+    pinRuntimeBinary(PINNED_BINARY);
+    writeLauncherHooksTemplate('claude-code');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installHooks();
+
+    const target = path.join(projectRoot, '.claude/settings.json');
+    const firstCommands = readHookCommands(target);
+    for (const cmd of firstCommands) {
+      expect(isMycoHookCommand(cmd)).toBe(true);
+    }
+
+    // Re-install: the marker-carrying groups are recognized and replaced, not
+    // duplicated. Exactly one group remains per event.
+    installer.installHooks();
+    const settings = readJson(target);
+    const hooks = settings.hooks as Record<string, unknown[]>;
+    for (const groups of Object.values(hooks)) {
+      expect(groups.length).toBe(1);
+    }
   });
 });

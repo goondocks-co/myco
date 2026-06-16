@@ -66,6 +66,27 @@ The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.t
 
 4. **The only legitimate exception** is `init.ts` creating a brand-new vault where no existing file exists yet. Every other write path must use `updateConfig`.
 
+### Machine/Grove Tier Writes — `updateTierConfigRaw`
+
+`updateConfig()` is for the **project tier** (`myco.yaml`). Machine (`~/.myco/config.yaml`) and grove (`~/.myco/groves/<id>/grove.yaml`) tier writes use `updateTierConfigRaw()` from `packages/myco/src/config/loader.ts`:
+
+```ts
+import { updateTierConfigRaw } from '../config/loader';
+
+// Write to machine tier
+updateTierConfigRaw({ kind: 'machine' }, (raw) => {
+  (raw as Record<string, unknown>).capture = { ...(raw.capture as object ?? {}), enabled: false };
+  return raw as Record<string, unknown>;
+});
+
+// Write to grove tier
+updateTierConfigRaw({ kind: 'grove', groveId }, (raw) => {
+  return { ...raw, 'agent': { ...(raw.agent as object ?? {}), model: 'claude-opus-4-5' } };
+});
+```
+
+`updateTierConfigRaw` reads the raw on-disk YAML, calls your mutation function, validates tolerantly (unknown keys preserved on disk; value violations throw `ZodError`), and persists atomically. Unlike `updateConfig`, it throws `TierConfigUnreadableError` when the target file has corrupt YAML or a non-mapping root — preventing silent file wipes.
+
 ### Grove-specific considerations
 
 **Global daemon coordination**: Grove's global daemon architecture means config changes may need coordination across multiple project vaults. Use the appropriate grove-aware config loader when working in a multi-project context.
@@ -185,7 +206,7 @@ The Settings UI uses dedicated PATCH handling via `handlePutScopedConfig` in `pa
 Myco's three-tier scoped configuration enables machine-global defaults, grove-level coordination, project team settings, and per-machine personalization:
 
 - **Machine tier** (`~/.myco/config.yaml`) — global daemon configuration across all groves and projects
-- **Grove tier** (`~/.myco/groves/<id>/grove.yaml`) — grove-level settings that coordinate across multiple projects within a grove  
+- **Grove tier** (`~/.myco/groves/<id>/grove.yaml`) — grove-level settings that coordinate across multiple projects within a grove
 - **Project tier** (`myco.yaml`) — committed team-shared settings that affect how the team collaborates
 - **Personal tier** (`.myco/local.yaml`) — gitignored per-machine overrides for individual developer preferences
 
@@ -207,7 +228,7 @@ When adding any new user-configurable behavior, follow these steps to determine 
 
 **Step 1: Apply the tier decision rule**
 - **Machine tier**: Global daemon behavior across all groves (port, logging, global auth, capture policy)
-- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)  
+- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies, agent provider and model selection, agent harness configuration, task configuration overlays, embedding configuration)
 - **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
 - **Personal tier**: Individual developer experience preferences (UI themes, notification settings, daemon operational settings)
 
@@ -234,7 +255,7 @@ Use these established patterns as representative examples (verify against the li
 - Task configuration overlays (`agent.tasks.*`)
 - Embedding provider configuration (`embedding.provider`)
 
-*Machine Settings:* Global daemon configuration  
+*Machine Settings:* Global daemon configuration
 - Global daemon port and networking
 - Machine-level authentication
 - Global logging and diagnostics
@@ -278,60 +299,20 @@ Use `loadMergedConfig(vaultDir, { groveId })` to automatically resolve grove-tie
 ### Add New Scoped Config Fields
 
 **Step 1: Update the config schema**
-Add the new field to the appropriate section in `packages/myco/src/config/schema.ts`:
-
-```typescript
-// For Personal-scoped field - add to the appropriate schema
-const DaemonSchema = z.object({
-  // existing fields...
-  new_personal_field: z.string().default("defaultValue"),
-});
-
-// For Grove-scoped field - add to the appropriate schema
-const GroveConfigSchema = z.object({
-  // existing fields...
-  new_grove_field: z.boolean().default(false),
-});
-
-// For Project-scoped field - add to the appropriate schema
-const TasksSchema = z.object({
-  // existing fields...
-  new_project_field: z.boolean().default(false),
-});
-```
+Add the new field to the appropriate section in `packages/myco/src/config/schema.ts`.
 
 **Step 2: Register the field in SCOPE_REGISTRY**
-Add the new field to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with correct `home` and `overridableBy`:
-
-```typescript
-// In scope.ts SCOPE_REGISTRY
-'your.new.field': { home: 'grove', overridableBy: ['local'] },
-```
-
-The scope-registry sync test will fail if this entry is missing, so add it before running tests.
+Add the new field to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` with correct `home` and `overridableBy`. The scope-registry sync test will fail if this entry is missing.
 
 **Step 3: Verify the scoped config endpoint handles your field**
 The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch merging with validation via `handlePutScopedConfig`:
-
 ```typescript
 // Endpoint contract: { scope: 'project' | 'local', patch: {...}, clear?: [...] }
 // patch_clear_overlap validation prevents same key in both patch and clear arrays
 ```
 
-Your new field should automatically work through this endpoint once added to the schema.
-
 **Step 4: Add field to scope defaults matrix (for UI)**
-If your field will appear in the daemon UI, update the scope defaults in the appropriate Settings component:
-
-```typescript
-// In settings UI component
-const scopeDefaults = {
-  'existing.field': 'local' as const,
-  'new.personal.field': 'local' as const,
-  'new.grove.field': 'project' as const,
-  'new.project.field': 'project' as const,
-};
-```
+If your field will appear in the daemon UI, update the scope defaults in the appropriate Settings component.
 
 **Step 5: Handle restart-required fields (if applicable)**
 If the field requires daemon restart rather than live-reload, document it in the settings UI and ensure the save handler sends the appropriate IPC restart signal alongside the config write.
@@ -364,15 +345,9 @@ registry.on(['agent.model', 'embedding'], createModelReaction(dependencies));
 ```
 
 **Step 3: Implement closure factory pattern**
-Create reactions using the standard closure factory:
-
 ```typescript
-// Dependencies explicit at call site, testable in isolation
 function createModelReaction(deps: { logger: Logger, embedManager: EmbedManager }) {
   return (config: MycoConfig) => {
-    // Handler must be idempotent - no self-writes
-    // Use the provided config object (already parsed, optimized)
-
     deps.logger.info('Model config changed, updating embedding provider');
     deps.embedManager.updateProvider(config.embedding.provider);
   };
@@ -380,7 +355,7 @@ function createModelReaction(deps: { logger: Logger, embedManager: EmbedManager 
 ```
 
 **Step 4: Follow idempotency constraints**
-Reactions must be idempotent and cannot trigger self-writes that would create feedback loops. If a reaction needs to write config, it should do so through a separate mechanism outside the reaction system.
+Reactions must be idempotent and cannot trigger self-writes that would create feedback loops.
 
 ---
 
@@ -450,19 +425,22 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **SCOPE_REGISTRY sync test:** A scope-registry sync test enforces that every Zod schema leaf has a registry entry. After adding a new config field to the schema, always add it to `SCOPE_REGISTRY` in `packages/myco/src/config/scope.ts` — or the test will fail loudly.
 
-**loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` when groveId is provided. When groveId is not provided, it auto-resolves from `loadProjectManifest(vaultDir)` to detect the project's grove association. If groveId is undefined and the project manifest contains no grove association, grove-tier settings are skipped.
+**loadMergedConfig groveId resolution:** `loadMergedConfig(vaultDir, { groveId })` automatically resolves and merges grove-tier configuration from `~/.myco/groves/<groveId>/grove.yaml` when groveId is provided. When groveId is not provided, it auto-resolves from `loadProjectManifest(vaultDir)`. If groveId is undefined and the project manifest contains no grove association, grove-tier settings are skipped.
 
-**Scoped-clear pruneEmptyParents omission:** When writing `unsetAtPath()` calls in a scoped-clear loop (e.g., `for (const key of clearList) unsetAtPath(working, key)`), always pass `{ pruneEmptyParents: true }`. Without it, deleting the last leaf under a parent key leaves an empty-map object as residue in the persisted YAML instead of removing the parent entirely. Both clear loops in `handlePutScopedConfig` (`packages/myco/src/daemon/api/config.ts` lines ~168 and ~201) currently omit this option — include it when implementing any new scoped-clear logic.
+**Scoped-clear pruneEmptyParents omission:** When writing `unsetAtPath()` calls in a scoped-clear loop, always pass `{ pruneEmptyParents: true }`. Without it, deleting the last leaf under a parent key leaves an empty-map object as residue in the persisted YAML instead of removing the parent entirely.
 
-**capture config is strictly machine-scoped:** The `capture` config section has `home: 'machine', overridableBy: []` in SCOPE_REGISTRY — the entire section, including the `ignore` sub-object (with its `paths` and `patterns` arrays), cannot be overridden by project or grove tiers. When debugging why a project root is excluded from capture, check `~/.myco/config.yaml` (the machine config), not `myco.yaml` or `~/.myco/groves/<id>/grove.yaml`. The `ignore` sub-object's `paths` field lists exact project root paths to exclude; `patterns` lists globs matched against the absolute project root with `~` expansion.
+**`TierConfigUnreadableError` on corrupt machine/grove config:** `updateTierConfigRaw()` throws `TierConfigUnreadableError` (from `packages/myco/src/config/loader.ts`) when the target file has invalid YAML or a non-mapping root — protecting against silently wiping a corrupt file. `updateConfig()` (project tier) does NOT throw this; it tolerates corrupt YAML by treating the file as empty. Callers of `updateTierConfigRaw` must catch `TierConfigUnreadableError` and surface it as a user error (API callers: return 422). The daemon uses `setTierParseFailureListener()` to register a notification callback for non-fatal tier read failures logged to stderr; the listener replays failures that occurred before it was registered so no pre-boot corruption goes unnoticed.
 
-**Capability gating via capabilityEnabled():** Features controlled by a named capability (`'cortex'`, `'canopy'`, `'skills'`, `'vault_evolution'`) must be checked via `capabilityEnabled(config, capId)` from `packages/myco/src/config/capabilities.ts`, not by reading config fields directly. The function is fail-closed — null or undefined config returns false. The `CAPABILITIES` record maps each capability ID to its `masterGate` config path, `memberGates`, and `scheduledTasks`. Adding a new capability-gated feature: (1) add an entry to `CAPABILITIES`; (2) add its ID to `CAPABILITY_IDS` in `packages/myco/src/config/scope.ts`; (3) call `capabilityEnabled()` at every gate-check site. Bypassing it with a direct config field read skips the fail-closed contract.
+**capture config is strictly machine-scoped:** The `capture` config section has `home: 'machine', overridableBy: []` in SCOPE_REGISTRY — the entire section, including the `ignore` sub-object (with its `paths` and `patterns` arrays), cannot be overridden by project or grove tiers. When debugging why a project root is excluded from capture, check `~/.myco/config.yaml` (the machine config), not `myco.yaml` or `~/.myco/groves/<id>/grove.yaml`.
+
+**Capability gating via capabilityEnabled():** Features controlled by a named capability must be checked via `capabilityEnabled(config, capId)` from `packages/myco/src/config/capabilities.ts`, not by reading config fields directly. The function is fail-closed — null or undefined config returns false. Adding a new capability-gated feature: (1) add an entry to `CAPABILITIES`; (2) add its ID to `CAPABILITY_IDS` in `packages/myco/src/config/scope.ts`; (3) call `capabilityEnabled()` at every gate-check site.
 
 ---
 
 ## Checklist Before Submitting a Config Change
 
-- [ ] YAML write goes through `updateConfig()` (or a named helper that uses it)
+- [ ] YAML write goes through `updateConfig()` (or a named helper that uses it) for project tier
+- [ ] Machine/grove tier writes use `updateTierConfigRaw()`; callers catch `TierConfigUnreadableError` and surface as 422
 - [ ] Every partial update spreads sibling keys at each level
 - [ ] `formToConfig()` accepts and spreads the original config (legacy forms only)
 - [ ] Settings page only sets fields it owns — no pass-through of other pages' sections

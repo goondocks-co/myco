@@ -5,7 +5,7 @@ import { readTranscriptMeta } from './transcript-meta.js';
 import { resolveProvisionedVaultDir } from './vault-gate.js';
 import { writeHookResponse } from './response.js';
 import { AntigravityJsonlParser } from '../symbionts/parsers/antigravity-jsonl.js';
-import { execFileSync } from 'node:child_process';
+import { runGit } from '../utils/git.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -76,7 +76,7 @@ export async function main() {
 
     let branch: string | undefined;
     try {
-      branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).trim();
+      branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], process.cwd());
     } catch { /* not a git repo */ }
 
     // Antigravity has no UserPromptSubmit equivalent — PreInvocation fires

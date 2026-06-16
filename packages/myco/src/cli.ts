@@ -2,6 +2,7 @@
 import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { activateDevBuildModeIfDetected } from './daemon/update-checker.js';
+import { runLaunchPreamble } from './cli/launch-preamble.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -34,6 +35,7 @@ Commands:
   doctor [--fix]          Check vault health and repair issues
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
+  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status) [--dev]
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -100,14 +102,21 @@ async function main(): Promise<void> {
   // Internal: spawned by the daemon to run a heavy restore out-of-process
   // (see backup/restore-runner.ts). Intentionally absent from the help text.
   if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
+  // Internal: spawned detached by the daemon to run the cross-platform update/
+  // restart orchestration after the daemon exits (see daemon/apply-update.ts).
+  if (cmd === '__apply-update') return (await import('./daemon/apply-update.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');
     console.log(getPluginVersion());
     return;
   }
-  if (cmd === 'mcp') return (await import('./mcp/stdio-bridge.js')).main();
+  if (cmd === 'mcp') {
+    runLaunchPreamble('mcp', args);
+    return (await import('./mcp/stdio-bridge.js')).main();
+  }
   if (cmd === 'hook') {
+    runLaunchPreamble('hook', args);
     const hookName = args[0];
     const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
       'session-start': () => import('./hooks/session-start.js'),
@@ -134,6 +143,10 @@ async function main(): Promise<void> {
     return (await loader()).main();
   }
   if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
+  // Supervisor lifecycle — manages the platform service + daemon binary, never a
+  // project vault. Belongs above the myco.yaml gate alongside daemon/update/remove,
+  // so `myco service <verb>` works from any cwd (e.g. a fresh host with no project).
+  if (cmd === 'service') return (await import('./cli/service.js')).run(args);
 
   if (cmd === 'doctor') {
     const vaultDir = resolveVaultDir();
@@ -142,6 +155,11 @@ async function main(): Promise<void> {
 
   if (cmd === 'update') return (await import('./cli/update.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
+
+  // Honor the runtime pin before the myco.yaml gate so a pinned binary is
+  // re-exec'd even on a host with no project vault; the pinned binary owns the
+  // gate decision after re-exec.
+  if (cmd === 'tool') runLaunchPreamble('tool', args);
 
   const vaultDir = resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
@@ -174,7 +192,6 @@ async function main(): Promise<void> {
     case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
     case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
-    case 'service': return (await import('./cli/service.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);

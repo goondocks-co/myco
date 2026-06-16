@@ -133,6 +133,10 @@ export class LaunchdServiceManager implements ServiceManager {
     return `launchctl kickstart -k ${this.domainTarget(label)}`;
   }
 
+  isManagedDaemon(_label: string, status: ServiceStatus, myPid: number): boolean {
+    return status.running && status.pid === myPid;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const plistPath = this.plistPath(label);
     if (!fs.existsSync(plistPath)) {

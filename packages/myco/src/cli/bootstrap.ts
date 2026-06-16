@@ -4,7 +4,8 @@
  * Two functions, split by *when* migration runs:
  *
  *   - `runGlobalBootstrap()` — ensure this variant's default Grove,
- *     write launchers, run a detection pass, AND walk every registered
+ *     clean up retired launcher trampolines, run a detection pass, AND
+ *     walk every registered
  *     project for legacy per-project install artifacts. Migration is
  *     fire-once-per-project: it runs at daemon first-start and on
  *     auto-Grove-create when a fresh project registers. Explicit retry
@@ -26,16 +27,12 @@
  * is the structural enforcement; this module reports.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, type InstallResult } from '../symbionts/installer.js';
 import {
-  GLOBAL_HOOK_LAUNCHER_FILENAME,
-  installGlobalLaunchers,
-  type InstalledLauncherReport,
-} from '../grove/launcher-install.js';
+  removeRetiredGlobalLaunchers,
+  type RetiredLauncherReport,
+} from '../grove/launcher-cleanup.js';
 import { runGlobalInstallMigrationPass, type MigrationPassResult } from '../grove/global-install-migration.js';
 import {
   runGlobalConfigMigration,
@@ -67,8 +64,8 @@ export interface BootstrapResult {
    * Grove on first hook (Decision 3).
    */
   defaultGrove: GroveRecord;
-  /** Whether the launchers were written (true) or already current (false). */
-  launchers: InstalledLauncherReport;
+  /** Retired launcher trampolines deleted this pass (empty when none lingered). */
+  launchers: RetiredLauncherReport;
   /** Per-symbiont detection outcomes. */
   symbionts: DetectionResult[];
   /**
@@ -83,28 +80,28 @@ export interface BootstrapResult {
 
 export interface GlobalBootstrapStartupDecision {
   shouldRun: boolean;
-  launchersAbsent: boolean;
   defaultGroveAbsent: boolean;
   servedBy: DaemonVariant;
   mycoHome: string;
 }
 
 /**
- * Startup bootstrap is needed when either shared launchers are missing
- * or this daemon variant lacks its default Grove. The second condition is
- * load-bearing for dogfood: production may already have created
- * `launcher.cjs`, while service-dev still needs to create `default-dev`
- * before hooks can auto-register projects into the dev Grove.
+ * Startup bootstrap is needed when this daemon variant lacks its default
+ * Grove. The default Grove is the durable "has this variant bootstrapped"
+ * signal — it persists across daemon restarts, and dev/prod each own a
+ * distinct one (so service-dev still bootstraps on a machine where prod has
+ * already run). Launcher presence is NOT a trigger: the launcher
+ * unification retired the global trampolines, and bootstrap's cleanup step
+ * deletes any that linger — keying on their absence would re-run bootstrap
+ * (and its migration walker) on every start.
  */
 export function shouldRunGlobalBootstrap(
   mycoHome: string = resolveMycoHome(),
   servedBy: DaemonVariant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT),
 ): GlobalBootstrapStartupDecision {
-  const launchersAbsent = !fs.existsSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME));
   const defaultGroveAbsent = resolveDefaultGroveForVariant(mycoHome, { servedBy }) === null;
   return {
-    shouldRun: launchersAbsent || defaultGroveAbsent,
-    launchersAbsent,
+    shouldRun: defaultGroveAbsent,
     defaultGroveAbsent,
     servedBy,
     mycoHome,
@@ -167,8 +164,8 @@ export function runSymbiontDetection(
  * first hook. Specifically:
  *
  *   1. The default Grove for this daemon's variant exists.
- *   2. The two global launchers (`~/.myco/launcher.cjs` +
- *      `~/.myco/mcp-launcher.cjs`) are present and current.
+ *   2. Any retired global launcher trampolines (`~/.myco/launcher.cjs` +
+ *      `~/.myco/mcp-launcher.cjs`) left by a previous release are deleted.
  *   3. Every detected agent has the global Myco config installed.
  *   4. Any per-project legacy install artifacts left over from
  *      pre-global-install Myco are migrated.
@@ -178,13 +175,13 @@ export function runSymbiontDetection(
  *   - **Default Grove FIRST.** Hooks that fire before the Grove exists
  *     would call `ensureProjectRegistered`, which silently returns null
  *     when no default Grove is set (capture loss). Creating the Grove
- *     before installing launchers + symbionts guarantees the receiving
- *     end is ready by the time any agent sends its first hook.
- *   - Launchers SECOND per the Decision 8 write-ordering invariant:
- *     launchers must exist on disk before any agent's hook config
- *     points at them.
- *   - Symbiont installs THIRD — they write the hook configs that
- *     reference the launcher paths.
+ *     before installing symbionts guarantees the receiving end is ready
+ *     by the time any agent sends its first hook.
+ *   - Launcher cleanup SECOND — it deletes inert orphan files; ordering
+ *     relative to the symbiont installs no longer matters (nothing
+ *     executes the deleted files), but it stays here for continuity.
+ *   - Symbiont installs THIRD — they write the hook configs that invoke
+ *     the binary directly.
  *   - Migration walker LAST — it operates on already-registered
  *     projects and doesn't depend on launcher state.
  *
@@ -199,12 +196,11 @@ export function runSymbiontDetection(
  *   - explicit `myco doctor --fix` retry for previously-failed projects
  *
  * The hourly PowerManager tick MUST call `runSymbiontDetection()`
- * directly (plus its own launcher refresh) rather than this function —
- * re-running the walker every hour treats failures as retry-next-hour
- * instead of failures to fix.
+ * directly rather than this function — re-running the walker every hour
+ * treats failures as retry-next-hour instead of failures to fix.
  *
  * Idempotent — a re-invocation against a populated `~/.myco/` returns
- * the same `defaultGrove`, `launchers.written === []`, per-symbiont
+ * the same `defaultGrove`, `launchers.removed === []`, per-symbiont
  * `'already-configured'` results, and `migration.projectsCleaned === 0`.
  */
 export function runGlobalBootstrap(
@@ -212,7 +208,6 @@ export function runGlobalBootstrap(
 ): BootstrapResult {
   const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
   const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
-  const launchers = installGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);
   // Per-project global-install migration. Sentinel-gated: projects
   // already migrated return alreadyDone immediately. Hot path on every
@@ -223,5 +218,11 @@ export function runGlobalBootstrap(
   // rule that gates SQLite access.
   const migration = runGlobalInstallMigrationPass({ packageRoot });
   const globalConfigMigration = runGlobalConfigMigration();
+  // Delete retired launcher trampolines LAST — only after detection has
+  // rewritten every detected agent's hook/MCP config onto the binary and the
+  // config migration scrubbed escaped references. Deleting earlier would orphan
+  // a config not yet rewritten in this pass (capture-loss window); by here no
+  // config references `~/.myco/launcher.cjs`, so removing it is safe.
+  const launchers = removeRetiredGlobalLaunchers();
   return { defaultGrove, launchers, symbionts, migration, globalConfigMigration };
 }

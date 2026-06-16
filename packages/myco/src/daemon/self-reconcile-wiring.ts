@@ -11,7 +11,7 @@ import {
   readUpdateError,
   consumeUpdateError,
 } from './update-checker.js';
-import { resolveServiceRestartCommand } from './api/restart.js';
+import { detectServiceManagedLabel } from './api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -141,13 +141,13 @@ async function runUpdateInstall(
   targetVersion: string,
 ): Promise<void> {
   const mycoBinary = resolveMycoBinary();
-  const serviceRestartCommand = await resolveServiceRestartCommand(getServiceManager());
+  const serviceManagedLabel = await detectServiceManagedLabel(getServiceManager());
   spawnUpdateScript({
     packageSpecs: [`${NPM_PACKAGE_NAME}@${targetVersion}`],
     projectRoot: deps.projectRoot,
     vaultDir: deps.daemonVaultDir,
     mycoBinary,
-    serviceRestartCommand,
+    serviceManagedLabel,
     daemonPort: deps.server.port,
     targetVersion,
   });
@@ -160,8 +160,10 @@ async function runUpdateInstall(
   // When the service manager will drive the restart, skip the
   // immediate SIGTERM here. Same reasoning as in handleUpdateApply:
   // a SIGTERM before `npm install` completes lets the supervisor
-  // respawn a daemon on the still-pre-install binary.
-  if (!serviceRestartCommand) {
+  // respawn a daemon on the still-pre-install binary. A null label means
+  // non-service-managed — we must self-terminate so the respawn can claim
+  // the port.
+  if (!serviceManagedLabel) {
     deps.scheduleShutdown();
   }
 }

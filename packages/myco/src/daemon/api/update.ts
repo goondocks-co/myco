@@ -31,7 +31,7 @@ import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import * as updateInProgress from '../update-in-progress.js';
 import { RELEASE_CHANNELS } from '../../constants/update.js';
 import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
-import { resolveServiceRestartCommand } from './restart.js';
+import { detectServiceManagedLabel } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
 import semver from 'semver';
@@ -170,13 +170,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
         }
         restartInitiated = true;
         const runLocalUpdate = !isStampMatching(installedVersion);
-        const serviceRestartCommand = await resolveServiceRestartCommand(serviceManager);
+        const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
         spawnRestartScript({
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
           toVersion: installedVersion,
           mycoBinary: snapshot.mycoBinary,
-          serviceRestartCommand,
+          serviceManagedLabel,
           daemonPort,
         });
         updateInProgress.write(daemonStateDir, {
@@ -337,7 +337,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
       : installSpecs;
 
-    const serviceRestartCommand = await resolveServiceRestartCommand(serviceManager);
+    const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
     spawnUpdateScript({
       packageSpecs: globalPackageSpecs,
       localRuntimeSpec,
@@ -345,7 +345,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       projectRoot,
       vaultDir,
       mycoBinary: snapshot.mycoBinary,
-      serviceRestartCommand,
+      serviceManagedLabel,
       daemonPort,
       targetVersion: status.latest_version,
     });
@@ -356,13 +356,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     });
 
     // When a service manager drives the restart (kickstart -k), the
-    // script's tail does the SIGTERM as part of the atomic swap.
+    // orchestrator does the SIGTERM as part of the atomic swap.
     // Calling scheduleShutdown here would shut the daemon down before
     // `npm install` completes, letting the supervisor's KeepAlive
     // respawn a daemon on the still-pre-install binary. Without a
-    // service manager the script can't initiate the SIGTERM itself,
-    // so the caller has to.
-    if (!serviceRestartCommand) {
+    // service manager (null label) the orchestrator can't initiate the
+    // SIGTERM itself, so the caller has to.
+    if (!serviceManagedLabel) {
       scheduleShutdown();
     }
 
