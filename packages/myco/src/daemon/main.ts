@@ -21,7 +21,8 @@ import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
-import { resolveMycoHome, resolveGroveDbPath } from '../grove/paths.js';
+import { resolveMycoHome, resolveGroveDbPath, currentDaemonVariant } from '../grove/paths.js';
+import { claimSubsystem, releaseSubsystemClaim, SYMBIONT_CONFIG_SUBSYSTEM } from './subsystem-claim.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
@@ -2473,6 +2474,16 @@ export async function main(): Promise<void> {
   powerManager.start();
   eventLoopLagProbe.start();
 
+  // Subsystem ownership: a dogfood (service-dev) daemon claims symbiont-config
+  // management so the production daemon defers and the two never fight over the
+  // machine's global agent configs. Released on graceful shutdown below; a
+  // crash leaves a stale claim that production reclaims via the pid-liveness
+  // check. No-op for the production daemon (it never claims — it's the default
+  // owner and simply defers while a peer holds the claim).
+  if (currentDaemonVariant() === 'service-dev') {
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, 'service-dev');
+  }
+
   // --- Shutdown ---
 
   // Guard against SIGTERM + SIGINT (or repeated signals) running the
@@ -2496,6 +2507,11 @@ export async function main(): Promise<void> {
     selfReconcileLoop.stop();
     powerManager.stop();
     eventLoopLagProbe.stop();
+    // Release our subsystem claim promptly so the production daemon can resume
+    // ownership without waiting on the pid-liveness fallback. No-op for prod.
+    if (currentDaemonVariant() === 'service-dev') {
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, 'service-dev');
+    }
     if (phantomRebindWatcher) {
       clearInterval(phantomRebindWatcher);
       phantomRebindWatcher = null;
