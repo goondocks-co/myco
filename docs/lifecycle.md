@@ -151,7 +151,6 @@ embedding:
   model: bge-m3
 
 daemon:
-  port: null                    # null = auto-assign
   log_level: info               # debug | info | warn | error
 
 capture:

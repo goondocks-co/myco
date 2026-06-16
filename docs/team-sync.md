@@ -1,6 +1,6 @@
 # Team Sync
 
-Share captured knowledge across your team through a Cloudflare-backed sync layer. Each teammate keeps their local Grove, and Team Sync mirrors your team's knowledge into a shared, queryable store — so everyone's agents draw on the same spores, sessions, plans, and graph without anyone having to think about it.
+Share captured knowledge across your team through a Cloudflare-backed sync layer. Each teammate keeps their knowledge local, and Team Sync mirrors your team's knowledge into a shared, queryable store — so everyone's agents draw on the same spores, sessions, plans, and graph without anyone having to think about it.
 
 Team Sync also exposes a secure [Cloud MCP Server](cloud-mcp.md) so cloud agents (Anthropic Managed Agents, n8n, and the like) can read your team's knowledge. See [Cloud MCP](cloud-mcp.md) for that side.
 
@@ -13,7 +13,7 @@ Team Sync also exposes a secure [Cloud MCP Server](cloud-mcp.md) so cloud agents
 - A team roster shows who's connected.
 - Runs on the Cloudflare free tier for small teams.
 
-Your local Grove stays the source of truth — the team store is a queryable mirror, and nothing is pulled back down to overwrite local data. Every record is attributed to the machine that created it.
+Your local data stays the source of truth — the team store is a queryable mirror, and nothing is pulled back down to overwrite it. Every record is attributed to the machine that created it.
 
 ## Set up a team
 
@@ -68,7 +68,7 @@ A **team selector** in the top-right scopes what you're viewing to one of your t
 
 ### Leaving a team
 
-To stop syncing to a team, open the **Teams** tab and choose **Leave team**. That removes the team from this machine and clears its pending queue — it does not touch the team's cloud Worker or your local Grove, and other members are unaffected. (To tear the cloud infrastructure down entirely, the operator runs `myco-team destroy --team-id <id>`.)
+To stop syncing to a team, open the **Teams** tab and choose **Leave team**. That removes the team from this machine and clears its pending queue — it does not touch the team's cloud Worker or your local data, and other members are unaffected. (To tear the cloud infrastructure down entirely, the operator runs `myco-team destroy --team-id <id>`.)
 
 ## Machine identity
 
@@ -99,7 +99,7 @@ Store your Cloudflare API token in `secrets.env`.
 
 ## Backup & restore
 
-Independent of Team Sync, Myco creates Grove-scoped backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution, so you can pull a teammate's backup without losing who said what.
+Independent of Team Sync, Myco creates local backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution, so you can pull a teammate's backup without losing who said what.
 
 Backups include all knowledge but exclude logs, tool-call activity, and vector embeddings (rebuilt automatically after restore).
 
@@ -117,7 +117,7 @@ The other operator commands take the same `--team-id`: `status`, `rotate-tokens`
 npm update -g @goondocks/myco-team
 ```
 
-The Worker keeps the cloud side lightweight: your local Grove stays the source of truth, the Worker holds a synced mirror for team search and Cloud MCP, and syncing is queued and retryable, so a transient network or Cloudflare hiccup never blocks local work.
+The Worker keeps the cloud side lightweight: your local data stays the source of truth, the Worker holds a synced mirror for team search and Cloud MCP, and syncing is queued and retryable, so a transient network or Cloudflare hiccup never blocks local work.
 
 ### Cost
 
