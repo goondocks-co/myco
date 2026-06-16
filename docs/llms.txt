@@ -2,9 +2,9 @@
 
 > Myco is the nervous system for AI-assisted software teams. It works alongside coding agents, subagents, and agent teams to provide shared project knowledge, semantic codebase awareness, and learned workflows that evolve with the project.
 
-Myco is not a replacement coding agent or hosted harness. It lives with the project, captures development sessions into a local Grove, and routes useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Sync mirrors connected teammates' Grove knowledge through Cloudflare and exposes synced knowledge to cloud agents through secure MCP.
+Myco is not a replacement coding agent or hosted harness. It runs on your machine and works with every git project automatically when you use a supported agent, capturing development sessions into a local Grove and routing useful context back to the agents a team already uses. Local Grove data remains the source of truth. Optional Team Sync mirrors connected teammates' synced knowledge through Cloudflare and exposes it to cloud agents through secure MCP.
 
-The supported path for the current release is macOS. Linux and Windows packages are published for early testing and are experimental.
+macOS is the supported path. Linux and Windows are in beta (Windows x64 only).
 
 ## Start here
 
@@ -23,16 +23,16 @@ The supported path for the current release is macOS. Linux and Windows packages 
 
 ## Team features
 
-- [Team Sync](https://myco.sh/team-sync.md): Share Grove knowledge across machines and teammates while keeping local data as the source of truth.
-- [Cloud MCP](https://myco.sh/cloud-mcp.md): Read-only access to synced Grove knowledge for cloud agents and automations.
+- [Team Sync](https://myco.sh/team-sync.md): Share team knowledge across machines and teammates while keeping local data as the source of truth.
+- [Cloud MCP](https://myco.sh/cloud-mcp.md): Read-only access to synced team knowledge for cloud agents and automations.
 - [Collective](https://myco.sh/collective.md): Cross-project search and shared settings for multiple Team Sync deployments.
 
 ## Operations
 
 - [Local service lifecycle](https://myco.sh/lifecycle.md): What gets captured, how the local service behaves, and what to do when something needs attention.
 - [Upgrade guide](https://myco.sh/upgrade.md): Upgrade Myco, preserve existing agent settings, and verify the install.
-- [Install script for macOS and Linux](https://myco.sh/install.sh): Shell installer. Linux support is experimental.
-- [Install script for Windows](https://myco.sh/install.ps1): PowerShell installer. Windows support is experimental.
+- [Install script for macOS and Linux](https://myco.sh/install.sh): Shell installer. Linux support is in beta.
+- [Install script for Windows](https://myco.sh/install.ps1): PowerShell installer. Windows support is in beta (x64 only).
 
 ## Optional
 

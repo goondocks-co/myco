@@ -2,6 +2,7 @@ import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -140,8 +141,10 @@ const MYCO_LAUNCHER_PLACEHOLDER = '{{mycoLauncher}}';
  * on PATH can still spawn the bridge — the gap the `myco-run` node shim left.
  *
  * Unlike the hook placeholder, no `--myco-managed` marker is appended: MCP
- * ownership is keyed by the `myco` server name (see `installMcpJson`'s sweep),
- * not the command string, so the command value can change freely across builds.
+ * ownership is keyed by the `myco` server name (see `installMcpJson`'s sweep).
+ * The command updates on a genuine binary change but the write is idempotent —
+ * `installMcpJson`/`installMcpToml` skip the file entirely when the entry already
+ * matches, so the hourly detection tick never churns a config the agent owns.
  */
 const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
 
@@ -927,7 +930,14 @@ export class SymbiontInstaller {
    */
   private installBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
     const targetPath = this.resolveAbsoluteTarget("hooks")!;
-    let data = readJsonFile(targetPath);
+    // Capture the on-disk structure up front so we can skip the write entirely
+    // when our transforms produce no change — otherwise the hourly detection
+    // tick would reformat a config the agent actively owns (claude-code's
+    // ~/.claude/settings.json, where hooks + MCP + settings colocate) on every
+    // pass just because its JSON style differs from ours. Same idempotency the
+    // standalone installMcpJson/installPluginHookFile paths already have.
+    const original = readJsonFile(targetPath);
+    let data = structuredClone(original);
     let hooks = false, mcp = false, settings = false;
 
     // Apply hooks transform
@@ -1006,7 +1016,7 @@ export class SymbiontInstaller {
       settings = true;
     }
 
-    writeJsonFile(targetPath, data);
+    if (!isDeepStrictEqual(data, original)) writeJsonFile(targetPath, data);
 
     return {
       hooks,
@@ -1789,6 +1799,14 @@ export class SymbiontInstaller {
   private installMcpJson(targetPath: string, template: Record<string, unknown>, serversKey: string): boolean {
     const config = readJsonFile(targetPath);
 
+    // Idempotency: only touch the file when myco's own entry actually needs to
+    // change (missing, drifted, or duplicated under a stale key). Otherwise the
+    // hourly detection tick would round-trip read → re-serialize → write and
+    // reformat a config the agent actively owns (e.g. ~/.claude/settings.json),
+    // churning it on every pass purely because our JSON style differs. `changed`
+    // gates the write; a structurally-identical entry is a no-op.
+    let changed = false;
+
     for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
       if (candidateKey === serversKey) continue;
       const candidate = config[candidateKey];
@@ -1797,24 +1815,35 @@ export class SymbiontInstaller {
       if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
       delete bag[MYCO_MCP_SERVER_NAME];
       if (Object.keys(bag).length === 0) delete config[candidateKey];
+      changed = true;
     }
 
     const servers = (config[serversKey] ?? {}) as Record<string, unknown>;
     for (const [name, def] of Object.entries(template)) {
+      if (isDeepStrictEqual(servers[name], def)) continue;
       servers[name] = def;
+      changed = true;
     }
     config[serversKey] = servers;
+
+    if (!changed) return false;
     return writeJsonFile(targetPath, config);
   }
 
   /** Write MCP servers to a TOML config file. */
   private installMcpToml(targetPath: string, template: Record<string, unknown>): boolean {
-    let raw = '';
-    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
+    let original = '';
+    try { original = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
+    let raw = original;
     for (const [name, def] of Object.entries(template)) {
       raw = buildTomlMcpSection(raw, name, def as Record<string, unknown>);
     }
+
+    // Idempotency (mirrors installMcpJson): skip the write when the upsert
+    // produced no change, so the detection tick doesn't churn a config.toml the
+    // agent owns on every pass.
+    if (raw === original) return false;
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     atomicWriteFileSync(targetPath, raw);

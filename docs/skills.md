@@ -17,7 +17,7 @@ survey → approve → generate → evolve
 
 **Approve** — Candidates appear in the Skills dashboard. You approve what becomes canon and dismiss the rest. Only approved candidates proceed to generation.
 
-**Generate** — Myco writes a SKILL.md file from the approved candidate's source material. The skill is staged, validated against quality criteria (is it procedural? does it have concrete file paths? is it under 500 lines? does it conflict with existing skills?), and promoted to Myco's canonical skill store only when it passes — at which point every installed agent picks it up via its global skills symlink.
+**Generate** — Myco writes a SKILL.md file from the approved candidate's source material. The skill is staged, validated against quality criteria (is it procedural? does it have concrete file paths? is it under 800 lines? does it conflict with existing skills?), and promoted to Myco's canonical skill store only when it passes — at which point every installed agent picks it up via its global skills symlink.
 
 **Evolve** — Over time, Myco monitors active skills for drift. When new knowledge appears that should be incorporated, a skill's underlying spores get superseded, or a skill grows oversized and should be split, the evolve task rewrites it. Each rewrite bumps a generation number and records what changed.
 
