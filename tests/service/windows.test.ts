@@ -61,6 +61,21 @@ describe('renderWindowsServiceScript', () => {
     expect(out).toContain(`"${spec.executable}" daemon >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`);
     expect(out.includes('\r\n')).toBe(true);
   });
+
+  test('keepAlive renders a crash-restart supervision loop (launchd KeepAlive equivalent)', () => {
+    const out = renderWindowsServiceScript(makeSpec({ keepAlive: true }));
+    expect(out).toContain(':myco_run');
+    expect(out).toContain('if %errorlevel% equ 0 goto myco_done'); // clean exit stops
+    expect(out).toContain('goto myco_run');                        // crash retries
+    expect(out).toContain('if %MYCO_RESTARTS% geq 10 goto myco_done'); // bounded — no hot loop
+    expect(out).toMatch(/ping -n \d+ 127\.0\.0\.1 > nul/);         // backoff sleep
+  });
+
+  test('non-keepAlive runs the daemon once, no supervision loop', () => {
+    const out = renderWindowsServiceScript(makeSpec({ keepAlive: false }));
+    expect(out).not.toContain(':myco_run');
+    expect(out).toContain('daemon >>');
+  });
 });
 
 describe('WindowsTaskServiceManager', () => {

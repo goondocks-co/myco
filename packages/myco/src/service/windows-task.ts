@@ -24,12 +24,36 @@ export function renderWindowsServiceScript(spec: ServiceSpec): string {
     .map(([key, value]) => `set "${key}=${value}"`);
 
   const exec = `"${spec.executable}" ${spec.args.join(' ')}`;
+  const run = `${exec} >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`;
 
+  // Non-keepAlive: run once, no supervision.
+  if (!spec.keepAlive) {
+    return ['@echo off', ...setLines, `cd /d "${spec.workingDir}"`, run, ''].join('\r\n');
+  }
+
+  // KeepAlive: supervise the daemon the way launchd KeepAlive / systemd
+  // Restart=on-failure do. Restart on a CRASH (any non-zero exit — including the
+  // 0xC0000005 access violation bun:sqlite can intermittently throw under
+  // x64-on-ARM emulation during a heavy startup replay), but stop on a clean
+  // shutdown (exit 0, e.g. `myco daemon kill` or a step-aside). Bounded so a
+  // permanently-failing binary can't hot-loop; the intermittent fault clears
+  // within a couple of tries. `ping` is the sleep — `timeout` needs a console a
+  // logon task doesn't have. `%errorlevel% equ 0` (not `if errorlevel 1`) so a
+  // negative crash code still counts as failure.
+  const backoffPings = Math.max(2, (spec.throttleSeconds || 2) + 1);
   return [
     '@echo off',
     ...setLines,
     `cd /d "${spec.workingDir}"`,
-    `${exec} >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`,
+    'set MYCO_RESTARTS=0',
+    ':myco_run',
+    run,
+    'if %errorlevel% equ 0 goto myco_done',
+    'set /a MYCO_RESTARTS+=1',
+    'if %MYCO_RESTARTS% geq 10 goto myco_done',
+    `ping -n ${backoffPings} 127.0.0.1 > nul`,
+    'goto myco_run',
+    ':myco_done',
     '',
   ].join('\r\n');
 }
