@@ -206,31 +206,34 @@ const KNOWN_REVERSIBILITY_GAPS = new Set<string>();
 
 describe('symbiont installer integration matrix (global scope)', () => {
   /**
-   * Post-install command-line scope check.
+   * Post-install command-line scope check (direct-binary form).
    *
-   * The regression this guards: a global-scope install whose hook
-   * commands still reference `.agents/myco-run.cjs` (the project-local
-   * launcher). When the project doesn't ship that file, capture dies
-   * silently. The fix is the `{{mycoLauncher}}` placeholder, substituted
-   * to `node "$HOME/.myco/launcher.cjs"` at install time. This assertion
-   * walks the actual on-disk hook files after install and proves the
-   * launcher path landed correctly.
+   * The regression this guards: a global-scope install whose hook commands
+   * still reference `.agents/myco-run.cjs` (the project-local launcher) or
+   * leave the literal `{{mycoLauncher}}` placeholder unsubstituted — either
+   * one kills capture silently. After the launcher-unification flip, hook
+   * commands invoke the self-contained binary directly (no `node`, no `.cjs`)
+   * and carry the `--myco-managed` ownership marker. A pinned
+   * `runtime.command` makes the resolved binary path deterministic so the
+   * assertion can prove it landed in the command line.
    */
-  describe('post-install hooks file references the global launcher', () => {
+  describe('post-install hooks file uses the direct binary with the ownership marker', () => {
+    const PINNED_BINARY = '/opt/myco/bin/myco';
     for (const manifest of manifests) {
       const reg = manifest.registration;
       if (!reg?.globalHooksTarget) continue;
       // Plugin-file format (opencode, pi) wires hooks through TypeScript
-      // plugin source that dispatches tool calls to the project-local
-      // launcher from inside an active project context — different
-      // dispatch model than JSON hook command lines. Excluded here; the
-      // JSON-format symbionts are what this assertion guards.
+      // plugin source — a different dispatch model than JSON hook command
+      // lines. Antigravity's JSON plugin-file template still substitutes
+      // commands, so it stays in scope.
       if (reg.hooksFormat === 'plugin-file' && reg.hooksTemplateFile !== 'hooks.json') continue;
       const skip = SKIP_REASONS[manifest.name];
       const test = skip ? it.skip : it;
-      test(`${manifest.name}: hook command lines reference ~/.myco/launcher.cjs, not .agents/myco-run.cjs`, () => {
+      test(`${manifest.name}: hook command lines invoke the binary directly with --myco-managed`, () => {
         const fake = setupFakeHome();
         try {
+          fs.mkdirSync(path.join(fake.tmpHome, '.myco'), { recursive: true });
+          fs.writeFileSync(path.join(fake.tmpHome, '.myco', 'runtime.command'), `${PINNED_BINARY}\n`, 'utf-8');
           ensureDetectionDir(manifest, fake.tmpHome);
           const installer = newInstaller(manifest, fake.tmpHome);
           installer.install();
@@ -238,13 +241,79 @@ describe('symbiont installer integration matrix (global scope)', () => {
           const hooksPath = (installer as any).resolveAbsoluteTarget('hooks') as string | null;
           if (!hooksPath || !fs.existsSync(hooksPath)) return;
           const content = fs.readFileSync(hooksPath, 'utf-8');
-          // Substituted file must reference the global launcher and
-          // must NOT contain the project-local launcher reference.
-          expect(content.includes('.myco/launcher.cjs')).toBe(true);
+          // Direct binary invocation, marker present, no trampoline.
+          expect(content.includes(PINNED_BINARY)).toBe(true);
+          expect(content.includes('--myco-managed')).toBe(true);
           expect(content.includes('.agents/myco-run.cjs')).toBe(false);
+          expect(content.includes('.cjs')).toBe(false);
           // The placeholder must be gone — leaving it literal would
           // be worse than the bug we're guarding against.
           expect(content.includes('{{mycoLauncher}}')).toBe(false);
+        } finally {
+          fake.cleanup();
+        }
+      });
+    }
+  });
+
+  /**
+   * Migration matrix — a config written by the PREVIOUS release (the
+   * `node ~/.myco/launcher.cjs` trampoline form, no `--myco-managed` marker)
+   * must be rewritten to the direct-binary form on the next `install()`.
+   *
+   * This is the gate for deleting `~/.myco/launcher.cjs`: the file can only
+   * be safely removed if `update` provably re-homes every symbiont's
+   * pre-existing old-form hook (and, for symbionts whose hooks + MCP share a
+   * settings file, the MCP server entry too) onto the binary. If migration
+   * silently left an old entry, the deleted launcher would ENOENT and capture
+   * would go dark — so the assertion is "no `launcher.cjs` survives".
+   *
+   * Method: clean-install (writes a structurally-valid new-form config),
+   * surgically downgrade the command back to the old launcher form (proving
+   * the simulated old state landed), then install again — the upgrade — and
+   * assert the binary form is restored with zero launcher.cjs residue. The
+   * downgrade is a pure string edit so the config shape always stays the one
+   * the installer itself produced, avoiding hand-rolled per-symbiont fixtures.
+   */
+  describe('migration: a pre-existing node launcher.cjs config is rewritten to the direct binary', () => {
+    const PINNED_BINARY = '/opt/myco/bin/myco';
+    const OLD_LAUNCHER = 'node /legacy-home/.myco/launcher.cjs';
+    for (const manifest of manifests) {
+      const reg = manifest.registration;
+      if (!reg?.globalHooksTarget) continue;
+      // Same scoping as the post-install command-line check: plugin-file
+      // symbionts (opencode, pi) dispatch through TypeScript source that the
+      // installer overwrites wholesale — there is no co-tenant old entry to
+      // recognize, so the migration risk class doesn't apply. Antigravity's
+      // JSON `hooks.json` plugin template substitutes commands, so it stays in.
+      if (reg.hooksFormat === 'plugin-file' && reg.hooksTemplateFile !== 'hooks.json') continue;
+      const skip = SKIP_REASONS[manifest.name];
+      const test = skip ? it.skip : it;
+      test(`${manifest.name}: old launcher.cjs hook (and any same-file MCP entry) is re-homed onto the binary`, () => {
+        const fake = setupFakeHome();
+        try {
+          fs.mkdirSync(path.join(fake.tmpHome, '.myco'), { recursive: true });
+          fs.writeFileSync(path.join(fake.tmpHome, '.myco', 'runtime.command'), `${PINNED_BINARY}\n`, 'utf-8');
+          ensureDetectionDir(manifest, fake.tmpHome);
+          // 1. Clean install → valid new-form config.
+          newInstaller(manifest, fake.tmpHome).install();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const hooksPath = (newInstaller(manifest, fake.tmpHome) as any).resolveAbsoluteTarget('hooks') as string | null;
+          if (!hooksPath || !fs.existsSync(hooksPath)) return;
+          // 2. Downgrade in place to the previous release's trampoline form:
+          //    swap the binary for `node …/launcher.cjs` and drop the marker.
+          const fresh = fs.readFileSync(hooksPath, 'utf-8');
+          const downgraded = fresh.split(PINNED_BINARY).join(OLD_LAUNCHER).split(' --myco-managed').join('');
+          fs.writeFileSync(hooksPath, downgraded, 'utf-8');
+          // Sanity: the simulated old state actually landed.
+          expect(fs.readFileSync(hooksPath, 'utf-8')).toContain('launcher.cjs');
+          // 3. The upgrade: a second install must re-home the old entry.
+          newInstaller(manifest, fake.tmpHome).install();
+          const after = fs.readFileSync(hooksPath, 'utf-8');
+          // No trampoline residue survives, and the binary form is restored.
+          expect(after.includes('launcher.cjs')).toBe(false);
+          expect(after.includes(PINNED_BINARY)).toBe(true);
+          expect(after.includes('--myco-managed')).toBe(true);
         } finally {
           fake.cleanup();
         }
@@ -427,9 +496,10 @@ describe('symbiont installer integration matrix (global scope)', () => {
         expect(installer.isConfigured()).toBe(true);
         const post = fs.readFileSync(hooksPath, 'utf-8');
         // Even though we overwrite the file with merged JSON, the
-        // post-install file must still contain a hook entry that
-        // references the launcher — that's the detection contract.
-        expect(/\bmyco-run\.cjs\b|\blauncher\.cjs\b/.test(post)).toBe(true);
+        // post-install file must still carry a Myco hook ownership signal —
+        // the `--myco-managed` marker is that signal for the direct-binary
+        // hook form. That's the detection contract.
+        expect(post.includes('--myco-managed')).toBe(true);
       } finally {
         fake.cleanup();
       }
@@ -514,110 +584,6 @@ describe('symbiont installer integration matrix (global scope)', () => {
    * absent → no hooks, but cursor reads empty `{}` → "hooks were defined,
    * none of them match" which surfaces in its UI panel).
    */
-  /**
-   * Write-ordering invariant — the launchers (`~/.myco/launcher.cjs` and
-   * `~/.myco/mcp-launcher.cjs`) MUST be on disk BEFORE any agent's global
-   * hook config is written referencing them. The docstring on
-   * `packages/myco/src/grove/launcher-install.ts` calls this out:
-   *
-   *   > Hook config that points at a not-yet-existent launcher leaves
-   *   > a multi-second window where every hook fires ENOENT and capture
-   *   > goes silent.
-   *
-   * The regression this guards against: a future refactor reorders
-   * `install()` so `installHooks()` runs before `installHookGuard()`,
-   * or so `installHookGuard()` becomes async/deferred. Either way, the
-   * symptom is the same — first-run hooks fail silently until the
-   * launcher write catches up.
-   *
-   * Captured via a write-order spy: every fs.renameSync (the atomic
-   * publish step) and fs.writeFileSync records the moment the target
-   * lands. At the moment ANY agent's global hook target lands, we
-   * snapshot whether the launcher file exists on disk. If a hook
-   * write was recorded before the launcher landed, fail.
-   */
-  describe('write ordering: launchers exist before any agent hook config references them', () => {
-    for (const manifest of manifests) {
-      const reg = manifest.registration;
-      if (!reg?.globalHooksTarget) continue;
-      const skip = SKIP_REASONS[manifest.name];
-      const test = skip ? it.skip : it;
-      test(`${manifest.name}: launcher.cjs exists at the instant the global hooks file is written`, () => {
-        const fake = setupFakeHome();
-        // Each recorded write captures: path written + whether the
-        // launcher existed on disk at that exact moment. The
-        // launcher-existence snapshot must come from `fs.existsSync`
-        // INSIDE the patched writer (post-rename, pre-return), not
-        // after-the-fact — by `install()`'s return, every write has
-        // landed and the test would be meaningless.
-        interface OrderedWrite { path: string; launcherExistedAtWriteTime: boolean }
-        const writes: OrderedWrite[] = [];
-        const mycoHome = process.env.MYCO_HOME!;
-        const launcherPath = path.join(mycoHome, 'launcher.cjs');
-
-        const realWriteFileSync = fs.writeFileSync;
-        const realRenameSync = fs.renameSync;
-        (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = ((
-          file: fs.PathOrFileDescriptor,
-          data: string | NodeJS.ArrayBufferView,
-          options?: fs.WriteFileOptions,
-        ) => {
-          realWriteFileSync(file, data, options);
-          if (typeof file === 'string' && !path.basename(file).startsWith('.tmp-')) {
-            writes.push({ path: file, launcherExistedAtWriteTime: fs.existsSync(launcherPath) });
-          }
-        }) as typeof fs.writeFileSync;
-        (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = ((
-          from: fs.PathLike,
-          to: fs.PathLike,
-        ) => {
-          realRenameSync(from, to);
-          if (typeof to === 'string' && !path.basename(to).startsWith('.tmp-')) {
-            writes.push({ path: to, launcherExistedAtWriteTime: fs.existsSync(launcherPath) });
-          }
-        }) as typeof fs.renameSync;
-
-        try {
-          ensureDetectionDir(manifest, fake.tmpHome);
-          const installer = newInstaller(manifest, fake.tmpHome);
-          installer.install();
-
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const hooksPath = (installer as any).resolveAbsoluteTarget('hooks') as string | null;
-          if (!hooksPath) return; // No global hooks surface — invariant vacuous.
-
-          // Sanity: the launcher itself must have been written at some
-          // point during the install. If it wasn't, the assertion below
-          // would trivially pass for the wrong reason.
-          const launcherWriteCount = writes.filter((w) => w.path === launcherPath).length;
-          expect(launcherWriteCount).toBeGreaterThan(0);
-
-          // The actual invariant: every write to the agent's global hooks
-          // target must have happened AFTER the launcher landed on disk.
-          // Multiple writes to the same path are fine (atomic publish +
-          // post-process re-write); we just need every one of them to
-          // see the launcher present.
-          const hookWrites = writes.filter((w) => w.path === hooksPath);
-          expect(hookWrites.length).toBeGreaterThan(0);
-          for (const w of hookWrites) {
-            if (!w.launcherExistedAtWriteTime) {
-              throw new Error(
-                `${manifest.name}: hook config write at ${w.path} happened ` +
-                `BEFORE launcher.cjs landed on disk. Multi-second ENOENT ` +
-                `window — capture would silently fail until the next ` +
-                `daemon reconcile pass. Write order: ${writes.map((x) => path.basename(x.path)).join(' → ')}`,
-              );
-            }
-          }
-        } finally {
-          (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWriteFileSync;
-          (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = realRenameSync;
-          fake.cleanup();
-        }
-      });
-    }
-  });
-
   describe('empty-config cleanup: uninstall removes files installer created', () => {
     for (const manifest of manifests) {
       const skip = SKIP_REASONS[manifest.name];

@@ -222,8 +222,9 @@ export async function handleListSymbionts(vaultDir: string, groveId?: string | n
  * daemon first-start handler, the PowerManager periodic tick, and the
  * version-drift handler:
  *
- *   - `installGlobalLaunchers`: write `~/.myco/launcher.cjs` +
- *     `mcp-launcher.cjs` (idempotent; content-diff gated).
+ *   - `removeRetiredGlobalLaunchers`: delete any retired launcher
+ *     trampolines (`~/.myco/launcher.cjs` + `mcp-launcher.cjs`) left by a
+ *     previous release (idempotent; the binary is the launcher now).
  *   - `runSymbiontDetection`: install Myco's global config into every
  *     detected symbiont.
  *   - `runGlobalInstallMigrationPass`: walk every registered project and

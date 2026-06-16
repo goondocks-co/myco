@@ -23,7 +23,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { Type } from "@sinclair/typebox";
@@ -262,9 +262,14 @@ async function getJson(
 
 // ---------------------------------------------------------------------------
 // CLI tool dispatch — dispatches `tool call <name> --json --input <json>` by
-// running `node ~/.myco/launcher.cjs` (the global launcher, resolved at
-// runtime via `resolveMycoHome()`); `cwd: directory` carries per-project
-// tenancy.
+// running the self-contained Myco binary directly (no `node`, no
+// `launcher.cjs`); `cwd: directory` carries per-project tenancy.
+//
+// The binary is resolved via the same `runtime.command` pin layering the daemon
+// and the CJS shims use — a project-scope pin found by a filesystem upward walk,
+// then the machine pin, then bare `myco` on PATH. Invoking the binary directly
+// (rather than `node ~/.myco/launcher.cjs`) is the form that works on a native,
+// node-absent install and matches every other symbiont's hook/MCP transport.
 //
 // Pi has no native MCP transport, so Myco tools are dispatched through the
 // CLI. Capture/
@@ -272,7 +277,7 @@ async function getJson(
 // and stays unchanged: those endpoints are universal symbiont infrastructure
 // feeding the daemon's EventBuffer.
 //
-// Degraded mode: when Myco isn't installed locally the launcher is absent
+// Degraded mode: when Myco isn't installed locally the binary is absent
 // (ENOENT) or the tool runtime is unavailable (non-zero exit); collapsing
 // every failure mode to `{ ok: false }` lets the LLM see "tool unavailable"
 // instead of an extension crash.
@@ -287,18 +292,49 @@ interface ToolCliEnvelope {
   error?: { code: string; message: string };
 }
 
+// Resolve the Myco binary to dispatch CLI tool calls. Mirrors the daemon's
+// resolveRuntimePinForCwd (which the extension can't import — see the no-Myco-
+// imports rule above): filesystem upward walk for a project-scope
+// `<dir>/.myco/runtime.command` pin, then the machine pin at
+// `~/.myco/runtime.command`, then bare `myco` on PATH. The pin holds the
+// resolved self-contained binary path, so dispatch needs neither `node` nor
+// `launcher.cjs`. The bare-PATH fallback is a last resort; a real install
+// always has a machine pin written by global bootstrap.
+function resolveMycoBinary(directory: string): string {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readRuntimePin(join(dir, ".myco", "runtime.command"));
+    if (pin) return pin;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const machinePin = readRuntimePin(join(resolveMycoHome(), "runtime.command"));
+  if (machinePin) return machinePin;
+  return process.platform === "win32" ? "myco.exe" : "myco";
+}
+
+function readRuntimePin(filePath: string): string | null {
+  try {
+    const raw = readFileSync(filePath, "utf-8").trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
 async function execMycoTool(
   directory: string,
   toolName: string,
   input: unknown,
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const launcher = join(resolveMycoHome(), "launcher.cjs");
+  const binary = resolveMycoBinary(directory);
   const inputJson = JSON.stringify(input ?? {});
 
   try {
     const { stdout } = await execFileP(
-      "node",
-      [launcher, "tool", "call", toolName, "--json", "--input", inputJson],
+      binary,
+      ["tool", "call", toolName, "--json", "--input", inputJson],
       {
         cwd: directory,
         timeout: MYCO_TOOL_TIMEOUT_MS,
@@ -309,7 +345,7 @@ async function execMycoTool(
     if (!envelope.ok) return { ok: false };
     return { ok: true, data: envelope.result };
   } catch {
-    // ENOENT (global launcher absent — Myco not installed), non-zero exit
+    // ENOENT (binary absent — Myco not installed / not on PATH), non-zero exit
     // (tool error or runtime unavailable), JSON parse failure, timeout —
     // all collapse to the existing degraded-mode signal.
     return { ok: false };

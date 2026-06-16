@@ -18,7 +18,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { parseLsofOutput, findVaultFromCwd } from '@myco/daemon/eviction.js';
+import {
+  parseLsofOutput,
+  findVaultFromCwd,
+  parseWindowsProcessCwd,
+  buildWindowsCwdCommand,
+  readWindowsProcessCwd,
+} from '@myco/daemon/eviction.js';
 
 // ---------------------------------------------------------------------------
 // parseLsofOutput
@@ -100,6 +106,69 @@ describe('findVaultFromCwd()', () => {
   it('returns null when .myco exists only as a file (not a dir)', () => {
     fs.writeFileSync(path.join(tmpRoot, '.myco'), 'not a directory');
     expect(findVaultFromCwd(tmpRoot)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Windows cwd-identity branch (FIX 3)
+// ---------------------------------------------------------------------------
+
+describe('parseWindowsProcessCwd()', () => {
+  it('extracts a drive-letter path', () => {
+    expect(parseWindowsProcessCwd('C:\\Users\\me\\project\r\n')).toBe('C:\\Users\\me\\project');
+  });
+
+  it('accepts forward-slash drive paths', () => {
+    expect(parseWindowsProcessCwd('D:/work/repo')).toBe('D:/work/repo');
+  });
+
+  it('extracts a UNC path', () => {
+    expect(parseWindowsProcessCwd('\\\\fileserver\\share\\proj')).toBe('\\\\fileserver\\share\\proj');
+  });
+
+  it('skips a PowerShell error preamble and finds the path line', () => {
+    const out = [
+      'Get-CimInstance : Some transient WMI warning',
+      '    + CategoryInfo : NotSpecified',
+      'C:\\opt\\myco',
+    ].join('\r\n');
+    expect(parseWindowsProcessCwd(out)).toBe('C:\\opt\\myco');
+  });
+
+  it('strips a leading BOM', () => {
+    expect(parseWindowsProcessCwd('﻿C:\\proj')).toBe('C:\\proj');
+  });
+
+  it('returns null for empty output', () => {
+    expect(parseWindowsProcessCwd('')).toBeNull();
+  });
+
+  it('returns null when no line is path-shaped', () => {
+    expect(parseWindowsProcessCwd('not-a-path\r\n\r\n   ')).toBeNull();
+  });
+});
+
+describe('buildWindowsCwdCommand()', () => {
+  it('embeds the pid in the Win32_Process filter', () => {
+    const cmd = buildWindowsCwdCommand(4242);
+    expect(cmd).toContain('ProcessId = 4242');
+    expect(cmd).toContain('Get-CimInstance Win32_Process');
+    expect(cmd).toContain('Split-Path -Parent $p.Path');
+  });
+});
+
+describe('readWindowsProcessCwd() — injected shell', () => {
+  it('parses the cwd from the injected shell output', () => {
+    const out = 'C:\\Users\\me\\proj\r\n';
+    expect(readWindowsProcessCwd(1234, () => out)).toBe('C:\\Users\\me\\proj');
+  });
+
+  it('returns null when the shell yields no path-shaped output', () => {
+    expect(readWindowsProcessCwd(1234, () => '')).toBeNull();
+  });
+
+  it('returns null (degrades gracefully) when the shell throws', () => {
+    expect(readWindowsProcessCwd(1234, () => { throw new Error('powershell not found'); })).toBeNull();
   });
 });
 

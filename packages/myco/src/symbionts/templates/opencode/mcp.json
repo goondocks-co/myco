@@ -1,6 +1,6 @@
 {
   "myco": {
     "type": "local",
-    "command": ["myco-run", "mcp"]
+    "command": ["{{mycoBinary}}", "mcp"]
   }
 }

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, type SpawnOptions } from 'node:child_process';
 import {
   DAEMON_CLIENT_TIMEOUT_MS,
   DAEMON_CAPTURE_RECOVERY_COALESCE_MS,
@@ -75,6 +75,33 @@ export function resolveCliEntryPath(): { execPath: string; cliEntry: string | nu
 /** Build the argv for re-exec'ing this binary with a subcommand. */
 export function buildReExecArgs(cliEntry: string | null, subcommand: string[]): string[] {
   return cliEntry === null ? subcommand : [cliEntry, ...subcommand];
+}
+
+/**
+ * Spawn options for the non-service raw daemon respawn.
+ *
+ * The respawned daemon must outlive the hook process that fired it. POSIX
+ * uses `detached: true` (new session via setsid) + `unref()`; on Windows
+ * `detached` creates a new process GROUP rather than a true daemon, so under
+ * some console hosts the parent's exit can still signal the group. Two extra
+ * guards close that gap without changing POSIX behavior:
+ *
+ *   - `stdio: 'ignore'` — no inherited stdio handles tether the child to the
+ *     parent's console (and nothing to flush on parent exit).
+ *   - `windowsHide: true` — the child runs with no console window of its own,
+ *     so it is not attached to (and cannot be signalled by) the parent's
+ *     console window's lifetime. A no-op on POSIX.
+ *
+ * Extracted as a pure builder so the detached/unref/ignore-stdio/windowsHide
+ * contract is unit-testable without spawning a process.
+ */
+export function buildDaemonSpawnOptions(cwd: string): SpawnOptions {
+  return {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    cwd,
+  };
 }
 
 interface HealthResponse {
@@ -611,11 +638,11 @@ export class DaemonClient {
     // with its `{ ok: false }` result.
     try {
       const { execPath, cliEntry } = resolveCliEntryPath();
-      const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {
-        detached: true,
-        stdio: 'ignore',
-        cwd: path.dirname(this.vaultDir),
-      });
+      const child = spawn(
+        execPath,
+        buildReExecArgs(cliEntry, ['daemon']),
+        buildDaemonSpawnOptions(path.dirname(this.vaultDir)),
+      );
       child.on('error', () => { /* unspawnable binary (ENOENT etc.); swallow */ });
       child.unref();
     } catch { /* runtime binary unresolvable; supervisor / next probe recovers */ }

@@ -226,10 +226,6 @@ first assertion.
      apiKey: process.env.ANTHROPIC_API_KEY,
    });
 
-   export function sendRequest() {
-     return client.messages.create(...);
-   }
-
    // AFTER: lazy — only constructed when backend actually needs it
    let client: Anthropic | null = null;
 
@@ -241,10 +237,6 @@ first assertion.
        });
      }
      return client;
-   }
-
-   export function sendRequest() {
-     return getClient().messages.create(...);
    }
    ```
 
@@ -267,26 +259,7 @@ first assertion.
 3. **Update all call sites.** Replace direct `client.xxx()` references with
    `getClient().xxx()` throughout the module.
 
-4. **Expose a test injection setter (add this to your module if tests need
-   mock injection).** This lets tests supply a mock client without triggering
-   real construction:
-   ```ts
-   // Add to the module under test:
-   let _testClient: Anthropic | undefined;
-   export function _setClientForTest(mock: Anthropic | undefined): void {
-     _testClient = mock;
-   }
-   function getClient(): Anthropic {
-     return _testClient ?? (realClient ??= new Anthropic({ dangerouslyAllowBrowser: true }));
-   }
-
-   // In test afterEach — reset between runs:
-   afterEach(() => {
-     _setClientForTest(undefined);
-   });
-   ```
-
-5. **Verify.** Run the previously failing test file:
+4. **Verify.** Run the previously failing test file:
    ```bash
    bun test tests/agent/runtime-claude.test.ts
    ```
@@ -317,8 +290,8 @@ passed. The symptom — "all tests green, job failed" — is the diagnostic sign
 **The lazy initialization singleton persists for the Bun process lifetime.**
 A `let client = null` or `private client?: Anthropic` pattern resets between
 test *files* only if the module is re-required. Within a shared process run,
-the singleton carries over. Use the test injection setter pattern (Procedure C,
-step 4) to reset between tests when clean state is required.
+the singleton carries over. Use dependency injection or test-local instantiation
+to reset between tests when clean state is required.
 
 **`scripts/run-bun-tests.mjs` is the authoritative runner.** Direct `bun test`
 invocations differ from `npm test` in file grouping and process count. When
@@ -329,3 +302,7 @@ understand which files share a Bun process before assuming isolation.
 `process.exit()` calls to work around hangs hides the real problem. Always
 trace the hang to its cause (module-level timer, open socket, pending mock)
 and fix the root cause using the procedures above.
+
+**Adding a new test file can reorganize chunk assignments and surface hidden state contamination.** Bun partitions test files into isolated chunks. Adding a new file may rebalance chunk assignments, causing previously-stable tests to move into chunks with different neighbors and expose latent state contamination. If CI failures appear immediately after adding a test file (with no logic changes), suspect chunk rebalancing before investigating test logic.
+
+**`vitest` is a transitive dependency — declare it as a direct `devDependency`.** `vitest` enters the monorepo as a transitive dependency of `@cloudflare/vitest-pool-workers`. If that package is removed or its dependency tree changes, `vitest` imports in active test files will break silently. Declare `vitest` as a direct `devDependency` in the root `package.json` to make the dependency explicit and prevent accidental removal.

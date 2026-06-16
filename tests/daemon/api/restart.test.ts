@@ -36,7 +36,7 @@ function restoreProcessKill() {
   (process as any).kill = realKill;
 }
 
-import { buildRestartShellCommand, detectServiceManagedLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
+import { buildRestartArgv, detectServiceManagedLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager';
 
@@ -49,25 +49,21 @@ function makeDeps(overrides: Partial<RestartHandlerDeps> = {}): RestartHandlerDe
   };
 }
 
-describe('buildRestartShellCommand', () => {
-  test('non-service-managed: spawns daemon directly with full sleep', () => {
-    const cmd = buildRestartShellCommand(null, '/usr/bin/myco', null);
-    expect(cmd).toBe('sleep 3 && /usr/bin/myco daemon');
+describe('buildRestartArgv (shell-free, cross-platform)', () => {
+  test('non-service-managed: respawns the daemon directly', () => {
+    expect(buildRestartArgv(null, null)).toEqual(['daemon']);
   });
 
-  test('non-service-managed with cliEntry: includes entry path', () => {
-    const cmd = buildRestartShellCommand(null, '/usr/bin/node', '/dist/cli.js');
-    expect(cmd).toBe('sleep 3 && /usr/bin/node /dist/cli.js daemon');
+  test('non-service-managed with cliEntry: prepends the entry path', () => {
+    expect(buildRestartArgv(null, '/dist/cli.js')).toEqual(['/dist/cli.js', 'daemon']);
   });
 
-  test('service-managed prod: invokes `service restart` with no variant flag', () => {
-    const cmd = buildRestartShellCommand('co.goondocks.myco', '/usr/bin/myco', null);
-    expect(cmd).toBe('sleep 0.5 && /usr/bin/myco service restart');
+  test('service-managed prod: `service restart` with no variant flag', () => {
+    expect(buildRestartArgv('co.goondocks.myco', null)).toEqual(['service', 'restart']);
   });
 
-  test('service-managed dev: invokes `service restart --dev`', () => {
-    const cmd = buildRestartShellCommand('co.goondocks.myco-dev', '/usr/bin/myco', null);
-    expect(cmd).toBe('sleep 0.5 && /usr/bin/myco service restart --dev');
+  test('service-managed dev: `service restart --dev`', () => {
+    expect(buildRestartArgv('co.goondocks.myco-dev', null)).toEqual(['service', 'restart', '--dev']);
   });
 });
 
@@ -152,7 +148,7 @@ describe('handleRestart', () => {
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
     expect(spawnCalls.length).toBe(1);
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).toContain('daemon');
     expect(shellCmd).not.toContain('service restart');
   });
@@ -164,7 +160,7 @@ describe('handleRestart', () => {
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).toContain('service restart');
     expect(shellCmd).not.toContain('--dev');
   });
@@ -178,7 +174,7 @@ describe('handleRestart', () => {
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).toContain('service restart');
     expect(shellCmd).not.toContain('--dev');
   });
@@ -190,7 +186,7 @@ describe('handleRestart', () => {
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).toContain('service restart --dev');
   });
 
@@ -201,7 +197,7 @@ describe('handleRestart', () => {
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).not.toContain('service restart');
   });
 
@@ -210,7 +206,7 @@ describe('handleRestart', () => {
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).not.toContain('service restart');
   });
 

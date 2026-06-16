@@ -15,7 +15,12 @@ function shellEscape(value: string): string {
 const SYSTEMD_LIMIT_NOFILE = 65_535;
 
 export function renderSystemdUnit(spec: ServiceSpec): string {
-  const execLine = [spec.executable, ...spec.args].join(' ');
+  // systemd splits ExecStart on whitespace, so an unquoted executable or arg
+  // under a spaced path (e.g. a user profile with a space) would be torn into
+  // separate words. Per systemd's quoting rules a double-quoted token is one
+  // argument, with C-style `\"`/`\\` escapes inside — which is exactly what
+  // shellEscape emits. Quote every token so spaced paths survive intact.
+  const execLine = [spec.executable, ...spec.args].map(shellEscape).join(' ');
   const envLines = Object.entries(spec.env)
     .map(([k, v]) => `Environment=${shellEscape(`${k}=${v}`)}`)
     .join('\n');

@@ -30,6 +30,7 @@ export function resolveServiceUnitDir(options: ServiceUnitDirOptions = {}): stri
   const override = env[SERVICE_UNIT_DIR_ENV]?.trim();
   if (override) return path.resolve(override);
   if (platform === 'darwin') return path.join(homeDir, 'Library', 'LaunchAgents');
+  if (platform === 'win32') return path.join(homeDir, '.myco', 'service');
   return path.join(homeDir, '.config', 'systemd', 'user');
 }
 

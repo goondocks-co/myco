@@ -47,10 +47,15 @@ fs.mkdirSync(outputDir, { recursive: true });
 const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
 const outfile = path.join(outputDir, binaryName);
 
-process.stdout.write(`[build:binary] ${target} -> ${outfile} (version ${mycoVersion})\n`);
+// Bun's `-baseline` x64 variant omits modern SIMD (AVX2). Required to run
+// under Windows-on-ARM x64 emulation (pre-24H2 lacks AVX2) and on older x64
+// CPUs. Opt in with BASELINE=1; native x64 hardware uses the default build.
+const bunTarget = process.env.BASELINE === '1' ? `bun-${target}-baseline` : `bun-${target}`;
+
+process.stdout.write(`[build:binary] ${target} (${bunTarget}) -> ${outfile} (version ${mycoVersion})\n`);
 const result = spawnSync(
   'bun',
-  ['build', '--compile', '--minify', `--target=bun-${target}`, entry, '--outfile', outfile],
+  ['build', '--compile', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
   { stdio: 'inherit', cwd: pkgRoot, env: process.env },
 );
 process.exit(result.status ?? 1);

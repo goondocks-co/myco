@@ -42,7 +42,7 @@ That knowledge also evolves. Myco is not an ever-growing static archive. It keep
 
 ## Install
 
-macOS is the primary supported platform for the current release. Linux and Windows packages are published for early testing, but they are experimental and not yet part of the supported path.
+macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh

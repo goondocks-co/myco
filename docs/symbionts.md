@@ -141,4 +141,4 @@ The uninstaller only removes entries Myco installed — pre-existing user keys i
 
 ## Platform support
 
-macOS is the primary supported platform for the current Myco release. Linux and Windows packages are published for early testing, but their service and launcher behavior is experimental.
+macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only x64 is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.

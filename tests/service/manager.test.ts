@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getServiceManager } from '../../packages/myco/src/service/manager';
 import { LaunchdServiceManager } from '../../packages/myco/src/service/launchd';
 import { SystemdUserServiceManager } from '../../packages/myco/src/service/systemd';
+import { WindowsTaskServiceManager } from '../../packages/myco/src/service/windows';
 import { UnsupportedServiceManager } from '../../packages/myco/src/service/unsupported';
 import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 
@@ -24,10 +25,21 @@ describe('getServiceManager', () => {
     expect(getServiceManager({ platform: 'linux' })).toBeInstanceOf(SystemdUserServiceManager);
   });
 
-  test('returns UnsupportedServiceManager on win32', () => {
+  test('returns WindowsTaskServiceManager on win32', () => {
     const mgr = getServiceManager({ platform: 'win32' });
+    expect(mgr).toBeInstanceOf(WindowsTaskServiceManager);
+    expect(mgr.supported).toBe(true);
+  });
+
+  test('returns UnsupportedServiceManager on an unknown platform', () => {
+    const mgr = getServiceManager({ platform: 'sunos' as NodeJS.Platform });
     expect(mgr).toBeInstanceOf(UnsupportedServiceManager);
     expect(mgr.supported).toBe(false);
+  });
+
+  test('win32 manager defaults scriptDir to ~/.myco/service', () => {
+    const mgr = getServiceManager({ platform: 'win32' }) as WindowsTaskServiceManager;
+    expect(mgr.scriptDir).toBe(path.join(os.homedir(), '.myco', 'service'));
   });
 
   test('darwin manager defaults agentsDir to ~/Library/LaunchAgents when MYCO_LAUNCH_AGENTS_DIR is unset', () => {

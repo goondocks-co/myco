@@ -3,8 +3,8 @@
  *
  * Validates the shared code path the daemon's first-start auto-bootstrap,
  * PowerManager tick, version-drift handler, and the postinstall script
- * all invoke. Asserts launcher writes, detection gate enforcement, and
- * idempotency on a second pass.
+ * all invoke. Asserts retired-launcher cleanup, detection gate
+ * enforcement, and idempotency on a second pass.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -22,7 +22,7 @@ import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import {
   GLOBAL_HOOK_LAUNCHER_FILENAME,
   GLOBAL_MCP_LAUNCHER_FILENAME,
-} from '@myco/grove/launcher-install.js';
+} from '@myco/grove/launcher-cleanup.js';
 import {
   createGrove,
   registerProjectInGrove,
@@ -56,11 +56,21 @@ describe('runGlobalBootstrap', () => {
     if (prevMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = prevMycoHome;
   });
 
-  it('writes both launchers and detects all symbionts as not-detected on a clean home', () => {
+  it('deletes retired launcher trampolines and detects all symbionts as not-detected on a clean home', () => {
+    // Seed stale launcher trampolines from a previous release so bootstrap
+    // has something to clean up.
+    const mycoHome = path.join(tmpHome, '.myco');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    const launcherPath = path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME);
+    const mcpLauncherPath = path.join(mycoHome, GLOBAL_MCP_LAUNCHER_FILENAME);
+    fs.writeFileSync(launcherPath, '// stale launcher\n', 'utf-8');
+    fs.writeFileSync(mcpLauncherPath, '// stale mcp launcher\n', 'utf-8');
+
     const result = runGlobalBootstrap(PKG_ROOT);
 
-    expect(result.launchers.written.length).toBe(2);
-    expect(result.launchers.unchanged).toEqual([]);
+    expect(result.launchers.removed).toEqual([launcherPath, mcpLauncherPath]);
+    expect(fs.existsSync(launcherPath)).toBe(false);
+    expect(fs.existsSync(mcpLauncherPath)).toBe(false);
     // No agent dirs exist under tmpHome — every symbiont should be 'not-detected'.
     expect(result.symbionts.every((r) => r.status === 'not-detected')).toBe(true);
   });
@@ -85,14 +95,15 @@ describe('runGlobalBootstrap', () => {
     expect(codexResult?.status).toBe('not-detected');
   });
 
-  it('is idempotent — a second invocation reports launchers unchanged + symbionts already-configured', () => {
+  it('is idempotent — a second invocation removes no launchers + reports symbionts already-configured', () => {
     fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
 
     runGlobalBootstrap(PKG_ROOT);
     const second = runGlobalBootstrap(PKG_ROOT);
 
-    expect(second.launchers.written).toEqual([]);
-    expect(second.launchers.unchanged.length).toBe(2);
+    // Nothing left to clean up — the first pass deleted any stale launchers
+    // (and a clean home never had them).
+    expect(second.launchers.removed).toEqual([]);
 
     const claudeResult = second.symbionts.find((r) => r.symbiont === 'claude-code');
     expect(claudeResult?.status).toBe('already-configured');
@@ -240,25 +251,22 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(result.defaultGrove.slug).toBe('default-dev');
   });
 
-  it('startup bootstrap still runs for service-dev when prod launchers exist but default-dev is missing', () => {
+  it('startup bootstrap still runs for service-dev when prod Grove exists but default-dev is missing', () => {
     const mycoHome = path.join(tmpHome, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
-    fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// prod-owned launcher\n', 'utf-8');
     createGrove('default', mycoHome, { servedBy: 'service' });
     clearGroveRegistryCaches();
 
     const decision = shouldRunGlobalBootstrap(mycoHome, 'service-dev');
 
     expect(decision.shouldRun).toBe(true);
-    expect(decision.launchersAbsent).toBe(false);
     expect(decision.defaultGroveAbsent).toBe(true);
     expect(decision.servedBy).toBe('service-dev');
   });
 
-  it('startup bootstrap skips when the shared launcher and this variant default Grove already exist', () => {
+  it('startup bootstrap skips when this variant default Grove already exists', () => {
     const mycoHome = path.join(tmpHome, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
-    fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// prod-owned launcher\n', 'utf-8');
     createGrove('default', mycoHome, { servedBy: 'service' });
     createGrove('default-dev', mycoHome, { servedBy: 'service-dev' });
     clearGroveRegistryCaches();
@@ -266,19 +274,23 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     const decision = shouldRunGlobalBootstrap(mycoHome, 'service-dev');
 
     expect(decision.shouldRun).toBe(false);
-    expect(decision.launchersAbsent).toBe(false);
     expect(decision.defaultGroveAbsent).toBe(false);
   });
 
-  it('startup bootstrap runs when the shared launcher is missing even if the default Grove exists', () => {
+  it('startup bootstrap does NOT re-run once this variant default Grove exists, regardless of launcher state', () => {
+    // The launcher unification retired the global trampolines and bootstrap
+    // deletes any that linger; launcher presence/absence is no longer a
+    // bootstrap trigger. The default Grove is the sole durable signal — so a
+    // stale launcher file on disk (or none) does not re-fire bootstrap.
     const mycoHome = path.join(tmpHome, '.myco');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// stale orphan launcher\n', 'utf-8');
     createGrove('default', mycoHome, { servedBy: 'service' });
     clearGroveRegistryCaches();
 
     const decision = shouldRunGlobalBootstrap(mycoHome, 'service');
 
-    expect(decision.shouldRun).toBe(true);
-    expect(decision.launchersAbsent).toBe(true);
+    expect(decision.shouldRun).toBe(false);
     expect(decision.defaultGroveAbsent).toBe(false);
   });
 

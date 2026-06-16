@@ -90,7 +90,7 @@ export function assertSafeServiceMutation(
   );
 }
 
-export async function run(args: string[], _vaultDir: string): Promise<void> {
+export async function run(args: string[]): Promise<void> {
   const parsed = parseServiceArgs(args);
   const mgr = getServiceManager();
   if (!mgr.supported && parsed.action !== 'status') {

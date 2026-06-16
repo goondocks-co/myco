@@ -214,6 +214,8 @@ The single squashed commit becomes the PR commit.
 
 - **Resource cleanup incomplete** — interrupted worktree operations leave stale references. Use `git worktree prune` periodically to clean orphaned worktree entries.
 
+- **`git checkout <sha>` silently detaches HEAD in worktrees** — running `git checkout <commit-sha>` inside a worktree puts the worktree in detached HEAD state; subsequent commits are orphaned from the branch ref and will be lost after `git worktree remove`. Recovery: `git checkout -B <branch-name> <sha>` to re-attach HEAD to the intended branch before committing.
+
 ### Binary and Path Safety
 
 - **Hardcoded binary names leak between scopes** — build scripts that reference fixed binary names (e.g., `myco-daemon`) break when multiple worktrees exist. Use dynamic scope dispatch to isolate binary instances.
@@ -221,6 +223,8 @@ The single squashed commit becomes the PR commit.
 - **Absolute path leaks** — worktree-specific absolute paths contaminate shared configuration. Always use relative paths or project-root-relative references in config files.
 
 - **Build artifact scope collision** — multiple worktrees can overwrite each other's build outputs. Ensure build directories are worktree-scoped or use unique naming.
+
+- **Never run `make dev-link` from a worktree directory** — `make dev-link` sets the machine-wide dev symlink at `~/.local/bin/myco-dev`; running it from inside a worktree routes the global daemon through the worktree binary, breaking isolation for all other sessions. Always run `make dev-link` from the root repo checkout. Use `make dev-link-worktree` (inside the worktree) to pin only that worktree's binary.
 
 ### CLI and Configuration Compatibility
 
@@ -240,3 +244,4 @@ The single squashed commit becomes the PR commit.
 - **Run `npm rebuild` after branch switches involving native modules** — if the dependency tree includes native Node addons (e.g., `better-sqlite3`), switching between branches requires `npm rebuild` before running tests or the daemon; failures manifest as cryptic runtime errors, not build errors
 - **Stage untracked files before `/simplify` or code review** — Claude Code's review tools only see git-tracked files; new files that haven't been `git add`-ed are invisible; run `git add -N .` (intent-to-add) before any review pass
 - **Check existing utility modules before extracting helpers** — re-extracting an existing helper creates a naming conflict during the simplify pass
+- **`gh pr merge --squash` exit code is unreliable inside worktrees** — the command can exit non-zero (local checkout fails) even when the remote merge succeeded; do not treat a non-zero exit as a failed merge. Always verify with `gh pr view --json state,mergeCommit` to confirm the actual PR state before retrying or force-pushing.

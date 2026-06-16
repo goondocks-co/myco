@@ -16,7 +16,7 @@ user's machine.
 
 This is the same pattern esbuild, swc, rollup, and the Bun runtime use.
 
-Product support is narrower than package availability in the current release: macOS is the primary supported platform, while Linux and Windows packages are published for early testing and remain experimental.
+Product support is narrower than package availability: macOS is the primary supported platform, while Linux and Windows are in beta. There is no Windows-on-ARM package — only x64 Windows is supported (Windows on ARM would run the x64 build under emulation, which is not supported).
 
 ## Why
 

@@ -300,6 +300,18 @@ The `myco remove --purge` command performs a registered-project walk that affect
 
 Implement security enforcement across Grove multi-tenant architecture.
 
+### Tenancy Authority — The Single Sanctioned Resolver
+
+`packages/myco/src/grove/project-tenancy.ts` is THE authority for answering "what grove/team owns this project." Never inline project-to-grove resolution ad hoc; always go through this module. Key exports:
+
+- **`resolveProjectTenancy(projectId)`** — returns `{ project, grove, team }`. Throws `ProjectGroveMissingError` if the project has no resolvable grove.
+- **`memberProjectIdsForGrove(groveId)`** — returns the project IDs that are team members in a given grove. Use this (not `machineHasAnyTeam()`) for per-grove team-sync scope decisions.
+- **`machineHasAnyTeam()`** — machine-level boolean: has this machine joined ANY team at all. Use only for machine-level routing, never for per-project membership gating.
+- **`assertAssignableProject(projectId)`** — use at team-assignment write boundaries to confirm the project has a valid grove before writing membership.
+- **`ProjectGroveMissingError`** — every project belongs to exactly one grove. A grove-less project is a loud failure, never a silent "global" fallback.
+
+**Why this matters:** Bypassing this module and using `machineHasAnyTeam()` for per-project outbox scoping caused the PR #508 team-sync flood — a non-member grove accumulated 1.7M phantom `team_outbox` rows. The authority centralizes the grove-membership check so there is only one place to get it wrong.
+
 ### Multi-Tenant Request Context Validation
 
 ```javascript
@@ -379,3 +391,5 @@ Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER T
 **Machine-level routes use action-scope, not tenantRoute**: Routes that operate across all Groves (backup, database vacuum, global dispatch) use `actionScopeKey` from `packages/myco/src/daemon/api/action-scope.ts` for deduplication, not `tenantRoute`. Using `tenantRoute` on machine-level routes fails with missing-project errors on callers that legitimately have no project context. The scoped-dispatch module (`packages/myco/src/daemon/api/scoped-dispatch.ts`) enforces the all-groves confirmation gate automatically.
 
 **v1.0.8 capture-only bug — saveConfig materializes defaults into committed tier**: A v1.0.8 bug caused `saveConfig` to write machine-scoped defaults into the committed project config tier when called from capture-only mode; the vault-gate hot path also bypassed the archived-project refusal check. If a project stuck in capture-only mode shows unexpected config entries, check for materialized defaults from this regression. Fix: call `saveConfig` only after verifying the project is not in archived/capture-only state.
+
+**Never bypass the tenancy authority for per-project team decisions**: `machineHasAnyTeam()` in `packages/myco/src/grove/project-tenancy.ts` answers "has this machine joined ANY team" — it is NOT a per-project gate. Using it for per-project outbox scoping caused the PR #508 team-sync flood (1.7M phantom rows in a non-member grove). Always use `memberProjectIdsForGrove(groveId)` to determine which projects in a grove are actually team members, and `resolveProjectTenancy(projectId)` to determine a specific project's grove and team context.

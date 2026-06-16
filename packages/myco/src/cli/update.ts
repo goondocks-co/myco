@@ -173,6 +173,22 @@ async function runMachineWideUpdate(
     console.log(`  !! Global config scrub failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // --- Delete retired launcher trampolines LAST ---
+  // Only after detection rewrote every detected agent's hook/MCP config onto the
+  // binary and the scrub healed escaped references. Deleting earlier would orphan
+  // a config not yet rewritten in this pass (capture-loss window); by here no
+  // config references `~/.myco/launcher.cjs`, so removal is safe.
+  try {
+    const { removeRetiredGlobalLaunchers } = await import('../grove/launcher-cleanup.js');
+    const removed = removeRetiredGlobalLaunchers().removed;
+    if (removed.length > 0) {
+      console.log(`  ✓ Removed ${removed.length} retired launcher trampoline${removed.length === 1 ? '' : 's'}`);
+      updatedCount += removed.length;
+    }
+  } catch (err) {
+    console.log(`  !! Retired launcher cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // --- Per-project one-shot global-install migration ---
   try {
     const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');

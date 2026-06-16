@@ -3,9 +3,10 @@
  *
  * Covers the operations that diverge between `'project'` and `'global'`
  * scope: project-content surfaces are skipped under `'global'`, target
- * paths come from `globalXxxTarget`, the hook guard delegates to the
- * shared `~/.myco/launcher.cjs` + `mcp-launcher.cjs`, and a detection
- * gate refuses installs when the agent's `detectionDir` is absent.
+ * paths come from `globalXxxTarget`, the global hook-guard step cleans up
+ * any retired `~/.myco/launcher.cjs` + `mcp-launcher.cjs` trampolines (the
+ * binary is the launcher now), and a detection gate refuses installs when
+ * the agent's `detectionDir` is absent.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -86,9 +87,10 @@ describe('SymbiontInstaller installScope=global', () => {
     expect(settings.hooks).toBeDefined();
     expect(settings.mcpServers?.myco).toBeDefined();
 
-    // Global launchers landed at ~/.myco/launcher.cjs + mcp-launcher.cjs.
-    expect(fs.existsSync(path.join(tmpHome, '.myco', 'launcher.cjs'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpHome, '.myco', 'mcp-launcher.cjs'))).toBe(true);
+    // No launcher trampolines are written — the binary is the launcher
+    // now; the hook command invokes it directly.
+    expect(fs.existsSync(path.join(tmpHome, '.myco', 'launcher.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpHome, '.myco', 'mcp-launcher.cjs'))).toBe(false);
 
     // Project-content surfaces are NOT created under global scope.
     expect(fs.existsSync(path.join(tmpHome, 'AGENTS.md'))).toBe(false);
@@ -99,8 +101,22 @@ describe('SymbiontInstaller installScope=global', () => {
     expect(fs.existsSync(path.join(tmpHome, '.agents', 'myco-run.cjs'))).toBe(false);
   });
 
-  it('per-symbiont uninstall does NOT remove the shared global launchers', () => {
+  it('global install does NOT delete retired launchers — removal is deferred until after all configs are rewritten', () => {
+    // Capture-safety ordering (P1a): `~/.myco/launcher.cjs` is shared across every
+    // symbiont, so deleting it during ONE symbiont's install would orphan the
+    // still-old configs of every symbiont not yet rewritten in the same pass —
+    // a window where their `node …/launcher.cjs` hooks hit ENOENT and capture
+    // goes dark. install() therefore leaves the trampolines in place; the
+    // orchestrating flows (runGlobalBootstrap / `myco update` / the hourly
+    // detection tick) call removeRetiredGlobalLaunchers() ONCE, after every
+    // detected agent's config has been rewritten onto the binary.
     fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
+    const mycoHome = path.join(tmpHome, '.myco');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    const launcherPath = path.join(mycoHome, 'launcher.cjs');
+    const mcpLauncherPath = path.join(mycoHome, 'mcp-launcher.cjs');
+    fs.writeFileSync(launcherPath, '// stale launcher\n', 'utf-8');
+    fs.writeFileSync(mcpLauncherPath, '// stale mcp launcher\n', 'utf-8');
 
     const installer = new SymbiontInstaller(
       getManifest('claude-code'),
@@ -112,14 +128,10 @@ describe('SymbiontInstaller installScope=global', () => {
       'global',
     );
     installer.install();
-    expect(fs.existsSync(path.join(tmpHome, '.myco', 'launcher.cjs'))).toBe(true);
 
-    installer.uninstall();
-    // Settings file may still exist (other content) but Myco's block removed.
-    // Launchers are shared across every symbiont — never removed by a
-    // per-symbiont uninstall. `myco remove` (Step 15) owns that cleanup.
-    expect(fs.existsSync(path.join(tmpHome, '.myco', 'launcher.cjs'))).toBe(true);
-    expect(fs.existsSync(path.join(tmpHome, '.myco', 'mcp-launcher.cjs'))).toBe(true);
+    // Still present after a single symbiont's install — removal is deferred.
+    expect(fs.existsSync(launcherPath)).toBe(true);
+    expect(fs.existsSync(mcpLauncherPath)).toBe(true);
   });
 
   it('project scope is unchanged — AGENTS.md + .gitignore + hook guard land under projectRoot', () => {

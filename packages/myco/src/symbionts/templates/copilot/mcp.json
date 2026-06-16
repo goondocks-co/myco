@@ -1,7 +1,7 @@
 {
   "myco": {
     "type": "stdio",
-    "command": "myco-run",
+    "command": "{{mycoBinary}}",
     "args": ["mcp"]
   }
 }

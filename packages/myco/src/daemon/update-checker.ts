@@ -281,6 +281,30 @@ export function resolveRuntimeCommand(vaultDir?: string): string | null {
   return readPinFile(resolveMachineRuntimeCommandPath());
 }
 
+/**
+ * Resolve the runtime pin from a launch cwd, used by the standalone launch
+ * preamble. The project-scope pin is found by a pure filesystem upward walk
+ * for `<dir>/.myco/runtime.command` (first non-empty wins, stopping at the
+ * filesystem root); the machine-scope `~/.myco/runtime.command` is the
+ * fallback.
+ *
+ * The walk must stay a filesystem walk — not a git-vault resolution — because
+ * a git worktree's vault resolves to the MAIN repo root, which would skip a
+ * worktree-local pin written by `make dev-link-worktree` and route dogfood
+ * hooks to the wrong binary.
+ */
+export function resolveRuntimePinForCwd(cwd: string): string | null {
+  let dir = path.resolve(cwd);
+  while (true) {
+    const pin = readPinFile(path.join(dir, '.myco', 'runtime.command'));
+    if (pin) return pin;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return resolveRuntimeCommand();
+}
+
 function readPinFile(filePath: string): string | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();

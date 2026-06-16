@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reconcileSelf } from '../../packages/myco/src/daemon/self-reconcile.js';
 import {
-  writeRefreshLaunchersIntent,
   writeRestartIntent,
   writeUpdateIntent,
 } from '../../packages/myco/src/daemon/intent.js';
@@ -242,56 +241,6 @@ describe('reconcileSelf', () => {
 
     await expect(reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger })).resolves.toBeUndefined();
     expect(existsSync(join(dir, RESTART_INTENT_FILE))).toBe(false);
-  });
-
-  test('refresh-launchers intent invokes the refresh callback and clears the intent', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-refresh-'));
-    const daemonService = makeDaemonService(dir);
-    const state = makeState();
-    const logger = makeLogger();
-    const REFRESH_FILE = 'intent.refresh-launchers.toml';
-
-    writeRefreshLaunchersIntent(daemonService, {
-      requested_at: new Date().toISOString(),
-      reason: 'version-drift',
-    });
-    expect(existsSync(join(dir, REFRESH_FILE))).toBe(true);
-
-    let refreshes = 0;
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      refreshLaunchers: () => { refreshes++; },
-    });
-
-    expect(refreshes).toBe(1);
-    expect(existsSync(join(dir, REFRESH_FILE))).toBe(false);
-    expect(logger.calls.some((c) => c.message.includes('Refresh-launchers intent observed'))).toBe(true);
-  });
-
-  test('refresh-launchers intent retained when the refresh callback throws', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-refresh-fail-'));
-    const daemonService = makeDaemonService(dir);
-    const state = makeState();
-    const logger = makeErrorLogger();
-    const REFRESH_FILE = 'intent.refresh-launchers.toml';
-
-    writeRefreshLaunchersIntent(daemonService, {
-      requested_at: new Date().toISOString(),
-    });
-
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      refreshLaunchers: () => { throw new Error('disk full'); },
-    });
-
-    expect(existsSync(join(dir, REFRESH_FILE))).toBe(true);
-    expect(logger.calls.some((c) => c.level === 'error' && c.message.includes('Launcher refresh failed'))).toBe(true);
   });
 
   test('overwrites daemon.json when it points to a different pid', async () => {

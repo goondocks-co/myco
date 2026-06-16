@@ -28,9 +28,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   if (!before) {
     const label = serviceLabel(serviceVariantForState(daemonService));
-    const supervisorHint = process.platform === 'darwin'
-      ? `  launchctl list | grep ${label}`
-      : `  systemctl --user status ${label}.service`;
+    const supervisorHint = supervisorStatusHint(label);
     console.error('No daemon found on the canonical port and no state file present.');
     console.error('If the daemon should be running, check the supervisor:');
     console.error(supervisorHint);
@@ -82,6 +80,27 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   console.error('  The /api/restart call succeeded, so the supervisor was invoked;');
   console.error('  if the daemon still has not respawned, check supervisor logs.');
   process.exit(1);
+}
+
+/**
+ * The down-daemon recovery hint: the supervisor command the user can run to
+ * inspect (or kick) the service on their platform. launchd/systemd surface a
+ * status query; Windows mirrors the Task Scheduler `/run` primitive that the
+ * service manager uses (see windows.ts `restartShellCommand`), since `schtasks
+ * /query` output is far noisier and the task name IS the service label.
+ */
+export function supervisorStatusHint(
+  label: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  switch (platform) {
+    case 'darwin':
+      return `  launchctl list | grep ${label}`;
+    case 'win32':
+      return `  schtasks /run /tn "${label}"   (or check the Task Scheduler service)`;
+    default:
+      return `  systemctl --user status ${label}.service`;
+  }
 }
 
 function extractErrorMessage(body: unknown): string | null {

@@ -1,306 +1,177 @@
-import { describe, it, expect } from 'bun:test';
-import { generateRestartScript, generateUpdateScript } from '@myco/daemon/update-installer.js';
+/**
+ * Tests for the update installer's detached-spawn layer.
+ *
+ * The orchestration logic moved out of generated `#!/bin/sh` scripts and into
+ * the cross-platform `apply-update.ts` (covered by its own test). What remains
+ * here is the daemon-side spawner: it writes the orchestration params to a temp
+ * JSON file and spawns `<binary> __apply-update <paramsFile>` DETACHED.
+ *
+ * These tests assert that contract: params JSON carries the right `kind`,
+ * fields, and `serviceManagedLabel`; the spawned argv invokes `__apply-update`
+ * with the params path; the spawn is detached + unreffed; no `/bin/sh`.
+ */
 
-describe('generateRestartScript()', () => {
-  const baseParams = {
-    projectRoot: '/home/user/project',
-    vaultDir: '/home/user/project/.myco',
-    fromVersion: '0.17.0',
-    toVersion: '0.17.1',
-    mycoBinary: 'myco',
-    daemonPort: 20915,
-  };
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 
-  it('includes myco update --all-projects when runLocalUpdate is true', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: true });
-    expect(script).toContain('update --all-projects');
-    // Restart still cd's into projectRoot so the new daemon picks up the vault.
-    expect(script).toContain('/home/user/project');
-  });
+// ---------------------------------------------------------------------------
+// Capture spawn calls and intercept fs writes so the test never touches the
+// real ~/.myco or shells out. We record written files in-memory by path.
+// ---------------------------------------------------------------------------
+type SpawnCall = { cmd: string; args: string[]; opts: Record<string, unknown> };
+const spawnCalls: SpawnCall[] = [];
+let unrefCount = 0;
 
-  it('skips myco update when runLocalUpdate is false', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).not.toContain('update --all-projects');
-    expect(script).not.toContain('update --project');
-  });
+import * as childProcessActual__ns from 'node:child_process';
+const childProcessActual = { ...childProcessActual__ns };
+mock.module('node:child_process', () => ({
+  ...childProcessActual,
+  spawn: vi.fn((cmd: string, args: string[], opts: Record<string, unknown>) => {
+    spawnCalls.push({ cmd, args, opts });
+    return { unref: () => { unrefCount++; }, on: () => {}, kill: () => {} } as never;
+  }),
+}));
 
-  it('starts the daemon from projectRoot so resolveVaultDir finds the vault', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).toContain('cd "/home/user/project"');
-    expect(script).toContain('"$MYCO" daemon');
-    // No explicit vault flag — vaults are project-local, resolved from cwd.
-    expect(script).not.toContain('--vault');
-  });
+const writtenFiles = new Map<string, string>();
+import * as fsActual__ns from 'node:fs';
+const fsActual = fsActual__ns.default ?? fsActual__ns;
+const fsStub = {
+  ...fsActual,
+  mkdirSync: vi.fn(() => undefined),
+  copyFileSync: vi.fn(() => undefined),
+  writeFileSync: vi.fn((p: string, content: string) => { writtenFiles.set(String(p), String(content)); }),
+};
+mock.module('node:fs', () => ({ ...fsStub, default: fsStub }));
 
-  it('writes restart-reason.json before starting daemon', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: true });
-    expect(script).toContain('restart-reason.json');
-  });
-
-  it('bakes the myco binary literal at script generation time (prod)', () => {
-    // Regression guard: the old implementation used `${MYCO_CMD:-myco}` —
-    // a runtime env-var dispatch inside the shell script that relied on
-    // the child process inheriting MYCO_CMD from its parent. The new
-    // implementation bakes the literal at generation time, eliminating
-    // the env-var dependency entirely.
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).not.toContain('${MYCO_CMD');
-    expect(script).toContain('MYCO="myco"');
-  });
-
-  it('bakes a dev-build CLI entry path when supplied', () => {
-    const script = generateRestartScript({
-      ...baseParams,
-      runLocalUpdate: false,
-      mycoBinary: '/Users/dev/.local/bin/myco-dev',
-    });
-    expect(script).toContain('MYCO="/Users/dev/.local/bin/myco-dev"');
-    expect(script).not.toContain('${MYCO_CMD');
-  });
-
-  it('cleans up the script file', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).toContain('rm -f "$0"');
-  });
-
-  it('bakes version strings into reason JSON from Node', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: true });
-    expect(script).toContain('0.17.0');
-    expect(script).toContain('0.17.1');
-    expect(script).toContain('version_sync');
-  });
-
-  it('handles paths with spaces via JSON quoting', () => {
-    const script = generateRestartScript({
-      ...baseParams,
-      projectRoot: '/home/user/my project',
-      vaultDir: '/home/user/my project/.myco',
-      runLocalUpdate: true,
-    });
-    expect(script).toContain('my project');
-  });
-
-  // Service-managed restart tail — same root cause as the /restart bug fixed
-  // in commit 78a2c421. When launchd's KeepAlive (or systemd's
-  // Restart=always) is going to respawn the daemon, the script must NOT
-  // also spawn `myco daemon` — they'd fight for the canonical port.
-  it('uses the service-restart command instead of spawning a daemon when service-managed', () => {
-    const script = generateRestartScript({
-      ...baseParams,
-      runLocalUpdate: false,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    expect(script).toContain('launchctl kickstart -k gui/501/co.goondocks.myco');
-    expect(script).not.toContain('"$MYCO" daemon');
-  });
-
-  it('uses the systemd restart command on Linux', () => {
-    const script = generateRestartScript({
-      ...baseParams,
-      runLocalUpdate: false,
-      serviceRestartCommand: 'systemctl --user restart myco.service',
-    });
-    expect(script).toContain('systemctl --user restart myco.service');
-    expect(script).not.toContain('"$MYCO" daemon');
-  });
-
-  it('falls back to spawning `myco daemon` when no service-restart command is supplied', () => {
-    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).toContain('"$MYCO" daemon');
-    expect(script).not.toContain('launchctl');
-    expect(script).not.toContain('systemctl');
-  });
+afterAll(() => {
+  mock.module('node:child_process', () => childProcessActual);
+  mock.module('node:fs', () => ({ ...fsActual, default: fsActual }));
 });
 
-describe('generateUpdateScript()', () => {
-  const baseParams = {
-    packageSpecs: ['@goondocks/myco@1.0.0'],
-    projectRoot: '/project',
-    vaultDir: '/project/.myco',
-    mycoBinary: 'myco',
-    daemonPort: 20915,
-    targetVersion: '1.0.0',
-  };
+import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 
-  it('generates a valid update script (existing behavior sanity check)', () => {
-    const script = generateUpdateScript(baseParams);
-    expect(script).toContain('npm install -g "@goondocks/myco@1.0.0"');
-    expect(script).toContain('update --all-projects');
+/** The single params file the spawner wrote for the most recent call. */
+function lastParams(): Record<string, unknown> {
+  const call = spawnCalls.at(-1)!;
+  const paramsFile = call.args[1];
+  return JSON.parse(writtenFiles.get(paramsFile)!) as Record<string, unknown>;
+}
+
+const UPDATE_BASE = {
+  packageSpecs: ['@goondocks/myco@1.0.0'],
+  projectRoot: '/project',
+  vaultDir: '/project/.myco',
+  mycoBinary: 'myco',
+  daemonPort: 20915,
+  targetVersion: '1.0.0',
+};
+
+const RESTART_BASE = {
+  projectRoot: '/home/user/project',
+  vaultDir: '/home/user/project/.myco',
+  runLocalUpdate: true,
+  fromVersion: '0.17.0',
+  toVersion: '0.17.1',
+  mycoBinary: 'myco',
+  daemonPort: 20915,
+};
+
+beforeEach(() => {
+  spawnCalls.length = 0;
+  writtenFiles.clear();
+  unrefCount = 0;
+});
+
+describe('spawnUpdateScript', () => {
+  it('spawns the binary `__apply-update` subcommand detached + unreffed', () => {
+    spawnUpdateScript(UPDATE_BASE);
+    expect(spawnCalls.length).toBe(1);
+    const { args, opts } = spawnCalls[0];
+    expect(args[0]).toBe('__apply-update');
+    // argv[1] is the params file path the orchestrator reads.
+    expect(args[1]).toBe(spawnCalls[0].args[1]);
+    expect(opts.detached).toBe(true);
+    expect(opts.stdio).toBe('ignore');
+    expect(opts.windowsHide).toBe(true);
+    expect(unrefCount).toBe(1);
   });
 
-  it('bakes the myco binary literal (no MYCO_CMD env-var dispatch)', () => {
-    const script = generateUpdateScript(baseParams);
-    expect(script).not.toContain('${MYCO_CMD');
-    expect(script).toContain('MYCO="myco"');
+  it('never spawns /bin/sh (the Windows-ENOENT bug this fix removes)', () => {
+    spawnUpdateScript(UPDATE_BASE);
+    expect(spawnCalls[0].cmd).not.toBe('/bin/sh');
   });
 
-  it('bakes a dev-build CLI entry path when supplied', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      mycoBinary: '/Users/dev/.local/bin/myco-dev',
-    });
-    expect(script).toContain('MYCO="/Users/dev/.local/bin/myco-dev"');
-  });
-
-  it('installs multiple Myco package specs in one script', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
+  it('writes a kind:"update" params JSON with the install fields', () => {
+    spawnUpdateScript({
+      ...UPDATE_BASE,
       packageSpecs: ['@goondocks/myco@1.0.0', '@goondocks/myco-team@0.1.1'],
     });
-    expect(script).toContain('"@goondocks/myco@1.0.0" "@goondocks/myco-team@0.1.1"');
+    const p = lastParams();
+    expect(p.kind).toBe('update');
+    expect(p.packageSpecs).toEqual(['@goondocks/myco@1.0.0', '@goondocks/myco-team@0.1.1']);
+    expect(p.projectRoot).toBe('/project');
+    expect(p.vaultDir).toBe('/project/.myco');
+    expect(p.mycoBinary).toBe('myco');
+    expect(p.daemonPort).toBe(20915);
+    expect(p.targetVersion).toBe('1.0.0');
+    expect(p.removeLocalRuntime).toBe(false);
   });
 
-  it('installs beta builds into the managed machine runtime when requested', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      packageSpecs: [],
-      localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1',
-    });
-    // Paths now resolve against `~/.myco/` via resolveMycoHome().
-    expect(script).toContain('npm install --prefix');
-    expect(script).toContain('runtime.tmp');
-    expect(script).toContain('"@goondocks/myco@1.1.0-beta.1"');
-    expect(script).toContain('runtime.command');
-    expect(script).toMatch(/MYCO="[^"]*runtime\/node_modules\/\.bin\/myco"/);
+  it('defaults serviceManagedLabel to null when not provided', () => {
+    spawnUpdateScript(UPDATE_BASE);
+    expect(lastParams().serviceManagedLabel).toBeNull();
   });
 
-  it('removes the managed machine runtime after a successful stable revert', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      removeLocalRuntime: true,
-    });
-    expect(script).toMatch(/rm -f "[^"]*runtime\.command"/);
-    expect(script).toMatch(/rm -rf "[^"]*\/runtime"/);
-    expect(script).toContain('MYCO="myco"');
+  it('passes a service label through when supplied', () => {
+    spawnUpdateScript({ ...UPDATE_BASE, serviceManagedLabel: 'co.goondocks.myco' });
+    expect(lastParams().serviceManagedLabel).toBe('co.goondocks.myco');
   });
 
-  // Service-managed update tail. Once PR #267 made the prod daemon
-  // service-managed, the post-install `cd … && myco daemon &` line raced
-  // launchd's KeepAlive for the canonical port — same bug shape as the
-  // /restart fix in commit 78a2c421. The script must invoke the platform
-  // restart primitive instead of spawning its own daemon.
-  it('uses the service-restart command instead of spawning a daemon when service-managed', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    expect(script).toContain('launchctl kickstart -k gui/501/co.goondocks.myco');
-    // Critical: no parallel daemon spawn.
-    expect(script).not.toContain('"$MYCO" daemon');
-  });
-
-  it('uses the systemd restart command on Linux', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'systemctl --user restart myco.service',
-    });
-    expect(script).toContain('systemctl --user restart myco.service');
-    expect(script).not.toContain('"$MYCO" daemon');
-  });
-
-  it('falls back to spawning `myco daemon` when no service-restart command is supplied', () => {
-    const script = generateUpdateScript(baseParams);
-    expect(script).toContain('"$MYCO" daemon');
-    expect(script).not.toContain('launchctl');
-    expect(script).not.toContain('systemctl');
-  });
-
-  it('service-restart tail still runs after the npm install completes (sequenced after update_failed branch)', () => {
-    // The restart command must follow the success/failure handling block so
-    // we never restart before the install attempt has finished.
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    const installIdx = script.indexOf('npm install');
-    const restartIdx = script.indexOf('launchctl kickstart');
-    expect(installIdx).toBeGreaterThan(-1);
-    expect(restartIdx).toBeGreaterThan(installIdx);
-  });
-
-  // -------------------------------------------------------------------------
-  // Readiness guard — regression coverage for the double-respawn race.
-  //
-  // Bug shipped to users in v0.27.11: launchctl kickstart -k unconditionally
-  // SIGTERMs the running daemon, but launchd's KeepAlive may have already
-  // respawned the daemon from the freshly-installed binary by the time the
-  // script reaches kickstart. Result: kickstart kills a fully-healthy new
-  // daemon and forces a redundant respawn cycle through launchd's throttle
-  // window (~10s of dead daemon, visible as "daemon never came back" to the
-  // user). Fix: probe /health for the target version BEFORE kickstart; skip
-  // when already converged.
-  // -------------------------------------------------------------------------
-
-  it('emits a readiness guard that probes /health on the canonical port', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    expect(script).toContain('http://127.0.0.1:20915/health');
-    // grep pattern asserts the version field matches the target literal.
-    expect(script).toContain('"version":"1.0.0"');
-  });
-
-  it('guard runs AFTER npm install but BEFORE the supervisor restart', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    const installIdx = script.indexOf('npm install');
-    const guardIdx = script.indexOf('/health');
-    const restartIdx = script.indexOf('launchctl kickstart');
-    expect(installIdx).toBeLessThan(guardIdx);
-    expect(guardIdx).toBeLessThan(restartIdx);
-  });
-
-  it('guard exits 0 (skip restart) when the running daemon already reports the target version', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
-    });
-    // The guard's match branch must clean up and exit non-fatally so the
-    // wrapping `set -e` doesn't surface a "failed restart" error.
-    expect(script).toMatch(/grep -q[^\n]*\n\s*echo[^\n]*\n\s*rm -f "\$0"\s*\n\s*exit 0/);
-  });
-
-  it('guard fires for the non-service-managed daemon-spawn path too', () => {
-    // Even without a serviceRestartCommand, the readiness probe still
-    // guards the daemon spawn — we don't want two daemons fighting for
-    // the canonical port either.
-    const script = generateUpdateScript(baseParams);
-    expect(script).toContain('http://127.0.0.1:20915/health');
-    expect(script).toContain('"version":"1.0.0"');
-  });
-
-  it('readiness guard uses the dev daemon port when supplied', () => {
-    const script = generateUpdateScript({
-      ...baseParams,
-      daemonPort: 19344,
-      targetVersion: '0.27.12',
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
-    });
-    expect(script).toContain('http://127.0.0.1:19344/health');
-    expect(script).toContain('"version":"0.27.12"');
+  it('resolves the managed machine-runtime paths into the params', () => {
+    spawnUpdateScript({ ...UPDATE_BASE, localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1' });
+    const p = lastParams();
+    expect(p.localRuntimeSpec).toBe('@goondocks/myco@1.1.0-beta.1');
+    expect(String(p.machineRuntimeTmpDir)).toContain('runtime.tmp');
+    expect(String(p.machineRuntimeCommandPath)).toContain('runtime.command');
+    expect(String(p.machineRuntimeMyco)).toMatch(/runtime[/\\]node_modules[/\\]\.bin[/\\]myco$/);
   });
 });
 
-describe('generateRestartScript() readiness guard', () => {
-  const baseParams = {
-    projectRoot: '/home/user/project',
-    vaultDir: '/home/user/project/.myco',
-    fromVersion: '0.17.0',
-    toVersion: '0.17.1',
-    mycoBinary: 'myco',
-    daemonPort: 20915,
-  };
+describe('spawnRestartScript', () => {
+  it('writes a kind:"restart" params JSON with the restart fields', () => {
+    spawnRestartScript(RESTART_BASE);
+    const p = lastParams();
+    expect(p.kind).toBe('restart');
+    expect(p.runLocalUpdate).toBe(true);
+    expect(p.fromVersion).toBe('0.17.0');
+    expect(p.toVersion).toBe('0.17.1');
+    expect(p.projectRoot).toBe('/home/user/project');
+    expect(p.daemonPort).toBe(20915);
+    expect(String(p.restartReasonPath)).toContain('restart-reason.json');
+  });
 
-  it('emits the readiness guard with toVersion as the target', () => {
-    const script = generateRestartScript({
-      ...baseParams,
-      runLocalUpdate: false,
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+  it('spawns `__apply-update` detached (no /bin/sh)', () => {
+    spawnRestartScript(RESTART_BASE);
+    expect(spawnCalls[0].cmd).not.toBe('/bin/sh');
+    expect(spawnCalls[0].args[0]).toBe('__apply-update');
+    expect(spawnCalls[0].opts.detached).toBe(true);
+  });
+
+  it('defaults serviceManagedLabel to null and passes a label through', () => {
+    spawnRestartScript(RESTART_BASE);
+    expect(lastParams().serviceManagedLabel).toBeNull();
+    spawnRestartScript({ ...RESTART_BASE, serviceManagedLabel: 'co.goondocks.myco-dev' });
+    expect(lastParams().serviceManagedLabel).toBe('co.goondocks.myco-dev');
+  });
+
+  it('installer→orchestrator handoff carries spaced paths intact (in the params JSON, not on argv)', () => {
+    spawnRestartScript({
+      ...RESTART_BASE,
+      projectRoot: '/home/user/my project',
+      vaultDir: '/home/user/my project/.myco',
     });
-    expect(script).toContain('http://127.0.0.1:20915/health');
-    expect(script).toContain('"version":"0.17.1"');
+    const p = lastParams();
+    expect(p.projectRoot).toBe('/home/user/my project');
+    expect(String(p.restartReasonPath)).toContain('my project');
   });
 });

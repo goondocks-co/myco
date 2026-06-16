@@ -2,7 +2,7 @@
 
 Windows x64 binary for [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco).
 
-Windows support is experimental for the current Myco release. This package is published for early testing while macOS remains the primary supported platform.
+Windows (x64) support is in beta while macOS remains the primary supported platform. Only **x64** Windows is supported — Windows on ARM, which runs this x64 build under emulation, is not supported.
 
 This package is installed automatically as an `optionalDependency` of
 `@goondocks/myco` when running on Windows x64. You should not install it

@@ -229,6 +229,14 @@ export const RECONCILE_SIGKILL_GRACE_MS = 500;
 /** reconcileExistingDaemon: poll interval while waiting for the predecessor
  *  pid to exit (ms). */
 export const RECONCILE_POLL_MS = 50;
+/** reconcileExistingDaemon: how long to let a predecessor that ACCEPTED a
+ *  cooperative `/api/shutdown` finish its graceful drain before escalating to
+ *  signals (ms). Aligned to the in-flight agent-run drain ceiling (inflight-runs
+ *  `DEFAULT_DRAIN_TIMEOUT_MS`) so we never hard-kill a legitimate drain — on
+ *  Windows that kill is an uncatchable TerminateProcess that would abort the
+ *  very drain we asked for. The wait returns the instant the pid exits, so the
+ *  common case (no in-flight work) costs milliseconds, not the full budget. */
+export const RECONCILE_COOPERATIVE_GRACE_MS = 30_000;
 
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */

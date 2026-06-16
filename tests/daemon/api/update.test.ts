@@ -342,6 +342,7 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.1.0',
     });
@@ -387,6 +388,7 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.1.0',
     });
@@ -425,6 +427,7 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: '/mock-home/.myco/runtime/node_modules/.bin/myco',
+      serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.0.0',
     });
@@ -434,12 +437,14 @@ describe('handleUpdateApply', () => {
   // Service-managed restart routing
   //
   // Mirrors the bug fix in commit 78a2c421 for /restart. When launchd /
-  // systemd manages the daemon, the post-install script must NOT spawn
-  // `myco daemon` itself — the service supervisor's KeepAlive would race
-  // it for the canonical port. Instead, the script invokes the platform
-  // restart primitive directly.
+  // systemd manages the daemon, the orchestrator must NOT spawn `myco daemon`
+  // itself — the service supervisor's KeepAlive would race it for the
+  // canonical port. Instead, the orchestrator restarts via the platform
+  // ServiceManager. The daemon passes the detected service LABEL (not a shell
+  // command); the cross-platform orchestrator turns the label into a
+  // ServiceManager.restart() call.
   // -------------------------------------------------------------------------
-  it('passes a launchctl kickstart command when the daemon is service-managed (prod)', async () => {
+  it('passes the service label when the daemon is service-managed (prod)', async () => {
     const mgr = installedServiceManager(
       'co.goondocks.myco',
       'launchctl kickstart -k gui/501/co.goondocks.myco',
@@ -450,12 +455,12 @@ describe('handleUpdateApply', () => {
 
     expect(spawnUpdateScript).toHaveBeenCalledWith(
       expect.objectContaining({
-        serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+        serviceManagedLabel: 'co.goondocks.myco',
       }),
     );
   });
 
-  it('passes a launchctl kickstart command for the dev service variant', async () => {
+  it('passes the dev service label for the dev service variant', async () => {
     const mgr = installedServiceManager(
       'co.goondocks.myco-dev',
       'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
@@ -466,22 +471,22 @@ describe('handleUpdateApply', () => {
 
     expect(spawnUpdateScript).toHaveBeenCalledWith(
       expect.objectContaining({
-        serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
+        serviceManagedLabel: 'co.goondocks.myco-dev',
       }),
     );
   });
 
-  it('omits the service-restart command when no service is installed (manual daemon)', async () => {
+  it('passes a null label when no service is installed (manual daemon)', async () => {
     const mgr = new FakeServiceManager();
     const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
 
     await handleUpdateApply(makeReq());
 
     const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
-    expect(call?.serviceRestartCommand).toBeUndefined();
+    expect(call?.serviceManagedLabel).toBeNull();
   });
 
-  it('omits the service-restart command when service is installed but a different PID is the daemon', async () => {
+  it('passes a null label when service is installed but a different PID is the daemon', async () => {
     // The supervisor manages SOME process, but not this one. Don't claim
     // service-managed semantics — fall back to the manual daemon spawn.
     const mgr = new FakeServiceManager();
@@ -493,17 +498,17 @@ describe('handleUpdateApply', () => {
     await handleUpdateApply(makeReq());
 
     const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
-    expect(call?.serviceRestartCommand).toBeUndefined();
+    expect(call?.serviceManagedLabel).toBeNull();
   });
 
-  it('omits the service-restart command on unsupported platforms', async () => {
+  it('passes a null label on unsupported platforms', async () => {
     const mgr = new FakeServiceManager({ supported: false });
     const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
 
     await handleUpdateApply(makeReq());
 
     const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
-    expect(call?.serviceRestartCommand).toBeUndefined();
+    expect(call?.serviceManagedLabel).toBeNull();
   });
 
   it('installs a managed beta runtime even when the global install matches the target', async () => {
@@ -542,6 +547,7 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.0.0',
     });
@@ -749,7 +755,7 @@ describe('handleUpdateStatus — restart_required', () => {
     expect(result.body).toMatchObject({ exempt: false });
   });
 
-  it('passes a service-restart command into the auto-restart script when service-managed', async () => {
+  it('passes the service label into the auto-restart orchestrator when service-managed', async () => {
     // Auto-restart short-circuit (sibling-version-sync) must route through
     // launchd / systemd too — same thundering-herd avoidance as
     // handleUpdateApply. Without this, the sibling daemon spawn + KeepAlive
@@ -770,7 +776,7 @@ describe('handleUpdateStatus — restart_required', () => {
 
     expect(spawnRestartScript).toHaveBeenCalledTimes(1);
     expect(vi.mocked(spawnRestartScript).mock.calls[0][0]).toMatchObject({
-      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+      serviceManagedLabel: 'co.goondocks.myco',
     });
   });
 

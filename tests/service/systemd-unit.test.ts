@@ -26,7 +26,9 @@ describe('renderSystemdUnit', () => {
 
   test('ExecStart quotes executable + args correctly', () => {
     const unit = renderSystemdUnit(baseSpec);
-    expect(unit).toContain('ExecStart=/home/test/.local/share/myco/bin/myco daemon');
+    // systemd splits ExecStart on whitespace, so every token is double-quoted
+    // (a spaced install path would otherwise be torn into separate words).
+    expect(unit).toContain('ExecStart="/home/test/.local/share/myco/bin/myco" "daemon"');
   });
 
   test('emits Environment= lines for every env var', () => {

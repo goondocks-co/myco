@@ -123,7 +123,9 @@ describe('scrubEscapedSmokeLaunchers', () => {
           UserPromptSubmit: [
             { matcher: '', hooks: [{ type: 'command', command: '"/Applications/GitKraken.app/Contents/MacOS/gk" ai hook run --host claude-code' }] },
             { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-final-smoke-AAAA/home/launcher.cjs hook user-prompt-submit --symbiont claude-code', timeout: 5 }] },
-            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/chris/.myco/launcher.cjs hook user-prompt-submit --symbiont claude-code', timeout: 5 }] },
+            // NEW form (`<binary> hook … --myco-managed`, no `.cjs`) — the
+            // current installed launcher; the scrub must leave it intact.
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && /Users/chris/.local/bin/myco hook user-prompt-submit --symbiont claude-code --myco-managed', timeout: 5 }] },
           ],
         },
       }, null, 2), 'utf-8');
@@ -135,7 +137,7 @@ describe('scrubEscapedSmokeLaunchers', () => {
       const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
       expect(after.hooks.UserPromptSubmit).toHaveLength(2);
       expect(after.hooks.UserPromptSubmit[0].hooks[0].command).toContain('GitKraken');
-      expect(after.hooks.UserPromptSubmit[1].hooks[0].command).toContain('/Users/chris/.myco/launcher.cjs');
+      expect(after.hooks.UserPromptSubmit[1].hooks[0].command).toContain('--myco-managed');
     });
   });
 
@@ -145,7 +147,7 @@ describe('scrubEscapedSmokeLaunchers', () => {
         hooks: {
           sessionStart: [
             { command: 'node /tmp/myco-wave2-smoke-BBBB/home/launcher.cjs hook session-start --symbiont cursor' },
-            { command: 'node /Users/chris/.myco/launcher.cjs hook session-start --symbiont cursor' },
+            { command: '/Users/chris/.local/bin/myco hook session-start --symbiont cursor --myco-managed' },
             { command: 'echo user-hook' },
           ],
         },
@@ -157,7 +159,7 @@ describe('scrubEscapedSmokeLaunchers', () => {
 
       const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
       expect(after.hooks.sessionStart).toHaveLength(2);
-      expect(after.hooks.sessionStart[0].command).toContain('/Users/chris/.myco/launcher.cjs');
+      expect(after.hooks.sessionStart[0].command).toContain('--myco-managed');
       expect(after.hooks.sessionStart[1].command).toBe('echo user-hook');
     });
   });
@@ -167,7 +169,7 @@ describe('scrubEscapedSmokeLaunchers', () => {
       const raw = JSON.stringify({
         hooks: {
           Stop: [
-            { matcher: '', hooks: [{ type: 'command', command: 'cd . && node /tmp/myco-cap-smoke-CCCC/home/launcher.cjs hook stop --symbiont claude-code' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/myco-cap-smoke-CCCC/home/launcher.cjs hook stop --symbiont claude-code' }] },
           ],
         },
       }, null, 2);
@@ -177,6 +179,255 @@ describe('scrubEscapedSmokeLaunchers', () => {
       expect(out.entriesRemoved).toBe(1);
       expect(out.rewritten).toBe(false);
       expect(fs.readFileSync(file, 'utf-8')).toBe(raw);
+    });
+  });
+
+  // Generalized signature-based scrub: catches Myco's own escaped/old launcher
+  // entries at ANY path (not just the smoke-specific `/tmp/myco-*/home/` one),
+  // by the full `<launcher.cjs> hook <known-event> --symbiont <known-agent>`
+  // signature, while leaving foreign hooks, genuine user wrappers, and the new
+  // marker-bearing binary form untouched.
+  describe('generalized launcher signature', () => {
+    it('removes a real-dogfood launcher at an arbitrary temp path', () => {
+      withTmpFile((file) => {
+        fs.writeFileSync(file, JSON.stringify({
+          hooks: {
+            sessionStart: [
+              { command: 'node /tmp/p2dogfood-daemon/launcher.cjs hook session-start --symbiont codex' },
+            ],
+          },
+        }, null, 2), 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(1);
+        expect(out.rewritten).toBe(true);
+        const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        expect(after.hooks.sessionStart).toHaveLength(0);
+      });
+    });
+
+    it('removes the canonical OLD .myco/launcher.cjs shape (flat)', () => {
+      withTmpFile((file) => {
+        fs.writeFileSync(file, JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /Users/x/.myco/launcher.cjs hook stop --symbiont claude-code' },
+            ],
+          },
+        }, null, 2), 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(1);
+        expect(out.rewritten).toBe(true);
+      });
+    });
+
+    it('removes the cd-prefixed OLD launcher shape', () => {
+      withTmpFile((file) => {
+        fs.writeFileSync(file, JSON.stringify({
+          hooks: {
+            UserPromptSubmit: [
+              { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /Users/x/.myco/launcher.cjs hook user-prompt-submit --symbiont claude-code', timeout: 5 }] },
+            ],
+          },
+        }, null, 2), 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(1);
+        expect(out.rewritten).toBe(true);
+      });
+    });
+
+    it('removes other Myco launcher filenames (mcp-launcher / myco-run / myco-hook)', () => {
+      withTmpFile((file) => {
+        fs.writeFileSync(file, JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /tmp/x/myco-run.cjs hook stop --symbiont cursor' },
+              { command: 'node /opt/foo/myco-hook.cjs hook stop --symbiont windsurf' },
+            ],
+          },
+        }, null, 2), 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(2);
+      });
+    });
+
+    it('PRESERVES the new marker-bearing binary form (no .cjs)', () => {
+      withTmpFile((file) => {
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: '/abs/build/myco hook stop --symbiont claude-code --myco-managed' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+        expect(fs.readFileSync(file, 'utf-8')).toBe(raw);
+      });
+    });
+
+    it('PRESERVES a user wrapper that invokes a launcher.cjs without the hook signature', () => {
+      withTmpFile((file) => {
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: '/opt/my-wrappers/launcher.cjs --symbiont workerA' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('PRESERVES a launcher.cjs command with a trailing shell composition', () => {
+      withTmpFile((file) => {
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /opt/me/launcher.cjs --symbiont cursor && my-thing' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('PRESERVES a full-signature command composed with a trailing operator (user-owned)', () => {
+      withTmpFile((file) => {
+        // Full Myco signature but user-composed: the trailing `&& my-notify`
+        // means the user wrote this wrapper. Stripping it would break their hook.
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /opt/me/launcher.cjs hook stop --symbiont cursor && my-notify' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('PRESERVES another app\'s hook script', () => {
+      withTmpFile((file) => {
+        const raw = JSON.stringify({
+          hooks: {
+            sessionStart: [
+              { command: '/Users/x/.superset/hooks/cursor-hook.sh Start' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('PRESERVES a full-signature launcher.cjs with an UNKNOWN symbiont', () => {
+      withTmpFile((file) => {
+        // workerA is not a known symbiont — fail-safe: leave it alone rather
+        // than risk stripping a user/third-party hook that happens to ape the
+        // shape.
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /opt/me/launcher.cjs hook stop --symbiont workerA' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('PRESERVES a full-signature launcher.cjs with an UNKNOWN event', () => {
+      withTmpFile((file) => {
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              { command: 'node /opt/me/launcher.cjs hook frobnicate --symbiont cursor' },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
+    });
+
+    it('mixed event: removes escaped junk, keeps new-form and a user-app group', () => {
+      withTmpFile((file) => {
+        fs.writeFileSync(file, JSON.stringify({
+          hooks: {
+            Stop: [
+              // escaped junk (old launcher.cjs, full signature, cd-prefixed)
+              { matcher: '', hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node /tmp/p2dogfood-daemon/launcher.cjs hook stop --symbiont claude-code' }] },
+              // new-form keeper (marker, no .cjs)
+              { matcher: '', hooks: [{ type: 'command', command: '/abs/build/myco hook stop --symbiont claude-code --myco-managed' }] },
+              // foreign user-app group
+              { matcher: '', hooks: [{ type: 'command', command: '"/Applications/GitKraken.app/Contents/MacOS/gk" ai hook run --host claude-code' }] },
+            ],
+          },
+        }, null, 2), 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(1);
+        expect(out.rewritten).toBe(true);
+
+        const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        expect(after.hooks.Stop).toHaveLength(2);
+        expect(after.hooks.Stop[0].hooks[0].command).toContain('--myco-managed');
+        expect(after.hooks.Stop[1].hooks[0].command).toContain('GitKraken');
+      });
+    });
+
+    it('nested group with a mix of matching and non-matching commands is preserved (every-match rule)', () => {
+      withTmpFile((file) => {
+        // A nested group is only removed when EVERY command matches. One foreign
+        // command in the group protects the whole group.
+        const raw = JSON.stringify({
+          hooks: {
+            Stop: [
+              {
+                matcher: '',
+                hooks: [
+                  { type: 'command', command: 'node /tmp/x/launcher.cjs hook stop --symbiont codex' },
+                  { type: 'command', command: 'echo not-myco' },
+                ],
+              },
+            ],
+          },
+        }, null, 2);
+        fs.writeFileSync(file, raw, 'utf-8');
+
+        const out = scrubEscapedSmokeLaunchers(file);
+        expect(out.entriesRemoved).toBe(0);
+        expect(out.rewritten).toBe(false);
+      });
     });
   });
 });

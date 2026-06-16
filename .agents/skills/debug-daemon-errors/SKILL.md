@@ -28,6 +28,9 @@ myco daemon:logs --follow
 
 # Or inspect the log file directly
 cat ~/.myco/daemon.log | tail -200
+
+# For hook invocation and launcher-level failures (missing hook output, status discrepancies):
+cat ~/.myco/logs/launcher.log | tail -100
 ```
 
 Look for the **first anomalous line**, not just the error message. Record:
@@ -152,29 +155,11 @@ for (const phase of task.phases) {
 
 **Problem:** Executor catches exceptions and records `complete` instead of `failed`.
 
-**Fix pattern:** Never record `complete` in a `catch` block:
-```typescript
-try {
-  const result = await runPhase(task, phase);
-  await markComplete(task.id, result);
-} catch (err) {
-  await markFailed(task.id, err.message);
-  logger.error('[Executor] Phase failed', { taskId: task.id, err });
-  throw err;
-}
-```
+**Fix pattern:** Never record `complete` in a `catch` block — always propagate failures to the error path.
 
 ### Daemon Startup Ordering — FTS Rebuild Before Port-Claim Bug
 
-**Problem:** The daemon's "step-aside if a healthy sibling is alive" check fires after `ensureSelfInstalledAsService` and after schema migration (including FTS rebuild). This ordering allows an orphan daemon to perform expensive FTS rebuild operations while another daemon instance is starting, leading to "database is locked" errors.
-
-**Root cause sequence:**
-1. Daemon A starts and begins schema migration including FTS rebuild
-2. Daemon B starts and also begins schema migration including FTS rebuild  
-3. Both daemons hold database locks during FTS operations
-4. Daemon A reaches port-claim and finds port 20915 occupied
-5. Daemon A should step aside but has already performed expensive FTS work
-6. Result: "database is locked" errors and wasted computation
+**Problem:** The daemon's "step-aside if a healthy sibling is alive" check fires after schema migration (including FTS rebuild). This allows an orphan daemon to perform expensive FTS rebuild operations while another instance is starting, leading to "database is locked" errors.
 
 **Fix pattern:** Move the port-claim check before expensive database operations.
 
@@ -229,7 +214,6 @@ grep "bridge.*timeout|bridge.*failed" ~/.myco/daemon.log | tail -20
 ```
 [MCP] Bridge connection attempt 1 failed: connect ECONNREFUSED 127.0.0.1:3456
 [MCP] Bridge connection attempt 2 failed: connect ECONNREFUSED 127.0.0.1:3456
-[MCP] Bridge connection attempt 3 failed: connect ECONNREFUSED 127.0.0.1:3456
 [MCP] Bridge reconnect exponential backoff, next attempt in 8000ms
 ```
 
@@ -269,41 +253,11 @@ Tests for daemon subsystems live in:
 
 ### Session Type Logging Strategy
 
-```typescript
-function createSessionWithDiagnostics(payload: SessionPayload) {
-  const sessionType = payload.parentSessionId ? 'sub-agent' : 'user-fork';
-  const context = {
-    sessionId: payload.id,
-    sessionType,
-    parentId: payload.parentSessionId || null,
-    source: payload.source || 'unknown',
-    timestamp: new Date().toISOString(),
-  };
-
-  logger.info(`[Session:Create] ${sessionType} session`, context);
-}
-```
+Log the session type, parent ID, and source at creation time with structured fields so log filtering by `sessionType` reveals the full lineage of phantom session bugs.
 
 ### Hook Payload Diagnostic Enhancement
 
-```typescript
-function processSessionHook(payload: any) {
-  logger.debug(`[Hook:Session] Raw payload received`, { 
-    payload: JSON.stringify(payload),
-    timestamp: new Date().toISOString()
-  });
-
-  // Check for duplicate processing
-  const recentSession = getSessionCreatedWithinSeconds(payload.id, 10);
-  if (recentSession) {
-    logger.warn(`[Hook:Session] Duplicate session creation attempt`, {
-      sessionId: payload.id,
-      timeDelta: Date.now() - recentSession.created_at
-    });
-    return;
-  }
-}
-```
+Add a duplicate-detection guard at hook processing time — check for a session with the same ID created within the last 10 seconds and emit a structured warning if found. This surfaces hook double-fire without requiring a schema change.
 
 ---
 
@@ -313,51 +267,11 @@ function processSessionHook(payload: any) {
 
 ### Task Recovery After Restart
 
-```typescript
-export async function recoverInterruptedTasks() {
-  const interruptedTasks = await db.select()
-    .from(tasks)
-    .where(
-      and(
-        inArray(tasks.status, ['running', 'starting']),
-        lt(tasks.updated_at, sql`datetime('now', '-5 minutes')`)
-      )
-    );
-
-  for (const task of interruptedTasks) {
-    await db.update(tasks)
-      .set({ 
-        status: 'pending', 
-        updated_at: new Date(),
-        restartCount: (task.restartCount || 0) + 1 
-      })
-      .where(eq(tasks.id, task.id));
-  }
-}
-```
+On startup, query for tasks in `running` or `starting` status older than 5 minutes and reset them to `pending` with an incremented `restartCount`. This prevents tasks from being permanently stuck after an unclean shutdown.
 
 ### Session and Outbox Recovery
 
-```typescript
-// Clean up sessions marked active but daemon wasn't running
-export async function cleanupStaleActiveSessions() {
-  const staleActiveSessions = await db.select()
-    .from(sessions)
-    .where(
-      and(
-        eq(sessions.status, 'active'),
-        lt(sessions.updated_at, sql`datetime('now', '-30 minutes')`)
-      )
-    );
-
-  for (const session of staleActiveSessions) {
-    const status = session.promptCount > 0 ? 'complete' : 'abandoned';
-    await db.update(sessions)
-      .set({ status, updated_at: new Date() })
-      .where(eq(sessions.id, session.id));
-  }
-}
-```
+On startup, query for sessions in `active` status with `updated_at` older than 30 minutes. Mark them `complete` if they have prompts, or `abandoned` if empty. This prevents ghost-active sessions from blocking new session creation.
 
 ---
 
@@ -442,3 +356,18 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 | "Database is locked" during startup | FTS rebuild before port-claim allows orphan operations | Move port-claim check before expensive database operations |
 | Multiple startup attempts with resource conflicts | Startup ordering allows collision between instances | Use coordination locks and resource conflict detection before expensive operations |
 | daemon.json deleted during restart | Third-contender race in concurrent startup | Use DaemonStateAuthority.deleteIfOwnedBy() with ownerPid guard |
+| Cortex injection silently stops working | cortex.enabled: false override in machine-local config | Inspect the machine-local local.yaml (gitignored) in the project's .myco/ directory before touching code — this override is only logged at debug level |
+
+---
+
+## Cross-Cutting Gotchas
+
+**Use named constants and shared utilities, not magic literals or local latches.** When fixing daemon handlers, resist the urge to add a local variable or inline numeric constant. Extract the value to `packages/myco/src/constants.ts` or a shared utility module. Magic literals in daemon code spread quickly and create silent inconsistencies between subsystems.
+
+**Audit existing config before adding new policy machinery.** Before building a new guard, threshold, or gate, check whether the behavior is already configurable via existing config keys (e.g., thresholds in `packages/myco/src/constants.ts`, scoped flags in myco.yaml). Adding redundant policy machinery creates conflicting sources of truth and makes future debugging harder.
+
+**Check the machine-local config first when injection goes silent.** The gitignored local.yaml in the project's .myco/ directory can contain a cortex.enabled: false override that silences all cortex injection machine-wide. This override is only logged at debug level, making it invisible in normal daemon output. When cortex injection stops working with no obvious error, read that file before modifying any code.
+
+**Never run `make dev-link` from a worktree.** `make dev-link` writes the project-scoped runtime pin pointing at the worktree binary, crossing the isolation boundary and routing the dev daemon through an unexpected binary path. Use `make dev-link-worktree` inside a worktree when per-worktree routing is needed; reserve `make dev-link` for the primary project root only.
+
+**Cross-variant artifact thrash.** When prod and dev daemon variants are both active (e.g., a dev-linked daemon running alongside a global install), their periodic update cycles can overwrite each other's shared machine-scoped launcher artifacts. Symptom: daemon unexpectedly switches to a different variant without user action, or hook output routes through the wrong binary. Diagnose with `ps aux | grep myco` to confirm which binary the daemon process is actually running, then check dev-link status. If both variants are stomping on each other, pin one variant's update schedule or stop the non-primary variant.

@@ -14,17 +14,20 @@ import path from 'node:path';
  * Myco through the CLI instead; only mcp-transport symbionts ship one.
  *
  * Shape variants allowed (both stdio):
- *   - Stdio bin:   `{ command: "myco-run", args: ["mcp"] }`
- *                  Claude Code, Copilot — the stdio bridge `myco-run mcp`
+ *   - Stdio bin:   `{ command: "{{mycoBinary}}", args: ["mcp"] }`
+ *                  Claude Code, Copilot — the stdio bridge `<binary> mcp`
  *                  spawns at the workspace cwd, so the bridge resolves the
  *                  project tenancy.
- *   - Local array: `{ type: "local", command: ["myco-run", "mcp"] }`
+ *   - Local array: `{ type: "local", command: ["{{mycoBinary}}", "mcp"] }`
  *                  OpenCode's local-MCP schema (command is an ARRAY).
  *
- * The launcher is `myco-run` (PATH binary). Any `url`/`serverUrl`-shaped
- * template is hard-rejected (guards the #355 stdio→HTTP regression). The
- * retired `["node", ".agents/myco-cli.cjs", "mcp"]` project-launcher shape
- * and the raw `myco`/`myco-dev` binaries are hard-rejected below.
+ * The launcher is the `{{mycoBinary}}` placeholder, substituted at install time
+ * with the resolved self-contained binary path (the same resolution hooks use)
+ * so a native Windows agent with no node on PATH can spawn the bridge. Any
+ * `url`/`serverUrl`-shaped template is hard-rejected (guards the #355 stdio→HTTP
+ * regression). The retired `myco-run` node shim, the `["node",
+ * ".agents/myco-cli.cjs", "mcp"]` project-launcher shape, and the raw
+ * `myco`/`myco-dev` binaries are hard-rejected below.
  */
 
 const TEMPLATES_ROOT = path.resolve('packages/myco/src/symbionts/templates');
@@ -80,21 +83,25 @@ describe('symbiont MCP templates', () => {
         expect(mycoServer.url).toBeUndefined();
         expect(mycoServer.serverUrl).toBeUndefined();
 
-        // Stdio transport: launcher invocation must use a portable
-        // command (no absolute paths, no host-specific shims). Both the
-        // bin shape (`command: "myco-run"`, args `["mcp"]`) and OpenCode's
-        // local-array shape (`command: ["myco-run", "mcp"]`) normalize to
-        // the same launcher + first-arg here.
+        // Stdio transport: the committed template carries the
+        // `{{mycoBinary}}` placeholder, substituted at install time with the
+        // resolved binary path. Both the bin shape
+        // (`command: "{{mycoBinary}}"`, args `["mcp"]`) and OpenCode's
+        // local-array shape (`command: ["{{mycoBinary}}", "mcp"]`) normalize
+        // to the same launcher + first-arg here.
         const { command, args } = extractLauncherInvocation(mycoServer);
-        expect(command).toBe('myco-run');
+        expect(command).toBe('{{mycoBinary}}');
         expect(args[0]).toBe('mcp');
 
         // Hard guards against the failure modes we've already seen,
-        // including the retired `.agents/myco-cli.cjs` project launcher.
+        // including the retired `myco-run` node shim and the
+        // `.agents/myco-cli.cjs` project launcher. Templates are checked in
+        // pre-substitution, so no absolute path should appear in the source.
         for (const token of [command, ...args]) {
           expect(token).not.toMatch(/^\//);
           expect(token).not.toContain('/Users/');
           expect(token).not.toBe('myco-dev');
+          expect(token).not.toBe('myco-run');
           expect(token).not.toContain('myco-cli.cjs');
         }
         expect(command).not.toBe('node');
