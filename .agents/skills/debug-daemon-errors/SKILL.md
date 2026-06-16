@@ -28,6 +28,9 @@ myco daemon:logs --follow
 
 # Or inspect the log file directly
 cat ~/.myco/daemon.log | tail -200
+
+# For hook invocation and launcher-level failures (missing hook output, status discrepancies):
+cat ~/.myco/logs/launcher.log | tail -100
 ```
 
 Look for the **first anomalous line**, not just the error message. Record:
@@ -322,7 +325,7 @@ All mutations require mandatory reason parameters with structured logging (kind=
 When troubleshooting daemon restart failures, consult this table of the four independent daemon state sources:
 
 | State Source | Location | Authority | Consistency Guarantee | Failure Mode |
-|--------------|----------|-----------|----------------------|--------------|
+|--------------|----------|-----------|----------------------|--------------| 
 | **daemon.json** | ~/.myco/daemon.json | Daemon self (intent-based) | Atomic write via temp-file rename; ownerPid prevents third-contender race | Stale PID; malformed JSON; third-contender deletion race |
 | **Process list** | /proc/[pid]/stat (Unix) or tasklist (Windows) | OS kernel | Real-time; immediate on kill | Race: process exits between check and reconciliation |
 | **Port claim** | Port 20915 (TCP socket) | OS kernel | Atomic on listen(); owner identifies PID | Port stuck in TIME_WAIT after unclean shutdown; EADDRINUSE false positive |
@@ -366,3 +369,5 @@ When daemon.json exists but daemon won't start, check these four sources in orde
 **Check the machine-local config first when injection goes silent.** The gitignored local.yaml in the project's .myco/ directory can contain a cortex.enabled: false override that silences all cortex injection machine-wide. This override is only logged at debug level, making it invisible in normal daemon output. When cortex injection stops working with no obvious error, read that file before modifying any code.
 
 **Never run `make dev-link` from a worktree.** `make dev-link` writes the project-scoped runtime pin pointing at the worktree binary, crossing the isolation boundary and routing the dev daemon through an unexpected binary path. Use `make dev-link-worktree` inside a worktree when per-worktree routing is needed; reserve `make dev-link` for the primary project root only.
+
+**Cross-variant artifact thrash.** When prod and dev daemon variants are both active (e.g., a dev-linked daemon running alongside a global install), their periodic update cycles can overwrite each other's shared machine-scoped launcher artifacts. Symptom: daemon unexpectedly switches to a different variant without user action, or hook output routes through the wrong binary. Diagnose with `ps aux | grep myco` to confirm which binary the daemon process is actually running, then check dev-link status. If both variants are stomping on each other, pin one variant's update schedule or stop the non-primary variant.
