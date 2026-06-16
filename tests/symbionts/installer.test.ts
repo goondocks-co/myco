@@ -116,6 +116,27 @@ const CLI_BATCHED_MANIFEST: SymbiontManifest = {
   },
 };
 
+// Like cli-batched but MCP-transport: hooks + MCP server + settings all land in
+// ONE JSON file, so install goes through `installBatchedJson` AND writes the MCP
+// server — the shape of claude-code's global ~/.claude/settings.json. Used to
+// pin batched-path idempotency.
+const MCP_BATCHED_MANIFEST: SymbiontManifest = {
+  name: 'mcp-batched',
+  displayName: 'MCP Batched',
+  binary: 'mcpbatched',
+  configDir: '.mcpbatched',
+  pluginRootEnvVar: 'MCPBATCHED_PLUGIN_ROOT',
+  settingsPath: '.mcpbatched/config.json',
+  hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
+  registration: {
+    hooksTarget: '.mcpbatched/config.json',
+    mcpTarget: '.mcpbatched/config.json',
+    mcpFormat: 'json',
+    settingsTarget: '.mcpbatched/config.json',
+    skillsTarget: '.agents/skills',
+  },
+};
+
 const GEMINI_MANIFEST: SymbiontManifest = {
   name: 'gemini',
   displayName: 'Gemini CLI',
@@ -776,6 +797,32 @@ describe('installMcp', () => {
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers['other-tool']).toBeDefined();
     expect(servers.myco).toBeDefined();
+  });
+
+  it('batched JSON (hooks + MCP + settings colocated) is idempotent — re-install preserves the agent config verbatim', () => {
+    // The claude-code shape: hooks + MCP server + settings share one file
+    // (~/.claude/settings.json), so install goes through installBatchedJson.
+    const tdir = path.join(packageRoot, 'src/symbionts/templates/mcp-batched');
+    fs.mkdirSync(tdir, { recursive: true });
+    writeJson(path.join(tdir, 'hooks.json'), {
+      Stop: [{ hooks: [{ type: 'command', command: '{{mycoLauncher}} hook stop --symbiont mcp-batched', timeout: 30 }] }],
+    });
+    writeJson(path.join(tdir, 'mcp.json'), MCP_TEMPLATE);
+    writeJson(path.join(tdir, 'settings.json'), { features: { capture: true } });
+
+    const installer = new SymbiontInstaller(MCP_BATCHED_MANIFEST, projectRoot, packageRoot);
+    const sharedFile = path.join(projectRoot, '.mcpbatched/config.json');
+    installer.install(); // first install writes hooks + MCP + settings into one file
+    expect((readJson(sharedFile).mcpServers as Record<string, unknown>).myco).toBeDefined();
+
+    // The agent rewrites the file in ITS own 4-space style, myco entry intact.
+    const agentStyled = JSON.stringify(readJson(sharedFile), null, 4) + '\n';
+    fs.writeFileSync(sharedFile, agentStyled);
+
+    // Re-install (the hourly detection tick): myco's contributions are
+    // unchanged, so the batched write must be a no-op — format preserved.
+    installer.install();
+    expect(fs.readFileSync(sharedFile, 'utf-8')).toBe(agentStyled);
   });
 
   it('is idempotent — re-install with myco already correct writes nothing and preserves the agent config verbatim', () => {

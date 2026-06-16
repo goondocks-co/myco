@@ -930,7 +930,14 @@ export class SymbiontInstaller {
    */
   private installBatchedJson(reg: NonNullable<typeof this.manifest.registration>): InstallResult {
     const targetPath = this.resolveAbsoluteTarget("hooks")!;
-    let data = readJsonFile(targetPath);
+    // Capture the on-disk structure up front so we can skip the write entirely
+    // when our transforms produce no change — otherwise the hourly detection
+    // tick would reformat a config the agent actively owns (claude-code's
+    // ~/.claude/settings.json, where hooks + MCP + settings colocate) on every
+    // pass just because its JSON style differs from ours. Same idempotency the
+    // standalone installMcpJson/installPluginHookFile paths already have.
+    const original = readJsonFile(targetPath);
+    let data = structuredClone(original);
     let hooks = false, mcp = false, settings = false;
 
     // Apply hooks transform
@@ -1009,7 +1016,7 @@ export class SymbiontInstaller {
       settings = true;
     }
 
-    writeJsonFile(targetPath, data);
+    if (!isDeepStrictEqual(data, original)) writeJsonFile(targetPath, data);
 
     return {
       hooks,
