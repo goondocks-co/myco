@@ -12,9 +12,9 @@
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { resolveHomeDir } from './paths.js';
 
 export interface GlobalConfigMigrationOutcome {
   filePath: string;
@@ -116,7 +116,7 @@ const SHELL_OPERATOR = /(\&\&|\|\||;|\||>)/;
 const HOOKS_ROOT_KEY = 'hooks';
 
 function currentHomeDir(): string {
-  return process.env.HOME ?? os.homedir();
+  return resolveHomeDir();
 }
 
 /**

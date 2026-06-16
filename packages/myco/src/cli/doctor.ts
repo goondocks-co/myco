@@ -21,7 +21,7 @@ import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { manifestToolTransport } from '../symbionts/capabilities.js';
-import { expandHome } from '../grove/paths.js';
+import { expandHome, resolveHomeDir } from '../grove/paths.js';
 import type { ServiceStatus } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
 
@@ -655,7 +655,7 @@ async function checkDetectedSymbionts(): Promise<DoctorCheck[]> {
  */
 export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
-  const home = process.env.HOME ?? '/';
+  const home = resolveHomeDir();
   let isFirst = true;
   const emit = (status: DoctorCheck['status'], detail: string, fix?: { id: DoctorFixerId; data?: Record<string, unknown> }): void => {
     const base = { name: isFirst ? 'Edge cases' : '', status, detail };

@@ -342,6 +342,138 @@ describe('reconcileExistingDaemon', () => {
     // stale recycled-pid record in place.
     expect(fs.existsSync(svc.statePath)).toBe(true);
   });
+
+  // --- Cooperative shutdown (#4): drain the predecessor before signalling ---
+
+  it('takes over via cooperative shutdown WITHOUT sending any signal when the predecessor accepts /api/shutdown', async () => {
+    // The Windows data-loss fix: on Windows a cross-process SIGTERM is an
+    // uncatchable TerminateProcess that skips the graceful drain. Reconcile
+    // must ask the predecessor to shut down over HTTP first; if it exits, we
+    // never hard-kill it (which would abort the drain mid-flight).
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    // port: 1 → health probe fails fast → takeover branch.
+    fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port: 1 }));
+
+    const killCalls: Array<NodeJS.Signals | 0> = [];
+    let cooperativeRequested = false;
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: (_pid, signal) => { killCalls.push(signal); },
+      // Alive until cooperative shutdown is requested, then it "drains and exits".
+      isProcessAlive: () => !cooperativeRequested,
+      requestShutdown: async () => { cooperativeRequested = true; return true; },
+      sigtermGraceMs: 200,
+      sigkillGraceMs: 200,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('ok');
+    expect(cooperativeRequested).toBe(true);
+    // The whole point: a graceful exit means NO signals were sent.
+    expect(killCalls).toEqual([]);
+  });
+
+  it('falls back to the SIGTERM→SIGKILL escalation when cooperative shutdown is refused', async () => {
+    // requestShutdown resolves false (e.g. /api/shutdown unreachable, or the
+    // predecessor predates this endpoint). The signal escalation must run.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port: 1 }));
+
+    const killCalls: Array<NodeJS.Signals | 0> = [];
+    let sigtermSent = false;
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: (_pid, signal) => {
+        killCalls.push(signal);
+        if (signal === 'SIGTERM') sigtermSent = true;
+      },
+      isProcessAlive: () => !sigtermSent, // exits on SIGTERM
+      requestShutdown: async () => false,
+      sigtermGraceMs: 200,
+      sigkillGraceMs: 200,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('ok');
+    expect(killCalls).toEqual(['SIGTERM']);
+  });
+
+  it('the default cooperative-shutdown probe POSTs /api/shutdown on the recorded port', async () => {
+    // Proves the wire contract of the default requestShutdown (no injection):
+    // method POST, path /api/shutdown, recorded port — and that accepting it
+    // (then exiting) takes over without any signal.
+    const seen: Array<{ method?: string; url?: string }> = [];
+    let cooperativeAccepted = false;
+    const server = http.createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url });
+      if (req.url === '/api/shutdown') {
+        // Accept and "begin draining" — the predecessor will now exit.
+        cooperativeAccepted = true;
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ myco: true, shutting_down: true }));
+        return;
+      }
+      // /health (GET) → not a healthy myco sibling (no version) → takeover.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ myco: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const svc = daemonService(vaultDir, { canonicalPort: adjacentPort(port) });
+      fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+      fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
+
+      const killCalls: Array<NodeJS.Signals | 0> = [];
+      const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+        kill: (_pid, signal) => { killCalls.push(signal); },
+        // "Exits" once the shutdown POST has been accepted.
+        isProcessAlive: () => !cooperativeAccepted,
+        sigtermGraceMs: 500,
+        sigkillGraceMs: 200,
+        pollMs: 10,
+      });
+
+      expect(result).toBe('ok');
+      const shutdownHit = seen.find((s) => s.url === '/api/shutdown');
+      expect(shutdownHit).toBeDefined();
+      expect(shutdownHit!.method).toBe('POST');
+      // Graceful exit via the default probe → no signals sent.
+      expect(killCalls).toEqual([]);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  // --- SIGKILL-survivor loop bound (#6): break the strand on staleness ---
+
+  it('takes over when an unkillable pid has an unreadable cmdline AND a stale daemon.json (loop bound)', async () => {
+    // The Windows strand loop: PowerShell blocked/absent → readProcessCommandLine
+    // returns null → the conservative step-aside repeats on every supervisor
+    // respawn. A live daemon (any uid) refreshes daemon.json's mtime each
+    // heartbeat, so a stale record means nothing is heartbeating the slot —
+    // take over to break the loop.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port: 1 }));
+    // Backdate mtime well past DAEMON_STALE_GRACE_PERIOD_MS (60s).
+    const ancient = (Date.now() - 10 * 60 * 1000) / 1000;
+    fs.utimesSync(svc.statePath, ancient, ancient);
+
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: () => {},
+      isProcessAlive: () => true,
+      readProcessCommandLine: () => null,
+      requestShutdown: async () => false,
+      sigtermGraceMs: 50,
+      sigkillGraceMs: 50,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('ok');
+    // daemon.json preserved — successor's atomic write overwrites it.
+    expect(fs.existsSync(svc.statePath)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

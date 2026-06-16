@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import path from 'node:path';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
 
@@ -39,6 +40,14 @@ function makeHarness(opts: {
   execPath?: string;
   realpaths?: Record<string, string>;
   execResult?: { status?: number } | Error;
+  /** Simulated host platform; defaults to `'darwin'` so POSIX paths run. */
+  platform?: NodeJS.Platform;
+  /** Set of paths that `existsSync` should report present (Windows resolver). */
+  existing?: string[];
+  /** PATH search dirs for the bare-alias resolver. */
+  pathDirs?: string[];
+  /** PATHEXT extensions (lowercased) for the Windows resolver. */
+  pathExts?: string[];
 } = {}): Harness {
   const execCalls: ExecCall[] = [];
   const chdirCalls: string[] = [];
@@ -50,6 +59,7 @@ function makeHarness(opts: {
     deps: {} as LaunchPreambleDeps,
   };
 
+  const existing = new Set(opts.existing ?? []);
   h.deps = {
     execPath: opts.execPath ?? '/usr/local/bin/myco',
     cwd: () => h.cwd,
@@ -70,6 +80,10 @@ function makeHarness(opts: {
       }
       return Buffer.alloc(0);
     },
+    platform: opts.platform ?? 'darwin',
+    existsSync: (p: string) => existing.has(p),
+    pathDirs: () => opts.pathDirs ?? [],
+    pathExts: () => opts.pathExts ?? ['.com', '.exe', '.bat', '.cmd'],
   };
   return h;
 }
@@ -267,6 +281,113 @@ describe('runLaunchPreamble — pin re-exec', () => {
     // This process re-exec'd, so no in-process buffer was set; readStdin falls
     // through to fd 0 (empty under bun test) → '{}'.
     expect(await readStdin()).toBe('{}');
+  });
+});
+
+describe('runLaunchPreamble — Windows pin PATHEXT resolution', () => {
+  it('resolves a bare-alias pin to <dir>/myco-dev.cmd on win32 and execs THAT', () => {
+    // execFileSync with shell:false does not apply PATHEXT, so the bare alias
+    // must be resolved to its `.cmd` shim before exec or it ENOENTs → exit(0)
+    // → capture goes dark for the pinned project.
+    const aliasDir = 'C:\\tools\\bin';
+    const resolved = path.join(aliasDir, 'myco-dev.cmd');
+    const h = makeHarness({
+      pin: 'myco-dev',
+      execPath: 'C:\\Program Files\\myco\\myco.exe',
+      platform: 'win32',
+      pathDirs: [aliasDir],
+      existing: [resolved],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], h.deps))
+      .toThrow(/exit\(0\)/);
+    expect(h.execCalls).toHaveLength(1);
+    expect(h.execCalls[0].file).toBe(resolved);
+    expect(h.execCalls[0].args).toEqual(['hook', 'session-start', '--symbiont', 'codex']);
+    expect(h.execCalls[0].options.env?.MYCO_TRAMPOLINED).toBe('1');
+  });
+
+  it('honors PATHEXT order — picks .exe over .cmd when both exist', () => {
+    const aliasDir = 'C:\\tools\\bin';
+    const exe = path.join(aliasDir, 'myco-dev.exe');
+    const cmd = path.join(aliasDir, 'myco-dev.cmd');
+    const h = makeHarness({
+      pin: 'myco-dev',
+      platform: 'win32',
+      pathDirs: [aliasDir],
+      pathExts: ['.exe', '.cmd'],
+      existing: [exe, cmd],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe(exe);
+  });
+
+  it('searches PATH dirs in order and stops at the first match', () => {
+    const dir1 = 'C:\\a';
+    const dir2 = 'C:\\b';
+    const hit = path.join(dir2, 'myco-dev.cmd');
+    const h = makeHarness({
+      pin: 'myco-dev',
+      platform: 'win32',
+      pathDirs: [dir1, dir2],
+      existing: [hit],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe(hit);
+  });
+
+  it('resolves an extensionless absolute pin to pin + ext on win32', () => {
+    const pin = 'C:\\opt\\myco-dev\\myco-dev';
+    const resolved = pin + '.cmd';
+    const h = makeHarness({
+      pin,
+      platform: 'win32',
+      existing: [resolved],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe(resolved);
+  });
+
+  it('leaves an absolute extensioned pin unchanged when it exists', () => {
+    const pin = 'C:\\Program Files\\myco-dev\\myco.exe';
+    const h = makeHarness({
+      pin,
+      platform: 'win32',
+      existing: [pin],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe(pin);
+  });
+
+  it('falls back to the original pin when nothing resolves (ENOENT path still applies)', () => {
+    const h = makeHarness({
+      pin: 'myco-dev',
+      platform: 'win32',
+      pathDirs: ['C:\\nowhere'],
+      existing: [], // nothing on disk
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    // Original bare alias is exec'd unchanged, so the existing ENOENT→exit(0)
+    // guard governs the outcome exactly as before.
+    expect(h.execCalls[0].file).toBe('myco-dev');
+  });
+
+  it('POSIX: never juggles extensions — a bare-alias pin is exec\'d verbatim', () => {
+    const h = makeHarness({
+      pin: 'myco-dev',
+      platform: 'darwin',
+      // existing/pathDirs present but must be ignored off-Windows.
+      pathDirs: ['/usr/local/bin'],
+      existing: ['/usr/local/bin/myco-dev.cmd'],
+    });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe('myco-dev');
+  });
+
+  it('POSIX: an absolute extensionless pin is exec\'d verbatim', () => {
+    const pin = '/opt/myco-dev/bin/myco';
+    const h = makeHarness({ pin, platform: 'darwin', existing: [pin + '.cmd'] });
+    expect(() => runLaunchPreamble('hook', ['session-start'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls[0].file).toBe(pin);
   });
 });
 

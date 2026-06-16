@@ -341,7 +341,9 @@ export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): strin
 }
 
 /**
- * Expand a leading `~` to the user's home dir. Pure path-string helper.
+ * The user's home directory. Single source of truth for the entire codebase —
+ * every home-relative resolver, every doctor check, every API handler that
+ * needs `~` funnels through this (directly, or via {@link expandHome}).
  *
  * Reads `$HOME` first so tests that override the home dir via
  * `process.env.HOME` actually take effect — Bun's `os.homedir()` resolves
@@ -349,9 +351,17 @@ export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): strin
  * would otherwise let test pollution from the developer's real `~/...`
  * leak into a tmp-dir scoped test.
  *
- * Single source of truth for the entire codebase — every `globalXxxTarget`
- * resolver, every doctor check, every API handler that touches a
- * `~/...` literal funnels through this.
+ * Cross-platform: `$HOME` is unset on Windows (it uses `%USERPROFILE%`), so
+ * the fallback to `os.homedir()` is what resolves there. A bare
+ * `process.env.HOME ?? '/'` would read off the filesystem root on Windows.
+ */
+export function resolveHomeDir(): string {
+  return process.env.HOME ?? os.homedir();
+}
+
+/**
+ * Expand a leading `~` to the user's home dir. Pure path-string helper.
+ * Home resolution funnels through {@link resolveHomeDir}.
  */
 export function expandHome(value: string, homeDir?: string): string {
   // Non-`~` paths are returned verbatim — no home resolution happens,
@@ -360,7 +370,7 @@ export function expandHome(value: string, homeDir?: string): string {
   // unrelated call paths that pass already-absolute values.
   const needsExpansion = value === '~' || value.startsWith(`~${path.sep}`) || value.startsWith('~/');
   if (!needsExpansion) return value;
-  const home = homeDir ?? process.env.HOME ?? os.homedir();
+  const home = homeDir ?? resolveHomeDir();
   assertSandboxedHome(home);
   if (value === '~') return home;
   // Accept both `~/foo` (POSIX shape, what every manifest target uses)

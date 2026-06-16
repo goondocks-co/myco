@@ -20,6 +20,14 @@ export interface LaunchPreambleDeps {
   realpathSync: (p: string) => string;
   readFd0: () => Buffer;
   execFileSync: (file: string, args: string[], options: ExecOptions) => Buffer;
+  /** Host platform. Defaulted to `process.platform`; tests inject `'win32'`. */
+  platform: NodeJS.Platform;
+  /** True when a path exists on disk. Used by the Windows pin resolver. */
+  existsSync: (p: string) => boolean;
+  /** PATH search dirs (process.env.PATH split on the platform delimiter). */
+  pathDirs: () => string[];
+  /** Executable extensions to try, lowercased (PATHEXT on Windows). */
+  pathExts: () => string[];
 }
 
 interface ExecOptions {
@@ -35,6 +43,13 @@ const PROJECT_DIR_ENV_VARS = [
   'MYCO_PROJECT_ROOT',
 ];
 
+/**
+ * PATHEXT fallback when the env var is unset. Mirrors the Windows default
+ * search order and the extensions the rest of the codebase resolves (a
+ * runtime.command alias is typically installed as a `.cmd` shim).
+ */
+const DEFAULT_PATHEXT = ['.com', '.exe', '.bat', '.cmd'];
+
 function defaultDeps(): LaunchPreambleDeps {
   return {
     execPath: process.execPath,
@@ -46,6 +61,14 @@ function defaultDeps(): LaunchPreambleDeps {
     readFd0: () => fs.readFileSync(0),
     execFileSync: (file, args, options) =>
       execFileSync(file, args, options) as unknown as Buffer,
+    platform: process.platform,
+    existsSync: (p: string) => fs.existsSync(p),
+    pathDirs: () => (process.env.PATH ?? '').split(path.delimiter).filter(Boolean),
+    pathExts: () =>
+      ((process.env.PATHEXT ?? DEFAULT_PATHEXT.join(path.delimiter))
+        .split(path.delimiter)
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean)),
   };
 }
 
@@ -143,6 +166,50 @@ function realpathOr(p: string, realpathSync: (p: string) => string): string {
   }
 }
 
+/**
+ * Resolve a pin to a runnable executable on Windows.
+ *
+ * `execFileSync` with `shell: false` does NOT apply PATHEXT, so a bare alias
+ * (`myco-dev`) or an extensionless absolute path that only exists as
+ * `myco-dev.cmd` ENOENTs — which, for a hook, is swallowed as exit(0) and the
+ * pinned project's capture goes dark. We replicate the shell's PATHEXT search
+ * here so the pin reaches its real `.cmd`/`.exe` shim.
+ *
+ * Returns the original pin unchanged when:
+ *   - not on Windows (POSIX behavior is byte-identical),
+ *   - the pin already exists as-given (already runnable / has an extension),
+ *   - nothing resolves (so the existing ENOENT-handled exec path still applies).
+ */
+function resolveExecutableForExec(pin: string, deps: LaunchPreambleDeps): string {
+  if (deps.platform !== 'win32') return pin;
+
+  // An explicit, already-existing file (e.g. an absolute `.exe`) is runnable.
+  const hasExt = path.extname(pin) !== '';
+  if (hasExt && deps.existsSync(pin)) return pin;
+
+  const exts = deps.pathExts();
+  const tryExtensions = (base: string): string | null => {
+    if (deps.existsSync(base) && hasExt) return base;
+    for (const ext of exts) {
+      const candidate = base + ext;
+      if (deps.existsSync(candidate)) return candidate;
+    }
+    return null;
+  };
+
+  // Path-bearing pin: probe the pin itself (and `pin + ext`) in place.
+  if (pin.includes('/') || pin.includes('\\') || path.isAbsolute(pin)) {
+    return tryExtensions(pin) ?? pin;
+  }
+
+  // Bare alias: walk PATH dirs applying PATHEXT, first match wins.
+  for (const dir of deps.pathDirs()) {
+    const resolved = tryExtensions(path.join(dir, pin));
+    if (resolved) return resolved;
+  }
+  return pin;
+}
+
 function reExec(
   command: LaunchCommand,
   argv: string[],
@@ -157,9 +224,11 @@ function reExec(
       : { stdio: 'inherit' }),
   };
 
+  const target = resolveExecutableForExec(pin, deps);
+
   let failure: { code?: string; status?: number } | null = null;
   try {
-    deps.execFileSync(pin, [command, ...argv], options);
+    deps.execFileSync(target, [command, ...argv], options);
   } catch (err) {
     failure = (err && typeof err === 'object') ? err as { code?: string; status?: number } : {};
   }

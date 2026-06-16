@@ -26,6 +26,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import {
   DAEMON_EVICT_POLL_MS,
@@ -203,6 +204,93 @@ function readDaemonJsonPid(stateDir: string): number | undefined {
 }
 
 /**
+ * Pull the first path-shaped line out of the Windows cwd PowerShell output.
+ *
+ * The command prints one line — the process's current directory — but real
+ * PowerShell output can carry a trailing newline, BOM, or (on error) a
+ * diagnostic preamble. Accept the first drive-letter (`C:\...`, forward or
+ * back slash) or UNC (`\\host\share`) line; return null when nothing
+ * path-shaped survives, so the caller degrades to the `/health` probe.
+ */
+export function parseWindowsProcessCwd(out: string): string | null {
+  for (const raw of out.split(/\r?\n/)) {
+    const line = raw.replace(/^﻿/, '').trim();
+    if (!line) continue;
+    if (/^[a-zA-Z]:[\\/]/.test(line) || line.startsWith('\\\\')) return line;
+  }
+  return null;
+}
+
+/**
+ * Build the PowerShell command that prints a best-effort working directory
+ * for `pid`.
+ *
+ * Win32_Process exposes no current-directory column and a running process's
+ * live cwd is not retrievable cross-process without native PEB reads, so we
+ * use the executable's containing directory (`Split-Path -Parent $p.Path`) as
+ * the degraded signal. For a per-vault daemon launched from inside its project
+ * tree, that directory walks up to the enclosing `.myco/` via
+ * {@link findVaultFromCwd} and matches; for a self-contained binary started
+ * elsewhere it simply won't match, and the caller falls back to the `/health`
+ * probe — the primary Windows identity path (see module header). Gated behind
+ * win32 and wrapped in try/null so any failure (no such pid, ACL denial, no
+ * PowerShell) degrades exactly as today.
+ *
+ * Kept as a builder so the exact command text is unit-testable without
+ * shelling out.
+ */
+export function buildWindowsCwdCommand(pid: number): string {
+  return [
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+    'if ($p -and $p.Path) { Split-Path -Parent $p.Path }',
+  ].join('; ');
+}
+
+/**
+ * Windows process cwd via PowerShell + CIM, mirroring the shared
+ * `readProcessCommandLine` win32 pattern (same `powershell.exe` invocation,
+ * same 3s timeout, same null-on-failure contract).
+ *
+ * `runShell` is injectable so the command construction and parsing are
+ * unit-testable without a real PowerShell.
+ */
+export function readWindowsProcessCwd(
+  pid: number,
+  runShell: (pid: number) => string = defaultWindowsCwdShell,
+): string | null {
+  try {
+    return parseWindowsProcessCwd(runShell(pid));
+  } catch {
+    return null;
+  }
+}
+
+function defaultWindowsCwdShell(pid: number): string {
+  return execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', buildWindowsCwdCommand(pid)],
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 },
+  );
+}
+
+/**
+ * cwd for `pid`, with a Windows fallback the shared `readProcessCwd` lacks.
+ *
+ * The shared helper implements Linux (`/proc/<pid>/cwd`) and Darwin (`lsof`)
+ * but returns null on win32. Without a win32 branch a Windows orphan daemon
+ * whose `daemon.json` was lost can't be identity-matched by cwd. This wrapper
+ * shells to PowerShell on win32 (same pattern as the shared
+ * `readProcessCommandLine`) and otherwise defers to the shared helper, so
+ * POSIX behavior is unchanged.
+ */
+function readProcessCwdCrossPlatform(pid: number): string | null {
+  const cwd = readProcessCwd(pid);
+  if (cwd) return cwd;
+  if (process.platform === 'win32') return readWindowsProcessCwd(pid);
+  return null;
+}
+
+/**
  * True when `pid` is a myco daemon process whose cwd belongs to `vaultDir`.
  *
  * Identity is established via two cross-checks, in order:
@@ -212,14 +300,15 @@ function readDaemonJsonPid(stateDir: string): number | undefined {
  *      update-apply, unclean shutdown, stale-JSON removal).
  *
  * cwd introspection is platform-specific: `/proc/<pid>/cwd` on Linux,
- * `lsof -p <pid> -d cwd` on Darwin. On unsupported platforms the
- * fallback returns false, meaning orphans with lost JSON may go
- * un-evicted there; operators must kill such processes manually.
+ * `lsof -p <pid> -d cwd` on Darwin, and `Get-CimInstance Win32_Process`
+ * (via {@link readWindowsProcessCwd}) on Windows. When cwd can't be obtained
+ * the check returns false and the caller falls back to the `/health` port
+ * probe — degrading gracefully rather than mis-evicting.
  */
 export function isMycoDaemonForVault(pid: number, vaultDir: string): boolean {
   if (readDaemonJsonPid(vaultDir) === pid) return true;
 
-  const cwd = readProcessCwd(pid);
+  const cwd = readProcessCwdCrossPlatform(pid);
   if (!cwd) return false;
 
   const resolvedVault = findVaultFromCwd(cwd);

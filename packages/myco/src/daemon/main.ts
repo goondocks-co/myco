@@ -219,6 +219,7 @@ import {
   DAEMON_EVICT_TIMEOUT_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_STALE_GRACE_PERIOD_MS,
+  RECONCILE_COOPERATIVE_GRACE_MS,
   RECONCILE_POLL_MS,
   RECONCILE_SIGKILL_GRACE_MS,
   RECONCILE_SIGTERM_GRACE_MS,
@@ -264,9 +265,39 @@ export interface ReconcileDeps {
    * (preserve step-aside) from a recycled foreign pid (take over).
    */
   readProcessCommandLine?: (pid: number) => string | null;
+  /**
+   * Ask the predecessor to shut down gracefully over HTTP before we resort to
+   * signals. Resolves true if the daemon accepted (HTTP 202). This is the only
+   * graceful drain path on Windows, where a cross-process SIGTERM maps to an
+   * uncatchable TerminateProcess that would abort the drain mid-flight.
+   */
+  requestShutdown?: (port: number, timeoutMs: number) => Promise<boolean>;
+  /** How long to let an ACCEPTED cooperative shutdown drain before escalating
+   *  to signals (ms). Defaults to RECONCILE_COOPERATIVE_GRACE_MS. */
+  cooperativeGraceMs?: number;
   sigtermGraceMs?: number;
   sigkillGraceMs?: number;
   pollMs?: number;
+}
+
+/**
+ * Default {@link ReconcileDeps.requestShutdown}: POST `/api/shutdown` on the
+ * predecessor's loopback port. Accepted ONLY on the daemon's 202 ack — a non-202
+ * (a foreign loopback service answering 200, or a daemon too old to expose the
+ * route) is NOT treated as "draining", so the caller doesn't wait out the
+ * cooperative grace and falls straight through to the signal escalation. Any
+ * error resolves false for the same reason.
+ */
+async function requestDaemonShutdown(port: number, timeoutMs: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.status === 202;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -309,6 +340,8 @@ export async function reconcileExistingDaemon(
   const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
   const alive = deps.isProcessAlive ?? isProcessAlive;
   const cmdlineReader = deps.readProcessCommandLine ?? readProcessCommandLine;
+  const requestShutdown = deps.requestShutdown ?? requestDaemonShutdown;
+  const cooperativeGraceMs = deps.cooperativeGraceMs ?? RECONCILE_COOPERATIVE_GRACE_MS;
   const sigtermGraceMs = deps.sigtermGraceMs ?? RECONCILE_SIGTERM_GRACE_MS;
   const sigkillGraceMs = deps.sigkillGraceMs ?? RECONCILE_SIGKILL_GRACE_MS;
   const pollMs = deps.pollMs ?? RECONCILE_POLL_MS;
@@ -380,6 +413,27 @@ export async function reconcileExistingDaemon(
   // Stale, unhealthy, or version mismatch: take over. We MUST confirm the
   // predecessor pid is dead before proceeding — otherwise a wedged
   // shutdown leaves a live daemon racing the new one for the port.
+  //
+  // Cooperative shutdown first, when we know the port: let the predecessor run
+  // its own graceful drain (in-flight runs, team-sync outbox, DB close) and
+  // exit. This is the ONLY graceful path on Windows, where the SIGTERM below
+  // maps to an uncatchable TerminateProcess that would abort the drain. If
+  // accepted, wait the drain-aware budget (the wait returns the instant the pid
+  // exits, so a clean drain costs milliseconds); only a predecessor still alive
+  // past that budget — its drain genuinely wedged — falls through to signals.
+  if (typeof info.port === 'number' && await requestShutdown(info.port, DAEMON_HEALTH_CHECK_TIMEOUT_MS)) {
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Requested cooperative shutdown of stale daemon', {
+      pid: info.pid,
+      port: info.port,
+    });
+    if (await waitForExit(info.pid, alive, cooperativeGraceMs, pollMs)) {
+      logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor exited on cooperative shutdown; proceeding to take over', {
+        predecessor_pid: info.pid,
+      });
+      return 'ok';
+    }
+  }
+
   try {
     kill(info.pid, 'SIGTERM');
     logger.info(LOG_KINDS.DAEMON_RECONCILE, 'SIGTERM sent to stale daemon', { pid: info.pid });
@@ -438,6 +492,32 @@ export async function reconcileExistingDaemon(
     );
     // Recycled foreign pid: the upcoming server.start() write will
     // overwrite the stale record atomically. No delete needed.
+    return 'ok';
+  }
+
+  // Cmdline unreadable (null) AND the record is stale. The conservative
+  // step-aside below loops forever against a recycled foreign pid when the
+  // cmdline probe is unavailable — e.g. PowerShell blocked/absent on Windows
+  // makes `readProcessCommandLine` return null, so every supervisor respawn
+  // re-reads the same record and steps aside again. Break the loop on
+  // staleness: any LIVE daemon (every uid, including a cross-uid one we can't
+  // signal) refreshes daemon.json's mtime each heartbeat, so a record that has
+  // gone stale past DAEMON_STALE_GRACE_PERIOD_MS is not backed by a running
+  // daemon — the pid is dead-and-recycled or an unrecoverable wedge. Taking
+  // over with a fresh daemon beats stranding ourselves indefinitely.
+  const recordIsStale = Date.now() - mtimeMs >= DAEMON_STALE_GRACE_PERIOD_MS;
+  if (cmdline === null && recordIsStale) {
+    logger.warn(
+      LOG_KINDS.DAEMON_RECONCILE,
+      `Pid ${info.pid} survived SIGKILL with an unreadable cmdline, but daemon.json has not heartbeat in over ${Math.round(DAEMON_STALE_GRACE_PERIOD_MS / 1000)}s — treating as a dead/recycled slot and taking over to break the strand loop`,
+      {
+        pid: info.pid,
+        record_age_ms: Date.now() - mtimeMs,
+        sigterm_grace_ms: sigtermGraceMs,
+        sigkill_grace_ms: sigkillGraceMs,
+      },
+    );
+    // The upcoming server.start() write overwrites the stale record atomically.
     return 'ok';
   }
 
@@ -2477,4 +2557,10 @@ export async function main(): Promise<void> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Cooperative cross-process shutdown. A successor daemon (reconcile takeover)
+  // or the updater POSTs /api/shutdown to run THIS graceful path on Windows,
+  // where a cross-process SIGTERM is an uncatchable TerminateProcess and the
+  // signal handlers above never fire. Wired here, after `shutdown` exists.
+  server.onShutdownRequest(() => { void shutdown('shutdown-request'); });
 }

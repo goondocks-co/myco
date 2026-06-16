@@ -96,6 +96,14 @@ export class DaemonServer {
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
   private onRequest: (() => void) | null;
+  /**
+   * Cooperative-shutdown trigger. Wired late (after the graceful-shutdown
+   * closure is built in main.ts) via {@link onShutdownRequest}; a POST to
+   * `/api/shutdown` invokes it. This is how a successor daemon or the updater
+   * drains THIS daemon on Windows, where a cross-process SIGTERM maps to an
+   * uncatchable `TerminateProcess` and the signal-based shutdown never runs.
+   */
+  private shutdownRequestHandler: (() => void) | null = null;
   private runtimeCache: GroveRuntimeCache;
   private ownsRuntimeCache: boolean;
   /**
@@ -174,6 +182,15 @@ export class DaemonServer {
 
   registerRawRoute(routePath: string, handler: RawRouteHandler): void {
     this.rawRoutes.set(routePath, handler);
+  }
+
+  /**
+   * Wire the cooperative-shutdown handler invoked by `POST /api/shutdown`.
+   * Called from main.ts once the graceful-shutdown closure exists. Until then
+   * the route reports 503 so a caller falls back to signals.
+   */
+  onShutdownRequest(handler: () => void): void {
+    this.shutdownRequestHandler = handler;
   }
 
   /** Last-resort trace for a transport handler rejection (see start()). */
@@ -283,6 +300,31 @@ export class DaemonServer {
       }
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
       res.end(JSON.stringify({ version: this.version }));
+    });
+    // Cooperative shutdown: a successor daemon or the updater POSTs here to run
+    // THIS daemon's graceful drain (in-flight runs, team-sync outbox, DB close)
+    // and exit on its own. The ONLY graceful path on Windows, where a
+    // cross-process SIGTERM is an uncatchable TerminateProcess. POST-only — it
+    // mutates daemon lifecycle; loopback CSRF is already enforced upstream.
+    this.registerRawRoute('/api/shutdown', async (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      const handler = this.shutdownRequestHandler;
+      if (!handler) {
+        // Briefly true between listen() and main.ts wiring the closure.
+        res.writeHead(503, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'shutdown_not_ready' }));
+        return;
+      }
+      // Respond BEFORE tearing down so the caller observes the 202, then start
+      // the graceful drain only once the body has flushed to the socket.
+      res.writeHead(202, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify({ myco: true, shutting_down: true }), () => {
+        handler();
+      });
     });
 
     // Readiness deliberately uses the normal route pipeline. /health answers
