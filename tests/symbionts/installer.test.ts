@@ -778,6 +778,22 @@ describe('installMcp', () => {
     expect(servers.myco).toBeDefined();
   });
 
+  it('is idempotent — re-install with myco already correct writes nothing and preserves the agent config verbatim', () => {
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    expect(installer.installMcp()).toBe(true); // first install writes
+
+    const mcpPath = path.join(projectRoot, '.mcp.json');
+    // The agent later rewrites the file in ITS own style (4-space indent),
+    // leaving myco's server entry structurally intact. The hourly detection
+    // tick must NOT reformat the whole file just because the JSON style differs
+    // — that is needless churn over a config the agent actively owns.
+    const agentStyled = JSON.stringify(readJson(mcpPath), null, 4) + '\n';
+    fs.writeFileSync(mcpPath, agentStyled);
+
+    expect(installer.installMcp()).toBe(false); // myco unchanged → no-op
+    expect(fs.readFileSync(mcpPath, 'utf-8')).toBe(agentStyled); // verbatim
+  });
+
   it('skips the MCP server for a cli-transport symbiont (cursor) and writes nothing', () => {
     const installer = new SymbiontInstaller(CURSOR_CLI_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
@@ -1358,6 +1374,16 @@ describe('installMcp (TOML)', () => {
     expect(content).not.toContain('myco-run');
     expect(content).not.toContain('cwd = "."');
     expect(content).not.toContain('[mcp_servers.myco.env]');
+  });
+
+  it('is idempotent — re-install with myco already correct writes nothing (TOML)', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    expect(installer.installMcp()).toBe(true); // first install writes
+    const tomlPath = path.join(projectRoot, '.codex/config.toml');
+    const first = fs.readFileSync(tomlPath, 'utf-8');
+    expect(installer.installMcp()).toBe(false); // unchanged → no-op
+    expect(fs.readFileSync(tomlPath, 'utf-8')).toBe(first);
   });
 
   it('preserves existing TOML content', () => {
