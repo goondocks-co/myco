@@ -101,9 +101,16 @@ describe('SymbiontInstaller installScope=global', () => {
     expect(fs.existsSync(path.join(tmpHome, '.agents', 'myco-run.cjs'))).toBe(false);
   });
 
-  it('global install deletes retired launcher trampolines left by a previous release', () => {
+  it('global install does NOT delete retired launchers — removal is deferred until after all configs are rewritten', () => {
+    // Capture-safety ordering (P1a): `~/.myco/launcher.cjs` is shared across every
+    // symbiont, so deleting it during ONE symbiont's install would orphan the
+    // still-old configs of every symbiont not yet rewritten in the same pass —
+    // a window where their `node …/launcher.cjs` hooks hit ENOENT and capture
+    // goes dark. install() therefore leaves the trampolines in place; the
+    // orchestrating flows (runGlobalBootstrap / `myco update` / the hourly
+    // detection tick) call removeRetiredGlobalLaunchers() ONCE, after every
+    // detected agent's config has been rewritten onto the binary.
     fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
-    // Seed stale trampolines as an upgrading user would have on disk.
     const mycoHome = path.join(tmpHome, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
     const launcherPath = path.join(mycoHome, 'launcher.cjs');
@@ -122,9 +129,9 @@ describe('SymbiontInstaller installScope=global', () => {
     );
     installer.install();
 
-    // The install's global hook-guard step cleans up the retired files.
-    expect(fs.existsSync(launcherPath)).toBe(false);
-    expect(fs.existsSync(mcpLauncherPath)).toBe(false);
+    // Still present after a single symbiont's install — removal is deferred.
+    expect(fs.existsSync(launcherPath)).toBe(true);
+    expect(fs.existsSync(mcpLauncherPath)).toBe(true);
   });
 
   it('project scope is unchanged — AGENTS.md + .gitignore + hook guard land under projectRoot', () => {

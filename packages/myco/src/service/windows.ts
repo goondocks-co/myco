@@ -98,7 +98,13 @@ export class WindowsTaskServiceManager implements ServiceManager {
     // (non-elevated) rights. A non-RunAtLoad spec gets an on-demand task with
     // no automatic trigger.
     const trigger = spec.runAtLoad ? ['/sc', 'onlogon'] : ['/sc', 'once', '/st', '00:00', '/sd', '01/01/2099'];
-    const result = await this.runner.run(['/create', '/tn', spec.label, '/tr', scriptPath, ...trigger, '/rl', 'limited', '/f']);
+    // Quote the /tr action: Task Scheduler re-parses the stored action string and
+    // splits an unquoted path at the first space, so a default script dir under a
+    // spaced user profile (`C:\Users\First Last\.myco\service\…cmd`) would fail to
+    // launch at logon. The embedded quotes are part of the argv value (the runner
+    // spawns schtasks without a shell), which is how schtasks delimits a spaced
+    // executable path.
+    const result = await this.runner.run(['/create', '/tn', spec.label, '/tr', `"${scriptPath}"`, ...trigger, '/rl', 'limited', '/f']);
     if (result.exitCode !== 0) {
       throw new Error(`schtasks /create /tn ${spec.label} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
     }

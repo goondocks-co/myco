@@ -2,7 +2,6 @@ import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { removeRetiredGlobalLaunchers } from '../grove/launcher-cleanup.js';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
@@ -574,9 +573,12 @@ export class SymbiontInstaller {
 
     if (this.capabilities.globalLauncher) {
       // The binary is the launcher now — every hook command invokes it directly,
-      // so there is no trampoline guard to install. Clean up any retired
-      // launcher.cjs / mcp-launcher.cjs left by a previous release.
-      removeRetiredGlobalLaunchers();
+      // so there is no trampoline guard to install. Retired launcher cleanup is
+      // NOT done here: deleting the shared `~/.myco/launcher.cjs` on the first
+      // symbiont's install would orphan the still-old configs of every symbiont
+      // not yet rewritten in this pass (a capture-loss window). The orchestrating
+      // flows (bootstrap / `myco update` / the detection tick) call
+      // `removeRetiredGlobalLaunchers()` once, AFTER every config is rewritten.
       return false;
     }
 
