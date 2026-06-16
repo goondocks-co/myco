@@ -94,7 +94,7 @@ Antigravity supports prompt capture, context routing, and session reconciliation
 
 Antigravity reuses the `~/.gemini/` user-home directory it inherited from Gemini IDE. On first detection, Myco performs a **one-time data remap** that migrates any legacy `~/.gemini/` Myco artifacts and cleans stale `trusted_hooks.json` entries.
 
-### Windsurf
+### Devin Desktop
 
 | Component | Global location |
 |-----------|-----------------|
@@ -103,7 +103,7 @@ Antigravity reuses the `~/.gemini/` user-home directory it inherited from Gemini
 | Skills | `~/.codeium/windsurf/skills/` → Myco's skill store |
 | Plans | `~/.windsurf/plans/` |
 
-Windsurf supports hook capture and skill discovery through Cascade's current agent surfaces.
+Devin Desktop — the editor formerly known as Windsurf — supports hook capture and skill discovery through Cascade's current agent surfaces. Its config still lives under the legacy `~/.codeium/windsurf/` and `~/.windsurf/` paths shown above.
 
 ### OpenCode
 

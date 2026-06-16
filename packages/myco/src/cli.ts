@@ -13,6 +13,7 @@ const USAGE = `Usage: myco <command> [args]
 
 Commands:
   grove <subcommand>       Manage local Groves
+  subsystem <subcommand>   Claim/release machine-global subsystem ownership (claim|release|list)
   update                   Update vault files and agent registration
   remove [--purge] [--yes]   Remove Myco's machine-wide install (prompts unless --yes;
                              captured data preserved unless --purge)
@@ -99,6 +100,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
+  // Declare which daemon variant owns a machine-global subsystem (e.g.
+  // symbiont-config) so a coexisting peer daemon defers — operator-driven,
+  // durable, contributor-only. Belongs above the myco.yaml gate like `grove`
+  // since it manages machine state, not a project vault.
+  if (cmd === 'subsystem') return (await import('./cli/subsystem.js')).run(args);
   // Internal: spawned by the daemon to run a heavy restore out-of-process
   // (see backup/restore-runner.ts). Intentionally absent from the help text.
   if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
