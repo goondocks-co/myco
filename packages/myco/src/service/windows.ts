@@ -5,6 +5,14 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderWindowsServiceScript } from './windows-task.js';
 import { spawnCombinedOutput } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
+import { requestCooperativeShutdown } from './cooperative-shutdown.js';
+import { SERVICE_LABEL_DEV } from './labels.js';
+import {
+  resolveMycoHome,
+  DAEMON_STATE_FILENAME,
+  SERVICE_DIRNAME,
+  SERVICE_DEV_DIRNAME,
+} from '../grove/paths.js';
 import type {
   InstallOptions,
   InstallResult,
@@ -12,6 +20,22 @@ import type {
   ServiceSpec,
   ServiceStatus,
 } from './types.js';
+
+/**
+ * Read the running daemon's loopback port from `daemon.json` for a service
+ * label. Returns null when the file is absent/unreadable — the caller then
+ * skips the cooperative drain and goes straight to `schtasks /end`.
+ */
+function readDaemonPortForLabel(label: string): number | null {
+  try {
+    const dirName = label.startsWith(SERVICE_LABEL_DEV) ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
+    const statePath = path.join(resolveMycoHome(), dirName, DAEMON_STATE_FILENAME);
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as { port?: number };
+    return typeof parsed.port === 'number' ? parsed.port : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface SchtasksRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
@@ -37,6 +61,10 @@ export interface WindowsManagerOptions {
   runner?: SchtasksRunner;
   /** Directory holding the launcher `.cmd` scripts. */
   scriptDir?: string;
+  /** Resolve the running daemon's loopback port for a label (reads daemon.json). */
+  resolveDaemonPort?: (label: string) => number | null;
+  /** Drain the daemon over HTTP before a hard `schtasks /end`. */
+  cooperativeShutdown?: (port: number) => Promise<boolean>;
 }
 
 /**
@@ -63,14 +91,33 @@ export class WindowsTaskServiceManager implements ServiceManager {
   readonly platformName = 'Windows Task Scheduler';
   private readonly runner: SchtasksRunner;
   readonly scriptDir: string;
+  private readonly resolveDaemonPort: (label: string) => number | null;
+  private readonly cooperativeShutdown: (port: number) => Promise<boolean>;
 
   constructor(opts: WindowsManagerOptions = {}) {
     this.runner = opts.runner ?? new RealSchtasksRunner();
     this.scriptDir = opts.scriptDir ?? path.join(os.homedir(), '.myco', 'service');
+    this.resolveDaemonPort = opts.resolveDaemonPort ?? readDaemonPortForLabel;
+    this.cooperativeShutdown = opts.cooperativeShutdown ?? requestCooperativeShutdown;
   }
 
   private scriptPath(label: string): string {
     return path.join(this.scriptDir, `${label}.cmd`);
+  }
+
+  /**
+   * Drain the daemon gracefully over HTTP before `schtasks /end` hard-kills it.
+   * `/end` is an uncatchable TerminateProcess, so without this the daemon's
+   * shutdown (in-flight runs, team-sync outbox, DB close) never runs and every
+   * Windows stop/restart/update defers that work to the next boot. Best-effort:
+   * a missing port or a wedged drain falls through to the `/end` that follows.
+   */
+  private async drainBeforeEnd(label: string): Promise<void> {
+    const port = this.resolveDaemonPort(label);
+    if (port === null) return;
+    try {
+      await this.cooperativeShutdown(port);
+    } catch { /* fall through to schtasks /end */ }
   }
 
   async isInstalled(label: string): Promise<boolean> {
@@ -123,10 +170,12 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async stop(label: string): Promise<void> {
+    await this.drainBeforeEnd(label);
     await this.runner.run(['/end', '/tn', label]);
   }
 
   async restart(label: string): Promise<void> {
+    await this.drainBeforeEnd(label);
     await this.runner.run(['/end', '/tn', label]);
     const result = await this.runner.run(['/run', '/tn', label]);
     if (result.exitCode !== 0) {

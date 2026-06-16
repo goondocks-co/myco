@@ -191,6 +191,73 @@ describe('WindowsTaskServiceManager', () => {
     expect(runner.calls.some((c) => c[0] === '/delete')).toBe(true);
     expect(fs.existsSync(path.join(scriptDir, `${spec.label}.cmd`))).toBe(false);
   });
+
+  // Cooperative drain (#4): `schtasks /end` is an uncatchable TerminateProcess,
+  // so restart/stop must drain the daemon over HTTP FIRST or every Windows
+  // restart/update orphans in-flight runs + the team-sync outbox.
+
+  /** A runner that records schtasks calls into a shared ordered event log. */
+  function recordingMgr(events: string[], opts: {
+    resolveDaemonPort?: (label: string) => number | null;
+    cooperativeShutdown?: (port: number) => Promise<boolean>;
+  }) {
+    const runner: SchtasksRunner = {
+      async run(args) { events.push('schtasks:' + args.join(' ')); return { stdout: '', exitCode: 0 }; },
+    };
+    return new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-'), ...opts });
+  }
+
+  test('restart() drains via cooperative shutdown BEFORE schtasks /end, then /run', async () => {
+    const events: string[] = [];
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+    });
+    await mgr.restart('co.goondocks.myco-dev');
+    expect(events).toEqual([
+      'drain:28876',
+      'schtasks:/end /tn co.goondocks.myco-dev',
+      'schtasks:/run /tn co.goondocks.myco-dev',
+    ]);
+  });
+
+  test('stop() drains before schtasks /end', async () => {
+    const events: string[] = [];
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => 28876,
+      cooperativeShutdown: async (port) => { events.push('drain:' + port); return true; },
+    });
+    await mgr.stop('co.goondocks.myco-dev');
+    expect(events).toEqual(['drain:28876', 'schtasks:/end /tn co.goondocks.myco-dev']);
+  });
+
+  test('restart() skips the drain when the daemon port is unknown (still ends + runs)', async () => {
+    const events: string[] = [];
+    let drained = false;
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => null,
+      cooperativeShutdown: async () => { drained = true; return true; },
+    });
+    await mgr.restart('co.goondocks.myco');
+    expect(drained).toBe(false);
+    expect(events).toEqual([
+      'schtasks:/end /tn co.goondocks.myco',
+      'schtasks:/run /tn co.goondocks.myco',
+    ]);
+  });
+
+  test('restart() still hard-ends when the cooperative drain throws (never strands)', async () => {
+    const events: string[] = [];
+    const mgr = recordingMgr(events, {
+      resolveDaemonPort: () => 1,
+      cooperativeShutdown: async () => { throw new Error('drain blew up'); },
+    });
+    await mgr.restart('co.goondocks.myco');
+    expect(events).toEqual([
+      'schtasks:/end /tn co.goondocks.myco',
+      'schtasks:/run /tn co.goondocks.myco',
+    ]);
+  });
 });
 
 describe('getServiceManager(win32)', () => {
