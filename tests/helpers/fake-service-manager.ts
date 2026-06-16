@@ -130,6 +130,13 @@ export class FakeServiceManager implements ServiceManager {
     }
     return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
   }
+
+  /** Mirrors the POSIX managers (pid-match) so existing detection tests drive it
+   *  via the `statuses` map. The Windows env-marker variant is covered by
+   *  WindowsTaskServiceManager's own unit test. */
+  isManagedDaemon(_label: string, status: ServiceStatus, myPid: number): boolean {
+    return status.running && status.pid === myPid;
+  }
 }
 
 /**

@@ -141,6 +141,13 @@ export class WindowsTaskServiceManager implements ServiceManager {
     return `schtasks /run /tn "${label}"`;
   }
 
+  isManagedDaemon(label: string, _status: ServiceStatus, _myPid: number): boolean {
+    // schtasks exposes no action PID (status.pid is always null), so the
+    // launchd/systemd pid-match can't work. The launcher .cmd exports
+    // MYCO_SERVICE_MANAGED=<label> (renderWindowsServiceScript); trust it.
+    return process.env.MYCO_SERVICE_MANAGED === label;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const { stdout, exitCode } = await this.runner.run(['/query', '/tn', label, '/fo', 'LIST', '/v']);
     if (exitCode !== 0) {

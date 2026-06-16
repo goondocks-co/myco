@@ -56,6 +56,8 @@ describe('renderWindowsServiceScript', () => {
     expect(out.startsWith('@echo off')).toBe(true);
     expect(out).toContain(`set "MYCO_HOME=${spec.env.MYCO_HOME}"`);
     expect(out).toContain('set "MYCO_SERVICE_VARIANT=dev"');
+    // The service-managed marker: restart detection reads this (schtasks gives no PID).
+    expect(out).toContain(`set "MYCO_SERVICE_MANAGED=${spec.label}"`);
     expect(out).not.toContain('set "PATH='); // POSIX PATH is meaningless on Windows — inherit the user's
     expect(out).toContain(`cd /d "${spec.workingDir}"`);
     expect(out).toContain(`"${spec.executable}" daemon >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`);
@@ -75,6 +77,22 @@ describe('renderWindowsServiceScript', () => {
     const out = renderWindowsServiceScript(makeSpec({ keepAlive: false }));
     expect(out).not.toContain(':myco_run');
     expect(out).toContain('daemon >>');
+  });
+
+  test('isManagedDaemon reads the MYCO_SERVICE_MANAGED marker, not a PID (schtasks has none)', () => {
+    const mgr = new WindowsTaskServiceManager({ runner: new StubRunner(), scriptDir: tmp('myco-wt-') });
+    const status = { installed: true, running: true, pid: null, lastExitCode: null, unitPath: null };
+    const prev = process.env.MYCO_SERVICE_MANAGED;
+    try {
+      process.env.MYCO_SERVICE_MANAGED = 'co.goondocks.myco-dev';
+      // Matches the marker regardless of the (null) PID; rejects a different label.
+      expect(mgr.isManagedDaemon('co.goondocks.myco-dev', status, 999)).toBe(true);
+      expect(mgr.isManagedDaemon('co.goondocks.myco', status, 999)).toBe(false);
+      delete process.env.MYCO_SERVICE_MANAGED;
+      expect(mgr.isManagedDaemon('co.goondocks.myco-dev', status, 999)).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.MYCO_SERVICE_MANAGED; else process.env.MYCO_SERVICE_MANAGED = prev;
+    }
   });
 });
 

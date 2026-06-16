@@ -17,11 +17,19 @@ import type { ServiceSpec } from './types.js';
  * CRLF line endings: `cmd.exe` is whitespace/line-ending sensitive.
  */
 export function renderWindowsServiceScript(spec: ServiceSpec): string {
-  const setLines = Object.entries(spec.env)
-    .filter(([key]) => key !== 'PATH')
-    // `set "K=V"` quoting keeps spaces/special chars literal and is the
-    // canonical cmd.exe form for values that may contain `&`, `(`, etc.
-    .map(([key, value]) => `set "${key}=${value}"`);
+  const setLines = [
+    ...Object.entries(spec.env)
+      .filter(([key]) => key !== 'PATH')
+      // `set "K=V"` quoting keeps spaces/special chars literal and is the
+      // canonical cmd.exe form for values that may contain `&`, `(`, etc.
+      .map(([key, value]) => `set "${key}=${value}"`),
+    // Marker so the daemon knows it was started by THIS service. Windows
+    // schtasks exposes no action PID, so detectServiceManagedLabel can't
+    // pid-match (as launchd/systemd do) — it reads this env var instead, which
+    // routes the restart button through `myco service restart` (schtasks
+    // /end + /run) rather than the unsupervised respawn path.
+    `set "MYCO_SERVICE_MANAGED=${spec.label}"`,
+  ];
 
   const exec = `"${spec.executable}" ${spec.args.join(' ')}`;
   const run = `${exec} >> "${spec.stdoutPath}" 2>> "${spec.stderrPath}"`;
