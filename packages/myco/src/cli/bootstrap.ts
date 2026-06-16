@@ -208,7 +208,6 @@ export function runGlobalBootstrap(
 ): BootstrapResult {
   const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
   const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
-  const launchers = removeRetiredGlobalLaunchers();
   const symbionts = runSymbiontDetection(packageRoot);
   // Per-project global-install migration. Sentinel-gated: projects
   // already migrated return alreadyDone immediately. Hot path on every
@@ -219,5 +218,11 @@ export function runGlobalBootstrap(
   // rule that gates SQLite access.
   const migration = runGlobalInstallMigrationPass({ packageRoot });
   const globalConfigMigration = runGlobalConfigMigration();
+  // Delete retired launcher trampolines LAST — only after detection has
+  // rewritten every detected agent's hook/MCP config onto the binary and the
+  // config migration scrubbed escaped references. Deleting earlier would orphan
+  // a config not yet rewritten in this pass (capture-loss window); by here no
+  // config references `~/.myco/launcher.cjs`, so removing it is safe.
+  const launchers = removeRetiredGlobalLaunchers();
   return { defaultGrove, launchers, symbionts, migration, globalConfigMigration };
 }

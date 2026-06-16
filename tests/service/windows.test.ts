@@ -90,6 +90,23 @@ describe('WindowsTaskServiceManager', () => {
     expect(r2.changed).toBe(false);
   });
 
+  test('quotes the /tr action so a spaced script dir does not split at logon (P2)', async () => {
+    // A default service dir under a spaced user profile
+    // (`C:\Users\First Last\.myco\service\…cmd`) must not split the schtasks
+    // action at the space — Task Scheduler re-parses the stored action string.
+    const scriptDir = path.join(tmp('myco-wt-'), 'First Last');
+    const runner = new StubRunner();
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir });
+    const spec = makeSpec();
+
+    await mgr.install(spec);
+    const scriptPath = path.join(scriptDir, `${spec.label}.cmd`);
+    expect(scriptPath).toContain(' '); // sanity: the path really has a space
+    const create = runner.calls.find((c) => c[0] === '/create')!;
+    const trValue = create[create.indexOf('/tr') + 1];
+    expect(trValue).toBe(`"${scriptPath}"`);
+  });
+
   test('isInstalled reflects schtasks /query exit code', async () => {
     const runner = new StubRunner();
     const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });

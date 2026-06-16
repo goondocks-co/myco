@@ -115,12 +115,20 @@ export function runLaunchPreamble(
 }
 
 /**
- * True when `pin` resolves to a different binary than `process.execPath`.
- * A bare/relative pin (e.g. `myco`) with no path separator can't name a
- * distinct absolute target, so it's treated as self → no re-exec.
+ * True when `pin` should be exec'd rather than handled in-process.
+ *
+ * A bare pin with no path separator (e.g. `myco-dev`) is a PATH-resolved alias
+ * — the documented `runtime.command` alias contract (hook-guard alias tests).
+ * We can't cheaply prove whether it resolves to this same binary, so we exec it
+ * and let the `MYCO_TRAMPOLINED` loop guard stop a self-alias from recursing.
+ * This faithfully matches the retired launcher, which always exec'd the pin
+ * value; the only cost is one extra exec when a bare alias happens to resolve to
+ * self, and only for deliberately-pinned setups (an unpinned cwd never reaches
+ * here). A path-bearing pin is compared by realpath so a self-pin stays
+ * in-process.
  */
 function pinPointsElsewhere(pin: string, deps: LaunchPreambleDeps): boolean {
-  if (!pin.includes('/') && !pin.includes('\\')) return false;
+  if (!pin.includes('/') && !pin.includes('\\')) return true;
   const pinAbs = path.resolve(pin);
   const pinReal = realpathOr(pinAbs, deps.realpathSync);
   const selfReal = realpathOr(deps.execPath, deps.realpathSync);

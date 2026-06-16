@@ -206,10 +206,18 @@ describe('runLaunchPreamble — pin re-exec', () => {
     expect(h.execCalls).toHaveLength(0);
   });
 
-  it('does NOT re-exec when the pin is bare "myco" (resolves to self)', () => {
-    const h = makeHarness({ pin: 'myco', execPath: '/usr/local/bin/myco' });
-    expect(() => runLaunchPreamble('tool', ['call', 'myco_search'], h.deps)).not.toThrow();
-    expect(h.execCalls).toHaveLength(0);
+  it('re-execs a bare-alias pin ("myco-dev") so the PATH-resolved alias handles the hook (loop-guarded)', () => {
+    // The runtime.command alias contract (hook-guard alias tests): a bare alias
+    // redirects to its PATH-resolved binary, exactly as the retired launcher did.
+    // We can't cheaply prove a bare alias resolves to self, so we exec it; the
+    // MYCO_TRAMPOLINED guard the re-exec sets stops a self-alias from recursing.
+    const h = makeHarness({ pin: 'myco-dev', execPath: '/usr/local/bin/myco' });
+    expect(() => runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], h.deps))
+      .toThrow(/exit\(0\)/);
+    expect(h.execCalls).toHaveLength(1);
+    expect(h.execCalls[0].file).toBe('myco-dev');
+    expect(h.execCalls[0].args).toEqual(['hook', 'session-start', '--symbiont', 'codex']);
+    expect(h.execCalls[0].options.env?.MYCO_TRAMPOLINED).toBe('1');
   });
 
   it('does NOT re-exec when MYCO_TRAMPOLINED is already set', () => {

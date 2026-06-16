@@ -527,6 +527,13 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       try {
         const { runSymbiontDetection } = await import('../cli/bootstrap.js');
         const symbionts = runSymbiontDetection();
+        // Delete retired launcher trampolines LAST — after detection rewrote
+        // every detected agent's config onto the binary this tick. Deleting
+        // before the rewrites would orphan a not-yet-rewritten config.
+        try {
+          const { removeRetiredGlobalLaunchers } = await import('../grove/launcher-cleanup.js');
+          removeRetiredGlobalLaunchers();
+        } catch { /* cleanup is best-effort; a lingering launcher is inert */ }
         const newlyInstalled = symbionts.filter((r) => r.status === 'installed');
         if (newlyInstalled.length > 0) {
           logger.info(LOG_KINDS.DAEMON_START, 'Symbiont detection wired in new agent(s)', {
