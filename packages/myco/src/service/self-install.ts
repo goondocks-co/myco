@@ -44,7 +44,7 @@ export function defaultServiceExecutable(
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (variant === 'prod') {
-    const managed = managedBinaryPath(home, platform);
+    const managed = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
     if (fs.existsSync(managed)) return managed;
   }
   return process.execPath;

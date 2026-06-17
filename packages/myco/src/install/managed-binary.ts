@@ -25,24 +25,42 @@ export interface InstallMarker {
  * Returns the managed binary directory for the given home directory and
  * platform.
  *
- * Win32 assumption: `%LOCALAPPDATA%` defaults to `<home>/AppData/Local`.
- * Task 7's install.ps1 uses the real `%LOCALAPPDATA%` env var directly.
- * This module remains pure — it does NOT read `process.env`.
+ * On win32, pass the real `%LOCALAPPDATA%` value as `localAppData` to avoid
+ * divergence under Known-Folder redirection or roaming profiles. When omitted,
+ * falls back to `<home>/AppData/Local` (the historical default). On non-win32
+ * platforms `localAppData` is ignored.
+ *
+ * This module remains pure — it does NOT read `process.env`. Callers that
+ * need the real env value pass `process.env.LOCALAPPDATA` at the call site.
  */
-export function managedBinDir(home: string, platform: NodeJS.Platform | string): string {
+export function managedBinDir(
+  home: string,
+  platform: NodeJS.Platform | string,
+  localAppData?: string,
+): string {
   const p = platform === 'win32' ? path.win32 : path.posix;
   if (platform === 'win32') {
-    // <home>/AppData/Local/Myco/bin (mirrors default %LOCALAPPDATA%\Myco\bin)
-    return p.join(home, 'AppData', 'Local', 'Myco', 'bin');
+    // Prefer the injected %LOCALAPPDATA% (real env value, honors KF redirection
+    // and roaming profiles). Fall back to the computed default when absent.
+    const appDataLocal = localAppData ?? p.join(home, 'AppData', 'Local');
+    return p.join(appDataLocal, 'Myco', 'bin');
   }
   return p.join(home, '.myco', 'bin');
 }
 
-/** Returns the full path to the managed binary for the given home and platform. */
-export function managedBinaryPath(home: string, platform: NodeJS.Platform | string): string {
+/** Returns the full path to the managed binary for the given home and platform.
+ *
+ * Pass `localAppData` on win32 to honor the real `%LOCALAPPDATA%` env var
+ * (see `managedBinDir`). Ignored on non-win32 platforms.
+ */
+export function managedBinaryPath(
+  home: string,
+  platform: NodeJS.Platform | string,
+  localAppData?: string,
+): string {
   const p = platform === 'win32' ? path.win32 : path.posix;
   const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return p.join(managedBinDir(home, platform), binaryName);
+  return p.join(managedBinDir(home, platform, localAppData), binaryName);
 }
 
 /**

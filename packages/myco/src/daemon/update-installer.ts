@@ -195,7 +195,7 @@ export function spawnUpdateScript(params: InstallParams): string {
     ...(params.mycoBinaryUpdate
       ? {
           mycoBinaryUpdate: params.mycoBinaryUpdate,
-          managedBinaryPath: managedBinaryPath(os.homedir(), process.platform),
+          managedBinaryPath: managedBinaryPath(os.homedir(), process.platform, process.env.LOCALAPPDATA),
           inProgressSentinelPath: params.inProgressSentinelPath ?? null,
         }
       : {}),

@@ -204,7 +204,7 @@ export function resolveManagedBinaryPath(
 ): string {
   const pin = resolveRuntimeCommand();
   if (pin) return pin.replaceAll('\\', '/');
-  const managed = managedBinaryPath(home, platform);
+  const managed = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
   if (fs.existsSync(managed)) return managed.replaceAll('\\', '/');
   return process.execPath.replaceAll('\\', '/');
 }
