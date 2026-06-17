@@ -343,6 +343,22 @@ jobs:
             fi
           done
 
+      # Upload raw per-platform binaries for the GitHub Release. The binaries
+      # are already verified above; stage them under canonical asset names so
+      # the create-release job can attach them without re-deriving paths.
+      - name: Upload raw binaries artifact (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        uses: actions/upload-artifact@v7
+        with:
+          name: myco-raw-binaries
+          path: |
+            packages/myco-darwin-arm64/bin/myco
+            packages/myco-darwin-x64/bin/myco
+            packages/myco-linux-x64/bin/myco
+            packages/myco-linux-arm64/bin/myco
+            packages/myco-windows-x64/bin/myco.exe
+          if-no-files-found: error
+
       # For myco tags, pack the 5 platform packages first (each injects
       # os/cpu metadata just before pack so the published tarball carries
       # the constraint while source-tree workspaces stay platform-neutral).
@@ -661,6 +677,46 @@ jobs:
             fi
             gh release create "${create_args[@]}"
           fi
+
+      # Download the raw binaries artifact (uploaded by the build job for myco
+      # tags) and attach them to the GitHub Release under canonical asset names.
+      # Additive: the .tgz upload above is untouched.
+      - name: Download raw binaries artifact (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        uses: actions/download-artifact@v8
+        with:
+          name: myco-raw-binaries
+          path: raw-binaries-staging/
+
+      - name: Stage and upload raw binaries + SHA256SUMS (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # download-artifact with a single artifact (no pattern) preserves the
+          # upload path structure relative to the artifact root, so files land at
+          # raw-binaries-staging/packages/myco-<target>/bin/myco[.exe].
+          # Rename each to its canonical asset name in a flat release-binaries/ dir.
+          mkdir -p release-binaries
+
+          cp raw-binaries-staging/packages/myco-darwin-arm64/bin/myco    release-binaries/myco-darwin-arm64
+          cp raw-binaries-staging/packages/myco-darwin-x64/bin/myco      release-binaries/myco-darwin-x64
+          cp raw-binaries-staging/packages/myco-linux-x64/bin/myco       release-binaries/myco-linux-x64
+          cp raw-binaries-staging/packages/myco-linux-arm64/bin/myco     release-binaries/myco-linux-arm64
+          cp raw-binaries-staging/packages/myco-windows-x64/bin/myco.exe release-binaries/myco-windows-x64.exe
+
+          # Generate SHA256SUMS in canonical two-space format (<sha>  <name>).
+          # Run sha256sum from inside the dir so names are bare (no path prefix);
+          # later install scripts parse $2 == <assetname>. Enumerate the five
+          # names explicitly — `sha256sum *` would include SHA256SUMS itself
+          # (shell creates the file before the glob expands), producing a bogus
+          # self-referential entry that breaks `sha256sum -c SHA256SUMS`.
+          ( cd release-binaries && sha256sum myco-darwin-arm64 myco-darwin-x64 myco-linux-x64 myco-linux-arm64 myco-windows-x64.exe > SHA256SUMS )
+
+          gh release upload "$TAG_NAME" release-binaries/* --clobber
 
   publish:
     name: Publish to npmjs.org
