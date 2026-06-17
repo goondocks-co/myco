@@ -43,7 +43,6 @@ import {
 import {
   resolveMachineRuntimeCommandPath,
   setDevServiceMode,
-  resolveMycoHome,
 } from '../grove/paths.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { readJsonFile } from '../utils/json.js';
@@ -53,7 +52,6 @@ import {
   resolveMycoVersions,
   githubHeaders,
 } from '../install/release-assets.js';
-import { readInstallMarker } from '../install/managed-binary.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -731,15 +729,6 @@ function isPrerelease(version: string): boolean {
   return semver.valid(version) !== null && semver.prerelease(version) !== null;
 }
 
-/**
- * The install-marker channel, when present. Corroborates the prerelease signal
- * (a marker that says `'stable'` while running a prerelease still reverts —
- * the running version wins). Returns null when no marker exists; callers must
- * NOT hard-depend on it.
- */
-function readInstallMarkerChannel(): ReleaseChannel | null {
-  return readInstallMarker(resolveMycoHome())?.channel ?? null;
-}
 
 function buildPackageResults(
   currentVersion: string,
@@ -750,15 +739,14 @@ function buildPackageResults(
 ): PackageCheckResult[] {
   const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
   // Revert-to-stable is offered when the operator's DESIRED channel is stable
-  // but the running binary is a prerelease — the most robust signal, since the
-  // managed-binary swap (curl + npm) no longer writes a runtime pin. The
-  // install marker corroborates (its channel == 'beta' is consistent) but is
-  // never a hard requirement: the marker may lag a fresh swap.
-  const markerChannel = readInstallMarkerChannel();
+  // but the running binary is a prerelease. The running version is the
+  // authoritative signal: the managed-binary swap (curl + npm) does not rewrite
+  // the install marker, so the marker may show 'stable' while the binary is
+  // already a prerelease. Keying on the running version makes revert available
+  // in all cases, including that stale-marker scenario.
   const desiredStableRevert =
     channel === 'stable'
-    && isPrerelease(currentVersion)
-    && markerChannel !== 'stable';
+    && isPrerelease(currentVersion);
 
   return UPDATE_PACKAGES.map((pkg) => {
     const cached = cache.packages[pkg.id];

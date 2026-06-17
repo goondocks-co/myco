@@ -838,6 +838,52 @@ describe('statusFromCache()', () => {
     expect(result!.runtime_scope).toBe('machine');
   });
 
+  it('offers a stable-channel revert when running a prerelease but the install marker still says stable (stale-marker scenario)', () => {
+    // KEY regression: install on stable (marker channel='stable'), apply a beta
+    // via UI (binary-swap does NOT rewrite install.json), then switch desired
+    // channel back to stable. The marker still reads 'stable' while the running
+    // binary is a prerelease. Previously the '&& markerChannel !== stable' clause
+    // suppressed revert_available in this case. After the fix, the running-version
+    // prerelease check is authoritative and revert must be offered.
+    const cache = makeCachedCheck({
+      channel: 'stable',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.0.0',
+          latest_beta: '1.1.0-beta.1',
+        },
+      },
+    });
+
+    // install.json marker says channel='stable' (the stale value left from the
+    // original install before the user switched to beta via the UI).
+    const staleMarker = JSON.stringify({ channel: 'stable', version: '1.0.0' });
+
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (String(p).endsWith('last-update-check.json')) {
+        return JSON.stringify(cache);
+      }
+      if (String(p).endsWith('install.json')) {
+        return staleMarker;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    // Running binary is a prerelease even though the marker says stable.
+    const result = statusFromCache(
+      '1.1.0-beta.1',
+      undefined,
+      undefined,
+      '/opt/homebrew',
+      null,
+    );
+    expect(result!.revert_available).toBe(true);
+    expect(result!.packages[0]?.revert_available).toBe(true);
+  });
+
   it('does NOT offer a revert when the running binary is already stable', () => {
     const cache = makeCachedCheck({
       channel: 'stable',
