@@ -22,7 +22,7 @@ Production and development services only serve the Groves assigned to them, so u
 
 ## Session capture
 
-When you start a session in any configured agent (Claude Code, Cursor, Codex, Pi, etc.), Myco registers the session and begins capturing events:
+When you start a session in any configured agent (Claude Code, Cursor, Codex, Cline, Pi, etc.), Myco registers the session and begins capturing events:
 
 - **User prompts** — every message you send the agent
 - **Tool uses** — every file read, bash command, edit, or search the agent runs

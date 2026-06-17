@@ -175,9 +175,8 @@ const SYNTH_PAYLOAD = JSON.stringify({
 
 /** Symbionts skipped: their global hooks file uses a non-JSON format
  *  (plugin-file) and the dispatch path isn't through a hook command
- *  line — opencode talks to the daemon over HTTP, pi via TS plugin.
- *  Both are covered by their own tests. */
-const SKIP_PLUGIN_FILE = new Set<string>(['opencode', 'pi']);
+ *  line. They are covered by their own plugin tests. */
+const SKIP_PLUGIN_FILE = new Set<string>(['cline', 'opencode', 'pi']);
 
 describe('symbiont capture round-trip — hook command reaches the runtime with payload', () => {
   let fake: FakeHome | null = null;

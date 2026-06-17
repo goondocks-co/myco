@@ -196,6 +196,38 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       }
     ]
   },
+  "cline": {
+    "captureRules": [
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<user_input mode=\"act\">"
+        },
+        "action": "rewrite_prompt",
+        "reason": "strip Cline act user_input envelope",
+        "strip_envelope": {
+          "open": "<user_input mode=\"act\">",
+          "close": "</user_input>"
+        },
+        "trim": true
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<user_input mode=\"plan\">"
+        },
+        "action": "rewrite_prompt",
+        "reason": "strip Cline plan user_input envelope",
+        "strip_envelope": {
+          "open": "<user_input mode=\"plan\">",
+          "close": "</user_input>"
+        },
+        "trim": true
+      }
+    ]
+  },
   "codex": {
     "capturePrompts": {
       "shapes": [

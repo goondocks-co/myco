@@ -283,15 +283,23 @@ function buildUpstreamForCurrentDaemon(
   const client = new DaemonClient(vaultDir);
   const info = client.getInfo();
   if (!info) return null;
-  const headers: Record<string, string> = {
-    ...requestContextHeaders(requestContextFromEnvironment(process.env, vaultDir)),
-    ...(info.auth_token ? { [REQUEST_CONTEXT_AUTH_HEADER]: info.auth_token } : {}),
-  };
+  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
   const transport = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${info.port}/mcp`),
     { requestInit: { headers } },
   );
   return { transport, port: info.port };
+}
+
+export function buildBridgeRequestHeaders(
+  vaultDir: string,
+  env: Record<string, string | undefined>,
+  authToken?: string | null,
+): Record<string, string> {
+  return {
+    ...requestContextHeaders(requestContextFromEnvironment(env, vaultDir, { launchContextTenancy: true })),
+    ...(authToken ? { [REQUEST_CONTEXT_AUTH_HEADER]: authToken } : {}),
+  };
 }
 
 export async function main(): Promise<void> {
@@ -307,10 +315,7 @@ export async function main(): Promise<void> {
 
   logErr(`bridge starting (pid=${process.pid}, ppid=${process.ppid}, daemon_port=${info.port})`);
 
-  const headers: Record<string, string> = {
-    ...requestContextHeaders(requestContextFromEnvironment(process.env, vaultDir)),
-    ...(info.auth_token ? { [REQUEST_CONTEXT_AUTH_HEADER]: info.auth_token } : {}),
-  };
+  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
   let upstream = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${info.port}/mcp`),
     { requestInit: { headers } },
