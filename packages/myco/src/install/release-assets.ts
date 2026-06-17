@@ -226,6 +226,70 @@ export function parseSha256Sum(text: string, asset: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// mycoReleasesApiUrl
+// ---------------------------------------------------------------------------
+
+/**
+ * GitHub API URL to list all releases for the myco repository.
+ *
+ * Returns up to 100 releases per call (sufficient for version resolution).
+ * The network call and pagination (if ever needed) are the caller's concern.
+ */
+export function mycoReleasesApiUrl(): string {
+  return `https://api.github.com/repos/${MYCO_REPO}/releases?per_page=100`;
+}
+
+// ---------------------------------------------------------------------------
+// resolveMycoVersions
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive `{ latest_stable, latest_beta }` from a GitHub releases array.
+ *
+ * Mirrors the npm dist-tag semantics used by the npm-registry path:
+ *   - `latest_stable` ≈ dist-tags.latest  — highest NON-prerelease semver
+ *   - `latest_beta`   ≈ dist-tags.beta    — highest PRERELEASE semver
+ *
+ * Only tags matching `^myco/v` are considered (sibling package tags such as
+ * `myco-team/v*` and `myco-collective/v*` are excluded). Tags whose suffix is
+ * not valid semver are skipped. Returns null for a category when no releases
+ * match it (e.g. a beta-only repository has `latest_stable === null`).
+ *
+ * Reuses the module-internal `isPrerelease` helper so prerelease detection
+ * is consistent with `pickRelease`.
+ */
+export function resolveMycoVersions(releases: GitHubRelease[]): {
+  latest_stable: string | null;
+  latest_beta: string | null;
+} {
+  let latestStable: semver.SemVer | null = null;
+  let latestBeta: semver.SemVer | null = null;
+
+  for (const release of releases) {
+    const match = MYCO_TAG_RE.exec(release.tag_name);
+    if (!match) continue; // excludes myco-team/v*, myco-collective/v*, etc.
+
+    const parsed = semver.parse(match[1]);
+    if (!parsed) continue; // invalid semver suffix
+
+    if (isPrerelease(release, parsed)) {
+      if (latestBeta === null || semver.gt(parsed, latestBeta)) {
+        latestBeta = parsed;
+      }
+    } else {
+      if (latestStable === null || semver.gt(parsed, latestStable)) {
+        latestStable = parsed;
+      }
+    }
+  }
+
+  return {
+    latest_stable: latestStable?.version ?? null,
+    latest_beta: latestBeta?.version ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // githubHeaders
 // ---------------------------------------------------------------------------
 

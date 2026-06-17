@@ -107,6 +107,7 @@ import {
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
 import { UPDATE_CONFIG_PATH } from '@myco/constants/update.js';
+import { mycoReleasesApiUrl } from '@myco/install/release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -189,6 +190,45 @@ function mockFetchSuccess(data: Record<string, unknown>): void {
 /** Helper: mock a failed fetch. */
 function mockFetchFailure(message = 'network error'): void {
   global.fetch = vi.fn().mockRejectedValue(new Error(message));
+}
+
+/**
+ * Build a minimal GitHub releases array from an npm-style dist-tags response.
+ *
+ * Translates `latest`/`beta` dist-tags into GitHub release fixtures so the
+ * GitHub-Releases branch in checkForUpdate sees the same version semantics
+ * that the old npm-registry branch did. Used by existing checkForUpdate tests
+ * that exercise the myco package update logic (myco now fetches GitHub, not npm).
+ */
+function makeGitHubReleasesFromDistTags(
+  data: Record<string, unknown>,
+): Array<{ tag_name: string; prerelease: boolean; assets: [] }> {
+  const distTags = (data['dist-tags'] ?? {}) as Record<string, string>;
+  const releases: Array<{ tag_name: string; prerelease: boolean; assets: [] }> = [];
+  if (distTags['latest']) {
+    releases.push({ tag_name: `myco/v${distTags['latest']}`, prerelease: false, assets: [] });
+  }
+  if (distTags['beta']) {
+    releases.push({ tag_name: `myco/v${distTags['beta']}`, prerelease: true, assets: [] });
+  }
+  return releases;
+}
+
+/**
+ * Mock fetch with URL routing: myco → GitHub Releases; operator CLIs → npm.
+ * Converts the npm-format `data` to a GitHub releases array for myco so
+ * existing per-version assertions remain correct.
+ */
+function mockFetchSuccessGitHubAware(data: Record<string, unknown>): void {
+  const githubUrl = mycoReleasesApiUrl();
+  const releases = makeGitHubReleasesFromDistTags(data);
+  global.fetch = vi.fn().mockImplementation((url: string) => {
+    if (url === githubUrl) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => releases });
+    }
+    // npm registry for operator CLIs
+    return Promise.resolve({ ok: true, status: 200, json: async () => data });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -530,7 +570,9 @@ describe('checkForUpdate()', () => {
   });
 
   it('fetches the registry and returns an update when a newer version exists', async () => {
-    mockFetchSuccess(makeRegistryResponse('2.0.0'));
+    // myco now resolves from GitHub Releases; operator CLIs remain on npm.
+    // mockFetchSuccessGitHubAware routes per-URL so all three packages are served.
+    mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0'));
 
     const result = await checkForUpdate('1.0.0');
 
@@ -542,7 +584,7 @@ describe('checkForUpdate()', () => {
   });
 
   it('returns no update when running the latest version', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.0.0'));
+    mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0'));
 
     const result = await checkForUpdate('1.0.0');
 
@@ -552,7 +594,7 @@ describe('checkForUpdate()', () => {
   });
 
   it('returns no update when running a newer version than registry (pre-release dev)', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.0.0'));
+    mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0'));
 
     const result = await checkForUpdate('2.0.0');
 
@@ -560,7 +602,7 @@ describe('checkForUpdate()', () => {
   });
 
   it('writes cache after a successful fetch', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.5.0'));
+    mockFetchSuccessGitHubAware(makeRegistryResponse('1.5.0'));
 
     await checkForUpdate('1.0.0');
 
@@ -580,7 +622,7 @@ describe('checkForUpdate()', () => {
     });
 
     it('considers the beta dist-tag when on beta channel', async () => {
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
+      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
 
       const result = await checkForUpdate('1.0.0');
 
@@ -591,7 +633,7 @@ describe('checkForUpdate()', () => {
 
     it('picks stable over beta when stable is higher (no-downgrade rule)', async () => {
       // stable 2.0.0 > beta 1.9.0-beta.1
-      mockFetchSuccess(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
+      mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
 
       const result = await checkForUpdate('1.0.0');
 
@@ -600,7 +642,7 @@ describe('checkForUpdate()', () => {
     });
 
     it('reports latest_beta even when not selected as target', async () => {
-      mockFetchSuccess(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
+      mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
 
       const result = await checkForUpdate('1.0.0');
 
@@ -608,7 +650,7 @@ describe('checkForUpdate()', () => {
     });
 
     it('sets channel to beta in the result', async () => {
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
+      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
 
       const result = await checkForUpdate('1.0.0');
 
@@ -619,7 +661,7 @@ describe('checkForUpdate()', () => {
   describe('stable channel', () => {
     it('ignores beta dist-tag on stable channel', async () => {
       // stable channel — beta tag should not be selected as target
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.5.0-beta.1'));
+      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.5.0-beta.1'));
 
       const result = await checkForUpdate('1.0.0');
 

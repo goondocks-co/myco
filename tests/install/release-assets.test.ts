@@ -6,6 +6,8 @@ import {
   assetDownloadUrl,
   parseSha256Sum,
   githubHeaders,
+  mycoReleasesApiUrl,
+  resolveMycoVersions,
   type GitHubRelease,
 } from '@myco/install/release-assets';
 
@@ -299,5 +301,110 @@ describe('githubHeaders', () => {
   it('includes User-Agent header', () => {
     const headers = githubHeaders({});
     expect(headers['User-Agent']).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mycoReleasesApiUrl
+// ---------------------------------------------------------------------------
+describe('mycoReleasesApiUrl', () => {
+  it('returns the GitHub releases API URL for the myco repo', () => {
+    const url = mycoReleasesApiUrl();
+    expect(url).toBe('https://api.github.com/repos/goondocks-co/myco/releases?per_page=100');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveMycoVersions
+// ---------------------------------------------------------------------------
+describe('resolveMycoVersions', () => {
+  function makeReleaseFull(
+    tagName: string,
+    prerelease: boolean,
+  ): GitHubRelease {
+    return { tag_name: tagName, prerelease, assets: [] };
+  }
+
+  it('stable+beta fixture: latest_stable is highest non-prerelease, latest_beta is highest prerelease', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/v1.4.0', false),        // stable
+      makeReleaseFull('myco/v1.3.0-beta.1', true),  // prerelease
+      makeReleaseFull('myco/v1.5.0-beta.2', true),  // prerelease (higher)
+      makeReleaseFull('myco-team/v9.9.9', false),   // sibling — must be excluded
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBe('1.4.0');
+    expect(result.latest_beta).toBe('1.5.0-beta.2');
+  });
+
+  it('sibling package tags are excluded from both stable and beta', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco-team/v9.9.9', false),
+      makeReleaseFull('myco-collective/v8.0.0', true),
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBeNull();
+    expect(result.latest_beta).toBeNull();
+  });
+
+  it('beta-only fixture: latest_stable is null', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/v1.0.0-beta.1', true),
+      makeReleaseFull('myco/v1.1.0-beta.2', true),
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBeNull();
+    expect(result.latest_beta).toBe('1.1.0-beta.2');
+  });
+
+  it('stable-only fixture: latest_beta is null', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/v1.0.0', false),
+      makeReleaseFull('myco/v1.2.0', false),
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBe('1.2.0');
+    expect(result.latest_beta).toBeNull();
+  });
+
+  it('empty releases: both null', () => {
+    expect(resolveMycoVersions([])).toEqual({ latest_stable: null, latest_beta: null });
+  });
+
+  it('semver component detection: flag=false but -alpha suffix → treated as prerelease', () => {
+    // The prerelease flag is false but the semver prerelease component is present
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/v2.0.0-alpha.1', false), // flag=false but semver says prerelease
+      makeReleaseFull('myco/v1.9.0', false),          // genuine stable
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBe('1.9.0');
+    expect(result.latest_beta).toBe('2.0.0-alpha.1');
+  });
+
+  it('picks the highest stable across multiple stable releases', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/v1.0.0', false),
+      makeReleaseFull('myco/v1.3.0', false),
+      makeReleaseFull('myco/v1.2.5', false),
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBe('1.3.0');
+  });
+
+  it('skips releases with invalid semver in the tag suffix', () => {
+    const releases: GitHubRelease[] = [
+      makeReleaseFull('myco/vnot-semver', false),
+      makeReleaseFull('myco/v1.0.0', false),
+    ];
+
+    const result = resolveMycoVersions(releases);
+    expect(result.latest_stable).toBe('1.0.0');
   });
 });

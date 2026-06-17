@@ -48,6 +48,11 @@ import {
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { readJsonFile } from '../utils/json.js';
 import { getPluginVersion } from '../version.js';
+import {
+  mycoReleasesApiUrl,
+  resolveMycoVersions,
+  githubHeaders,
+} from '../install/release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -880,6 +885,26 @@ export async function checkForUpdate(
 
   const registryChecks = await Promise.allSettled(
     UPDATE_PACKAGES.map(async (pkg) => {
+      if (pkg.id === 'myco') {
+        const response = await fetch(mycoReleasesApiUrl(), {
+          headers: githubHeaders(),
+          signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+        });
+
+        if (!response.ok) {
+          throw new Error(`${pkg.packageName}: GitHub releases responded with ${response.status}`);
+        }
+
+        const releases = await response.json();
+        const { latest_stable, latest_beta } = resolveMycoVersions(releases);
+        return {
+          id: pkg.id,
+          package_name: pkg.packageName,
+          latest_stable: latest_stable ?? currentVersion,
+          latest_beta,
+        };
+      }
+
       const response = await fetch(packageRegistryUrl(pkg.packageName), {
         signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
       });
