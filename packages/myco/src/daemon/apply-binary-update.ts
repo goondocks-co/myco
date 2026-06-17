@@ -19,11 +19,16 @@
  * Two overriding guarantees, pinned by tests:
  *   - VERIFY BEFORE SWAP. A missing SHA entry, a checksum mismatch, or any
  *     download failure ABORTS before touching `<bin>`: no `<bin>.prev` is
- *     created, the binary is byte-for-byte unchanged, the temp is removed, an
- *     error side-channel is written, and NO restart is performed.
+ *     created, the binary is byte-for-byte unchanged, the temp is removed, and
+ *     an error side-channel is written.
  *   - THE DAEMON ALWAYS COMES BACK. After a verified swap the function never
  *     returns without the daemon having been (re)started on a binary that is
- *     either the new one (healthy) or the restored prior one.
+ *     either the new one (healthy) or the restored prior one. A PRE-SWAP abort
+ *     ALSO restarts — but only when NOT service-managed: the caller already
+ *     SIGTERM'd this daemon (so a detached respawn can claim the port), and the
+ *     untouched `<bin>` is the good binary to respawn on. Under a service
+ *     manager the supervisor's KeepAlive/Restart respawns it, so a pre-swap
+ *     abort performs NO restart (doing so would race the supervisor).
  *
  * This primitive does NOT resolve the release (channel/version/URLs) — that is
  * the caller's job. It receives already-resolved URLs + the asset name. All
@@ -38,6 +43,7 @@ import path from 'node:path';
 import { UPDATE_ERROR_PATH } from '../constants/update.js';
 import { parseSha256Sum } from '../install/release-assets.js';
 import { getServiceManager } from '../service/manager.js';
+import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { restart, spawnDetached, writeFileSafe, type ApplyUpdateDeps } from './apply-update.js';
 
 // ---------------------------------------------------------------------------
@@ -67,6 +73,15 @@ export interface ApplyBinaryUpdateParams {
   healthIntervalMs: number;
   /** Error side-channel path. Defaults to UPDATE_ERROR_PATH; overridable for tests. */
   errorPath?: string;
+  /**
+   * Absolute path to the `update.in-progress` sentinel the caller wrote before
+   * spawning this orchestrator. Cleared here on any abort/restore so a failed
+   * self-update never leaves the daemon locked out of future updates for the
+   * full 10-minute stale window (the daemon-startup clear only fires when the
+   * restarted version matches `targetVersion`, which an aborted/restored daemon
+   * does NOT). Optional: when absent the stale-age sweep is the only fallback.
+   */
+  inProgressSentinelPath?: string | null;
 }
 
 /**
@@ -201,6 +216,32 @@ export async function applyBinaryUpdate(
     writeFileSafe(errorPath, JSON.stringify({ error: message }));
   };
 
+  // Clear the caller's `update.in-progress` sentinel. Called on every
+  // abort/restore so a failed self-update doesn't lock out future updates for
+  // the full 10-minute stale window. The daemon-startup clear only fires when
+  // the restarted version matches `targetVersion`, which an aborted/restored
+  // daemon does NOT report — so the primitive must drop it here.
+  const clearSentinel = (): void => {
+    if (params.inProgressSentinelPath) clearJsonSentinel(params.inProgressSentinelPath);
+  };
+
+  /**
+   * PRE-SWAP abort: the binary is byte-for-byte untouched and no myco.prev was
+   * created, so there is nothing to roll back. Record the error and drop the
+   * sentinel, then bring the daemon back IFF it is not service-managed:
+   *   - Service-managed: the supervisor (launchd KeepAlive / systemd Restart /
+   *     Task Scheduler) respawns on its own. Restarting here would race it.
+   *   - Non-service: the caller (handleUpdateApply / self-reconcile) already
+   *     scheduled THIS daemon's shutdown so the respawn could claim the port —
+   *     nothing else will bring it back. `params.binaryPath` is still the
+   *     untouched good binary, so a respawn on it is correct.
+   */
+  const abort = async (message: string): Promise<void> => {
+    writeError(message);
+    clearSentinel();
+    if (!params.serviceManagedLabel) await restartDaemon(params, deps);
+  };
+
   // --- 1 + 2: download and VERIFY, all BEFORE any mutation of binaryPath. ---
   // Any failure here aborts with the binary untouched and no myco.prev created.
   try {
@@ -212,25 +253,22 @@ export async function applyBinaryUpdate(
     if (!expected) {
       rmSafe(tmpAsset);
       rmSafe(tmpSums);
-      writeError(`SHA256SUMS has no entry for ${params.assetName} — aborting update (binary unchanged)`);
-      return;
+      return abort(`SHA256SUMS has no entry for ${params.assetName} — aborting update (binary unchanged)`);
     }
 
     const actual = await deps.computeSha256(tmpAsset);
     if (actual.toLowerCase() !== expected.toLowerCase()) {
       rmSafe(tmpAsset);
       rmSafe(tmpSums);
-      writeError(
+      return abort(
         `checksum mismatch for ${params.assetName} (expected ${expected}, got ${actual}) — aborting update (binary unchanged)`,
       );
-      return;
     }
   } catch (err) {
     // Download / read / hash failure → abort. Nothing was swapped.
     rmSafe(tmpAsset);
     rmSafe(tmpSums);
-    writeError(`update download/verify failed: ${String(err)} — aborting (binary unchanged)`);
-    return;
+    return abort(`update download/verify failed: ${String(err)} — aborting (binary unchanged)`);
   }
 
   // The sums file has served its purpose; the asset is verified and trusted.
@@ -244,8 +282,7 @@ export async function applyBinaryUpdate(
     // Could not stage the rollback target → do NOT swap (we'd lose the only
     // good binary). Abort cleanly; the running daemon is untouched.
     rmSafe(tmpAsset);
-    writeError(`could not stage rollback target ${prevPath}: ${String(err)} — aborting (binary unchanged)`);
-    return;
+    return abort(`could not stage rollback target ${prevPath}: ${String(err)} — aborting (binary unchanged)`);
   }
 
   try {
@@ -267,6 +304,11 @@ export async function applyBinaryUpdate(
       /* best-effort */
     }
     writeError(`binary swap failed: ${String(err)} — restored prior binary`);
+    // Restored onto the OLD version → the daemon-startup clear won't fire; drop
+    // the sentinel here so the next update isn't blocked. The restart is
+    // unconditional (post-swap the daemon must always come back); on the service
+    // path `restartDaemon` routes through the ServiceManager.
+    clearSentinel();
     await restartDaemon(params, deps);
     return;
   }
@@ -296,6 +338,9 @@ export async function applyBinaryUpdate(
     writeError(
       `new binary ${params.targetVersion} failed to become healthy after ${params.maxHealthAttempts} attempts — rollback to prior binary applied`,
     );
+    // Rolled back to the OLD version → the daemon-startup clear won't fire; drop
+    // the sentinel so the next update isn't blocked behind a 10-minute window.
+    clearSentinel();
     await restartDaemon(params, deps);
   } catch (err) {
     // Last resort: record the failure and make one final restart attempt so the

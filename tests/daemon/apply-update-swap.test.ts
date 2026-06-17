@@ -183,63 +183,135 @@ describe('applyBinaryUpdate — happy path', () => {
 });
 
 describe('applyBinaryUpdate — verify-before-swap aborts', () => {
-  it('checksum mismatch: binary untouched, NO myco.prev, temp cleaned, error written, no swap', async () => {
-    // SHA256SUMS lists a hash that does NOT match the downloaded bytes.
-    const rec = makeDeps({
-      assetBytes: NEW_BYTES,
-      sha256sumsText: `${sha256('TAMPERED-DIFFERENT-BYTES')}  ${ASSET_NAME}\n`,
-    });
-    await applyBinaryUpdate(baseParams(), rec.deps);
+  // The verify guarantees (binary untouched, no myco.prev, temp cleaned, error
+  // written) are INDEPENDENT of restart semantics. Restart, however, splits:
+  //   - service-managed: the supervisor (KeepAlive) respawns → abort does NOT
+  //     restart (restarting would race it);
+  //   - non-service: the caller already SIGTERM'd this daemon so the respawn
+  //     could claim the port → abort MUST restart once, on the untouched good
+  //     binary, or the daemon is stranded down.
+  const SERVICE_LABEL = 'co.goondocks.myco';
 
-    // The single most important guarantee: original binary unchanged.
-    expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
-    // No rollback target was created (nothing was swapped).
-    expect(fs.existsSync(prevPath())).toBe(false);
-    // Temp download cleaned up — only the binary + bin dir remain under tmp/bin.
-    const leftovers = fs
-      .readdirSync(path.dirname(binaryPath))
-      .filter((n) => n !== 'myco');
-    expect(leftovers).toEqual([]);
-    // Error side-channel written.
-    expect(fs.existsSync(errorPath)).toBe(true);
-    // No restart of any kind on a failed verify.
-    expect(rec.restartCount).toBe(0);
-    expect(rec.mgr.restartCalls).toEqual([]);
+  // Each abort scenario → the deps opts that trigger it.
+  const ABORTS: Array<{ name: string; opts: RecorderOpts }> = [
+    {
+      name: 'checksum mismatch',
+      opts: {
+        assetBytes: NEW_BYTES,
+        sha256sumsText: `${sha256('TAMPERED-DIFFERENT-BYTES')}  ${ASSET_NAME}\n`,
+      },
+    },
+    {
+      name: 'missing SHA entry',
+      opts: {
+        sha256sumsText: `${sha256(NEW_BYTES)}  myco-linux-x64\n${sha256('x')}  myco-windows-x64.exe\n`,
+      },
+    },
+    {
+      name: 'download error',
+      opts: { downloadThrows: true },
+    },
+  ];
+
+  describe('verify guarantees (binary untouched, no myco.prev, temp cleaned, error written)', () => {
+    for (const { name, opts } of ABORTS) {
+      it(`${name}: binary unchanged, no myco.prev, temp cleaned, error written, no swap`, async () => {
+        const rec = makeDeps(opts);
+        await applyBinaryUpdate(baseParams(), rec.deps);
+
+        // The single most important guarantee: original binary unchanged.
+        expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
+        // No rollback target was created (nothing was swapped).
+        expect(fs.existsSync(prevPath())).toBe(false);
+        // Temp download cleaned up — only the binary + bin dir remain under tmp/bin.
+        const leftovers = fs
+          .readdirSync(path.dirname(binaryPath))
+          .filter((n) => n !== 'myco');
+        expect(leftovers).toEqual([]);
+        // Error side-channel written.
+        expect(fs.existsSync(errorPath)).toBe(true);
+      });
+    }
   });
 
-  it('missing SHA entry: same abort guarantees as a mismatch', async () => {
-    const rec = makeDeps({
-      // SHA256SUMS has entries, but none for our asset name.
-      sha256sumsText: `${sha256(NEW_BYTES)}  myco-linux-x64\n${sha256('x')}  myco-windows-x64.exe\n`,
-    });
-    await applyBinaryUpdate(baseParams(), rec.deps);
+  describe('service-managed → abort does NOT restart (supervisor respawns)', () => {
+    for (const { name, opts } of ABORTS) {
+      it(`${name}: no restart of any kind`, async () => {
+        const rec = makeDeps(opts);
+        await applyBinaryUpdate(
+          { ...baseParams(), serviceManagedLabel: SERVICE_LABEL },
+          rec.deps,
+        );
 
-    expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
-    expect(fs.existsSync(prevPath())).toBe(false);
-    expect(fs.existsSync(errorPath)).toBe(true);
-    expect(rec.restartCount).toBe(0);
+        expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
+        expect(rec.restartCount).toBe(0);
+        expect(rec.mgr.restartCalls).toEqual([]);
+      });
+    }
   });
 
-  it('download error: aborts, binary untouched, no myco.prev, error written', async () => {
+  describe('non-service → abort MUST restart once on the untouched good binary', () => {
+    for (const { name, opts } of ABORTS) {
+      it(`${name}: restarts exactly once via direct spawn on params.binaryPath`, async () => {
+        const rec = makeDeps(opts);
+        await applyBinaryUpdate(
+          { ...baseParams(), serviceManagedLabel: null },
+          rec.deps,
+        );
+
+        // Binary is untouched — the respawn is on the GOOD binary.
+        expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
+        // Restarted exactly once, via the direct-spawn fallback (no service label).
+        expect(rec.restartCount).toBe(1);
+        expect(rec.mgr.restartCalls).toEqual([]);
+        expect(rec.restoreSpawns).toEqual([
+          { bin: binaryPath, args: ['daemon'], cwd: '/project' },
+        ]);
+      });
+    }
+  });
+
+  it('non-service abort clears the update.in-progress sentinel', async () => {
+    const sentinelPath = path.join(tmpDir, 'update.in-progress');
+    fs.writeFileSync(sentinelPath, JSON.stringify({ targetVersion: '1.1.0', startedAt: Date.now(), initiator: 'api/update/apply' }));
     const rec = makeDeps({ downloadThrows: true });
-    await applyBinaryUpdate(baseParams(), rec.deps);
+    await applyBinaryUpdate(
+      { ...baseParams(), serviceManagedLabel: null, inProgressSentinelPath: sentinelPath },
+      rec.deps,
+    );
 
+    // Aborted/restored daemon comes back on the OLD version, so the
+    // daemon-startup target-version clear won't fire — the primitive drops it.
+    expect(fs.existsSync(sentinelPath)).toBe(false);
     expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
-    expect(fs.existsSync(prevPath())).toBe(false);
-    expect(fs.existsSync(errorPath)).toBe(true);
+    expect(rec.restartCount).toBe(1);
+  });
+
+  it('service-managed abort also clears the sentinel (no restart)', async () => {
+    const sentinelPath = path.join(tmpDir, 'update.in-progress');
+    fs.writeFileSync(sentinelPath, JSON.stringify({ targetVersion: '1.1.0', startedAt: Date.now(), initiator: 'api/update/apply' }));
+    const rec = makeDeps({ downloadThrows: true });
+    await applyBinaryUpdate(
+      { ...baseParams(), serviceManagedLabel: 'co.goondocks.myco', inProgressSentinelPath: sentinelPath },
+      rec.deps,
+    );
+
+    expect(fs.existsSync(sentinelPath)).toBe(false);
     expect(rec.restartCount).toBe(0);
   });
 });
 
 describe('applyBinaryUpdate — crash-loop auto-restore', () => {
-  it('never-healthy-on-target across maxHealthAttempts → restores myco.prev and restarts again', async () => {
+  it('never-healthy-on-target across maxHealthAttempts → restores myco.prev, restarts again, clears sentinel', async () => {
     // Verify passes and the swap happens, but the new daemon never reports the
     // target version (down the whole window).
+    const sentinelPath = path.join(tmpDir, 'update.in-progress');
+    fs.writeFileSync(sentinelPath, JSON.stringify({ targetVersion: '1.1.0', startedAt: Date.now(), initiator: 'api/update/apply' }));
     const rec = makeDeps({
       healthSequence: [null, null, null], // 3 attempts, all down
       assetBytes: NEW_BYTES,
     });
-    await applyBinaryUpdate(baseParams(), rec.deps);
+    await applyBinaryUpdate({ ...baseParams(), inProgressSentinelPath: sentinelPath }, rec.deps);
 
     // RESTORED: the prior binary is back in place.
     expect(fs.readFileSync(binaryPath, 'utf-8')).toBe(OLD_BYTES);
@@ -254,6 +326,10 @@ describe('applyBinaryUpdate — crash-loop auto-restore', () => {
     expect(fs.existsSync(errorPath)).toBe(true);
     const err = JSON.parse(fs.readFileSync(errorPath, 'utf-8'));
     expect(JSON.stringify(err).toLowerCase()).toContain('rollback');
+
+    // Rolled back to the OLD version → the daemon-startup clear won't fire, so
+    // the primitive drops the sentinel itself.
+    expect(fs.existsSync(sentinelPath)).toBe(false);
   });
 
   it('healthy but on the WRONG version across all attempts → also restores', async () => {

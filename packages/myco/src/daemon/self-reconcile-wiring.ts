@@ -173,6 +173,10 @@ async function runUpdateInstall(
     daemonPort: deps.server.port,
     targetVersion,
     mycoBinaryUpdate,
+    // Forward the sentinel path so an aborted/rolled-back binary swap clears it
+    // (the restored daemon comes back on the OLD version, so the daemon-startup
+    // target-version clear won't fire).
+    inProgressSentinelPath: updateInProgress.sentinelPath(deps.daemonService.stateDir),
   });
   updateInProgress.write(deps.daemonService.stateDir, {
     targetVersion,

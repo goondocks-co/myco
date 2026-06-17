@@ -69,6 +69,14 @@ export interface InstallParams {
    * Operator-CLI specs in `packageSpecs` still `npm install -g`.
    */
   mycoBinaryUpdate?: MycoBinaryUpdateRefs;
+  /**
+   * Absolute path to the `update.in-progress` sentinel the daemon wrote before
+   * spawning the orchestrator. Forwarded so an aborted/rolled-back BINARY swap
+   * clears it (an aborted/restored daemon comes back on the OLD version, so the
+   * daemon-startup target-version clear won't fire and the sentinel would
+   * otherwise block updates for the full 10-minute stale window).
+   */
+  inProgressSentinelPath?: string | null;
 }
 
 /** Parameters for a restart-only orchestration (no global npm install). */
@@ -188,6 +196,7 @@ export function spawnUpdateScript(params: InstallParams): string {
       ? {
           mycoBinaryUpdate: params.mycoBinaryUpdate,
           managedBinaryPath: managedBinaryPath(os.homedir(), process.platform),
+          inProgressSentinelPath: params.inProgressSentinelPath ?? null,
         }
       : {}),
   };

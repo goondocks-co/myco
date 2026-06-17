@@ -79,6 +79,13 @@ export interface ApplyUpdateParams {
   maxHealthAttempts?: number;
   /** Crash-loop /health poll spacing (ms) for the binary swap. */
   healthIntervalMs?: number;
+  /**
+   * Absolute path to the `update.in-progress` sentinel the daemon wrote before
+   * spawning this orchestrator. Forwarded to `applyBinaryUpdate` so an aborted
+   * or rolled-back self-update clears it (the restored daemon comes back on the
+   * OLD version, so the daemon-startup target-version clear won't fire).
+   */
+  inProgressSentinelPath?: string | null;
 }
 
 export interface ApplyRestartParams {
@@ -358,6 +365,7 @@ async function runBinaryUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Pro
     projectRoot: p.projectRoot,
     maxHealthAttempts: p.maxHealthAttempts ?? BINARY_UPDATE_HEALTH_ATTEMPTS,
     healthIntervalMs: p.healthIntervalMs ?? BINARY_UPDATE_HEALTH_INTERVAL_MS,
+    inProgressSentinelPath: p.inProgressSentinelPath ?? null,
   });
 }
 

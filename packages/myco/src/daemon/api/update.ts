@@ -353,6 +353,9 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
     // The myco binary swap supersedes both the old managed-runtime install and
     // the revert-to-stable npm install; operator CLIs ride in `packageSpecs`.
+    // Forward the sentinel path so an aborted/rolled-back binary swap can clear
+    // it (the restored daemon comes back on the OLD version, so the
+    // daemon-startup target-version clear won't fire).
     spawnUpdateScript({
       packageSpecs: operatorSpecs,
       projectRoot,
@@ -362,6 +365,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       daemonPort,
       targetVersion: status.latest_version,
       mycoBinaryUpdate,
+      inProgressSentinelPath: updateInProgress.sentinelPath(daemonStateDir),
     });
     updateInProgress.write(daemonStateDir, {
       targetVersion: status.latest_version,
