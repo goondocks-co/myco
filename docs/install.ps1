@@ -48,6 +48,11 @@ if ($Channel -ne "stable" -and $Channel -ne "beta") {
     exit 1
 }
 
+# Ensure TLS 1.2 is enabled — PowerShell 5.1 on older Windows (pre-1709 / Server 2016)
+# does not include it by default, causing SSL/TLS failures against api.github.com.
+# -bor preserves existing protocols; this is a no-op on newer Windows.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 Write-Host "Myco installer — windows-x64 / channel: $Channel" -ForegroundColor Cyan
 Write-Host "Windows support is beta. Report issues at https://github.com/$Repo/issues" -ForegroundColor Yellow
 Write-Host ""
@@ -58,7 +63,7 @@ Write-Host ""
 function Get-AuthHeaders {
     $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { "" }
     $h = @{
-        'User-Agent' = 'myco-installer'
+        'User-Agent' = 'myco-installer/goondocks-co/myco'
         'Accept'     = 'application/vnd.github+json'
     }
     if ($tok -ne "") { $h['Authorization'] = "Bearer $tok" }
@@ -125,10 +130,17 @@ function Select-MycoRelease {
         # Channel gate
         if ($Channel -eq 'stable' -and $isPre) { continue }
 
-        # Split core from prerelease identifiers
+        # Split core from prerelease identifiers, then strip any +build metadata.
+        # e.g. "1.2.3+build.1" -> core="1.2.3"; "1.2.3-beta.1+build" -> core="1.2.3", pre="beta.1"
         $dashIdx   = $version.IndexOf('-')
         $core      = if ($dashIdx -ge 0) { $version.Substring(0, $dashIdx) } else { $version }
         $preStr    = if ($dashIdx -ge 0) { $version.Substring($dashIdx + 1) } else { "" }
+        # Strip +build metadata from core (e.g. "1.2.3+build" -> "1.2.3")
+        $plusIdx = $core.IndexOf('+')
+        if ($plusIdx -ge 0) { $core = $core.Substring(0, $plusIdx) }
+        # Strip +build metadata from prerelease string (e.g. "beta.1+build" -> "beta.1")
+        $plusIdx = $preStr.IndexOf('+')
+        if ($plusIdx -ge 0) { $preStr = $preStr.Substring(0, $plusIdx) }
 
         $parts = $core.Split('.')
         $major = [int]$parts[0]

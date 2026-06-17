@@ -160,9 +160,10 @@ if command -v jq >/dev/null 2>&1; then
       | { tag: .tag_name,
           pre: ((.prerelease == true) or ($v | contains("-"))) }
       | select($ch == "beta" or (.pre | not))
-      | ($v | split("-")[0] | split(".") | map(tonumber)) as $core
+      | ($v | gsub("\\+[^-]*";"")) as $vclean
+      | ($vclean | split("-")[0] | split(".") | map(tonumber)) as $core
       | (if .pre then 0 else 1 end) as $rel
-      | (($v | split("-")[1]) // "" | split(".")
+      | (($vclean | split("-")[1]) // "" | split(".")
            | map(if test("^[0-9]+$") then tonumber else . end)) as $preids
       | . + { key: ($core + [$rel] + $preids) } ]
     | sort_by(.key) | last | .tag // empty
