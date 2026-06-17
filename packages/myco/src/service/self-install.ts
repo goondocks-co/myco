@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import { getServiceManager } from './manager.js';
 import { buildServiceSpec } from './spec-builder.js';
 import { serviceLabel } from './labels.js';
 import { isDevServiceMode } from '../grove/paths.js';
+import { managedBinaryPath } from '../install/managed-binary.js';
 import type { ServiceManager, ServiceVariant } from './types.js';
 
 interface MinimalLogger {
@@ -17,6 +20,34 @@ export interface SelfInstallOptions {
   manager?: ServiceManager;
   /** Override the variant resolver (used by tests). */
   variant?: ServiceVariant;
+}
+
+/**
+ * Returns the executable path the OS service should use.
+ *
+ * For the prod variant, prefers the managed binary at `~/.myco/bin/myco` when
+ * it exists — so a self-update's in-place swap of that binary takes effect on
+ * the next supervisor restart without the service unit needing rewriting.
+ *
+ * The dev variant ALWAYS returns `process.execPath` (the dev-build binary).
+ * This is a correctness requirement, not an optimisation: if a prod install
+ * also exists on the same machine, a dogfood `service-dev` daemon must never
+ * have its unit re-pointed at the prod `~/.myco/bin/myco` — that would
+ * silently run released code as the `service-dev` unit, violating strict
+ * variant isolation (AGENTS.md).
+ *
+ * `home` and `platform` are injectable for deterministic testing.
+ */
+export function defaultServiceExecutable(
+  variant: ServiceVariant,
+  home: string = os.homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (variant === 'prod') {
+    const managed = managedBinaryPath(home, platform);
+    if (fs.existsSync(managed)) return managed;
+  }
+  return process.execPath;
 }
 
 /**
@@ -47,7 +78,7 @@ export async function ensureSelfInstalledAsService(
     const label = serviceLabel(variant);
     const wasInstalled = await mgr.isInstalled(label);
 
-    const executable = opts.executable ?? process.execPath;
+    const executable = opts.executable ?? defaultServiceExecutable(variant);
     const spec = buildServiceSpec({ variant, executable });
 
     // `force: true` would terminate the calling daemon.
