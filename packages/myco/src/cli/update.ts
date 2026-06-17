@@ -538,10 +538,10 @@ async function runUpdateIntent(targetVersion: string): Promise<void> {
   // (Bucket F) applies the same regex, but the CLI writes intent.toml
   // directly via `writeUpdateIntent` without going through the HTTP
   // surface — an attacker who controls argv could otherwise bypass the
-  // daemon-side validation and land an npm-spec like `file:/tmp/evil` or
-  // `git+ssh://...` that the reconciler interpolates into
-  // `npm install -g @goondocks/myco@<value>`. Keep this regex
-  // byte-identical to `SEMVER_RE` in `daemon/api/intent.ts`.
+  // daemon-side validation and land an unsanitized value that the
+  // reconciler uses as the target myco version driving a binary-swap
+  // update (resolved to the `myco/v<value>` GitHub release). Keep this
+  // regex byte-identical to `SEMVER_RE` in `daemon/api/intent.ts`.
   const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
   if (!SEMVER_RE.test(targetVersion)) {
     console.error(

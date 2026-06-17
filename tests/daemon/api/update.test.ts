@@ -24,6 +24,7 @@ import path from 'node:path';
 // --isolate, which masks the leak; the restore stays correct regardless).
 const realUpdateChecker = await import('@myco/daemon/update-checker.js');
 const realUpdateInstaller = await import('@myco/daemon/update-installer.js');
+const realReleaseResolver = await import('@myco/daemon/myco-release-resolver.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
@@ -46,9 +47,17 @@ mock.module('@myco/daemon/update-installer.js', () => ({
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
 
+// The myco binary path resolves release refs through this module. Mock it so
+// handleUpdateApply never hits the network; tests drive the resolved refs.
+mock.module('@myco/daemon/myco-release-resolver.js', () => ({
+  resolveMycoBinaryUpdateRefs: vi.fn(),
+  resolveMycoBinaryUpdateRefsForVersion: vi.fn(),
+}));
+
 afterAll(() => {
   mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
   mock.module('@myco/daemon/update-installer.js', () => realUpdateInstaller);
+  mock.module('@myco/daemon/myco-release-resolver.js', () => realReleaseResolver);
 });
 
 import {
@@ -66,6 +75,7 @@ import {
   isManagedMachineRuntime,
 } from '@myco/daemon/update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
+import { resolveMycoBinaryUpdateRefs } from '@myco/daemon/myco-release-resolver.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager';
@@ -141,6 +151,20 @@ const NO_UPDATE_STATUS = {
       update_available: false,
     },
   ],
+};
+
+/** Resolved myco binary-update refs the release resolver returns for 1.1.0. */
+const MYCO_REFS_1_1_0 = {
+  assetUrl: 'https://example.test/releases/myco-darwin-arm64',
+  sha256sumsUrl: 'https://example.test/releases/SHA256SUMS',
+  assetName: 'myco-darwin-arm64',
+  targetVersion: '1.1.0',
+};
+
+/** Resolved myco binary-update refs for the revert-to-stable 1.0.0 target. */
+const MYCO_REFS_1_0_0 = {
+  ...MYCO_REFS_1_1_0,
+  targetVersion: '1.0.0',
 };
 
 /** Default deps for tests. Each call gets a fresh tmpdir for the
@@ -298,6 +322,10 @@ describe('handleUpdateApply', () => {
     vi.mocked(spawnUpdateScript).mockReturnValue('/tmp/myco-update-123.sh');
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
     vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
+    // Default: the release resolver yields the 1.1.0 myco refs. Tests that
+    // need a different target (revert) or a no-myco-update case override this.
+    vi.mocked(resolveMycoBinaryUpdateRefs).mockReset();
+    vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(MYCO_REFS_1_1_0);
   });
 
   it('returns 400 when exempt', async () => {
@@ -329,23 +357,26 @@ describe('handleUpdateApply', () => {
     expect(result.status).toBe(400);
   });
 
-  it('spawns update script and schedules shutdown', async () => {
+  it('routes myco through the BINARY swap (no myco in packageSpecs) and schedules shutdown', async () => {
     const scheduleShutdown = vi.fn();
     const { handleUpdateApply } = createUpdateHandlers(makeDeps({ scheduleShutdown }));
 
     const result = await handleUpdateApply(makeReq());
 
+    // Myco is NOT in packageSpecs — it's the binary swap. Operator CLIs (none
+    // here) would be the only packageSpecs entries.
     expect(spawnUpdateScript).toHaveBeenCalledWith({
-      packageSpecs: ['@goondocks/myco@1.1.0'],
-      localRuntimeSpec: undefined,
-      removeLocalRuntime: false,
+      packageSpecs: [],
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.1.0',
+      mycoBinaryUpdate: MYCO_REFS_1_1_0,
     });
+    // Resolver was consulted for the stable channel.
+    expect(resolveMycoBinaryUpdateRefs).toHaveBeenCalledWith('stable');
     expect(scheduleShutdown).toHaveBeenCalled();
     expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });
   });
@@ -359,7 +390,7 @@ describe('handleUpdateApply', () => {
     expect(spawnUpdateScript).not.toHaveBeenCalled();
   });
 
-  it('includes optional installed packages when they have updates', async () => {
+  it('keeps operator CLIs (myco-team) on npm while myco takes the binary swap', async () => {
     vi.mocked(statusFromCache).mockReturnValue({
       ...UPDATE_AVAILABLE_STATUS,
       packages: [
@@ -382,19 +413,19 @@ describe('handleUpdateApply', () => {
     await handleUpdateApply(makeReq());
 
     expect(spawnUpdateScript).toHaveBeenCalledWith({
-      packageSpecs: ['@goondocks/myco@1.1.0', '@goondocks/myco-team@0.1.1'],
-      localRuntimeSpec: undefined,
-      removeLocalRuntime: false,
+      // Operator CLI STAYS on npm; myco is NOT in packageSpecs.
+      packageSpecs: ['@goondocks/myco-team@0.1.1'],
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.1.0',
+      mycoBinaryUpdate: MYCO_REFS_1_1_0,
     });
   });
 
-  it('removes a managed local runtime when switching back to stable', async () => {
+  it('revert-to-stable resolves the STABLE release and swaps the same binary (no removeLocalRuntime, no myco npm)', async () => {
     vi.mocked(statusFromCache).mockReturnValue({
       ...UPDATE_AVAILABLE_STATUS,
       running_version: '1.1.0-beta.1',
@@ -415,22 +446,26 @@ describe('handleUpdateApply', () => {
     });
     vi.mocked(resolveRuntimeCommand).mockReturnValue('/mock-home/.myco/runtime/node_modules/.bin/myco');
     vi.mocked(isManagedMachineRuntime).mockReturnValue(true);
+    // The stable channel resolves the 1.0.0 release for the revert.
+    vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(MYCO_REFS_1_0_0);
 
     const { handleUpdateApply } = createUpdateHandlers(makeDeps());
 
     await handleUpdateApply(makeReq());
 
     expect(spawnUpdateScript).toHaveBeenCalledWith({
-      packageSpecs: ['@goondocks/myco@1.0.0'],
-      localRuntimeSpec: undefined,
-      removeLocalRuntime: true,
+      // No myco npm spec, no managed-runtime plumbing — the binary swaps to 1.0.0.
+      packageSpecs: [],
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: '/mock-home/.myco/runtime/node_modules/.bin/myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.0.0',
+      mycoBinaryUpdate: MYCO_REFS_1_0_0,
     });
+    // The revert resolved through the stable channel.
+    expect(resolveMycoBinaryUpdateRefs).toHaveBeenCalledWith('stable');
   });
 
   // -------------------------------------------------------------------------
@@ -511,10 +546,11 @@ describe('handleUpdateApply', () => {
     expect(call?.serviceManagedLabel).toBeNull();
   });
 
-  it('installs a managed beta runtime even when the global install matches the target', async () => {
-    // User is on stable, opts into beta. Global myco is already at the
-    // version the beta channel resolves to — update_available is false but
-    // we still need to create the managed runtime under ~/.myco/runtime/.
+  it('entering beta swaps to the beta binary even when the version matches (resolves the prerelease)', async () => {
+    // User is on stable, opts into beta. The running version equals the beta
+    // target's base — update_available is false — but the channel switch still
+    // swaps onto the beta binary (the old "create managed runtime" semantic,
+    // now a binary swap).
     vi.mocked(statusFromCache).mockReturnValue({
       ...UPDATE_AVAILABLE_STATUS,
       channel: 'beta',
@@ -534,22 +570,25 @@ describe('handleUpdateApply', () => {
     });
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
     vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
+    const betaRefs = { ...MYCO_REFS_1_1_0, targetVersion: '1.0.0' };
+    vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(betaRefs);
 
     const { handleUpdateApply } = createUpdateHandlers(makeDeps());
 
     const result = await handleUpdateApply(makeReq());
 
     expect(result.status).toBeUndefined();
+    // Beta channel was resolved.
+    expect(resolveMycoBinaryUpdateRefs).toHaveBeenCalledWith('beta');
     expect(spawnUpdateScript).toHaveBeenCalledWith({
       packageSpecs: [],
-      localRuntimeSpec: '@goondocks/myco@1.0.0',
-      removeLocalRuntime: false,
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.0.0',
+      mycoBinaryUpdate: betaRefs,
     });
   });
 });

@@ -135,6 +135,27 @@ describe('spawnUpdateScript', () => {
     expect(String(p.machineRuntimeCommandPath)).toContain('runtime.command');
     expect(String(p.machineRuntimeMyco)).toMatch(/runtime[/\\]node_modules[/\\]\.bin[/\\]myco$/);
   });
+
+  it('threads mycoBinaryUpdate + the managed binary path into the params (binary self-update)', () => {
+    const mycoBinaryUpdate = {
+      assetUrl: 'https://example.test/releases/myco-darwin-arm64',
+      sha256sumsUrl: 'https://example.test/releases/SHA256SUMS',
+      assetName: 'myco-darwin-arm64',
+      targetVersion: '1.1.0',
+    };
+    spawnUpdateScript({ ...UPDATE_BASE, packageSpecs: [], mycoBinaryUpdate });
+    const p = lastParams();
+    expect(p.mycoBinaryUpdate).toEqual(mycoBinaryUpdate);
+    // The managed binary the orchestrator will swap (`~/.myco/bin/myco` on posix).
+    expect(String(p.managedBinaryPath)).toMatch(/(\.myco[/\\]bin[/\\]myco|Myco[/\\]bin[/\\]myco\.exe)$/);
+  });
+
+  it('omits mycoBinaryUpdate/managedBinaryPath when no binary update is requested', () => {
+    spawnUpdateScript(UPDATE_BASE);
+    const p = lastParams();
+    expect(p.mycoBinaryUpdate).toBeUndefined();
+    expect(p.managedBinaryPath).toBeUndefined();
+  });
 });
 
 describe('spawnRestartScript', () => {

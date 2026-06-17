@@ -9,6 +9,9 @@
  *   assetName            — `myco-<triple>[.exe]`
  *   pickRelease          — highest-semver release for a channel (no-downgrade)
  *   assetDownloadUrl     — prefers browser_download_url; falls back to constructed
+ *   sha256sumsDownloadUrl — download URL for the release's SHA256SUMS asset
+ *   resolveAssetRefs     — pure { assetUrl, sha256sumsUrl, assetName, targetVersion }
+ *                          for a release+triple (the daemon does the fetch)
  *   parseSha256Sum       — parses a SHA256SUMS file body
  *   githubHeaders        — token-aware request headers (injectable env)
  */
@@ -189,6 +192,71 @@ export function assetDownloadUrl(release: GitHubRelease, triple: TargetTriple): 
   // be percent-encoded in the URL path.
   const encodedTag = encodeURIComponent(release.tag_name);
   return `${GITHUB_BASE}/${MYCO_REPO}/releases/download/${encodedTag}/${name}`;
+}
+
+// ---------------------------------------------------------------------------
+// sha256sumsDownloadUrl
+// ---------------------------------------------------------------------------
+
+/** Canonical filename of the per-release checksum manifest. */
+export const SHA256SUMS_ASSET_NAME = 'SHA256SUMS';
+
+/**
+ * Resolve the download URL for the release's `SHA256SUMS` manifest.
+ *
+ * Mirrors {@link assetDownloadUrl}: prefer the asset's pre-encoded
+ * `browser_download_url`, fall back to the constructed canonical URL. The
+ * checksum manifest is platform-independent (one file per release lists every
+ * triple's asset digest), so there is no triple parameter.
+ */
+export function sha256sumsDownloadUrl(release: GitHubRelease): string {
+  const fromAssets = release.assets.find((a) => a.name === SHA256SUMS_ASSET_NAME)?.browser_download_url;
+  if (fromAssets) return fromAssets;
+
+  const encodedTag = encodeURIComponent(release.tag_name);
+  return `${GITHUB_BASE}/${MYCO_REPO}/releases/download/${encodedTag}/${SHA256SUMS_ASSET_NAME}`;
+}
+
+// ---------------------------------------------------------------------------
+// resolveAssetRefs
+// ---------------------------------------------------------------------------
+
+/** Already-resolved download references the binary-update primitive consumes. */
+export interface AssetRefs {
+  /** Download URL for this platform's myco binary asset. */
+  assetUrl: string;
+  /** Download URL for the release's SHA256SUMS manifest. */
+  sha256sumsUrl: string;
+  /** Asset filename as it appears in SHA256SUMS (e.g. `myco-darwin-arm64`). */
+  assetName: string;
+  /** The release's semver version (tag suffix after `myco/v`). */
+  targetVersion: string;
+}
+
+/**
+ * Resolve every download reference the binary-update primitive needs from an
+ * already-fetched release object + this machine's target triple.
+ *
+ * PURE: no network, no env. The daemon layer fetches the releases list,
+ * `pickRelease`s the channel's release, then calls this. Returns null when the
+ * release tag isn't a parseable `myco/v<semver>` (a sibling-package release the
+ * caller should never have selected) or the asset URL can't be resolved.
+ */
+export function resolveAssetRefs(release: GitHubRelease, triple: TargetTriple): AssetRefs | null {
+  const match = MYCO_TAG_RE.exec(release.tag_name);
+  if (!match) return null;
+  const parsed = semver.parse(match[1]);
+  if (!parsed) return null;
+
+  const assetUrl = assetDownloadUrl(release, triple);
+  if (!assetUrl) return null;
+
+  return {
+    assetUrl,
+    sha256sumsUrl: sha256sumsDownloadUrl(release),
+    assetName: assetName(triple),
+    targetVersion: parsed.version,
+  };
 }
 
 // ---------------------------------------------------------------------------

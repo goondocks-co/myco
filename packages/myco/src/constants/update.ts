@@ -77,6 +77,15 @@ export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 /** Delay in seconds before update script starts (allows daemon to exit). */
 export const UPDATE_SCRIPT_DELAY_SECONDS = 2;
 
+/**
+ * Crash-loop watch for the binary self-update path: how many times the
+ * orchestrator polls /health for the target version after a swap+restart, and
+ * the spacing between polls. If the new binary never reports the target version
+ * within this window, `applyBinaryUpdate` restores `myco.prev`.
+ */
+export const BINARY_UPDATE_HEALTH_ATTEMPTS = 10;
+export const BINARY_UPDATE_HEALTH_INTERVAL_MS = 2_000;
+
 /** Valid release channels. */
 export const RELEASE_CHANNELS = ['stable', 'beta'] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];

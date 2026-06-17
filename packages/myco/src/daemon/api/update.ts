@@ -28,8 +28,10 @@ import {
 } from '../update-checker.js';
 import { TierConfigUnreadableError } from '../../config/loader.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
+import { resolveMycoBinaryUpdateRefs } from '../myco-release-resolver.js';
+import type { MycoBinaryUpdateRefs } from '../apply-update.js';
 import * as updateInProgress from '../update-in-progress.js';
-import { RELEASE_CHANNELS } from '../../constants/update.js';
+import { RELEASE_CHANNELS, NPM_PACKAGE_NAME } from '../../constants/update.js';
 import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
 import { detectServiceManagedLabel } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
@@ -290,39 +292,48 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     const mycoPackage = status.packages.find((pkg) => pkg.id === 'myco');
-    const mycoPackageSpec = mycoPackage?.latest_version
-      ? `${mycoPackage.package_name}@${mycoPackage.latest_version}`
-      : undefined;
 
-    // Specs to `npm install -g` — covers both forward updates and revert
-    // flows. For a revert, we reinstall the stable target globally so the
-    // machine runtime is at the correct version before we drop the
-    // project-local runtime.
-    const installSpecs = status.packages
+    // Myco itself updates by BINARY SWAP (stable AND beta) — never npm. The
+    // operator CLIs (myco-team / myco-collective) STAY on npm. Split the
+    // packages accordingly: myco drives `mycoBinaryUpdate`, everyone else lands
+    // in `packageSpecs` for `npm install -g`.
+    const operatorSpecs = status.packages
       .filter(
-        (pkg) => pkg.installed && (pkg.update_available || pkg.revert_available) && pkg.latest_version,
+        (pkg) =>
+          pkg.id !== 'myco' &&
+          pkg.installed &&
+          (pkg.update_available || pkg.revert_available) &&
+          pkg.latest_version,
       )
       .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
 
-    // Reverting a managed beta runtime back to the global stable install.
-    const removeLocalRuntime =
-      status.channel === 'stable' && snapshot.runtimeScope === 'managed';
+    // A myco binary swap is needed for a forward update, a revert-to-stable, OR
+    // a channel switch onto beta where the resolved beta target differs from
+    // what's running (the old "enter beta even when the version matches"
+    // semantic — under a binary swap this means "swap onto the beta binary").
+    const mycoNeedsUpdate = Boolean(
+      mycoPackage?.installed && (mycoPackage.update_available || mycoPackage.revert_available),
+    );
+    const enteringBeta = status.channel === 'beta' && snapshot.runtimeScope === 'machine';
+    const mycoNeedsBinarySwap = mycoNeedsUpdate || enteringBeta;
 
-    // Entering beta on a machine still on the global runtime means we need
-    // to install a managed runtime — even when the global install is already
-    // at the beta target version and `update_available` is false.
-    const enteringBetaLocalRuntime =
-      status.channel === 'beta' && snapshot.runtimeScope === 'machine';
-
-    const localRuntimeSpec = (() => {
-      if (enteringBetaLocalRuntime) return mycoPackageSpec;
-      if (status.channel === 'beta') {
-        return installSpecs.find((spec) => spec.startsWith('@goondocks/myco@'));
+    // Resolve the release refs for this channel BEFORE spawning the detached
+    // orchestrator (it runs after the daemon exits and can't re-discover the
+    // release). Beta resolves a prerelease; stable / revert-to-stable resolve
+    // the stable release — both swap the SAME managed `~/.myco/bin/myco`.
+    let mycoBinaryUpdate: MycoBinaryUpdateRefs | undefined;
+    if (mycoNeedsBinarySwap) {
+      try {
+        mycoBinaryUpdate = (await resolveMycoBinaryUpdateRefs(status.channel)) ?? undefined;
+      } catch {
+        mycoBinaryUpdate = undefined;
       }
-      return undefined;
-    })();
+      if (!mycoBinaryUpdate) {
+        return { status: 502, body: { error: 'release_resolution_failed' } };
+      }
+    }
 
-    if (installSpecs.length === 0 && !removeLocalRuntime && !localRuntimeSpec) {
+    if (operatorSpecs.length === 0 && !mycoBinaryUpdate) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
@@ -333,21 +344,20 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 409, body: { error: 'update_in_progress' } };
     }
 
-    const globalPackageSpecs = localRuntimeSpec
-      ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
-      : installSpecs;
-
     const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
+    // `localRuntimeSpec` / `removeLocalRuntime` are intentionally left unset for
+    // the myco path: the binary swap supersedes the managed-runtime install AND
+    // the revert-to-stable npm install. The legacy managed-runtime plumbing is
+    // retained-but-inert (Task 9c removes it).
     spawnUpdateScript({
-      packageSpecs: globalPackageSpecs,
-      localRuntimeSpec,
-      removeLocalRuntime,
+      packageSpecs: operatorSpecs,
       projectRoot,
       vaultDir,
       mycoBinary: snapshot.mycoBinary,
       serviceManagedLabel,
       daemonPort,
       targetVersion: status.latest_version,
+      mycoBinaryUpdate,
     });
     updateInProgress.write(daemonStateDir, {
       targetVersion: status.latest_version,
@@ -358,7 +368,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     // When a service manager drives the restart (kickstart -k), the
     // orchestrator does the SIGTERM as part of the atomic swap.
     // Calling scheduleShutdown here would shut the daemon down before
-    // `npm install` completes, letting the supervisor's KeepAlive
+    // the swap / npm install completes, letting the supervisor's KeepAlive
     // respawn a daemon on the still-pre-install binary. Without a
     // service manager (null label) the orchestrator can't initiate the
     // SIGTERM itself, so the caller has to.
@@ -366,9 +376,9 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       scheduleShutdown();
     }
 
-    const reportedPackages = localRuntimeSpec && !installSpecs.includes(localRuntimeSpec)
-      ? [...installSpecs, localRuntimeSpec]
-      : installSpecs;
+    const reportedPackages = mycoBinaryUpdate
+      ? [`${NPM_PACKAGE_NAME}@${mycoBinaryUpdate.targetVersion}`, ...operatorSpecs]
+      : operatorSpecs;
 
     return {
       body: {

@@ -5,6 +5,8 @@ import type { DaemonStateAuthority } from './daemon-state-authority.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import { spawnUpdateScript } from './update-installer.js';
+import { resolveMycoBinaryUpdateRefsForVersion } from './myco-release-resolver.js';
+import { writeFileSafe } from './apply-update.js';
 import * as updateInProgress from './update-in-progress.js';
 import {
   resolveMycoBinary,
@@ -13,7 +15,7 @@ import {
 } from './update-checker.js';
 import { detectServiceManagedLabel } from './api/restart.js';
 import { getServiceManager } from '../service/manager.js';
-import { NPM_PACKAGE_NAME } from '../constants/update.js';
+import { UPDATE_ERROR_PATH } from '../constants/update.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 
@@ -141,15 +143,36 @@ async function runUpdateInstall(
   targetVersion: string,
 ): Promise<void> {
   const mycoBinary = resolveMycoBinary();
+
+  // Myco updates by BINARY SWAP — resolve the exact-version release refs for
+  // this machine's platform instead of putting a myco npm spec in packageSpecs.
+  // `packageSpecs` stays empty here: the `--target-version` intent path only
+  // ever targets the myco core (operator CLIs are not version-pinned through
+  // this channel).
+  const mycoBinaryUpdate = await resolveMycoBinaryUpdateRefsForVersion(targetVersion);
+  if (!mycoBinaryUpdate) {
+    // No matching release / no asset for this platform. Surface via the error
+    // side-channel so the next reconcile tick clears the intent (no auto-retry)
+    // instead of re-resolving forever.
+    writeFileSafe(
+      UPDATE_ERROR_PATH,
+      JSON.stringify({
+        error: `no myco release asset found for ${targetVersion} on this platform — update aborted`,
+      }),
+    );
+    return;
+  }
+
   const serviceManagedLabel = await detectServiceManagedLabel(getServiceManager());
   spawnUpdateScript({
-    packageSpecs: [`${NPM_PACKAGE_NAME}@${targetVersion}`],
+    packageSpecs: [],
     projectRoot: deps.projectRoot,
     vaultDir: deps.daemonVaultDir,
     mycoBinary,
     serviceManagedLabel,
     daemonPort: deps.server.port,
     targetVersion,
+    mycoBinaryUpdate,
   });
   updateInProgress.write(deps.daemonService.stateDir, {
     targetVersion,

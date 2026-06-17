@@ -20,7 +20,8 @@ import {
   resolveMachineRuntimeDir,
   resolveMachineRuntimeTmpDir,
 } from '../grove/paths.js';
-import type { ApplyUpdateParams, ApplyRestartParams } from './apply-update.js';
+import { managedBinaryPath } from '../install/managed-binary.js';
+import type { ApplyUpdateParams, ApplyRestartParams, MycoBinaryUpdateRefs } from './apply-update.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -70,6 +71,13 @@ export interface InstallParams {
    * before skipping the restart.
    */
   targetVersion: string;
+  /**
+   * When present, myco updates by BINARY SWAP (stable + beta) through
+   * `applyBinaryUpdate` instead of the myco npm/managed-runtime install. The
+   * daemon resolves the release refs BEFORE spawning the detached orchestrator.
+   * Operator-CLI specs in `packageSpecs` still `npm install -g`.
+   */
+  mycoBinaryUpdate?: MycoBinaryUpdateRefs;
 }
 
 /** Parameters for a restart-only orchestration (no global npm install). */
@@ -189,6 +197,15 @@ export function spawnUpdateScript(params: InstallParams): string {
     machineRuntimeTmpDir: resolveMachineRuntimeTmpDir(),
     machineRuntimeCommandPath: resolveMachineRuntimeCommandPath(),
     machineRuntimeMyco: path.join(machineRuntimeDir, 'node_modules', '.bin', 'myco'),
+    // Myco binary self-update (stable + beta): the orchestrator swaps the
+    // managed `~/.myco/bin/myco` instead of npm-installing myco. The release
+    // refs are resolved by the daemon (the caller) before we get here.
+    ...(params.mycoBinaryUpdate
+      ? {
+          mycoBinaryUpdate: params.mycoBinaryUpdate,
+          managedBinaryPath: managedBinaryPath(os.homedir(), process.platform),
+        }
+      : {}),
   };
   return spawnApplyUpdate('myco-update', applyParams);
 }
