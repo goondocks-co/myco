@@ -146,6 +146,23 @@ describe('symbiont manifests', () => {
     ]);
   });
 
+  it('cline manifest uses SDK plugin hooks plus standard MCP targets', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cline.yaml'), 'utf-8');
+    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(manifest.registration).toBeDefined();
+    expect(manifest.registration!.hooksTarget).toBe('.cline/plugins/myco.ts');
+    expect(manifest.registration!.globalHooksTarget).toBe('~/.cline/plugins/myco.ts');
+    expect(manifest.registration!.hooksFormat).toBe('plugin-file');
+    expect(manifest.registration!.mcpTarget).toBe('.cline/mcp.json');
+    expect(manifest.registration!.globalMcpTarget).toEqual([
+      { path: '~/.cline/data/settings/cline_mcp_settings.json' },
+      { path: '~/.cline/mcp.json' },
+    ]);
+    expect(manifest.registration!.skillsTarget).toBe('.cline/skills');
+    expect(manifest.registration!.globalSkillsTarget).toBe('~/.cline/skills');
+    expect(manifest.capabilities?.sessionStartInjection).toBe(true);
+  });
+
   it('claude-code manifest has settingsTarget', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));

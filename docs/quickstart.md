@@ -7,7 +7,7 @@ Myco does not replace an agent's reasoning, native memory, tools, or workflow. I
 ## Requirements
 
 - **Node.js 22+**
-- **At least one supported coding agent** — Claude Code, Cursor, Codex, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi
+- **At least one supported coding agent** — Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi
 - **macOS** for the supported path, with **Linux and Windows in beta**. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 Provider configuration is **optional** at install time. Myco captures sessions and provides full-text search immediately. To enable spores, digests, semantic search, Canopy summaries, and skill lifecycle features, configure intelligence and embedding providers in the dashboard after install.

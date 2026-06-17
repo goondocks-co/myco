@@ -1,0 +1,72 @@
+name: cline
+displayName: Cline
+binary: cline
+configDir: .cline
+detectionDir: ~/.cline
+pluginRootEnvVar: CLINE_PLUGIN_ROOT
+resumeCommand: "cline --resume {sessionId}"
+hookFields:
+  sessionId: conversationId
+  transcriptPath: transcript_path
+  lastResponse: last_assistant_message
+  prompt: prompt
+  toolName: tool_name
+  toolInput: tool_input
+  toolOutput: tool_output
+capture:
+  rules:
+    # Cline CLI stores the model-facing user message as a `<user_input
+    # mode="...">` envelope, while its session metadata retains the clean
+    # prompt. The SDK hook context exposes the model-facing request, so strip
+    # the envelope at Myco's manifest-driven capture boundary.
+    - event: user_prompt
+      when:
+        prompt_starts_with: '<user_input mode="act">'
+      action: rewrite_prompt
+      strip_envelope:
+        open: '<user_input mode="act">'
+        close: '</user_input>'
+      reason: strip Cline act user_input envelope
+    - event: user_prompt
+      when:
+        prompt_starts_with: '<user_input mode="plan">'
+      action: rewrite_prompt
+      strip_envelope:
+        open: '<user_input mode="plan">'
+        close: '</user_input>'
+      reason: strip Cline plan user_input envelope
+registration:
+  # Cline SDK plugins are TypeScript modules discovered from .cline/plugins/
+  hooksTarget: .cline/plugins/myco.ts
+  globalHooksTarget: ~/.cline/plugins/myco.ts
+  hooksFormat: plugin-file
+  # Cline CLI reads global MCP JSON from its data/settings directory;
+  # project-local overrides use the documented .cline/mcp.json path.
+  mcpTarget: .cline/mcp.json
+  globalMcpTarget:
+    - ~/.cline/data/settings/cline_mcp_settings.json
+    - ~/.cline/mcp.json
+  skillsTarget: .cline/skills
+  globalSkillsTarget: ~/.cline/skills
+  # No instructionsFile: Cline reads AGENTS.md natively through its shared
+  # project-instruction search paths.
+capabilities:
+  sessionStartInjection: true
+  preToolUseInjection: false
+  subagentStartInjection: false
+  pathBearingTools:
+    - tool: read_files
+      pathField: path
+    - tool: editor
+      pathField: path
+    - tool: apply_patch
+      pathField: input
+      extract: patch
+    - tool: run_commands
+      pathField: command
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+    - tool: run_commands
+      pathField: cmd
+      extract: shell-arg
+      readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]

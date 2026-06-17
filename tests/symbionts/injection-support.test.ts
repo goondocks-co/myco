@@ -35,6 +35,7 @@ const EXPECTED_SUPPORT: Record<string, { session: boolean; prompt: boolean }> = 
   opencode: { session: true, prompt: true },
   pi: { session: true, prompt: true },
   copilot: { session: true, prompt: true },
+  cline: { session: true, prompt: true },
   windsurf: { session: false, prompt: true },
 };
 
@@ -46,6 +47,7 @@ const EXPECTED_SUBAGENT_START_INJECTION: Record<string, boolean> = {
   opencode: false,
   pi: false,
   copilot: true,
+  cline: false,
   windsurf: false,
 };
 

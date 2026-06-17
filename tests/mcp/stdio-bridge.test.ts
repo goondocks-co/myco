@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createProjectId, assertGroveProjectId } from '@myco/grove/ids.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import {
+  REQUEST_CONTEXT_AUTH_HEADER,
+  REQUEST_CONTEXT_HEADERS,
+} from '@myco/grove/request-context.js';
+import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import {
+  buildBridgeRequestHeaders,
   isParentGone,
   PARENT_WATCHDOG_INTERVAL_MS,
   DAEMON_HEARTBEAT_INTERVAL_MS,
@@ -8,6 +20,41 @@ import {
   SELF_HEAL_PROBE_BACKOFFS_MS,
   REQUEST_RESEND_MAX_ATTEMPTS,
 } from '@myco/mcp/stdio-bridge.js';
+
+function withRegisteredProject<T>(fn: (args: {
+  home: string;
+  projectRoot: string;
+  vaultDir: string;
+  groveId: string;
+  projectId: string;
+}) => T): T {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stdio-bridge-'));
+  const previousHome = process.env.MYCO_HOME;
+  try {
+    const home = path.join(tmp, 'home');
+    process.env.MYCO_HOME = home;
+    const projectRoot = path.join(tmp, 'project');
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const grove = createGrove('Bridge Test', home);
+    const projectId = assertGroveProjectId(createProjectId());
+    saveProjectManifest(vaultDir, {
+      project: { id: projectId, name: 'Bridge Project' },
+      grove: { binding_id: 'gbind-bridge', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Bridge Project',
+      projectRoot,
+      bindingId: 'gbind-bridge',
+    }, home);
+    return fn({ home, projectRoot, vaultDir, groveId: grove.id, projectId });
+  } finally {
+    if (previousHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 /**
  * Regression coverage for the MCP-bridge lifecycle gates. The actual
@@ -30,6 +77,17 @@ import {
  * prevents recurrence.
  */
 describe('mcp stdio-bridge lifecycle gates', () => {
+  it('builds caller-tenancy headers from a registered launch context', () => {
+    withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+      const headers = buildBridgeRequestHeaders(vaultDir, {}, 'secret-token');
+
+      expect(headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(projectRoot);
+      expect(headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe(projectId);
+      expect(headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(groveId);
+      expect(headers[REQUEST_CONTEXT_AUTH_HEADER]).toBe('secret-token');
+    });
+  });
+
   describe('isParentGone predicate', () => {
     it('returns true when current ppid is 1 (orphan reparented to init)', () => {
       expect(isParentGone(42_000, 1)).toBe(true);

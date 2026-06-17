@@ -239,6 +239,32 @@ describe('createEventDispatcher', () => {
     fs.rmSync(transcriptDir, { recursive: true, force: true });
   });
 
+  it('applies manifest prompt rewrites to live plugin user_prompt events', async () => {
+    const { handler, logger, vaultDir } = makeHandler();
+    const sessionId = 'cline-live-envelope-rewrite-001';
+
+    const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
+      body: {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'cline',
+        prompt: '<user_input mode="act">Use no tools.\nReply ok.</user_input>',
+      },
+      query: {},
+      params: {},
+      pathname: '/events',
+    });
+
+    expect(res.body).toMatchObject({ ok: true });
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batches).toHaveLength(1);
+    expect(batches[0].user_prompt).toBe('Use no tools.\nReply ok.');
+
+    logger.close();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  });
+
   it('converges the prior turn on the next-prompt boundary (liveReconcile fires on user_prompt)', async () => {
     const calls: Array<{ sessionId: string; agent: string; transcriptPath: string }> = [];
     const { handler, logger, vaultDir } = makeHandler({

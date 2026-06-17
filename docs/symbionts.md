@@ -23,11 +23,11 @@ For every detected agent, Myco contributes the same four things:
 - **Skills** — symlinks from the agent's native skills directory to Myco's canonical skill store, so [auto-generated skills](skills.md) reach every agent.
 - **Auto-approve rules** — so the agent can run Myco's MCP tools without prompting.
 
-Myco's edits to shared config files (Codex's `config.toml`, OpenCode's `opencode.json`, Copilot's VS Code `settings.json`) preserve any pre-existing user keys. `myco remove` reverses Myco's contributions and leaves your other settings intact.
+Myco's edits to shared config files (Codex's `config.toml`, Cline's `cline_mcp_settings.json`, OpenCode's `opencode.json`, Copilot's VS Code `settings.json`) preserve any pre-existing user keys. `myco remove` reverses Myco's contributions and leaves your other settings intact.
 
 ## Agents
 
-Eight symbionts ship today. Each entry below lists the **global** install targets — Myco wires into each agent's user-level config, so a single install covers every project on your machine.
+Nine symbionts ship today. Each entry below lists the **global** install targets — Myco wires into each agent's user-level config, so a single install covers every project on your machine.
 
 ### Claude Code
 
@@ -63,6 +63,18 @@ Cursor supports session capture and context routing from the project directory C
 | Settings | `~/.codex/config.toml` |
 
 Codex's `config.toml` is shared with the user — Myco upserts only its own keys. The `[features].hooks` key (and any other pre-existing user keys) is preserved across `myco remove` cycles.
+
+### Cline
+
+Cline connects through its SDK plugin surface and standard MCP configuration.
+
+| Component | Global location |
+|-----------|-----------------|
+| Plugin | `~/.cline/plugins/myco.ts` |
+| MCP | `~/.cline/data/settings/cline_mcp_settings.json` (also mirrored to `~/.cline/mcp.json`) |
+| Skills | `~/.cline/skills/` → Myco's skill store |
+
+Cline supports session capture, MCP tools, and Myco skills from Cline CLI sessions that run inside git projects.
 
 ### GitHub Copilot
 

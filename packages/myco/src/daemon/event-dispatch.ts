@@ -52,6 +52,7 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
+import { normalizeAcceptedUserPromptEvent } from '@myco/capture/user-prompt-event.js';
 import { EventDedupCache } from './event-dedup-cache.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
@@ -237,10 +238,28 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
 
   return async (req) => {
     const validated = EventBody.parse(req.body);
-    const event = {
+    let event = {
       ...validated,
       timestamp: (validated as Record<string, unknown>).timestamp ?? new Date().toISOString(),
     } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
+
+    try {
+      const normalized = normalizeAcceptedUserPromptEvent(event, { manifests });
+      event = normalized.event;
+      if (normalized.action === 'rewrite') {
+        logger.info(LOG_KINDS.HOOKS_PROMPT, 'User prompt rewritten by capture rule', {
+          session_id: event.session_id,
+          agent: normalized.agent,
+          reason: normalized.reason ?? 'rule',
+        });
+      }
+    } catch (err) {
+      logger.error(LOG_KINDS.HOOKS_PROMPT, 'User-prompt capture-rules evaluator threw', {
+        error: String(err),
+        session_id: event.session_id,
+        agent: typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
+      });
+    }
 
     let userPromptBatchId: number | undefined;
     // Honest response contract: `persisted` reports whether every per-type

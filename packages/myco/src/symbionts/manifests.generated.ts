@@ -366,6 +366,144 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     }
   },
   {
+    "name": "cline",
+    "displayName": "Cline",
+    "binary": "cline",
+    "configDir": ".cline",
+    "detectionDir": "~/.cline",
+    "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
+    "hookFields": {
+      "sessionId": "conversationId",
+      "transcriptPath": "transcript_path",
+      "lastResponse": "last_assistant_message",
+      "prompt": "prompt",
+      "toolName": "tool_name",
+      "toolInput": "tool_input",
+      "toolOutput": "tool_output"
+    },
+    "resumeCommand": "cline --resume {sessionId}",
+    "capture": {
+      "planDirs": [],
+      "planTags": [],
+      "rules": [
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<user_input mode=\"act\">"
+          },
+          "action": "rewrite_prompt",
+          "reason": "strip Cline act user_input envelope",
+          "strip_envelope": {
+            "open": "<user_input mode=\"act\">",
+            "close": "</user_input>"
+          },
+          "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<user_input mode=\"plan\">"
+          },
+          "action": "rewrite_prompt",
+          "reason": "strip Cline plan user_input envelope",
+          "strip_envelope": {
+            "open": "<user_input mode=\"plan\">",
+            "close": "</user_input>"
+          },
+          "trim": true
+        }
+      ]
+    },
+    "registration": {
+      "hooksTarget": ".cline/plugins/myco.ts",
+      "globalHooksTarget": "~/.cline/plugins/myco.ts",
+      "globalMcpTarget": [
+        {
+          "path": "~/.cline/data/settings/cline_mcp_settings.json"
+        },
+        {
+          "path": "~/.cline/mcp.json"
+        }
+      ],
+      "globalSkillsTarget": "~/.cline/skills",
+      "hooksFormat": "plugin-file",
+      "mcpTarget": ".cline/mcp.json",
+      "mcpFormat": "json",
+      "mcpServersKey": "mcpServers",
+      "skillsTarget": ".cline/skills",
+      "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false,
+      "sessionStartInjection": true,
+      "subagentStartInjection": false,
+      "toolTransport": "mcp",
+      "canopyReadTools": [],
+      "pathBearingTools": [
+        {
+          "tool": "read_files",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "editor",
+          "pathField": "path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "apply_patch",
+          "pathField": "input",
+          "extract": "patch"
+        },
+        {
+          "tool": "run_commands",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        },
+        {
+          "tool": "run_commands",
+          "pathField": "cmd",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
+    },
+    "hooks": {}
+  },
+  {
     "name": "codex",
     "displayName": "Codex",
     "binary": "codex",
