@@ -1,32 +1,88 @@
 #!/bin/sh
-set -e
-
 # Myco installer — https://myco.sh
 # Usage: curl -fsSL https://myco.sh/install.sh | sh
+#
+# Env overrides:
+#   MYCO_CHANNEL   — "stable" (default) or "beta"
+#   MYCO_BIN_DIR   — destination directory (default: ~/.myco/bin)
+#   GITHUB_TOKEN   — or GH_TOKEN — avoid GitHub API rate limits
+set -eu
 
-PACKAGE="@goondocks/myco"
-MIN_NODE_MAJOR=22
+REPO="goondocks-co/myco"
+CHANNEL="${MYCO_CHANNEL:-stable}"
+BIN_DIR="${MYCO_BIN_DIR:-$HOME/.myco/bin}"
 
-# Colors
+# ---------------------------------------------------------------------------
+# Color helpers
+# ---------------------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-info() { printf "${CYAN}%s${NC}\n" "$1"; }
-success() { printf "${GREEN}%s${NC}\n" "$1"; }
-warn() { printf "${YELLOW}%s${NC}\n" "$1"; }
-error() { printf "${RED}%s${NC}\n" "$1"; }
+info()    { printf "${CYAN}%s${NC}\n"   "$1"; }
+success() { printf "${GREEN}%s${NC}\n"  "$1"; }
+warn()    { printf "${YELLOW}%s${NC}\n" "$1"; }
+error()   { printf "${RED}%s${NC}\n"    "$1" >&2; }
 
-# Detect OS
+# ---------------------------------------------------------------------------
+# Token helpers — DRY, no eval, token never echoed/logged
+# ---------------------------------------------------------------------------
+
+# Returns the effective GitHub token: GITHUB_TOKEN takes precedence over GH_TOKEN.
+auth_token() { printf '%s' "${GITHUB_TOKEN:-${GH_TOKEN:-}}"; }
+
+# Token-aware curl wrapper.
+gh_curl() {
+  _token="$(auth_token)"
+  if [ -n "$_token" ]; then
+    curl -fsSL -H "Authorization: Bearer $_token" \
+               -H "Accept: application/vnd.github+json" \
+               -H "User-Agent: myco-installer/${REPO}" \
+               "$@"
+  else
+    curl -fsSL -H "Accept: application/vnd.github+json" \
+               -H "User-Agent: myco-installer/${REPO}" \
+               "$@"
+  fi
+}
+
+# Same wrapper but writes HTTP status to a variable via a temp file.
+# Usage: gh_curl_status OUTFILE URL  — exits 0 even on HTTP error; caller checks $HTTP_STATUS
+gh_curl_status() {
+  _out="$1"; shift
+  _token="$(auth_token)"
+  if [ -n "$_token" ]; then
+    HTTP_STATUS="$(curl -sSL \
+      -H "Authorization: Bearer $_token" \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: myco-installer/${REPO}" \
+      -w '%{http_code}' \
+      -o "$_out" \
+      "$@" 2>/dev/null)" || true
+  else
+    HTTP_STATUS="$(curl -sSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: myco-installer/${REPO}" \
+      -w '%{http_code}' \
+      -o "$_out" \
+      "$@" 2>/dev/null)" || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
 OS="$(uname -s)"
+ARCH="$(uname -m)"
+
 case "$OS" in
-  Linux*)   PLATFORM="linux" ;;
-  Darwin*)  PLATFORM="macos" ;;
+  Darwin) os=darwin ;;
+  Linux)  os=linux  ;;
   MINGW*|MSYS*|CYGWIN*)
-    error "Windows detected. Use PowerShell instead:"
-    echo "  irm https://myco.sh/install.ps1 | iex"
+    error "Windows detected. Use the PowerShell installer instead:"
+    printf "  irm https://myco.sh/install.ps1 | iex\n"
     exit 1
     ;;
   *)
@@ -35,87 +91,194 @@ case "$OS" in
     ;;
 esac
 
-info "Myco installer — $PLATFORM"
-if [ "$PLATFORM" = "linux" ]; then
-  warn "Linux support is experimental in the current Myco release."
-  warn "The macOS path is the primary supported release target; please report Linux install issues."
-fi
-echo ""
-
-# Check Node.js
-if ! command -v node >/dev/null 2>&1; then
-  error "Node.js is not installed."
-  echo ""
-  case "$PLATFORM" in
-    macos)
-      echo "  Install with Homebrew:  brew install node"
-      echo "  Or with nvm:           curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
-      ;;
-    linux)
-      echo "  Install with nvm:      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
-      echo "  Or your package manager (apt, dnf, pacman, etc.)"
-      ;;
-  esac
-  echo ""
-  echo "  Then re-run this installer."
-  exit 1
-fi
-
-# Check Node version
-NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
-if [ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]; then
-  error "Node.js v${MIN_NODE_MAJOR}+ required (found v$(node -v | tr -d 'v'))"
-  echo ""
-  echo "  Update with nvm:  nvm install ${MIN_NODE_MAJOR}"
-  echo "  Or Homebrew:      brew upgrade node"
-  exit 1
-fi
-
-success "Node.js v$(node -v | tr -d 'v') ✓"
-
-# Check npm
-if ! command -v npm >/dev/null 2>&1; then
-  error "npm is not installed. It should come with Node.js."
-  echo "  Try reinstalling Node.js."
-  exit 1
-fi
-
-success "npm v$(npm -v) ✓"
-
-# Install (suppress transitive deprecation warnings from native addons)
-echo ""
-info "Installing ${PACKAGE}..."
-if ! npm install -g "${PACKAGE}" --loglevel=error 2>/tmp/myco-install-err.log; then
-  # EEXIST: a previous install or npm link left a conflicting binary
-  if grep -q "EEXIST" /tmp/myco-install-err.log 2>/dev/null; then
-    warn "Existing myco installation detected — removing before reinstall..."
-    npm rm -g "${PACKAGE}" 2>/dev/null || true
-    npm rm -g "@goondocks-co/myco" 2>/dev/null || true
-    npm install -g "${PACKAGE}" --loglevel=error
-  else
-    cat /tmp/myco-install-err.log >&2
+case "$ARCH" in
+  arm64|aarch64) arch=arm64 ;;
+  x86_64|amd64)  arch=x64   ;;
+  *)
+    error "Unsupported architecture: $ARCH"
     exit 1
+    ;;
+esac
+
+TARGET="${os}-${arch}"
+ASSET="myco-${TARGET}"
+
+info "Myco installer — ${TARGET} / channel: ${CHANNEL}"
+if [ "$os" = "linux" ]; then
+  warn "Linux support is beta. Report issues at https://github.com/${REPO}/issues"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Checksum tool (Linux: sha256sum; macOS: shasum -a 256)
+# ---------------------------------------------------------------------------
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_CMD="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA_CMD="shasum -a 256"
+else
+  error "No SHA-256 tool found (expected sha256sum or shasum)."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve release tag for channel via GitHub Releases API
+# ---------------------------------------------------------------------------
+info "Resolving ${CHANNEL} release..."
+
+RELEASES_URL="https://api.github.com/repos/${REPO}/releases?per_page=100"
+RELEASES_FILE="$(mktemp)"
+HTTP_STATUS=""
+# shellcheck disable=SC2064
+trap 'rm -f "$RELEASES_FILE"' EXIT
+
+gh_curl_status "$RELEASES_FILE" "$RELEASES_URL"
+
+case "$HTTP_STATUS" in
+  200) ;;  # ok
+  403|429)
+    error "GitHub API rate limit hit (HTTP ${HTTP_STATUS})."
+    printf "  Set GITHUB_TOKEN (or GH_TOKEN) to a personal access token and retry:\n" >&2
+    printf "  GITHUB_TOKEN=ghp_... sh install.sh\n" >&2
+    exit 1
+    ;;
+  *)
+    error "GitHub Releases API returned HTTP ${HTTP_STATUS}."
+    exit 1
+    ;;
+esac
+
+# jq-based channel selection — mirrors Task 5 pickRelease semver ordering:
+#   stable: highest non-prerelease myco/v* tag
+#   beta:   max(stable, prerelease) — 1.4.0 beats 1.3.0-beta.1 (no-downgrade)
+if command -v jq >/dev/null 2>&1; then
+  TAG="$(jq -r --arg ch "$CHANNEL" '
+    [ .[]
+      | select(.tag_name | test("^myco/v"))
+      | (.tag_name | ltrimstr("myco/v")) as $v
+      | select($v | test("^[0-9]+\\.[0-9]+\\.[0-9]+"))
+      | { tag: .tag_name,
+          pre: ((.prerelease == true) or ($v | contains("-"))) }
+      | select($ch == "beta" or (.pre | not))
+      | ($v | split("-")[0] | split(".") | map(tonumber)) as $core
+      | (if .pre then 0 else 1 end) as $rel
+      | (($v | split("-")[1]) // "" | split(".")
+           | map(if test("^[0-9]+$") then tonumber else . end)) as $preids
+      | . + { key: ($core + [$rel] + $preids) } ]
+    | sort_by(.key) | last | .tag // empty
+  ' "$RELEASES_FILE")" || TAG=""
+else
+  warn "jq not found — using sort -V fallback (prerelease ordering may be imprecise)."
+  if [ "$CHANNEL" = "beta" ]; then
+    TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
+           | sed 's/"tag_name": *"//;s/"//' \
+           | sort -rV \
+           | head -1)" || TAG=""
+  else
+    TAG="$(grep -o '"tag_name": *"myco/v[^"]*"' "$RELEASES_FILE" \
+           | sed 's/"tag_name": *"//;s/"//' \
+           | grep -v -- '-' \
+           | sort -rV \
+           | head -1)" || TAG=""
   fi
 fi
-rm -f /tmp/myco-install-err.log
+
+if [ -z "$TAG" ]; then
+  error "No ${CHANNEL} release found for myco. Check https://github.com/${REPO}/releases"
+  exit 1
+fi
+
+info "Found: ${TAG}"
+
+# ---------------------------------------------------------------------------
+# Download binary + checksum, verify, place atomically
+# ---------------------------------------------------------------------------
+# TAG contains a slash (myco/v1.2.3) — must be URL-encoded for the DL path.
+# GitHub's releases download URL encodes the slash as %2F.
+ENCODED_TAG="$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
+DL="https://github.com/${REPO}/releases/download/${ENCODED_TAG}"
+
+mkdir -p "$BIN_DIR"
+TMP_DIR="$(mktemp -d "${BIN_DIR}/.myco-install-XXXXXX")"
+# shellcheck disable=SC2064
+trap 'rm -rf "$TMP_DIR"; rm -f "$RELEASES_FILE"' EXIT
+
+info "Downloading ${ASSET}..."
+gh_curl "${DL}/${ASSET}"   -o "${TMP_DIR}/myco"
+gh_curl "${DL}/SHA256SUMS" -o "${TMP_DIR}/SHA256SUMS"
+
+info "Verifying checksum..."
+# Parse SHA256SUMS: handle both "hash  filename" and "hash *filename" formats
+EXPECTED="$(awk -v a="$ASSET" '
+  { hash=$1; rest=substr($0, index($0,$2)); gsub(/^\*/, "", rest);
+    gsub(/^[[:space:]]+/, "", rest);
+    if (rest == a) print hash }
+' "${TMP_DIR}/SHA256SUMS")"
+
+if [ -z "$EXPECTED" ]; then
+  error "Asset ${ASSET} not found in SHA256SUMS."
+  exit 1
+fi
+
+ACTUAL="$(${SHA_CMD} "${TMP_DIR}/myco" | awk '{print $1}')"
+
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  error "Checksum mismatch for ${ASSET}!"
+  printf "  expected: %s\n" "$EXPECTED" >&2
+  printf "  got:      %s\n" "$ACTUAL"   >&2
+  exit 1
+fi
+
+success "Checksum verified."
+
+# ---------------------------------------------------------------------------
+# Atomic placement (same-filesystem mv — TMP_DIR is under $BIN_DIR)
+# ---------------------------------------------------------------------------
+chmod +x "${TMP_DIR}/myco"
+mv "${TMP_DIR}/myco" "${BIN_DIR}/myco"
+
+# macOS Gatekeeper: strip quarantine attribute if present (best-effort)
+if [ "$os" = "darwin" ]; then
+  xattr -d com.apple.quarantine "${BIN_DIR}/myco" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# Write install marker
+# ---------------------------------------------------------------------------
+mkdir -p "$HOME/.myco"
+printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco"\n}\n' \
+  "$CHANNEL" "$BIN_DIR" > "$HOME/.myco/install.json"
+
+# ---------------------------------------------------------------------------
+# PATH — idempotent rc edits
+# ---------------------------------------------------------------------------
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*)
+    :  # already on PATH
+    ;;
+  *)
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+      if [ -f "$rc" ] && ! grep -qF "$BIN_DIR" "$rc"; then
+        # SC2016: $PATH must NOT expand here — it belongs in the rc file verbatim
+        # shellcheck disable=SC2016
+        printf '\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
+      fi
+    done
+    warn "Added ${BIN_DIR} to PATH in shell rc files."
+    warn "Restart your shell or run: export PATH=\"${BIN_DIR}:\$PATH\""
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# First run — daemon self-installs the service (best-effort)
+# ---------------------------------------------------------------------------
+"${BIN_DIR}/myco" doctor >/dev/null 2>&1 || true
 
 echo ""
-success "Myco installed successfully!"
-echo ""
-echo "  The local service is starting, and supported coding agents on this"
-echo "  machine are being connected to Myco."
-echo "  Git projects register automatically when agents start working in them."
-if [ "$PLATFORM" = "linux" ]; then
-  echo ""
-  warn "  Reminder: Linux service support is experimental in the current Myco release."
-fi
+success "Myco installed to ${BIN_DIR}/myco"
 echo ""
 echo "  Open the dashboard to confirm setup and configure intelligence providers:"
 echo ""
 echo "    myco open"
 echo "    http://localhost:20915/"
-echo ""
-echo "  Optional operator CLIs:"
-echo "    npm install -g @goondocks/myco-team        # https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md"
-echo "    npm install -g @goondocks/myco-collective  # https://github.com/goondocks-co/myco/blob/main/docs/collective.md"
 echo ""
