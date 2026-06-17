@@ -42,8 +42,8 @@ import {
 } from '../constants/update.js';
 import {
   resolveMachineRuntimeCommandPath,
-  resolveMachineRuntimeDir,
   setDevServiceMode,
+  resolveMycoHome,
 } from '../grove/paths.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { readJsonFile } from '../utils/json.js';
@@ -53,6 +53,7 @@ import {
   resolveMycoVersions,
   githubHeaders,
 } from '../install/release-assets.js';
+import { readInstallMarker } from '../install/managed-binary.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -91,9 +92,12 @@ export interface PackageCheckResult {
   /** True when the target version is strictly greater than what's installed. */
   update_available: boolean;
   /**
-   * True when the project is pinned to a managed beta runtime and the stable
-   * target is lower than the running version — set only on the `myco` package
-   * during a revert-to-stable flow. Mutually exclusive with `update_available`.
+   * True when the desired channel is `stable`, the running binary is a
+   * prerelease, and a stable target exists — i.e. a beta user can step back
+   * onto the stable release. Set only on the `myco` package; mutually
+   * exclusive with `update_available`. Derived from the running version +
+   * desired channel (the robust primary signal), corroborated by the install
+   * marker when present — NOT from the retired managed-runtime pin.
    */
   revert_available: boolean;
 }
@@ -111,11 +115,12 @@ export interface CheckResult {
   /** Always `'machine'` — the channel is machine-scoped (decision-46130740). */
   channel_scope: 'machine';
   /**
-   * `'managed'` — the daemon is dispatched through `~/.myco/runtime/`
-   * (managed beta runtime). `'machine'` — no machine-runtime pin, the
-   * global myco install on PATH answers.
+   * Always `'machine'` — myco is a single managed binary at `~/.myco/bin/myco`
+   * swapped in place (curl + npm both install it). The legacy `'managed'`
+   * value (a separate `~/.myco/runtime/` npm install) was retired with the
+   * native installer; the field is kept in the API contract for stability.
    */
-  runtime_scope: 'managed' | 'machine';
+  runtime_scope: 'machine';
   check_interval_hours: number;
   last_check: string;
   error: string | null;
@@ -320,17 +325,6 @@ function readPinFile(filePath: string): string | null {
 }
 
 /**
- * True when `cliEntry` points inside `~/.myco/runtime/node_modules/`,
- * i.e. the managed beta runtime install. Used to distinguish managed
- * runtimes from external pins (dev binaries, `~/.local/bin/myco-dev`).
- */
-export function isManagedMachineRuntime(cliEntry: string): boolean {
-  const normalized = cliEntry.split(path.sep).join('/');
-  const managedPrefix = `${resolveMachineRuntimeDir().split(path.sep).join('/')}/node_modules/`;
-  return normalized.startsWith(managedPrefix);
-}
-
-/**
  * The effective release channel is MACHINE-scoped (decision-46130740): it
  * comes from machine config `daemon.update_channel`. There is NO project or
  * personal override — a legacy `update.channel` in a project local.yaml is
@@ -370,14 +364,14 @@ export function isUpdateExempt(): boolean {
  *                global prefix (dogfood `make dev-link`, `npm link`, etc.),
  *                or a project-scope pin at `<vaultDir>/runtime.command`
  *                points the daemon at a hand-built dev binary.
- * - `'beta'`   — the machine pin at `~/.myco/runtime.command` points
- *                inside the managed runtime dir (`~/.myco/runtime/`).
- * - `'stable'` — none of the above; the global myco install on PATH answers.
+ * - `'stable'` — otherwise; the managed `~/.myco/bin/myco` (stable or beta
+ *                channel — both are the same in-place binary) answers.
  *
- * A dev build always wins over a beta runtime since the dev binary is
- * actually executing the daemon.
+ * The legacy `'beta'` source (a separate `~/.myco/runtime/` npm install) was
+ * retired with the native installer: a beta user runs the same managed binary,
+ * just resolved from a prerelease release.
  */
-export type RuntimeOrigin = 'stable' | 'dev' | 'beta';
+export type RuntimeOrigin = 'stable' | 'dev';
 
 export interface RuntimeOriginInfo {
   source: RuntimeOrigin;
@@ -398,11 +392,7 @@ export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
   if (devBuildCliEntry !== null) {
     return { source: 'dev', command: devBuildCliEntry };
   }
-  const runtimeCommand = resolveRuntimeCommand(vaultDir);
-  if (runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)) {
-    return { source: 'beta', command: runtimeCommand };
-  }
-  return { source: 'stable', command: runtimeCommand };
+  return { source: 'stable', command: resolveRuntimeCommand(vaultDir) };
 }
 
 /**
@@ -501,9 +491,6 @@ export function detectDevBuild(
   if (!cliEntry) return null;
   try {
     const resolvedEntry = realpath(cliEntry);
-    if (isManagedMachineRuntime(resolvedEntry)) {
-      return null;
-    }
     const resolvedPrefix = realpath(globalPrefix);
     if (resolvedEntry.startsWith(resolvedPrefix + path.sep) || resolvedEntry === resolvedPrefix) {
       return null;
@@ -734,18 +721,44 @@ function buildInstalledPackageVersions(
   return installed;
 }
 
+/**
+ * True when `version` carries a semver prerelease component (e.g. a `-beta.N`
+ * suffix). The robust primary signal that the running myco binary is a beta:
+ * curl + npm both write the same `~/.myco/bin/myco`, so the running version is
+ * authoritative where an install-marker channel may lag.
+ */
+function isPrerelease(version: string): boolean {
+  return semver.valid(version) !== null && semver.prerelease(version) !== null;
+}
+
+/**
+ * The install-marker channel, when present. Corroborates the prerelease signal
+ * (a marker that says `'stable'` while running a prerelease still reverts —
+ * the running version wins). Returns null when no marker exists; callers must
+ * NOT hard-depend on it.
+ */
+function readInstallMarkerChannel(): ReleaseChannel | null {
+  return readInstallMarker(resolveMycoHome())?.channel ?? null;
+}
+
 function buildPackageResults(
   currentVersion: string,
   cache: CachedCheck,
   channel: ReleaseChannel,
   globalPrefix: string | null,
-  runtimeCommand: string | null = null,
+  _runtimeCommand: string | null = null,
 ): PackageCheckResult[] {
   const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
-  const isManagedStableRevert =
+  // Revert-to-stable is offered when the operator's DESIRED channel is stable
+  // but the running binary is a prerelease — the most robust signal, since the
+  // managed-binary swap (curl + npm) no longer writes a runtime pin. The
+  // install marker corroborates (its channel == 'beta' is consistent) but is
+  // never a hard requirement: the marker may lag a fresh swap.
+  const markerChannel = readInstallMarkerChannel();
+  const desiredStableRevert =
     channel === 'stable'
-    && runtimeCommand !== null
-    && isManagedMachineRuntime(runtimeCommand);
+    && isPrerelease(currentVersion)
+    && markerChannel !== 'stable';
 
   return UPDATE_PACKAGES.map((pkg) => {
     const cached = cache.packages[pkg.id];
@@ -759,7 +772,8 @@ function buildPackageResults(
       semver.gt(latestVersion, installedVersion);
     const revertAvailable =
       pkg.id === 'myco' &&
-      isManagedStableRevert &&
+      desiredStableRevert &&
+      cached?.latest_stable != null &&
       latestVersion !== null &&
       latestVersion !== currentVersion &&
       !updateAvailable;
@@ -799,10 +813,6 @@ function buildCheckResult(
   const latestBeta = primaryPackage?.latest_beta ?? null;
   const updateAvailable = packages.some((pkg) => pkg.installed && pkg.update_available);
   const revertAvailable = packages.some((pkg) => pkg.revert_available);
-  const runtimeScope: 'managed' | 'machine' =
-    runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
-      ? 'managed'
-      : 'machine';
 
   return {
     update_available: updateAvailable,
@@ -813,7 +823,7 @@ function buildCheckResult(
     latest_beta: latestBeta,
     channel,
     channel_scope: 'machine',
-    runtime_scope: runtimeScope,
+    runtime_scope: 'machine',
     check_interval_hours: config.check_interval_hours,
     last_check: cache.checked_at,
     error,
@@ -958,10 +968,7 @@ export async function checkForUpdate(
       latest_beta: null,
       channel: effectiveChannel,
       channel_scope: 'machine',
-      runtime_scope:
-        runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
-          ? 'managed'
-          : 'machine',
+      runtime_scope: 'machine',
       check_interval_hours: config.check_interval_hours,
       last_check: new Date().toISOString(),
       error: fetchError,

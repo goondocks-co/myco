@@ -50,7 +50,7 @@ interface Recorder {
 }
 
 /** Build a deps bag that records everything and never touches the real world. */
-function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null; createRuntimeOnInstall?: boolean } = {}): Recorder {
+function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {}): Recorder {
   const mgr = new FakeServiceManager();
   const rec: Recorder = {
     npmCalls: [],
@@ -68,13 +68,6 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null; create
     runNpm: vi.fn(async (args: string[], cwd?: string) => {
       rec.npmCalls.push(args);
       rec.npmCwds.push(cwd);
-      // Simulate a successful managed-runtime install populating the staging
-      // dir (`--prefix <basename>` resolved against `cwd`) so the atomic rename
-      // can succeed — the real npm creates it; the mock otherwise wouldn't.
-      const prefixIdx = args.indexOf('--prefix');
-      if (opts.createRuntimeOnInstall && rec.npmOk && prefixIdx >= 0 && cwd) {
-        fs.mkdirSync(path.join(cwd, args[prefixIdx + 1]), { recursive: true });
-      }
       return { ok: rec.npmOk, output: 'npm output' };
     }),
     spawnDetached: vi.fn((bin: string, args: string[], cwd?: string) => {
@@ -97,19 +90,18 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null; create
   return rec;
 }
 
+// The operator-CLI-only update path: no myco binary swap. The myco self-update
+// always travels the binary-swap path (covered below); this base exercises the
+// remaining `npm install -g` (operator CLIs) + fan-out + restart flow.
 const UPDATE_PARAMS: ApplyUpdateParams = {
   kind: 'update',
-  packageSpecs: ['@goondocks/myco@1.1.0'],
+  packageSpecs: ['@goondocks/myco-team@1.1.0'],
   projectRoot: '/project',
   vaultDir: '/project/.myco',
   mycoBinary: 'myco',
   serviceManagedLabel: null,
   daemonPort: 20915,
   targetVersion: '1.1.0',
-  machineRuntimeDir: '/tmp/does-not-exist/runtime',
-  machineRuntimeTmpDir: '/tmp/does-not-exist/runtime.tmp',
-  machineRuntimeCommandPath: '/tmp/does-not-exist/runtime.command',
-  machineRuntimeMyco: '/tmp/does-not-exist/runtime/node_modules/.bin/myco',
 };
 
 describe('run() — kind:update', () => {
@@ -118,7 +110,7 @@ describe('run() — kind:update', () => {
     await run([writeParams(UPDATE_PARAMS)], rec.deps);
 
     expect(rec.deps.sleep).toHaveBeenCalled();
-    expect(rec.npmCalls).toContainEqual(['install', '-g', '@goondocks/myco@1.1.0']);
+    expect(rec.npmCalls).toContainEqual(['install', '-g', '@goondocks/myco-team@1.1.0']);
     // Successful install fans the per-project sync out before restarting.
     expect(rec.fanoutCalls.length).toBe(1);
     expect(rec.fanoutCalls[0].bin).toBe('myco');
@@ -158,7 +150,7 @@ describe('run() — kind:update', () => {
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
     // On failure the per-project fan-out is skipped (the install never landed).
     expect(rec.fanoutCalls).toEqual([]);
-    expect(rec.npmCalls).toEqual([['install', '-g', '@goondocks/myco@1.1.0']]);
+    expect(rec.npmCalls).toEqual([['install', '-g', '@goondocks/myco-team@1.1.0']]);
   });
 
   it('service restart throws → falls back to a direct daemon spawn (never strands)', async () => {
@@ -167,57 +159,6 @@ describe('run() — kind:update', () => {
     await run([writeParams({ ...UPDATE_PARAMS, serviceManagedLabel: 'co.goondocks.myco' })], rec.deps);
 
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
-  });
-
-  it('beta managed-runtime install: --prefix is a space-free basename run in the parent cwd (space-safe)', async () => {
-    // B1: a spaced MYCO_HOME must NOT be passed as a `--prefix <full path>` arg
-    // — the shell npm runs under word-splits it. The prefix is the basename and
-    // the spaced parent rides in `cwd` (an OS-level arg the shell never splits).
-    const rec = makeDeps({ createRuntimeOnInstall: true });
-    const spacedHome = path.join(tmpDir, 'My Myco Home');
-    const runtimeTmp = path.join(spacedHome, 'runtime.tmp');
-    const runtimeDir = path.join(spacedHome, 'runtime');
-    const managedMyco = path.join(runtimeDir, 'node_modules', '.bin', 'myco');
-
-    await run([writeParams({
-      ...UPDATE_PARAMS,
-      packageSpecs: [],
-      localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1',
-      machineRuntimeDir: runtimeDir,
-      machineRuntimeTmpDir: runtimeTmp,
-      machineRuntimeCommandPath: path.join(spacedHome, 'runtime.command'),
-      machineRuntimeMyco: managedMyco,
-    })], rec.deps);
-
-    expect(rec.npmCalls[0]).toEqual(['install', '--prefix', 'runtime.tmp', '@goondocks/myco@1.1.0-beta.1']);
-    expect(rec.npmCwds[0]).toBe(spacedHome);
-    // Rename succeeded → the managed binary is adopted for the restart.
-    expect(rec.detachedSpawns).toEqual([{ bin: managedMyco, args: ['daemon'], cwd: '/project' }]);
-  });
-
-  it('beta managed-runtime swap failure: falls back to the original binary and still restarts (no silent strand)', async () => {
-    // B2: if the atomic rename throws (here: staging dir never created, as if
-    // npm produced nothing), we must NOT pin/adopt a binary in a directory that
-    // does not exist. Fall back to the original binary and still come back.
-    const rec = makeDeps();
-    const spacedHome = path.join(tmpDir, 'My Myco Home');
-    const runtimeDir = path.join(spacedHome, 'runtime');
-    const managedMyco = path.join(runtimeDir, 'node_modules', '.bin', 'myco');
-
-    await run([writeParams({
-      ...UPDATE_PARAMS,
-      packageSpecs: [],
-      localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1',
-      machineRuntimeDir: runtimeDir,
-      machineRuntimeTmpDir: path.join(spacedHome, 'runtime.tmp'), // never created → rename ENOENTs
-      machineRuntimeCommandPath: path.join(spacedHome, 'runtime.command'),
-      machineRuntimeMyco: managedMyco,
-    })], rec.deps);
-
-    // Daemon comes back on the ORIGINAL binary, never the missing managed one.
-    expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
-    // The pin to the non-existent managed binary was NOT written.
-    expect(fs.existsSync(path.join(spacedHome, 'runtime.command'))).toBe(false);
   });
 });
 

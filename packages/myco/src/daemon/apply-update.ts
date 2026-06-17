@@ -53,12 +53,8 @@ export interface MycoBinaryUpdateRefs {
 /** Discriminated union of the two orchestration kinds. */
 export interface ApplyUpdateParams {
   kind: 'update';
-  /** Fully-qualified npm specs to install globally. */
+  /** Fully-qualified npm specs to install globally (operator CLIs only). */
   packageSpecs: string[];
-  /** Optional core Myco spec to install into the managed machine runtime. */
-  localRuntimeSpec?: string;
-  /** Remove the managed machine runtime after a successful stable apply. */
-  removeLocalRuntime?: boolean;
   projectRoot: string;
   vaultDir: string;
   /** Literal myco binary used for the project fan-out and direct respawn. */
@@ -67,19 +63,12 @@ export interface ApplyUpdateParams {
   serviceManagedLabel?: string | null;
   daemonPort: number;
   targetVersion: string;
-  // Machine-runtime paths, resolved by the daemon before it exits (the
-  // orchestrator runs detached and shares the same MYCO_HOME).
-  machineRuntimeDir: string;
-  machineRuntimeTmpDir: string;
-  machineRuntimeCommandPath: string;
-  machineRuntimeMyco: string;
   /**
-   * When present, myco updates by BINARY SWAP through `applyBinaryUpdate`
-   * INSTEAD OF the myco npm install and INSTEAD OF the localRuntimeSpec
-   * managed-runtime install (both stable and beta). `applyBinaryUpdate` owns
-   * download→verify→myco.prev→swap→restart→health-watch→auto-restore, so it is
-   * the SOLE restart owner on this path — runUpdate runs no restart of its own.
-   * Operator-CLI specs in `packageSpecs` are STILL `npm install -g`'d.
+   * When present, myco updates by BINARY SWAP through `applyBinaryUpdate` (both
+   * stable and beta — and the revert-to-stable downgrade). `applyBinaryUpdate`
+   * owns download→verify→myco.prev→swap→restart→health-watch→auto-restore, so it
+   * is the SOLE restart owner on this path — runUpdate runs no restart of its
+   * own. Operator-CLI specs in `packageSpecs` are STILL `npm install -g`'d.
    *
    * Resolved by the daemon before it spawns the detached orchestrator.
    */
@@ -232,10 +221,6 @@ const DEFAULT_DEPS: ApplyUpdateDeps = {
 // Filesystem helpers (cross-platform — no shell)
 // ---------------------------------------------------------------------------
 
-function rmrf(p: string): void {
-  try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* best-effort */ }
-}
-
 export function writeFileSafe(p: string, content: string): void {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -379,78 +364,35 @@ async function runBinaryUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Pro
 async function runUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<void> {
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
 
-  // Myco binary self-update (stable + beta): bypass the myco npm install AND
-  // the managed-runtime install; the primitive owns the restart.
+  // Myco binary self-update (stable + beta, including the revert-to-stable
+  // downgrade): the primitive owns the restart.
   if (p.mycoBinaryUpdate && p.managedBinaryPath) {
     await runBinaryUpdate(p, deps);
     return;
   }
 
+  // Operator-CLI-only update (no myco binary swap): `npm install -g` the
+  // operator specs, fan out the per-project sync, then restart.
   let updateFailed = false;
-  let effectiveMycoBinary = p.mycoBinary;
-  const failedSpecs = [...p.packageSpecs, p.localRuntimeSpec].filter(Boolean).join(', ');
+  const failedSpecs = p.packageSpecs.join(', ');
 
-  // 1. Managed machine runtime install (beta channel), atomic swap.
-  if (p.localRuntimeSpec) {
-    rmrf(p.machineRuntimeTmpDir);
-    // Pass the prefix as a space-free basename resolved against `cwd` (the
-    // parent dir), NOT the full `machineRuntimeTmpDir` — a spaced MYCO_HOME
-    // would be word-split by the shell npm runs under (see spawnShellSafe).
-    const { ok } = await deps.runNpm(
-      ['install', '--prefix', path.basename(p.machineRuntimeTmpDir), p.localRuntimeSpec],
-      path.dirname(p.machineRuntimeTmpDir),
-    );
-    if (ok) {
-      rmrf(p.machineRuntimeDir);
-      let renamed = false;
-      try {
-        fs.renameSync(p.machineRuntimeTmpDir, p.machineRuntimeDir);
-        renamed = true;
-      } catch (err) {
-        // NOT silent: a failed swap must not leave us pinned to a binary in a
-        // directory we just deleted. Log, mark failed, keep the original binary.
-        process.stderr.write(`[myco] managed-runtime swap failed: ${String(err)}\n`);
-      }
-      if (renamed) {
-        // Pin + adopt the managed binary only once it actually exists on disk.
-        writeFileSafe(p.machineRuntimeCommandPath, `${p.machineRuntimeMyco}\n`);
-        effectiveMycoBinary = p.machineRuntimeMyco;
-      } else {
-        rmrf(p.machineRuntimeTmpDir);
-        updateFailed = true;
-      }
-    } else {
-      rmrf(p.machineRuntimeTmpDir);
-      updateFailed = true;
-    }
-  }
-
-  // 2. Global package install.
-  if (p.packageSpecs.length > 0 && !updateFailed) {
+  if (p.packageSpecs.length > 0) {
     const { ok } = await deps.runNpm(['install', '-g', ...p.packageSpecs]);
     if (!ok) updateFailed = true;
   }
 
-  // 3. Remove the managed runtime (reverting beta → global stable).
-  if (p.removeLocalRuntime && !updateFailed) {
-    rmrf(p.machineRuntimeCommandPath);
-    rmrf(p.machineRuntimeDir);
-    effectiveMycoBinary = 'myco';
-  }
-
-  // 4. Side-channel: fan-out on success, error file on failure.
+  // Side-channel: fan-out on success, error file on failure.
   if (!updateFailed) {
     const fanoutLog = path.join(path.dirname(UPDATE_ERROR_PATH), 'update-fanout.log');
-    await deps.runFanout(effectiveMycoBinary, fanoutLog);
+    await deps.runFanout(p.mycoBinary, fanoutLog);
     try { fs.rmSync(UPDATE_ERROR_PATH, { force: true }); } catch { /* best-effort */ }
   } else {
     writeFileSafe(UPDATE_ERROR_PATH, JSON.stringify({ error: `npm install failed for ${failedSpecs}` }));
-    effectiveMycoBinary = p.mycoBinary;
   }
 
-  // 5. Readiness guard, then restart.
+  // Readiness guard, then restart.
   if (await shouldSkipRestart(deps, p.daemonPort, p.targetVersion)) return;
-  await restart(deps, p.serviceManagedLabel, effectiveMycoBinary, p.projectRoot);
+  await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
 }
 
 async function runRestart(p: ApplyRestartParams, deps: ApplyUpdateDeps): Promise<void> {

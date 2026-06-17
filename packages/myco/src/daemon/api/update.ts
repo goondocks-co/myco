@@ -24,7 +24,6 @@ import {
   getInstalledVersion,
   resolveMycoBinary,
   resolveRuntimeCommand,
-  isManagedMachineRuntime,
 } from '../update-checker.js';
 import { TierConfigUnreadableError } from '../../config/loader.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
@@ -102,10 +101,10 @@ export function createUpdateHandlers(deps: UpdateDeps) {
   function readVaultSnapshot() {
     const runtimeCommand = resolveRuntimeCommand(vaultDir);
     const desiredChannel = readProjectReleaseChannel(vaultDir);
-    const runtimeScope: 'managed' | 'machine' =
-      runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
-        ? 'managed'
-        : 'machine';
+    // myco is a single managed binary swapped in place — there is no separate
+    // managed runtime, so the scope is always `'machine'` (the contract keeps
+    // the field for stability; see CheckResult.runtime_scope).
+    const runtimeScope = 'machine' as const;
     const mycoBinary = runtimeCommand ?? resolveMycoBinary();
     return { runtimeCommand, desiredChannel, runtimeScope, mycoBinary };
   }
@@ -307,15 +306,22 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       )
       .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
 
-    // A myco binary swap is needed for a forward update, a revert-to-stable, OR
-    // a channel switch onto beta where the resolved beta target differs from
-    // what's running (the old "enter beta even when the version matches"
-    // semantic — under a binary swap this means "swap onto the beta binary").
+    // A myco binary swap is needed for a forward update, a revert-to-stable, a
+    // channel switch onto beta, OR a channel switch back onto stable while the
+    // running binary is still a prerelease. Under a binary swap, both
+    // directions simply resolve the channel's release and swap the SAME managed
+    // `~/.myco/bin/myco`.
     const mycoNeedsUpdate = Boolean(
       mycoPackage?.installed && (mycoPackage.update_available || mycoPackage.revert_available),
     );
-    const enteringBeta = status.channel === 'beta' && snapshot.runtimeScope === 'machine';
-    const mycoNeedsBinarySwap = mycoNeedsUpdate || enteringBeta;
+    const enteringBeta = status.channel === 'beta';
+    // Symmetric to `enteringBeta`: desired stable + a prerelease binary still
+    // running means swap back onto the stable release. Re-founded on the
+    // running version (`isPrerelease`), not the retired managed-runtime pin;
+    // this is the apply-side mirror of `revert_available`.
+    const enteringStable =
+      status.channel === 'stable' && semver.prerelease(currentVersion) !== null;
+    const mycoNeedsBinarySwap = mycoNeedsUpdate || enteringBeta || enteringStable;
 
     // Resolve the release refs for this channel BEFORE spawning the detached
     // orchestrator (it runs after the daemon exits and can't re-discover the
@@ -345,10 +351,8 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
-    // `localRuntimeSpec` / `removeLocalRuntime` are intentionally left unset for
-    // the myco path: the binary swap supersedes the managed-runtime install AND
-    // the revert-to-stable npm install. The legacy managed-runtime plumbing is
-    // retained-but-inert (Task 9c removes it).
+    // The myco binary swap supersedes both the old managed-runtime install and
+    // the revert-to-stable npm install; operator CLIs ride in `packageSpecs`.
     spawnUpdateScript({
       packageSpecs: operatorSpecs,
       projectRoot,

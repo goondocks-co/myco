@@ -92,7 +92,6 @@ import {
   getDevBuildCliEntry,
   resolveMycoBinary,
   resolveRuntimeCommand,
-  isManagedMachineRuntime,
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
   readUpdateConfig,
@@ -356,30 +355,6 @@ describe('resolveRuntimeCommand()', () => {
   it('returns null when runtime.command is missing', () => {
     mockNoFiles();
     expect(resolveRuntimeCommand()).toBeNull();
-  });
-});
-
-describe('isManagedMachineRuntime()', () => {
-  it('matches a managed runtime path under ~/.myco/runtime/', () => {
-    expect(
-      isManagedMachineRuntime('/mock-home/.myco/runtime/node_modules/.bin/myco'),
-    ).toBe(true);
-  });
-
-  it('returns false for a global myco install', () => {
-    expect(isManagedMachineRuntime('/opt/homebrew/bin/myco')).toBe(false);
-  });
-
-  it('returns false for a dev binary outside the managed runtime', () => {
-    expect(isManagedMachineRuntime('/Users/dev/.local/bin/myco-dev')).toBe(false);
-  });
-
-  it('returns false for a project-local path that happens to share the suffix', () => {
-    // Pre-rescope, this used to match via substring. Post-rescope, only
-    // ~/.myco/runtime/ counts as managed.
-    expect(
-      isManagedMachineRuntime('/Users/me/proj/.myco/runtime/node_modules/.bin/myco'),
-    ).toBe(false);
   });
 });
 
@@ -822,7 +797,11 @@ describe('statusFromCache()', () => {
     expect(result!.latest_version).toBe('1.1.0-beta.1');
   });
 
-  it('offers a stable-channel revert when running from the managed machine runtime', () => {
+  it('offers a stable-channel revert when the running binary is a prerelease (no managed-runtime pin)', () => {
+    // Re-founded signal: desired channel stable + the RUNNING version is a
+    // prerelease + a stable target exists. No `runtime.command` pin is needed —
+    // the managed-binary swap (curl + npm) does not write one. The install
+    // marker is absent here (fs reads ENOENT → null), which still reverts.
     const cache = makeCachedCheck({
       channel: 'stable',
       packages: {
@@ -848,7 +827,7 @@ describe('statusFromCache()', () => {
       undefined,
       undefined,
       '/opt/homebrew',
-      '/mock-home/.myco/runtime/node_modules/.bin/myco',
+      null, // no runtime.command pin
     );
     // Revert to a lower stable version is a revert, not an update.
     expect(result!.update_available).toBe(false);
@@ -856,6 +835,34 @@ describe('statusFromCache()', () => {
     expect(result!.latest_version).toBe('1.0.0');
     expect(result!.packages[0]?.update_available).toBe(false);
     expect(result!.packages[0]?.revert_available).toBe(true);
+    expect(result!.runtime_scope).toBe('machine');
+  });
+
+  it('does NOT offer a revert when the running binary is already stable', () => {
+    const cache = makeCachedCheck({
+      channel: 'stable',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.0.0',
+          latest_beta: '1.1.0-beta.1',
+        },
+      },
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (String(p).endsWith('last-update-check.json')) {
+        return JSON.stringify(cache);
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    // Running stable 1.0.0, desired stable, nothing newer → up to date.
+    const result = statusFromCache('1.0.0', undefined, undefined, '/opt/homebrew', null);
+    expect(result!.update_available).toBe(false);
+    expect(result!.revert_available).toBe(false);
+    expect(result!.packages[0]?.revert_available).toBe(false);
   });
 });
 
@@ -974,20 +981,6 @@ describe('detectDevBuild()', () => {
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
       symlinkResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('treats the managed machine runtime as prod, not a dev build', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/mock-home/.myco/runtime/node_modules/.bin/myco',
-      (p: string) => {
-        if (p === '/mock-home/.myco/runtime/node_modules/.bin/myco') {
-          return '/mock-home/.myco/runtime/node_modules/@goondocks/myco/bin/myco.cjs';
-        }
-        return p;
-      },
     );
     expect(result).toBeNull();
   });

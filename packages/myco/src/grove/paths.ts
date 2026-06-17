@@ -2,11 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import {
-  MACHINE_RUNTIME_COMMAND_FILENAME,
-  MACHINE_RUNTIME_DIRNAME,
-  MACHINE_RUNTIME_TMP_DIRNAME,
-} from '../constants/update.js';
+import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { assertGroveEraId, isGroveEraId } from './ids.js';
 import type { DaemonVariant } from './registry.js';
 
@@ -327,17 +323,6 @@ export function resolveProjectLocalManifestPath(projectVaultDir: string): string
  */
 export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
-}
-
-/** `~/.myco/runtime/` — managed beta runtime install directory. */
-export function resolveMachineRuntimeDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, MACHINE_RUNTIME_DIRNAME);
-}
-
-
-/** `~/.myco/runtime.tmp/` — staging dir for atomic runtime swap on update. */
-export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, MACHINE_RUNTIME_TMP_DIRNAME);
 }
 
 /**

@@ -114,7 +114,6 @@ describe('spawnUpdateScript', () => {
     expect(p.mycoBinary).toBe('myco');
     expect(p.daemonPort).toBe(20915);
     expect(p.targetVersion).toBe('1.0.0');
-    expect(p.removeLocalRuntime).toBe(false);
   });
 
   it('defaults serviceManagedLabel to null when not provided', () => {
@@ -127,13 +126,15 @@ describe('spawnUpdateScript', () => {
     expect(lastParams().serviceManagedLabel).toBe('co.goondocks.myco');
   });
 
-  it('resolves the managed machine-runtime paths into the params', () => {
-    spawnUpdateScript({ ...UPDATE_BASE, localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1' });
+  it('omits the retired managed-runtime params (deleted with the native installer)', () => {
+    spawnUpdateScript(UPDATE_BASE);
     const p = lastParams();
-    expect(p.localRuntimeSpec).toBe('@goondocks/myco@1.1.0-beta.1');
-    expect(String(p.machineRuntimeTmpDir)).toContain('runtime.tmp');
-    expect(String(p.machineRuntimeCommandPath)).toContain('runtime.command');
-    expect(String(p.machineRuntimeMyco)).toMatch(/runtime[/\\]node_modules[/\\]\.bin[/\\]myco$/);
+    expect(p.localRuntimeSpec).toBeUndefined();
+    expect(p.removeLocalRuntime).toBeUndefined();
+    expect(p.machineRuntimeDir).toBeUndefined();
+    expect(p.machineRuntimeTmpDir).toBeUndefined();
+    expect(p.machineRuntimeCommandPath).toBeUndefined();
+    expect(p.machineRuntimeMyco).toBeUndefined();
   });
 
   it('threads mycoBinaryUpdate + the managed binary path into the params (binary self-update)', () => {

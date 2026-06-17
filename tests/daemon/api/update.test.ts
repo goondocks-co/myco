@@ -39,7 +39,6 @@ mock.module('@myco/daemon/update-checker.js', () => ({
   getInstalledVersion: vi.fn(() => null),
   resolveMycoBinary: vi.fn(() => 'myco'),
   resolveRuntimeCommand: vi.fn(() => null),
-  isManagedMachineRuntime: vi.fn(() => false),
 }));
 
 mock.module('@myco/daemon/update-installer.js', () => ({
@@ -72,7 +71,6 @@ import {
   isCacheStale,
   getInstalledVersion,
   resolveRuntimeCommand,
-  isManagedMachineRuntime,
 } from '@myco/daemon/update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 import { resolveMycoBinaryUpdateRefs } from '@myco/daemon/myco-release-resolver.js';
@@ -321,7 +319,6 @@ describe('handleUpdateApply', () => {
     vi.mocked(spawnUpdateScript).mockReset();
     vi.mocked(spawnUpdateScript).mockReturnValue('/tmp/myco-update-123.sh');
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     // Default: the release resolver yields the 1.1.0 myco refs. Tests that
     // need a different target (revert) or a no-myco-update case override this.
     vi.mocked(resolveMycoBinaryUpdateRefs).mockReset();
@@ -425,7 +422,12 @@ describe('handleUpdateApply', () => {
     });
   });
 
-  it('revert-to-stable resolves the STABLE release and swaps the same binary (no removeLocalRuntime, no myco npm)', async () => {
+  it('revert-to-stable (beta-running, desired stable) resolves the STABLE release and swaps the same binary — no 400, no npm', async () => {
+    // A beta user with desired channel stable. revert_available is true and
+    // update_available is false (it's a downgrade), so WITHOUT enteringStable
+    // this 400s `no_update_available`. enteringStable (re-founded on the
+    // running prerelease version, not a managed-runtime pin) resolves the
+    // stable release and swaps the SAME ~/.myco/bin/myco.
     vi.mocked(statusFromCache).mockReturnValue({
       ...UPDATE_AVAILABLE_STATUS,
       running_version: '1.1.0-beta.1',
@@ -444,21 +446,23 @@ describe('handleUpdateApply', () => {
         },
       ],
     });
-    vi.mocked(resolveRuntimeCommand).mockReturnValue('/mock-home/.myco/runtime/node_modules/.bin/myco');
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(true);
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
     // The stable channel resolves the 1.0.0 release for the revert.
     vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(MYCO_REFS_1_0_0);
 
-    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+    // Daemon is RUNNING the beta prerelease — this is the enteringStable signal.
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ currentVersion: '1.1.0-beta.1' }));
 
-    await handleUpdateApply(makeReq());
+    const result = await handleUpdateApply(makeReq());
 
+    // NOT a 400.
+    expect(result.status).toBeUndefined();
     expect(spawnUpdateScript).toHaveBeenCalledWith({
       // No myco npm spec, no managed-runtime plumbing — the binary swaps to 1.0.0.
       packageSpecs: [],
       projectRoot: '/project',
       vaultDir: '/vault',
-      mycoBinary: '/mock-home/.myco/runtime/node_modules/.bin/myco',
+      mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
       targetVersion: '1.0.0',
@@ -466,6 +470,44 @@ describe('handleUpdateApply', () => {
     });
     // The revert resolved through the stable channel.
     expect(resolveMycoBinaryUpdateRefs).toHaveBeenCalledWith('stable');
+  });
+
+  it('enteringStable: beta-running + desired stable swaps to stable even when revert_available is somehow stale', async () => {
+    // Guard the symmetric apply path independently of revert_available: a
+    // prerelease binary on the stable channel must always be offered the swap.
+    vi.mocked(statusFromCache).mockReturnValue({
+      ...UPDATE_AVAILABLE_STATUS,
+      channel: 'stable',
+      running_version: '1.1.0-beta.1',
+      latest_version: '1.0.0',
+      latest_stable: '1.0.0',
+      update_available: false,
+      revert_available: false,
+      packages: [
+        {
+          ...UPDATE_AVAILABLE_STATUS.packages[0],
+          installed_version: '1.1.0-beta.1',
+          latest_version: '1.0.0',
+          latest_stable: '1.0.0',
+          update_available: false,
+          revert_available: false,
+        },
+      ],
+    });
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(MYCO_REFS_1_0_0);
+
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ currentVersion: '1.1.0-beta.1' }));
+
+    const result = await handleUpdateApply(makeReq());
+
+    expect(result.status).toBeUndefined();
+    expect(resolveMycoBinaryUpdateRefs).toHaveBeenCalledWith('stable');
+    expect(vi.mocked(spawnUpdateScript).mock.calls[0][0]).toMatchObject({
+      packageSpecs: [],
+      targetVersion: '1.0.0',
+      mycoBinaryUpdate: MYCO_REFS_1_0_0,
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -569,7 +611,6 @@ describe('handleUpdateApply', () => {
       ],
     });
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     const betaRefs = { ...MYCO_REFS_1_1_0, targetVersion: '1.0.0' };
     vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(betaRefs);
 
@@ -604,7 +645,6 @@ describe('handleUpdateChannel', () => {
     vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     vi.mocked(writeProjectReleaseChannel).mockImplementation(() => {});
     vi.mocked(clearCachedCheck).mockImplementation(() => {});
   });
@@ -765,22 +805,16 @@ describe('handleUpdateStatus — restart_required', () => {
   });
 
   // Any runtime.command pin isolates the daemon from the global install.
-  // The short-circuit must skip whenever a pin is set, regardless of where
-  // the pin points. Two representative cases:
-  //
-  //   1. Pin under `.myco/runtime/` — beta-channel project-local install.
-  //   2. Pin outside `.myco/runtime/` — dogfood `~/.local/bin/myco-dev`
-  //      symlinked to a locally-built repo binary.
-  //
-  // Before this fix, only case 1 was gated (via the `runtimeScope`
-  // label), leaving dogfood daemons in a restart loop whenever the
-  // globally-installed version outran the pinned binary.
-  it('does not trigger auto-restart when runtime.command pins a project-local beta runtime', async () => {
+  // The short-circuit must skip whenever a `runtime.command` pin is set,
+  // regardless of where the pin points (dogfood `~/.local/bin/myco-dev`
+  // symlinked to a locally-built repo binary, any user-set pin). Restarting a
+  // pinned daemon would respawn the same binary and loop. The gate is purely
+  // "is a pin set?" — there is no longer a managed-runtime sub-classification.
+  it('does not trigger auto-restart when runtime.command pins a runtime', async () => {
     vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
     vi.mocked(resolveRuntimeCommand).mockReturnValue(
       '/vault/runtime/node_modules/.bin/myco',
     );
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(true);
     const scheduleShutdown = vi.fn();
     const { handleUpdateStatus } = createUpdateHandlers(
       makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
@@ -802,7 +836,6 @@ describe('handleUpdateStatus — restart_required', () => {
     vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
     // Reset runtime.command pin pollution from preceding tests in this block.
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     const mgr = installedServiceManager(
       'co.goondocks.myco',
       'launchctl kickstart -k gui/501/co.goondocks.myco',
@@ -819,14 +852,12 @@ describe('handleUpdateStatus — restart_required', () => {
     });
   });
 
-  it('does not trigger auto-restart when runtime.command pins a dogfood binary outside .myco/runtime/', async () => {
+  it('does not trigger auto-restart when runtime.command pins a dogfood binary', async () => {
     vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
     // Dogfood layout: ~/.local/bin/myco-dev symlinked to the repo's built
-    // vendor binary. `isManagedMachineRuntime` returns false (not under
-    // `.myco/runtime/node_modules/`), but the daemon is still pinned —
-    // restart would respawn the same binary and loop.
+    // vendor binary. The daemon is pinned, so a restart would respawn the same
+    // binary and loop — the pin gate skips it.
     vi.mocked(resolveRuntimeCommand).mockReturnValue('/Users/x/.local/bin/myco-dev');
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     const scheduleShutdown = vi.fn();
     const { handleUpdateStatus } = createUpdateHandlers(
       makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
@@ -875,7 +906,6 @@ describe('handleUpdateStatus — runLocalUpdate stamp gating', () => {
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(getInstalledVersion).mockReset();
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     vi.mocked(spawnRestartScript).mockReset();
     vi.mocked(spawnRestartScript).mockReturnValue('/tmp/myco-restart-stamp.sh');
   });

@@ -28,7 +28,7 @@ export interface UpdateStatus {
   latest_beta?: string | null;
   channel?: string;
   channel_scope?: 'machine';
-  runtime_scope?: 'managed' | 'machine';
+  runtime_scope?: 'machine';
   check_interval_hours?: number;
   last_check?: string;
   error?: string | null;

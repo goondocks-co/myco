@@ -15,11 +15,6 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { MYCO_GLOBAL_DIR, UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
-import {
-  resolveMachineRuntimeCommandPath,
-  resolveMachineRuntimeDir,
-  resolveMachineRuntimeTmpDir,
-} from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
 import type { ApplyUpdateParams, ApplyRestartParams, MycoBinaryUpdateRefs } from './apply-update.js';
 
@@ -29,12 +24,8 @@ import type { ApplyUpdateParams, ApplyRestartParams, MycoBinaryUpdateRefs } from
 
 /** Parameters required to spawn an update orchestration. */
 export interface InstallParams {
-  /** Fully-qualified npm package specs to install globally (e.g. ["@goondocks/myco-team@0.11.0"]). */
+  /** Fully-qualified npm package specs to install globally (operator CLIs, e.g. ["@goondocks/myco-team@0.11.0"]). */
   packageSpecs: string[];
-  /** Optional core Myco package spec to install into the managed machine runtime. */
-  localRuntimeSpec?: string;
-  /** Remove the managed machine runtime after a successful stable-channel apply. */
-  removeLocalRuntime?: boolean;
   /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
   projectRoot: string;
   /** Absolute path to the vault directory the daemon was running against (used as cwd for the respawn). */
@@ -181,22 +172,15 @@ export function spawnUpdateScript(params: InstallParams): string {
   // Ensure ~/.myco/ exists before writing the error path or checking state.
   fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
 
-  const machineRuntimeDir = resolveMachineRuntimeDir();
   const applyParams: ApplyUpdateParams = {
     kind: 'update',
     packageSpecs: params.packageSpecs,
-    localRuntimeSpec: params.localRuntimeSpec,
-    removeLocalRuntime: params.removeLocalRuntime ?? false,
     projectRoot: params.projectRoot,
     vaultDir: params.vaultDir,
     mycoBinary: params.mycoBinary,
     serviceManagedLabel: params.serviceManagedLabel ?? null,
     daemonPort: params.daemonPort,
     targetVersion: params.targetVersion,
-    machineRuntimeDir,
-    machineRuntimeTmpDir: resolveMachineRuntimeTmpDir(),
-    machineRuntimeCommandPath: resolveMachineRuntimeCommandPath(),
-    machineRuntimeMyco: path.join(machineRuntimeDir, 'node_modules', '.bin', 'myco'),
     // Myco binary self-update (stable + beta): the orchestrator swaps the
     // managed `~/.myco/bin/myco` instead of npm-installing myco. The release
     // refs are resolved by the daemon (the caller) before we get here.
