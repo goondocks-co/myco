@@ -8,9 +8,18 @@
  * works identically on macOS, Linux, and Windows — there is no `/bin/sh` on
  * Windows, so the old detached shell child ENOENT'd and stranded the daemon.
  *
- * The flow mirrors the old scripts exactly:
+ * Two update paths diverge after the sleep:
+ *
+ *   BINARY-SWAP PATH (myco self-update, stable + beta):
  *   1. sleep UPDATE_SCRIPT_DELAY_SECONDS (let the old daemon release its lock)
- *   2. (update only) npm install the managed-runtime and/or global specs
+ *   2. `npm install -g` any operator-CLI specs (myco-team / myco-collective)
+ *   3. fan out `<myco> update --all-projects` on the current binary (non-fatal)
+ *   4. hand off to `applyBinaryUpdate` (download → verify → swap → restart →
+ *      health-watch → auto-restore); it is the SOLE restart owner on this path
+ *
+ *   OPERATOR-CLI PATH (no myco binary swap — only operator npm packages):
+ *   1. sleep UPDATE_SCRIPT_DELAY_SECONDS
+ *   2. `npm install -g` the operator specs
  *   3. fan out `<myco> update --all-projects` (non-fatal)
  *   4. write the error / restart-reason side-channel files
  *   5. readiness guard — skip restart if the daemon is already on target

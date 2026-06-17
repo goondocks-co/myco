@@ -385,7 +385,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     const reportedPackages = mycoBinaryUpdate
-      ? [`${NPM_PACKAGE_NAME}@${mycoBinaryUpdate.targetVersion}`, ...operatorSpecs]
+      ? [`myco@${mycoBinaryUpdate.targetVersion}`, ...operatorSpecs]
       : operatorSpecs;
 
     return {

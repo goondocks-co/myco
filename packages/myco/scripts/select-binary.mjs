@@ -46,7 +46,7 @@ function detectTarget() {
  *
  * @param {{ home: string, platform: string, resolvedBinary: string, dest: string, channel: string }} args
  */
-export function convergeNpmInstall({ home, platform, resolvedBinary, dest, channel }) {
+export function convergeNpmInstall({ home, platform, resolvedBinary, dest, channel, writeMarker }) {
   const log = (msg) => process.stderr.write(`[myco] ${msg}\n`);
   const mycoHome = path.join(home, '.myco');
   let copied = false;
@@ -91,7 +91,8 @@ export function convergeNpmInstall({ home, platform, resolvedBinary, dest, chann
     let pin = '';
     try { pin = fs.readFileSync(pinPath, 'utf8').trim(); } catch { /* absent */ }
 
-    // Mirrors `isManagedMachineRuntime`: a pin under `~/.myco/runtime/node_modules/`.
+    // Preserve a legacy managed-runtime pin (a path under ~/.myco/runtime/node_modules/)
+    // so a pre-native-installer setup isn't stranded.
     const normalize = (p) => p.split(path.sep).join('/');
     const managedPrefix = `${normalize(path.join(mycoHome, 'runtime'))}/node_modules/`;
     const isManagedRuntimePin = pin !== '' && normalize(pin).startsWith(managedPrefix);
@@ -109,7 +110,7 @@ export function convergeNpmInstall({ home, platform, resolvedBinary, dest, chann
       try { fs.chmodSync(pinPath, 0o644); } catch { /* best effort */ }
       pinAction = 'wrote';
     } else if (isManagedRuntimePin) {
-      log('beta managed-runtime pin preserved; not re-pointing runtime.command');
+      log('legacy managed-runtime pin detected; not re-pointing runtime.command');
       pinAction = 'preserved-managed';
     } else {
       log('external runtime.command pin preserved; not re-pointing');
@@ -120,12 +121,21 @@ export function convergeNpmInstall({ home, platform, resolvedBinary, dest, chann
   }
 
   // --- Install marker -----------------------------------------------------
+  // When `writeMarker` is injected (production: `managed.writeInstallMarker`
+  // from dist/src/install/managed-binary.js), delegate to the canonical helper
+  // so the format is defined in exactly one place.  Tests that call
+  // convergeNpmInstall directly do not inject `writeMarker`, so the inline
+  // fallback keeps convergence unit-testable without a compiled dist/.
   try {
-    fs.mkdirSync(mycoHome, { recursive: true });
-    fs.writeFileSync(
-      path.join(mycoHome, 'install.json'),
-      JSON.stringify({ channel, source: 'npm', bin: dest }, null, 2) + '\n',
-    );
+    if (writeMarker) {
+      writeMarker(mycoHome, { channel, source: 'npm', bin: dest });
+    } else {
+      fs.mkdirSync(mycoHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(mycoHome, 'install.json'),
+        JSON.stringify({ channel, source: 'npm', bin: dest }, null, 2),
+      );
+    }
   } catch (err) {
     log(`install marker skipped: ${err?.message ?? err}`);
   }
@@ -224,6 +234,7 @@ async function main() {
           resolvedBinary: binaryPath,
           dest,
           channel,
+          writeMarker: managed.writeInstallMarker,
         });
       } catch (err) {
         process.stderr.write(`[myco] Convergence skipped: ${err?.message ?? err}\n`);
