@@ -129,7 +129,7 @@ function runNpm(args: string[], cwd?: string): Promise<{ ok: boolean; output: st
   });
 }
 
-function spawnDetached(bin: string, args: string[], cwd?: string): void {
+export function spawnDetached(bin: string, args: string[], cwd?: string): void {
   const child = spawnShellSafe(bin, args, { detached: true, stdio: 'ignore', ...(cwd ? { cwd } : {}) });
   child.on('error', (err) => {
     try {
@@ -194,7 +194,7 @@ function rmrf(p: string): void {
   try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
-function writeFileSafe(p: string, content: string): void {
+export function writeFileSafe(p: string, content: string): void {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, content, 'utf-8');
@@ -234,7 +234,7 @@ async function shouldSkipRestart(
  * service AND when the service restart itself throws, so the daemon ALWAYS
  * comes back.
  */
-async function restart(
+export async function restart(
   deps: ApplyUpdateDeps,
   serviceManagedLabel: string | null | undefined,
   effectiveMycoBinary: string,
