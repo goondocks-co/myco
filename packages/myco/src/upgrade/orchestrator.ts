@@ -664,7 +664,9 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
       );
     }
     clearSentinel();
-    await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+    try {
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+    } catch { /* last-resort: binary already good/restored and sentinel already cleared; swallow */ }
     return;
   }
 

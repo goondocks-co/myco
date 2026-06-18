@@ -307,20 +307,31 @@ describe('runAdopt — crash-loop (health never reaches target → restore + res
 
 describe('runAdopt — non-service (serviceManagedLabel:null) CR-1 guarantees', () => {
   it('happy path: restarts via direct spawn (spawnDetached), not ServiceManager', async () => {
+    const params = makeParams({ serviceManagedLabel: null });
     const rec = makeAdoptDeps({ healthSequence: [{ version: '1.2.3' }] });
-    await run([writeParamsFile(makeParams({ serviceManagedLabel: null }))], rec.deps);
+    await run([writeParamsFile(params)], rec.deps);
 
     expect(rec.deps.spawnDetached).toHaveBeenCalledTimes(1);
     expect(rec.mgr.restartCalls).toEqual([]);
+    // Spawned binary must be the managed myco binary from params.
+    const [spawnedBin] = (rec.deps.spawnDetached as ReturnType<typeof vi.fn>).mock.calls[0] as [string, ...unknown[]];
+    expect(spawnedBin).toBe(params.mycoBinary);
   });
 
   it('crash-loop: still restarts twice (once for new binary, once after restore) — never strands DOWN', async () => {
+    const sentinelPath = path.join(tmpDir, 'update.in-progress');
+    fs.writeFileSync(sentinelPath, JSON.stringify({
+      targetVersion: '1.2.3', startedAt: Date.now(), initiator: 'api/update/apply',
+    }));
+
     const rec = makeAdoptDeps({ healthSequence: [null, null, null] });
-    await run([writeParamsFile(makeParams({ serviceManagedLabel: null }))], rec.deps);
+    await run([writeParamsFile(makeParams({ serviceManagedLabel: null, inProgressSentinelPath: sentinelPath }))], rec.deps);
 
     // Must have restarted twice — the daemon NEVER stays down on non-service.
     expect(rec.restartCount).toBe(2);
     expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
+    // clearSentinel is unconditional — must fire on the non-service path too (CR-1).
+    expect(fs.existsSync(sentinelPath)).toBe(false);
   });
 
   it('adoptStaged throws (non-service): restoreVersion + restart → sentinel cleared', async () => {
