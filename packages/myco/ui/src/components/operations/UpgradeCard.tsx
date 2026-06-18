@@ -6,26 +6,27 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 import { errorMessage as toErrorMessage } from '../../lib/error';
+import { ApiError } from '../../lib/api';
 import { RELEASE_CHANNELS } from '../../lib/constants';
 import { withBasePath } from '../../lib/base-path';
 import {
-  useUpdateStatus,
-  useUpdateCheck,
-  useUpdateApply,
-  useUpdateChannel,
-} from '../../hooks/use-update-status';
+  useUpgradeStatus,
+  useUpgradeCheck,
+  useUpgradeApply,
+  useUpgradeChannel,
+} from '../../hooks/use-upgrade-status';
 
 /* ---------- Constants ---------- */
 
-/** Interval for polling /health after update apply (ms). */
+/** Interval for polling /health after upgrade apply (ms). */
 const HEALTH_POLL_INTERVAL_MS = 500;
 
-/** Max time to wait for the new daemon after update apply (ms). */
+/** Max time to wait for the new daemon after upgrade apply (ms). */
 const HEALTH_POLL_TIMEOUT_MS = 60_000;
 
 /* ---------- Types ---------- */
 
-type ApplyState = 'idle' | 'applying' | 'restarting' | 'error';
+type ApplyState = 'idle' | 'applying' | 'restarting' | 'staging' | 'error';
 
 /* ---------- Helpers ---------- */
 
@@ -35,7 +36,7 @@ function formatLastCheck(iso: string | undefined | null): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function updateBadgeLabel(
+function upgradeBadgeLabel(
   packageCount: number,
   latestVersion: string | undefined,
 ): string | null {
@@ -44,13 +45,13 @@ function updateBadgeLabel(
   return `${packageCount} packages`;
 }
 
-/* ---------- UpdateCard ---------- */
+/* ---------- UpgradeCard ---------- */
 
-export function UpdateCard() {
-  const { data: status } = useUpdateStatus();
-  const checkMutation = useUpdateCheck();
-  const applyMutation = useUpdateApply();
-  const channelMutation = useUpdateChannel();
+export function UpgradeCard() {
+  const { data: status } = useUpgradeStatus();
+  const checkMutation = useUpgradeCheck();
+  const applyMutation = useUpgradeApply();
+  const channelMutation = useUpgradeChannel();
 
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -124,6 +125,14 @@ export function UpdateCard() {
       });
       window.location.reload();
     } catch (err) {
+      // 422 means the background staging job hasn't completed yet — this is a
+      // transient, recoverable state. Show a retry-friendly message instead of
+      // a hard error so the button stays usable.
+      if (err instanceof ApiError && err.status === 422) {
+        setApplyState('staging');
+        setErrorMessage(null);
+        return;
+      }
       setApplyState('error');
       const msg = toErrorMessage(err) === 'timeout'
         ? 'Daemon did not restart within the expected time. Check the terminal.'
@@ -155,7 +164,7 @@ export function UpdateCard() {
   const installedPackages = (status.packages ?? []).filter((pkg) => pkg.installed);
   const pendingPackages = installedPackages.filter((pkg) => pkg.update_available);
   const pendingCount = pendingPackages.length;
-  const latestBadge = updateBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
+  const latestBadge = upgradeBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
   const runtimeSummary =
     'This machine runs the managed Myco binary at ~/.myco/bin/myco. Switching channels swaps that same binary in place — Beta installs the latest prerelease, Stable steps back to the latest stable release.';
 
@@ -165,10 +174,10 @@ export function UpdateCard() {
       <Surface level="low" className="p-6 space-y-4">
         <div className="flex items-center gap-2">
           <Shield className="h-4 w-4 text-primary" />
-          <SectionHeader>Updates</SectionHeader>
+          <SectionHeader>Upgrade</SectionHeader>
         </div>
         <p className="font-sans text-sm text-on-surface-variant">
-          Updates are disabled in development mode.{' '}
+          Upgrades are disabled in development mode.{' '}
           <span className="font-mono text-xs text-outline">{status.running_version}</span>
         </p>
       </Surface>
@@ -183,7 +192,7 @@ export function UpdateCard() {
           <ArrowUpCircle
             className={cn('h-4 w-4', actionAvailable ? 'text-secondary' : 'text-primary')}
           />
-          <SectionHeader>Updates</SectionHeader>
+          <SectionHeader>Upgrade</SectionHeader>
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-outline">{status.running_version}</span>
@@ -205,14 +214,14 @@ export function UpdateCard() {
             {isApplying ? (
               <>
                 <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                {applyState === 'restarting' ? 'Restarting…' : (revertAvailable && !updateAvailable ? 'Reverting…' : 'Updating…')}
+                {applyState === 'restarting' ? 'Restarting…' : (revertAvailable && !updateAvailable ? 'Reverting…' : 'Upgrading…')}
               </>
             ) : (
               <>
                 <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
                 {revertAvailable && !updateAvailable
                   ? 'Revert to Stable & Restart'
-                  : pendingCount > 1 ? `Update ${pendingCount} Packages & Restart` : 'Update & Restart'}
+                  : pendingCount > 1 ? `Upgrade ${pendingCount} Packages & Restart` : 'Upgrade & Restart'}
               </>
             )}
           </Button>
@@ -271,7 +280,7 @@ export function UpdateCard() {
                   </div>
                 </div>
                 <Badge variant={pkg.update_available || showRevert ? 'warning' : 'secondary'}>
-                  {pkg.update_available ? 'Update available' : showRevert ? 'Revert pending' : 'Installed'}
+                  {pkg.update_available ? 'Upgrade available' : showRevert ? 'Revert pending' : 'Installed'}
                 </Badge>
               </div>
             );
@@ -279,6 +288,16 @@ export function UpdateCard() {
           <p className="font-sans text-xs text-on-surface-variant">
             {runtimeSummary}
           </p>
+        </div>
+      )}
+
+      {/* Staging state — transient 422 race: background staging not yet complete */}
+      {applyState === 'staging' && (
+        <div className="flex items-start gap-2 text-on-surface-variant">
+          <RefreshCw className="h-4 w-4 mt-0.5 shrink-0 animate-spin" />
+          <span className="font-sans text-sm">
+            Upgrade is staging — try again in a moment.
+          </span>
         </div>
       )}
 

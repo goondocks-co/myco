@@ -43,7 +43,7 @@ describe('DaemonStatusPillView', () => {
     expect(screen.getByText('v0.18.1-244-g63fe75a5')).toBeDefined();
   });
 
-  it('links to update settings and indicates update availability', () => {
+  it('links to upgrade settings and indicates upgrade availability', () => {
     render(
       <MemoryRouter>
         <DaemonStatusPillView
@@ -51,11 +51,11 @@ describe('DaemonStatusPillView', () => {
           version="0.25.1"
           updateAvailable
           latestVersion="0.27.19"
-          to="/settings?configSection=update#update"
+          to="/settings?configSection=upgrade#upgrade"
         />
       </MemoryRouter>,
     );
-    expect(screen.getByRole('link', { name: /daemon/i }).getAttribute('href')).toBe('/settings?configSection=update#update');
+    expect(screen.getByRole('link', { name: /daemon/i }).getAttribute('href')).toBe('/settings?configSection=upgrade#upgrade');
     expect(screen.getByTestId('status-dot').dataset.tone).toBe('ochre');
     expect(screen.getByTestId('status-dot').dataset.pulsing).toBe('true');
   });

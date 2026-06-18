@@ -5,7 +5,7 @@ import { POLL_INTERVALS } from '../lib/constants';
 
 /* ---------- Types ---------- */
 
-export interface UpdatePackageStatus {
+export interface UpgradePackageStatus {
   id: string;
   display_name: string;
   package_name: string;
@@ -18,7 +18,7 @@ export interface UpdatePackageStatus {
   revert_available?: boolean;
 }
 
-export interface UpdateStatus {
+export interface UpgradeStatus {
   exempt: boolean;
   running_version: string;
   update_available?: boolean;
@@ -35,7 +35,7 @@ export interface UpdateStatus {
   /** Set when daemon is auto-restarting for a version sync. */
   restarting?: boolean;
   reason?: string;
-  packages?: UpdatePackageStatus[];
+  packages?: UpgradePackageStatus[];
 }
 
 interface ApplyResponse {
@@ -45,12 +45,12 @@ interface ApplyResponse {
 
 /* ---------- Query ---------- */
 
-const UPDATE_QUERY_KEY = ['update-status'] as const;
+const UPGRADE_QUERY_KEY = ['upgrade-status'] as const;
 
-export function useUpdateStatus() {
-  return usePowerQuery<UpdateStatus>({
-    queryKey: [...UPDATE_QUERY_KEY],
-    queryFn: ({ signal }) => fetchJson<UpdateStatus>('/upgrade/status', { signal }),
+export function useUpgradeStatus() {
+  return usePowerQuery<UpgradeStatus>({
+    queryKey: [...UPGRADE_QUERY_KEY],
+    queryFn: ({ signal }) => fetchJson<UpgradeStatus>('/upgrade/status', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     contextFree: true,
@@ -59,28 +59,28 @@ export function useUpdateStatus() {
 
 /* ---------- Mutations ---------- */
 
-export function useUpdateCheck() {
+export function useUpgradeCheck() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<UpdateStatus>('/upgrade/check'),
+    mutationFn: () => postJson<UpgradeStatus>('/upgrade/check'),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...UPDATE_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [...UPGRADE_QUERY_KEY] });
     },
   });
 }
 
-export function useUpdateApply() {
+export function useUpgradeApply() {
   return useMutation({
     mutationFn: () => postJson<ApplyResponse>('/upgrade/apply'),
   });
 }
 
-export function useUpdateChannel() {
+export function useUpgradeChannel() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (channel: string) => putJson<UpdateStatus>('/upgrade/channel', { channel }),
+    mutationFn: (channel: string) => putJson<UpgradeStatus>('/upgrade/channel', { channel }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...UPDATE_QUERY_KEY] });
+      queryClient.invalidateQueries({ queryKey: [...UPGRADE_QUERY_KEY] });
     },
   });
 }
