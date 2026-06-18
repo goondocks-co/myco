@@ -15,8 +15,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { MYCO_GLOBAL_DIR, UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
-import { managedBinaryPath } from '../install/managed-binary.js';
-import type { ApplyUpdateParams, ApplyRestartParams, ApplyAdoptParams, MycoBinaryUpdateRefs } from './orchestrator.js';
+import type { ApplyUpdateParams, ApplyRestartParams, ApplyAdoptParams } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -62,21 +61,6 @@ export interface InstallParams {
    * before skipping the restart.
    */
   targetVersion: string;
-  /**
-   * When present, myco updates by BINARY SWAP (stable + beta) through
-   * `applyBinaryUpdate` instead of the myco npm/managed-runtime install. The
-   * daemon resolves the release refs BEFORE spawning the detached orchestrator.
-   * Operator-CLI specs in `packageSpecs` still `npm install -g`.
-   */
-  mycoBinaryUpdate?: MycoBinaryUpdateRefs;
-  /**
-   * Absolute path to the `update.in-progress` sentinel the daemon wrote before
-   * spawning the orchestrator. Forwarded so an aborted/rolled-back BINARY swap
-   * clears it (an aborted/restored daemon comes back on the OLD version, so the
-   * daemon-startup target-version clear won't fire and the sentinel would
-   * otherwise block updates for the full 10-minute stale window).
-   */
-  inProgressSentinelPath?: string | null;
 }
 
 /** Parameters for a restart-only orchestration (no global npm install). */
@@ -189,16 +173,6 @@ export function spawnUpdateScript(params: InstallParams): string {
     serviceManagedLabel: params.serviceManagedLabel ?? null,
     daemonPort: params.daemonPort,
     targetVersion: params.targetVersion,
-    // Myco binary self-update (stable + beta): the orchestrator swaps the
-    // managed `~/.myco/bin/myco` instead of npm-installing myco. The release
-    // refs are resolved by the daemon (the caller) before we get here.
-    ...(params.mycoBinaryUpdate
-      ? {
-          mycoBinaryUpdate: params.mycoBinaryUpdate,
-          managedBinaryPath: managedBinaryPath(os.homedir(), process.platform, process.env.LOCALAPPDATA),
-          inProgressSentinelPath: params.inProgressSentinelPath ?? null,
-        }
-      : {}),
   };
   return spawnApplyUpgrade('myco-update', applyParams);
 }

@@ -44,7 +44,6 @@ interface Recorder {
   npmCwds: Array<string | undefined>;
   detachedSpawns: Array<{ bin: string; args: string[]; cwd?: string }>;
   fanoutCalls: Array<{ bin: string; logPath: string }>;
-  binaryUpdateCalls: Array<Record<string, unknown>>;
   npmOk: boolean;
   healthVersion: string | null;
 }
@@ -57,7 +56,6 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
     npmCwds: [],
     detachedSpawns: [],
     fanoutCalls: [],
-    binaryUpdateCalls: [],
     npmOk: opts.npmOk ?? true,
     healthVersion: opts.healthVersion ?? null,
     mgr,
@@ -79,13 +77,6 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
     probeHealth: vi.fn(async () => (rec.healthVersion === null ? null : { version: rec.healthVersion })),
     // No real waiting in tests.
     sleep: vi.fn(async () => {}),
-    // Injected fake binary-update primitive: the myco binary path uses this
-    // INSTEAD of npm. It is the sole restart owner, so the fake records its
-    // params and (by not calling spawnDetached/restart) leaves the
-    // detachedSpawns/restartCalls assertions clean.
-    applyBinaryUpdate: vi.fn(async (params: Record<string, unknown>) => {
-      rec.binaryUpdateCalls.push(params);
-    }),
   };
   return rec;
 }
@@ -159,144 +150,6 @@ describe('run() — kind:update', () => {
     await run([writeParams({ ...UPDATE_PARAMS, serviceManagedLabel: 'co.goondocks.myco' })], rec.deps);
 
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// kind:update — myco BINARY self-update path (Task 9b)
-//
-// When `mycoBinaryUpdate` is populated, myco updates by binary swap through
-// `applyBinaryUpdate` — NOT the myco npm install and NOT the managed-runtime
-// install. `applyBinaryUpdate` OWNS the restart + crash-loop recovery, so
-// runUpdate must NOT also run its own restart (exactly one restart owner).
-// Operator-CLI npm specs in `packageSpecs` STILL `npm install -g`.
-// ---------------------------------------------------------------------------
-
-const MYCO_BINARY_UPDATE = {
-  assetUrl: 'https://example.test/releases/myco-darwin-arm64',
-  sha256sumsUrl: 'https://example.test/releases/SHA256SUMS',
-  assetName: 'myco-darwin-arm64',
-  targetVersion: '1.1.0',
-};
-
-const BINARY_UPDATE_PARAMS: ApplyUpdateParams = {
-  ...UPDATE_PARAMS,
-  // The myco npm spec is GONE from packageSpecs on the binary path.
-  packageSpecs: [],
-  mycoBinaryUpdate: MYCO_BINARY_UPDATE,
-  managedBinaryPath: '/home/user/.myco/bin/myco',
-  maxHealthAttempts: 10,
-  healthIntervalMs: 2000,
-};
-
-describe('run() — kind:update, myco binary self-update', () => {
-  it('routes the myco update through applyBinaryUpdate with the resolved refs; no myco npm, no own restart', async () => {
-    const rec = makeDeps();
-    await run([writeParams(BINARY_UPDATE_PARAMS)], rec.deps);
-
-    // The binary primitive was invoked exactly once with the resolved refs +
-    // the managed binary path + restart routing.
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-    expect(rec.binaryUpdateCalls[0]).toMatchObject({
-      assetUrl: MYCO_BINARY_UPDATE.assetUrl,
-      sha256sumsUrl: MYCO_BINARY_UPDATE.sha256sumsUrl,
-      assetName: MYCO_BINARY_UPDATE.assetName,
-      targetVersion: '1.1.0',
-      binaryPath: '/home/user/.myco/bin/myco',
-      daemonPort: 20915,
-      serviceManagedLabel: null,
-      projectRoot: '/project',
-      maxHealthAttempts: 10,
-      healthIntervalMs: 2000,
-    });
-
-    // Myco did NOT go through npm.
-    expect(rec.npmCalls).toEqual([]);
-    // runUpdate did NOT run its own restart — the primitive owns it.
-    expect(rec.detachedSpawns).toEqual([]);
-    expect(rec.mgr.restartCalls).toEqual([]);
-  });
-
-  it('still npm-installs operator-CLI specs (myco-team / myco-collective), then runs the binary swap', async () => {
-    const rec = makeDeps();
-    await run([writeParams({
-      ...BINARY_UPDATE_PARAMS,
-      packageSpecs: ['@goondocks/myco-team@0.1.1', '@goondocks/myco-collective@0.2.0'],
-    })], rec.deps);
-
-    // Operator CLIs STAY on npm.
-    expect(rec.npmCalls).toEqual([
-      ['install', '-g', '@goondocks/myco-team@0.1.1', '@goondocks/myco-collective@0.2.0'],
-    ]);
-    // The binary swap still happened (and is still the sole restart owner).
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-    expect(rec.detachedSpawns).toEqual([]);
-    expect(rec.mgr.restartCalls).toEqual([]);
-  });
-
-  it('passes the service label through to applyBinaryUpdate when service-managed', async () => {
-    const rec = makeDeps();
-    await run([writeParams({ ...BINARY_UPDATE_PARAMS, serviceManagedLabel: 'co.goondocks.myco' })], rec.deps);
-
-    expect(rec.binaryUpdateCalls[0]).toMatchObject({ serviceManagedLabel: 'co.goondocks.myco' });
-    // The primitive owns the restart — runUpdate must not pre-empt it.
-    expect(rec.detachedSpawns).toEqual([]);
-    expect(rec.mgr.restartCalls).toEqual([]);
-  });
-
-  it('fans the per-project sync out (on the current binary) before the binary swap', async () => {
-    const rec = makeDeps();
-    await run([writeParams(BINARY_UPDATE_PARAMS)], rec.deps);
-
-    // Fan-out runs on the still-running binary (config regen is version-agnostic),
-    // then the swap restarts onto the new one.
-    expect(rec.fanoutCalls.length).toBe(1);
-    expect(rec.fanoutCalls[0].bin).toBe('myco');
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-  });
-
-  it('operator-CLI npm failure still proceeds to the binary swap (daemon must come back)', async () => {
-    const rec = makeDeps({ npmOk: false });
-    await run([writeParams({
-      ...BINARY_UPDATE_PARAMS,
-      packageSpecs: ['@goondocks/myco-team@0.1.1'],
-    })], rec.deps);
-
-    // npm failed, but the myco binary self-update is independent and still runs.
-    expect(rec.npmCalls).toEqual([['install', '-g', '@goondocks/myco-team@0.1.1']]);
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-  });
-
-  it('runNpm THROWS: binary swap still reached (structural non-fatal invariant)', async () => {
-    // Verify that an unexpected throw from runNpm (not just a { ok: false }
-    // return) cannot strand the binary swap. The try/catch in runBinaryUpdate
-    // must swallow the throw and proceed to applyBinaryUpdate.
-    const rec = makeDeps();
-    rec.deps.runNpm = vi.fn(async () => { throw new Error('runNpm exploded'); });
-    await run([writeParams({
-      ...BINARY_UPDATE_PARAMS,
-      packageSpecs: ['@goondocks/myco-team@0.1.1'],
-    })], rec.deps);
-
-    // Despite the throw, applyBinaryUpdate was still invoked.
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-    // runUpdate's own restart is not invoked — the primitive owns it.
-    expect(rec.detachedSpawns).toEqual([]);
-    expect(rec.mgr.restartCalls).toEqual([]);
-  });
-
-  it('runFanout THROWS: binary swap still reached (structural non-fatal invariant)', async () => {
-    // Verify that an unexpected throw from runFanout cannot strand the binary
-    // swap. The try/catch in runBinaryUpdate must swallow the throw and
-    // proceed to applyBinaryUpdate.
-    const rec = makeDeps();
-    rec.deps.runFanout = vi.fn(async () => { throw new Error('runFanout exploded'); });
-    await run([writeParams(BINARY_UPDATE_PARAMS)], rec.deps);
-
-    // Fan-out threw, but applyBinaryUpdate was still invoked.
-    expect(rec.binaryUpdateCalls.length).toBe(1);
-    expect(rec.detachedSpawns).toEqual([]);
-    expect(rec.mgr.restartCalls).toEqual([]);
   });
 });
 

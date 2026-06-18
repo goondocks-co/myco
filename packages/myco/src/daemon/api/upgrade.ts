@@ -728,8 +728,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         serviceManagedLabel,
         daemonPort,
         targetVersion: status.latest_version,
-        mycoBinaryUpdate: undefined,
-        inProgressSentinelPath: updateInProgress.sentinelPath(daemonStateDir),
       });
       if (!serviceManagedLabel) {
         scheduleShutdown();

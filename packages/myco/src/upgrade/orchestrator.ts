@@ -8,14 +8,7 @@
  * works identically on macOS, Linux, and Windows — there is no `/bin/sh` on
  * Windows, so the old detached shell child ENOENT'd and stranded the daemon.
  *
- * Three paths are supported:
- *
- *   BINARY-SWAP PATH (myco self-update, stable + beta):
- *   1. sleep UPDATE_SCRIPT_DELAY_SECONDS (let the old daemon release its lock)
- *   2. `npm install -g` any operator-CLI specs (myco-team / myco-collective)
- *   3. fan out `<myco> update --all-projects` on the current binary (non-fatal)
- *   4. hand off to `applyBinaryUpdate` (download → verify → swap → restart →
- *      health-watch → auto-restore); it is the SOLE restart owner on this path
+ * Two paths are supported:
  *
  *   OPERATOR-CLI PATH (no myco binary swap — only operator npm packages):
  *   1. sleep UPDATE_SCRIPT_DELAY_SECONDS
@@ -47,8 +40,6 @@ import { spawn } from 'node:child_process';
 import {
   UPDATE_ERROR_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
-  BINARY_UPDATE_HEALTH_ATTEMPTS,
-  BINARY_UPDATE_HEALTH_INTERVAL_MS,
 } from '../constants/update.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
@@ -84,29 +75,6 @@ export interface ApplyUpdateParams {
   serviceManagedLabel?: string | null;
   daemonPort: number;
   targetVersion: string;
-  /**
-   * When present, myco updates by BINARY SWAP through `applyBinaryUpdate` (both
-   * stable and beta — and the revert-to-stable downgrade). `applyBinaryUpdate`
-   * owns download→verify→myco.prev→swap→restart→health-watch→auto-restore, so it
-   * is the SOLE restart owner on this path — runUpdate runs no restart of its
-   * own. Operator-CLI specs in `packageSpecs` are STILL `npm install -g`'d.
-   *
-   * Resolved by the daemon before it spawns the detached orchestrator.
-   */
-  mycoBinaryUpdate?: MycoBinaryUpdateRefs;
-  /** The managed binary to swap (`~/.myco/bin/myco`). Required with mycoBinaryUpdate. */
-  managedBinaryPath?: string;
-  /** Crash-loop /health poll budget for the binary swap. */
-  maxHealthAttempts?: number;
-  /** Crash-loop /health poll spacing (ms) for the binary swap. */
-  healthIntervalMs?: number;
-  /**
-   * Absolute path to the `update.in-progress` sentinel the daemon wrote before
-   * spawning this orchestrator. Forwarded to `applyBinaryUpdate` so an aborted
-   * or rolled-back self-update clears it (the restored daemon comes back on the
-   * OLD version, so the daemon-startup target-version clear won't fire).
-   */
-  inProgressSentinelPath?: string | null;
 }
 
 export interface ApplyRestartParams {
@@ -190,13 +158,6 @@ export interface ApplyUpdateDeps {
   probeHealth: (daemonPort: number) => Promise<{ version?: string } | null>;
   /** Sleep helper (overridable so tests don't actually wait). */
   sleep: (ms: number) => Promise<void>;
-  /**
-   * The single-binary self-update primitive. Optional + injected so tests can
-   * assert the binary path without network/fs; production resolves it lazily
-   * (a static import would create an apply-update ⇄ apply-binary-update cycle).
-   * Typed loosely here to keep the import one-directional.
-   */
-  applyBinaryUpdate?: (params: Record<string, unknown>) => Promise<void>;
   /**
    * Copy the staged versioned binary onto the managed binary path (atomic
    * temp+rename). ASSUMES the daemon is already stopped. Throws on any
@@ -398,96 +359,8 @@ export async function restart(
   deps.spawnDetached(effectiveMycoBinary, ['daemon'], projectRoot);
 }
 
-/**
- * Resolve the binary-update primitive: the injected fake in tests, or the real
- * one via a lazy dynamic import in production. The dynamic import is what keeps
- * the static graph acyclic (apply-binary-update imports apply-update, not the
- * reverse).
- */
-async function resolveApplyBinaryUpdate(
-  deps: ApplyUpdateDeps,
-): Promise<(params: Record<string, unknown>) => Promise<void>> {
-  if (deps.applyBinaryUpdate) return deps.applyBinaryUpdate;
-  const mod = await import('./apply-binary.js');
-  return mod.applyBinaryUpdate as unknown as (params: Record<string, unknown>) => Promise<void>;
-}
-
-/**
- * Myco BINARY self-update path (stable + beta). `applyBinaryUpdate` OWNS the
- * download→verify→myco.prev→swap→restart→health-watch→auto-restore, so it is
- * the SOLE restart owner here — this function never runs a restart of its own
- * (that would race the supervisor and double-restart). Operator-CLI npm specs
- * STILL `npm install -g`; the project fan-out runs on the CURRENT binary (config
- * regen is version-agnostic) BEFORE the swap so the daemon comes back exactly
- * once, on the new binary.
- */
-async function runBinaryUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<void> {
-  const refs = p.mycoBinaryUpdate!;
-
-  // Operator CLIs (myco-team / myco-collective) stay on npm. A failure here is
-  // recorded but NON-FATAL to the myco self-update — the binary swap below is
-  // independent and the daemon must still come back on the new myco binary.
-  // Wrapped in try/catch so an unexpected throw (e.g. a broken deps injection)
-  // cannot propagate to run()'s outer catch and strand the binary swap.
-  if (p.packageSpecs.length > 0) {
-    try {
-      const { ok } = await deps.runNpm(['install', '-g', ...p.packageSpecs]);
-      if (!ok) {
-        writeFileSafe(
-          UPDATE_ERROR_PATH,
-          JSON.stringify({ error: `npm install failed for ${p.packageSpecs.join(', ')}` }),
-        );
-      }
-    } catch (err) {
-      process.stderr.write(
-        `[myco] operator npm install threw unexpectedly; proceeding to binary swap: ${String(err)}\n`,
-      );
-      writeFileSafe(
-        UPDATE_ERROR_PATH,
-        JSON.stringify({ error: `npm install threw: ${String(err)}` }),
-      );
-    }
-  }
-
-  // Fan out the per-project config sync on the still-running (pre-swap) binary.
-  // Non-fatal; never blocks the swap. Wrapped in try/catch so an unexpected
-  // throw cannot strand the binary swap — applyBinaryUpdate must always run.
-  const fanoutLog = path.join(path.dirname(UPDATE_ERROR_PATH), 'update-fanout.log');
-  try {
-    await deps.runFanout(p.mycoBinary, fanoutLog);
-  } catch (err) {
-    process.stderr.write(
-      `[myco] project fan-out threw unexpectedly; proceeding to binary swap: ${String(err)}\n`,
-    );
-  }
-
-  // Hand the whole restart lifecycle to the primitive. It is the LAST step and
-  // the ONLY restart owner on this path.
-  const applyBinaryUpdate = await resolveApplyBinaryUpdate(deps);
-  await applyBinaryUpdate({
-    assetUrl: refs.assetUrl,
-    sha256sumsUrl: refs.sha256sumsUrl,
-    assetName: refs.assetName,
-    targetVersion: refs.targetVersion,
-    binaryPath: p.managedBinaryPath!,
-    daemonPort: p.daemonPort,
-    serviceManagedLabel: p.serviceManagedLabel ?? null,
-    projectRoot: p.projectRoot,
-    maxHealthAttempts: p.maxHealthAttempts ?? BINARY_UPDATE_HEALTH_ATTEMPTS,
-    healthIntervalMs: p.healthIntervalMs ?? BINARY_UPDATE_HEALTH_INTERVAL_MS,
-    inProgressSentinelPath: p.inProgressSentinelPath ?? null,
-  });
-}
-
 async function runUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<void> {
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
-
-  // Myco binary self-update (stable + beta, including the revert-to-stable
-  // downgrade): the primitive owns the restart.
-  if (p.mycoBinaryUpdate && p.managedBinaryPath) {
-    await runBinaryUpdate(p, deps);
-    return;
-  }
 
   // Operator-CLI-only update (no myco binary swap): `npm install -g` the
   // operator specs, fan out the per-project sync, then restart.
