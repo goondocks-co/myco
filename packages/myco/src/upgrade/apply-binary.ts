@@ -45,6 +45,13 @@ import { parseSha256Sum } from './release-assets.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
 import { restart, spawnDetached, writeFileSafe, type ApplyUpdateDeps } from './orchestrator.js';
+import {
+  versionsDir,
+  versionDir,
+  versionBinaryPath,
+  managedBinaryPath,
+} from '../install/managed-binary.js';
+import type { AssetRefs } from './release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Params (resolved by the caller) + deps (injected)
@@ -388,3 +395,345 @@ async function pollHealthyOnTarget(
   return false;
 }
 
+// ===========================================================================
+// Task 4: stage → versioned-dir + copy-on-adopt + retention/restore
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// stageBinary deps (injectable for tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deps for `stageBinary`. Reuses the download/computeSha256 pair already
+ * defined on `ApplyBinaryUpdateDeps` so the same dep bag can cover both the
+ * legacy `applyBinaryUpdate` and the new staged primitives.
+ */
+export interface StageBinaryDeps {
+  /** Download `url` to `destPath`. Throws on any network/write failure. */
+  download: (url: string, destPath: string, headers?: Record<string, string>) => Promise<void>;
+  /** Hex SHA-256 of the file at `filePath`. */
+  computeSha256: (filePath: string) => Promise<string>;
+}
+
+/** Result of a successful `stageBinary`. */
+export interface StageBinarySuccess {
+  /** The version directory (`<bindir>/versions/<version>`). */
+  versionDir: string;
+  /** The semver version string (tag suffix from `AssetRefs.targetVersion`). */
+  version: string;
+}
+
+/** Result of a failed `stageBinary`. */
+export interface StageBinaryError {
+  error: string;
+}
+
+export type StageBinaryResult = StageBinarySuccess | StageBinaryError;
+
+/**
+ * Download and verify a new release asset into the versioned-dir layout.
+ *
+ * CONTRACT (failure invariant):
+ *   - Download to a temp path INSIDE `versions/` (same filesystem as
+ *     `versions/<v>/`) so the final rename is atomic.
+ *   - Verify sha256 BEFORE any rename into `versions/<v>/`.
+ *   - On ANY failure (download throws / missing SHA entry / checksum mismatch):
+ *       - delete the temp file
+ *       - return `{ error }` — nothing lands under `versions/<v>/`
+ *       - the stable managed binary (`~/.myco/bin/myco`) is NEVER touched
+ *   - On success: rename verified temp → `versionBinaryPath`; return `{ versionDir, version }`.
+ *
+ * Task 5 owns stop → adopt → start → health-watch → restore-on-crash.
+ * This primitive is ONLY the download+verify+stage step.
+ */
+export async function stageBinary(
+  params: {
+    refs: AssetRefs;
+    home: string;
+    platform: NodeJS.Platform;
+    localAppData?: string;
+  },
+  deps: StageBinaryDeps,
+): Promise<StageBinaryResult> {
+  const { refs, home, platform, localAppData } = params;
+  const { targetVersion } = refs;
+
+  // Compute the destination paths using the Task 3 helpers.
+  const vDir = versionDir(home, platform, targetVersion, localAppData);
+  const vBinPath = versionBinaryPath(home, platform, targetVersion, localAppData);
+  const vDir2 = versionsDir(home, platform, localAppData);
+
+  // Temp file inside `versions/` so the final rename is same-fs/atomic.
+  // Use the versions parent dir (NOT the version-specific subdir) so the
+  // temp is always on the same fs but we write nothing into `versions/<v>/`
+  // until verification passes.
+  const tempPath = path.join(vDir2, `.myco-stage-${process.pid}-${Date.now()}.tmp`);
+  const tempSums = path.join(vDir2, `.myco-stage-${process.pid}-${Date.now()}.sha256sums`);
+
+  // Ensure the versions dir exists (version-specific dir is created after verify).
+  try {
+    fs.mkdirSync(vDir2, { recursive: true });
+  } catch (err) {
+    return { error: `could not create versions dir ${vDir2}: ${String(err)}` };
+  }
+
+  // --- 1 + 2: download and VERIFY, all BEFORE creating versions/<v>/ ---
+  try {
+    await deps.download(refs.assetUrl, tempPath);
+    await deps.download(refs.sha256sumsUrl, tempSums);
+
+    const sumsText = fs.readFileSync(tempSums, 'utf-8');
+    const expected = parseSha256Sum(sumsText, refs.assetName);
+    if (!expected) {
+      rmSafe(tempPath);
+      rmSafe(tempSums);
+      return {
+        error: `SHA256SUMS has no entry for ${refs.assetName} — staging aborted (stable binary untouched)`,
+      };
+    }
+
+    const actual = await deps.computeSha256(tempPath);
+    if (actual.toLowerCase() !== expected.toLowerCase()) {
+      rmSafe(tempPath);
+      rmSafe(tempSums);
+      return {
+        error: `checksum mismatch for ${refs.assetName} (expected ${expected}, got ${actual}) — staging aborted (stable binary untouched)`,
+      };
+    }
+  } catch (err) {
+    rmSafe(tempPath);
+    rmSafe(tempSums);
+    return {
+      error: `stage download/verify failed: ${String(err)} — staging aborted (stable binary untouched)`,
+    };
+  }
+
+  // Sums file served its purpose.
+  rmSafe(tempSums);
+
+  // --- 3: RENAME verified temp into versions/<v>/ (atomic, same fs) ---
+  // Only now do we create the version-specific directory.
+  try {
+    fs.mkdirSync(vDir, { recursive: true });
+    fs.renameSync(tempPath, vBinPath);
+    if (platform !== 'win32') {
+      try {
+        fs.chmodSync(vBinPath, 0o755);
+      } catch {
+        /* best-effort: keep going */
+      }
+    }
+  } catch (err) {
+    rmSafe(tempPath);
+    // If we created the version dir but the rename failed, clean it up so
+    // nothing half-lands under versions/<v>/.
+    try { fs.rmSync(vDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    return {
+      error: `could not stage binary to ${vBinPath}: ${String(err)} — staging aborted (stable binary untouched)`,
+    };
+  }
+
+  return { versionDir: vDir, version: targetVersion };
+}
+
+// ---------------------------------------------------------------------------
+// adoptStaged deps
+// ---------------------------------------------------------------------------
+
+/**
+ * Deps for `adoptStaged` (injectable for tests — no real fs ops needed in the
+ * test environment beyond what the test directly writes).
+ */
+export interface AdoptStagedDeps {
+  /** Hex SHA-256 of the file at `filePath` (kept symmetric with stageBinary). */
+  computeSha256?: (filePath: string) => Promise<string>;
+}
+
+/**
+ * Copy the versioned binary into the managed path atomically (temp+rename,
+ * same fs; `chmod 0o755` on non-win32).
+ *
+ * CONTRACT:
+ *   - Assumes the daemon is ALREADY stopped (Task 5 owns the stop).
+ *   - Retains the version dir (so `restoreVersion` can use it).
+ *   - Atomic: copy to a temp in the managed bin dir, then rename over the
+ *     managed binary (same filesystem as `~/.myco/bin/`) so there is no
+ *     window where the managed binary is absent.
+ *
+ * Throws on any fs failure (the caller — Task 5 — must handle this and
+ * restore if needed).
+ */
+export async function adoptStaged(
+  params: {
+    home: string;
+    platform: NodeJS.Platform;
+    version: string;
+    localAppData?: string;
+  },
+  _deps: AdoptStagedDeps = {},
+): Promise<void> {
+  const { home, platform, version, localAppData } = params;
+
+  const src = versionBinaryPath(home, platform, version, localAppData);
+  const dest = managedBinaryPath(home, platform, localAppData);
+  const destDir = path.dirname(dest);
+  const tmp = path.join(destDir, `.myco-adopt-${process.pid}-${Date.now()}.tmp`);
+
+  fs.mkdirSync(destDir, { recursive: true });
+
+  // Copy src → temp in the same dir as dest (same filesystem → rename is atomic).
+  fs.copyFileSync(src, tmp);
+  if (platform !== 'win32') {
+    try {
+      fs.chmodSync(tmp, 0o755);
+    } catch {
+      /* best-effort: keep going, Task 5 still needs to start the daemon */
+    }
+  }
+
+  // Atomic rename over the managed binary.
+  fs.renameSync(tmp, dest);
+}
+
+// ---------------------------------------------------------------------------
+// restoreVersion
+// ---------------------------------------------------------------------------
+
+/**
+ * Copy the versioned binary for `version` back onto the managed binary path.
+ *
+ * This is the COPY-BACK primitive. Task 5 owns the daemon restart after a
+ * restore. No cleanup of the version dir — the caller decides retention.
+ *
+ * Uses the same temp+rename approach as `adoptStaged` to keep the managed
+ * binary never-absent during the restore.
+ */
+export async function restoreVersion(
+  home: string,
+  platform: NodeJS.Platform,
+  version: string,
+  localAppData?: string,
+): Promise<void> {
+  const src = versionBinaryPath(home, platform, version, localAppData);
+  const dest = managedBinaryPath(home, platform, localAppData);
+  const destDir = path.dirname(dest);
+  const tmp = path.join(destDir, `.myco-restore-${process.pid}-${Date.now()}.tmp`);
+
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.copyFileSync(src, tmp);
+  if (platform !== 'win32') {
+    try {
+      fs.chmodSync(tmp, 0o755);
+    } catch {
+      /* best-effort */
+    }
+  }
+  fs.renameSync(tmp, dest);
+}
+
+// ---------------------------------------------------------------------------
+// pruneVersions
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove old version directories, keeping at most `max(keep, 2)` total
+ * (the floor protects current + previous from ever being pruned).
+ *
+ * INVARIANTS:
+ *   - NEVER removes the `current` or `previous` version dir, even if keep < 2.
+ *   - `keep` is floored at 2 (so `pruneVersions(…, 1)` behaves like `keep=2`).
+ *   - Prunes the OLDEST versions (by semver) first so the most recent versions
+ *     are always kept.
+ *   - If the versions directory does not exist, returns without error.
+ *   - Version dirs that are not valid semver are skipped (never removed by prune).
+ *
+ * @param home        Myco home directory (e.g. `~/.myco`).
+ * @param platform    Target platform.
+ * @param keep        Number of versions to keep total (floored at 2). Default 3.
+ * @param localAppData  Only used on win32.
+ * @param current     The currently-running version (never pruned). Default: latest by semver.
+ * @param previous    The previous version kept as rollback target (never pruned). Default: second-latest.
+ */
+export function pruneVersions(
+  home: string,
+  platform: NodeJS.Platform,
+  keep = 3,
+  localAppData?: string,
+  current?: string,
+  previous?: string,
+): void {
+  const effectiveKeep = Math.max(keep, 2);
+  const vDir = versionsDir(home, platform, localAppData);
+
+  // If versions directory doesn't exist, nothing to do.
+  if (!fs.existsSync(vDir)) return;
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(vDir);
+  } catch {
+    return;
+  }
+
+  // Collect only directories with valid semver names.
+  const semverRe = /^\d+\.\d+\.\d+/;
+  const versions = entries
+    .filter((entry) => {
+      if (!semverRe.test(entry)) return false;
+      try {
+        return fs.statSync(path.join(vDir, entry)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => {
+      // Sort newest-first using simple semver tuple comparison.
+      return compareSemverStrings(b, a);
+    });
+
+  // Build the keep set: always-protected (current + previous) PLUS the
+  // newest versions up to `effectiveKeep` total.
+  const protectedSet = new Set<string>();
+  if (current) protectedSet.add(current);
+  if (previous) protectedSet.add(previous);
+  // If not specified, protect the top two by semver (floor).
+  if (!current && versions.length > 0) protectedSet.add(versions[0]);
+  if (!previous && versions.length > 1) protectedSet.add(versions[1]);
+
+  // Fill keep slots from the newest versions first, then always add protected ones.
+  const keepSet = new Set<string>(protectedSet);
+  for (const ver of versions) {
+    if (keepSet.size >= effectiveKeep) break;
+    keepSet.add(ver);
+  }
+
+  if (versions.length <= keepSet.size) return;
+
+  for (const ver of versions) {
+    if (keepSet.has(ver)) continue;
+    // Prune this version dir.
+    try {
+      fs.rmSync(path.join(vDir, ver), { recursive: true, force: true });
+    } catch {
+      /* best-effort: if we can't remove, skip it */
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Semver comparison helper (no semver dep — operates on string triplets)
+// ---------------------------------------------------------------------------
+
+function parseSemverTuple(v: string): [number, number, number] {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  if (!m) return [0, 0, 0];
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function compareSemverStrings(a: string, b: string): number {
+  const [aMaj, aMin, aPat] = parseSemverTuple(a);
+  const [bMaj, bMin, bPat] = parseSemverTuple(b);
+  if (aMaj !== bMaj) return aMaj - bMaj;
+  if (aMin !== bMin) return aMin - bMin;
+  return aPat - bPat;
+}
