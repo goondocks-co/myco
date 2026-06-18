@@ -356,7 +356,8 @@ describe('handleUpdateApply', () => {
 
   it('routes myco through the BINARY swap (no myco in packageSpecs) and schedules shutdown', async () => {
     const scheduleShutdown = vi.fn();
-    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ scheduleShutdown }));
+    const deps = makeDeps({ scheduleShutdown });
+    const { handleUpdateApply } = createUpdateHandlers(deps);
 
     const result = await handleUpdateApply(makeReq());
 
@@ -369,6 +370,7 @@ describe('handleUpdateApply', () => {
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
+      inProgressSentinelPath: path.join(deps.daemonStateDir, 'update.in-progress'),
       targetVersion: '1.1.0',
       mycoBinaryUpdate: MYCO_REFS_1_1_0,
     });
@@ -405,7 +407,8 @@ describe('handleUpdateApply', () => {
         },
       ],
     });
-    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+    const deps = makeDeps();
+    const { handleUpdateApply } = createUpdateHandlers(deps);
 
     await handleUpdateApply(makeReq());
 
@@ -417,6 +420,7 @@ describe('handleUpdateApply', () => {
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
+      inProgressSentinelPath: path.join(deps.daemonStateDir, 'update.in-progress'),
       targetVersion: '1.1.0',
       mycoBinaryUpdate: MYCO_REFS_1_1_0,
     });
@@ -451,7 +455,8 @@ describe('handleUpdateApply', () => {
     vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(MYCO_REFS_1_0_0);
 
     // Daemon is RUNNING the beta prerelease — this is the enteringStable signal.
-    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ currentVersion: '1.1.0-beta.1' }));
+    const deps = makeDeps({ currentVersion: '1.1.0-beta.1' });
+    const { handleUpdateApply } = createUpdateHandlers(deps);
 
     const result = await handleUpdateApply(makeReq());
 
@@ -465,6 +470,7 @@ describe('handleUpdateApply', () => {
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
+      inProgressSentinelPath: path.join(deps.daemonStateDir, 'update.in-progress'),
       targetVersion: '1.0.0',
       mycoBinaryUpdate: MYCO_REFS_1_0_0,
     });
@@ -614,7 +620,8 @@ describe('handleUpdateApply', () => {
     const betaRefs = { ...MYCO_REFS_1_1_0, targetVersion: '1.0.0' };
     vi.mocked(resolveMycoBinaryUpdateRefs).mockResolvedValue(betaRefs);
 
-    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+    const deps = makeDeps();
+    const { handleUpdateApply } = createUpdateHandlers(deps);
 
     const result = await handleUpdateApply(makeReq());
 
@@ -628,6 +635,7 @@ describe('handleUpdateApply', () => {
       mycoBinary: 'myco',
       serviceManagedLabel: null,
       daemonPort: 20915,
+      inProgressSentinelPath: path.join(deps.daemonStateDir, 'update.in-progress'),
       targetVersion: '1.0.0',
       mycoBinaryUpdate: betaRefs,
     });
