@@ -29,7 +29,6 @@ import {
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
-  UPDATE_ERROR_PATH,
   UPDATE_CHECK_INTERVAL_HOURS,
   MS_PER_HOUR,
   DEV_BUILD_CACHE_PATH,
@@ -42,8 +41,6 @@ import {
   resolveMachineRuntimeCommandPath,
   setDevServiceMode,
 } from '../grove/paths.js';
-import { clearJsonSentinel } from '../utils/json-sentinel.js';
-import { readJsonFile } from '../utils/json.js';
 import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
@@ -558,36 +555,6 @@ export function isCacheStale(cache: CachedCheck | null, intervalHours: number): 
 
   const ageMs = Date.now() - checkedAt;
   return ageMs > intervalHours * MS_PER_HOUR;
-}
-
-// ---------------------------------------------------------------------------
-// Error file
-// ---------------------------------------------------------------------------
-
-interface UpdateErrorSentinel { error: string }
-
-function isUpdateErrorSentinel(value: unknown): value is UpdateErrorSentinel {
-  return !!value
-    && typeof value === 'object'
-    && typeof (value as Partial<UpdateErrorSentinel>).error === 'string';
-}
-
-/**
- * Reads ~/.myco/update-error.json. Returns the error string when present, null
- * otherwise.
- */
-export function readUpdateError(): string | null {
-  return readJsonFile(UPDATE_ERROR_PATH, isUpdateErrorSentinel)?.error ?? null;
-}
-
-/**
- * Removes ~/.myco/update-error.json so a future install attempt starts
- * from a clean slate. Idempotent — silently succeeds when the file is
- * already absent. Reconciler calls this after surfacing the prior error
- * so the next user-driven `myco update` is not gated on a stale failure.
- */
-export function consumeUpdateError(): void {
-  clearJsonSentinel(UPDATE_ERROR_PATH);
 }
 
 // ---------------------------------------------------------------------------

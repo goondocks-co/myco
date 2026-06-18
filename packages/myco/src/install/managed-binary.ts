@@ -58,9 +58,8 @@ export function managedBinaryPath(
   platform: NodeJS.Platform | string,
   localAppData?: string,
 ): string {
-  const p = platform === 'win32' ? path.win32 : path.posix;
   const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return p.join(managedBinDir(home, platform, localAppData), binaryName);
+  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), binaryName);
 }
 
 /**
@@ -73,8 +72,7 @@ export function versionsDir(
   platform: NodeJS.Platform | string,
   localAppData?: string,
 ): string {
-  const p = platform === 'win32' ? path.win32 : path.posix;
-  return p.join(managedBinDir(home, platform, localAppData), 'versions');
+  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), 'versions');
 }
 
 /**
@@ -88,8 +86,7 @@ export function versionDir(
   version: string,
   localAppData?: string,
 ): string {
-  const p = platform === 'win32' ? path.win32 : path.posix;
-  return p.join(versionsDir(home, platform, localAppData), version);
+  return (platform === 'win32' ? path.win32 : path.posix).join(versionsDir(home, platform, localAppData), version);
 }
 
 /**
@@ -103,9 +100,8 @@ export function versionBinaryPath(
   version: string,
   localAppData?: string,
 ): string {
-  const p = platform === 'win32' ? path.win32 : path.posix;
   const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return p.join(versionDir(home, platform, version, localAppData), binaryName);
+  return (platform === 'win32' ? path.win32 : path.posix).join(versionDir(home, platform, version, localAppData), binaryName);
 }
 
 /**
