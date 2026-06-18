@@ -39,6 +39,7 @@ import {
   resolveTargetTriple,
   type GitHubRelease,
   type AssetRefs,
+  type TargetTriple,
 } from '../upgrade/release-assets.js';
 import {
   stageBinary,
@@ -109,6 +110,8 @@ export interface UpgradeDeps {
   writeChannel?: typeof writeProjectReleaseChannel;
   /** Inject the update-check function (for positive --check tests). */
   checkFn?: typeof resolveMycoPackageCheck;
+  /** Resolve this machine's target triple (process.platform/arch by default). */
+  targetTriple?: () => TargetTriple;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +357,7 @@ async function resolveAssetRefsForTarget(
     const releases = await fetchReleasesFn();
     const release = releases.find((r) => r.tag_name === `myco/v${targetVersionArg}`);
     if (!release) return null;
-    const triple = resolveTargetTriple();
+    const triple = deps.targetTriple ? deps.targetTriple() : resolveTargetTriple();
     return resolveAssetRefs(release, triple);
   }
 

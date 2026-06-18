@@ -106,6 +106,10 @@ function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
     daemonPort: 20915,
     mycoBinary: '/fake/home/.myco/bin/myco',
     projectRoot: '/fake/project',
+    // Pin the target triple so exact-version asset resolution is deterministic
+    // regardless of the host OS. The mock releases only include myco-darwin-arm64,
+    // so we always resolve against that triple.
+    targetTriple: () => 'darwin-arm64',
     // resolveRefs as vi.fn() so tests can assert on it with .toHaveBeenCalled etc.
     resolveRefs: vi.fn(async (_channel) => makeRefs('1.1.0')),
     fetchReleases: vi.fn(async () => [
