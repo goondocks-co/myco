@@ -252,7 +252,53 @@ export function resolveRuntimePinForCwd(cwd: string): string | null {
   return resolveRuntimeCommand();
 }
 
+/**
+ * POSIX trust check for a `runtime.command` pin file — mirrors
+ * `checkRuntimeCommandTrust` in `bin/runtime-redirect.cjs` (the G7 guard).
+ * The two implementations are intentionally kept in sync: both refuse any pin
+ * whose mode permits group/other write (`mode & 0o022 !== 0`) or whose owner
+ * uid differs from the current process. `0o644` (owner rw, group/other
+ * readable) is explicitly trusted — only *writability* is the threat surface.
+ * Skipped on win32 (no POSIX mode semantics), where the pin is always trusted.
+ *
+ * Returns `{ ok: true }` when the pin is trusted (or on win32), or
+ * `{ ok: false, reason }` when it must be ignored.
+ */
+const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
+
+function checkPinTrust(filePath: string): { ok: true } | { ok: false; reason: string } {
+  if (process.platform === 'win32') return { ok: true };
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
+    return { ok: false, reason: `stat failed: ${(err as Error).message ?? 'unknown'}` };
+  }
+  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (myUid !== null && stat.uid !== myUid) {
+    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
+  }
+  const mode = stat.mode & 0o777;
+  if (mode & RUNTIME_COMMAND_INSECURE_MODE_MASK) {
+    return { ok: false, reason: `pin file mode 0${mode.toString(8)} is writable by group/other` };
+  }
+  return { ok: true };
+}
+
 function readPinFile(filePath: string): string | null {
+  const trust = checkPinTrust(filePath);
+  if (!trust.ok) {
+    // Best-effort warning — never fatal; a daemon with a poisoned pin falls
+    // back to the PATH-resolved `myco` rather than silently executing it.
+    try {
+      process.stderr.write(`[myco] daemon: ignoring runtime.command pin (${trust.reason}): ${filePath}\n`);
+    } catch {
+      // stderr unavailable — swallow
+    }
+    return null;
+  }
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;

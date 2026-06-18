@@ -129,9 +129,19 @@ function makeCachedCheck(overrides: Partial<CachedCheck> = {}): CachedCheck {
 
 /** Build a synthetic fs.Stats keyed by content so the machine-config tier
  *  cache invalidates whenever the mocked content changes (defends against
- *  cross-test machineConfigCache leakage — see readTierConfig). */
+ *  cross-test machineConfigCache leakage — see readTierConfig).
+ *
+ *  `uid` and `mode` are set to pass the pin-trust check in `checkPinTrust`
+ *  (uid = current process uid, mode = 0o100644 — owner rw, group/other r).
+ *  Files that aren't pin files ignore these fields; files that ARE pin files
+ *  must look trusted so existing resolveRuntimeCommand tests keep passing. */
 function fakeStat(content: string): fs.Stats {
-  return { mtimeMs: content.length + 1, size: content.length } as unknown as fs.Stats;
+  return {
+    mtimeMs: content.length + 1,
+    size: content.length,
+    uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+    mode: 0o100644,
+  } as unknown as fs.Stats;
 }
 
 /** Helper: mock fs.readFileSync to return specific content for a path. */
@@ -290,6 +300,116 @@ describe('resolveRuntimeCommand()', () => {
 
   it('returns null when runtime.command is missing', () => {
     mockNoFiles();
+    expect(resolveRuntimeCommand()).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // E2: daemon-side pin trust check (mirrors runtime-redirect.cjs G7 guard)
+  // ---------------------------------------------------------------------------
+
+  it('E2: ignores a group-writable pin file (mode 0o664) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100664, // group-writable — insecure
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBeNull();
+  });
+
+  it('E2: ignores an other-writable pin file (mode 0o666) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100666, // other-writable — insecure
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBeNull();
+  });
+
+  it('E2: honors a trusted pin file (mode 0o644, owned by current uid)', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100644, // owner rw, group/other read-only — trusted
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBe('/opt/pinned/myco');
+  });
+
+  it('E2: ignores a pin file owned by a different uid and returns null', () => {
+    if (process.platform === 'win32') return;
+    if (typeof process.getuid !== 'function') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    const foreignUid = process.getuid() === 0 ? 1 : 0; // pick a uid that isn't ours
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: foreignUid,
+          mode: 0o100644,
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
     expect(resolveRuntimeCommand()).toBeNull();
   });
 });
