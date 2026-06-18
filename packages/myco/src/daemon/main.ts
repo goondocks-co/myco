@@ -2342,6 +2342,19 @@ export async function main(): Promise<void> {
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
     reconciler,
+    // Upgrade auto-check + idle-adopt jobs. Skipped on dev builds inside
+    // the job fns themselves via `isUpdateExempt()`, so these are safe to
+    // register unconditionally here.
+    upgrade: {
+      currentVersion: server.version,
+      home: mycoHome,
+      platform: process.platform,
+      localAppData: process.env.LOCALAPPDATA,
+      stateDir: daemonService.stateDir,
+      daemonPort: server.port,
+      mycoBinary: getDevBuildCliEntry() ?? undefined,
+      projectRoot,
+    },
   });
   const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,
@@ -2352,6 +2365,41 @@ export async function main(): Promise<void> {
     scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(jobRunner, runtimeCache);
+
+  // Startup auto-check: fire once in the background immediately after boot
+  // so the user doesn't wait for the first idle/sleep tick to discover a
+  // new version. The periodic job (upgrade-auto-check) applies the cadence
+  // gate on subsequent ticks; this call always runs (dev-build no-op inside).
+  void (async () => {
+    try {
+      const { checkAndStage: doCheckAndStage } = await import('../upgrade/auto-check.js');
+      const { readUpdateConfig: readCfg } = await import('./update-checker.js');
+      const cfg = readCfg();
+      const result = await doCheckAndStage(
+        server.version,
+        {
+          home: mycoHome,
+          platform: process.platform,
+          localAppData: process.env.LOCALAPPDATA,
+          logger,
+          channel: cfg.channel,
+        },
+      );
+      if (result.status === 'staged') {
+        logger.info(LOG_KINDS.DAEMON_START, 'Startup auto-check staged new version', {
+          version: result.version,
+        });
+      } else if (result.status === 'error') {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Startup auto-check stage error', {
+          error: result.error,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.DAEMON_START, 'Startup auto-check failed', {
+        error: errorMessage(err),
+      });
+    }
+  })();
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner

@@ -30,6 +30,26 @@ export const POWER_JOB_NAMES = {
    * register/event trigger to converge them.
    */
   CAPTURE_BUFFER_DRAIN: 'capture-buffer-drain',
+  /**
+   * Background update check + stage: resolves the channel target from
+   * GitHub Releases and stages the binary under `versions/<v>/` when a
+   * newer version is available. Respects the configured check cadence
+   * (UPDATE_CHECK_INTERVAL_HOURS). No-ops on dev builds.
+   *
+   * Runs in idle/sleep only — no need to hit the network during active
+   * use; cadence gate throttles to at most once per interval.
+   */
+  UPGRADE_AUTO_CHECK: 'upgrade-auto-check',
+  /**
+   * Idle-adopt: when a staged version strictly > current is present and
+   * no update is already in-flight, spawns the adopt orchestrator and
+   * requests cooperative shutdown. The `inFlight` guard (sentinel file)
+   * is what makes this fire once-per-staged-version, not once-per-tick.
+   *
+   * Runs in idle/sleep only (`active` excluded — must not interrupt a
+   * live session). `deep_sleep` doesn't tick, so it is also excluded.
+   */
+  UPGRADE_ADOPT: 'upgrade-adopt',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];
