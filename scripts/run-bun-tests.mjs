@@ -136,7 +136,13 @@ const SAFE_NODE_BUNDLE_GROUPS = new Set([
   'tests/release-provenance',
   'tests/service',
   'tests/services',
-  'tests/symbionts',
+  // 'tests/symbionts' intentionally omitted: installer.test.ts, installer-integration.test.ts,
+  // installer-scope.test.ts, installer-invariants.test.ts and others all mutate process.env.HOME
+  // and process.env.MYCO_HOME in beforeEach/afterEach. Under bun's default max-concurrency=20,
+  // tests from different files can interleave within one shared bun process, creating a race on
+  // process.env that produces ~93 spurious failures in the full suite (while passing in isolation
+  // or in the scoped `npm test -- tests/symbionts/` run which uses --isolate per file). Each file
+  // runs isolated below instead.
   'tests/symbionts/parsers',
   'tests/symbionts/templates',
   'tests/templates',
@@ -182,7 +188,8 @@ const NO_ISOLATE_NODE_TARGETS = [
   'tests/release-provenance',
   'tests/service',
   'tests/services',
-  'tests/symbionts',
+  // 'tests/symbionts' intentionally omitted: see SAFE_NODE_BUNDLE_GROUPS comment above.
+  // Root-level symbiont tests run per-file isolated to prevent process.env race conditions.
   'tests/templates',
   'tests/tools',
   'tests/ui/layout',
@@ -1349,8 +1356,34 @@ if (dom !== null) {
   });
 }
 
-const exitCode = nonDomStatus || domStatus;
+// Aggregate JUnit failures+errors across every phase report as a backstop against
+// bun silently exiting 0 when tests fail (observed: 93 JUnit failures, exit 0).
+// The runner exits non-zero if EITHER bun reported a non-zero exit code OR the
+// JUnit aggregate shows any failure or error. Both must be zero for a green run.
+function aggregateJunitFailures(reports) {
+  let total = 0;
+  for (const { file } of reports) {
+    if (!fs.existsSync(file)) continue;
+    let xml;
+    try { xml = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const m of xml.matchAll(/<testsuite\b[^>]*/g)) {
+      const failures = Number(m[0].match(/\bfailures="(\d+)"/)?.[1] ?? 0);
+      const errors = Number(m[0].match(/\berrors="(\d+)"/)?.[1] ?? 0);
+      total += failures + errors;
+    }
+  }
+  return total;
+}
+
+const junitFailureCount = aggregateJunitFailures(phaseReports);
+const exitCode = nonDomStatus || domStatus || (junitFailureCount > 0 ? 1 : 0);
 if (exitCode !== 0) {
+  if (junitFailureCount > 0 && (nonDomStatus || domStatus) === 0) {
+    // bun exited 0 but JUnit reports failures — the false-green scenario.
+    console.error(
+      `\n[run-bun-tests] FAIL: bun exited 0 but JUnit aggregated ${junitFailureCount} failure(s)/error(s) across ${phaseReports.length} phase(s). Exiting non-zero.`,
+    );
+  }
   printFailureSummary(phaseReports);
 }
 process.exit(exitCode);
