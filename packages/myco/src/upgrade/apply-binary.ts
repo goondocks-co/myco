@@ -54,6 +54,20 @@ import {
 import type { AssetRefs } from './release-assets.js';
 
 // ---------------------------------------------------------------------------
+// Download size cap (DoS / availability guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum bytes accepted per binary download. A compromised or misconfigured
+ * CDN returning a huge body would otherwise OOM the orchestrator — this cap
+ * makes that impossible. Set well above the largest expected myco binary
+ * (~17 MB) to allow plenty of growth headroom while still bounding memory
+ * exposure. This is NOT an integrity check; sha256 verify-before-place covers
+ * that. Integrity: sha256. Availability: this cap.
+ */
+export const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024; // 256 MiB
+
+// ---------------------------------------------------------------------------
 // Params (resolved by the caller) + deps (injected)
 // ---------------------------------------------------------------------------
 
@@ -117,9 +131,62 @@ async function download(
   if (!res.ok) {
     throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
   }
-  const buf = Buffer.from(await res.arrayBuffer());
+
+  // Early-reject: if Content-Length is present and already exceeds the cap,
+  // refuse before reading a single byte. Content-Length can lie, so the
+  // streaming byte-count below is ALWAYS enforced regardless.
+  const contentLength = res.headers.get('content-length');
+  if (contentLength !== null) {
+    const declared = Number(contentLength);
+    if (!Number.isNaN(declared) && declared > MAX_DOWNLOAD_BYTES) {
+      throw new Error(
+        `download refused: Content-Length ${declared} exceeds cap of ${MAX_DOWNLOAD_BYTES} bytes (${url})`,
+      );
+    }
+  }
+
+  if (!res.body) {
+    throw new Error(`download failed: response body is null (${url})`);
+  }
+
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.writeFileSync(destPath, buf);
+
+  // Stream response body to disk with a running byte counter. If the counter
+  // exceeds MAX_DOWNLOAD_BYTES the stream is aborted, the partial file is
+  // deleted, and a clear error is thrown — the caller's temp-cleanup path
+  // handles the rest. This prevents an oversized (or malicious) CDN response
+  // from OOM-ing the orchestrator even when Content-Length is absent or lying.
+  let received = 0;
+  const fileStream = fs.createWriteStream(destPath);
+  const reader = res.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_DOWNLOAD_BYTES) {
+        reader.cancel().catch(() => { /* best-effort cancel */ });
+        fileStream.destroy();
+        rmSafe(destPath);
+        throw new Error(
+          `download exceeded ${MAX_DOWNLOAD_BYTES} bytes (cap) — aborting to prevent OOM (${url})`,
+        );
+      }
+      await new Promise<void>((resolve, reject) => {
+        fileStream.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
+      });
+    }
+    await new Promise<void>((resolve, reject) => {
+      fileStream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
+  } catch (err) {
+    // On any error (cap exceeded, write failure, …) ensure the file stream is
+    // closed and the partial file is removed before re-throwing.
+    fileStream.destroy();
+    rmSafe(destPath);
+    throw err;
+  }
 }
 
 function computeSha256(filePath: string): Promise<string> {

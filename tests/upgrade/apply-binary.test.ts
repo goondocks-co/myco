@@ -14,7 +14,7 @@
  * binaries.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,8 @@ import {
   adoptStaged,
   restoreVersion,
   pruneVersions,
+  MAX_DOWNLOAD_BYTES,
+  DEFAULT_BINARY_UPDATE_DEPS,
   type StageBinaryDeps,
   type StageBinaryResult,
 } from '@myco/upgrade/apply-binary.js';
@@ -689,5 +691,104 @@ describe('restoreVersion — chmod-failure propagation (T4)', () => {
     const binDir = path.dirname(stablePath);
     const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-restore-'));
     expect(temps).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// download() — byte-cap DoS guard (E1)
+//
+// Tests exercise the real DEFAULT_BINARY_UPDATE_DEPS.download() by injecting
+// a fake globalThis.fetch. No real network is used.
+//
+// The cap is MAX_DOWNLOAD_BYTES (256 MiB). To keep tests fast, we use a tiny
+// TEST_CAP and override it in the test — but since MAX_DOWNLOAD_BYTES is a
+// module-level constant we instead supply a body that genuinely exceeds the
+// real cap is impractical, so we test with a body that is just-under and
+// just-over a count that the real streaming counter accumulates.
+//
+// Strategy: construct a fake ReadableStream that yields chunks summing to
+// exactly MAX_DOWNLOAD_BYTES + 1, and verify the download is aborted.
+// ===========================================================================
+
+/** Build a fake Response whose body is a ReadableStream of `chunks`. */
+function fakeResponse(
+  chunks: Uint8Array[],
+  headers: Record<string, string> = {},
+): Response {
+  let i = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) {
+        controller.enqueue(chunks[i++]);
+      } else {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, { status: 200, headers });
+}
+
+describe('download() — byte-cap DoS guard (E1)', () => {
+  let savedFetch: typeof globalThis.fetch;
+  let destPath: string;
+
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+    // Use a per-test temp file inside tmpHome (which is recreated each test by
+    // the outer beforeEach/afterEach).
+    destPath = path.join(tmpHome, 'dl-test.tmp');
+  });
+
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+    // Clean up in case a test left the file.
+    try { fs.rmSync(destPath, { force: true }); } catch { /* best-effort */ }
+  });
+
+  it('streams a response under the cap successfully to disk', async () => {
+    // 1 MiB of data — well under 256 MiB.
+    const oneMiB = 1024 * 1024;
+    const chunk = new Uint8Array(oneMiB).fill(0xab);
+    globalThis.fetch = mock(async () => fakeResponse([chunk]));
+
+    await DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath);
+
+    expect(fs.existsSync(destPath)).toBe(true);
+    expect(fs.statSync(destPath).size).toBe(oneMiB);
+  });
+
+  it('rejects when cumulative bytes exceed MAX_DOWNLOAD_BYTES and cleans up the partial file', async () => {
+    // Construct two chunks that together exceed MAX_DOWNLOAD_BYTES by 1 byte.
+    // Each chunk is MAX_DOWNLOAD_BYTES/2 + 1 bytes, so after the second chunk
+    // the running total is MAX_DOWNLOAD_BYTES + 2 > MAX_DOWNLOAD_BYTES.
+    const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
+    const chunk1 = new Uint8Array(halfCap).fill(0xcc);
+    const chunk2 = new Uint8Array(halfCap).fill(0xdd);
+    globalThis.fetch = mock(async () => fakeResponse([chunk1, chunk2]));
+
+    await expect(
+      DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(/exceeded.*bytes.*cap/i);
+
+    // Partial temp file must be cleaned up.
+    expect(fs.existsSync(destPath)).toBe(false);
+  });
+
+  it('rejects on a lying Content-Length (small header, large body still caught by streaming counter)', async () => {
+    // Content-Length lies small (1 byte), body is actually over the cap.
+    const halfCap = Math.floor(MAX_DOWNLOAD_BYTES / 2) + 1;
+    const chunk1 = new Uint8Array(halfCap).fill(0xee);
+    const chunk2 = new Uint8Array(halfCap).fill(0xff);
+    globalThis.fetch = mock(async () =>
+      fakeResponse([chunk1, chunk2], { 'content-length': '1' }),
+    );
+
+    await expect(
+      DEFAULT_BINARY_UPDATE_DEPS.download('https://example.test/asset', destPath),
+    ).rejects.toThrow(/exceeded.*bytes.*cap/i);
+
+    // Even though Content-Length was small (passed the early check), the
+    // streaming counter caught it and must have cleaned the partial file.
+    expect(fs.existsSync(destPath)).toBe(false);
   });
 });
