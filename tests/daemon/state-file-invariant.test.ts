@@ -9,14 +9,15 @@
  *   visibly-absent window. The self-reconciler heartbeat is the
  *   backstop for the rare case where succession itself crashes.
  *
- * Plus the two intent-file sub-invariants that complete the tenet:
+ * Plus the restart-intent sub-invariant that completes the tenet:
  *
  *   - Restart intent: clear-BEFORE-act. The intent section must be
  *     removed before the supervisor restart is requested, otherwise a
  *     fast respawn re-reads the same intent and loops forever.
- *   - Update intent: clear-AFTER-success. The intent section is removed
- *     only when the installer succeeds; on failure the section is
- *     retained so the next reconcile tick retries.
+ *
+ * Note: the `[update]` intent sub-invariant (clear-AFTER-success) was
+ * removed in the Task 9 refactor — binary upgrades now drive directly
+ * via `initiateAdopt` paths and the [update] intent surface is gone.
  *
  * This file is the SINGLE place a future reader should land to see the
  * tenet proven end-to-end across operations. Per-operation tests cover
@@ -27,17 +28,15 @@
  *       step-aside when pid survives SIGKILL, stale grace window.
  *   - `tests/daemon/self-reconcile.test.ts`
  *       Heartbeat re-asserts daemon.json after external deletion;
- *       clear-before-act restart contract; retain-on-fail update
- *       contract.
+ *       clear-before-act restart contract.
  *   - `tests/hooks/client-kill-no-orphan.test.ts`
  *       killDaemon does NOT unlink daemon.json when the recorded pid is
  *       still alive — cleanup is owned by the successor's reconcile.
  *   - `tests/daemon/intent.test.ts`
- *       Atomic writes and merge/clear semantics for intent.toml.
+ *       Atomic writes and clear semantics for intent.restart.toml.
  *
  * Net-new in this file: cross-cutting round trips that touch more than
- * one primitive in a single test, plus scenarios the per-operation
- * suites do not exercise (notably simultaneous restart + update intent).
+ * one primitive in a single test.
  *
  * See `docs/superpowers/plans/2026-05-16-self-mutation-discipline.md`.
  */
@@ -58,7 +57,6 @@ import { reconcileSelf } from '../../packages/myco/src/daemon/self-reconcile.js'
 import {
   readIntent,
   writeRestartIntent,
-  writeUpdateIntent,
 } from '../../packages/myco/src/daemon/intent.js';
 import { DaemonLogger } from '../../packages/myco/src/daemon/logger.js';
 import type {
@@ -151,99 +149,59 @@ describe('self-mutation-discipline invariants', () => {
     expect(observed.pid).toBe(successor.pid);
   });
 
-  test('simultaneous restart + update intent — both sections processed in one tick, file fully cleared', async () => {
-    // Net-new scenario not covered elsewhere: a user could plausibly
-    // queue both intents (e.g. `myco restart` then `myco update`
-    // before the daemon has ticked). The reconcile loop must process
-    // both deterministically and leave intent.toml fully cleaned when
-    // both succeed — otherwise a partial state at next tick could
-    // produce surprising behavior (re-restart, re-update).
-    const dir = mkdtempSync(join(tmpdir(), 'myco-tenet-both-intents-'));
+  test('restart intent: clear-before-act — intent section cleared before supervisor restart fires', async () => {
+    // Verifies the restart sub-invariant: intent.restart.toml must be
+    // removed BEFORE the supervisor restart is requested, so a fast
+    // respawn cannot observe the file and trigger an infinite loop.
+    const dir = mkdtempSync(join(tmpdir(), 'myco-tenet-restart-clear-'));
     const svc = makeService(dir);
     const logger = makeLogger(dir);
     const state = makeState();
 
-    writeRestartIntent(svc, { requested_at: new Date().toISOString(), reason: 'tenet-both' });
-    writeUpdateIntent(svc, { target_version: '0.27.99', requested_at: new Date().toISOString() });
+    writeRestartIntent(svc, { requested_at: new Date().toISOString(), reason: 'tenet-restart' });
     const restartFile = join(svc.stateDir, 'intent.restart.toml');
-    const updateFile = join(svc.stateDir, 'intent.update.toml');
     expect(existsSync(restartFile)).toBe(true);
-    expect(existsSync(updateFile)).toBe(true);
 
     const events: string[] = [];
+    let restartFilePresentAtRestartTime: boolean | null = null;
     await reconcileSelf({
       daemonService: svc,
       stateAuthority: makeAuthority(svc),
       currentState: () => state,
       logger,
-      requestSupervisorRestart: () => events.push('restart'),
-      installUpdate: async (target) => { events.push(`update:${target}`); },
+      requestSupervisorRestart: () => {
+        restartFilePresentAtRestartTime = existsSync(restartFile);
+        events.push('restart');
+      },
     });
 
-    // Both intents were invoked, restart first (it's processed before
-    // update in reconcileSelf; this locks the ordering in).
-    expect(events).toEqual(['restart', 'update:0.27.99']);
-    // INVARIANT: restart section cleared (clear-before-act); update
-    // section RETAINED across the spawn so the post-restart daemon can
-    // decide based on current.version vs target + update-error.json
-    // presence. Clearing here would defeat the retry semantics on
-    // install failure.
+    expect(events).toEqual(['restart']);
+    // INVARIANT: restart section was already cleared by the time the
+    // supervisor restart callback fired.
+    expect(restartFilePresentAtRestartTime).toBe(false);
     expect(existsSync(restartFile)).toBe(false);
-    expect(existsSync(updateFile)).toBe(true);
     // INVARIANT: daemon.json present and pointing at us.
     expect(existsSync(svc.statePath)).toBe(true);
     const written = JSON.parse(readFileSync(svc.statePath, 'utf-8'));
     expect(written.pid).toBe(state.pid);
   });
 
-  test('simultaneous restart + update where update FAILS — restart still fires, update intent retained', async () => {
-    // Net-new corollary: even when one intent's action fails, the
-    // other's must still complete, and only the failed intent's
-    // section is retained. This proves the two intent sections are
-    // independent and that failure containment works.
-    const dir = mkdtempSync(join(tmpdir(), 'myco-tenet-update-fail-'));
-    const svc = makeService(dir);
-    const state = makeState();
-    // Use the silent test logger shape from self-reconcile.test.ts —
-    // the real DaemonLogger writes to disk, which is fine, but we
-    // need to avoid the error being treated as a test failure.
-    const logger: DaemonLoggerType = {
-      debug() {},
-      info() {},
-      warn() {},
-      error() {},
-    } as unknown as DaemonLoggerType;
-
-    writeRestartIntent(svc, { requested_at: new Date().toISOString(), reason: 'tenet-partial-fail' });
-    writeUpdateIntent(svc, { target_version: '0.27.99', requested_at: new Date().toISOString() });
-
-    let restartCalls = 0;
-    let updateCalls = 0;
-    await reconcileSelf({
-      daemonService: svc,
-      stateAuthority: makeAuthority(svc),
-      currentState: () => state,
-      logger,
-      requestSupervisorRestart: () => { restartCalls += 1; },
-      installUpdate: async () => {
-        updateCalls += 1;
-        throw new Error('npm registry unreachable');
-      },
-    });
-
-    // Restart fired, update attempted.
-    expect(restartCalls).toBe(1);
-    expect(updateCalls).toBe(1);
-
-    // INVARIANT: restart section cleared (it succeeded), update
-    // section retained (sync-spawn failure path retries on next tick)
-    // — proves clear-before-act for restart and retain-on-sync-throw
-    // for update operate independently.
+  test('[update] intent surface is gone — intent.ts no longer exposes update fields', () => {
+    // Structural regression guard: the Intent type must not have an
+    // `update` field (removed in Task 9). If someone re-adds the field,
+    // this test fails immediately.
+    const dir = mkdtempSync(join(tmpdir(), 'myco-tenet-no-update-'));
+    mkdirSync(join(dir, 'service'), { recursive: true });
+    const svc: DaemonServiceState = {
+      scope: 'global',
+      stateDir: join(dir, 'service'),
+      statePath: join(dir, 'service', 'daemon.json') as DaemonStatePath,
+      lockPath: join(dir, 'service', 'daemon.lock'),
+      canonicalPort: 20915,
+    };
     const intent = readIntent(svc);
-    expect(intent.restart).toBeUndefined();
-    expect(intent.update?.target_version).toBe('0.27.99');
-    expect(existsSync(join(svc.stateDir, 'intent.restart.toml'))).toBe(false);
-    expect(existsSync(join(svc.stateDir, 'intent.update.toml'))).toBe(true);
+    // The intent object must not carry an `update` field.
+    expect('update' in intent).toBe(false);
   });
 
   test('pid-reuse defense: stale daemon.json pointing at a recycled pid → takeover without orphaning the stranger', async () => {

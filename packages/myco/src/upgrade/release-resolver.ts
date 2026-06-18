@@ -74,22 +74,3 @@ export async function resolveMycoBinaryUpdateRefs(
   return resolveAssetRefs(release, triple);
 }
 
-/**
- * Resolve the binary-update refs for an EXACT target version (the
- * `myco update --target-version <ver>` / self-reconcile intent path).
- *
- * Matches the release whose tag is `myco/v<version>` exactly. Returns null when
- * no such release exists or it has no asset for this platform. The
- * `--target-version` flow carries only a version string (no channel / release
- * object), so we resolve it directly against the releases list.
- */
-export async function resolveMycoBinaryUpdateRefsForVersion(
-  version: string,
-  deps: MycoReleaseResolverDeps = DEFAULT_RELEASE_RESOLVER_DEPS,
-): Promise<AssetRefs | null> {
-  const releases = await deps.fetchReleases();
-  const release = releases.find((r) => r.tag_name === `myco/v${version}`);
-  if (!release) return null;
-  const triple = deps.targetTriple();
-  return resolveAssetRefs(release, triple);
-}

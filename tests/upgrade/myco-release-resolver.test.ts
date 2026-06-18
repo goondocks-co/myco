@@ -4,14 +4,17 @@
  *
  * All fetching is injected so the tests touch no network. The resolver:
  *   - by channel: fetch → pickRelease → resolveAssetRefs for this triple
- *   - by exact version: fetch → match `myco/v<version>` → resolveAssetRefs
  *   - returns null when no release matches / no asset for this platform
+ *
+ * Note: `resolveMycoBinaryUpdateRefsForVersion` (exact-version lookup for the
+ * old `myco update --target-version` / self-reconcile intent path) was deleted
+ * in the Task 9 refactor. Binary upgrades now use `resolveMycoBinaryUpdateRefs`
+ * (channel-based) via the `initiateAdopt` / `myco upgrade` paths.
  */
 
 import { describe, it, expect } from 'bun:test';
 import {
   resolveMycoBinaryUpdateRefs,
-  resolveMycoBinaryUpdateRefsForVersion,
   type MycoReleaseResolverDeps,
 } from '@myco/upgrade/release-resolver.js';
 import type { GitHubRelease } from '@myco/upgrade/release-assets.js';
@@ -68,21 +71,5 @@ describe('resolveMycoBinaryUpdateRefs (by channel)', () => {
       deps([release('myco-team/v9.9.9', false), release('myco/v1.2.0', false)]),
     );
     expect(refs?.targetVersion).toBe('1.2.0');
-  });
-});
-
-describe('resolveMycoBinaryUpdateRefsForVersion (exact version)', () => {
-  it('matches the release tagged myco/v<version>', async () => {
-    const refs = await resolveMycoBinaryUpdateRefsForVersion(
-      '1.3.0',
-      deps([release('myco/v1.2.0', false), release('myco/v1.3.0', false)]),
-    );
-    expect(refs?.targetVersion).toBe('1.3.0');
-    expect(refs?.assetUrl).toBe('https://dl.test/myco/v1.3.0/myco-darwin-arm64');
-  });
-
-  it('returns null when no release matches the exact version', async () => {
-    const refs = await resolveMycoBinaryUpdateRefsForVersion('9.9.9', deps([release('myco/v1.3.0', false)]));
-    expect(refs).toBeNull();
   });
 });

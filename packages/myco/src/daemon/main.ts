@@ -1621,15 +1621,16 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // Intent surface: read + write the per-section intent files behind
-  // `myco restart` / `myco update --target-version`. Surfacing these via
-  // HTTP lets MCP tool callers and the UI drive daemon lifecycle ops
-  // without shelling to the CLI. Reconciler still owns convergence.
+  // `myco restart`. Surfacing these via HTTP lets MCP tool callers and
+  // the UI drive daemon restart without shelling to the CLI. Reconciler
+  // still owns convergence.
+  //
+  // Binary upgrade intents ([update]) were removed — use `api/upgrade`
+  // and `myco upgrade [<version>]` instead.
   const intentHandlers = createIntentHandlers(daemonService);
   server.registerRoute('GET',    '/api/daemon/intent',         intentHandlers.status);
   server.registerRoute('POST',   '/api/daemon/intent/restart', intentHandlers.requestRestart);
-  server.registerRoute('POST',   '/api/daemon/intent/update',  intentHandlers.requestUpdate);
   server.registerRoute('DELETE', '/api/daemon/intent/restart', intentHandlers.cancelRestart);
-  server.registerRoute('DELETE', '/api/daemon/intent/update',  intentHandlers.cancelUpdate);
 
   // --- Upgrade routes ---
   const upgradeProjectRoot = resolveProjectRoot(bootstrapVaultDir);
@@ -2363,9 +2364,6 @@ export async function main(): Promise<void> {
     daemonService,
     stateAuthority: daemonStateAuthority,
     server,
-    daemonVaultDir: bootstrapVaultDir,
-    projectRoot,
-    scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(jobRunner, runtimeCache);
 
