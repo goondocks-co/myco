@@ -39,9 +39,14 @@ import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
 import { initiateAdopt } from '@myco/upgrade/adopt.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import type { PackageCheckResult } from '@myco/upgrade/checker.js';
+import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
+import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS } from '@myco/upgrade/apply-binary.js';
+import type { StageBinaryDeps } from '@myco/upgrade/apply-binary.js';
+import type { AssetRefs } from '@myco/upgrade/release-assets.js';
 import { checkOperatorCliVersions } from '../operator-cli-versions.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
+import { versionBinaryPath } from '../../install/managed-binary.js';
 import {
   RELEASE_CHANNELS,
   NPM_PACKAGE_NAME,
@@ -116,6 +121,18 @@ export interface UpgradeDeps {
   localAppData?: string;
   /** Optional override for tests; defaults to the platform service manager. */
   serviceManager?: ServiceManager;
+  /**
+   * Resolve the binary-update refs for the given channel + this machine. Used
+   * by the revert-to-stable path to resolve the stable target DIRECTLY (it may
+   * be a LOWER version than the running prerelease, so the strictly-greater
+   * staged-version scan cannot find it). Defaults to the real channel resolver;
+   * tests override it to avoid network calls.
+   */
+  resolveRevertRefs?: (channel: ReleaseChannel) => Promise<AssetRefs | null>;
+  /** Stage a resolved binary. Defaults to the real `stageBinary`. Test override. */
+  stageBinary?: typeof stageBinary;
+  /** Download/hash deps for `stageBinary`. Defaults to DEFAULT_BINARY_UPDATE_DEPS. */
+  stageDeps?: StageBinaryDeps;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +204,14 @@ function buildPackagesFromCache(
       semver.valid(latestVersion) !== null &&
       semver.gt(latestVersion, installedVersion);
 
+    // Mirrors the live revert gate in upgrade/checker.ts (`latest_stable != null`).
+    // It stays behaviorally equivalent ONLY because the same `?? currentVersion`
+    // fallback is applied consistently: the cache writer stores
+    // `latest_stable ?? currentVersion`, and `latestVersion` (compared below)
+    // derives from `latestStable` (the fallback value), not the raw null. Gating
+    // on `latestStableRaw` here keeps this in lockstep with checker.ts — if a
+    // future change stored the raw null instead, this gate must be revisited so
+    // the two paths don't silently diverge.
     const revertAvailable =
       pkg.id === 'myco' &&
       desiredStableRevert &&
@@ -319,6 +344,9 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     localAppData,
   } = deps;
   const serviceManager = deps.serviceManager ?? getServiceManager();
+  const resolveRevertRefs = deps.resolveRevertRefs ?? resolveMycoBinaryUpdateRefs;
+  const stageBinaryFn = deps.stageBinary ?? stageBinary;
+  const stageDeps = deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS;
 
   function readVaultSnapshot() {
     const runtimeCommand = resolveRuntimeCommand(vaultDir);
@@ -535,17 +563,79 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
   }
 
   /**
+   * Resolve + stage the stable-channel target for a beta→stable revert.
+   *
+   * Mirrors the CLI (`cli/upgrade.ts`): resolve the stable channel's asset refs
+   * DIRECTLY, then stage them if the versioned binary is not already on disk —
+   * intentionally NOT going through `resolveNewestStagedVersion`, whose
+   * strictly-greater scan can never return a stable version below the running
+   * prerelease. The caller then `initiateAdopt`s the returned version, which
+   * bypasses the no-downgrade gate for this explicit revert.
+   *
+   * Returns the resolved stable version, or an `{ error }` body for the 422.
+   */
+  async function resolveStableRevertTarget(): Promise<
+    { version: string } | { error: { error: string; message: string } }
+  > {
+    let refs: AssetRefs | null;
+    try {
+      refs = await resolveRevertRefs('stable');
+    } catch (err) {
+      return {
+        error: {
+          error: 'revert_resolve_failed',
+          message: `Could not resolve the stable release to revert to: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      };
+    }
+    if (refs === null) {
+      return {
+        error: {
+          error: 'no_stable_release',
+          message: 'No stable release is available to revert to.',
+        },
+      };
+    }
+
+    // Stage the resolved stable binary if it is not already on disk. The adopt
+    // step requires the versioned binary to exist under versions/<v>/.
+    const vBinPath = versionBinaryPath(home, platform, refs.targetVersion, localAppData);
+    if (!fs.existsSync(vBinPath)) {
+      const staged = await stageBinaryFn({ refs, home, platform, localAppData }, stageDeps);
+      if ('error' in staged) {
+        return {
+          error: {
+            error: 'revert_stage_failed',
+            message: `Could not stage the stable release ${refs.targetVersion}: ${staged.error}`,
+          },
+        };
+      }
+    }
+
+    return { version: refs.targetVersion };
+  }
+
+  /**
    * POST /api/upgrade/apply — initiates the upgrade and schedules shutdown.
    *
-   * For the myco binary: drives initiateAdopt on the staged version (staged
-   * by the background auto-check+stage job). Returns 422 when no staged
-   * version is available yet (background check hasn't run).
+   * For the myco binary:
+   *   - FORWARD upgrade / enter-beta: drives initiateAdopt on the newest staged
+   *     version strictly greater than current (staged by the background
+   *     auto-check+stage job). Returns 422 when nothing has been staged yet.
+   *   - REVERT-TO-STABLE (running a prerelease, channel→stable): the stable
+   *     target is a LOWER version than the running prerelease, so the
+   *     strictly-greater staged scan can never find it (and the strictly-greater
+   *     auto-stage path never staged it either). This path mirrors the CLI:
+   *     resolve the stable channel's refs DIRECTLY, stage them if not already
+   *     present, then initiateAdopt that exact version — intentionally bypassing
+   *     the no-downgrade gate for the explicit revert.
    * For operator CLIs (myco-team / myco-collective): uses spawnUpdateScript
    * (npm path), the same as before.
    *
    * Returns 400 when no update is available or when in dev mode.
    * Returns 409 when an update is already in flight.
-   * Returns 422 when myco update is requested but no staged version is found.
+   * Returns 422 when a forward myco update is requested but nothing is staged,
+   * or when the revert-to-stable target cannot be resolved/staged.
    */
   async function handleUpgradeApply(_req: RouteRequest): Promise<RouteResponse> {
     if (isUpdateExempt()) {
@@ -578,24 +668,13 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       mycoPackage?.installed && (mycoPackage.update_available || mycoPackage.revert_available),
     );
     const enteringBeta = status.channel === 'beta';
+    // Revert-to-stable: running a prerelease while the desired channel is stable.
+    // The stable target is LOWER than the running prerelease, so it is resolved
+    // and staged directly (see resolveStableRevertTarget) rather than via the
+    // strictly-greater staged scan the forward path uses.
     const enteringStable =
       status.channel === 'stable' && semver.prerelease(currentVersion) !== null;
     const mycoNeedsBinarySwap = mycoNeedsUpdate || enteringBeta || enteringStable;
-
-    // Resolve staged version for the myco binary swap path via initiateAdopt.
-    let stagedVersion: string | null = null;
-    if (mycoNeedsBinarySwap) {
-      stagedVersion = resolveNewestStagedVersion(home, platform, currentVersion, localAppData);
-      if (stagedVersion === null) {
-        return {
-          status: 422,
-          body: {
-            error: 'no_staged_version',
-            message: 'No staged version found. The background auto-check has not yet staged a binary. Try again in a moment.',
-          },
-        };
-      }
-    }
 
     if (operatorSpecs.length === 0 && !mycoNeedsBinarySwap) {
       return { status: 400, body: { error: 'no_update_available' } };
@@ -605,8 +684,39 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       return { status: 409, body: { error: 'update_in_progress' } };
     }
 
+    // Resolve the version the myco binary should adopt.
+    //
+    // REVERT-TO-STABLE: resolve the stable channel's refs directly (mirroring
+    // the CLI's resolve→stage→adopt), stage them if not already present, and
+    // adopt that exact version — even when it is LOWER than the running
+    // prerelease. This is the only path that bypasses the no-downgrade gate.
+    //
+    // FORWARD / enter-beta: adopt the newest version strictly greater than
+    // current that the background auto-check has already staged.
+    let mycoTargetVersion: string | null = null;
+    if (mycoNeedsBinarySwap) {
+      if (enteringStable) {
+        const resolved = await resolveStableRevertTarget();
+        if ('error' in resolved) {
+          return { status: 422, body: resolved.error };
+        }
+        mycoTargetVersion = resolved.version;
+      } else {
+        mycoTargetVersion = resolveNewestStagedVersion(home, platform, currentVersion, localAppData);
+        if (mycoTargetVersion === null) {
+          return {
+            status: 422,
+            body: {
+              error: 'no_staged_version',
+              message: 'No staged version found. The background auto-check has not yet staged a binary. Try again in a moment.',
+            },
+          };
+        }
+      }
+    }
+
     const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
-    const reportedVersion = stagedVersion ?? status.latest_version;
+    const reportedVersion = mycoTargetVersion ?? status.latest_version;
 
     // Operator CLIs: spawn update script (npm path).
     if (operatorSpecs.length > 0) {
@@ -626,17 +736,17 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       }
     }
 
-    // Myco binary: drive initiateAdopt on the staged version.
-    if (mycoNeedsBinarySwap && stagedVersion !== null) {
+    // Myco binary: drive initiateAdopt on the resolved (staged) version.
+    if (mycoNeedsBinarySwap && mycoTargetVersion !== null) {
       updateInProgress.write(daemonStateDir, {
-        targetVersion: stagedVersion,
+        targetVersion: mycoTargetVersion,
         startedAt: Date.now(),
-        initiator: 'api/update/apply',
+        initiator: 'api/upgrade/apply',
       });
 
       await initiateAdopt({
         source: 'daemon',
-        targetVersion: stagedVersion,
+        targetVersion: mycoTargetVersion,
         prevVersion: currentVersion,
         home,
         platform,
@@ -650,7 +760,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     }
 
     const reportedPackages = [
-      ...(mycoNeedsBinarySwap && stagedVersion ? [`${NPM_PACKAGE_NAME}@${stagedVersion}`] : []),
+      ...(mycoNeedsBinarySwap && mycoTargetVersion ? [`${NPM_PACKAGE_NAME}@${mycoTargetVersion}`] : []),
       ...operatorSpecs,
     ];
 

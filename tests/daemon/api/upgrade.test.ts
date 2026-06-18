@@ -614,8 +614,12 @@ describe('handleUpgradeApply', () => {
     );
   });
 
-  it('beta→stable revert: uses initiateAdopt with staged stable version', async () => {
-    // Running beta, cache says stable is 1.0.0, no newer beta → revert path
+  it('beta→stable revert: resolves+stages+adopts the LOWER stable version (not a 422)', async () => {
+    // Running beta 1.1.0-beta.1; the stable target (1.0.0) is LOWER than the
+    // running prerelease. The forward staged scan (resolveNewestStagedVersion)
+    // can NEVER find a version below current, so the revert path must resolve
+    // the stable refs DIRECTLY and stage them — mirroring the CLI. Returning a
+    // null staged scan here proves the revert path does not depend on it.
     (readCachedCheck as AnyMock).mockReturnValue({
       checked_at: new Date().toISOString(),
       channel: 'stable',
@@ -623,15 +627,35 @@ describe('handleUpgradeApply', () => {
         myco: { package_name: '@goondocks/myco', latest_stable: '1.0.0', latest_beta: null },
       },
     });
-    (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.0.0');
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
 
-    const deps = makeDeps({ currentVersion: '1.1.0-beta.1' });
+    const stableRefs = {
+      assetUrl: 'https://example/myco-darwin-arm64',
+      sha256sumsUrl: 'https://example/SHA256SUMS',
+      assetName: 'myco-darwin-arm64',
+      targetVersion: '1.0.0',
+    };
+    const resolveRevertRefs = vi.fn(async () => stableRefs);
+    const stageBinary = vi.fn(async () => ({ versionDir: '/home/user/.myco/bin/versions/1.0.0', version: '1.0.0' }));
+
+    const deps = makeDeps({
+      currentVersion: '1.1.0-beta.1',
+      resolveRevertRefs,
+      stageBinary,
+    });
     const { handleUpgradeApply } = createUpgradeHandlers(deps);
 
     const result = await handleUpgradeApply(makeReq());
 
     expect(result.status).toBeUndefined();
+    // Resolved the stable channel directly, then staged it (no pre-staged binary).
+    expect(resolveRevertRefs).toHaveBeenCalledWith('stable');
+    expect(stageBinary).toHaveBeenCalledWith(
+      expect.objectContaining({ refs: stableRefs }),
+      expect.anything(),
+    );
+    // The forward staged scan must NOT decide the revert target.
     expect(initiateAdopt).toHaveBeenCalledWith(
       expect.objectContaining({
         source: 'daemon',
@@ -639,7 +663,55 @@ describe('handleUpgradeApply', () => {
         prevVersion: '1.1.0-beta.1',
       }),
     );
-    expect(result.body).toMatchObject({ status: 'applying' });
+    expect(result.body).toMatchObject({ status: 'applying', version: '1.0.0' });
+  });
+
+  it('beta→stable revert: skips staging when the stable version is already on disk', async () => {
+    (readCachedCheck as AnyMock).mockReturnValue({
+      checked_at: new Date().toISOString(),
+      channel: 'stable',
+      packages: {
+        myco: { package_name: '@goondocks/myco', latest_stable: '1.0.0', latest_beta: null },
+      },
+    });
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+
+    // Point home at a tmpdir and pre-create the versioned binary so the
+    // already-staged guard short-circuits the stage step. The managed layout is
+    // `<home>/.myco/bin/versions/<v>/myco` on POSIX (see managed-binary.ts).
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-revert-home-'));
+    const vBinDir = path.join(home, '.myco', 'bin', 'versions', '1.0.0');
+    fs.mkdirSync(vBinDir, { recursive: true });
+    fs.writeFileSync(path.join(vBinDir, 'myco'), '#!/bin/sh\n');
+
+    const stableRefs = {
+      assetUrl: 'https://example/myco-darwin-arm64',
+      sha256sumsUrl: 'https://example/SHA256SUMS',
+      assetName: 'myco-darwin-arm64',
+      targetVersion: '1.0.0',
+    };
+    const resolveRevertRefs = vi.fn(async () => stableRefs);
+    const stageBinary = vi.fn(async () => ({ versionDir: vBinDir, version: '1.0.0' }));
+
+    const deps = makeDeps({
+      currentVersion: '1.1.0-beta.1',
+      home,
+      resolveRevertRefs,
+      stageBinary,
+    });
+    const { handleUpgradeApply } = createUpgradeHandlers(deps);
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(resolveRevertRefs).toHaveBeenCalledWith('stable');
+    expect(stageBinary).not.toHaveBeenCalled();
+    expect(initiateAdopt).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'daemon', targetVersion: '1.0.0' }),
+    );
+    expect(result.status).toBeUndefined();
+
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('passes service label to initiateAdopt when service-managed', async () => {
