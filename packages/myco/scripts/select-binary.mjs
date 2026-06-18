@@ -37,22 +37,58 @@ function detectTarget() {
  * to stderr and is NON-FATAL — npm postinstall must never fail because the
  * daemon's lazy-spawn path and `myco doctor` still recover the gap.
  *
- * `dest` is INJECTED (not computed here) so the path lives in exactly one
- * place — `@myco/install/managed-binary` — which prod computes from the
- * compiled `dist` module and tests compute from the `.ts`. Same source, zero
- * `.ts`/`.mjs` drift.
+ * `dest` and `versionedDest` are INJECTED (not computed here) so the paths
+ * live in exactly one place — `@myco/install/managed-binary` — which prod
+ * computes from the compiled `dist` module and tests compute from the `.ts`.
+ * Same source, zero `.ts`/`.mjs` drift.
+ *
+ * Layout produced (mirrors install.sh / the daemon helpers):
+ *   `versionedDest`  → <bindir>/versions/<bare-semver>/myco[.exe]
+ *   `dest`           → <bindir>/myco[.exe]  (stable, current slot)
+ *
+ * Sequence: place at versioned slot via atomic temp+rename, then copy from
+ * the versioned slot to the stable path via a second atomic temp+rename. A
+ * partial copy can never leave a broken stable binary.
  *
  * Returns `{ dest, copied, pinAction }` for callers/tests to assert.
  *
- * @param {{ home: string, platform: string, resolvedBinary: string, dest: string, channel: string }} args
+ * @param {{ home: string, platform: string, resolvedBinary: string, dest: string, channel: string, version?: string, versionedDest?: string, writeMarker?: Function }} args
  */
-export function convergeNpmInstall({ home, platform, resolvedBinary, dest, channel, writeMarker }) {
+export function convergeNpmInstall({ home, platform, resolvedBinary, dest, channel, version, versionedDest, writeMarker }) {
   const log = (msg) => process.stderr.write(`[myco] ${msg}\n`);
   const mycoHome = path.join(home, '.myco');
   let copied = false;
   let pinAction = 'skipped';
 
-  // --- Atomic copy: never truncate `dest` in place ------------------------
+  // --- Step 1: Atomic placement into the versioned slot -------------------
+  // When `versionedDest` is provided, place the binary at the versioned path
+  // first. This is the canonical layout: <bindir>/versions/<semver>/myco[.exe].
+  // Uses the same temp+rename pattern as the stable copy below.
+  let sourceForStable = resolvedBinary;
+  if (versionedDest) {
+    try {
+      fs.mkdirSync(path.dirname(versionedDest), { recursive: true });
+      const tmpV = `${versionedDest}.tmp-${process.pid}`;
+      try {
+        fs.copyFileSync(resolvedBinary, tmpV);
+        if (platform !== 'win32') {
+          try { fs.chmodSync(tmpV, 0o755); } catch { /* best effort */ }
+        }
+        fs.renameSync(tmpV, versionedDest);
+        // Stable copy reads from the versioned slot — ensures both paths
+        // hold identical bytes from the same verified source.
+        sourceForStable = versionedDest;
+      } catch (err) {
+        try { fs.rmSync(tmpV, { force: true }); } catch { /* best effort */ }
+        throw err;
+      }
+    } catch (err) {
+      log(`versioned binary placement skipped: ${err?.message ?? err}`);
+      // Fall back to copying directly from the resolved source binary.
+    }
+  }
+
+  // --- Step 2: Atomic copy to the stable dest ----------------------------
   // Write to a pid-suffixed temp file in the same directory, then rename onto
   // `dest`. A reader either sees the old binary or the new one, never a
   // half-written file.
@@ -60,7 +96,7 @@ export function convergeNpmInstall({ home, platform, resolvedBinary, dest, chann
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const tmp = `${dest}.tmp-${process.pid}`;
     try {
-      fs.copyFileSync(resolvedBinary, tmp);
+      fs.copyFileSync(sourceForStable, tmp);
       if (platform !== 'win32') {
         try { fs.chmodSync(tmp, 0o755); } catch { /* best effort */ }
       }
@@ -226,14 +262,29 @@ async function main() {
     if (fs.existsSync(distManagedBinary)) {
       try {
         const managed = await import(distManagedBinary);
-        dest = managed.managedBinaryPath(os.homedir(), process.platform);
+        const home = os.homedir();
+        const platform = process.platform;
+        // `pkg.version` is the bare semver (e.g. "1.2.3") — npm packages never
+        // carry the "myco/v" tag prefix that curl installers use. This is the
+        // exact version string the daemon's versionBinaryPath() expects.
+        let pkg = { version: null };
+        try {
+          pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+        } catch { /* version stays null; versionedDest skipped */ }
+        const version = pkg.version ?? null;
+        dest = managed.managedBinaryPath(home, platform);
+        const versionedDest = version
+          ? managed.versionBinaryPath(home, platform, version)
+          : null;
         const channel = deriveChannel(pkgRoot);
         convergeNpmInstall({
-          home: os.homedir(),
-          platform: process.platform,
+          home,
+          platform,
           resolvedBinary: binaryPath,
           dest,
           channel,
+          version,
+          versionedDest,
           writeMarker: managed.writeInstallMarker,
         });
       } catch (err) {
