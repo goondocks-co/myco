@@ -317,8 +317,14 @@ export function EmbeddingTab() {
   }
 
   // --- Aggregate totals ---
-  const totalPending = Object.values(data.pending).reduce((a, b) => a + b, 0);
-  const totalStale = Object.values(data.by_namespace).reduce((a, ns) => a + ns.stale, 0);
+  // Sum over namespace_breakdown so the header cards use the same composed
+  // source as the grid rows (which add canopy undescribed to pending and
+  // max content-staleness for canopy_entries). Fall back to the raw fields
+  // when namespace_breakdown is absent (older daemon responses).
+  const totalPending = EMBEDDABLE_NAMESPACES.reduce(
+    (sum, ns) => sum + (data.namespace_breakdown?.[ns]?.pending ?? data.pending[ns] ?? 0), 0);
+  const totalStale = EMBEDDABLE_NAMESPACES.reduce(
+    (sum, ns) => sum + (data.namespace_breakdown?.[ns]?.stale ?? data.by_namespace[ns]?.stale ?? 0), 0);
   const canopyDescribePending = data.canopy_describe?.pending ?? 0;
 
   return (

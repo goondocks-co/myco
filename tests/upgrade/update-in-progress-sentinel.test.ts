@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import * as updateInProgress from '@myco/daemon/update-in-progress.js';
+import * as updateInProgress from '@myco/upgrade/in-progress.js';
 
 describe('update-in-progress sentinel', () => {
   let stateDir: string;

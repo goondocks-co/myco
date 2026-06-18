@@ -8,12 +8,10 @@ import { loadConfig, updateConfig } from '../config/loader.js';
 import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { getPluginVersion } from '../version.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
-import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
+import { readDaemonPort } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { resolveLastUpdateVersionPath } from '../grove/paths.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
-import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
-import { DaemonClient } from '../hooks/client.js';
 import {
   activateProjectMigration,
   activationMarkerPath,
@@ -28,6 +26,10 @@ import path from 'node:path';
 // runtime migrations (vector reindex, etc.) are owned by the daemon and
 // gated by the `migration_tasks` ledger so they run exactly once per
 // vault regardless of update invocations.
+//
+// Binary upgrades have moved to `myco upgrade [<version>]`.
+// The old `--target-version` / `--cancel-update` flags are no longer
+// accepted and will produce a redirect error.
 
 const USAGE = `Usage: myco update [options]
 
@@ -35,12 +37,13 @@ Regenerate managed Myco project files and migrate legacy config to the
 current Machine/Grove/Project config tiers.
 
 Options:
-  --project <path>           Update only this project (default: every registered project)
-  --all-projects             Deprecated alias; update is global by default
-  --target-version <ver>     Request the daemon install @goondocks/myco@<ver>
-                             via the intent + reconciliation pipeline
-  --cancel-update            Clear a pending [update] intent without installing
-  -h, --help                 Show this help
+  --project <path>   Update only this project (default: every registered project)
+  --all-projects     Deprecated alias; update is global by default
+  -h, --help         Show this help
+
+Binary upgrades have moved to a dedicated command:
+  myco upgrade               Upgrade to the latest stable release
+  myco upgrade <version>     Upgrade to a specific version
 `;
 
 export async function run(args: string[]): Promise<void> {
@@ -49,26 +52,25 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
+  // These flags drove the old [update]-intent binary-upgrade path, which
+  // has been superseded by `myco upgrade [<version>]`. Reject them with
+  // a clear redirect so users who relied on the old flags know where to go.
+  if (args.some((a) => a === '--target-version' || a === '--cancel-update')) {
+    console.error(
+      'Binary upgrades have moved to `myco upgrade`.\n'
+      + '  myco upgrade               — upgrade to the latest stable release\n'
+      + '  myco upgrade <version>     — upgrade to a specific version\n'
+      + '\n'
+      + '`myco update` now only refreshes project config, hooks, and MCP entries.',
+    );
+    process.exit(1);
+  }
+
   const parsed = parseStrictFlags('myco update', args, [
     { name: '--project', value: 'required' },
     { name: '--all-projects' },
-    { name: '--target-version', value: 'required' },
-    { name: '--cancel-update' },
     { name: '--help', aliases: ['-h'] },
   ], USAGE);
-
-  // `--target-version <v>` writes a binary-update intent for the daemon's
-  // reconciler to pick up. Distinct from the project-config-sync path
-  // (the rest of this command). Doesn't touch project files.
-  if (parsed.has('--target-version')) {
-    await runUpdateIntent(parsed.value('--target-version')!);
-    return;
-  }
-
-  if (parsed.has('--cancel-update')) {
-    await runCancelUpdate();
-    return;
-  }
 
   // Explicit single-project targeting — update only this project. The
   // strict parser guarantees a value: a bare `--project` is a usage
@@ -519,82 +521,6 @@ async function runAllProjects(): Promise<void> {
     }
   }
   process.exit(1);
-}
-
-/**
- * Write a `[update]` intent under `<stateDir>/intent.toml` and exit.
- *
- * Parallel to `myco restart`: the CLI does not call the installer
- * directly. Instead it writes intent and lets the daemon's
- * `reconcileSelf` PowerManager tick observe it and invoke
- * `spawnUpdateScript`. On install failure, the intent is retained so
- * the next reconcile tick retries — see `self-reconcile.ts`.
- *
- * The current daemon's running version is read via `DaemonClient`. When
- * the daemon is already at the requested version, no intent is written.
- */
-async function runUpdateIntent(targetVersion: string): Promise<void> {
-  // Strict semver gate at the CLI write boundary. The HTTP intent API
-  // (Bucket F) applies the same regex, but the CLI writes intent.toml
-  // directly via `writeUpdateIntent` without going through the HTTP
-  // surface — an attacker who controls argv could otherwise bypass the
-  // daemon-side validation and land an npm-spec like `file:/tmp/evil` or
-  // `git+ssh://...` that the reconciler interpolates into
-  // `npm install -g @goondocks/myco@<value>`. Keep this regex
-  // byte-identical to `SEMVER_RE` in `daemon/api/intent.ts`.
-  const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-  if (!SEMVER_RE.test(targetVersion)) {
-    console.error(
-      `--target-version must be a strict semver (e.g. 0.27.11); got '${targetVersion}'`,
-    );
-    process.exit(1);
-  }
-
-  const vaultDir = resolveVaultDir();
-  const daemonService = resolveDaemonServiceState(vaultDir);
-  const client = new DaemonClient(vaultDir);
-  const reachable = await client.getInfoAsync();
-
-  if (!reachable) {
-    console.error('No daemon found. Start the daemon before running `myco update --target-version`.');
-    process.exit(1);
-  }
-
-  // `getInfoAsync` returns the daemon's pid/port but not version (the
-  // `/health` fallback intentionally omits it). For the same-version
-  // short-circuit we consult daemon.json — written by the live daemon's
-  // self-reconcile tick, includes the version field.
-  const state = readDaemonState(daemonService.statePath);
-  if (state?.version === targetVersion) {
-    console.log(`Daemon already at version ${targetVersion}. Nothing to do.`);
-    return;
-  }
-
-  writeUpdateIntent(daemonService, {
-    target_version: targetVersion,
-    requested_at: new Date().toISOString(),
-  });
-  console.log(
-    `Update to ${targetVersion} requested. The daemon will apply it on the next reconcile tick.`,
-  );
-  console.log(`Tail ~/.myco/update-error.json if the update fails.`);
-  console.log(`Run \`myco update --cancel-update\` to withdraw before it lands.`);
-}
-
-/**
- * Clear a pending `[update]` intent. Idempotent — succeeds even when
- * no intent is present.
- */
-async function runCancelUpdate(): Promise<void> {
-  const vaultDir = resolveVaultDir();
-  const daemonService = resolveDaemonServiceState(vaultDir);
-  const updateIntent = readUpdateIntent(daemonService);
-  if (!updateIntent) {
-    console.log('No pending update intent.');
-    return;
-  }
-  clearIntentSection(daemonService, 'update');
-  console.log(`Cleared pending update intent (target was ${updateIntent.target_version}).`);
 }
 
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {

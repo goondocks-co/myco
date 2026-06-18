@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
@@ -21,8 +22,8 @@ import { parseStrictFlags } from './args.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { manifestToolTransport } from '../symbionts/capabilities.js';
-import { expandHome, resolveHomeDir } from '../grove/paths.js';
-import type { ServiceStatus } from '../service/types.js';
+import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
+import type { ServiceStatus, ServiceVariant } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
 
 // --- Named constants (no magic literals) ---
@@ -31,7 +32,6 @@ import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doct
 /** Filename of the vault config file. */
 const CONFIG_FILENAME = 'myco.yaml';
 
-/** Filename of the daemon state file. */
 /** Filename of the SQLite database. */
 const DB_FILENAME = 'myco.db';
 
@@ -475,10 +475,19 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
 }
 
 
+/** Optional context for the managed-binary assertion in evaluateServiceCheck. */
+export interface ServiceManagedBinaryOptions {
+  /** The detected install variant. Only 'prod' triggers the managed-binary assertion. */
+  variant: ServiceVariant;
+  /** Canonical managed binary path (e.g. `~/.myco/bin/myco`). */
+  managedBinary: string;
+}
+
 export function evaluateServiceCheck(
   label: string,
   status: ServiceStatus,
   expectedExecutable: string,
+  managedOptions?: ServiceManagedBinaryOptions,
 ): DoctorCheck {
   if (!status.installed) {
     return fixableCheck({
@@ -510,6 +519,30 @@ export function evaluateServiceCheck(
       fixable: false,
     };
   }
+
+  // Assert the service is pointed at the managed binary (prod variant only).
+  // A dogfood 'dev' daemon legitimately runs its dev binary from
+  // packages/myco-<arch>/bin/myco, not ~/.myco/bin/myco — do NOT warn for it.
+  if (managedOptions && managedOptions.variant === 'prod') {
+    // Use realpathSync to follow symlinks before comparing: a symlinked service
+    // exec or managed binary would otherwise false-positive a "non-managed binary" warn.
+    const realpath = (p: string): string => {
+      try { return fs.realpathSync(p).replaceAll('\\', '/'); } catch { return path.resolve(p).replaceAll('\\', '/'); }
+    };
+    const serviceExec = realpath(expectedExecutable);
+    const managed = realpath(managedOptions.managedBinary);
+    if (serviceExec !== managed) {
+      return {
+        name: 'Service',
+        status: 'warn',
+        detail: `${label} is configured to run a non-managed binary (${expectedExecutable}). ` +
+          `\`myco update\`'s in-place swap of ${managedOptions.managedBinary} won't take effect until ` +
+          `the service unit is re-pointed — run \`myco service install\` to repair.`,
+        fixable: false,
+      };
+    }
+  }
+
   return {
     name: 'Service',
     status: 'ok',
@@ -522,6 +555,7 @@ async function checkService(): Promise<DoctorCheck> {
   const { getServiceManager } = await import('../service/manager.js');
   const { serviceLabel } = await import('../service/labels.js');
   const { detectInstallVariant, resolveServiceExecutable } = await import('./service.js');
+  const { managedBinaryPath } = await import('../install/managed-binary.js');
   const mgr = getServiceManager();
   if (!mgr.supported) {
     return { name: 'Service', status: 'warn', detail: `unsupported platform (${mgr.platformName}) — daemon uses lazy spawn`, fixable: false };
@@ -529,7 +563,39 @@ async function checkService(): Promise<DoctorCheck> {
   const variant = detectInstallVariant();
   const label = serviceLabel(variant);
   const status = await mgr.status(label);
-  return evaluateServiceCheck(label, status, resolveServiceExecutable(variant));
+  const serviceExec = resolveServiceExecutable(variant);
+  const managedBinary = managedBinaryPath(os.homedir(), process.platform, process.env.LOCALAPPDATA);
+  return evaluateServiceCheck(label, status, serviceExec, { variant, managedBinary });
+}
+
+/**
+ * Report the install source (curl / npm) and resolved running binary.
+ *
+ * Reads `~/.myco/install.json` (written by the curl installer or a future
+ * npm post-install script) and the resolved binary via `resolveManagedBinaryPath`.
+ * Always returns `status:'ok'` — this is informational only and must never
+ * flip the exit code on its own.
+ */
+export async function checkInstallSource(): Promise<DoctorCheck> {
+  try {
+    const { readInstallMarker } = await import('../install/managed-binary.js');
+    const { resolveManagedBinaryPath } = await import('../symbionts/installer.js');
+    const mycoHome = resolveMycoHome();
+    const marker = readInstallMarker(mycoHome);
+    const resolvedBinary = resolveManagedBinaryPath();
+
+    let detail: string;
+    if (marker) {
+      const channelPart = marker.channel ? ` (${marker.channel})` : '';
+      detail = `source: ${marker.source}${channelPart} — binary: ${resolvedBinary}`;
+    } else {
+      detail = `no install marker — pre-convergence or source build — binary: ${resolvedBinary}`;
+    }
+
+    return { name: 'Install', status: 'ok', detail, fixable: false };
+  } catch {
+    return { name: 'Install', status: 'ok', detail: 'install marker unavailable', fixable: false };
+  }
 }
 
 // --- Public API ---
@@ -565,6 +631,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkDaemon(vaultDir));
   checks.push(await checkService());
   checks.push(checkBinaryVersionSkew());
+  checks.push(await checkInstallSource());
   checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());
   checks.push(...await checkSymbiontEdgeCases());
@@ -583,7 +650,6 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
  * so its presence is a non-fatal advisory, not a failure.
  */
 async function checkGlobalLaunchers(): Promise<DoctorCheck> {
-  const { resolveMycoHome } = await import('../grove/paths.js');
   const {
     GLOBAL_HOOK_LAUNCHER_FILENAME,
     GLOBAL_MCP_LAUNCHER_FILENAME,

@@ -1,15 +1,17 @@
 /**
- * Tests for the update checker module.
+ * Tests for the update checker module (retained exports).
  *
  * Covers:
  * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
  *   module-level state (replaces the old MYCO_CMD env-var dispatch)
  * - readUpdateConfig — defaults when missing, reads YAML when present
  * - isCacheStale — null cache, fresh cache, expired cache
- * - checkForUpdate — fetches registry, update detection, channel logic
- * - statusFromCache — builds CheckResult from cache without registry
  * - detectDevBuild — realpath comparison against npm global prefix
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
+ *
+ * Note: checkForUpdate / statusFromCache were retired from update-checker.ts
+ * (Task 7). The composite CheckResult assembly now lives in daemon/api/upgrade.ts.
+ * Those functions' behaviors are covered by tests/daemon/api/upgrade.test.ts.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
@@ -92,13 +94,10 @@ import {
   getDevBuildCliEntry,
   resolveMycoBinary,
   resolveRuntimeCommand,
-  isManagedMachineRuntime,
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
   readUpdateConfig,
   isCacheStale,
-  checkForUpdate,
-  statusFromCache,
   resolveGlobalPrefix,
   getInstalledVersion,
   getRuntimeVersionLabel,
@@ -128,21 +127,21 @@ function makeCachedCheck(overrides: Partial<CachedCheck> = {}): CachedCheck {
   };
 }
 
-/** Build a minimal npm registry response. */
-function makeRegistryResponse(latest: string, beta?: string): Record<string, unknown> {
-  return {
-    'dist-tags': {
-      latest,
-      ...(beta !== undefined ? { beta } : {}),
-    },
-  };
-}
-
 /** Build a synthetic fs.Stats keyed by content so the machine-config tier
  *  cache invalidates whenever the mocked content changes (defends against
- *  cross-test machineConfigCache leakage — see readTierConfig). */
+ *  cross-test machineConfigCache leakage — see readTierConfig).
+ *
+ *  `uid` and `mode` are set to pass the pin-trust check in `checkPinTrust`
+ *  (uid = current process uid, mode = 0o100644 — owner rw, group/other r).
+ *  Files that aren't pin files ignore these fields; files that ARE pin files
+ *  must look trusted so existing resolveRuntimeCommand tests keep passing. */
 function fakeStat(content: string): fs.Stats {
-  return { mtimeMs: content.length + 1, size: content.length } as unknown as fs.Stats;
+  return {
+    mtimeMs: content.length + 1,
+    size: content.length,
+    uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+    mode: 0o100644,
+  } as unknown as fs.Stats;
 }
 
 /** Helper: mock fs.readFileSync to return specific content for a path. */
@@ -175,20 +174,6 @@ function mockNoFiles(): void {
     err.code = 'ENOENT';
     throw err;
   });
-}
-
-/** Helper: mock a successful fetch response. */
-function mockFetchSuccess(data: Record<string, unknown>): void {
-  global.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => data,
-  } as Response);
-}
-
-/** Helper: mock a failed fetch. */
-function mockFetchFailure(message = 'network error'): void {
-  global.fetch = vi.fn().mockRejectedValue(new Error(message));
 }
 
 // ---------------------------------------------------------------------------
@@ -317,29 +302,115 @@ describe('resolveRuntimeCommand()', () => {
     mockNoFiles();
     expect(resolveRuntimeCommand()).toBeNull();
   });
-});
 
-describe('isManagedMachineRuntime()', () => {
-  it('matches a managed runtime path under ~/.myco/runtime/', () => {
-    expect(
-      isManagedMachineRuntime('/mock-home/.myco/runtime/node_modules/.bin/myco'),
-    ).toBe(true);
+  // ---------------------------------------------------------------------------
+  // E2: daemon-side pin trust check (mirrors runtime-redirect.cjs G7 guard)
+  // ---------------------------------------------------------------------------
+
+  it('E2: ignores a group-writable pin file (mode 0o664) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100664, // group-writable — insecure
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBeNull();
   });
 
-  it('returns false for a global myco install', () => {
-    expect(isManagedMachineRuntime('/opt/homebrew/bin/myco')).toBe(false);
+  it('E2: ignores an other-writable pin file (mode 0o666) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100666, // other-writable — insecure
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBeNull();
   });
 
-  it('returns false for a dev binary outside the managed runtime', () => {
-    expect(isManagedMachineRuntime('/Users/dev/.local/bin/myco-dev')).toBe(false);
+  it('E2: honors a trusted pin file (mode 0o644, owned by current uid)', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100644, // owner rw, group/other read-only — trusted
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBe('/opt/pinned/myco');
   });
 
-  it('returns false for a project-local path that happens to share the suffix', () => {
-    // Pre-rescope, this used to match via substring. Post-rescope, only
-    // ~/.myco/runtime/ counts as managed.
-    expect(
-      isManagedMachineRuntime('/Users/me/proj/.myco/runtime/node_modules/.bin/myco'),
-    ).toBe(false);
+  it('E2: ignores a pin file owned by a different uid and returns null', () => {
+    if (process.platform === 'win32') return;
+    if (typeof process.getuid !== 'function') return;
+    const pinPath = '/mock-home/.myco/runtime.command';
+    const content = '/opt/pinned/myco';
+    const foreignUid = process.getuid() === 0 ? 1 : 0; // pick a uid that isn't ours
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: foreignUid,
+          mode: 0o100644,
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeCommand()).toBeNull();
   });
 });
 
@@ -520,304 +591,6 @@ describe('isCacheStale()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkForUpdate
-// ---------------------------------------------------------------------------
-
-describe('checkForUpdate()', () => {
-  beforeEach(() => {
-    // No pre-existing config or cache by default
-    mockNoFiles();
-  });
-
-  it('fetches the registry and returns an update when a newer version exists', async () => {
-    mockFetchSuccess(makeRegistryResponse('2.0.0'));
-
-    const result = await checkForUpdate('1.0.0');
-
-    expect(result.update_available).toBe(true);
-    expect(result.running_version).toBe('1.0.0');
-    expect(result.latest_stable).toBe('2.0.0');
-    expect(result.latest_version).toBe('2.0.0');
-    expect(result.error).toBeNull();
-  });
-
-  it('returns no update when running the latest version', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.0.0'));
-
-    const result = await checkForUpdate('1.0.0');
-
-    expect(result.update_available).toBe(false);
-    expect(result.latest_stable).toBe('1.0.0');
-    expect(result.error).toBeNull();
-  });
-
-  it('returns no update when running a newer version than registry (pre-release dev)', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.0.0'));
-
-    const result = await checkForUpdate('2.0.0');
-
-    expect(result.update_available).toBe(false);
-  });
-
-  it('writes cache after a successful fetch', async () => {
-    mockFetchSuccess(makeRegistryResponse('1.5.0'));
-
-    await checkForUpdate('1.0.0');
-
-    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledOnce();
-    const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
-    const cached = JSON.parse(writtenContent) as CachedCheck;
-    expect(cached.packages.myco?.latest_stable).toBe('1.5.0');
-  });
-
-  describe('beta channel', () => {
-    beforeEach(() => {
-      // Config file returns beta channel
-      mockFileContent(
-        UPDATE_CONFIG_PATH,
-        'channel: beta\ncheck_interval_hours: 6\n',
-      );
-    });
-
-    it('considers the beta dist-tag when on beta channel', async () => {
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(true);
-      expect(result.latest_version).toBe('1.1.0-beta.1');
-      expect(result.latest_beta).toBe('1.1.0-beta.1');
-    });
-
-    it('picks stable over beta when stable is higher (no-downgrade rule)', async () => {
-      // stable 2.0.0 > beta 1.9.0-beta.1
-      mockFetchSuccess(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(true);
-      expect(result.latest_version).toBe('2.0.0');
-    });
-
-    it('reports latest_beta even when not selected as target', async () => {
-      mockFetchSuccess(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.latest_beta).toBe('1.9.0-beta.1');
-    });
-
-    it('sets channel to beta in the result', async () => {
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.channel).toBe('beta');
-    });
-  });
-
-  describe('stable channel', () => {
-    it('ignores beta dist-tag on stable channel', async () => {
-      // stable channel — beta tag should not be selected as target
-      mockFetchSuccess(makeRegistryResponse('1.0.0', '1.5.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.latest_version).toBe('1.0.0');
-      // But latest_beta is still reported
-      expect(result.latest_beta).toBe('1.5.0-beta.1');
-    });
-  });
-
-  describe('error handling', () => {
-    it('returns cached result with error when fetch fails and cache exists', async () => {
-      const staleCache = makeCachedCheck({
-        channel: 'stable',
-        packages: {
-          myco: {
-            package_name: '@goondocks/myco',
-            latest_stable: '1.2.0',
-            latest_beta: null,
-          },
-        },
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p) => {
-        if (String(p).endsWith('last-update-check.json')) {
-          return JSON.stringify(staleCache);
-        }
-        const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-        err.code = 'ENOENT';
-        throw err;
-      });
-
-      mockFetchFailure('fetch failed');
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.error).toMatch(/fetch failed/);
-      expect(result.latest_stable).toBe('1.2.0');
-    });
-
-    it('returns no-update with error when fetch fails and no cache exists', async () => {
-      mockNoFiles();
-      mockFetchFailure('connection refused');
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.error).toMatch(/connection refused/);
-    });
-
-    it('handles non-ok HTTP response', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        json: async () => ({}),
-      } as Response);
-      mockNoFiles();
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.error).toMatch(/503/);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// statusFromCache
-// ---------------------------------------------------------------------------
-
-describe('statusFromCache()', () => {
-  it('returns null when no cache file exists', () => {
-    mockNoFiles();
-    const result = statusFromCache('1.0.0');
-    expect(result).toBeNull();
-  });
-
-  it('builds a CheckResult from cache when cache exists', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      checked_at: new Date().toISOString(),
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.5.0',
-          latest_beta: null,
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.0.0');
-
-    expect(result).not.toBeNull();
-    expect(result!.update_available).toBe(true);
-    expect(result!.running_version).toBe('1.0.0');
-    expect(result!.latest_stable).toBe('1.5.0');
-    expect(result!.latest_version).toBe('1.5.0');
-    expect(result!.channel).toBe('stable');
-    expect(result!.error).toBeNull();
-  });
-
-  it('correctly detects no update from cache', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.5.0',
-          latest_beta: null,
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.5.0');
-    expect(result!.update_available).toBe(false);
-  });
-
-  it('uses beta channel logic when cache channel is beta', () => {
-    const cache = makeCachedCheck({
-      channel: 'beta',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.0.0');
-    expect(result!.update_available).toBe(true);
-    expect(result!.latest_version).toBe('1.1.0-beta.1');
-  });
-
-  it('offers a stable-channel revert when running from the managed machine runtime', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache(
-      '1.1.0-beta.1',
-      undefined,
-      undefined,
-      '/opt/homebrew',
-      '/mock-home/.myco/runtime/node_modules/.bin/myco',
-    );
-    // Revert to a lower stable version is a revert, not an update.
-    expect(result!.update_available).toBe(false);
-    expect(result!.revert_available).toBe(true);
-    expect(result!.latest_version).toBe('1.0.0');
-    expect(result!.packages[0]?.update_available).toBe(false);
-    expect(result!.packages[0]?.revert_available).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // resolveGlobalPrefix
 // ---------------------------------------------------------------------------
 
@@ -932,20 +705,6 @@ describe('detectDevBuild()', () => {
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
       symlinkResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('treats the managed machine runtime as prod, not a dev build', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/mock-home/.myco/runtime/node_modules/.bin/myco',
-      (p: string) => {
-        if (p === '/mock-home/.myco/runtime/node_modules/.bin/myco') {
-          return '/mock-home/.myco/runtime/node_modules/@goondocks/myco/bin/myco.cjs';
-        }
-        return p;
-      },
     );
     expect(result).toBeNull();
   });

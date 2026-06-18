@@ -28,6 +28,7 @@ import path from 'node:path';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
+import { managedBinaryPath } from '@myco/install/managed-binary.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -74,6 +75,14 @@ function setupFakeHome(): FakeHome {
   fs.writeFileSync(stubLog, '');
   // Pin the machine-global runtime to our stub so launcher resolves to it.
   fs.writeFileSync(path.join(tmpHome, '.myco', 'runtime.command'), stubBin + '\n');
+  // Also place the stub at the managed-binary path (~/.myco/bin/myco) so that
+  // resolveManagedBinaryPath() step 2 (fs.existsSync check) resolves to the
+  // stub even if step 1 (runtime.command pin) is flaky on CI. This ensures
+  // neither resolution step ever falls through to bun (process.execPath).
+  const managedBin = managedBinaryPath(tmpHome, process.platform, process.env.LOCALAPPDATA);
+  fs.mkdirSync(path.dirname(managedBin), { recursive: true });
+  fs.writeFileSync(managedBin, STUB_SCRIPT, { mode: 0o755 });
+  fs.chmodSync(managedBin, 0o755);
   const prevHome = process.env.HOME;
   const prevMycoHome = process.env.MYCO_HOME;
   process.env.HOME = tmpHome;

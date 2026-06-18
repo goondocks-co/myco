@@ -56,11 +56,11 @@ const machineConfig: Record<string, unknown> = {
 
 /* ---------- Mocks ---------- */
 
-mock.module('../../packages/myco/ui/src/hooks/use-update-status', () => ({
-  useUpdateStatus: () => ({ data: { exempt: false, update_available: false } }),
-  useUpdateCheck: () => ({ mutate: vi.fn(), isPending: false }),
-  useUpdateApply: () => ({ mutate: vi.fn(), isPending: false }),
-  useUpdateChannel: () => ({ mutate: vi.fn(), isPending: false }),
+mock.module('../../packages/myco/ui/src/hooks/use-upgrade-status', () => ({
+  useUpgradeStatus: () => ({ data: { exempt: false, update_available: false } }),
+  useUpgradeCheck: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpgradeApply: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpgradeChannel: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({

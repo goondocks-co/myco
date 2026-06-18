@@ -201,11 +201,11 @@ mock.module('../../packages/myco/ui/src/components/config/PlanCaptureCard', () =
   PlanCaptureCard: () => <div data-testid="plan-capture-card" />,
 }));
 
-// UpdateCard polls /update-status; BackupCard fetches /backups + manages
+// UpgradeCard polls /upgrade/status; BackupCard fetches /backups + manages
 // preview/restore state. The unified-page tests don't exercise those flows —
 // stub both to markers so the page layout tests stay focused.
-mock.module('../../packages/myco/ui/src/components/operations/UpdateCard', () => ({
-  UpdateCard: () => <div data-testid="update-card" />,
+mock.module('../../packages/myco/ui/src/components/operations/UpgradeCard', () => ({
+  UpgradeCard: () => <div data-testid="upgrade-card" />,
 }));
 mock.module('../../packages/myco/ui/src/components/operations/BackupCard', () => ({
   BackupCard: () => <div data-testid="backup-card" />,
@@ -260,16 +260,16 @@ describe('Unified Settings page', () => {
   it('scope filter narrows visible groups', () => {
     renderPage();
     // Click "Machine" — only groups with at least one machine-scoped field
-    // (Logging, Update) should remain visible. Scope buttons are role="tab".
+    // (Logging, Upgrade) should remain visible. Scope buttons are role="tab".
     fireEvent.click(screen.getByRole('tab', { name: /^Machine/ }));
 
-    // Visible: Logging, Update.
+    // Visible: Logging, Upgrade.
     const sections = Array.from(document.querySelectorAll('section[id]'));
     const visibleIds = sections
       .filter((s) => (s as HTMLElement).offsetParent !== null || true)
       .map((s) => s.id);
     expect(visibleIds).toContain('logging');
-    expect(visibleIds).toContain('update');
+    expect(visibleIds).toContain('upgrade');
     // Hidden: skills (project-only), team (grove-only).
     expect(visibleIds).not.toContain('skills');
     expect(visibleIds).not.toContain('team');
@@ -310,7 +310,7 @@ describe('Unified Settings page', () => {
     const originalScroll = Element.prototype.scrollIntoView;
     const scrollSpy = vi.fn();
     Element.prototype.scrollIntoView = scrollSpy;
-    renderPage('/settings?configSection=update#update');
+    renderPage('/settings?configSection=upgrade#upgrade');
 
     await waitFor(() => {
       expect(scrollSpy).toHaveBeenCalled();

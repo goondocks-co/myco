@@ -91,9 +91,9 @@ export function resolveProvisionedVaultDir(cwd: string = process.cwd()): string 
   if (fs.existsSync(mycoYamlPath)) {
     if (isCaptureGateClosed(projectRoot)) return null;
     if (lifecycleForRootMemo(projectRoot) === 'unregistered') {
-      try { ensureProjectVault(projectRoot, { force: true }); }
+      try { ensureProjectVault(projectRoot); }
       catch {
-        // Re-seeding is best-effort on the hot path; capture can still proceed
+        // Re-admission is best-effort on the hot path; capture can still proceed
         // with the existing vault and the provisioning-failed trace remains
         // reserved for cold-path creation failures.
       }

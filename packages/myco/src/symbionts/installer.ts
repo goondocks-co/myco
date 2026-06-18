@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { expandHome, resolveMycoHome } from '../grove/paths.js';
+import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
@@ -18,6 +18,7 @@ import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { resolveRuntimeCommand } from '../daemon/update-checker.js';
+import { managedBinaryPath } from '../install/managed-binary.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import {
@@ -177,16 +178,35 @@ function resolveLauncherCmd(_scope: InstallScope, binaryPath: string): string {
  * Resolve the path to the managed Myco binary the installer should embed into
  * emitted commands (hook commands and the MCP server command alike).
  *
- * The path is the machine `runtime.command` pin (`resolveRuntimeCommand()`),
- * falling back to `process.execPath` — the running compiled binary, since the
- * installer executes in-daemon. Forward-slashed so the unquoted command is safe
- * for bash, argv-split, and cmd alike on every platform.
+ * Resolved via the layered order documented below; forward-slashed so the
+ * unquoted command is safe for bash, argv-split, and cmd alike on every
+ * platform.
  *
  * Shared by the hook path (`substituteMycoLauncher`) and the MCP path
  * (`resolveMcpTemplate`) so the two can't drift onto different binaries.
+ *
+ * Resolve order (coexistence fix — field incident 2026-06-17):
+ *   1. Machine `runtime.command` pin — explicit operator intent; always wins.
+ *   2. Converged managed binary (`~/.myco/bin/myco`) when it exists on disk —
+ *      writes a daemon-agnostic path so a dev daemon holding the
+ *      symbiont-config claim never embeds its own dev `process.execPath` into
+ *      the GLOBAL `~/.claude/settings.json` hooks.
+ *   3. `process.execPath` — last resort, pre-convergence only (managed binary
+ *      not yet installed).
+ *
+ * There is intentionally NO dev-variant guard here (contrast: Task 4's
+ * `defaultServiceExecutable`). Per-project dogfood routing is the
+ * `runtime.command` pin's job; this path must remain daemon-agnostic.
  */
-function resolveManagedBinaryPath(): string {
-  return (resolveRuntimeCommand() ?? process.execPath).replaceAll('\\', '/');
+export function resolveManagedBinaryPath(
+  home: string = resolveHomeDir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const pin = resolveRuntimeCommand();
+  if (pin) return pin.replaceAll('\\', '/');
+  const managed = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
+  if (fs.existsSync(managed)) return managed.replaceAll('\\', '/');
+  return process.execPath.replaceAll('\\', '/');
 }
 
 /**

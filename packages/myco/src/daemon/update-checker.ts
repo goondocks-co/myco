@@ -25,13 +25,10 @@ import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
 import { setAtPath } from '../utils/dot-path.js';
 
 import {
-  NPM_REGISTRY_BASE_URL,
   NPM_PACKAGE_NAME,
-  UPDATE_PACKAGES,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
-  UPDATE_ERROR_PATH,
   UPDATE_CHECK_INTERVAL_HOURS,
   MS_PER_HOUR,
   DEV_BUILD_CACHE_PATH,
@@ -42,11 +39,8 @@ import {
 } from '../constants/update.js';
 import {
   resolveMachineRuntimeCommandPath,
-  resolveMachineRuntimeDir,
   setDevServiceMode,
 } from '../grove/paths.js';
-import { clearJsonSentinel } from '../utils/json-sentinel.js';
-import { readJsonFile } from '../utils/json.js';
 import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
@@ -73,56 +67,9 @@ export interface CachedCheck {
   packages: Partial<Record<UpdatePackageId, CachedPackageCheck>>;
 }
 
-/** Installed/update status for one globally installed Myco package. */
-export interface PackageCheckResult {
-  id: UpdatePackageId;
-  display_name: string;
-  package_name: string;
-  installed: boolean;
-  installed_version: string | null;
-  latest_version: string | null;
-  latest_stable: string | null;
-  latest_beta: string | null;
-  /** True when the target version is strictly greater than what's installed. */
-  update_available: boolean;
-  /**
-   * True when the project is pinned to a managed beta runtime and the stable
-   * target is lower than the running version — set only on the `myco` package
-   * during a revert-to-stable flow. Mutually exclusive with `update_available`.
-   */
-  revert_available: boolean;
-}
-
-/** Result returned to callers of checkForUpdate / statusFromCache */
-export interface CheckResult {
-  update_available: boolean;
-  /** True when any package has `revert_available` set. */
-  revert_available: boolean;
-  running_version: string;
-  latest_version: string;
-  latest_stable: string;
-  latest_beta: string | null;
-  channel: ReleaseChannel;
-  /** Always `'machine'` — the channel is machine-scoped (decision-46130740). */
-  channel_scope: 'machine';
-  /**
-   * `'managed'` — the daemon is dispatched through `~/.myco/runtime/`
-   * (managed beta runtime). `'machine'` — no machine-runtime pin, the
-   * global myco install on PATH answers.
-   */
-  runtime_scope: 'managed' | 'machine';
-  check_interval_hours: number;
-  last_check: string;
-  error: string | null;
-  packages: PackageCheckResult[];
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Fetch timeout for registry requests. */
-const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Dev-mode exemption
@@ -305,24 +252,59 @@ export function resolveRuntimePinForCwd(cwd: string): string | null {
   return resolveRuntimeCommand();
 }
 
+/**
+ * POSIX trust check for a `runtime.command` pin file — mirrors
+ * `checkRuntimeCommandTrust` in `bin/runtime-redirect.cjs` (the G7 guard).
+ * The two implementations are intentionally kept in sync: both refuse any pin
+ * whose mode permits group/other write (`mode & 0o022 !== 0`) or whose owner
+ * uid differs from the current process. `0o644` (owner rw, group/other
+ * readable) is explicitly trusted — only *writability* is the threat surface.
+ * Skipped on win32 (no POSIX mode semantics), where the pin is always trusted.
+ *
+ * Returns `{ ok: true }` when the pin is trusted (or on win32), or
+ * `{ ok: false, reason }` when it must be ignored.
+ */
+const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
+
+function checkPinTrust(filePath: string): { ok: true } | { ok: false; reason: string } {
+  if (process.platform === 'win32') return { ok: true };
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
+    return { ok: false, reason: `stat failed: ${(err as Error).message ?? 'unknown'}` };
+  }
+  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (myUid !== null && stat.uid !== myUid) {
+    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
+  }
+  const mode = stat.mode & 0o777;
+  if (mode & RUNTIME_COMMAND_INSECURE_MODE_MASK) {
+    return { ok: false, reason: `pin file mode 0${mode.toString(8)} is writable by group/other` };
+  }
+  return { ok: true };
+}
+
 function readPinFile(filePath: string): string | null {
+  const trust = checkPinTrust(filePath);
+  if (!trust.ok) {
+    // Best-effort warning — never fatal; a daemon with a poisoned pin falls
+    // back to the PATH-resolved `myco` rather than silently executing it.
+    try {
+      process.stderr.write(`[myco] daemon: ignoring runtime.command pin (${trust.reason}): ${filePath}\n`);
+    } catch {
+      // stderr unavailable — swallow
+    }
+    return null;
+  }
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
   } catch {
     return null;
   }
-}
-
-/**
- * True when `cliEntry` points inside `~/.myco/runtime/node_modules/`,
- * i.e. the managed beta runtime install. Used to distinguish managed
- * runtimes from external pins (dev binaries, `~/.local/bin/myco-dev`).
- */
-export function isManagedMachineRuntime(cliEntry: string): boolean {
-  const normalized = cliEntry.split(path.sep).join('/');
-  const managedPrefix = `${resolveMachineRuntimeDir().split(path.sep).join('/')}/node_modules/`;
-  return normalized.startsWith(managedPrefix);
 }
 
 /**
@@ -365,14 +347,14 @@ export function isUpdateExempt(): boolean {
  *                global prefix (dogfood `make dev-link`, `npm link`, etc.),
  *                or a project-scope pin at `<vaultDir>/runtime.command`
  *                points the daemon at a hand-built dev binary.
- * - `'beta'`   — the machine pin at `~/.myco/runtime.command` points
- *                inside the managed runtime dir (`~/.myco/runtime/`).
- * - `'stable'` — none of the above; the global myco install on PATH answers.
+ * - `'stable'` — otherwise; the managed `~/.myco/bin/myco` (stable or beta
+ *                channel — both are the same in-place binary) answers.
  *
- * A dev build always wins over a beta runtime since the dev binary is
- * actually executing the daemon.
+ * The legacy `'beta'` source (a separate `~/.myco/runtime/` npm install) was
+ * retired with the native installer: a beta user runs the same managed binary,
+ * just resolved from a prerelease release.
  */
-export type RuntimeOrigin = 'stable' | 'dev' | 'beta';
+export type RuntimeOrigin = 'stable' | 'dev';
 
 export interface RuntimeOriginInfo {
   source: RuntimeOrigin;
@@ -393,11 +375,7 @@ export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
   if (devBuildCliEntry !== null) {
     return { source: 'dev', command: devBuildCliEntry };
   }
-  const runtimeCommand = resolveRuntimeCommand(vaultDir);
-  if (runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)) {
-    return { source: 'beta', command: runtimeCommand };
-  }
-  return { source: 'stable', command: runtimeCommand };
+  return { source: 'stable', command: resolveRuntimeCommand(vaultDir) };
 }
 
 /**
@@ -496,9 +474,6 @@ export function detectDevBuild(
   if (!cliEntry) return null;
   try {
     const resolvedEntry = realpath(cliEntry);
-    if (isManagedMachineRuntime(resolvedEntry)) {
-      return null;
-    }
     const resolvedPrefix = realpath(globalPrefix);
     if (resolvedEntry.startsWith(resolvedPrefix + path.sep) || resolvedEntry === resolvedPrefix) {
       return null;
@@ -629,194 +604,6 @@ export function isCacheStale(cache: CachedCheck | null, intervalHours: number): 
 }
 
 // ---------------------------------------------------------------------------
-// Error file
-// ---------------------------------------------------------------------------
-
-interface UpdateErrorSentinel { error: string }
-
-function isUpdateErrorSentinel(value: unknown): value is UpdateErrorSentinel {
-  return !!value
-    && typeof value === 'object'
-    && typeof (value as Partial<UpdateErrorSentinel>).error === 'string';
-}
-
-/**
- * Reads ~/.myco/update-error.json. Returns the error string when present, null
- * otherwise.
- */
-export function readUpdateError(): string | null {
-  return readJsonFile(UPDATE_ERROR_PATH, isUpdateErrorSentinel)?.error ?? null;
-}
-
-/**
- * Removes ~/.myco/update-error.json so a future install attempt starts
- * from a clean slate. Idempotent — silently succeeds when the file is
- * already absent. Reconciler calls this after surfacing the prior error
- * so the next user-driven `myco update` is not gated on a stale failure.
- */
-export function consumeUpdateError(): void {
-  clearJsonSentinel(UPDATE_ERROR_PATH);
-}
-
-// ---------------------------------------------------------------------------
-// Registry types
-// ---------------------------------------------------------------------------
-
-interface NpmDistTags {
-  latest: string;
-  beta?: string;
-  [tag: string]: string | undefined;
-}
-
-interface NpmRegistryResponse {
-  'dist-tags': NpmDistTags;
-}
-
-/** Build the npm registry URL for a specific package. */
-function packageRegistryUrl(packageName: string): string {
-  return `${NPM_REGISTRY_BASE_URL}/${encodeURIComponent(packageName)}`;
-}
-
-// ---------------------------------------------------------------------------
-// Channel comparison logic
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the target version to compare against based on channel.
- * - Stable: dist-tags.latest
- * - Beta: max(dist-tags.latest, dist-tags.beta) — no-downgrade rule
- */
-function resolveTargetVersion(distTags: NpmDistTags, channel: ReleaseChannel): string {
-  const stable = distTags.latest;
-  const beta = distTags.beta ?? null;
-
-  if (channel === 'stable' || beta === null) {
-    return stable;
-  }
-
-  // Beta channel: pick whichever is higher (stable can exceed beta tag)
-  const higher = semver.gt(beta, stable) ? beta : stable;
-  return higher;
-}
-
-function resolveTargetVersionFromCache(
-  pkg: CachedPackageCheck,
-  channel: ReleaseChannel,
-): string {
-  return resolveTargetVersion(
-    { latest: pkg.latest_stable, beta: pkg.latest_beta ?? undefined },
-    channel,
-  );
-}
-
-function buildInstalledPackageVersions(
-  globalPrefix: string | null,
-  currentVersion: string,
-): Record<UpdatePackageId, string | null> {
-  const installed: Record<UpdatePackageId, string | null> = {
-    myco: currentVersion,
-    'myco-team': null,
-    'myco-collective': null,
-  };
-
-  if (globalPrefix === null) return installed;
-
-  for (const pkg of UPDATE_PACKAGES) {
-    if (pkg.id === 'myco') continue;
-    installed[pkg.id] = getInstalledVersion(globalPrefix, pkg.packageName);
-  }
-
-  return installed;
-}
-
-function buildPackageResults(
-  currentVersion: string,
-  cache: CachedCheck,
-  channel: ReleaseChannel,
-  globalPrefix: string | null,
-  runtimeCommand: string | null = null,
-): PackageCheckResult[] {
-  const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
-  const isManagedStableRevert =
-    channel === 'stable'
-    && runtimeCommand !== null
-    && isManagedMachineRuntime(runtimeCommand);
-
-  return UPDATE_PACKAGES.map((pkg) => {
-    const cached = cache.packages[pkg.id];
-    const installedVersion = installedVersions[pkg.id];
-    const latestVersion = cached ? resolveTargetVersionFromCache(cached, channel) : null;
-    const updateAvailable =
-      installedVersion !== null &&
-      latestVersion !== null &&
-      semver.valid(installedVersion) !== null &&
-      semver.valid(latestVersion) !== null &&
-      semver.gt(latestVersion, installedVersion);
-    const revertAvailable =
-      pkg.id === 'myco' &&
-      isManagedStableRevert &&
-      latestVersion !== null &&
-      latestVersion !== currentVersion &&
-      !updateAvailable;
-
-    return {
-      id: pkg.id,
-      display_name: pkg.displayName,
-      package_name: pkg.packageName,
-      installed: installedVersion !== null,
-      installed_version: installedVersion,
-      latest_version: latestVersion,
-      latest_stable: cached?.latest_stable ?? null,
-      latest_beta: cached?.latest_beta ?? null,
-      update_available: updateAvailable,
-      revert_available: revertAvailable,
-    };
-  });
-}
-
-// ---------------------------------------------------------------------------
-// CheckResult builder
-// ---------------------------------------------------------------------------
-
-function buildCheckResult(
-  currentVersion: string,
-  cache: CachedCheck,
-  config: UpdateConfig,
-  channel: ReleaseChannel,
-  error: string | null,
-  globalPrefix: string | null,
-  runtimeCommand: string | null = null,
-): CheckResult {
-  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix, runtimeCommand);
-  const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
-  const targetVersion = primaryPackage?.latest_version ?? currentVersion;
-  const latestStable = primaryPackage?.latest_stable ?? currentVersion;
-  const latestBeta = primaryPackage?.latest_beta ?? null;
-  const updateAvailable = packages.some((pkg) => pkg.installed && pkg.update_available);
-  const revertAvailable = packages.some((pkg) => pkg.revert_available);
-  const runtimeScope: 'managed' | 'machine' =
-    runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
-      ? 'managed'
-      : 'machine';
-
-  return {
-    update_available: updateAvailable,
-    revert_available: revertAvailable,
-    running_version: currentVersion,
-    latest_version: targetVersion,
-    latest_stable: latestStable,
-    latest_beta: latestBeta,
-    channel,
-    channel_scope: 'machine',
-    runtime_scope: runtimeScope,
-    check_interval_hours: config.check_interval_hours,
-    last_check: cache.checked_at,
-    error,
-    packages,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Installed version detection
 // ---------------------------------------------------------------------------
 
@@ -854,154 +641,3 @@ export function getInstalledVersion(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Primary exports
-// ---------------------------------------------------------------------------
-
-/**
- * Fetches the npm registry, compares versions, and writes the result to cache.
- *
- * On network failure, returns the last cached result (with an error field) if
- * one exists. If no cache exists and the fetch fails, the error field is set
- * and update_available is false.
- */
-export async function checkForUpdate(
-  currentVersion: string,
-  globalPrefix: string | null = null,
-  runtimeCommand: string | null = null,
-  channelOverride?: ReleaseChannel,
-): Promise<CheckResult> {
-  const config = readUpdateConfig();
-  const existingCache = readCachedCheck();
-  const effectiveChannel = channelOverride ?? config.channel;
-
-  const freshPackages: Partial<Record<UpdatePackageId, CachedPackageCheck>> = {};
-  const fetchErrors: string[] = [];
-
-  const registryChecks = await Promise.allSettled(
-    UPDATE_PACKAGES.map(async (pkg) => {
-      const response = await fetch(packageRegistryUrl(pkg.packageName), {
-        signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
-      });
-
-      if (!response.ok) {
-        throw new Error(`${pkg.packageName}: registry responded with ${response.status}`);
-      }
-
-      const data = (await response.json()) as NpmRegistryResponse;
-      return {
-        id: pkg.id,
-        package_name: pkg.packageName,
-        latest_stable: data['dist-tags'].latest,
-        latest_beta: data['dist-tags'].beta ?? null,
-      };
-    }),
-  );
-
-  for (const result of registryChecks) {
-    if (result.status === 'fulfilled') {
-      freshPackages[result.value.id] = {
-        package_name: result.value.package_name,
-        latest_stable: result.value.latest_stable,
-        latest_beta: result.value.latest_beta,
-      };
-      continue;
-    }
-
-    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
-    fetchErrors.push(message);
-  }
-
-  if (existingCache !== null) {
-    for (const pkg of UPDATE_PACKAGES) {
-      if (freshPackages[pkg.id] !== undefined) continue;
-      const cached = existingCache.packages[pkg.id];
-      if (cached) {
-        freshPackages[pkg.id] = cached;
-      }
-    }
-  }
-
-  if (Object.keys(freshPackages).length === 0) {
-    const fetchError = fetchErrors[0] ?? 'registry fetch failed';
-    return {
-      update_available: false,
-      revert_available: false,
-      running_version: currentVersion,
-      latest_version: currentVersion,
-      latest_stable: currentVersion,
-      latest_beta: null,
-      channel: effectiveChannel,
-      channel_scope: 'machine',
-      runtime_scope:
-        runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
-          ? 'managed'
-          : 'machine',
-      check_interval_hours: config.check_interval_hours,
-      last_check: new Date().toISOString(),
-      error: fetchError,
-      packages: buildPackageResults(
-        currentVersion,
-        { checked_at: new Date().toISOString(), channel: effectiveChannel, packages: {} },
-        effectiveChannel,
-        globalPrefix,
-        runtimeCommand,
-      ),
-    };
-  }
-
-  const freshCache: CachedCheck = {
-    checked_at: new Date().toISOString(),
-    channel: effectiveChannel,
-    packages: freshPackages,
-  };
-
-  try {
-    fs.mkdirSync(path.dirname(UPDATE_CHECK_CACHE_PATH), { recursive: true });
-    fs.writeFileSync(UPDATE_CHECK_CACHE_PATH, JSON.stringify(freshCache, null, 2), 'utf-8');
-  } catch {
-    // Cache write failure is non-fatal
-  }
-
-  const error = fetchErrors.length > 0 ? fetchErrors.join('; ') : null;
-  return buildCheckResult(
-    currentVersion,
-    freshCache,
-    config,
-    effectiveChannel,
-    error,
-    globalPrefix,
-    runtimeCommand,
-  );
-}
-
-/**
- * Builds a CheckResult from cached data without hitting the registry.
- * Returns null when no cache exists.
- *
- * Accepts optional pre-read `cache` and `config` to avoid redundant file
- * reads when the caller has already loaded them (e.g. for a staleness check).
- */
-export function statusFromCache(
-  currentVersion: string,
-  cache?: CachedCheck | null,
-  config?: UpdateConfig,
-  globalPrefix: string | null = null,
-  runtimeCommand: string | null = null,
-  channelOverride?: ReleaseChannel,
-): CheckResult | null {
-  const resolvedCache = cache !== undefined ? cache : readCachedCheck();
-  if (resolvedCache === null) return null;
-
-  const resolvedConfig = config !== undefined ? config : readUpdateConfig();
-  const effectiveChannel = channelOverride ?? resolvedCache.channel ?? resolvedConfig.channel;
-  return buildCheckResult(
-    currentVersion,
-    resolvedCache,
-    resolvedConfig,
-    effectiveChannel,
-    null,
-    globalPrefix,
-    runtimeCommand,
-  );
-}
