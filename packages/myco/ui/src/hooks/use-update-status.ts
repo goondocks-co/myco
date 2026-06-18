@@ -50,7 +50,7 @@ const UPDATE_QUERY_KEY = ['update-status'] as const;
 export function useUpdateStatus() {
   return usePowerQuery<UpdateStatus>({
     queryKey: [...UPDATE_QUERY_KEY],
-    queryFn: ({ signal }) => fetchJson<UpdateStatus>('/update/status', { signal }),
+    queryFn: ({ signal }) => fetchJson<UpdateStatus>('/upgrade/status', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     contextFree: true,
@@ -62,7 +62,7 @@ export function useUpdateStatus() {
 export function useUpdateCheck() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<UpdateStatus>('/update/check'),
+    mutationFn: () => postJson<UpdateStatus>('/upgrade/check'),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [...UPDATE_QUERY_KEY] });
     },
@@ -71,14 +71,14 @@ export function useUpdateCheck() {
 
 export function useUpdateApply() {
   return useMutation({
-    mutationFn: () => postJson<ApplyResponse>('/update/apply'),
+    mutationFn: () => postJson<ApplyResponse>('/upgrade/apply'),
   });
 }
 
 export function useUpdateChannel() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (channel: string) => putJson<UpdateStatus>('/update/channel', { channel }),
+    mutationFn: (channel: string) => putJson<UpdateStatus>('/upgrade/channel', { channel }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [...UPDATE_QUERY_KEY] });
     },

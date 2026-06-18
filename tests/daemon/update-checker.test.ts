@@ -1,15 +1,17 @@
 /**
- * Tests for the update checker module.
+ * Tests for the update checker module (retained exports).
  *
  * Covers:
  * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
  *   module-level state (replaces the old MYCO_CMD env-var dispatch)
  * - readUpdateConfig — defaults when missing, reads YAML when present
  * - isCacheStale — null cache, fresh cache, expired cache
- * - checkForUpdate — fetches registry, update detection, channel logic
- * - statusFromCache — builds CheckResult from cache without registry
  * - detectDevBuild — realpath comparison against npm global prefix
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
+ *
+ * Note: checkForUpdate / statusFromCache were retired from update-checker.ts
+ * (Task 7). The composite CheckResult assembly now lives in daemon/api/upgrade.ts.
+ * Those functions' behaviors are covered by tests/daemon/api/upgrade.test.ts.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
@@ -96,8 +98,6 @@ import {
   writeProjectReleaseChannel,
   readUpdateConfig,
   isCacheStale,
-  checkForUpdate,
-  statusFromCache,
   resolveGlobalPrefix,
   getInstalledVersion,
   getRuntimeVersionLabel,
@@ -106,7 +106,6 @@ import {
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
 import { UPDATE_CONFIG_PATH } from '@myco/constants/update.js';
-import { mycoReleasesApiUrl } from '@myco/upgrade/release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -125,16 +124,6 @@ function makeCachedCheck(overrides: Partial<CachedCheck> = {}): CachedCheck {
       },
     },
     ...overrides,
-  };
-}
-
-/** Build a minimal npm registry response. */
-function makeRegistryResponse(latest: string, beta?: string): Record<string, unknown> {
-  return {
-    'dist-tags': {
-      latest,
-      ...(beta !== undefined ? { beta } : {}),
-    },
   };
 }
 
@@ -174,59 +163,6 @@ function mockNoFiles(): void {
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
     err.code = 'ENOENT';
     throw err;
-  });
-}
-
-/** Helper: mock a successful fetch response. */
-function mockFetchSuccess(data: Record<string, unknown>): void {
-  global.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => data,
-  } as Response);
-}
-
-/** Helper: mock a failed fetch. */
-function mockFetchFailure(message = 'network error'): void {
-  global.fetch = vi.fn().mockRejectedValue(new Error(message));
-}
-
-/**
- * Build a minimal GitHub releases array from an npm-style dist-tags response.
- *
- * Translates `latest`/`beta` dist-tags into GitHub release fixtures so the
- * GitHub-Releases branch in checkForUpdate sees the same version semantics
- * that the old npm-registry branch did. Used by existing checkForUpdate tests
- * that exercise the myco package update logic (myco now fetches GitHub, not npm).
- */
-function makeGitHubReleasesFromDistTags(
-  data: Record<string, unknown>,
-): Array<{ tag_name: string; prerelease: boolean; assets: [] }> {
-  const distTags = (data['dist-tags'] ?? {}) as Record<string, string>;
-  const releases: Array<{ tag_name: string; prerelease: boolean; assets: [] }> = [];
-  if (distTags['latest']) {
-    releases.push({ tag_name: `myco/v${distTags['latest']}`, prerelease: false, assets: [] });
-  }
-  if (distTags['beta']) {
-    releases.push({ tag_name: `myco/v${distTags['beta']}`, prerelease: true, assets: [] });
-  }
-  return releases;
-}
-
-/**
- * Mock fetch with URL routing: myco → GitHub Releases; operator CLIs → npm.
- * Converts the npm-format `data` to a GitHub releases array for myco so
- * existing per-version assertions remain correct.
- */
-function mockFetchSuccessGitHubAware(data: Record<string, unknown>): void {
-  const githubUrl = mycoReleasesApiUrl();
-  const releases = makeGitHubReleasesFromDistTags(data);
-  global.fetch = vi.fn().mockImplementation((url: string) => {
-    if (url === githubUrl) {
-      return Promise.resolve({ ok: true, status: 200, json: async () => releases });
-    }
-    // npm registry for operator CLIs
-    return Promise.resolve({ ok: true, status: 200, json: async () => data });
   });
 }
 
@@ -531,384 +467,6 @@ describe('isCacheStale()', () => {
   it('returns true when checked_at is not a valid date', () => {
     const bad = makeCachedCheck({ checked_at: 'not-a-date' });
     expect(isCacheStale(bad, 6)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// checkForUpdate
-// ---------------------------------------------------------------------------
-
-describe('checkForUpdate()', () => {
-  beforeEach(() => {
-    // No pre-existing config or cache by default
-    mockNoFiles();
-  });
-
-  it('fetches the registry and returns an update when a newer version exists', async () => {
-    // myco now resolves from GitHub Releases; operator CLIs remain on npm.
-    // mockFetchSuccessGitHubAware routes per-URL so all three packages are served.
-    mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0'));
-
-    const result = await checkForUpdate('1.0.0');
-
-    expect(result.update_available).toBe(true);
-    expect(result.running_version).toBe('1.0.0');
-    expect(result.latest_stable).toBe('2.0.0');
-    expect(result.latest_version).toBe('2.0.0');
-    expect(result.error).toBeNull();
-  });
-
-  it('returns no update when running the latest version', async () => {
-    mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0'));
-
-    const result = await checkForUpdate('1.0.0');
-
-    expect(result.update_available).toBe(false);
-    expect(result.latest_stable).toBe('1.0.0');
-    expect(result.error).toBeNull();
-  });
-
-  it('returns no update when running a newer version than registry (pre-release dev)', async () => {
-    mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0'));
-
-    const result = await checkForUpdate('2.0.0');
-
-    expect(result.update_available).toBe(false);
-  });
-
-  it('writes cache after a successful fetch', async () => {
-    mockFetchSuccessGitHubAware(makeRegistryResponse('1.5.0'));
-
-    await checkForUpdate('1.0.0');
-
-    expect(vi.mocked(fs.writeFileSync)).toHaveBeenCalledOnce();
-    const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
-    const cached = JSON.parse(writtenContent) as CachedCheck;
-    expect(cached.packages.myco?.latest_stable).toBe('1.5.0');
-  });
-
-  describe('beta channel', () => {
-    beforeEach(() => {
-      // Config file returns beta channel
-      mockFileContent(
-        UPDATE_CONFIG_PATH,
-        'channel: beta\ncheck_interval_hours: 6\n',
-      );
-    });
-
-    it('considers the beta dist-tag when on beta channel', async () => {
-      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(true);
-      expect(result.latest_version).toBe('1.1.0-beta.1');
-      expect(result.latest_beta).toBe('1.1.0-beta.1');
-    });
-
-    it('picks stable over beta when stable is higher (no-downgrade rule)', async () => {
-      // stable 2.0.0 > beta 1.9.0-beta.1
-      mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(true);
-      expect(result.latest_version).toBe('2.0.0');
-    });
-
-    it('reports latest_beta even when not selected as target', async () => {
-      mockFetchSuccessGitHubAware(makeRegistryResponse('2.0.0', '1.9.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.latest_beta).toBe('1.9.0-beta.1');
-    });
-
-    it('sets channel to beta in the result', async () => {
-      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.1.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.channel).toBe('beta');
-    });
-  });
-
-  describe('stable channel', () => {
-    it('ignores beta dist-tag on stable channel', async () => {
-      // stable channel — beta tag should not be selected as target
-      mockFetchSuccessGitHubAware(makeRegistryResponse('1.0.0', '1.5.0-beta.1'));
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.latest_version).toBe('1.0.0');
-      // But latest_beta is still reported
-      expect(result.latest_beta).toBe('1.5.0-beta.1');
-    });
-  });
-
-  describe('error handling', () => {
-    it('returns cached result with error when fetch fails and cache exists', async () => {
-      const staleCache = makeCachedCheck({
-        channel: 'stable',
-        packages: {
-          myco: {
-            package_name: '@goondocks/myco',
-            latest_stable: '1.2.0',
-            latest_beta: null,
-          },
-        },
-      });
-      vi.mocked(fs.readFileSync).mockImplementation((p) => {
-        if (String(p).endsWith('last-update-check.json')) {
-          return JSON.stringify(staleCache);
-        }
-        const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-        err.code = 'ENOENT';
-        throw err;
-      });
-
-      mockFetchFailure('fetch failed');
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.error).toMatch(/fetch failed/);
-      expect(result.latest_stable).toBe('1.2.0');
-    });
-
-    it('returns no-update with error when fetch fails and no cache exists', async () => {
-      mockNoFiles();
-      mockFetchFailure('connection refused');
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.error).toMatch(/connection refused/);
-    });
-
-    it('handles non-ok HTTP response', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        json: async () => ({}),
-      } as Response);
-      mockNoFiles();
-
-      const result = await checkForUpdate('1.0.0');
-
-      expect(result.update_available).toBe(false);
-      expect(result.error).toMatch(/503/);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// statusFromCache
-// ---------------------------------------------------------------------------
-
-describe('statusFromCache()', () => {
-  it('returns null when no cache file exists', () => {
-    mockNoFiles();
-    const result = statusFromCache('1.0.0');
-    expect(result).toBeNull();
-  });
-
-  it('builds a CheckResult from cache when cache exists', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      checked_at: new Date().toISOString(),
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.5.0',
-          latest_beta: null,
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.0.0');
-
-    expect(result).not.toBeNull();
-    expect(result!.update_available).toBe(true);
-    expect(result!.running_version).toBe('1.0.0');
-    expect(result!.latest_stable).toBe('1.5.0');
-    expect(result!.latest_version).toBe('1.5.0');
-    expect(result!.channel).toBe('stable');
-    expect(result!.error).toBeNull();
-  });
-
-  it('correctly detects no update from cache', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.5.0',
-          latest_beta: null,
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.5.0');
-    expect(result!.update_available).toBe(false);
-  });
-
-  it('uses beta channel logic when cache channel is beta', () => {
-    const cache = makeCachedCheck({
-      channel: 'beta',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache('1.0.0');
-    expect(result!.update_available).toBe(true);
-    expect(result!.latest_version).toBe('1.1.0-beta.1');
-  });
-
-  it('offers a stable-channel revert when the running binary is a prerelease (no managed-runtime pin)', () => {
-    // Re-founded signal: desired channel stable + the RUNNING version is a
-    // prerelease + a stable target exists. No `runtime.command` pin is needed —
-    // the managed-binary swap (curl + npm) does not write one. The install
-    // marker is absent here (fs reads ENOENT → null), which still reverts.
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    const result = statusFromCache(
-      '1.1.0-beta.1',
-      undefined,
-      undefined,
-      '/opt/homebrew',
-      null, // no runtime.command pin
-    );
-    // Revert to a lower stable version is a revert, not an update.
-    expect(result!.update_available).toBe(false);
-    expect(result!.revert_available).toBe(true);
-    expect(result!.latest_version).toBe('1.0.0');
-    expect(result!.packages[0]?.update_available).toBe(false);
-    expect(result!.packages[0]?.revert_available).toBe(true);
-    expect(result!.runtime_scope).toBe('machine');
-  });
-
-  it('offers a stable-channel revert when running a prerelease but the install marker still says stable (stale-marker scenario)', () => {
-    // KEY regression: install on stable (marker channel='stable'), apply a beta
-    // via UI (binary-swap does NOT rewrite install.json), then switch desired
-    // channel back to stable. The marker still reads 'stable' while the running
-    // binary is a prerelease. Previously the '&& markerChannel !== stable' clause
-    // suppressed revert_available in this case. After the fix, the running-version
-    // prerelease check is authoritative and revert must be offered.
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-
-    // install.json marker says channel='stable' (the stale value left from the
-    // original install before the user switched to beta via the UI).
-    const staleMarker = JSON.stringify({ channel: 'stable', version: '1.0.0' });
-
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      if (String(p).endsWith('install.json')) {
-        return staleMarker;
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    // Running binary is a prerelease even though the marker says stable.
-    const result = statusFromCache(
-      '1.1.0-beta.1',
-      undefined,
-      undefined,
-      '/opt/homebrew',
-      null,
-    );
-    expect(result!.revert_available).toBe(true);
-    expect(result!.packages[0]?.revert_available).toBe(true);
-  });
-
-  it('does NOT offer a revert when the running binary is already stable', () => {
-    const cache = makeCachedCheck({
-      channel: 'stable',
-      packages: {
-        myco: {
-          package_name: '@goondocks/myco',
-          latest_stable: '1.0.0',
-          latest_beta: '1.1.0-beta.1',
-        },
-      },
-    });
-    vi.mocked(fs.readFileSync).mockImplementation((p) => {
-      if (String(p).endsWith('last-update-check.json')) {
-        return JSON.stringify(cache);
-      }
-      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
-      err.code = 'ENOENT';
-      throw err;
-    });
-
-    // Running stable 1.0.0, desired stable, nothing newer → up to date.
-    const result = statusFromCache('1.0.0', undefined, undefined, '/opt/homebrew', null);
-    expect(result!.update_available).toBe(false);
-    expect(result!.revert_available).toBe(false);
-    expect(result!.packages[0]?.revert_available).toBe(false);
   });
 });
 

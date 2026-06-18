@@ -36,7 +36,7 @@ import { installProcessGuards } from './process-guards.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
-import { createUpdateHandlers } from './api/update.js';
+import { createUpgradeHandlers } from './api/upgrade.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
@@ -1631,22 +1631,25 @@ export async function main(): Promise<void> {
   server.registerRoute('DELETE', '/api/daemon/intent/restart', intentHandlers.cancelRestart);
   server.registerRoute('DELETE', '/api/daemon/intent/update',  intentHandlers.cancelUpdate);
 
-  // --- Update routes ---
-  const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);
-  const updateHandlers = createUpdateHandlers({
+  // --- Upgrade routes ---
+  const upgradeProjectRoot = resolveProjectRoot(bootstrapVaultDir);
+  const upgradeHandlers = createUpgradeHandlers({
     vaultDir: bootstrapVaultDir,
-    projectRoot: updateProjectRoot,
+    projectRoot: upgradeProjectRoot,
     currentVersion: server.version,
     daemonPort: server.port,
     globalPrefix,
     daemonStateDir: daemonService.stateDir,
-    scheduleShutdown: scheduleShutdownWithAttribution('api/update', logger),
+    scheduleShutdown: scheduleShutdownWithAttribution('api/upgrade', logger),
+    home: mycoHome,
+    platform: process.platform,
+    localAppData: process.env.LOCALAPPDATA,
   });
 
-  server.registerRoute('GET', '/api/update/status', async (req) => updateHandlers.handleUpdateStatus(req));
-  server.registerRoute('POST', '/api/update/check', async (req) => updateHandlers.handleUpdateCheck(req));
-  server.registerRoute('POST', '/api/update/apply', async (req) => updateHandlers.handleUpdateApply(req));
-  server.registerRoute('PUT', '/api/update/channel', async (req) => updateHandlers.handleUpdateChannel(req));
+  server.registerRoute('GET', '/api/upgrade/status', async (req) => upgradeHandlers.handleUpgradeStatus(req));
+  server.registerRoute('POST', '/api/upgrade/check', async (req) => upgradeHandlers.handleUpgradeCheck(req));
+  server.registerRoute('POST', '/api/upgrade/apply', async (req) => upgradeHandlers.handleUpgradeApply(req));
+  server.registerRoute('PUT', '/api/upgrade/channel', async (req) => upgradeHandlers.handleUpgradeChannel(req));
 
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
