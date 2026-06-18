@@ -735,7 +735,6 @@ function buildPackageResults(
   cache: CachedCheck,
   channel: ReleaseChannel,
   globalPrefix: string | null,
-  _runtimeCommand: string | null = null,
 ): PackageCheckResult[] {
   const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
   // Revert-to-stable is offered when the operator's DESIRED channel is stable
@@ -792,9 +791,8 @@ function buildCheckResult(
   channel: ReleaseChannel,
   error: string | null,
   globalPrefix: string | null,
-  runtimeCommand: string | null = null,
 ): CheckResult {
-  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix, runtimeCommand);
+  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix);
   const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
   const targetVersion = primaryPackage?.latest_version ?? currentVersion;
   const latestStable = primaryPackage?.latest_stable ?? currentVersion;
@@ -965,7 +963,6 @@ export async function checkForUpdate(
         { checked_at: new Date().toISOString(), channel: effectiveChannel, packages: {} },
         effectiveChannel,
         globalPrefix,
-        runtimeCommand,
       ),
     };
   }
@@ -991,7 +988,6 @@ export async function checkForUpdate(
     effectiveChannel,
     error,
     globalPrefix,
-    runtimeCommand,
   );
 }
 
@@ -1022,6 +1018,5 @@ export function statusFromCache(
     effectiveChannel,
     null,
     globalPrefix,
-    runtimeCommand,
   );
 }
