@@ -13,8 +13,8 @@ import {
   resolveMycoBinaryUpdateRefs,
   resolveMycoBinaryUpdateRefsForVersion,
   type MycoReleaseResolverDeps,
-} from '@myco/daemon/myco-release-resolver.js';
-import type { GitHubRelease } from '@myco/install/release-assets.js';
+} from '@myco/upgrade/release-resolver.js';
+import type { GitHubRelease } from '@myco/upgrade/release-assets.js';
 
 function release(tag: string, prerelease: boolean): GitHubRelease {
   return {

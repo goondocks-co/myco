@@ -41,10 +41,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { UPDATE_ERROR_PATH } from '../constants/update.js';
-import { parseSha256Sum } from '../install/release-assets.js';
+import { parseSha256Sum } from './release-assets.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
-import { restart, spawnDetached, writeFileSafe, type ApplyUpdateDeps } from './apply-update.js';
+import { restart, spawnDetached, writeFileSafe, type ApplyUpdateDeps } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Params (resolved by the caller) + deps (injected)

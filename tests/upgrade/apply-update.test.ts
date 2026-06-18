@@ -16,8 +16,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { run, type ApplyUpdateDeps } from '@myco/daemon/apply-update.js';
-import type { ApplyUpdateParams, ApplyRestartParams } from '@myco/daemon/apply-update.js';
+import { run, type ApplyUpdateDeps } from '@myco/upgrade/orchestrator.js';
+import type { ApplyUpdateParams, ApplyRestartParams } from '@myco/upgrade/orchestrator.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
 
 let tmpDir: string;

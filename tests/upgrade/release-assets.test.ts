@@ -9,7 +9,7 @@ import {
   mycoReleasesApiUrl,
   resolveMycoVersions,
   type GitHubRelease,
-} from '@myco/install/release-assets';
+} from '@myco/upgrade/release-assets';
 
 // ---------------------------------------------------------------------------
 // resolveTargetTriple

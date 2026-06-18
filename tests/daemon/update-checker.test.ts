@@ -106,7 +106,7 @@ import {
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
 import { UPDATE_CONFIG_PATH } from '@myco/constants/update.js';
-import { mycoReleasesApiUrl } from '@myco/install/release-assets.js';
+import { mycoReleasesApiUrl } from '@myco/upgrade/release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

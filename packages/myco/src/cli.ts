@@ -109,8 +109,8 @@ async function main(): Promise<void> {
   // (see backup/restore-runner.ts). Intentionally absent from the help text.
   if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
   // Internal: spawned detached by the daemon to run the cross-platform update/
-  // restart orchestration after the daemon exits (see daemon/apply-update.ts).
-  if (cmd === '__apply-update') return (await import('./daemon/apply-update.js')).run(args);
+  // restart orchestration after the daemon exits (see upgrade/orchestrator.ts).
+  if (cmd === '__apply-update') return (await import('./upgrade/orchestrator.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');

@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process';
 
 import { MYCO_GLOBAL_DIR, UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
-import type { ApplyUpdateParams, ApplyRestartParams, MycoBinaryUpdateRefs } from './apply-update.js';
+import type { ApplyUpdateParams, ApplyRestartParams, MycoBinaryUpdateRefs } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -119,7 +119,7 @@ export interface RestartParams {
  * old inode — so we spawn `process.execPath` directly. This is the ONE
  * legitimate platform branch in the update flow.
  */
-function resolveOrchestratorBinary(): string {
+export function resolveOrchestratorBinary(): string {
   if (process.platform !== 'win32') return process.execPath;
   // Sweep leaked copies from prior updates first: a running .exe can't delete
   // itself, so the orchestrator can never clean up its own copy — the NEXT
@@ -143,7 +143,7 @@ function resolveOrchestratorBinary(): string {
  * `<binary> __apply-update <paramsFile>` detached + unreffed so the daemon can
  * exit immediately. Returns the params file path.
  */
-function spawnApplyUpdate(namePrefix: string, params: ApplyUpdateParams | ApplyRestartParams): string {
+export function spawnApplyUpgrade(namePrefix: string, params: ApplyUpdateParams | ApplyRestartParams): string {
   const paramsFile = path.join(os.tmpdir(), `${namePrefix}-${Date.now()}.json`);
   fs.writeFileSync(paramsFile, JSON.stringify(params), 'utf-8');
 
@@ -200,7 +200,7 @@ export function spawnUpdateScript(params: InstallParams): string {
         }
       : {}),
   };
-  return spawnApplyUpdate('myco-update', applyParams);
+  return spawnApplyUpgrade('myco-update', applyParams);
 }
 
 /**
@@ -219,5 +219,5 @@ export function spawnRestartScript(params: RestartParams): string {
     daemonPort: params.daemonPort,
     restartReasonPath: path.join(params.vaultDir, RESTART_REASON_FILENAME),
   };
-  return spawnApplyUpdate('myco-restart', applyParams);
+  return spawnApplyUpgrade('myco-restart', applyParams);
 }

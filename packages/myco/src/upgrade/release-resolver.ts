@@ -25,7 +25,7 @@ import {
   resolveTargetTriple,
   type AssetRefs,
   type GitHubRelease,
-} from '../install/release-assets.js';
+} from './release-assets.js';
 import type { ReleaseChannel } from '../constants/update.js';
 
 /** Timeout for the GitHub releases fetch. Mirrors the update-checker probe. */

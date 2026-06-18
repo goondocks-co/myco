@@ -51,7 +51,7 @@ import {
   mycoReleasesApiUrl,
   resolveMycoVersions,
   githubHeaders,
-} from '../install/release-assets.js';
+} from '@myco/upgrade/release-assets.js';
 
 // ---------------------------------------------------------------------------
 // Public types

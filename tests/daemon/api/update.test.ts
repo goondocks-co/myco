@@ -23,8 +23,8 @@ import path from 'node:path';
 // in the same `bun test` invocation (the canonical npm test runner uses
 // --isolate, which masks the leak; the restore stays correct regardless).
 const realUpdateChecker = await import('@myco/daemon/update-checker.js');
-const realUpdateInstaller = await import('@myco/daemon/update-installer.js');
-const realReleaseResolver = await import('@myco/daemon/myco-release-resolver.js');
+const realUpdateInstaller = await import('@myco/upgrade/spawn.js');
+const realReleaseResolver = await import('@myco/upgrade/release-resolver.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
@@ -41,22 +41,22 @@ mock.module('@myco/daemon/update-checker.js', () => ({
   resolveRuntimeCommand: vi.fn(() => null),
 }));
 
-mock.module('@myco/daemon/update-installer.js', () => ({
+mock.module('@myco/upgrade/spawn.js', () => ({
   spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
 
 // The myco binary path resolves release refs through this module. Mock it so
 // handleUpdateApply never hits the network; tests drive the resolved refs.
-mock.module('@myco/daemon/myco-release-resolver.js', () => ({
+mock.module('@myco/upgrade/release-resolver.js', () => ({
   resolveMycoBinaryUpdateRefs: vi.fn(),
   resolveMycoBinaryUpdateRefsForVersion: vi.fn(),
 }));
 
 afterAll(() => {
   mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
-  mock.module('@myco/daemon/update-installer.js', () => realUpdateInstaller);
-  mock.module('@myco/daemon/myco-release-resolver.js', () => realReleaseResolver);
+  mock.module('@myco/upgrade/spawn.js', () => realUpdateInstaller);
+  mock.module('@myco/upgrade/release-resolver.js', () => realReleaseResolver);
 });
 
 import {
@@ -72,8 +72,8 @@ import {
   getInstalledVersion,
   resolveRuntimeCommand,
 } from '@myco/daemon/update-checker.js';
-import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
-import { resolveMycoBinaryUpdateRefs } from '@myco/daemon/myco-release-resolver.js';
+import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
+import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager';

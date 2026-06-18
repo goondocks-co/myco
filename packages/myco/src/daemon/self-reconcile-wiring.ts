@@ -4,10 +4,10 @@ import type { DaemonServiceState } from './service-state.js';
 import type { DaemonStateAuthority } from './daemon-state-authority.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
-import { spawnUpdateScript } from './update-installer.js';
-import { resolveMycoBinaryUpdateRefsForVersion } from './myco-release-resolver.js';
-import { writeFileSafe } from './apply-update.js';
-import * as updateInProgress from './update-in-progress.js';
+import { spawnUpdateScript } from '@myco/upgrade/spawn.js';
+import { resolveMycoBinaryUpdateRefsForVersion } from '@myco/upgrade/release-resolver.js';
+import { writeFileSafe } from '@myco/upgrade/orchestrator.js';
+import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import {
   resolveMycoBinary,
   readUpdateError,

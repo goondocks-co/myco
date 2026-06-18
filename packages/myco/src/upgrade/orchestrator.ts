@@ -307,7 +307,7 @@ async function resolveApplyBinaryUpdate(
   deps: ApplyUpdateDeps,
 ): Promise<(params: Record<string, unknown>) => Promise<void>> {
   if (deps.applyBinaryUpdate) return deps.applyBinaryUpdate;
-  const mod = await import('./apply-binary-update.js');
+  const mod = await import('./apply-binary.js');
   return mod.applyBinaryUpdate as unknown as (params: Record<string, unknown>) => Promise<void>;
 }
 

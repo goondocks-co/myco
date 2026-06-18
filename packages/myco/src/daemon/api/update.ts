@@ -26,10 +26,10 @@ import {
   resolveRuntimeCommand,
 } from '../update-checker.js';
 import { TierConfigUnreadableError } from '../../config/loader.js';
-import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
-import { resolveMycoBinaryUpdateRefs } from '../myco-release-resolver.js';
-import type { MycoBinaryUpdateRefs } from '../apply-update.js';
-import * as updateInProgress from '../update-in-progress.js';
+import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
+import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
+import type { MycoBinaryUpdateRefs } from '@myco/upgrade/orchestrator.js';
+import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { RELEASE_CHANNELS, NPM_PACKAGE_NAME } from '../../constants/update.js';
 import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
 import { detectServiceManagedLabel } from './restart.js';

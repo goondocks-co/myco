@@ -48,7 +48,7 @@ afterAll(() => {
   mock.module('node:fs', () => ({ ...fsActual, default: fsActual }));
 });
 
-import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
+import { spawnUpdateScript, spawnRestartScript } from '@myco/upgrade/spawn.js';
 
 /** The single params file the spawner wrote for the most recent call. */
 function lastParams(): Record<string, unknown> {

@@ -30,7 +30,7 @@ import {
   applyBinaryUpdate,
   type ApplyBinaryUpdateParams,
   type ApplyBinaryUpdateDeps,
-} from '@myco/daemon/apply-binary-update.js';
+} from '@myco/upgrade/apply-binary.js';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
 
 let tmpDir: string;

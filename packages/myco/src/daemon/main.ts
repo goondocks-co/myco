@@ -16,7 +16,7 @@ import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
-import * as updateInProgress from './update-in-progress.js';
+import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
