@@ -105,6 +105,10 @@ export interface UpgradeDeps {
   mycoBinary?: string;
   /** Override the project root (for adopt's restart cwd). */
   projectRoot?: string;
+  /** Inject the channel-persist function (for testing side-effect ordering). */
+  writeChannel?: typeof writeProjectReleaseChannel;
+  /** Inject the update-check function (for positive --check tests). */
+  checkFn?: typeof resolveMycoPackageCheck;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,31 +179,30 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   const isCheck = parsed.has('--check');
 
-  // Check dev-build status before any side effects.
-  const devBuildCheck = deps.isDevBuild ?? isUpdateExempt;
-  const onDevBuild = devBuildCheck();
-
-  // Persist channel change BEFORE resolving, so the resolver sees the new value.
-  if (channelArg) {
-    writeProjectReleaseChannel(undefined, channelArg as ReleaseChannel);
-    console.log(`Channel set to '${channelArg}'.`);
-  }
-
-  // Effective channel for this run.
+  // Effective channel for this run (before any persist — reading the stored value).
   const channel: ReleaseChannel = (channelArg as ReleaseChannel | undefined) ?? readProjectReleaseChannel();
 
-  // --check path: report only, never adopt. Dev builds may still report.
+  // --check path: report only, never adopt, never persist. Dev builds may still report.
   if (isCheck) {
     await runCheck(channel, deps);
     return;
   }
 
-  // Dev-build guard for upgrade (not check).
-  if (onDevBuild) {
+  // Dev-build guard for upgrade (not check). Refuse before any side effects.
+  const devBuildCheck = deps.isDevBuild ?? isUpdateExempt;
+  if (devBuildCheck()) {
     console.error(
       'myco upgrade: running a dev build — upgrade is managed by your checkout, not the binary installer.',
     );
     process.exit(1);
+  }
+
+  // Persist channel change now that we are on the actual-upgrade path.
+  // This keeps the side effect out of --check and dev-build-refused paths.
+  if (channelArg) {
+    const persistChannel = deps.writeChannel ?? writeProjectReleaseChannel;
+    persistChannel(undefined, channelArg as ReleaseChannel);
+    console.log(`Channel set to '${channelArg}'.`);
   }
 
   // Resolve the asset refs for the upgrade target.
@@ -292,9 +295,10 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps): Promise<voi
   const currentVersion = deps.currentVersion ?? getPluginVersion();
   console.log(`Checking for updates on the '${channel}' channel…`);
 
+  const checkFn = deps.checkFn ?? resolveMycoPackageCheck;
   let checkResult: Awaited<ReturnType<typeof resolveMycoPackageCheck>>;
   try {
-    checkResult = await resolveMycoPackageCheck(
+    checkResult = await checkFn(
       currentVersion,
       channel,
       // installed_version: use current as proxy (CLI doesn't track the npm install path

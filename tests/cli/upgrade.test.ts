@@ -118,6 +118,7 @@ function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
       version: '1.1.0',
     })),
     initiateAdopt: vi.fn(async (_opts) => {}),
+    writeChannel: vi.fn((_vaultDir, _channel) => {}),
     ...overrides,
   };
 }
@@ -278,6 +279,45 @@ describe('myco upgrade --check', () => {
     const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
     expect(errOutput).not.toContain('running a dev build');
   });
+
+  it('positive: calls checkFn + prints update available + never stages or adopts', async () => {
+    const fakeCheckResult = {
+      update_available: true,
+      latest_version: '1.2.0',
+      revert_available: false,
+      latest_stable: '1.1.0',
+    };
+    const checkFn = vi.fn(async () => fakeCheckResult);
+    const deps = makeDeps({ checkFn: checkFn as unknown as UpgradeDeps['checkFn'] });
+
+    await run(['--check'], deps);
+
+    expect(checkFn).toHaveBeenCalledTimes(1);
+    const logOutput = (console.log as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+    expect(logOutput).toContain('1.2.0');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('positive: calls checkFn with correct channel when --channel is passed', async () => {
+    const fakeCheckResult = {
+      update_available: false,
+      latest_version: '1.0.0',
+      revert_available: false,
+      latest_stable: '1.0.0',
+    };
+    const checkFn = vi.fn(async () => fakeCheckResult);
+    const deps = makeDeps({ checkFn: checkFn as unknown as UpgradeDeps['checkFn'] });
+
+    await run(['--check', '--channel', 'beta'], deps);
+
+    expect(checkFn).toHaveBeenCalledTimes(1);
+    // checkFn receives channel as second arg
+    const callArgs = (checkFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string, string];
+    expect(callArgs[1]).toBe('beta');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -435,6 +475,41 @@ describe('myco upgrade --channel', () => {
     });
     await run(['--channel', 'beta'], deps);
     expect((deps.resolveRefs as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('beta');
+  });
+
+  it('persists channel via writeChannel BEFORE calling resolveRefs (on actual-upgrade path)', async () => {
+    const callOrder: string[] = [];
+    const deps = makeDeps({
+      writeChannel: vi.fn((_vaultDir, channel) => { callOrder.push(`persist:${channel}`); }),
+      resolveRefs: vi.fn(async (channel) => { callOrder.push(`resolve:${channel}`); return makeRefs('1.1.0-beta.1'); }),
+    });
+    await run(['--channel', 'beta'], deps);
+    expect(deps.writeChannel).toHaveBeenCalledTimes(1);
+    expect((deps.writeChannel as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe('beta');
+    // persist must come before resolve
+    expect(callOrder.indexOf('persist:beta')).toBeLessThan(callOrder.indexOf('resolve:beta'));
+  });
+
+  it('--channel on a dev build does NOT persist (refuses before side effects)', async () => {
+    const deps = makeDeps({ isDevBuild: () => true });
+    await expect(run(['--channel', 'beta'], deps)).rejects.toThrow('__exit__');
+    expect(deps.writeChannel).not.toHaveBeenCalled();
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+  });
+
+  it('--check --channel beta does NOT persist (report-only, no side effects)', async () => {
+    const fakeCheckResult = {
+      update_available: false,
+      latest_version: '1.0.0',
+      revert_available: false,
+      latest_stable: '1.0.0',
+    };
+    const checkFn = vi.fn(async () => fakeCheckResult);
+    const deps = makeDeps({ checkFn: checkFn as unknown as UpgradeDeps['checkFn'] });
+    await run(['--check', '--channel', 'beta'], deps);
+    expect(deps.writeChannel).not.toHaveBeenCalled();
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
   });
 
   it('beta→stable revert: adopts even when stable < current beta', async () => {
