@@ -122,4 +122,55 @@ describe('select-binary postinstall', () => {
     expect(fs.realpathSync(resolved.binaryPath)).toBe(fs.realpathSync(fixture.binaryPath));
     expect(result.stdout).toContain(`@goondocks/myco-${fixture.target}`);
   });
+
+  // Regression: convergence must run against the published package shape, which
+  // has NO dist/src/ and NO src/ directories. The original bug was a silent
+  // skip ("managed-binary module not found in dist/") because the convergence
+  // block imported dist/src/install/managed-binary.js — never emitted by the
+  // bun binary build. This test exercises the exact published shape.
+  it('convergence runs against the published package shape (no dist/src/, no src/)', () => {
+    const fixture = makeFixture({ includeBinary: true });
+    fixtures.push(fixture);
+
+    // Write a package.json with a real version so versionedDest is computed.
+    fs.writeFileSync(
+      path.join(fixture.pkgRoot, 'package.json'),
+      JSON.stringify({ name: '@goondocks/myco', version: '1.2.3' }) + '\n',
+    );
+
+    // Confirm the published shape: no dist/src/, no src/.
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'dist', 'src'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'src'))).toBe(false);
+
+    // Run with a custom HOME so convergence writes to a temp dir, not the real ~/.myco.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-conv-smoke-'));
+    fixtures.push({ ...fixture, tmpDir: fakeHome }); // ensure cleanup
+
+    const result = spawnSync(process.execPath, [fixture.scriptPath], {
+      cwd: fixture.pkgRoot,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeHome, MYCO_HOME: path.join(fakeHome, '.myco') },
+    });
+
+    expect(result.status).toBe(0);
+    // Must NOT print the old skip message.
+    expect(result.stderr).not.toContain('managed-binary module not found in dist/');
+    expect(result.stderr).not.toContain('Convergence skipped');
+
+    // Stable managed binary must be laid down.
+    const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
+    const managedBin = path.join(fakeHome, '.myco', 'bin', binaryName);
+    expect(fs.existsSync(managedBin)).toBe(true);
+
+    // Versioned slot must exist at <bindir>/versions/1.2.3/myco[.exe].
+    const versionedBin = path.join(fakeHome, '.myco', 'bin', 'versions', '1.2.3', binaryName);
+    expect(fs.existsSync(versionedBin)).toBe(true);
+
+    // install.json marker must be present.
+    const markerPath = path.join(fakeHome, '.myco', 'install.json');
+    expect(fs.existsSync(markerPath)).toBe(true);
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    expect(marker.source).toBe('npm');
+    expect(marker.bin).toBe(managedBin);
+  });
 });

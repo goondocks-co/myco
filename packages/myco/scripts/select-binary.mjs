@@ -8,9 +8,16 @@
 // `bin/myco` dispatch can find it), and then CONVERGES: it copies the
 // selected binary into the canonical managed location (`~/.myco/bin/myco`),
 // reconciles the `runtime.command` pin so every CLI invocation re-execs the
-// managed binary, writes the install marker, and re-points the OS service at
-// the managed binary. npm thus becomes a one-time bootstrap that hands off to
-// the same self-updating binary the curl installer produces.
+// managed binary, and writes the install marker. The daemon heals the OS
+// service unit on its next startup via `ensureSelfInstalledAsService`, so
+// the postinstall does NOT need to call any service-install logic — doing so
+// would require `dist/src/` modules that are never emitted in the published
+// tarball (the build only produces a bun binary + `dist/ui/`).
+//
+// Path layout helpers are inlined here (not imported from `dist/src/`) for
+// the same reason: this script is the only .mjs in the published package and
+// must be self-contained. The layout it produces MUST match what
+// `src/install/managed-binary.ts` computes (verified by the pack smoke test).
 //
 // This module exports `convergeNpmInstall` so the convergence mechanics are
 // unit-testable in isolation. The postinstall side effects run only when the
@@ -22,6 +29,31 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// ---------------------------------------------------------------------------
+// Inlined path helpers — must match src/install/managed-binary.ts exactly.
+// We cannot import dist/src/ because it is never emitted in the published
+// tarball (the build only produces a bun binary + dist/ui/).
+// ---------------------------------------------------------------------------
+
+function managedBinDir(home, platform, localAppData) {
+  if (platform === 'win32') {
+    const appDataLocal = localAppData ?? path.win32.join(home, 'AppData', 'Local');
+    return path.win32.join(appDataLocal, 'Myco', 'bin');
+  }
+  return path.posix.join(home, '.myco', 'bin');
+}
+
+function managedBinaryPath(home, platform, localAppData) {
+  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
+  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), binaryName);
+}
+
+function versionBinaryPath(home, platform, version, localAppData) {
+  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  return p.join(managedBinDir(home, platform, localAppData), 'versions', version, binaryName);
+}
 
 function detectTarget() {
   const { platform, arch } = process;
@@ -37,10 +69,8 @@ function detectTarget() {
  * to stderr and is NON-FATAL — npm postinstall must never fail because the
  * daemon's lazy-spawn path and `myco doctor` still recover the gap.
  *
- * `dest` and `versionedDest` are INJECTED (not computed here) so the paths
- * live in exactly one place — `@myco/install/managed-binary` — which prod
- * computes from the compiled `dist` module and tests compute from the `.ts`.
- * Same source, zero `.ts`/`.mjs` drift.
+ * `dest` and `versionedDest` are INJECTED so tests can supply arbitrary paths
+ * without touching the real home directory.
  *
  * Layout produced (mirrors install.sh / the daemon helpers):
  *   `versionedDest`  → <bindir>/versions/<bare-semver>/myco[.exe]
@@ -157,11 +187,8 @@ export function convergeNpmInstall({ home, platform, resolvedBinary, dest, chann
   }
 
   // --- Install marker -----------------------------------------------------
-  // When `writeMarker` is injected (production: `managed.writeInstallMarker`
-  // from dist/src/install/managed-binary.js), delegate to the canonical helper
-  // so the format is defined in exactly one place.  Tests that call
-  // convergeNpmInstall directly do not inject `writeMarker`, so the inline
-  // fallback keeps convergence unit-testable without a compiled dist/.
+  // `writeMarker` is an optional injection seam for tests. Production callers
+  // omit it; the inline fallback writes the same JSON shape.
   try {
     if (writeMarker) {
       writeMarker(mycoHome, { channel, source: 'npm', bin: dest });
@@ -251,66 +278,44 @@ async function main() {
 
   process.stdout.write(`[myco] Selected platform binary: ${binaryPath}\n`);
 
-  // Converge npm into the single managed binary, then self-install/repoint the
-  // OS service at it. Skipped in source checkouts (no published dist/). Both
-  // steps are wrapped so neither can fail the postinstall — the daemon's
-  // lazy-spawn path still works and `myco doctor` surfaces any gap.
-  // Plan reference: Decision 13 / Step 12.
+  // Converge npm into the single managed binary. Skipped in source checkouts
+  // (no platform binary present before `make dev-link`). Wrapped so a failure
+  // logs to stderr and is NON-FATAL — the daemon's lazy-spawn path still works
+  // and `myco doctor` surfaces any gap. Plan reference: Decision 13 / Step 12.
+  //
+  // Service install is intentionally NOT performed here. The daemon calls
+  // `ensureSelfInstalledAsService` on every startup (daemon/main.ts), which is
+  // idempotent and handles the service unit. Attempting it from the postinstall
+  // would require dist/src/service/self-install.js, which is never emitted in
+  // the published tarball.
   if (!isSourceCheckout) {
-    const distManagedBinary = path.join(pkgRoot, 'dist/src/install/managed-binary.js');
-    let dest = null;
-    if (fs.existsSync(distManagedBinary)) {
+    try {
+      const home = os.homedir();
+      const platform = process.platform;
+      // `pkg.version` is the bare semver (e.g. "1.2.3") — npm packages never
+      // carry the "myco/v" tag prefix that curl installers use. This is the
+      // exact version string the daemon's versionBinaryPath() expects.
+      let pkg = { version: null };
       try {
-        const managed = await import(distManagedBinary);
-        const home = os.homedir();
-        const platform = process.platform;
-        // `pkg.version` is the bare semver (e.g. "1.2.3") — npm packages never
-        // carry the "myco/v" tag prefix that curl installers use. This is the
-        // exact version string the daemon's versionBinaryPath() expects.
-        let pkg = { version: null };
-        try {
-          pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
-        } catch { /* version stays null; versionedDest skipped */ }
-        const version = pkg.version ?? null;
-        dest = managed.managedBinaryPath(home, platform);
-        const versionedDest = version
-          ? managed.versionBinaryPath(home, platform, version)
-          : null;
-        const channel = deriveChannel(pkgRoot);
-        convergeNpmInstall({
-          home,
-          platform,
-          resolvedBinary: binaryPath,
-          dest,
-          channel,
-          version,
-          versionedDest,
-          writeMarker: managed.writeInstallMarker,
-        });
-      } catch (err) {
-        process.stderr.write(`[myco] Convergence skipped: ${err?.message ?? err}\n`);
-      }
-    } else {
-      process.stderr.write('[myco] Convergence skipped: managed-binary module not found in dist/\n');
-    }
-
-    const distSelfInstall = path.join(pkgRoot, 'dist/src/service/self-install.js');
-    if (fs.existsSync(distSelfInstall)) {
-      try {
-        const mod = await import(distSelfInstall);
-        const stderrLogger = {
-          info: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
-          debug: () => undefined,
-          warn: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
-          error: (kind, message) => process.stderr.write(`[myco] ${kind}: ${message}\n`),
-        };
-        // Re-point the service unit at the managed binary so a self-update's
-        // in-place swap takes effect on the next supervisor restart. Falls
-        // back to the default executable inside self-install if `dest` is null.
-        await mod.ensureSelfInstalledAsService(stderrLogger, dest ? { executable: dest } : {});
-      } catch (err) {
-        process.stderr.write(`[myco] Service install skipped: ${err?.message ?? err}\n`);
-      }
+        pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+      } catch { /* version stays null; versionedDest skipped */ }
+      const version = pkg.version ?? null;
+      const dest = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
+      const versionedDest = version
+        ? versionBinaryPath(home, platform, version, process.env.LOCALAPPDATA)
+        : null;
+      const channel = deriveChannel(pkgRoot);
+      convergeNpmInstall({
+        home,
+        platform,
+        resolvedBinary: binaryPath,
+        dest,
+        channel,
+        version,
+        versionedDest,
+      });
+    } catch (err) {
+      process.stderr.write(`[myco] Convergence skipped: ${err?.message ?? err}\n`);
     }
   }
 }
