@@ -31,7 +31,7 @@ import { clearJsonSentinel, writeJsonSentinel } from '../utils/json-sentinel.js'
 const FILE_NAME = 'update.in-progress';
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
-export const UPDATE_INITIATORS = ['api/update/apply', 'self-reconcile'] as const;
+export const UPDATE_INITIATORS = ['api/update/apply', 'self-reconcile', 'daemon'] as const;
 export type UpdateInitiator = typeof UPDATE_INITIATORS[number];
 
 export interface UpdateInProgressSentinel {

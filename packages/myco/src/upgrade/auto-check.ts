@@ -32,7 +32,7 @@ import {
 import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from './apply-binary.js';
 import { initiateAdopt } from './adopt.js';
 import type { InitiateAdoptOpts } from './adopt.js';
-import { inFlight as inProgressInFlight } from './in-progress.js';
+import { inFlight as inProgressInFlight, write as writeInProgress, sentinelPath as inProgressSentinelPathFn } from './in-progress.js';
 import {
   versionsDir,
   versionBinaryPath,
@@ -315,6 +315,18 @@ export function buildAdoptJobFn(
 
       const initiateAdoptFn = adoptDeps.initiateAdopt ?? initiateAdopt;
 
+      // Write the update.in-progress sentinel BEFORE calling initiateAdopt so
+      // that subsequent idle ticks see it and no-op even if the cooperative
+      // shutdown fails silently (matching the self-reconcile-wiring.ts pattern).
+      // The sentinel write is inside the try/catch so a write failure cannot
+      // wedge the tick — it is caught, logged, and the job returns cleanly.
+      const sentinelPath = inProgressSentinelPathFn(stateDir);
+      writeInProgress(stateDir, {
+        targetVersion: stagedVersion,
+        startedAt: Date.now(),
+        initiator: 'daemon',
+      });
+
       const adoptOpts: InitiateAdoptOpts = {
         source: 'daemon',
         targetVersion: stagedVersion,
@@ -326,6 +338,10 @@ export function buildAdoptJobFn(
         serviceManagedLabel,
         mycoBinary: mycoBinary ?? 'myco',
         projectRoot,
+        // Thread the sentinel path so the detached orchestrator clears it on
+        // abort / stop-not-confirmed / crash-loop-restore (matching
+        // self-reconcile-wiring.ts ~line 179).
+        inProgressSentinelPath: sentinelPath,
       };
 
       await initiateAdoptFn(adoptOpts);

@@ -111,6 +111,10 @@ describe('adoptJobFn: basic adopt path', () => {
     expect(opts.source).toBe('daemon');
     expect(opts.targetVersion).toBe(STAGED);
     expect(opts.prevVersion).toBe(CURRENT);
+    // inProgressSentinelPath must be threaded through so the detached orchestrator
+    // can clear it on abort / stop-not-confirmed / crash-loop-restore.
+    expect(typeof opts.inProgressSentinelPath).toBe('string');
+    expect(opts.inProgressSentinelPath).toContain('update.in-progress');
   });
 
   it('does NOT call initiateAdopt when no staged version exists', async () => {
@@ -143,35 +147,27 @@ describe('adoptJobFn: inFlight guard (once-per-staged-version, not per-tick)', (
   it('calls initiateAdopt EXACTLY ONCE across two consecutive idle ticks', async () => {
     writeStagedBinary(STAGED);
 
-    // After the first tick, initiateAdopt writes the sentinel. We simulate
-    // that by writing it ourselves during the mock call.
-    let callCount = 0;
-    const initiateAdoptMock = mock(async () => {
-      callCount++;
-      // Simulate the orchestrator writing the sentinel (daemon path does this
-      // right before requesting shutdown in real code, but the sentinel is
-      // written by self-reconcile or the spawn path; we write it here to
-      // replicate what the daemon does after `initiateAdopt` returns).
-      updateInProgress.write(stateDir, {
-        targetVersion: STAGED,
-        startedAt: Date.now(),
-        initiator: 'self-reconcile',
-      });
-    });
+    // initiateAdopt is a pure no-op spy — it does NOT write the sentinel.
+    // The sentinel MUST be written by buildAdoptJobFn itself before calling
+    // initiateAdopt, so the guard holds even if the cooperative shutdown
+    // fails silently. This test proves the production guard works without
+    // any help from the mock.
+    const initiateAdoptMock = mock(async () => {});
 
     const deps = makeAdoptDeps({ initiateAdopt: initiateAdoptMock });
     const fn = buildAdoptJobFn(deps);
     const ctx = { sliceBudget: { maxItems: 0, softDeadlineMs: 2000 } };
 
-    // Tick 1 — should call initiateAdopt and write sentinel.
+    // Tick 1 — job body should write the sentinel THEN call initiateAdopt.
     await fn(ctx);
-    expect(callCount).toBe(1);
-    // Sentinel should now be in-flight.
+    expect(initiateAdoptMock).toHaveBeenCalledTimes(1);
+    // (a) The job body itself must have written the sentinel — not the mock.
     expect(updateInProgress.inFlight(stateDir)).not.toBeNull();
 
-    // Tick 2 — inFlight sentinel present → should NOT call initiateAdopt again.
+    // (b) Tick 2 — the REAL sentinel written by the job body (not the mock)
+    // blocks the second call. initiateAdopt is still called exactly once.
     await fn(ctx);
-    expect(callCount).toBe(1); // EXACTLY ONCE — this is the invariant.
+    expect(initiateAdoptMock).toHaveBeenCalledTimes(1); // EXACTLY ONCE — the invariant.
   });
 
   it('no-ops when an in-flight sentinel is already present', async () => {
