@@ -49,19 +49,6 @@ import type { ServiceManager } from '../service/types.js';
 // Params (written by update-installer.ts, read here)
 // ---------------------------------------------------------------------------
 
-/**
- * Already-resolved binary-update references (the daemon resolves the release
- * BEFORE spawning the orchestrator, since the orchestrator runs after the
- * daemon exits). Mirror of `AssetRefs` in release-assets; redeclared here so
- * apply-update has no install-layer import.
- */
-export interface MycoBinaryUpdateRefs {
-  assetUrl: string;
-  sha256sumsUrl: string;
-  assetName: string;
-  targetVersion: string;
-}
-
 /** Discriminated union of the two orchestration kinds. */
 export interface ApplyUpdateParams {
   kind: 'update';

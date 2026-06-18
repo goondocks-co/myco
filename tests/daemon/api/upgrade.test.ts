@@ -297,6 +297,53 @@ describe('handleUpgradeStatus', () => {
 
     expect(body.update_available).toBe(false);
   });
+
+  // T7 — combined GitHub (myco) + npm (operator CLI) routing in a single status call
+  it('packages[] union contains myco (GitHub) row first then operator (npm) rows; update_available aggregates correctly (T7)', async () => {
+    // Cache with both myco AND an operator CLI (myco-team) having updates.
+    (readCachedCheck as AnyMock).mockReturnValue({
+      checked_at: new Date().toISOString(),
+      channel: 'stable' as const,
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.1.0',
+          latest_beta: null,
+        },
+        'myco-team': {
+          package_name: '@goondocks/myco-team',
+          latest_stable: '0.2.0',
+          latest_beta: null,
+        },
+      },
+    });
+    // myco: installed 1.0.0 (update to 1.1.0); myco-team: installed 0.1.0 (update to 0.2.0).
+    (getInstalledVersion as AnyMock).mockImplementation(
+      (_globalPrefix: unknown, pkg?: unknown) => {
+        if (!pkg || pkg === '@goondocks/myco') return '1.0.0';
+        if (pkg === '@goondocks/myco-team') return '0.1.0';
+        return null;
+      },
+    );
+    (isCacheStale as AnyMock).mockReturnValue(false);
+
+    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
+    const result = await handleUpgradeStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+    const packages = body.packages as Array<{ id: string; update_available: boolean; installed: boolean }>;
+
+    // myco (GitHub resolver) must be first.
+    expect(packages[0]?.id).toBe('myco');
+    // Operator row (npm resolver) must also be present.
+    const operatorRow = packages.find((p) => p.id === 'myco-team');
+    expect(operatorRow).toBeDefined();
+    expect(operatorRow?.update_available).toBe(true);
+
+    // Top-level aggregate must be true because at least one installed package has an update.
+    expect(body.update_available).toBe(true);
+    // revert_available must be false (running stable, not a prerelease).
+    expect(body.revert_available).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

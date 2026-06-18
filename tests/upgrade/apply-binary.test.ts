@@ -595,3 +595,99 @@ describe('restoreVersion — mode and failure', () => {
     expect(temps).toEqual([]);
   });
 });
+
+// ===========================================================================
+// T4 — chmod-failure propagation: adoptStaged + restoreVersion
+//
+// On non-win32, chmodSync failure after copyFileSync must:
+//   1. reject / throw
+//   2. clean up the temp file (rmSafe)
+//   3. leave the stable managed binary UNCHANGED
+// ===========================================================================
+
+describe('adoptStaged — chmod-failure propagation (T4)', () => {
+  if (process.platform === 'win32') return; // chmod is a no-op on win32; skip
+
+  function writeVersionBinary(version: string, content: string): void {
+    const vBin = versionBinaryPath(tmpHome, PLATFORM, version);
+    fs.mkdirSync(path.dirname(vBin), { recursive: true });
+    fs.writeFileSync(vBin, content);
+  }
+
+  it('rejects when chmodSync throws on the temp file', async () => {
+    if (process.platform === 'win32') return;
+    writeVersionBinary(VERSION, NEW_BYTES);
+    // Pre-populate the stable binary so we can verify it is untouched.
+    const stablePath = writeStableBinary();
+
+    const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((p, _mode) => {
+      // Only intercept the .myco-adopt-* temp file; let other chmod calls pass.
+      if (typeof p === 'string' && p.includes('.myco-adopt-')) {
+        throw new Error('chmod injected failure');
+      }
+      // Pass through to real implementation for other paths.
+      return undefined;
+    });
+
+    try {
+      await expect(
+        adoptStaged({ home: tmpHome, platform: PLATFORM, version: VERSION }),
+      ).rejects.toThrow();
+    } finally {
+      chmodSpy.mockRestore();
+    }
+
+    // The stable managed binary must be byte-for-byte unchanged.
+    expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
+
+    // No temp file should remain in the managed bin dir.
+    const binDir = path.dirname(stablePath);
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-adopt-'));
+    expect(temps).toEqual([]);
+  });
+});
+
+describe('restoreVersion — chmod-failure propagation (T4)', () => {
+  if (process.platform === 'win32') return; // chmod is a no-op on win32; skip
+
+  const PREV_VERSION = '1.1.0';
+  const PREV_BYTES = 'PREV-BINARY-v1.1.0';
+
+  function writeVersionBinary(version: string, content: string): void {
+    const vBin = versionBinaryPath(tmpHome, PLATFORM, version);
+    fs.mkdirSync(path.dirname(vBin), { recursive: true });
+    fs.writeFileSync(vBin, content);
+  }
+
+  it('rejects when chmodSync throws on the temp file', async () => {
+    if (process.platform === 'win32') return;
+    writeVersionBinary(PREV_VERSION, PREV_BYTES);
+    // Pre-populate the stable binary as the "current" managed binary.
+    const stablePath = managedBinaryPath(tmpHome, PLATFORM);
+    fs.mkdirSync(path.dirname(stablePath), { recursive: true });
+    fs.writeFileSync(stablePath, NEW_BYTES);
+
+    const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementation((p, _mode) => {
+      if (typeof p === 'string' && p.includes('.myco-restore-')) {
+        throw new Error('chmod injected failure');
+      }
+      return undefined;
+    });
+
+    try {
+      await expect(
+        restoreVersion(tmpHome, PLATFORM, PREV_VERSION),
+      ).rejects.toThrow();
+    } finally {
+      chmodSpy.mockRestore();
+    }
+
+    // Managed binary must be byte-for-byte unchanged (still NEW_BYTES, not the restored version).
+    expect(fs.readFileSync(stablePath, 'utf-8')).toBe(NEW_BYTES);
+
+    // No temp file should remain in the managed bin dir.
+    const binDir = path.dirname(stablePath);
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-restore-'));
+    expect(temps).toEqual([]);
+  });
+});
