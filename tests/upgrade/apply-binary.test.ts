@@ -372,14 +372,14 @@ describe('pruneVersions', () => {
   }
 
   it('no-ops when versions dir does not exist', () => {
-    expect(() => pruneVersions(tmpHome, PLATFORM, 3)).not.toThrow();
+    expect(() => pruneVersions(tmpHome, PLATFORM, 3, '1.0.0')).not.toThrow();
   });
 
   it('no-ops when version count is at or below keep', () => {
     seedVersion('1.0.0');
     seedVersion('1.1.0');
     seedVersion('1.2.0');
-    pruneVersions(tmpHome, PLATFORM, 3, undefined, '1.2.0', '1.1.0');
+    pruneVersions(tmpHome, PLATFORM, 3, '1.2.0', '1.1.0');
     expect(listVersionDirs()).toEqual(['1.0.0', '1.1.0', '1.2.0']);
   });
 
@@ -388,7 +388,7 @@ describe('pruneVersions', () => {
     seedVersion('1.1.0');
     seedVersion('1.2.0');
     seedVersion('1.3.0');
-    pruneVersions(tmpHome, PLATFORM, 3, undefined, '1.3.0', '1.2.0');
+    pruneVersions(tmpHome, PLATFORM, 3, '1.3.0', '1.2.0');
     // Should keep 1.3.0 (current), 1.2.0 (previous), 1.1.0 (newest non-protected)
     // and prune 1.0.0.
     const remaining = listVersionDirs();
@@ -404,7 +404,7 @@ describe('pruneVersions', () => {
     seedVersion('1.2.0');
     seedVersion('1.3.0');
     // keep=1 is below the floor of 2; current+previous must survive.
-    pruneVersions(tmpHome, PLATFORM, 1, undefined, '1.3.0', '1.2.0');
+    pruneVersions(tmpHome, PLATFORM, 1, '1.3.0', '1.2.0');
     const remaining = listVersionDirs();
     expect(remaining).toContain('1.3.0');
     expect(remaining).toContain('1.2.0');
@@ -412,7 +412,7 @@ describe('pruneVersions', () => {
 
   it('NEVER prunes current even if it is the only version (keep=1)', () => {
     seedVersion('1.3.0');
-    pruneVersions(tmpHome, PLATFORM, 1, undefined, '1.3.0', undefined);
+    pruneVersions(tmpHome, PLATFORM, 1, '1.3.0', undefined);
     expect(listVersionDirs()).toContain('1.3.0');
   });
 
@@ -421,7 +421,7 @@ describe('pruneVersions', () => {
     seedVersion('1.1.0');
     seedVersion('1.2.0');
     seedVersion('1.3.0');
-    pruneVersions(tmpHome, PLATFORM, 0, undefined, '1.3.0', '1.2.0');
+    pruneVersions(tmpHome, PLATFORM, 0, '1.3.0', '1.2.0');
     const remaining = listVersionDirs();
     expect(remaining).toContain('1.3.0');
     expect(remaining).toContain('1.2.0');
@@ -433,7 +433,7 @@ describe('pruneVersions', () => {
     seedVersion('1.2.0');
     seedVersion('1.3.0');
     seedVersion('1.4.0');
-    pruneVersions(tmpHome, PLATFORM, 2, undefined, '1.4.0', '1.3.0');
+    pruneVersions(tmpHome, PLATFORM, 2, '1.4.0', '1.3.0');
     const remaining = listVersionDirs();
     expect(remaining).toContain('1.4.0');
     expect(remaining).toContain('1.3.0');
@@ -451,7 +451,7 @@ describe('pruneVersions', () => {
     const vDir = versionsDir(tmpHome, PLATFORM);
     fs.mkdirSync(path.join(vDir, 'not-semver'), { recursive: true });
 
-    pruneVersions(tmpHome, PLATFORM, 2, undefined, '1.3.0', '1.2.0');
+    pruneVersions(tmpHome, PLATFORM, 2, '1.3.0', '1.2.0');
     // non-semver should still be present.
     expect(listVersionDirs()).toContain('not-semver');
   });
@@ -462,10 +462,136 @@ describe('pruneVersions', () => {
     seedVersion('1.2.0');
     seedVersion('1.3.0');
     seedVersion('1.4.0');
-    pruneVersions(tmpHome, PLATFORM, undefined as unknown as number, undefined, '1.4.0', '1.3.0');
+    // Pass undefined for keep to exercise the default=3 path; current is required.
+    pruneVersions(tmpHome, PLATFORM, undefined as unknown as number, '1.4.0', '1.3.0');
     const remaining = listVersionDirs().filter((v) => /^\d/.test(v));
     expect(remaining.length).toBe(3);
     expect(remaining).toContain('1.4.0');
     expect(remaining).toContain('1.3.0');
+  });
+
+  it('NEVER deletes the running version even when it is an OLDER semver than a staged newer version (rollback scenario)', () => {
+    // Simulate rollback: daemon rolled back to 1.2.0 after a bad 1.3.0 upgrade,
+    // and a 1.4.0 was staged but not yet adopted. current=1.2.0 is NOT the newest.
+    seedVersion('1.0.0');
+    seedVersion('1.1.0');
+    seedVersion('1.2.0'); // <-- running version after rollback
+    seedVersion('1.3.0'); // <-- the bad version
+    seedVersion('1.4.0'); // <-- staged newer version not yet adopted
+    // keep=3: must keep current (1.2.0), previous (1.1.0 — next below current),
+    // and one more from the newest. 1.0.0 should be the only candidate to prune.
+    pruneVersions(tmpHome, PLATFORM, 3, '1.2.0');
+    const remaining = listVersionDirs();
+    // The running version must NEVER be pruned, regardless of semver position.
+    expect(remaining).toContain('1.2.0');
+  });
+
+  it('derives previous automatically as the next-newest version strictly below current', () => {
+    seedVersion('1.0.0');
+    seedVersion('1.1.0');
+    seedVersion('1.2.0');
+    seedVersion('1.3.0');
+    // current=1.2.0, no explicit previous → should auto-derive previous=1.1.0
+    pruneVersions(tmpHome, PLATFORM, 2, '1.2.0');
+    const remaining = listVersionDirs();
+    expect(remaining).toContain('1.2.0'); // current: protected
+    expect(remaining).toContain('1.1.0'); // derived previous: protected
+    // 1.3.0 and 1.0.0 are candidates for pruning; keep=2 keeps exactly 2
+    expect(remaining.length).toBe(2);
+  });
+});
+
+// ===========================================================================
+// adoptStaged — executable mode + failure propagation (IMPORTANT-2 + MINOR-3)
+// ===========================================================================
+
+describe('adoptStaged — mode and failure', () => {
+  function writeVersionBinary(version: string, content: string): string {
+    const vBin = versionBinaryPath(tmpHome, PLATFORM, version);
+    fs.mkdirSync(path.dirname(vBin), { recursive: true });
+    fs.writeFileSync(vBin, content);
+    return vBin;
+  }
+
+  it('adopted binary has executable mode on non-win32 (mode & 0o111 !== 0)', async () => {
+    if (process.platform === 'win32') return; // skip on Windows
+    writeVersionBinary(VERSION, NEW_BYTES);
+    await adoptStaged({ home: tmpHome, platform: PLATFORM, version: VERSION });
+
+    const stablePath = managedBinaryPath(tmpHome, PLATFORM);
+    const mode = fs.statSync(stablePath).mode;
+    expect(mode & 0o111).not.toBe(0);
+  });
+
+  it('leaves no temp in bin dir when rename fails (MINOR-3 cleanup)', async () => {
+    // Write the version binary so copyFileSync succeeds.
+    writeVersionBinary(VERSION, NEW_BYTES);
+    // Make the destination dir read-only so renameSync fails.
+    const dest = managedBinaryPath(tmpHome, PLATFORM);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.chmodSync(path.dirname(dest), 0o555); // read+execute only — writes forbidden
+
+    try {
+      await expect(
+        adoptStaged({ home: tmpHome, platform: PLATFORM, version: VERSION }),
+      ).rejects.toThrow();
+    } finally {
+      // Restore permissions so afterEach cleanup can delete the dir.
+      fs.chmodSync(path.dirname(dest), 0o755);
+    }
+
+    // No temp file should remain in the bin dir.
+    const binDir = path.dirname(dest);
+    const temps = fs.readdirSync(binDir).filter((e) => e.startsWith('.myco-adopt-'));
+    expect(temps).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// restoreVersion — executable mode + failure propagation (IMPORTANT-2 + MINOR-3)
+// ===========================================================================
+
+describe('restoreVersion — mode and failure', () => {
+  const PREV_VERSION = '1.1.0';
+  const PREV_BYTES = 'PREV-BINARY-v1.1.0';
+
+  function writeVersionBinary(version: string, content: string): string {
+    const vBin = versionBinaryPath(tmpHome, PLATFORM, version);
+    fs.mkdirSync(path.dirname(vBin), { recursive: true });
+    fs.writeFileSync(vBin, content);
+    return vBin;
+  }
+
+  it('restored binary has executable mode on non-win32 (mode & 0o111 !== 0)', async () => {
+    if (process.platform === 'win32') return; // skip on Windows
+    writeVersionBinary(PREV_VERSION, PREV_BYTES);
+    const stablePath = managedBinaryPath(tmpHome, PLATFORM);
+    fs.mkdirSync(path.dirname(stablePath), { recursive: true });
+    fs.writeFileSync(stablePath, NEW_BYTES);
+
+    await restoreVersion(tmpHome, PLATFORM, PREV_VERSION);
+
+    const mode = fs.statSync(stablePath).mode;
+    expect(mode & 0o111).not.toBe(0);
+  });
+
+  it('leaves no temp in bin dir when rename fails (MINOR-3 cleanup)', async () => {
+    writeVersionBinary(PREV_VERSION, PREV_BYTES);
+    const dest = managedBinaryPath(tmpHome, PLATFORM);
+    const destDir = path.dirname(dest);
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.writeFileSync(dest, NEW_BYTES);
+    fs.chmodSync(destDir, 0o555); // read+execute only — writes forbidden
+
+    try {
+      await expect(
+        restoreVersion(tmpHome, PLATFORM, PREV_VERSION),
+      ).rejects.toThrow();
+    } finally {
+      fs.chmodSync(destDir, 0o755);
+    }
+
+    const temps = fs.readdirSync(destDir).filter((e) => e.startsWith('.myco-restore-'));
+    expect(temps).toEqual([]);
   });
 });

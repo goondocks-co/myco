@@ -559,6 +559,10 @@ export interface AdoptStagedDeps {
  *   - Atomic: copy to a temp in the managed bin dir, then rename over the
  *     managed binary (same filesystem as `~/.myco/bin/`) so there is no
  *     window where the managed binary is absent.
+ *   - On non-win32, chmod failure is FATAL (not best-effort): a non-executable
+ *     managed binary would silently break daemon restarts. The tmp is cleaned
+ *     and the error is rethrown so Task 5 can restore.
+ *   - On win32, executability is not mode-based; chmod is skipped entirely.
  *
  * Throws on any fs failure (the caller — Task 5 — must handle this and
  * restore if needed).
@@ -583,16 +587,27 @@ export async function adoptStaged(
 
   // Copy src → temp in the same dir as dest (same filesystem → rename is atomic).
   fs.copyFileSync(src, tmp);
+
+  // On non-win32, chmod must succeed: a 0644 binary from copyFileSync cannot
+  // be exec'd by the daemon. If chmod fails, clean the tmp and rethrow so
+  // Task 5 can restore rather than adopting a non-executable binary.
   if (platform !== 'win32') {
     try {
       fs.chmodSync(tmp, 0o755);
-    } catch {
-      /* best-effort: keep going, Task 5 still needs to start the daemon */
+    } catch (chmodErr) {
+      rmSafe(tmp);
+      throw chmodErr;
     }
   }
 
   // Atomic rename over the managed binary.
-  fs.renameSync(tmp, dest);
+  // If rename fails, clean the tmp (managed binary is untouched) and rethrow.
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (renameErr) {
+    rmSafe(tmp);
+    throw renameErr;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +621,9 @@ export async function adoptStaged(
  * restore. No cleanup of the version dir — the caller decides retention.
  *
  * Uses the same temp+rename approach as `adoptStaged` to keep the managed
- * binary never-absent during the restore.
+ * binary never-absent during the restore. Same chmod and rename-failure
+ * semantics as `adoptStaged`: on non-win32, chmod failure is fatal (tmp
+ * cleaned, error rethrown); rename failure likewise cleans tmp and rethrows.
  */
 export async function restoreVersion(
   home: string,
@@ -621,14 +638,24 @@ export async function restoreVersion(
 
   fs.mkdirSync(destDir, { recursive: true });
   fs.copyFileSync(src, tmp);
+
+  // On non-win32, chmod must succeed (same rationale as adoptStaged).
   if (platform !== 'win32') {
     try {
       fs.chmodSync(tmp, 0o755);
-    } catch {
-      /* best-effort */
+    } catch (chmodErr) {
+      rmSafe(tmp);
+      throw chmodErr;
     }
   }
-  fs.renameSync(tmp, dest);
+
+  // Rename failure cleans the tmp and rethrows; managed binary is untouched.
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (renameErr) {
+    rmSafe(tmp);
+    throw renameErr;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +668,12 @@ export async function restoreVersion(
  *
  * INVARIANTS:
  *   - NEVER removes the `current` or `previous` version dir, even if keep < 2.
+ *   - `current` is REQUIRED (the running version). Omitting it is a type error.
+ *     This prevents the rollback-scenario foot-gun: during a rollback the
+ *     running version is NOT the newest, so deriving current from semver order
+ *     alone could delete the live version and make restoreVersion impossible.
+ *   - `previous` is derived automatically (next-newest version strictly below
+ *     `current` by semver, if any). It can also be overridden by the caller.
  *   - `keep` is floored at 2 (so `pruneVersions(…, 1)` behaves like `keep=2`).
  *   - Prunes the OLDEST versions (by semver) first so the most recent versions
  *     are always kept.
@@ -650,17 +683,18 @@ export async function restoreVersion(
  * @param home        Myco home directory (e.g. `~/.myco`).
  * @param platform    Target platform.
  * @param keep        Number of versions to keep total (floored at 2). Default 3.
+ * @param current     REQUIRED: the currently-running version (never pruned).
+ * @param previous    The previous version kept as rollback target (never pruned).
+ *                    Defaults to the next-newest version strictly below `current`.
  * @param localAppData  Only used on win32.
- * @param current     The currently-running version (never pruned). Default: latest by semver.
- * @param previous    The previous version kept as rollback target (never pruned). Default: second-latest.
  */
 export function pruneVersions(
   home: string,
   platform: NodeJS.Platform,
   keep = 3,
-  localAppData?: string,
-  current?: string,
+  current: string,
   previous?: string,
+  localAppData?: string,
 ): void {
   const effectiveKeep = Math.max(keep, 2);
   const vDir = versionsDir(home, platform, localAppData);
@@ -675,7 +709,7 @@ export function pruneVersions(
     return;
   }
 
-  // Collect only directories with valid semver names.
+  // Collect only directories with valid semver names, sorted newest-first.
   const semverRe = /^\d+\.\d+\.\d+/;
   const versions = entries
     .filter((entry) => {
@@ -691,16 +725,23 @@ export function pruneVersions(
       return compareSemverStrings(b, a);
     });
 
-  // Build the keep set: always-protected (current + previous) PLUS the
-  // newest versions up to `effectiveKeep` total.
-  const protectedSet = new Set<string>();
-  if (current) protectedSet.add(current);
-  if (previous) protectedSet.add(previous);
-  // If not specified, protect the top two by semver (floor).
-  if (!current && versions.length > 0) protectedSet.add(versions[0]);
-  if (!previous && versions.length > 1) protectedSet.add(versions[1]);
+  // If there is only one version and it is current, nothing to prune.
+  if (versions.length <= 1) return;
 
-  // Fill keep slots from the newest versions first, then always add protected ones.
+  // Derive `previous` if not supplied: next-newest version strictly below
+  // `current` by semver. This is safe even during rollback (current may be
+  // older than a newer staged version — we still protect it and its predecessor).
+  const effectivePrevious =
+    previous ??
+    versions.find((v) => compareSemverStrings(v, current) < 0) ??
+    undefined;
+
+  // Build the protected set: current + previous (if any).
+  const protectedSet = new Set<string>();
+  protectedSet.add(current);
+  if (effectivePrevious) protectedSet.add(effectivePrevious);
+
+  // Fill keep slots from the newest versions first; protected are always included.
   const keepSet = new Set<string>(protectedSet);
   for (const ver of versions) {
     if (keepSet.size >= effectiveKeep) break;
