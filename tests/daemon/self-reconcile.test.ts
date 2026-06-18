@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { reconcileSelf } from '../../packages/myco/src/daemon/self-reconcile.js';
 import {
   writeRestartIntent,
-  writeUpdateIntent,
 } from '../../packages/myco/src/daemon/intent.js';
 import type {
   DaemonServiceState,
@@ -23,7 +22,6 @@ function makeAuthority(daemonService: DaemonServiceState): DaemonStateAuthority 
 }
 
 const RESTART_INTENT_FILE = 'intent.restart.toml';
-const UPDATE_INTENT_FILE = 'intent.update.toml';
 
 function makeLogger(): DaemonLogger & { calls: { kind: string; message: string }[] } {
   const calls: { kind: string; message: string }[] = [];
@@ -60,20 +58,6 @@ function makeState(): DaemonState {
     version: '0.27.10',
     auth_token: 'tok-deadbeef',
   };
-}
-
-function makeErrorLogger(): DaemonLogger & {
-  calls: { kind: string; message: string; level: 'info' | 'error' }[];
-} {
-  const calls: { kind: string; message: string; level: 'info' | 'error' }[] = [];
-  const logger = {
-    calls,
-    debug() {},
-    info(kind: string, message: string) { calls.push({ kind, message, level: 'info' }); },
-    warn() {},
-    error(kind: string, message: string) { calls.push({ kind, message, level: 'error' }); },
-  } as unknown as DaemonLogger & { calls: typeof calls };
-  return logger;
 }
 
 describe('reconcileSelf', () => {
@@ -259,181 +243,38 @@ describe('reconcileSelf', () => {
     expect(final.pid).toBe(state.pid);
     expect(logger.calls.some((c) => c.message.includes('Re-asserting'))).toBe(true);
   });
-});
 
-describe('reconcileSelf update intent', () => {
-  test('invokes installUpdate and RETAINS intent across the spawn (post-restart daemon decides)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-spawn-'));
+  test('self-reconcile does not dispatch a binary update — update intent is no longer drained', async () => {
+    // Regression guard: writing an intent.update.toml file (e.g. leftover
+    // from a pre-Task-9 state dir) must NOT trigger any installer call.
+    // reconcileSelf only drains [restart] now.
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-no-update-'));
     const daemonService = makeDaemonService(dir);
     const state = makeState();
     const logger = makeLogger();
 
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
+    // Write a stale update intent file directly (bypass the removed API).
+    const { join: pathJoin } = await import('node:path');
+    const { writeFileSync: wfs } = await import('node:fs');
+    wfs(
+      pathJoin(dir, 'intent.update.toml'),
+      'target_version = "9.9.9"\nrequested_at = "2026-06-01T00:00:00Z"\n',
+    );
 
-    const installerCalls: string[] = [];
+    let restartCalls = 0;
     await reconcileSelf({
       daemonService,
       stateAuthority: makeAuthority(daemonService),
       currentState: () => state,
       logger,
-      installUpdate: async (target) => { installerCalls.push(target); },
+      requestSupervisorRestart: () => { restartCalls += 1; },
     });
 
-    expect(installerCalls).toEqual(['0.27.99']);
-    // Intent is retained: the installer script is detached and the post-
-    // restart daemon decides based on version match + update-error.json.
-    // Clearing here would defeat the retry semantics on install failure.
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
-    expect(logger.calls.some((c) => c.message.includes('Update intent observed'))).toBe(true);
-  });
-
-  test('skips installUpdate and stays silent when updateInFlight reports an in-flight installer', async () => {
-    // Real failure mode: `/api/update/apply` writes the in-progress
-    // sentinel and spawns the installer; the next reconciler tick
-    // observes the still-present intent file and would re-spawn a
-    // second installer without this gate. We assert no installUpdate
-    // call, no "Update intent observed" log noise, and that the
-    // intent file is retained (the post-restart tick decides).
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-inflight-'));
-    const daemonService = makeDaemonService(dir);
-    const state = makeState();
-    const logger = makeLogger();
-
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-
-    let installerCalls = 0;
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      installUpdate: async () => { installerCalls += 1; },
-      updateInFlight: () => true,
-    });
-
-    expect(installerCalls).toBe(0);
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
-    expect(logger.calls.some((c) => c.message.includes('Update intent observed'))).toBe(false);
-  });
-
-  test('clears intent when current version matches target (post-restart success path)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-success-'));
-    const daemonService = makeDaemonService(dir);
-    const state: DaemonState = { ...makeState(), version: '0.27.99' };
-    const logger = makeLogger();
-
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-
-    let installerCalls = 0;
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      installUpdate: async () => { installerCalls += 1; },
-    });
-
-    expect(installerCalls).toBe(0);
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(false);
-  });
-
-  test('clears intent and surfaces error when update-error.json is present (failure path)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-failure-'));
-    const daemonService = makeDaemonService(dir);
-    // Version mismatch — install did not move the binary to target.
-    const state: DaemonState = { ...makeState(), version: '0.27.10' };
-    const logger = makeErrorLogger();
-
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-
-    let installerCalls = 0;
-    let consumed = 0;
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      installUpdate: async () => { installerCalls += 1; },
-      readUpdateError: () => 'npm install failed for @goondocks/myco@0.27.99',
-      consumeUpdateError: () => { consumed += 1; },
-    });
-
-    // Installer must NOT have been re-invoked — that would be the
-    // infinite-retry bug. Surface the prior failure to the user instead.
-    expect(installerCalls).toBe(0);
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(false);
-    expect(consumed).toBe(1);
-    expect(
-      logger.calls.some(
-        (c) => c.level === 'error' && c.message.includes('Update failed during a prior attempt'),
-      ),
-    ).toBe(true);
-  });
-
-  test('retains intent and logs error on synchronous installer throw (next-tick retry)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-sync-fail-'));
-    const daemonService = makeDaemonService(dir);
-    const state = makeState();
-    const logger = makeErrorLogger();
-
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-
-    let installerCalls = 0;
-    await reconcileSelf({
-      daemonService,
-      stateAuthority: makeAuthority(daemonService),
-      currentState: () => state,
-      logger,
-      installUpdate: async () => {
-        installerCalls += 1;
-        throw new Error('mkdir tmp failed (transient)');
-      },
-      readUpdateError: () => null,
-    });
-
-    expect(installerCalls).toBe(1);
-    // Intent file MUST still be present so the next tick retries — a
-    // sync-spawn failure is typically transient (filesystem hiccup) and
-    // a retry will likely succeed.
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
-    expect(
-      logger.calls.some(
-        (c) => c.level === 'error' && c.message.includes('Update spawn failed synchronously'),
-      ),
-    ).toBe(true);
-  });
-
-  test('does nothing when installUpdate dep is omitted', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-no-dep-'));
-    const daemonService = makeDaemonService(dir);
-    const state = makeState();
-    const logger = makeLogger();
-
-    writeUpdateIntent(daemonService, {
-      target_version: '0.27.99',
-      requested_at: new Date().toISOString(),
-    });
-
-    await expect(
-      reconcileSelf({ daemonService, stateAuthority: makeAuthority(daemonService), currentState: () => state, logger }),
-    ).resolves.toBeUndefined();
-
-    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
+    // No restart triggered (the file only contained an update intent).
+    expect(restartCalls).toBe(0);
+    // The stale file is left untouched (reconcileSelf no longer reads it).
+    expect(existsSync(pathJoin(dir, 'intent.update.toml'))).toBe(true);
+    // No update-related log line.
+    expect(logger.calls.some((c) => c.message.toLowerCase().includes('update'))).toBe(false);
   });
 });

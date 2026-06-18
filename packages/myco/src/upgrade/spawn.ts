@@ -15,12 +15,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { MYCO_GLOBAL_DIR, UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
-import {
-  resolveMachineRuntimeCommandPath,
-  resolveMachineRuntimeDir,
-  resolveMachineRuntimeTmpDir,
-} from '../grove/paths.js';
-import type { ApplyUpdateParams, ApplyRestartParams } from './apply-update.js';
+import type { ApplyUpdateParams, ApplyRestartParams, ApplyAdoptParams } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -28,12 +23,8 @@ import type { ApplyUpdateParams, ApplyRestartParams } from './apply-update.js';
 
 /** Parameters required to spawn an update orchestration. */
 export interface InstallParams {
-  /** Fully-qualified npm package specs to install globally (e.g. ["@goondocks/myco-team@0.11.0"]). */
+  /** Fully-qualified npm package specs to install globally (operator CLIs, e.g. ["@goondocks/myco-team@0.11.0"]). */
   packageSpecs: string[];
-  /** Optional core Myco package spec to install into the managed machine runtime. */
-  localRuntimeSpec?: string;
-  /** Remove the managed machine runtime after a successful stable-channel apply. */
-  removeLocalRuntime?: boolean;
   /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
   projectRoot: string;
   /** Absolute path to the vault directory the daemon was running against (used as cwd for the respawn). */
@@ -112,7 +103,7 @@ export interface RestartParams {
  * old inode — so we spawn `process.execPath` directly. This is the ONE
  * legitimate platform branch in the update flow.
  */
-function resolveOrchestratorBinary(): string {
+export function resolveOrchestratorBinary(): string {
   if (process.platform !== 'win32') return process.execPath;
   // Sweep leaked copies from prior updates first: a running .exe can't delete
   // itself, so the orchestrator can never clean up its own copy — the NEXT
@@ -136,7 +127,7 @@ function resolveOrchestratorBinary(): string {
  * `<binary> __apply-update <paramsFile>` detached + unreffed so the daemon can
  * exit immediately. Returns the params file path.
  */
-function spawnApplyUpdate(namePrefix: string, params: ApplyUpdateParams | ApplyRestartParams): string {
+export function spawnApplyUpgrade(namePrefix: string, params: ApplyUpdateParams | ApplyRestartParams | ApplyAdoptParams): string {
   const paramsFile = path.join(os.tmpdir(), `${namePrefix}-${Date.now()}.json`);
   fs.writeFileSync(paramsFile, JSON.stringify(params), 'utf-8');
 
@@ -173,24 +164,17 @@ export function spawnUpdateScript(params: InstallParams): string {
   // Ensure ~/.myco/ exists before writing the error path or checking state.
   fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
 
-  const machineRuntimeDir = resolveMachineRuntimeDir();
   const applyParams: ApplyUpdateParams = {
     kind: 'update',
     packageSpecs: params.packageSpecs,
-    localRuntimeSpec: params.localRuntimeSpec,
-    removeLocalRuntime: params.removeLocalRuntime ?? false,
     projectRoot: params.projectRoot,
     vaultDir: params.vaultDir,
     mycoBinary: params.mycoBinary,
     serviceManagedLabel: params.serviceManagedLabel ?? null,
     daemonPort: params.daemonPort,
     targetVersion: params.targetVersion,
-    machineRuntimeDir,
-    machineRuntimeTmpDir: resolveMachineRuntimeTmpDir(),
-    machineRuntimeCommandPath: resolveMachineRuntimeCommandPath(),
-    machineRuntimeMyco: path.join(machineRuntimeDir, 'node_modules', '.bin', 'myco'),
   };
-  return spawnApplyUpdate('myco-update', applyParams);
+  return spawnApplyUpgrade('myco-update', applyParams);
 }
 
 /**
@@ -209,5 +193,5 @@ export function spawnRestartScript(params: RestartParams): string {
     daemonPort: params.daemonPort,
     restartReasonPath: path.join(params.vaultDir, RESTART_REASON_FILENAME),
   };
-  return spawnApplyUpdate('myco-restart', applyParams);
+  return spawnApplyUpgrade('myco-restart', applyParams);
 }

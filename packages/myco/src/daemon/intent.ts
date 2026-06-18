@@ -1,27 +1,27 @@
 /**
  * Daemon intent files — one per section, atomic-rename per file.
  *
- * Two intent kinds the reconciler drains every tick:
+ * One intent kind the reconciler drains every tick:
  *   - [restart]  → `<stateDir>/intent.restart.toml`
- *   - [update]   → `<stateDir>/intent.update.toml`
+ *
+ * The `[update]` intent surface (writeUpdateIntent / readUpdateIntent /
+ * intent.update.toml) was removed in the Task 9 refactor. Binary upgrades
+ * are now driven directly by `initiateAdopt` paths (idle-job sentinel,
+ * `api/upgrade` apply, `myco upgrade` CLI) — the intent-indirection
+ * hop is gone.
  *
  * Each section is a single file written via atomicWriteFileSync. Concurrent
  * writers never read each other's section, so there is no read-modify-write
- * race like the single-file `intent.toml` had — a `myco restart` and a
- * `myco update --target-version` overlapping at the wall clock land in
- * separate files and both survive.
+ * race like the single-file `intent.toml` had.
  *
- * Runtime shape guards (isRestartIntent / isUpdateIntent) reject malformed
- * but valid TOML — a structurally-wrong file is treated as empty, never
- * returned as an `Intent` via `as` cast.
+ * Runtime shape guards (isRestartIntent) reject malformed but valid TOML —
+ * a structurally-wrong file is treated as empty, never returned as an
+ * `Intent` via `as` cast.
  *
  * ## TRUST MODEL — these files drive code execution
  *
- * intent.update.toml interpolates `target_version` into
- * `npm install -g @goondocks/myco@<value>` and spawns the resulting
- * shell command. intent.restart.toml triggers the daemon to exit and be
- * re-spawned by the supervisor. Both files are daemon-EXECUTED, not
- * merely daemon-READ.
+ * intent.restart.toml triggers the daemon to exit and be re-spawned by
+ * the supervisor. The file is daemon-EXECUTED, not merely daemon-READ.
  *
  * Protections (single-machine, single-user trust boundary):
  *   - Files live under `~/.myco/service/` (chmod 0o700 — see
@@ -29,17 +29,10 @@
  *     restricted to the owner.
  *   - Each file is chmod 0o600 (see writers below) so even with
  *     directory descend, the bytes are owner-only.
- *   - `target_version` is gated by strict semver at BOTH writers (HTTP
- *     `POST /api/daemon/intent/update` in `api/intent.ts`, and the CLI
- *     `myco update --target-version` in `cli/update.ts`) to defeat
- *     npm-spec injection (`file:`, `git+ssh:`, etc.).
- *   - `isRestartIntent` / `isUpdateIntent` shape guards reject
- *     structurally-malformed TOML before the reconciler reads either as
- *     an `Intent`.
+ *   - `isRestartIntent` shape guards reject structurally-malformed TOML
+ *     before the reconciler reads it as an `Intent`.
  *
- * Any future writer of these files must preserve the chmod 0o600 + the
- * semver gate. Any future field interpolated into a shell command must
- * be validated at the writer (defense in depth: also at the reader).
+ * Any future writer of these files must preserve the chmod 0o600 gate.
  */
 
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
@@ -53,25 +46,14 @@ export interface RestartIntent {
   reason?: string;
 }
 
-export interface UpdateIntent {
-  target_version: string;
-  requested_at: string;
-}
-
 export interface Intent {
   restart?: RestartIntent;
-  update?: UpdateIntent;
 }
 
 const RESTART_INTENT_FILENAME = 'intent.restart.toml';
-const UPDATE_INTENT_FILENAME = 'intent.update.toml';
 
 function restartIntentPath(daemonService: DaemonServiceState): string {
   return join(daemonService.stateDir, RESTART_INTENT_FILENAME);
-}
-
-function updateIntentPath(daemonService: DaemonServiceState): string {
-  return join(daemonService.stateDir, UPDATE_INTENT_FILENAME);
 }
 
 function isRestartIntent(value: unknown): value is RestartIntent {
@@ -79,14 +61,6 @@ function isRestartIntent(value: unknown): value is RestartIntent {
   const v = value as Record<string, unknown>;
   if (typeof v.requested_at !== 'string') return false;
   if (v.reason !== undefined && typeof v.reason !== 'string') return false;
-  return true;
-}
-
-function isUpdateIntent(value: unknown): value is UpdateIntent {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  if (typeof v.target_version !== 'string' || v.target_version === '') return false;
-  if (typeof v.requested_at !== 'string') return false;
   return true;
 }
 
@@ -105,16 +79,10 @@ export function readRestartIntent(daemonService: DaemonServiceState): RestartInt
   return readSectionFile(restartIntentPath(daemonService), isRestartIntent);
 }
 
-export function readUpdateIntent(daemonService: DaemonServiceState): UpdateIntent | undefined {
-  return readSectionFile(updateIntentPath(daemonService), isUpdateIntent);
-}
-
 export function readIntent(daemonService: DaemonServiceState): Intent {
   const restart = readRestartIntent(daemonService);
-  const update = readUpdateIntent(daemonService);
   return {
     ...(restart ? { restart } : {}),
-    ...(update ? { update } : {}),
   };
 }
 
@@ -126,20 +94,6 @@ export function writeRestartIntent(daemonService: DaemonServiceState, intent: Re
   );
 }
 
-export function writeUpdateIntent(daemonService: DaemonServiceState, intent: UpdateIntent): void {
-  atomicWriteFileSync(
-    updateIntentPath(daemonService),
-    stringify(intent as unknown as Record<string, unknown>),
-    { mode: 0o600 },
-  );
-}
-
-export function clearIntentSection(
-  daemonService: DaemonServiceState,
-  section: 'restart' | 'update',
-): void {
-  const filePath = section === 'restart'
-    ? restartIntentPath(daemonService)
-    : updateIntentPath(daemonService);
-  try { unlinkSync(filePath); } catch { /* already gone */ }
+export function clearRestartIntent(daemonService: DaemonServiceState): void {
+  try { unlinkSync(restartIntentPath(daemonService)); } catch { /* already gone */ }
 }

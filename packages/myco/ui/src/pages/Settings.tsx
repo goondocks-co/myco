@@ -34,7 +34,7 @@ import { NotificationSettings } from '../components/notifications/NotificationSe
 import { AgentProviderCard } from '../components/settings/AgentProviderCard';
 import { EmbeddingCard } from '../components/settings/EmbeddingCard';
 import { ReleaseProvenanceCard } from '../components/settings/ReleaseProvenanceCard';
-import { UpdateCard } from '../components/operations/UpdateCard';
+import { UpgradeCard } from '../components/operations/UpgradeCard';
 import { BackupCard } from '../components/operations/BackupCard';
 import { useDaemon } from '../hooks/use-daemon';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
@@ -172,7 +172,7 @@ const CUSTOM_GROUP_IDS = new Set([
   'capture',
   'release-provenance',
   'notifications',
-  'update',
+  'upgrade',
   'backup',
   'logging',
 ]);
@@ -209,11 +209,11 @@ const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Elemen
   ),
   'release-provenance': () => <ReleaseProvenanceCard />,
   notifications: () => <NotificationSettings />,
-  // UpdateCard owns dev-mode awareness ("Updates are disabled in
+  // UpgradeCard owns dev-mode awareness ("Upgrades are disabled in
   // development mode"), the channel toggle, per-package status, and
   // last-check timestamp — none of which a plain SelectField for
   // daemon.update_channel would preserve.
-  update: () => <UpdateCard />,
+  upgrade: () => <UpgradeCard />,
   // Backup is hybrid: manifest fields drive the config form
   // (dir, auto_interval_hours, retention.keep_*) and BackupCard adds
   // the action surface (create/preview/restore + list).

@@ -79,17 +79,39 @@ describe('resolveProvisionedVaultDir re-admission gate', () => {
     expect(resolveProvisionedVaultDir(projectRoot)).toBeNull();
   });
 
-  it('re-seeds capture-only for an unregistered root with a leftover vault', () => {
+  it('does NOT reseed capabilities when re-admitting an already-enabled project', () => {
+    // The vault was seeded with cortex.enabled=true in beforeEach.
+    // Transiently resolving as "unregistered" (e.g. daemon restart churn) must
+    // NOT clobber those explicitly enabled capabilities.
     const vaultDir = resolveProvisionedVaultDir(projectRoot);
 
     expect(vaultDir).toBe(resolveProjectVaultDir(projectRoot));
     const localRaw = YAML.parse(
       fs.readFileSync(path.join(resolveProjectVaultDir(projectRoot), 'local.yaml'), 'utf-8'),
     ) as Record<string, any>;
-    expect(localRaw.cortex?.enabled).toBe(false);
-    expect(localRaw.cortex?.canopy?.enabled).toBe(false);
-    expect(localRaw.skills?.enabled).toBe(false);
-    expect(localRaw.vault_evolution?.enabled).toBe(false);
+    // Capability values written before re-admission must survive untouched.
+    expect(localRaw.cortex?.enabled).toBe(true);
+  });
+
+  it('still seeds capture-only for a genuinely new (uninitialized) vault', () => {
+    // A project root with NO pre-existing vault gets the capture-only defaults
+    // on first auto-provision — that default must be preserved.
+    const freshRoot = path.join(path.dirname(projectRoot), 'fresh-project');
+    fs.mkdirSync(freshRoot, { recursive: true });
+    execFileSync('git', ['init'], { cwd: freshRoot, stdio: 'pipe' });
+    try {
+      const vaultDir = resolveProvisionedVaultDir(freshRoot);
+      expect(vaultDir).toBe(resolveProjectVaultDir(freshRoot));
+      const localRaw = YAML.parse(
+        fs.readFileSync(path.join(resolveProjectVaultDir(freshRoot), 'local.yaml'), 'utf-8'),
+      ) as Record<string, any>;
+      expect(localRaw.cortex?.enabled).toBe(false);
+      expect(localRaw.cortex?.canopy?.enabled).toBe(false);
+      expect(localRaw.skills?.enabled).toBe(false);
+      expect(localRaw.vault_evolution?.enabled).toBe(false);
+    } finally {
+      fs.rmSync(freshRoot, { recursive: true, force: true });
+    }
   });
 });
 

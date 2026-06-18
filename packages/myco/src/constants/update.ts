@@ -27,25 +27,14 @@ export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json')
 export const DEV_BUILD_CACHE_PATH = path.join(MYCO_GLOBAL_DIR, 'dev-build-cache.json');
 
 /**
- * Machine-scope managed runtime directory.
+ * Filename for the machine-scope runtime command pin (lives in `~/.myco/`).
  *
- * Lives under `~/.myco/` (or whatever `resolveMycoHome()` returns). When
- * the user opts into the beta channel, `update-installer.ts` does
- * `npm install --prefix ~/.myco/runtime/` and writes the resolved binary
- * path into {@link MACHINE_RUNTIME_COMMAND_FILENAME} so the daemon, hooks,
- * and MCP launchers all dispatch to the same managed binary regardless of
- * which project they're invoked from.
+ * Single source of truth for which `myco` binary the launcher shims exec.
+ * Still load-bearing post native-installer: convergence, `runtime-redirect.cjs`,
+ * the launch preamble, and dev dogfood pins all read/write it. (The retired
+ * managed-runtime DIR/TMP constants were deleted with the native installer; the
+ * pin file itself remains.)
  */
-export const MACHINE_RUNTIME_DIRNAME = 'runtime';
-
-/**
- * Staging directory used during atomic swap on update. Same machine-scope
- * sibling as {@link MACHINE_RUNTIME_DIRNAME}: install into `runtime.tmp/`,
- * then `mv` it into place.
- */
-export const MACHINE_RUNTIME_TMP_DIRNAME = `${MACHINE_RUNTIME_DIRNAME}.tmp`;
-
-/** Filename for the machine-scope runtime command alias (lives in `~/.myco/`). */
 export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
 
 /** Filename for the restart reason signal file (lives inside vault .myco/). */
@@ -76,6 +65,15 @@ export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 
 /** Delay in seconds before update script starts (allows daemon to exit). */
 export const UPDATE_SCRIPT_DELAY_SECONDS = 2;
+
+/**
+ * Crash-loop watch for the binary self-update path: how many times the
+ * orchestrator polls /health for the target version after a swap+restart, and
+ * the spacing between polls. If the new binary never reports the target version
+ * within this window, `applyBinaryUpdate` restores `myco.prev`.
+ */
+export const BINARY_UPDATE_HEALTH_ATTEMPTS = 10;
+export const BINARY_UPDATE_HEALTH_INTERVAL_MS = 2_000;
 
 /** Valid release channels. */
 export const RELEASE_CHANNELS = ['stable', 'beta'] as const;

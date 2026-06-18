@@ -16,7 +16,7 @@ import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
-import * as updateInProgress from './update-in-progress.js';
+import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
@@ -36,7 +36,7 @@ import { installProcessGuards } from './process-guards.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
-import { createUpdateHandlers } from './api/update.js';
+import { createUpgradeHandlers } from './api/upgrade.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
@@ -1621,32 +1621,36 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // Intent surface: read + write the per-section intent files behind
-  // `myco restart` / `myco update --target-version`. Surfacing these via
-  // HTTP lets MCP tool callers and the UI drive daemon lifecycle ops
-  // without shelling to the CLI. Reconciler still owns convergence.
+  // `myco restart`. Surfacing these via HTTP lets MCP tool callers and
+  // the UI drive daemon restart without shelling to the CLI. Reconciler
+  // still owns convergence.
+  //
+  // Binary upgrade intents ([update]) were removed — use `api/upgrade`
+  // and `myco upgrade [<version>]` instead.
   const intentHandlers = createIntentHandlers(daemonService);
   server.registerRoute('GET',    '/api/daemon/intent',         intentHandlers.status);
   server.registerRoute('POST',   '/api/daemon/intent/restart', intentHandlers.requestRestart);
-  server.registerRoute('POST',   '/api/daemon/intent/update',  intentHandlers.requestUpdate);
   server.registerRoute('DELETE', '/api/daemon/intent/restart', intentHandlers.cancelRestart);
-  server.registerRoute('DELETE', '/api/daemon/intent/update',  intentHandlers.cancelUpdate);
 
-  // --- Update routes ---
-  const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);
-  const updateHandlers = createUpdateHandlers({
+  // --- Upgrade routes ---
+  const upgradeProjectRoot = resolveProjectRoot(bootstrapVaultDir);
+  const upgradeHandlers = createUpgradeHandlers({
     vaultDir: bootstrapVaultDir,
-    projectRoot: updateProjectRoot,
+    projectRoot: upgradeProjectRoot,
     currentVersion: server.version,
     daemonPort: server.port,
     globalPrefix,
     daemonStateDir: daemonService.stateDir,
-    scheduleShutdown: scheduleShutdownWithAttribution('api/update', logger),
+    scheduleShutdown: scheduleShutdownWithAttribution('api/upgrade', logger),
+    home: mycoHome,
+    platform: process.platform,
+    localAppData: process.env.LOCALAPPDATA,
   });
 
-  server.registerRoute('GET', '/api/update/status', async (req) => updateHandlers.handleUpdateStatus(req));
-  server.registerRoute('POST', '/api/update/check', async (req) => updateHandlers.handleUpdateCheck(req));
-  server.registerRoute('POST', '/api/update/apply', async (req) => updateHandlers.handleUpdateApply(req));
-  server.registerRoute('PUT', '/api/update/channel', async (req) => updateHandlers.handleUpdateChannel(req));
+  server.registerRoute('GET', '/api/upgrade/status', async (req) => upgradeHandlers.handleUpgradeStatus(req));
+  server.registerRoute('POST', '/api/upgrade/check', async (req) => upgradeHandlers.handleUpgradeCheck(req));
+  server.registerRoute('POST', '/api/upgrade/apply', async (req) => upgradeHandlers.handleUpgradeApply(req));
+  server.registerRoute('PUT', '/api/upgrade/channel', async (req) => upgradeHandlers.handleUpgradeChannel(req));
 
   server.registerRoute('GET', '/api/progress/:token', async (req) => handleGetProgress(progressTracker, req.params.token));
 
@@ -2342,16 +2346,61 @@ export async function main(): Promise<void> {
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
     reconciler,
+    // Upgrade auto-check + idle-adopt jobs. Skipped on dev builds inside
+    // the job fns themselves via `isUpdateExempt()`, so these are safe to
+    // register unconditionally here.
+    upgrade: {
+      currentVersion: server.version,
+      home: mycoHome,
+      platform: process.platform,
+      localAppData: process.env.LOCALAPPDATA,
+      stateDir: daemonService.stateDir,
+      daemonPort: server.port,
+      mycoBinary: getDevBuildCliEntry() ?? undefined,
+      projectRoot,
+    },
   });
   const selfReconcileLoop = startSelfReconcileLoop(logger, {
     daemonService,
     stateAuthority: daemonStateAuthority,
     server,
-    daemonVaultDir: bootstrapVaultDir,
-    projectRoot,
-    scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(jobRunner, runtimeCache);
+
+  // Startup auto-check: fire once in the background immediately after boot
+  // so the user doesn't wait for the first idle/sleep tick to discover a
+  // new version. The periodic job (upgrade-auto-check) applies the cadence
+  // gate on subsequent ticks; this call always runs (dev-build no-op inside).
+  void (async () => {
+    try {
+      const { checkAndStage: doCheckAndStage } = await import('../upgrade/auto-check.js');
+      const { readUpdateConfig: readCfg } = await import('./update-checker.js');
+      const cfg = readCfg();
+      const result = await doCheckAndStage(
+        server.version,
+        {
+          home: mycoHome,
+          platform: process.platform,
+          localAppData: process.env.LOCALAPPDATA,
+          logger,
+          channel: cfg.channel,
+        },
+      );
+      if (result.status === 'staged') {
+        logger.info(LOG_KINDS.DAEMON_START, 'Startup auto-check staged new version', {
+          version: result.version,
+        });
+      } else if (result.status === 'error') {
+        logger.warn(LOG_KINDS.DAEMON_START, 'Startup auto-check stage error', {
+          error: result.error,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.DAEMON_START, 'Startup auto-check failed', {
+        error: errorMessage(err),
+      });
+    }
+  })();
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner

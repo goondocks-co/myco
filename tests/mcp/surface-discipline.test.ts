@@ -51,8 +51,8 @@ const BANNED_IMPORT_PATTERNS: readonly { pattern: RegExp; why: string }[] = [
     why: 'self-reconcile machinery drives the daemon lifecycle',
   },
   {
-    pattern: /from\s+['"][^'"]*\/daemon\/update-installer(\.js)?['"]/,
-    why: 'update-installer spawns the post-install script — admin only',
+    pattern: /from\s+['"][^'"]*\/(daemon\/update-installer|upgrade\/spawn)(\.js)?['"]/,
+    why: 'spawn/update-installer spawns the post-install script — admin only',
   },
   {
     pattern: /from\s+['"]@myco\/service\/manager(\.js)?['"]/,

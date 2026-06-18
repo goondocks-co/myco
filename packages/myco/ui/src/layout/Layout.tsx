@@ -170,10 +170,10 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
 /**
- * Visual indicator that the daemon is running off a non-stable runtime
- * — a dev binary (`make dev-link`, `npm link`, etc.) or the managed
- * beta runtime under `~/.myco/runtime/`. Always visible while non-
- * stable; nothing rendered for stable installs.
+ * Visual indicator that the daemon is running off a dev binary
+ * (`make dev-link`, `npm link`, etc.). Nothing rendered for a normal
+ * stable/beta install — both run the same managed `~/.myco/bin/myco`,
+ * so there is no separate runtime to flag.
  *
  * Lives in the sidebar so it's persistent across pages — there's no
  * good reason to hunt for it on a settings tab when the question is
@@ -182,16 +182,11 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
   const { data } = useDaemon();
   const runtime = data?.daemon.runtime;
-  if (!runtime || runtime.source === 'stable') return null;
+  if (!runtime || runtime.source !== 'dev') return null;
 
-  const isDev = runtime.source === 'dev';
-  const label = isDev ? 'DEV' : 'BETA';
-  const tooltip = isDev
-    ? 'Daemon is running from a dev binary (make dev-link / npm link).'
-    : 'Daemon is running from the managed beta runtime under ~/.myco/runtime/.';
-  const colorClasses = isDev
-    ? 'bg-tertiary/20 text-tertiary border-tertiary/40'
-    : 'bg-secondary/20 text-secondary border-secondary/40';
+  const label = 'DEV';
+  const tooltip = 'Daemon is running from a dev binary (make dev-link / npm link).';
+  const colorClasses = 'bg-tertiary/20 text-tertiary border-tertiary/40';
 
   if (collapsed) {
     return (

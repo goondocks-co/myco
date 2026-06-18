@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { StatusDot } from './status-dot';
 import { useDaemon } from '../../hooks/use-daemon';
-import { useUpdateStatus } from '../../hooks/use-update-status';
+import { useUpgradeStatus } from '../../hooks/use-upgrade-status';
 import { cn } from '../../lib/cn';
 
 export function formatUptime(seconds: number): string {
@@ -90,18 +90,18 @@ export function DaemonStatusPillView({
 
 export function DaemonStatusPill({ to, className }: { to?: string; className?: string }) {
   const { data } = useDaemon();
-  const updateStatus = useUpdateStatus();
+  const upgradeStatus = useUpgradeStatus();
   const updateAvailable = Boolean(
-    updateStatus.data
-    && !updateStatus.data.exempt
-    && (updateStatus.data.update_available || updateStatus.data.revert_available),
+    upgradeStatus.data
+    && !upgradeStatus.data.exempt
+    && (upgradeStatus.data.update_available || upgradeStatus.data.revert_available),
   );
   return (
     <DaemonStatusPillView
       uptimeSeconds={data?.daemon.uptime_seconds}
       version={data?.daemon.version_label ?? data?.daemon.version}
       updateAvailable={updateAvailable}
-      latestVersion={updateStatus.data?.latest_version}
+      latestVersion={upgradeStatus.data?.latest_version}
       to={to}
       className={className}
     />

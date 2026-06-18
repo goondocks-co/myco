@@ -90,7 +90,7 @@ export function Topbar({
         </kbd>
       </button>
 
-      <DaemonStatusPill to="/settings?configSection=update#update" />
+      <DaemonStatusPill to="/settings?configSection=upgrade#upgrade" />
       <CortexStatusPill to={cortexPath} />
       <GitIdentityPill
         data={gitIdentity.data}

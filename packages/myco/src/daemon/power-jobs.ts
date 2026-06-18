@@ -55,12 +55,41 @@ import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.j
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
 import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
 import { reconcileManagedProjectFiles } from '@myco/symbionts/reconcile.js';
+import {
+  checkAndStage,
+  buildAdoptJobFn,
+  type AutoAdoptDeps,
+} from '@myco/upgrade/auto-check.js';
+import { resolveMycoBinary, readUpdateConfig } from './update-checker.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/** Required deps for the upgrade auto-check + adopt jobs (supplied by main.ts). */
+export interface UpgradeJobDeps {
+  /** The version currently running (daemon's own `server.version`). */
+  currentVersion: string;
+  /** Myco home directory (`~/.myco`). */
+  home: string;
+  /** Target platform. */
+  platform: NodeJS.Platform;
+  /** %LOCALAPPDATA% on win32; ignored on non-win32. */
+  localAppData?: string;
+  /** Daemon state dir — home of the `update.in-progress` sentinel. */
+  stateDir: string;
+  /** Canonical daemon port. */
+  daemonPort: number;
+  /**
+   * Myco binary path used for the direct-spawn restart fallback.
+   * Defaults to `resolveMycoBinary()` (i.e. the dev-build entry or `'myco'`).
+   */
+  mycoBinary?: string;
+  /** Project root for direct-spawn restart cwd. */
+  projectRoot: string;
+}
 
 export interface PowerJobDeps {
   registry: SessionRegistry;
@@ -93,6 +122,12 @@ export interface PowerJobDeps {
     hasUnconvergedBuffer(sessionId: string): boolean;
     runDrainPass(options?: { groveId?: string }): unknown;
   };
+  /**
+   * When provided, registers the upgrade auto-check and adopt jobs.
+   * Omitted in tests that don't need upgrade wiring (existing test
+   * suites remain unaffected).
+   */
+  upgrade?: UpgradeJobDeps;
 }
 
 export interface PowerJobsResult {
@@ -772,6 +807,79 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       }
     },
   });
+
+  // ---------------------------------------------------------------------------
+  // Upgrade: background auto-check+stage + idle auto-adopt
+  // ---------------------------------------------------------------------------
+  // Only registered when the caller supplies upgrade deps (not available in
+  // tests that exercise power-jobs without upgrade wiring). This keeps
+  // existing test suites stable while cleanly extending the production path.
+  if (deps.upgrade) {
+    const upg = deps.upgrade;
+
+    // upgrade-auto-check: hit GitHub at most once per configured interval;
+    // stage the binary if a newer version is available.
+    let lastAutoCheckAt = 0;
+    runner.register({
+      name: POWER_JOB_NAMES.UPGRADE_AUTO_CHECK,
+      runIn: ['idle', 'sleep'],
+      kind: 'housekeeping',
+      fn: async () => {
+        const config = readUpdateConfig();
+        const intervalMs = config.check_interval_hours * MS_PER_HOUR;
+        const now = Date.now();
+        // Job-level cadence gate: tick fires more often than the check interval.
+        if (now - lastAutoCheckAt < intervalMs) return;
+        lastAutoCheckAt = now;
+        const result = await checkAndStage(
+          upg.currentVersion,
+          {
+            home: upg.home,
+            platform: upg.platform,
+            localAppData: upg.localAppData,
+            logger,
+            channel: config.channel,
+          },
+        );
+        if (result.status === 'staged') {
+          logger.info(LOG_KINDS.DAEMON_START, 'Auto-check staged new version', {
+            version: result.version,
+          });
+        } else if (result.status === 'error') {
+          logger.warn(LOG_KINDS.DAEMON_START, 'Auto-check stage error', {
+            error: result.error,
+          });
+        }
+      },
+    });
+
+    // upgrade-adopt: when idle/sleep and a staged version > current exists,
+    // spawn the adopt orchestrator. The inFlight sentinel is the idempotency gate.
+    const adoptDeps: AutoAdoptDeps = {
+      currentVersion: upg.currentVersion,
+      home: upg.home,
+      platform: upg.platform,
+      localAppData: upg.localAppData,
+      stateDir: upg.stateDir,
+      daemonPort: upg.daemonPort,
+      // Resolve the service-managed label lazily at adopt time (async, only
+      // runs when we actually have a staged version ready to adopt).
+      resolveServiceLabel: async () => {
+        const { getServiceManager } = await import('../service/manager.js');
+        const { detectServiceManagedLabel } = await import('./api/restart.js');
+        return detectServiceManagedLabel(getServiceManager());
+      },
+      mycoBinary: upg.mycoBinary ?? resolveMycoBinary(),
+      projectRoot: upg.projectRoot,
+      logger,
+    };
+    runner.register({
+      name: POWER_JOB_NAMES.UPGRADE_ADOPT,
+      runIn: ['idle', 'sleep'],
+      kind: 'housekeeping',
+      fn: buildAdoptJobFn(adoptDeps),
+    });
+  }
 
   const canopy = registerCanopyJobs(runner, {
     logger,
