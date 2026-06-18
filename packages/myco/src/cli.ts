@@ -160,6 +160,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'update') return (await import('./cli/update.js')).run(args);
+  if (cmd === 'upgrade') return (await import('./cli/upgrade.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
 
   // Honor the runtime pin before the myco.yaml gate so a pinned binary is

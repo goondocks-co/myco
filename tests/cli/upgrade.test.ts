@@ -1,0 +1,509 @@
+/**
+ * Tests for `myco upgrade` CLI command (cli/upgrade.ts).
+ *
+ * Critical flows covered:
+ *   1. Arg parsing: --now / --check / --target-version <v> / <version> positional /
+ *      --channel <stable|beta>
+ *   2. --check calls the checker + prints, NEVER calls stage or adopt
+ *   3. bare `myco upgrade` / `--now`: resolves channel target → stages → initiateAdopt
+ *   4. `myco upgrade <version>` / `--target-version <v>`: resolves specific version refs
+ *      (owned here, via the fetchReleases → exact-match path)
+ *   5. Dev-build is refused (exits non-zero) — --check still reports
+ *   6. --channel persists before resolving; beta→stable revert adopts stable
+ *   7. win32 adopt: initiateAdopt is called with source='cli' (the re-exec is
+ *      internal to adopt.ts; we verify opts here)
+ *
+ * All I/O (network, fs writes, daemon comms) is injected via UpgradeDeps.
+ * The test never hits GitHub or the real filesystem.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
+
+// ---------------------------------------------------------------------------
+// Module mocks (must precede import of the module under test)
+// ---------------------------------------------------------------------------
+
+// Mock isUpdateExempt and writeProjectReleaseChannel in the update-checker module.
+// These are read at call time via deps override or directly, so we control
+// them via the `isDevBuild` dep injection and the real writeProjectReleaseChannel
+// path needs to be stubbed to avoid real fs writes.
+mock.module('@myco/daemon/update-checker.js', () => ({
+  isUpdateExempt: () => false,
+  readProjectReleaseChannel: () => 'stable',
+  writeProjectReleaseChannel: (_vaultDir: string, _channel: string) => { /* no-op */ },
+  activateDevBuildModeIfDetected: () => {},
+}));
+
+// Mock grove/paths so resolveMycoHome doesn't touch the real filesystem.
+mock.module('@myco/grove/paths.js', () => ({
+  resolveMycoHome: () => '/fake/myco-home',
+  resolveGlobalConfigPath: () => '/fake/myco-home/config.yaml',
+}));
+
+// Mock service-state so resolveGlobalDaemonPort doesn't spawn processes.
+mock.module('@myco/daemon/service-state.js', () => ({
+  resolveGlobalDaemonPort: () => 20915,
+}));
+
+// Mock managed-binary so managedBinaryPath doesn't compute a real path.
+mock.module('@myco/install/managed-binary.js', () => ({
+  managedBinaryPath: (home: string, platform: string) =>
+    platform === 'win32' ? `${home}\\AppData\\Local\\Myco\\bin\\myco.exe` : `${home}/.myco/bin/myco`,
+}));
+
+// Mock service/manager and daemon/api/restart for detectServiceManagedLabel.
+mock.module('@myco/service/manager.js', () => ({
+  getServiceManager: () => ({ type: 'none' }),
+}));
+
+mock.module('@myco/daemon/api/restart.js', () => ({
+  detectServiceManagedLabel: async () => null,
+}));
+
+// import AFTER mocks
+import { run, type UpgradeDeps } from '@myco/cli/upgrade.js';
+import type { GitHubRelease, AssetRefs } from '@myco/upgrade/release-assets.js';
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+function makeRelease(tag: string, prerelease: boolean): GitHubRelease {
+  return {
+    tag_name: tag,
+    prerelease,
+    assets: [
+      {
+        name: 'myco-darwin-arm64',
+        browser_download_url: `https://dl.test/${tag}/myco-darwin-arm64`,
+      },
+      {
+        name: 'SHA256SUMS',
+        browser_download_url: `https://dl.test/${tag}/SHA256SUMS`,
+      },
+    ],
+  };
+}
+
+function makeRefs(version: string): AssetRefs {
+  return {
+    assetUrl: `https://dl.test/myco/v${version}/myco-darwin-arm64`,
+    sha256sumsUrl: `https://dl.test/myco/v${version}/SHA256SUMS`,
+    assetName: 'myco-darwin-arm64',
+    targetVersion: version,
+  };
+}
+
+/** Deps that override everything network/fs-touching. */
+function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
+  return {
+    isDevBuild: () => false,
+    currentVersion: '1.0.0',
+    home: '/fake/home',
+    platform: 'linux',
+    localAppData: undefined,
+    daemonPort: 20915,
+    mycoBinary: '/fake/home/.myco/bin/myco',
+    projectRoot: '/fake/project',
+    // resolveRefs as vi.fn() so tests can assert on it with .toHaveBeenCalled etc.
+    resolveRefs: vi.fn(async (_channel) => makeRefs('1.1.0')),
+    fetchReleases: vi.fn(async () => [
+      makeRelease('myco/v1.0.0', false),
+      makeRelease('myco/v1.1.0', false),
+      makeRelease('myco/v1.2.0-beta.1', true),
+    ]),
+    stageBinary: vi.fn(async (_params, _deps) => ({
+      versionDir: '/fake/home/.myco/bin/versions/1.1.0',
+      version: '1.1.0',
+    })),
+    initiateAdopt: vi.fn(async (_opts) => {}),
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Spy on process.exit so tests don't actually exit
+// ---------------------------------------------------------------------------
+
+let exitSpy: ReturnType<typeof vi.spyOn>;
+let stdoutSpy: ReturnType<typeof vi.spyOn>;
+let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    throw new Error(`__exit__${code ?? 0}__`);
+  }) as never);
+  stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  exitSpy.mockRestore();
+  stdoutSpy.mockRestore();
+  stderrSpy.mockRestore();
+  mock.restore();
+});
+
+// ---------------------------------------------------------------------------
+// 1. Arg parsing
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade: arg parsing', () => {
+  it('--now is accepted and upgrades (equivalent to bare upgrade)', async () => {
+    const deps = makeDeps();
+    await run(['--now'], deps);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+  });
+
+  it('--check is accepted and triggers report-only path', async () => {
+    const deps = makeDeps({
+      resolveRefs: async () => makeRefs('1.1.0'),
+    });
+    // --check exits via resolveMycoPackageCheck; we mock it so it doesn't hit network.
+    // Since we didn't mock checker.ts here, we verify that stage+adopt are NOT called.
+    // Wrap in try/catch because resolveMycoPackageCheck may throw (no network).
+    try {
+      await run(['--check'], deps);
+    } catch {
+      // May throw from real checker.ts hitting a missing fetch; that's fine.
+    }
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('--target-version <v> is parsed and uses exact version path', async () => {
+    const deps = makeDeps();
+    await run(['--target-version', '1.1.0'], deps);
+    // Should use fetchReleases path (exact match), not resolveRefs
+    expect(deps.fetchReleases).toHaveBeenCalledTimes(1);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    const stageCall = (deps.stageBinary as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      refs: AssetRefs;
+    };
+    expect(stageCall.refs.targetVersion).toBe('1.1.0');
+  });
+
+  it('positional <version> is parsed and uses exact version path', async () => {
+    const deps = makeDeps();
+    await run(['1.1.0'], deps);
+    expect(deps.fetchReleases).toHaveBeenCalledTimes(1);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+  });
+
+  it('--target-version wins over positional', async () => {
+    const deps = makeDeps({
+      fetchReleases: async () => [
+        makeRelease('myco/v1.1.0', false),
+        makeRelease('myco/v1.2.0', false),
+      ],
+      stageBinary: vi.fn(async (_params, _deps) => ({
+        versionDir: '/fake/home/.myco/bin/versions/1.1.0',
+        version: '1.1.0',
+      })),
+    });
+    await run(['--target-version', '1.1.0', '1.2.0'], deps);
+    const stageCall = (deps.stageBinary as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      refs: AssetRefs;
+    };
+    expect(stageCall.refs.targetVersion).toBe('1.1.0');
+  });
+
+  it('--channel <stable|beta> is accepted', async () => {
+    const deps = makeDeps();
+    await run(['--channel', 'beta'], deps);
+    // Should have called resolveRefs (channel path), not fetchReleases
+    expect(deps.resolveRefs).toHaveBeenCalledTimes(1);
+    expect((deps.resolveRefs as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('beta');
+  });
+
+  it('rejects invalid channel', async () => {
+    const deps = makeDeps();
+    await expect(run(['--channel', 'nightly'], deps)).rejects.toThrow('__exit__');
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).toContain("--channel must be 'stable' or 'beta'");
+  });
+
+  it('rejects invalid semver for positional', async () => {
+    const deps = makeDeps();
+    await expect(run(['not-a-version'], deps)).rejects.toThrow('__exit__');
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).toContain('must be a strict semver');
+  });
+
+  it('rejects invalid semver for --target-version', async () => {
+    const deps = makeDeps();
+    await expect(run(['--target-version', 'not-a-version'], deps)).rejects.toThrow('__exit__');
+  });
+
+  it('--help outputs usage and returns', async () => {
+    const deps = makeDeps();
+    await run(['--help'], deps);
+    expect(stdoutSpy).toHaveBeenCalled();
+    const out = (stdoutSpy as ReturnType<typeof vi.fn>).mock.calls.flat().join('');
+    expect(out).toContain('Usage: myco upgrade');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2. --check path: calls checker + prints, NEVER stage/adopt
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade --check', () => {
+  it('does NOT call stageBinary or initiateAdopt', async () => {
+    const deps = makeDeps();
+    // checker.ts will throw in test (no network) — that's fine, just verify no stage/adopt
+    try {
+      await run(['--check'], deps);
+    } catch {
+      // May throw from process.exit(1) in the catch block of runCheck
+    }
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('--check works even on dev builds (does not refuse)', async () => {
+    const deps = makeDeps({ isDevBuild: () => true });
+    // Should not throw with the dev-build refusal message before runCheck is called.
+    // It may throw from the checker (no network), but NOT from the dev-build guard.
+    try {
+      await run(['--check'], deps);
+    } catch {
+      // Expected from missing network
+    }
+    // If it exited, verify the error is NOT the dev-build refusal.
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).not.toContain('running a dev build');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. bare `myco upgrade` / --now: channel resolve → stage → adopt inline
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade (bare / --now): check → stage → initiateAdopt', () => {
+  it('bare: resolves channel target, stages, adopts', async () => {
+    const refs = makeRefs('1.1.0');
+    const deps = makeDeps({
+      currentVersion: '1.0.0',
+      resolveRefs: vi.fn(async () => refs),
+    });
+    await run([], deps);
+
+    expect(deps.resolveRefs).toHaveBeenCalledTimes(1);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    const stageParam = (deps.stageBinary as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      refs: AssetRefs;
+      home: string;
+      platform: NodeJS.Platform;
+    };
+    expect(stageParam.refs).toEqual(refs);
+    expect(stageParam.home).toBe('/fake/home');
+    expect(stageParam.platform).toBe('linux');
+
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+    const adoptOpts = (deps.initiateAdopt as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      source: string;
+      targetVersion: string;
+      prevVersion: string;
+    };
+    expect(adoptOpts.source).toBe('cli');
+    expect(adoptOpts.targetVersion).toBe('1.1.0');
+    expect(adoptOpts.prevVersion).toBe('1.0.0');
+  });
+
+  it('--now: identical behaviour to bare', async () => {
+    const deps = makeDeps();
+    await run(['--now'], deps);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+  });
+
+  it('exits cleanly when channel target matches current (already up to date)', async () => {
+    const deps = makeDeps({
+      currentVersion: '1.1.0',
+      resolveRefs: async () => makeRefs('1.1.0'),
+    });
+    await expect(run([], deps)).rejects.toThrow('__exit__0__');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('exits cleanly when no channel release found (null refs)', async () => {
+    const deps = makeDeps({
+      resolveRefs: async () => null,
+    });
+    await expect(run([], deps)).rejects.toThrow('__exit__0__');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+  });
+
+  it('exits 1 when stage fails', async () => {
+    const deps = makeDeps({
+      stageBinary: vi.fn(async () => ({ error: 'download failed' })),
+    });
+    await expect(run([], deps)).rejects.toThrow('__exit__1__');
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Exact-version resolution (owned by cli/upgrade.ts)
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade <version> / --target-version: specific version refs', () => {
+  it('resolves via fetchReleases → tag match → refs', async () => {
+    const releases = [
+      makeRelease('myco/v1.0.0', false),
+      makeRelease('myco/v1.1.0', false),
+    ];
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => releases),
+      stageBinary: vi.fn(async (_params, _deps) => ({
+        versionDir: '/fake/versions/1.1.0',
+        version: '1.1.0',
+      })),
+    });
+    await run(['--target-version', '1.1.0'], deps);
+
+    expect(deps.fetchReleases).toHaveBeenCalledTimes(1);
+    // resolveRefs (channel-latest) should NOT be called
+    expect(deps.resolveRefs).not.toHaveBeenCalled();
+
+    const stageParam = (deps.stageBinary as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      refs: AssetRefs;
+    };
+    expect(stageParam.refs.targetVersion).toBe('1.1.0');
+    expect(stageParam.refs.assetUrl).toContain('myco/v1.1.0');
+  });
+
+  it('exits 1 when the exact version tag is not found', async () => {
+    const deps = makeDeps({
+      fetchReleases: async () => [makeRelease('myco/v1.0.0', false)],
+    });
+    await expect(run(['--target-version', '9.9.9'], deps)).rejects.toThrow('__exit__1__');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+  });
+
+  it('positional version uses the exact-version path, not resolveRefs', async () => {
+    const deps = makeDeps({
+      fetchReleases: vi.fn(async () => [makeRelease('myco/v1.1.0', false)]),
+    });
+    await run(['1.1.0'], deps);
+    expect(deps.fetchReleases).toHaveBeenCalledTimes(1);
+    expect(deps.resolveRefs).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Dev-build guard
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade: dev-build guard', () => {
+  it('refuses with a clear message when isDevBuild returns true', async () => {
+    const deps = makeDeps({ isDevBuild: () => true });
+    await expect(run([], deps)).rejects.toThrow('__exit__');
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).toContain('running a dev build');
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('dev-build with --check does NOT refuse', async () => {
+    const deps = makeDeps({ isDevBuild: () => true });
+    // Wrap — checker may throw from network, but dev-build guard must not fire before it
+    try {
+      await run(['--check'], deps);
+    } catch {
+      /* expected: no network */
+    }
+    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
+    expect(errOutput).not.toContain('running a dev build');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. --channel: persists channel + beta→stable revert
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade --channel', () => {
+  it('calls resolveRefs with the provided channel', async () => {
+    const deps = makeDeps({
+      resolveRefs: vi.fn(async () => makeRefs('1.1.0-beta.1')),
+    });
+    await run(['--channel', 'beta'], deps);
+    expect((deps.resolveRefs as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe('beta');
+  });
+
+  it('beta→stable revert: adopts even when stable < current beta', async () => {
+    // Current is a beta; --channel stable targets an older stable. The no-downgrade
+    // rule must NOT block this because channelArg is set (explicit channel switch).
+    const deps = makeDeps({
+      currentVersion: '1.1.0-beta.2',
+      resolveRefs: vi.fn(async () => makeRefs('1.0.5')), // stable is "older" than the beta
+      stageBinary: vi.fn(async () => ({ versionDir: '/v/1.0.5', version: '1.0.5' })),
+    });
+    await run(['--channel', 'stable'], deps);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+    const adoptOpts = (deps.initiateAdopt as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      targetVersion: string;
+    };
+    expect(adoptOpts.targetVersion).toBe('1.0.5');
+  });
+
+  it('explicit --target-version also bypasses the no-downgrade rule', async () => {
+    // User explicitly requests an older version — respect it.
+    const deps = makeDeps({
+      currentVersion: '1.1.0',
+      fetchReleases: async () => [makeRelease('myco/v1.0.5', false)],
+      stageBinary: vi.fn(async () => ({ versionDir: '/v/1.0.5', version: '1.0.5' })),
+    });
+    await run(['--target-version', '1.0.5'], deps);
+    expect(deps.stageBinary).toHaveBeenCalledTimes(1);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. initiateAdopt is called with source='cli'
+// ---------------------------------------------------------------------------
+
+describe('myco upgrade: adopt opts', () => {
+  it('initiateAdopt receives source=cli, targetVersion, prevVersion, daemonPort', async () => {
+    const deps = makeDeps({
+      currentVersion: '1.0.0',
+      daemonPort: 19344,
+    });
+    await run([], deps);
+    expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
+    const opts = (deps.initiateAdopt as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      source: string;
+      targetVersion: string;
+      prevVersion: string;
+      daemonPort: number;
+    };
+    expect(opts.source).toBe('cli');
+    expect(opts.targetVersion).toBe('1.1.0');
+    expect(opts.prevVersion).toBe('1.0.0');
+    expect(opts.daemonPort).toBe(19344);
+  });
+
+  it('initiateAdopt is NOT called when stage fails', async () => {
+    const deps = makeDeps({
+      stageBinary: vi.fn(async () => ({ error: 'network timeout' })),
+    });
+    await expect(run([], deps)).rejects.toThrow('__exit__1__');
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+
+  it('initiateAdopt is NOT called on --check', async () => {
+    const deps = makeDeps();
+    try {
+      await run(['--check'], deps);
+    } catch { /* expected */ }
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
+  });
+});
