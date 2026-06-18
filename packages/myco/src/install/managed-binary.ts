@@ -64,6 +64,51 @@ export function managedBinaryPath(
 }
 
 /**
+ * Returns the versions directory (`<bindir>/versions`) for the managed binary.
+ *
+ * Pass `localAppData` on win32 — see `managedBinDir` for details.
+ */
+export function versionsDir(
+  home: string,
+  platform: NodeJS.Platform | string,
+  localAppData?: string,
+): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  return p.join(managedBinDir(home, platform, localAppData), 'versions');
+}
+
+/**
+ * Returns the directory for a specific version (`<bindir>/versions/<version>`).
+ *
+ * Pass `localAppData` on win32 — see `managedBinDir` for details.
+ */
+export function versionDir(
+  home: string,
+  platform: NodeJS.Platform | string,
+  version: string,
+  localAppData?: string,
+): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  return p.join(versionsDir(home, platform, localAppData), version);
+}
+
+/**
+ * Returns the full path to the versioned binary (`<versionDir>/myco[.exe]`).
+ *
+ * Pass `localAppData` on win32 — see `managedBinDir` for details.
+ */
+export function versionBinaryPath(
+  home: string,
+  platform: NodeJS.Platform | string,
+  version: string,
+  localAppData?: string,
+): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
+  return p.join(versionDir(home, platform, version, localAppData), binaryName);
+}
+
+/**
  * Writes the install marker to `<dir>/install.json`.
  *
  * `dir` is the `.myco` home directory (e.g. `~/.myco`).
