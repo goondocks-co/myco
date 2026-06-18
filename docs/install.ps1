@@ -208,6 +208,11 @@ Write-Host "Found: $tag" -ForegroundColor Cyan
 $encodedTag = $tag -replace '/', '%2F'
 $dlBase     = "https://github.com/$Repo/releases/download/$encodedTag"
 
+# Extract the bare semver (e.g. "1.2.3") from the tag (e.g. "myco/v1.2.3").
+# This is the dir name under versions\ — must match the daemon's versionBinaryPath().
+$Version    = $tag -replace '^myco/v', ''
+$VersionDir = Join-Path $BinDir (Join-Path "versions" $Version)
+
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $tmpDir = Join-Path $BinDir (".myco-install-" + [System.IO.Path]::GetRandomFileName().Replace('.',''))
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -259,12 +264,35 @@ try {
     Write-Host "Checksum verified." -ForegroundColor Green
 
     # -------------------------------------------------------------------------
-    # Place the verified binary
+    # Versioned placement + atomic stable copy
+    #
+    # Layout (mirrors daemon's versionBinaryPath / managedBinaryPath):
+    #   %LOCALAPPDATA%\Myco\bin\versions\<bare-semver>\myco.exe  — versioned slot
+    #   %LOCALAPPDATA%\Myco\bin\myco.exe                         — stable (current) slot
+    #
+    # Sequence: place in version dir → temp+rename to stable path.
+    # The temp file lives under $BinDir (same volume) so the final rename is
+    # atomic — a partial copy can never leave a broken stable binary.
     # -------------------------------------------------------------------------
+
+    # Place the versioned copy
+    New-Item -ItemType Directory -Force -Path $VersionDir | Out-Null
+    $VersionExe = Join-Path $VersionDir "myco.exe"
     try {
-        Move-Item -Path $tmpExe -Destination $Exe -Force -ErrorAction Stop
+        Copy-Item -Path $tmpExe -Destination $VersionExe -Force -ErrorAction Stop
     } catch {
-        Write-Host "Failed to place $Exe : $_" -ForegroundColor Red
+        Write-Host "Failed to place versioned binary at $VersionExe : $_" -ForegroundColor Red
+        exit 1
+    }
+
+    # Atomic stable copy via temp+rename (same volume as $BinDir)
+    $tmpStable = Join-Path $BinDir (".myco-stable-" + [System.IO.Path]::GetRandomFileName().Replace('.','') + ".exe")
+    try {
+        Copy-Item -Path $VersionExe -Destination $tmpStable -Force -ErrorAction Stop
+        Move-Item -Path $tmpStable -Destination $Exe -Force -ErrorAction Stop
+    } catch {
+        if (Test-Path $tmpStable) { Remove-Item -Path $tmpStable -Force -ErrorAction SilentlyContinue }
+        Write-Host "Failed to place stable binary at $Exe : $_" -ForegroundColor Red
         Write-Host "  If the Myco daemon is running, stop it first and retry." -ForegroundColor Yellow
         exit 1
     }

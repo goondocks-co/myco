@@ -199,6 +199,11 @@ info "Found: ${TAG}"
 ENCODED_TAG="$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
 DL="https://github.com/${REPO}/releases/download/${ENCODED_TAG}"
 
+# Extract the bare semver (e.g. "1.2.3") from the tag (e.g. "myco/v1.2.3").
+# This is the dir name under versions/ — must match the daemon's versionBinaryPath().
+VERSION="$(printf '%s' "$TAG" | sed 's|^myco/v||')"
+VERSION_DIR="${BIN_DIR}/versions/${VERSION}"
+
 mkdir -p "$BIN_DIR"
 TMP_DIR="$(mktemp -d "${BIN_DIR}/.myco-install-XXXXXX")"
 # shellcheck disable=SC2064
@@ -233,13 +238,30 @@ fi
 success "Checksum verified."
 
 # ---------------------------------------------------------------------------
-# Atomic placement (same-filesystem mv — TMP_DIR is under $BIN_DIR)
+# Versioned placement + atomic stable copy
+#
+# Layout (mirrors daemon's versionBinaryPath / managedBinaryPath):
+#   ~/.myco/bin/versions/<bare-semver>/myco   ← versioned slot
+#   ~/.myco/bin/myco                          ← stable (current) slot
+#
+# Sequence: chmod → place in version dir → temp+rename to stable path.
+# The temp file lives under $BIN_DIR (same filesystem) so the final rename
+# is atomic — a partial copy can never leave a broken stable binary.
 # ---------------------------------------------------------------------------
 chmod +x "${TMP_DIR}/myco"
-mv "${TMP_DIR}/myco" "${BIN_DIR}/myco"
+
+# Place verified binary in its versioned slot (atomic mv — TMP_DIR is under $BIN_DIR,
+# same filesystem, so this rename never produces a partial file under $VERSION_DIR).
+mkdir -p "${VERSION_DIR}"
+mv "${TMP_DIR}/myco" "${VERSION_DIR}/myco"
+
+# Atomic stable copy via temp+rename (cp to a sibling temp, then rename over stable path)
+cp "${VERSION_DIR}/myco" "${TMP_DIR}/myco.stable"
+mv "${TMP_DIR}/myco.stable" "${BIN_DIR}/myco"
 
 # macOS Gatekeeper: strip quarantine attribute if present (best-effort)
 if [ "$os" = "darwin" ]; then
+  xattr -d com.apple.quarantine "${VERSION_DIR}/myco" 2>/dev/null || true
   xattr -d com.apple.quarantine "${BIN_DIR}/myco" 2>/dev/null || true
 fi
 
