@@ -564,7 +564,7 @@ async function checkService(): Promise<DoctorCheck> {
   const label = serviceLabel(variant);
   const status = await mgr.status(label);
   const serviceExec = resolveServiceExecutable(variant);
-  const managedBinary = managedBinaryPath(os.homedir(), process.platform, process.env.LOCALAPPDATA);
+  const managedBinary = managedBinaryPath(resolveMycoHome(), process.platform, process.env.LOCALAPPDATA);
   return evaluateServiceCheck(label, status, serviceExec, { variant, managedBinary });
 }
 

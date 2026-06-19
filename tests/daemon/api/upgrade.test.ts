@@ -724,11 +724,12 @@ describe('handleUpgradeApply', () => {
     (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
 
-    // Point home at a tmpdir and pre-create the versioned binary so the
-    // already-staged guard short-circuits the stage step. The managed layout is
-    // `<home>/.myco/bin/versions/<v>/myco` on POSIX (see managed-binary.ts).
+    // Point the myco-home at a tmpdir and pre-create the versioned binary so the
+    // already-staged guard short-circuits the stage step. The deps `home` IS the
+    // resolved myco-home (`resolveMycoHome()`), so the managed layout is
+    // `<mycoHome>/bin/versions/<v>/myco` on POSIX (see managed-paths.mjs).
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-revert-home-'));
-    const vBinDir = path.join(home, '.myco', 'bin', 'versions', '1.0.0');
+    const vBinDir = path.join(home, 'bin', 'versions', '1.0.0');
     fs.mkdirSync(vBinDir, { recursive: true });
     fs.writeFileSync(path.join(vBinDir, 'myco'), '#!/bin/sh\n');
 

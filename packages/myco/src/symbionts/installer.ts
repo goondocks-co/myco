@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
+import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
@@ -199,12 +199,12 @@ function resolveLauncherCmd(_scope: InstallScope, binaryPath: string): string {
  * `runtime.command` pin's job; this path must remain daemon-agnostic.
  */
 export function resolveManagedBinaryPath(
-  home: string = resolveHomeDir(),
+  mycoHome: string = resolveMycoHome(),
   platform: NodeJS.Platform = process.platform,
 ): string {
   const pin = resolveRuntimeCommand();
   if (pin) return pin.replaceAll('\\', '/');
-  const managed = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
+  const managed = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
   if (fs.existsSync(managed)) return managed.replaceAll('\\', '/');
   return process.execPath.replaceAll('\\', '/');
 }

@@ -5,7 +5,7 @@
  * dev variant always uses `process.execPath` (dogfood guard).
  */
 
-import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,14 +16,20 @@ import { FakeServiceManager } from '../helpers/fake-service-manager';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Create a temp dir with the managed binary present and return its home root. */
-function makeTempHomeWithManagedBinary(): { home: string; binPath: string } {
+/**
+ * Create a temp OS-home with the managed binary present at `<home>/.myco/bin/myco`,
+ * and return both the OS-home and the MYCO-HOME (`<home>/.myco`). Callers of
+ * `defaultServiceExecutable` pass the myco-home (the resolved `resolveMycoHome()`
+ * value the daemon supplies), not the OS-home.
+ */
+function makeTempHomeWithManagedBinary(): { home: string; mycoHome: string; binPath: string } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-managed-'));
-  const binDir = path.join(home, '.myco', 'bin');
+  const mycoHome = path.join(home, '.myco');
+  const binDir = path.join(mycoHome, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
   const binPath = path.join(binDir, 'myco');
   fs.writeFileSync(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  return { home, binPath };
+  return { home, mycoHome, binPath };
 }
 
 /** Create a temp home dir WITHOUT any managed binary. */
@@ -54,8 +60,8 @@ class CapturingLogger {
 
 describe('defaultServiceExecutable', () => {
   test('prod + managed binary present → returns the managed binary path', () => {
-    const { home, binPath } = makeTempHomeWithManagedBinary();
-    const result = defaultServiceExecutable('prod', home, 'darwin');
+    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
+    const result = defaultServiceExecutable('prod', mycoHome, 'darwin');
     expect(result).toBe(binPath);
   });
 
@@ -78,9 +84,9 @@ describe('defaultServiceExecutable', () => {
     expect(result).toBe(process.execPath);
   });
 
-  test('works on linux platform (uses .myco/bin path)', () => {
-    const { home, binPath } = makeTempHomeWithManagedBinary();
-    const result = defaultServiceExecutable('prod', home, 'linux');
+  test('works on linux platform (uses <mycoHome>/bin path)', () => {
+    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
+    const result = defaultServiceExecutable('prod', mycoHome, 'linux');
     expect(result).toBe(binPath);
   });
 });
@@ -139,15 +145,16 @@ describe('ensureSelfInstalledAsService executable threading', () => {
     }
   });
 
-  test('prod without explicit override picks up the managed binary via os.homedir() (default wiring)', async () => {
-    const { home, binPath } = makeTempHomeWithManagedBinary();
+  test('prod without explicit override resolves the managed binary via resolveMycoHome (default wiring)', async () => {
+    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
     const logger = new CapturingLogger();
     const mgr = new FakeServiceManager();
 
     const origHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = path.join(home, '.myco');
+    // The default wiring uses resolveMycoHome(), which honors $MYCO_HOME — no
+    // os.homedir() mock needed (the old default read os.homedir() directly).
+    process.env.MYCO_HOME = mycoHome;
 
-    const homedirSpy = spyOn(os, 'homedir').mockReturnValue(home);
     try {
       // No `executable` override — the default wiring must resolve it.
       await ensureSelfInstalledAsService(logger, {
@@ -159,7 +166,6 @@ describe('ensureSelfInstalledAsService executable threading', () => {
       expect(mgr.installCalls[0].executable).toBe(binPath);
       expect(logger.warns).toHaveLength(0);
     } finally {
-      homedirSpy.mockRestore();
       if (origHome === undefined) delete process.env.MYCO_HOME;
       else process.env.MYCO_HOME = origHome;
     }
