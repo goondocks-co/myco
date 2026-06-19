@@ -36,6 +36,7 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'daemon.log_level': { home: 'machine', overridableBy: [] },
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },
   'daemon.update_channel': { home: 'machine', overridableBy: [] },
+  'daemon.check_interval_hours': { home: 'machine', overridableBy: [] },
   // Legacy `update.channel` leaf. Runtime reads/writes machine
   // `daemon.update_channel` exclusively, and the loader lifts any legacy
   // `update.channel` from myco.yaml or local.yaml to machine once, then strips

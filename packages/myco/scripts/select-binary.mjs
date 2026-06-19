@@ -14,10 +14,11 @@
 // would require `dist/src/` modules that are never emitted in the published
 // tarball (the build only produces a bun binary + `dist/ui/`).
 //
-// Path layout helpers are inlined here (not imported from `dist/src/`) for
-// the same reason: this script is the only .mjs in the published package and
-// must be self-contained. The layout it produces MUST match what
-// `src/install/managed-binary.ts` computes (verified by the pack smoke test).
+// The path-layout helpers come from `./managed-paths.mjs` — a shared plain-ESM
+// module imported BOTH here and (re-exported) by `src/install/managed-binary.ts`,
+// so the postinstall and the compiled binary cannot disagree on the layout.
+// (We still cannot import `dist/src/` — it is never emitted in the published
+// tarball — which is why the shared module is plain ESM under `scripts/`.)
 //
 // This module exports `convergeNpmInstall` so the convergence mechanics are
 // unit-testable in isolation. The postinstall side effects run only when the
@@ -30,29 +31,26 @@ import os from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// The PATH layout is imported from the shared `./managed-paths.mjs` module —
+// the SINGLE source of truth that both this postinstall and the compiled binary
+// (`src/install/managed-binary.ts` re-exports it) use, so they cannot drift.
+import { managedBinaryPath, versionBinaryPath } from './managed-paths.mjs';
+
 // ---------------------------------------------------------------------------
-// Inlined path helpers — must match src/install/managed-binary.ts exactly.
-// We cannot import dist/src/ because it is never emitted in the published
-// tarball (the build only produces a bun binary + dist/ui/).
+// Myco-home resolution. Mirrors `src/grove/paths.ts` resolveMycoHome() for the
+// postinstall (which cannot import TS): honors `$MYCO_HOME`, else `~/.myco`.
 // ---------------------------------------------------------------------------
 
-function managedBinDir(home, platform, localAppData) {
-  if (platform === 'win32') {
-    const appDataLocal = localAppData ?? path.win32.join(home, 'AppData', 'Local');
-    return path.win32.join(appDataLocal, 'Myco', 'bin');
+function resolveMycoHome() {
+  const configured = process.env.MYCO_HOME?.trim();
+  if (configured) {
+    if (configured === '~') return os.homedir();
+    if (configured.startsWith('~/') || configured.startsWith(`~${path.sep}`)) {
+      return path.join(os.homedir(), configured.slice(2));
+    }
+    return path.resolve(configured);
   }
-  return path.posix.join(home, '.myco', 'bin');
-}
-
-function managedBinaryPath(home, platform, localAppData) {
-  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), binaryName);
-}
-
-function versionBinaryPath(home, platform, version, localAppData) {
-  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  const p = platform === 'win32' ? path.win32 : path.posix;
-  return p.join(managedBinDir(home, platform, localAppData), 'versions', version, binaryName);
+  return path.join(os.homedir(), '.myco');
 }
 
 function detectTarget() {
@@ -82,11 +80,10 @@ function detectTarget() {
  *
  * Returns `{ dest, copied, pinAction }` for callers/tests to assert.
  *
- * @param {{ home: string, platform: string, resolvedBinary: string, dest: string, channel: string, version?: string, versionedDest?: string, writeMarker?: Function }} args
+ * @param {{ mycoHome: string, platform: string, resolvedBinary: string, dest: string, channel: string, version?: string, versionedDest?: string, writeMarker?: Function }} args
  */
-export function convergeNpmInstall({ home, platform, resolvedBinary, dest, channel, version, versionedDest, writeMarker }) {
+export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, channel, version, versionedDest, writeMarker }) {
   const log = (msg) => process.stderr.write(`[myco] ${msg}\n`);
-  const mycoHome = path.join(home, '.myco');
   let copied = false;
   let pinAction = 'skipped';
 
@@ -290,7 +287,7 @@ async function main() {
   // the published tarball.
   if (!isSourceCheckout) {
     try {
-      const home = os.homedir();
+      const mycoHome = resolveMycoHome();
       const platform = process.platform;
       // `pkg.version` is the bare semver (e.g. "1.2.3") — npm packages never
       // carry the "myco/v" tag prefix that curl installers use. This is the
@@ -300,13 +297,13 @@ async function main() {
         pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
       } catch { /* version stays null; versionedDest skipped */ }
       const version = pkg.version ?? null;
-      const dest = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
+      const dest = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
       const versionedDest = version
-        ? versionBinaryPath(home, platform, version, process.env.LOCALAPPDATA)
+        ? versionBinaryPath(mycoHome, platform, version, process.env.LOCALAPPDATA)
         : null;
       const channel = deriveChannel(pkgRoot);
       convergeNpmInstall({
-        home,
+        mycoHome,
         platform,
         resolvedBinary: binaryPath,
         dest,

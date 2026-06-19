@@ -4,7 +4,7 @@
  * Covers:
  * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
  *   module-level state (replaces the old MYCO_CMD env-var dispatch)
- * - readUpdateConfig — defaults when missing, reads YAML when present
+ * - readUpdateConfig — reads channel + cadence from the canonical daemon config
  * - isCacheStale — null cache, fresh cache, expired cache
  * - detectDevBuild — realpath comparison against npm global prefix
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
@@ -105,7 +105,6 @@ import {
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
-import { UPDATE_CONFIG_PATH } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -521,40 +520,28 @@ describe('release channel helpers (machine-scoped, decision-46130740)', () => {
 // readUpdateConfig
 // ---------------------------------------------------------------------------
 
-describe('readUpdateConfig()', () => {
-  it('returns defaults when the config file is missing', () => {
+describe('readUpdateConfig() — reads the canonical daemon config', () => {
+  // readUpdateConfig now delegates to the machine config `daemon.*` (the SAME
+  // source the UI/CLI write), NOT a separate ~/.myco/update.yaml. Invalid
+  // channel/interval values are rejected at the schema layer (covered by config
+  // tests), so they are no longer this function's concern.
+  const MACHINE_CONFIG_PATH = '/mock-home/.myco/config.yaml';
+
+  it('returns schema defaults when the machine config is missing', () => {
     mockNoFiles();
-    const config = readUpdateConfig();
+    const config: UpdateConfig = readUpdateConfig();
     expect(config.channel).toBe('stable');
-    expect(config.check_interval_hours).toBeGreaterThan(0);
+    expect(config.check_interval_hours).toBe(6);
   });
 
-  it('reads channel from yaml when file exists', () => {
+  it('reads channel + cadence from daemon.* in machine config', () => {
     mockFileContent(
-      UPDATE_CONFIG_PATH,
-      'channel: beta\ncheck_interval_hours: 12\n',
+      MACHINE_CONFIG_PATH,
+      'daemon:\n  update_channel: beta\n  check_interval_hours: 12\n',
     );
     const config = readUpdateConfig();
     expect(config.channel).toBe('beta');
     expect(config.check_interval_hours).toBe(12);
-  });
-
-  it('falls back to stable channel for unknown channel values', () => {
-    mockFileContent(
-      UPDATE_CONFIG_PATH,
-      'channel: nightly\ncheck_interval_hours: 6\n',
-    );
-    const config = readUpdateConfig();
-    expect(config.channel).toBe('stable');
-  });
-
-  it('falls back to default interval for invalid interval value', () => {
-    mockFileContent(
-      UPDATE_CONFIG_PATH,
-      'channel: stable\ncheck_interval_hours: -5\n',
-    );
-    const config: UpdateConfig = readUpdateConfig();
-    expect(config.check_interval_hours).toBeGreaterThan(0);
   });
 });
 

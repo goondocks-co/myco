@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   checkAndStage,
   resolveNewestStagedVersion,
+  markAdoptFailed,
   type CheckAndStageDeps,
 } from '@myco/upgrade/auto-check.js';
 import * as updateChecker from '@myco/daemon/update-checker.js';
@@ -325,5 +326,52 @@ describe('resolveNewestStagedVersion', () => {
       () => { throw new Error('EACCES'); },
     );
     expect(result).toBeNull();
+  });
+
+  it('skips a version whose adopt already failed (marker present), returning the next-newest', () => {
+    const vDir = versionsDir(tmpHome, PLATFORM);
+    const failedMarker = path.join(vDir, '1.3.0', '.adopt-failed');
+    const result = resolveNewestStagedVersion(
+      tmpHome,
+      PLATFORM,
+      CURRENT_VERSION,
+      undefined,
+      // versions dir exists; 1.3.0 carries the failed marker, 1.2.0 does not.
+      (p: string) => p === vDir || p === failedMarker,
+      () => ['1.2.0', '1.3.0'],
+    );
+    expect(result).toBe('1.2.0');
+  });
+
+  it('returns null when the ONLY newer staged version is marked failed', () => {
+    const vDir = versionsDir(tmpHome, PLATFORM);
+    const failedMarker = path.join(vDir, '1.3.0', '.adopt-failed');
+    const result = resolveNewestStagedVersion(
+      tmpHome,
+      PLATFORM,
+      CURRENT_VERSION,
+      undefined,
+      (p: string) => p === vDir || p === failedMarker,
+      () => ['1.3.0'],
+    );
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markAdoptFailed
+// ---------------------------------------------------------------------------
+
+describe('markAdoptFailed', () => {
+  it('writes the .adopt-failed marker into an existing version slot', () => {
+    const dir = path.join(versionsDir(tmpHome, PLATFORM), '1.3.0');
+    fs.mkdirSync(dir, { recursive: true });
+    markAdoptFailed(tmpHome, PLATFORM, '1.3.0');
+    expect(fs.existsSync(path.join(dir, '.adopt-failed'))).toBe(true);
+  });
+
+  it('no-ops (no throw) when the version slot does not exist', () => {
+    expect(() => markAdoptFailed(tmpHome, PLATFORM, '9.9.9')).not.toThrow();
+    expect(fs.existsSync(path.join(versionsDir(tmpHome, PLATFORM), '9.9.9'))).toBe(false);
   });
 });

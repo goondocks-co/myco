@@ -13,6 +13,10 @@ interface Fixture {
   target: string;
   binaryName: string;
   binaryPath: string;
+  /** Hermetic env for the spawned postinstall — HOME + MYCO_HOME redirected into the temp tree. */
+  scriptEnv: NodeJS.ProcessEnv;
+  /** The sandbox myco-home (`<sandboxHome>/.myco`) the convergence writes into. */
+  mycoHome: string;
 }
 
 function hostTarget(): string | null {
@@ -41,6 +45,13 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
 
   const scriptPath = path.join(scriptsDir, 'select-binary.mjs');
   fs.copyFileSync(SCRIPT_SOURCE, scriptPath);
+  // select-binary.mjs imports the shared `./managed-paths.mjs` path module — it
+  // ships alongside the script in `scripts/` and must travel with it into the
+  // scaffolded package, or the postinstall subprocess crashes at module load.
+  fs.copyFileSync(
+    path.resolve('packages/myco/scripts/managed-paths.mjs'),
+    path.join(scriptsDir, 'managed-paths.mjs'),
+  );
 
   if (options?.sourceCheckout) {
     fs.mkdirSync(path.join(pkgRoot, 'src'), { recursive: true });
@@ -64,7 +75,17 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
     fs.writeFileSync(binaryPath, 'binary');
   }
 
-  return { tmpDir, pkgRoot, scriptPath, target, binaryName, binaryPath };
+  // HERMETIC SANDBOX (critical): the postinstall CONVERGES into MYCO_HOME,
+  // which DEFAULTS to ~/.myco. Every spawn MUST redirect HOME + MYCO_HOME into
+  // the temp tree — otherwise a test with a real platform binary present writes
+  // the fixture's fake binary over the developer's REAL ~/.myco/bin/myco, which
+  // breaks every hook on the machine (the runtime.command pin execs that path).
+  const sandboxHome = path.join(tmpDir, 'sandbox-home');
+  const mycoHome = path.join(sandboxHome, '.myco');
+  fs.mkdirSync(sandboxHome, { recursive: true });
+  const scriptEnv = { ...process.env, HOME: sandboxHome, MYCO_HOME: mycoHome };
+
+  return { tmpDir, pkgRoot, scriptPath, target, binaryName, binaryPath, scriptEnv, mycoHome };
 }
 
 describe('select-binary postinstall', () => {
@@ -84,6 +105,7 @@ describe('select-binary postinstall', () => {
     const result = spawnSync(process.execPath, [fixture.scriptPath], {
       cwd: fixture.pkgRoot,
       encoding: 'utf8',
+      env: fixture.scriptEnv,
     });
 
     expect(result.status).toBe(0);
@@ -97,6 +119,7 @@ describe('select-binary postinstall', () => {
     const result = spawnSync(process.execPath, [fixture.scriptPath], {
       cwd: fixture.pkgRoot,
       encoding: 'utf8',
+      env: fixture.scriptEnv,
     });
 
     expect(result.status).toBe(1);
@@ -111,6 +134,7 @@ describe('select-binary postinstall', () => {
     const result = spawnSync(process.execPath, [fixture.scriptPath], {
       cwd: fixture.pkgRoot,
       encoding: 'utf8',
+      env: fixture.scriptEnv,
     });
 
     expect(result.status).toBe(0);
@@ -142,14 +166,10 @@ describe('select-binary postinstall', () => {
     expect(fs.existsSync(path.join(fixture.pkgRoot, 'dist', 'src'))).toBe(false);
     expect(fs.existsSync(path.join(fixture.pkgRoot, 'src'))).toBe(false);
 
-    // Run with a custom HOME so convergence writes to a temp dir, not the real ~/.myco.
-    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-conv-smoke-'));
-    fixtures.push({ ...fixture, tmpDir: fakeHome }); // ensure cleanup
-
     const result = spawnSync(process.execPath, [fixture.scriptPath], {
       cwd: fixture.pkgRoot,
       encoding: 'utf8',
-      env: { ...process.env, HOME: fakeHome, MYCO_HOME: path.join(fakeHome, '.myco') },
+      env: fixture.scriptEnv,
     });
 
     expect(result.status).toBe(0);
@@ -157,17 +177,18 @@ describe('select-binary postinstall', () => {
     expect(result.stderr).not.toContain('managed-binary module not found in dist/');
     expect(result.stderr).not.toContain('Convergence skipped');
 
-    // Stable managed binary must be laid down.
+    // Convergence wrote into the sandbox myco-home, never the real ~/.myco.
+    // Stable managed binary at <mycoHome>/bin/myco[.exe].
     const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
-    const managedBin = path.join(fakeHome, '.myco', 'bin', binaryName);
+    const managedBin = path.join(fixture.mycoHome, 'bin', binaryName);
     expect(fs.existsSync(managedBin)).toBe(true);
 
-    // Versioned slot must exist at <bindir>/versions/1.2.3/myco[.exe].
-    const versionedBin = path.join(fakeHome, '.myco', 'bin', 'versions', '1.2.3', binaryName);
+    // Versioned slot at <mycoHome>/bin/versions/1.2.3/myco[.exe].
+    const versionedBin = path.join(fixture.mycoHome, 'bin', 'versions', '1.2.3', binaryName);
     expect(fs.existsSync(versionedBin)).toBe(true);
 
-    // install.json marker must be present.
-    const markerPath = path.join(fakeHome, '.myco', 'install.json');
+    // install.json marker at <mycoHome>/install.json.
+    const markerPath = path.join(fixture.mycoHome, 'install.json');
     expect(fs.existsSync(markerPath)).toBe(true);
     const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
     expect(marker.source).toBe('npm');

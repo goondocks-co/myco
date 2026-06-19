@@ -123,6 +123,21 @@ function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
     })),
     initiateAdopt: vi.fn(async (_opts) => {}),
     writeChannel: vi.fn((_vaultDir, _channel) => {}),
+    // checkFn stubbed so `--check` NEVER hits the real GitHub releases API —
+    // resolveMycoPackageCheck defaults to `globalThis.fetch`, which hangs on CI.
+    // Returns a deterministic up-to-date result (report-only path; no stage/adopt).
+    checkFn: vi.fn(async (_current, _channel, _installed) => ({
+      id: 'myco' as const,
+      display_name: 'Myco',
+      package_name: '@goondocks/myco',
+      installed: true,
+      installed_version: '1.0.0',
+      latest_version: '1.0.0',
+      latest_stable: '1.0.0',
+      latest_beta: null,
+      update_available: false,
+      revert_available: false,
+    })),
     ...overrides,
   };
 }

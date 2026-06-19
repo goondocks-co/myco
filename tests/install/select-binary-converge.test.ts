@@ -13,36 +13,41 @@ const PLATFORM = process.platform === 'win32' ? 'win32' : process.platform;
 const TEST_VERSION = '1.2.3';
 
 interface Fixture {
-  home: string;
+  // The temp dir IS the resolved myco-home (what the daemon passes as the
+  // `mycoHome` arg — `resolveMycoHome()` = `~/.myco` / `$MYCO_HOME`). The managed
+  // layout (`bin/`, `bin/versions/`, `runtime.command`, `install.json`) lives
+  // directly under it.
+  mycoHome: string;
   resolvedBinary: string;
 }
 
 function makeFixture(): Fixture {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-converge-home-'));
+  const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-converge-home-'));
   // A fake "source" platform binary that convergence copies into the managed
-  // bin dir. Distinct content so we can assert byte-for-byte placement.
-  const srcDir = path.join(home, 'fake-platform-pkg', 'bin');
+  // bin dir. Distinct content so we can assert byte-for-byte placement. Kept in
+  // a sibling dir so it doesn't collide with the managed `bin/` layout.
+  const srcDir = path.join(mycoHome, 'fake-platform-pkg', 'bin');
   fs.mkdirSync(srcDir, { recursive: true });
   const resolvedBinary = path.join(srcDir, 'myco');
   fs.writeFileSync(resolvedBinary, 'FAKE-MYCO-BINARY-CONTENT');
-  return { home, resolvedBinary };
+  return { mycoHome, resolvedBinary };
 }
 
-function writePin(home: string, value: string): void {
-  const pinPath = path.join(home, '.myco', 'runtime.command');
+function writePin(mycoHome: string, value: string): void {
+  const pinPath = path.join(mycoHome, 'runtime.command');
   fs.mkdirSync(path.dirname(pinPath), { recursive: true });
   fs.writeFileSync(pinPath, `${value}\n`, { mode: 0o644 });
 }
 
-function readPin(home: string): string {
-  return fs.readFileSync(path.join(home, '.myco', 'runtime.command'), 'utf8').trim();
+function readPin(mycoHome: string): string {
+  return fs.readFileSync(path.join(mycoHome, 'runtime.command'), 'utf8').trim();
 }
 
 describe('select-binary convergeNpmInstall', () => {
   let fixtures: Fixture[] = [];
 
   afterEach(() => {
-    for (const f of fixtures) fs.rmSync(f.home, { recursive: true, force: true });
+    for (const f of fixtures) fs.rmSync(f.mycoHome, { recursive: true, force: true });
     fixtures = [];
   });
 
@@ -57,12 +62,12 @@ describe('select-binary convergeNpmInstall', () => {
   it('places the binary in the versioned slot then copies to stable dest (a, a2, b)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
 
     const result = convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -77,12 +82,14 @@ describe('select-binary convergeNpmInstall', () => {
 
     // (a2) stable dest is the canonical managed path and holds the source bytes.
     expect(result.dest).toBe(dest);
-    expect(dest).toBe(managedBinaryPath(home, PLATFORM));
+    expect(dest).toBe(managedBinaryPath(mycoHome, PLATFORM));
     expect(fs.existsSync(dest)).toBe(true);
     expect(fs.readFileSync(dest, 'utf8')).toBe('FAKE-MYCO-BINARY-CONTENT');
+    // The single-.myco invariant: the managed path is rooted at the myco-home,
+    // never doubled.
+    expect(dest).not.toContain('.myco/.myco');
 
-    // (b) no leftover temp files from the atomic placement — in either the
-    // stable bin dir or the versioned slot dir (both use temp+rename).
+    // (b) no leftover temp files from the atomic placement.
     const binDir = path.dirname(dest);
     const stableLeftovers = fs.readdirSync(binDir).filter((n) => n.includes('.tmp-'));
     expect(stableLeftovers).toEqual([]);
@@ -95,12 +102,12 @@ describe('select-binary convergeNpmInstall', () => {
   it('versioned slot path matches versions/<version>/myco layout (a3)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
 
     convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -109,7 +116,6 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    // Path structure: <bindir>/versions/<bare-semver>/myco[.exe]
     const binaryName = PLATFORM === 'win32' ? 'myco.exe' : 'myco';
     expect(versionedPath).toContain(`versions/${TEST_VERSION}/${binaryName}`);
     expect(fs.existsSync(versionedPath)).toBe(true);
@@ -118,12 +124,12 @@ describe('select-binary convergeNpmInstall', () => {
   it('writes the runtime.command pin to dest, never group/other-writable (c)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
 
     convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -132,9 +138,9 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    expect(readPin(home)).toBe(dest);
+    expect(readPin(mycoHome)).toBe(dest);
     if (process.platform !== 'win32') {
-      const mode = fs.statSync(path.join(home, '.myco', 'runtime.command')).mode & 0o777;
+      const mode = fs.statSync(path.join(mycoHome, 'runtime.command')).mode & 0o777;
       expect(mode & 0o022).toBe(0);
     }
   });
@@ -142,12 +148,12 @@ describe('select-binary convergeNpmInstall', () => {
   it('writes the install marker with source=npm, bin=dest, and channel (d)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
 
     convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -156,7 +162,7 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    const marker = JSON.parse(fs.readFileSync(path.join(home, '.myco', 'install.json'), 'utf8'));
+    const marker = JSON.parse(fs.readFileSync(path.join(mycoHome, 'install.json'), 'utf8'));
     expect(marker.source).toBe('npm');
     expect(marker.bin).toBe(dest);
     expect(marker.channel).toBe('beta');
@@ -165,15 +171,15 @@ describe('select-binary convergeNpmInstall', () => {
   it('preserves a pre-existing managed-runtime pin (e)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
-    // An ACTIVE beta managed runtime pin: <home>/.myco/runtime/node_modules/...
-    const managedRuntimePin = path.join(home, '.myco', 'runtime', 'node_modules', '.bin', 'myco');
-    writePin(home, managedRuntimePin);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
+    // An ACTIVE beta managed runtime pin: <mycoHome>/runtime/node_modules/...
+    const managedRuntimePin = path.join(mycoHome, 'runtime', 'node_modules', '.bin', 'myco');
+    writePin(mycoHome, managedRuntimePin);
 
     const result = convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -184,7 +190,7 @@ describe('select-binary convergeNpmInstall', () => {
 
     // Pin is untouched — the binary still converges, but we do NOT clobber an
     // active managed runtime.
-    expect(readPin(home)).toBe(managedRuntimePin);
+    expect(readPin(mycoHome)).toBe(managedRuntimePin);
     expect(result.pinAction).not.toBe('wrote');
     expect(fs.existsSync(dest)).toBe(true);
   });
@@ -192,15 +198,15 @@ describe('select-binary convergeNpmInstall', () => {
   it('re-points a legacy node_modules pin onto the managed binary (f)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
     // A legacy npm install pin: inside node_modules but NOT the managed runtime.
     const legacyPin = '/somewhere/node_modules/@goondocks/myco-darwin-arm64/bin/myco';
-    writePin(home, legacyPin);
+    writePin(mycoHome, legacyPin);
 
     const result = convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -209,26 +215,24 @@ describe('select-binary convergeNpmInstall', () => {
       versionedDest: versionedPath,
     });
 
-    expect(readPin(home)).toBe(dest);
+    expect(readPin(mycoHome)).toBe(dest);
     expect(result.pinAction).toBe('wrote');
   });
 
   it('preserves a deliberate external/dev pin (not node_modules, not managed-runtime) (g)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
-    const { home, resolvedBinary } = fixture;
-    const versionedPath = versionBinaryPath(home, PLATFORM, TEST_VERSION);
-    const dest = managedBinaryPath(home, PLATFORM);
+    const { mycoHome, resolvedBinary } = fixture;
+    const versionedPath = versionBinaryPath(mycoHome, PLATFORM, TEST_VERSION);
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
     // A deliberate external/dev pin: no /node_modules/ segment, not under
-    // <home>/.myco/runtime/. Convergence must NEVER clobber this.
-    const externalPin = path.join(home, '.local', 'bin', 'myco-dev');
-    writePin(home, externalPin);
-    // Record exact bytes written (writePin appends \n, trim() strips it for
-    // readPin; compare at the trim level to match the assertion style of case e).
-    const pinBefore = readPin(home);
+    // <mycoHome>/runtime/. Convergence must NEVER clobber this.
+    const externalPin = path.join(mycoHome, '.local', 'bin', 'myco-dev');
+    writePin(mycoHome, externalPin);
+    const pinBefore = readPin(mycoHome);
 
     const result = convergeNpmInstall({
-      home,
+      mycoHome,
       platform: PLATFORM,
       resolvedBinary,
       dest,
@@ -238,11 +242,9 @@ describe('select-binary convergeNpmInstall', () => {
     });
 
     // Pin is byte-identical to what was written — not overwritten with dest.
-    expect(readPin(home)).toBe(pinBefore);
-    expect(readPin(home)).toBe(externalPin);
-    // Implementation must land on the preserve-external branch, not 'wrote'.
+    expect(readPin(mycoHome)).toBe(pinBefore);
+    expect(readPin(mycoHome)).toBe(externalPin);
     expect(result.pinAction).toBe('preserved-external');
-    // Binary convergence still happens — the managed dest is placed.
     expect(fs.existsSync(dest)).toBe(true);
   });
 });

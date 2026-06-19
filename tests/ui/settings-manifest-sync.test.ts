@@ -40,6 +40,9 @@ const ALLOWLIST: readonly string[] = [
   // Admission ignore list — managed via the Groves "Ignore" action and the
   // machine settings page, not a per-field settings card.
   'capture.ignore.',
+  // Auto-update check cadence — an internal daemon setting. The Upgrade card
+  // surfaces only the channel (daemon.update_channel), not the poll interval.
+  'daemon.check_interval_hours',
 ];
 
 function isAllowlisted(key: string): boolean {

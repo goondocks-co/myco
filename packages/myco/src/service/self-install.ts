@@ -1,9 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import { getServiceManager } from './manager.js';
 import { buildServiceSpec } from './spec-builder.js';
 import { serviceLabel } from './labels.js';
-import { isDevServiceMode } from '../grove/paths.js';
+import { isDevServiceMode, resolveMycoHome } from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
 import type { ServiceManager, ServiceVariant } from './types.js';
 
@@ -36,15 +35,15 @@ export interface SelfInstallOptions {
  * silently run released code as the `service-dev` unit, violating strict
  * variant isolation (AGENTS.md).
  *
- * `home` and `platform` are injectable for deterministic testing.
+ * `mycoHome` and `platform` are injectable for deterministic testing.
  */
 export function defaultServiceExecutable(
   variant: ServiceVariant,
-  home: string = os.homedir(),
+  mycoHome: string = resolveMycoHome(),
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (variant === 'prod') {
-    const managed = managedBinaryPath(home, platform, process.env.LOCALAPPDATA);
+    const managed = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
     if (fs.existsSync(managed)) return managed;
   }
   return process.execPath;

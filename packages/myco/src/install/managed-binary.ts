@@ -1,9 +1,13 @@
 /**
- * Canonical managed-binary path + install-marker helpers.
+ * Install-marker helpers, plus a re-export of the canonical managed-binary path
+ * layout.
  *
- * This module is the single owner of the path computation for the managed
- * binary (`~/.myco/bin/myco` / `%LOCALAPPDATA%\Myco\bin\myco.exe`) and the
- * `~/.myco/install.json` marker that records how the binary was installed.
+ * The PATH layout itself lives in ONE plain-ESM module — `scripts/managed-paths.mjs`
+ * — which is imported BOTH here (compiled into the bun binary) AND by the npm
+ * postinstall (`scripts/select-binary.mjs`). Sharing one module is what keeps
+ * the JS and TS copies from drifting; the historical duplication is what let
+ * the doubled-path (`~/.myco/.myco/bin`) bug ship. See that module for the
+ * `home` → `mycoHome` convention (callers pass the resolved myco-home).
  *
  * Note: the *running* binary is resolved elsewhere via the existing
  * `resolveManagedBinaryPath()` in `symbionts/installer.ts`; this module only
@@ -14,94 +18,19 @@ import type { ReleaseChannel } from '@myco/constants/update';
 import fs from 'node:fs';
 import path from 'node:path';
 
+export {
+  managedBinDir,
+  managedBinaryPath,
+  versionsDir,
+  versionDir,
+  versionBinaryPath,
+} from '../../scripts/managed-paths.mjs';
+
 /** Shape of the install marker written to `<myco-home>/install.json`. */
 export interface InstallMarker {
   channel: ReleaseChannel;
   source: 'curl' | 'npm';
   bin: string;
-}
-
-/**
- * Returns the managed binary directory for the given home directory and
- * platform.
- *
- * On win32, pass the real `%LOCALAPPDATA%` value as `localAppData` to avoid
- * divergence under Known-Folder redirection or roaming profiles. When omitted,
- * falls back to `<home>/AppData/Local` (the historical default). On non-win32
- * platforms `localAppData` is ignored.
- *
- * This module remains pure — it does NOT read `process.env`. Callers that
- * need the real env value pass `process.env.LOCALAPPDATA` at the call site.
- */
-export function managedBinDir(
-  home: string,
-  platform: NodeJS.Platform | string,
-  localAppData?: string,
-): string {
-  const p = platform === 'win32' ? path.win32 : path.posix;
-  if (platform === 'win32') {
-    // Prefer the injected %LOCALAPPDATA% (real env value, honors KF redirection
-    // and roaming profiles). Fall back to the computed default when absent.
-    const appDataLocal = localAppData ?? p.join(home, 'AppData', 'Local');
-    return p.join(appDataLocal, 'Myco', 'bin');
-  }
-  return p.join(home, '.myco', 'bin');
-}
-
-/** Returns the full path to the managed binary for the given home and platform.
- *
- * Pass `localAppData` on win32 to honor the real `%LOCALAPPDATA%` env var
- * (see `managedBinDir`). Ignored on non-win32 platforms.
- */
-export function managedBinaryPath(
-  home: string,
-  platform: NodeJS.Platform | string,
-  localAppData?: string,
-): string {
-  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), binaryName);
-}
-
-/**
- * Returns the versions directory (`<bindir>/versions`) for the managed binary.
- *
- * Pass `localAppData` on win32 — see `managedBinDir` for details.
- */
-export function versionsDir(
-  home: string,
-  platform: NodeJS.Platform | string,
-  localAppData?: string,
-): string {
-  return (platform === 'win32' ? path.win32 : path.posix).join(managedBinDir(home, platform, localAppData), 'versions');
-}
-
-/**
- * Returns the directory for a specific version (`<bindir>/versions/<version>`).
- *
- * Pass `localAppData` on win32 — see `managedBinDir` for details.
- */
-export function versionDir(
-  home: string,
-  platform: NodeJS.Platform | string,
-  version: string,
-  localAppData?: string,
-): string {
-  return (platform === 'win32' ? path.win32 : path.posix).join(versionsDir(home, platform, localAppData), version);
-}
-
-/**
- * Returns the full path to the versioned binary (`<versionDir>/myco[.exe]`).
- *
- * Pass `localAppData` on win32 — see `managedBinDir` for details.
- */
-export function versionBinaryPath(
-  home: string,
-  platform: NodeJS.Platform | string,
-  version: string,
-  localAppData?: string,
-): string {
-  const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
-  return (platform === 'win32' ? path.win32 : path.posix).join(versionDir(home, platform, version, localAppData), binaryName);
 }
 
 /**

@@ -19,7 +19,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import YAML from 'yaml';
 import semver from 'semver';
 import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
 import { setAtPath } from '../utils/dot-path.js';
@@ -28,8 +27,6 @@ import {
   NPM_PACKAGE_NAME,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
-  UPDATE_CONFIG_PATH,
-  UPDATE_CHECK_INTERVAL_HOURS,
   MS_PER_HOUR,
   DEV_BUILD_CACHE_PATH,
   DEFAULT_RELEASE_CHANNEL,
@@ -47,7 +44,7 @@ import { getPluginVersion } from '../version.js';
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Persisted update configuration stored in ~/.myco/update.yaml */
+/** Daemon update config (channel + check cadence), read from the canonical machine config `daemon.*`. */
 export interface UpdateConfig {
   channel: ReleaseChannel;
   check_interval_hours: number;
@@ -488,44 +485,19 @@ export function detectDevBuild(
 // Config helpers
 // ---------------------------------------------------------------------------
 
-/** Default config returned when no update.yaml exists. */
-function defaultUpdateConfig(): UpdateConfig {
-  return {
-    channel: DEFAULT_RELEASE_CHANNEL,
-    check_interval_hours: UPDATE_CHECK_INTERVAL_HOURS,
-  };
-}
-
 /**
- * Reads ~/.myco/update.yaml. Returns defaults when the file is missing or
- * unparseable.
+ * Reads the daemon's update config from the CANONICAL machine config
+ * (`~/.myco/config.yaml` `daemon.*`) — the SAME source the UI/CLI write via
+ * `writeProjectReleaseChannel`. This is deliberately NOT a separate file: the
+ * old `~/.myco/update.yaml` diverged from `daemon.update_channel` (nothing ever
+ * wrote it), so the background auto-adopt silently ignored channel switches.
+ * Reading the daemon config makes the channel + cadence a single source of truth.
  */
 export function readUpdateConfig(): UpdateConfig {
-  try {
-    const raw = fs.readFileSync(UPDATE_CONFIG_PATH, 'utf-8');
-    const parsed = YAML.parse(raw) as Partial<UpdateConfig>;
-
-    const channel = RELEASE_CHANNELS.includes(parsed?.channel as ReleaseChannel)
-      ? (parsed.channel as ReleaseChannel)
-      : DEFAULT_RELEASE_CHANNEL;
-
-    const check_interval_hours =
-      typeof parsed?.check_interval_hours === 'number' && parsed.check_interval_hours > 0
-        ? parsed.check_interval_hours
-        : UPDATE_CHECK_INTERVAL_HOURS;
-
-    return { channel, check_interval_hours };
-  } catch {
-    return defaultUpdateConfig();
-  }
-}
-
-/**
- * Writes UpdateConfig to ~/.myco/update.yaml. Creates ~/.myco/ if needed.
- */
-export function writeUpdateConfig(config: UpdateConfig): void {
-  fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
-  fs.writeFileSync(UPDATE_CONFIG_PATH, YAML.stringify(config), 'utf-8');
+  return {
+    channel: readProjectReleaseChannel(),
+    check_interval_hours: loadMachineConfig().daemon.check_interval_hours,
+  };
 }
 
 // ---------------------------------------------------------------------------
