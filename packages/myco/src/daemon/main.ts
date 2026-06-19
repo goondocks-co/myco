@@ -2285,6 +2285,19 @@ export async function main(): Promise<void> {
         target_version: sentinel.targetVersion,
         initiator: sentinel.initiator,
       });
+    } else if (sentinel) {
+      // An adopt was attempted but the daemon came back on a DIFFERENT version —
+      // the adopt failed (crash / restore). Mark the target version failed so the
+      // idle adopt job never re-adopts a known-bad release (otherwise it loops
+      // every ~10-min sentinel stale-window), then clear the sentinel now.
+      const { markAdoptFailed } = await import('../upgrade/auto-check.js');
+      markAdoptFailed(mycoHome, process.platform, sentinel.targetVersion, process.env.LOCALAPPDATA);
+      updateInProgress.clear(daemonService.stateDir);
+      logger.warn(LOG_KINDS.DAEMON_START, 'Adopt did not reach target version — marked failed, sentinel cleared', {
+        target_version: sentinel.targetVersion,
+        running_version: server.version,
+        initiator: sentinel.initiator,
+      });
     }
   }
 
