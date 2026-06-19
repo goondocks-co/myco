@@ -24,6 +24,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import semver from 'semver';
 
 import {
@@ -35,6 +36,7 @@ import type { InitiateAdoptOpts } from './adopt.js';
 import { inFlight as inProgressInFlight, write as writeInProgress, sentinelPath as inProgressSentinelPathFn } from './in-progress.js';
 import {
   versionsDir,
+  versionDir,
   versionBinaryPath,
 } from '../install/managed-binary.js';
 import { isUpdateExempt } from '../daemon/update-checker.js';
@@ -206,6 +208,39 @@ export async function checkAndStage(
 }
 
 // ---------------------------------------------------------------------------
+// Failed-adopt marker
+// ---------------------------------------------------------------------------
+
+/**
+ * Marker file written into a versioned slot when an adopt of that version
+ * FAILED (the daemon came back on a different version). `resolveNewestStagedVersion`
+ * skips marked versions so a known-bad release is not re-adopted on every idle
+ * tick — without it the loop is only bounded by the ~10-min sentinel stale sweep.
+ */
+const ADOPT_FAILED_MARKER = '.adopt-failed';
+
+/**
+ * Record that adopting `version` failed by writing the marker into its versioned
+ * slot. Best-effort and never throws — a missing marker only costs one extra
+ * (bounded) retry. Called from the daemon startup path when the running version
+ * does not match the sentinel's target (see daemon/main.ts).
+ */
+export function markAdoptFailed(
+  home: string,
+  platform: NodeJS.Platform,
+  version: string,
+  localAppData?: string,
+): void {
+  try {
+    const dir = versionDir(home, platform, version, localAppData);
+    if (!fs.existsSync(dir)) return;
+    fs.writeFileSync(path.join(dir, ADOPT_FAILED_MARKER), `${new Date().toISOString()}\n`);
+  } catch {
+    /* best effort */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helper: resolve the newest staged version strictly greater than current
 // ---------------------------------------------------------------------------
 
@@ -236,6 +271,11 @@ export function resolveNewestStagedVersion(
   const candidates = entries
     .filter((entry) => semver.valid(entry) !== null)
     .filter((entry) => semver.gt(entry, currentVersion))
+    // Skip versions whose adopt already failed (marker in the slot) — otherwise a
+    // known-bad release is re-adopted on every idle tick / stale-window.
+    .filter(
+      (entry) => !existsSyncFn(path.join(versionDir(home, platform, entry, localAppData), ADOPT_FAILED_MARKER)),
+    )
     // Sort newest-first.
     .sort((a, b) => semver.compare(semver.valid(b)!, semver.valid(a)!));
 

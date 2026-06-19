@@ -39,14 +39,17 @@ import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Create a temp home directory with a managed binary on disk. */
-function makeTempHomeWithManagedBinary(): { home: string; managedPath: string } {
+/** Create a temp home with a managed binary on disk at `<mycoHome>/bin/myco`. */
+function makeTempHomeWithManagedBinary(): { home: string; mycoHome: string; managedPath: string } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mbp-test-'));
-  const binDir = path.join(home, '.myco', 'bin');
+  // The temp dir is the OS-home; the myco-home is `<home>/.myco` (what the
+  // daemon passes as `resolveMycoHome()`). The managed binary lives under it.
+  const mycoHome = path.join(home, '.myco');
+  const binDir = path.join(mycoHome, 'bin');
   fs.mkdirSync(binDir, { recursive: true });
   const managedPath = path.join(binDir, 'myco');
   fs.writeFileSync(managedPath, '#!/bin/sh\nexec myco "$@"', 'utf8');
-  return { home, managedPath };
+  return { home, mycoHome, managedPath };
 }
 
 /** Create a temp home directory WITHOUT a managed binary on disk. */
@@ -93,11 +96,11 @@ describe('resolveManagedBinaryPath', () => {
 
   describe('managed binary preferred over execPath (coexistence fix)', () => {
     it('returns the managed binary when no pin AND managed binary exists on disk', () => {
-      const { home, managedPath } = makeTempHomeWithManagedBinary();
+      const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
       mockResolveRuntimeCommand = () => null;
 
       try {
-        const result = resolveManagedBinaryPath(home, 'linux');
+        const result = resolveManagedBinaryPath(mycoHome, 'linux');
         // KEY ASSERTION: the managed path wins over process.execPath
         expect(result).toBe(managedPath.replaceAll('\\', '/'));
         expect(result).not.toBe(process.execPath.replaceAll('\\', '/'));
@@ -111,14 +114,14 @@ describe('resolveManagedBinaryPath', () => {
       // owns the symbiont-config claim and writes global hook config. With a
       // converged ~/.myco/bin/myco on disk, the hook MUST embed that managed path,
       // not the writing daemon's own execPath.
-      const { home, managedPath } = makeTempHomeWithManagedBinary();
+      const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
       mockResolveRuntimeCommand = () => null;
 
       // The dev daemon's execPath is something like
       // packages/myco-darwin-arm64/bin/myco — but we only need to verify
       // that the result is the managed path, not process.execPath.
       try {
-        const result = resolveManagedBinaryPath(home, 'linux');
+        const result = resolveManagedBinaryPath(mycoHome, 'linux');
         expect(result).toBe(managedPath.replaceAll('\\', '/'));
         // This is the incident fix: the writer's own binary must not appear
         expect(result).not.toContain(process.execPath.replaceAll('\\', '/'));
@@ -194,11 +197,11 @@ describe('resolveManagedBinaryPath', () => {
     });
 
     it('managed binary beats execPath when managed exists but no pin', () => {
-      const { home, managedPath } = makeTempHomeWithManagedBinary();
+      const { home, mycoHome, managedPath } = makeTempHomeWithManagedBinary();
       mockResolveRuntimeCommand = () => null;
 
       try {
-        const result = resolveManagedBinaryPath(home, 'linux');
+        const result = resolveManagedBinaryPath(mycoHome, 'linux');
         expect(result).toBe(managedPath.replaceAll('\\', '/'));
         // execPath must not appear unless it happens to equal the managed path
         if (process.execPath.replaceAll('\\', '/') !== managedPath.replaceAll('\\', '/')) {

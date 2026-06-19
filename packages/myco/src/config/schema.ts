@@ -505,6 +505,12 @@ const MachineDaemonSchema = z.object({
   log_retention_days: z.number().int().min(1).max(365).default(30),
   /** Update channel — `stable` (default) or `beta` for dogfood/preview builds. */
   update_channel: z.enum(['stable', 'beta']).default('stable'),
+  /**
+   * How often the daemon checks the release channel for a newer version, in
+   * hours. Positive (fractional allowed for dogfood/testing). Default 6. This
+   * is the canonical home — the legacy `~/.myco/update.yaml` is retired.
+   */
+  check_interval_hours: z.number().positive().max(8760).default(6),
 });
 
 // NOTE: the registry block (`grove.default_grove_id`) used to live
