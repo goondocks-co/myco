@@ -5,18 +5,18 @@ import {
   readClaim,
   KNOWN_SUBSYSTEMS,
 } from '../daemon/subsystem-claim.js';
-import { resolveMycoHome, currentDaemonVariant } from '@myco/grove/paths.js';
+import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
 
 const USAGE = `Usage: myco subsystem <command>
 
-Declare which daemon variant owns a machine-global subsystem so a peer daemon
-defers. Operator-driven and durable — the claim stands until released, mirroring
+Declare which daemon owns a machine-global subsystem so a peer daemon defers.
+Operator-driven and durable — the claim stands until released, mirroring
 \`myco grove claim\`. Run claim/release under the build whose daemon should own
-the subsystem (the dogfood build → owner 'service-dev').
+the subsystem; the owner recorded is that daemon's home (MYCO_HOME).
 
 Commands:
-  claim <subsystem> [--force]   Take ownership for this build's daemon variant
-  release <subsystem>           Relinquish a claim this variant owns
+  claim <subsystem> [--force]   Take ownership for this daemon (its home)
+  release <subsystem>           Relinquish a claim this daemon owns
   list                          Show active claims on this machine
 
 Subsystems: ${KNOWN_SUBSYSTEMS.join(', ')}`;
@@ -56,7 +56,7 @@ export async function run(args: string[]): Promise<void> {
     const subsystem = rest[0];
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
-    const self = currentDaemonVariant();
+    const self = daemonIdentity(mycoHome);
     const existing = readClaim(subsystem, mycoHome);
     if (existing && existing.owner !== self && !rest.includes('--force')) {
       throw new Error(
@@ -66,7 +66,7 @@ export async function run(args: string[]): Promise<void> {
     }
     claimSubsystem(subsystem, self, { mycoHome });
     console.log(`Claimed ${subsystem} for ${self}.`);
-    console.log(`A peer daemon variant now defers ${subsystem} work to this build's daemon.`);
+    console.log(`A peer daemon (a different home) now defers ${subsystem} work to this daemon.`);
     console.log(`Run \`myco subsystem release ${subsystem}\` (under this build) when you're done.`);
     return;
   }
@@ -75,7 +75,7 @@ export async function run(args: string[]): Promise<void> {
     const subsystem = rest[0];
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
-    const self = currentDaemonVariant();
+    const self = daemonIdentity(mycoHome);
     const existing = readClaim(subsystem, mycoHome);
     if (!existing) {
       console.log(`${subsystem} is not claimed.`);

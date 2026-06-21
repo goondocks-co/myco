@@ -94,6 +94,8 @@ import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import { checkOperatorCliVersions } from '@myco/daemon/operator-cli-versions.js';
 import { createUpgradeHandlers } from '@myco/daemon/api/upgrade.js';
+import { serviceLabel } from '@myco/service/labels.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager.js';
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context.js';
@@ -109,7 +111,12 @@ type AnyMock = ReturnType<typeof vi.fn>;
 // Pre-installed service helper
 // ---------------------------------------------------------------------------
 
-function installedServiceManager(label: string, shellCmd: string): FakeServiceManager {
+// The runner sets a hermetic sandbox MYCO_HOME, so the daemon's service label
+// is the home-derived label for that sandbox — resolve it the same way the
+// production code does so detectServiceManagedLabel(mgr) finds the seeded fake.
+const HOME_LABEL = serviceLabel(resolveMycoHome());
+
+function installedServiceManager(shellCmd: string, label: string = HOME_LABEL): FakeServiceManager {
   const mgr = new FakeServiceManager();
   mgr.installed.add(label);
   mgr.statuses.set(label, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
@@ -410,7 +417,7 @@ describe('handleUpgradeStatus — version-sync restart', () => {
   it('passes the service label into spawnRestartScript when service-managed', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
-    const mgr = installedServiceManager('co.goondocks.myco', 'launchctl kickstart -k gui/501/co.goondocks.myco');
+    const mgr = installedServiceManager(`launchctl kickstart -k gui/501/${HOME_LABEL}`);
     const { handleUpgradeStatus } = createUpgradeHandlers(
       makeDeps({ globalPrefix: '/usr/local', serviceManager: mgr }),
     );
@@ -419,7 +426,7 @@ describe('handleUpgradeStatus — version-sync restart', () => {
 
     expect(spawnRestartScript).toHaveBeenCalledTimes(1);
     const call = (spawnRestartScript as AnyMock).mock.calls[0][0] as Record<string, unknown>;
-    expect(call.serviceManagedLabel).toBe('co.goondocks.myco');
+    expect(call.serviceManagedLabel).toBe(HOME_LABEL);
   });
 
   it('passes runLocalUpdate:true when stamp does not match installed version', async () => {
@@ -730,13 +737,13 @@ describe('handleUpgradeApply', () => {
   });
 
   it('passes service label to initiateAdopt when service-managed', async () => {
-    const mgr = installedServiceManager('co.goondocks.myco', 'launchctl kickstart -k gui/501/co.goondocks.myco');
+    const mgr = installedServiceManager(`launchctl kickstart -k gui/501/${HOME_LABEL}`);
     const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ serviceManager: mgr }));
 
     await handleUpgradeApply(makeReq());
 
     expect(initiateAdopt).toHaveBeenCalledWith(
-      expect.objectContaining({ serviceManagedLabel: 'co.goondocks.myco' }),
+      expect.objectContaining({ serviceManagedLabel: HOME_LABEL }),
     );
   });
 

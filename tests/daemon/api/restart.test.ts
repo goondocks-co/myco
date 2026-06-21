@@ -38,7 +38,15 @@ function restoreProcessKill() {
 
 import { buildRestartArgv, detectServiceManagedLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
+import { serviceLabel } from '@myco/service/labels.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager';
+
+// The test runner sets a hermetic sandbox MYCO_HOME, so the daemon's service
+// label is the home-derived label for that sandbox — NOT the canonical
+// `co.goondocks.myco`. Resolve it the same way the production code does so the
+// seeded fake matches what findInstalledServiceLabel(mgr) looks up.
+const HOME_LABEL = serviceLabel(resolveMycoHome());
 
 function makeDeps(overrides: Partial<RestartHandlerDeps> = {}): RestartHandlerDeps {
   const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-vault-'));
@@ -58,76 +66,76 @@ describe('buildRestartArgv (shell-free, cross-platform)', () => {
     expect(buildRestartArgv(null, '/dist/cli.js')).toEqual(['/dist/cli.js', 'daemon']);
   });
 
-  test('service-managed prod: `service restart` with no variant flag', () => {
+  test('service-managed: `service restart` (no variant flag — the child inherits MYCO_HOME)', () => {
     expect(buildRestartArgv('co.goondocks.myco', null)).toEqual(['service', 'restart']);
   });
 
-  test('service-managed dev: `service restart --dev`', () => {
-    expect(buildRestartArgv('co.goondocks.myco-dev', null)).toEqual(['service', 'restart', '--dev']);
+  test('service-managed for any home label: still just `service restart`', () => {
+    expect(buildRestartArgv('co.goondocks.myco.0be20de4', null)).toEqual(['service', 'restart']);
   });
 });
 
 // Process-agnostic sibling of detectServiceManagedLabel — used by client-side
 // surfaces (DaemonClient.spawnDaemon) that need to know "is a supervisor
-// installed for our variant" without checking the PID match.
+// installed for this home" without checking the PID match. There is exactly
+// one managed service per home now (its label IS the home), so the default
+// resolves `serviceLabel(resolveMycoHome())`; the test env's default home is
+// `~/.myco` → `co.goondocks.myco`.
 describe('findInstalledServiceLabel', () => {
   test('returns null when service manager is unsupported', async () => {
     const mgr = new FakeServiceManager({ supported: false });
     expect(await findInstalledServiceLabel(mgr)).toBeNull();
   });
 
-  test('returns null when no variant is installed', async () => {
+  test('returns null when nothing is installed', async () => {
     const mgr = new FakeServiceManager();
     expect(await findInstalledServiceLabel(mgr)).toBeNull();
   });
 
-  test('returns label + status when prod is installed (running)', async () => {
+  test('returns label + status when the home service is installed (running)', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: 4242, lastExitCode: 0, unitPath: '/x.plist' });
+    mgr.installed.add(HOME_LABEL);
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: 4242, lastExitCode: 0, unitPath: '/x.plist' });
     const found = await findInstalledServiceLabel(mgr);
-    expect(found?.label).toBe('co.goondocks.myco');
+    expect(found?.label).toBe(HOME_LABEL);
     expect(found?.status.running).toBe(true);
     expect(found?.status.pid).toBe(4242);
   });
 
-  test('returns label + not-running status when service is installed but stopped', async () => {
+  test('returns label + not-running status when the service is installed but stopped', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: false, pid: null, lastExitCode: 1, unitPath: '/x.plist' });
+    mgr.installed.add(HOME_LABEL);
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: false, pid: null, lastExitCode: 1, unitPath: '/x.plist' });
     const found = await findInstalledServiceLabel(mgr);
-    expect(found?.label).toBe('co.goondocks.myco-dev');
+    expect(found?.label).toBe(HOME_LABEL);
     expect(found?.status.running).toBe(false);
   });
 
   test('does NOT require PID match (process-agnostic)', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
+    mgr.installed.add(HOME_LABEL);
     // PID intentionally different from process.pid — findInstalledServiceLabel
     // must still return the entry; only detectServiceManagedLabel checks PID.
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x.plist' });
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x.plist' });
     const found = await findInstalledServiceLabel(mgr);
-    expect(found?.label).toBe('co.goondocks.myco');
+    expect(found?.label).toBe(HOME_LABEL);
   });
 
-  test('variant filter returns prod even when dev is installed first', async () => {
+  test('an explicit home selects that home\'s label', async () => {
+    const home = path.join(os.homedir(), '.myco-other');
+    const label = serviceLabel(home);
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/dev.plist' });
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: false, pid: null, lastExitCode: 78, unitPath: '/prod.plist' });
-    const found = await findInstalledServiceLabel(mgr, 'prod');
-    expect(found?.label).toBe('co.goondocks.myco');
-    expect(found?.status.running).toBe(false);
+    mgr.installed.add(label);
+    mgr.statuses.set(label, { installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/other.plist' });
+    const found = await findInstalledServiceLabel(mgr, home);
+    expect(found?.label).toBe(label);
   });
 
-  test('detectServiceManagedLabel scans past non-matching dev service', async () => {
+  test('detectServiceManagedLabel matches the home service by PID', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/dev.plist' });
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod.plist' });
-    await expect(detectServiceManagedLabel(mgr, process.pid)).resolves.toBe('co.goondocks.myco');
+    mgr.installed.add(HOME_LABEL);
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod.plist' });
+    await expect(detectServiceManagedLabel(mgr, process.pid)).resolves.toBe(HOME_LABEL);
   });
 });
 
@@ -153,47 +161,22 @@ describe('handleRestart', () => {
     expect(shellCmd).not.toContain('service restart');
   });
 
-  test('service-managed prod: routes to `service restart` (no variant flag)', async () => {
+  test('service-managed: routes to `service restart` (no variant flag — child inherits MYCO_HOME)', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
+    mgr.installed.add(HOME_LABEL);
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
     const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
     expect(shellCmd).toContain('service restart');
     expect(shellCmd).not.toContain('--dev');
-  });
-
-  test('service-managed prod with dev service also running: still routes to prod restart', async () => {
-    const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/dev' });
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod' });
-    const deps = makeDeps({ serviceManager: mgr });
-    const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
-    expect(shellCmd).toContain('service restart');
-    expect(shellCmd).not.toContain('--dev');
-  });
-
-  test('service-managed dev: routes to `service restart --dev`', async () => {
-    const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
-    const deps = makeDeps({ serviceManager: mgr });
-    const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ status: 'restarting' });
-    const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
-    expect(shellCmd).toContain('service restart --dev');
   });
 
   test('service installed but a different PID is the running daemon: treats us as non-service-managed', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
+    mgr.installed.add(HOME_LABEL);
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });

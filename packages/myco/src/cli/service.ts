@@ -2,10 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-builder.js';
-import { serviceLabel, serviceVariantToDirName } from '../service/labels.js';
+import { serviceLabel } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
-import { resolveMycoHome, DAEMON_STATE_FILENAME } from '../grove/paths.js';
-export { detectInstallVariant } from '../service/labels.js';
+import { isDefaultMycoHome, resolveMycoHome, resolveServiceDir, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'status';
 
@@ -33,22 +32,21 @@ export function parseServiceArgs(args: string[]): ParsedServiceArgs {
  *
  * Priority order:
  *  1. The currently-running daemon's self-recorded `command` (read from
- *     `<mycoHome>/<service|service-dev>/daemon.json`). The daemon writes its
- *     own resolved binary path at startup, so this is the authoritative source.
+ *     `<MYCO_HOME>/service/daemon.json`). The daemon writes its own resolved
+ *     binary path at startup, so this is the authoritative source.
  *  2. `process.execPath` as a fallback. Works for compiled prod binaries; for
  *     dev-mode invocations through bun/node it returns the wrapper path, which
  *     `buildServiceSpec` will reject downstream.
  */
-export function resolveServiceExecutable(variant: ServiceVariant): string {
-  const recorded = readRecordedDaemonCommand(variant);
+export function resolveServiceExecutable(mycoHome: string = resolveMycoHome()): string {
+  const recorded = readRecordedDaemonCommand(mycoHome);
   if (recorded) return recorded;
   return process.execPath;
 }
 
-function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
+function readRecordedDaemonCommand(mycoHome: string): string | null {
   try {
-    const mycoHome = resolveMycoHome();
-    const daemonJsonPath = path.join(mycoHome, serviceVariantToDirName(variant), DAEMON_STATE_FILENAME);
+    const daemonJsonPath = path.join(resolveServiceDir(mycoHome), DAEMON_STATE_FILENAME);
     if (!fs.existsSync(daemonJsonPath)) return null;
     const raw = fs.readFileSync(daemonJsonPath, 'utf-8');
     const parsed = JSON.parse(raw) as { command?: string | null };
@@ -59,7 +57,8 @@ function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
 }
 
 /**
- * Hard fence: a dev-build binary must never manage the *prod* service.
+ * Hard fence: a dev-build binary must never manage the DEFAULT-home
+ * (`~/.myco`) service — the production install every released user shares.
  *
  * Why this exists: even when the dev binary resolves the correct
  * executable for the prod plist (via daemon.json), `mgr.install`
@@ -68,8 +67,9 @@ function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
  * the bootout/bootstrap cycle SIGTERMs the running prod daemon
  * mid-flight. The dev binary also has no business uninstalling /
  * restarting / stopping the prod service. Block every mutating verb at
- * the CLI boundary so an accidental `myco service install` (no `--dev`)
- * from a developer shell can never disturb prod.
+ * the CLI boundary so an accidental `myco service install` from a
+ * developer shell can never disturb the default-home daemon. To dogfood,
+ * point `MYCO_HOME` at a separate home (e.g. `~/.myco-dev`).
  *
  * Returns a refusal message when the action should be blocked, or null
  * when the action is safe to proceed. Exported for unit tests.
@@ -77,15 +77,16 @@ function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
 export function assertSafeServiceMutation(
   parsed: ParsedServiceArgs,
   execPath: string,
+  mycoHome: string = resolveMycoHome(),
 ): string | null {
   const mutating: ReadonlySet<ServiceAction> = new Set(['install', 'uninstall', 'start', 'stop', 'restart']);
-  if (parsed.variant !== 'prod') return null;
+  if (!isDefaultMycoHome(mycoHome)) return null;
   if (!mutating.has(parsed.action)) return null;
   if (!looksLikeDevBuildExecutable(execPath)) return null;
   return (
-    `Refusing to ${parsed.action} the *prod* service from a dev-build binary (${execPath}). ` +
-    `The prod service must be managed by the globally installed myco. ` +
-    `Use \`myco service ${parsed.action} --dev\` for the dogfood service, or run this command from the installed binary ` +
+    `Refusing to ${parsed.action} the default-home (~/.myco) service from a dev-build binary (${execPath}). ` +
+    `That service must be managed by the globally installed myco. ` +
+    `To dogfood, point MYCO_HOME at a separate home (e.g. ~/.myco-dev), or run this command from the installed binary ` +
     `(e.g. /opt/homebrew/lib/node_modules/@goondocks/myco/vendor/<arch>/myco).`
   );
 }
@@ -99,9 +100,10 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const label = serviceLabel(parsed.variant);
+  const mycoHome = resolveMycoHome();
+  const label = serviceLabel(mycoHome);
 
-  const refusal = assertSafeServiceMutation(parsed, process.execPath);
+  const refusal = assertSafeServiceMutation(parsed, process.execPath, mycoHome);
   if (refusal) {
     console.error(refusal);
     process.exit(1);
@@ -109,7 +111,7 @@ export async function run(args: string[]): Promise<void> {
 
   switch (parsed.action) {
     case 'install': {
-      const spec = buildServiceSpec({ variant: parsed.variant, executable: resolveServiceExecutable(parsed.variant) });
+      const spec = buildServiceSpec({ mycoHome, executable: resolveServiceExecutable(mycoHome) });
       await mgr.install(spec, { force: true });
       await mgr.start(label);
       console.log(`Installed ${label} via ${mgr.platformName}`);

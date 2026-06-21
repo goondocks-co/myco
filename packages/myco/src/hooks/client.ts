@@ -33,7 +33,6 @@ import {
 import { readLockHolder } from '../utils/lifecycle-lock.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
-import { serviceVariantForState } from '../service/labels.js';
 import type { ServiceManager } from '../service/types.js';
 import { ensureProjectRegistered } from '../grove/registry.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
@@ -606,7 +605,7 @@ export class DaemonClient {
     // the /restart and update-flow bypasses fixed earlier in this branch.
     try {
       const mgr = this.serviceManager ?? getServiceManager();
-      const installed = await findInstalledServiceLabel(mgr, serviceVariantForState(this.daemonService));
+      const installed = await findInstalledServiceLabel(mgr, path.dirname(this.daemonService.stateDir));
       if (installed) {
         if (!installed.status.running) {
           // Supervisor knows about the service but isn't running it (cold
@@ -677,7 +676,7 @@ export class DaemonClient {
 
     try {
       const mgr = this.serviceManager ?? getServiceManager();
-      const installed = await findInstalledServiceLabel(mgr, serviceVariantForState(this.daemonService));
+      const installed = await findInstalledServiceLabel(mgr, path.dirname(this.daemonService.stateDir));
       if (installed) {
         await mgr.restart(installed.label).catch(() => { /* best-effort */ });
         return;

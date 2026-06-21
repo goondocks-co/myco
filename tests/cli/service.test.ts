@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import os from 'node:os';
+import path from 'node:path';
 import { parseServiceArgs, assertSafeServiceMutation } from '../../packages/myco/src/cli/service';
+
+const DEFAULT_HOME = path.join(os.homedir(), '.myco');
+const DOGFOOD_HOME = path.join(os.homedir(), '.myco-dev');
 
 describe('parseServiceArgs', () => {
   test('install (no flags) → variant=prod', () => {
@@ -35,11 +40,12 @@ describe('parseServiceArgs', () => {
   });
 });
 
-// Regression: the dev daemon was once allowed to manage the prod plist,
-// which produced a multi-minute prod outage when the dev binary's plist
-// format diverged from the installed prod binary's. The fence below
-// makes that path unreachable at the CLI boundary.
-describe('assertSafeServiceMutation (prod-from-dev-binary fence)', () => {
+// Regression: a dev daemon was once allowed to manage the default-home
+// (~/.myco) plist, which produced a multi-minute prod outage when the dev
+// binary's plist format diverged from the installed prod binary's. The fence
+// below makes that path unreachable at the CLI boundary — keyed on the home now
+// (the default home is the production install), not a prod/dev variant.
+describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () => {
   // New layout: dev binary lives in its own platform package, sibling
   // to packages/myco/. Legacy layout: binary lived under packages/myco/vendor/.
   // Both must be caught by the dev-build guard.
@@ -47,35 +53,35 @@ describe('assertSafeServiceMutation (prod-from-dev-binary fence)', () => {
   const legacyDevBuildPath = '/Users/dev/repos/myco/packages/myco/vendor/darwin-arm64/myco';
   const globalPath = '/opt/homebrew/lib/node_modules/@goondocks/myco-darwin-arm64/bin/myco';
 
-  test('refuses every mutating verb against prod when run from a dev-build binary', () => {
+  test('refuses every mutating verb against the default home when run from a dev-build binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
-      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath);
+      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
-      expect(refusal!).toMatch(/Refusing to .* the \*prod\* service from a dev-build binary/);
+      expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
     }
   });
 
-  test('refuses every mutating verb against prod from the legacy vendor/<arch>/ layout', () => {
+  test('refuses every mutating verb against the default home from the legacy vendor/<arch>/ layout', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
-      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, legacyDevBuildPath);
+      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, legacyDevBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
-      expect(refusal!).toMatch(/Refusing to .* the \*prod\* service from a dev-build binary/);
+      expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
     }
   });
 
-  test('allows status against prod even from a dev-build binary (read-only)', () => {
-    expect(assertSafeServiceMutation({ action: 'status', variant: 'prod' }, devBuildPath)).toBeNull();
+  test('allows status against the default home even from a dev-build binary (read-only)', () => {
+    expect(assertSafeServiceMutation({ action: 'status', variant: 'prod' }, devBuildPath, DEFAULT_HOME)).toBeNull();
   });
 
-  test('allows all actions against dev variant from a dev-build binary', () => {
+  test('allows all actions against a non-default (dogfood) home from a dev-build binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
-      expect(assertSafeServiceMutation({ action, variant: 'dev' }, devBuildPath)).toBeNull();
+      expect(assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath, DOGFOOD_HOME)).toBeNull();
     }
   });
 
-  test('allows all actions against prod variant from the globally installed binary', () => {
+  test('allows all actions against the default home from the globally installed binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
-      expect(assertSafeServiceMutation({ action, variant: 'prod' }, globalPath)).toBeNull();
+      expect(assertSafeServiceMutation({ action, variant: 'prod' }, globalPath, DEFAULT_HOME)).toBeNull();
     }
   });
 });

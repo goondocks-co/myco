@@ -1,14 +1,14 @@
 /**
- * Subsystem ownership claims — a small, general "this daemon variant owns
- * <subsystem> on this machine" marker written into the shared `~/.myco/claims/`
- * area.
+ * Subsystem ownership claims — a small, general "this daemon owns <subsystem>
+ * on this machine" marker written into the shared `~/.myco/claims/` area.
  *
- * Two daemons can run on one machine (the production `service` daemon and a
- * contributor's dogfood `service-dev` daemon). For machine-global work that
- * both would otherwise perform — today: rewriting global agent/symbiont
- * configs — they'd fight, each clobbering the other's binary path on its next
- * tick. A claim lets the operator declare which variant owns the subsystem so
- * the peer defers.
+ * Two daemons can run on one machine — two independent installs in two homes
+ * (`~/.myco` and a dogfood `~/.myco-dev`). For machine-global work that both
+ * would otherwise perform — today: rewriting global agent/symbiont configs —
+ * they'd fight, each clobbering the other's binary path on its next tick. A
+ * claim lets the operator declare which daemon owns the subsystem so the peer
+ * defers. The owner is an opaque token — the daemon's home path
+ * (`daemonIdentity`) — compared by equality.
  *
  * Deliberately operator-driven, not automatic (mirrors `myco grove claim`): a
  * claim is taken with `myco subsystem claim <name>` and dropped with
@@ -17,7 +17,7 @@
  * intent rather than a function of which process happens to be alive. The peer
  * daemon never writes a claim; it only reads one and opts out of the work.
  *
- * The claim is just a file: present and owned by another variant = the peer
+ * The claim is just a file: present and owned by a different token = the peer
  * defers; absent = free. A stale claim (owner daemon long gone, never released)
  * is cleared the same way it was taken — `myco subsystem release` — and is
  * visible via `myco subsystem list`. Inert for normal single-daemon installs:
@@ -30,7 +30,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import type { DaemonVariant } from '../grove/registry.js';
 
 /** The symbiont-config (hooks/MCP) management subsystem — the first claim user. */
 export const SYMBIONT_CONFIG_SUBSYSTEM = 'symbiont-config';
@@ -44,7 +43,8 @@ export const KNOWN_SUBSYSTEMS: readonly string[] = [SYMBIONT_CONFIG_SUBSYSTEM];
 
 export interface SubsystemClaim {
   subsystem: string;
-  owner: DaemonVariant;
+  /** Opaque owner token — the owning daemon's home path (`daemonIdentity`). */
+  owner: string;
   /** The pid that took the claim — informational only (for `subsystem list`). */
   pid: number;
   claimed_at: number;
@@ -95,7 +95,7 @@ export function listSubsystemClaims(deps: ClaimDeps = {}): SubsystemClaim[] {
 }
 
 /** Assert ownership of `subsystem` for `owner`. Idempotent (overwrites). Best-effort. */
-export function claimSubsystem(subsystem: string, owner: DaemonVariant, deps: ClaimDeps = {}): void {
+export function claimSubsystem(subsystem: string, owner: string, deps: ClaimDeps = {}): void {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const claim: SubsystemClaim = {
     subsystem,
@@ -109,8 +109,8 @@ export function claimSubsystem(subsystem: string, owner: DaemonVariant, deps: Cl
   } catch { /* best-effort — a missing claim just means the peer doesn't defer */ }
 }
 
-/** Release a claim. Only the recorded owner variant may release it. */
-export function releaseSubsystemClaim(subsystem: string, owner: DaemonVariant, deps: ClaimDeps = {}): void {
+/** Release a claim. Only the recorded owner may release it. */
+export function releaseSubsystemClaim(subsystem: string, owner: string, deps: ClaimDeps = {}): void {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const claim = readClaim(subsystem, mycoHome);
   if (claim && claim.owner === owner) {
@@ -119,12 +119,13 @@ export function releaseSubsystemClaim(subsystem: string, owner: DaemonVariant, d
 }
 
 /**
- * True when a DIFFERENT daemon variant holds a claim on `subsystem`. The caller
- * (`self`) should defer the subsystem's work. A claim by `self`, or no claim at
- * all, returns false. Durable: the claim stands until explicitly released, so
- * this is a pure function of the on-disk marker — no process-liveness check.
+ * True when a DIFFERENT daemon holds a claim on `subsystem`. The caller
+ * (`self`, an owner token) should defer the subsystem's work. A claim by
+ * `self`, or no claim at all, returns false. Durable: the claim stands until
+ * explicitly released, so this is a pure function of the on-disk marker — no
+ * process-liveness check.
  */
-export function isClaimedByPeer(subsystem: string, self: DaemonVariant, deps: ClaimDeps = {}): boolean {
+export function isClaimedByPeer(subsystem: string, self: string, deps: ClaimDeps = {}): boolean {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const claim = readClaim(subsystem, mycoHome);
   return claim !== null && claim.owner !== self;

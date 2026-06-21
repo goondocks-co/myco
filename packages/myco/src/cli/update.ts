@@ -459,9 +459,9 @@ function dashboardUrlForVault(vaultDir: string): string | null {
  * exit non-zero if any project failed so callers can see the rollup.
  */
 async function runAllProjects(): Promise<void> {
-  const { detectInstallVariant, serviceVariantToDirName } = await import('../service/labels.js');
-  const variant = detectInstallVariant();
-  const groves = listGroves(undefined, { servedBy: serviceVariantToDirName(variant) });
+  // Home-scoped: every Grove under this MYCO_HOME belongs to this daemon (the
+  // home is the ownership boundary now, not a prod/dev variant).
+  const groves = listGroves(undefined);
   const targets: { groveSlug: string; projectName: string; root: string }[] = [];
   for (const grove of groves) {
     for (const project of listRegisteredProjects(grove.id)) {
@@ -474,7 +474,7 @@ async function runAllProjects(): Promise<void> {
     return;
   }
 
-  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'} served_by ${serviceVariantToDirName(variant)}.\n`);
+  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'}.\n`);
 
   // Hoist machine-wide work (global symbiont install, scrub, migration
   // pass, version stamp) ABOVE the per-project loop. Each block was

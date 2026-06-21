@@ -664,11 +664,11 @@ export async function main(): Promise<void> {
   const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
   const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
     resolveBootstrapVaultDirOrPhantom();
-  // The global, multi-tenant daemon (run under a service supervisor with
-  // MYCO_SERVICE_VARIANT set) has no bootstrap project. It always boots
-  // phantom (home-scoped to MYCO_HOME) and serves every tenant by request
-  // context — it never anchors to, nor rebinds to, a registered project.
-  const isGlobalDaemon = (process.env.MYCO_SERVICE_VARIANT?.trim() ?? '') !== '';
+  // The global, multi-tenant daemon (run under a service supervisor, which
+  // sets MYCO_DAEMON_MANAGED=1 in the unit env) has no bootstrap project. It
+  // always boots phantom (home-scoped to MYCO_HOME) and serves every tenant by
+  // request context — it never anchors to, nor rebinds to, a registered project.
+  const isGlobalDaemon = (process.env.MYCO_DAEMON_MANAGED?.trim() ?? '') !== '';
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   // BEFORE the first getMachineId() call mints a fresh value, scan every
@@ -2476,7 +2476,7 @@ export async function main(): Promise<void> {
   // resolves a real vault via `resolveBootstrapVaultDir()` and brings up
   // the full Grove-bound surface (sqlite, embeddings, scope iteration).
   //
-  // The GLOBAL daemon (MYCO_SERVICE_VARIANT set) is excluded: it has no
+  // The GLOBAL daemon (MYCO_DAEMON_MANAGED set) is excluded: it has no
   // bootstrap project and never rebinds to one. Its home is MYCO_HOME and
   // every request carries its own tenancy, so it stays phantom (home-
   // scoped) for its whole lifetime. Running the rebind poll for the global

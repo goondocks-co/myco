@@ -1,7 +1,8 @@
+import path from 'node:path';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { writeRestartIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
-import { serviceLabel, serviceVariantForState } from '../service/labels.js';
+import { serviceLabel } from '../service/labels.js';
 
 const RESTART_CONVERGE_DEADLINE_MS = 15_000;
 const RESTART_POLL_INTERVAL_MS = 500;
@@ -27,7 +28,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   const before = await client.getInfoAsync();
 
   if (!before) {
-    const label = serviceLabel(serviceVariantForState(daemonService));
+    const label = serviceLabel(path.dirname(daemonService.stateDir));
     const supervisorHint = supervisorStatusHint(label);
     console.error('No daemon found on the canonical port and no state file present.');
     console.error('If the daemon should be running, check the supervisor:');

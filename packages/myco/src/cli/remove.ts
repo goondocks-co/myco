@@ -112,11 +112,10 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
   //     doesn't relaunch the daemon mid-uninstall). ---
   try {
     const { getServiceManager } = await import('../service/manager.js');
-    const { detectInstallVariant } = await import('./service.js');
     const { serviceLabel } = await import('../service/labels.js');
     const mgr = getServiceManager();
     if (mgr.supported) {
-      await mgr.uninstall(serviceLabel(detectInstallVariant()));
+      await mgr.uninstall(serviceLabel(mycoHome));
       console.log('  ✓ Unregistered OS service');
     }
   } catch (err) {

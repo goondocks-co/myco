@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FakeServiceManager } from '../helpers/fake-service-manager.js';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
-import type { ServiceVariant } from '@myco/service/types';
+import { serviceLabel } from '@myco/service/labels';
 
 // Service-manager calls must NEVER hit real launchctl/systemctl from a
 // test — route everything to the shared fake.
@@ -17,7 +17,6 @@ mock.module('@myco/service/manager.js', () => ({
 let refusal: string | null = null;
 let resolvedExecutable = '';
 mock.module('@myco/cli/service.js', () => ({
-  detectInstallVariant: (): ServiceVariant => 'prod',
   resolveServiceExecutable: () => resolvedExecutable,
   assertSafeServiceMutation: () => refusal,
 }));
@@ -25,10 +24,11 @@ mock.module('@myco/cli/service.js', () => ({
 // Capture the executable handed to buildServiceSpec — the real builder
 // throws on bun/node basenames (which process.execPath is under the test
 // runner), and the fallback contract is exactly what these tests assert.
-const builtSpecs: Array<{ variant: ServiceVariant; executable: string }> = [];
+// Identity is the home now, not a variant.
+const builtSpecs: Array<{ mycoHome?: string; executable: string }> = [];
 mock.module('@myco/service/spec-builder.js', () => ({
-  buildServiceSpec: (opts: { variant: ServiceVariant; executable: string }) => {
-    builtSpecs.push({ variant: opts.variant, executable: opts.executable });
+  buildServiceSpec: (opts: { mycoHome?: string; executable: string }) => {
+    builtSpecs.push({ mycoHome: opts.mycoHome, executable: opts.executable });
     return {
       label: 'co.goondocks.myco',
       executable: opts.executable,
@@ -92,11 +92,12 @@ describe('DOCTOR_FIXERS service-reinstall', () => {
 
     expect(builtSpecs).toHaveLength(1);
     expect(builtSpecs[0]!.executable).toBe(process.execPath);
-    expect(builtSpecs[0]!.variant).toBe('prod');
+    expect(builtSpecs[0]!.mycoHome).toBe(sandbox.mycoHome);
     expect(fakeServiceManager.installCalls).toHaveLength(1);
     expect(fakeServiceManager.installOptions[0]).toEqual({ force: true });
-    expect(fakeServiceManager.startCalls).toEqual(['co.goondocks.myco']);
-    expect(actions).toEqual(['Reinstalled co.goondocks.myco service and started it']);
+    const label = serviceLabel(sandbox.mycoHome);
+    expect(fakeServiceManager.startCalls).toEqual([label]);
+    expect(actions).toEqual([`Reinstalled ${label} service and started it`]);
   });
 
   it('reports a throwing service manager as a failed action instead of escaping fix()', async () => {
@@ -126,7 +127,7 @@ describe('DOCTOR_FIXERS service-reinstall', () => {
       expect(builtSpecs).toHaveLength(1);
       expect(builtSpecs[0]!.executable).toBe(resolvedExecutable);
       expect(fakeServiceManager.installCalls).toHaveLength(1);
-      expect(actions).toEqual(['Reinstalled co.goondocks.myco service and started it']);
+      expect(actions).toEqual([`Reinstalled ${serviceLabel(sandbox.mycoHome)} service and started it`]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

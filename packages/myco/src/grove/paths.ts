@@ -65,6 +65,26 @@ export function resolveMycoHome(options: MycoHomeOptions = {}): string {
 }
 
 /**
+ * True when `mycoHome` resolves to the canonical default home (`~/.myco`),
+ * ignoring any `MYCO_HOME` override. This home is the production install every
+ * released user shares; a non-default home (e.g. `~/.myco-dev`) is the dogfood
+ * path. Used to key the default-home service label and the dev-build guard.
+ */
+export function isDefaultMycoHome(mycoHome: string): boolean {
+  return path.resolve(mycoHome) === resolveMycoHome({ env: {} });
+}
+
+/**
+ * The daemon's identity token — its resolved home path. An opaque,
+ * equality-compared owner used for subsystem claims: two independent installs
+ * in two homes own subsystems distinctly. Two daemons sharing one home are the
+ * same identity (only one should run per home).
+ */
+export function daemonIdentity(mycoHome: string = resolveMycoHome()): string {
+  return path.resolve(mycoHome);
+}
+
+/**
  * Resolve the root directory for project-scoped backups. Precedence:
  *   1. Explicit `override` argument.
  *   2. `MYCO_BACKUPS_DIR` environment variable.
