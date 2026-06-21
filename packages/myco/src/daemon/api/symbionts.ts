@@ -4,7 +4,7 @@ import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { findRegisteredProject } from '@myco/grove/registry.js';
-import { resolveMycoHome, resolveServiceDirName } from '@myco/grove/paths.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import { runGlobalInstallMigrationPass } from '@myco/grove/global-install-migration.js';
 import { ProjectVault } from '@myco/vault/project-vault.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -292,19 +292,12 @@ export async function handleDrainMigration(): Promise<RouteResponse> {
  *
  * Routes through `updateConfig()` (single-config-write-path invariant).
  */
-export function createProjectSymbiontsPatchHandler(daemonStateDir: string): RouteHandler {
+export function createProjectSymbiontsPatchHandler(_daemonStateDir: string): RouteHandler {
   return async (req) => {
     const projectId = req.params.projectId;
     const mycoHome = resolveMycoHome();
     const found = findRegisteredProject({ projectId }, mycoHome);
     if (!found) {
-      return {
-        status: 404,
-        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
-      };
-    }
-    const variant = resolveServiceDirName(daemonStateDir, mycoHome);
-    if (found.grove.served_by !== variant) {
       return {
         status: 404,
         body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
@@ -394,16 +387,12 @@ export function createProjectSymbiontsPatchHandler(daemonStateDir: string): Rout
  *   false — REMOVE the `symbionts:` block entirely. Project follows
  *           global defaults. Idempotent.
  */
-export function createProjectSymbiontsCustomizationHandler(daemonStateDir: string): RouteHandler {
+export function createProjectSymbiontsCustomizationHandler(_daemonStateDir: string): RouteHandler {
   return async (req) => {
     const projectId = req.params.projectId;
     const mycoHome = resolveMycoHome();
     const found = findRegisteredProject({ projectId }, mycoHome);
     if (!found) {
-      return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`) };
-    }
-    const variant = resolveServiceDirName(daemonStateDir, mycoHome);
-    if (found.grove.served_by !== variant) {
       return { status: 404, body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`) };
     }
     const body = (req.body ?? {}) as { enabled?: unknown };

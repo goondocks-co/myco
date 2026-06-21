@@ -92,7 +92,10 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
     expect(fs.existsSync(path.join(root, '.agents/myco-cli.cjs'))).toBe(false);
   });
 
-  it('reconciles registered project-managed files only for the requested daemon variant', () => {
+  it('reconciles every registered project-managed file in the home (home is the filter)', () => {
+    // Home is the boundary now: a single daemon owns every Grove under its
+    // MYCO_HOME, so reconciliation covers all in-home projects regardless
+    // of any legacy `served_by` value — there is no per-variant filter.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-reconcile-home-'));
     const devRoot = makeGitProjectWithVault();
     const prodRoot = makeGitProjectWithVault();
@@ -128,12 +131,13 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
       );
     }
 
-    const outcomes = reconcileRegisteredManagedProjectFiles({ mycoHome: home, servedBy: 'service-dev' });
+    const outcomes = reconcileRegisteredManagedProjectFiles({ mycoHome: home });
 
-    expect(outcomes.map((o) => o.projectId)).toEqual(['proj_dev']);
+    expect(outcomes.map((o) => o.projectId).sort()).toEqual(['proj_dev', 'proj_prod']);
+    // Both projects in the home get their stale guidance rewritten.
     expect(fs.readFileSync(path.join(devRoot, 'AGENTS.md'), 'utf-8'))
       .toContain('myco tool call myco_cortex --json --input');
     expect(fs.readFileSync(path.join(prodRoot, 'AGENTS.md'), 'utf-8'))
-      .toContain('node .agents/myco-cli.cjs tool call myco_cortex');
+      .toContain('myco tool call myco_cortex --json --input');
   });
 });

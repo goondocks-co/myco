@@ -6,7 +6,6 @@ import path from 'node:path';
 import {
   clearGroveRegistryCaches,
   createGrove,
-  ForeignGroveError,
   UnknownGroveError,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -177,8 +176,14 @@ describe('backup handlers — explicit Grove, fail-loud', () => {
     expect(body.file_path).toBeTruthy();
   });
 
-  it('create backup refuses a foreign-served Grove before opening its DB (RC-5)', async () => {
-    const foreign = createGrove('Dogfood', env.mycoHome, { servedBy: 'service-dev' });
+  it('create backup refuses a Grove in another home before opening its DB (RC-5)', async () => {
+    // Ownership is the home: the Grove lives under home B but the handler
+    // owns home A (`env.mycoHome`), so the home-scoped lookup returns null
+    // and `assertOwnedGrove` throws UnknownGroveError. Two real homes — a
+    // no-op gate would open the foreign DB.
+    const foreignHome = path.join(env.workDir, 'home-B');
+    fs.mkdirSync(foreignHome, { recursive: true });
+    const foreign = createGrove('Dogfood', foreignHome);
     const handlers = createBackupHandlers({ cache: env.cache, machineId: MACHINE, mycoHome: env.mycoHome });
 
     let caught: unknown;
@@ -189,9 +194,9 @@ describe('backup handlers — explicit Grove, fail-loud', () => {
     } catch (err) {
       caught = err;
     }
-    // Thrown so the daemon transport maps it to 403 foreign_grove; the
-    // foreign Grove's DB was never opened or created.
-    expect(caught).toBeInstanceOf(ForeignGroveError);
+    // Thrown so the daemon transport maps it to 404 grove_not_found; the
+    // foreign Grove's DB was never opened or created in this home.
+    expect(caught).toBeInstanceOf(UnknownGroveError);
     expect(fs.existsSync(resolveGroveDbPath(foreign.id, env.mycoHome))).toBe(false);
   });
 

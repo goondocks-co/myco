@@ -454,11 +454,10 @@ export class DaemonServer {
           return;
         }
         if (error instanceof ForeignGroveError) {
-          // The request resolved to a Grove served by the other daemon
-          // variant. Refuse before any handler (or DB open) runs —
-          // `myco grove claim` is the supported cross-daemon path.
-          // Logged at warn: hook clients swallow 403s silently, so this
-          // line is the only daemon-side trace during a claim window.
+          // The request resolved to a Grove that lives in another daemon's
+          // home (`<MYCO_HOME>/groves/`). Refuse before any handler (or DB
+          // open) runs. Logged at warn: hook clients swallow 403s silently,
+          // so this line is the only daemon-side trace.
           this.logger.warn(LOG_KINDS.SERVER_ERROR, 'Refused request for foreign-served Grove', {
             path: req.url,
             grove_id: error.groveId,

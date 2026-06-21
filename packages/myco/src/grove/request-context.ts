@@ -116,9 +116,9 @@ export interface RequestContextAuthOptions {
    */
   expectedAuthToken?: string | null;
   /**
-   * Enforce `grove.toml served_by` ownership on the Grove this request
-   * resolves to: when the Grove is served by the other daemon variant
-   * (per `currentDaemonVariant()`), throw {@link ForeignGroveError}
+   * Enforce home ownership on the Grove this request resolves to: when the
+   * Grove lives in another daemon's home (it does not load from this
+   * daemon's `<MYCO_HOME>/groves/`), throw {@link ForeignGroveError}
    * instead of returning a context whose `databasePath` points into a
    * foreign Grove. Opt-in, set ONLY where the daemon resolves inbound
    * requests (the HTTP API and `/mcp` transports). The same resolver

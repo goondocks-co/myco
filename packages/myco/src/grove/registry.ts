@@ -8,7 +8,6 @@ import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
 import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
-  currentDaemonVariant,
   pathsEquivalent,
   resolveGlobalConfigPath,
   resolveGroveDir,
@@ -226,37 +225,35 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
 }
 
 /**
- * True when this process's daemon variant owns the Grove. Reads always
- * normalize `served_by` to `'service' | 'service-dev'` (legacy records
- * without the field read as `'service'`), so plain equality is the whole
- * ownership predicate. On-demand seams — tool-call Grove pivots and the
- * daemon's inbound request resolution — gate cross-Grove access through
- * this before any database is opened or schema-migrated.
+ * True when this daemon owns the Grove. Ownership is the home: a daemon
+ * runs under one `MYCO_HOME` and only the Groves under
+ * `<MYCO_HOME>/groves/` are its own. The predicate re-derives ownership
+ * by a home-scoped lookup of the Grove's id — a record that lives in a
+ * different home resolves to `null` here and reads as not-owned even if
+ * it was loaded from disk elsewhere. On-demand seams — tool-call Grove
+ * pivots and the daemon's inbound request resolution — gate cross-Grove
+ * access through this before any database is opened or schema-migrated.
  */
 export function groveServedByThisDaemon(
-  grove: Pick<GroveRecord, 'served_by'>,
-  variant: DaemonVariant = currentDaemonVariant(),
+  grove: Pick<GroveRecord, 'id'>,
+  mycoHome = resolveMycoHome(),
 ): boolean {
-  return grove.served_by === variant;
+  return loadGroveRecord(grove.id, mycoHome) !== null;
 }
 
 /**
- * A request resolved to a Grove that is served by the other daemon
- * variant. Thrown by daemon-side request resolution when Grove-ownership
- * enforcement is enabled; transports translate it into a 403
- * `foreign_grove` error so the caller never reaches a database the
- * daemon does not own. Crossing the boundary deliberately is what
- * `myco grove claim` is for.
+ * A request resolved to a Grove that lives in a different daemon's home
+ * (`<MYCO_HOME>/groves/`). Thrown by daemon-side request resolution when
+ * Grove-ownership enforcement is enabled; transports translate it into a
+ * 403 `foreign_grove` error so the caller never reaches a database the
+ * daemon does not own.
  */
 export class ForeignGroveError extends Error {
   constructor(
     public readonly groveId: string,
     public readonly servedBy: DaemonVariant,
   ) {
-    super(
-      `Grove ${groveId} is served by another daemon (${servedBy}); `
-      + 'claim it first (myco grove claim)',
-    );
+    super(`Grove ${groveId} is served by another daemon (home ${servedBy})`);
     this.name = 'ForeignGroveError';
   }
 }
@@ -279,14 +276,14 @@ export class UnknownGroveError extends Error {
  * OUTSIDE the request-context funnel (body `ActionScope.grove_id`, URL
  * `:id` params). Throws {@link UnknownGroveError} when no record exists —
  * so an unknown id can never create `groves/<id>/` as a side effect of a
- * DB open — and {@link ForeignGroveError} when the Grove is served by the
- * other daemon variant. Call it BEFORE any `cache.getDatabase` /
+ * DB open — and {@link ForeignGroveError} when the Grove lives in a
+ * different daemon's home. Call it BEFORE any `cache.getDatabase` /
  * `resolveGroveDbPath` on the named Grove.
  */
 export function assertOwnedGrove(groveId: string, mycoHome = resolveMycoHome()): GroveRecord {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new UnknownGroveError(groveId);
-  if (!groveServedByThisDaemon(grove)) {
+  if (!groveServedByThisDaemon(grove, mycoHome)) {
     throw new ForeignGroveError(grove.id, grove.served_by);
   }
   return grove;

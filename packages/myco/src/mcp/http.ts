@@ -9,6 +9,7 @@ import {
   requestContextFromHttpHeaders,
   tryResolveRequestContextForVault,
   UnauthorizedRequestContextError,
+  UnknownRequestContextError,
   type MycoRequestContext,
 } from '../grove/request-context.js';
 import { createMcpProtocolServer } from './server.js';
@@ -89,9 +90,13 @@ function resolveRequestContextOrLegacy(
     // legacy-vault soft-fail. Re-throw so the caller's existing handling
     // applies.
     if (err instanceof UnauthorizedRequestContextError) throw err;
-    // Same for ownership: a Grove served by the other daemon variant is a
+    // Same for ownership: a Grove that lives in another daemon's home is a
     // 403 foreign_grove refusal, never the misleading legacy_vault 503.
     if (err instanceof ForeignGroveError) throw err;
+    // A named (Grove, project) that does not exist in this daemon's home is
+    // unknown tenancy (404), never the misleading legacy_vault 503 — a
+    // foreign-home Grove is unknown to this daemon, not a pre-Grove vault.
+    if (err instanceof UnknownRequestContextError) throw err;
     // Pre-Grove vault: the resolver threw because there's no Grove project
     // id to bind to. Surface the soft-fail reason rather than a 500.
     const result = tryResolveRequestContextForVault(vaultDir);
@@ -151,6 +156,15 @@ export function createStreamableMcpHttpHandler(
           grove_id: err.groveId,
           served_by: err.servedBy,
         }));
+        return;
+      }
+      // A named (Grove, project) absent from this daemon's home: surface
+      // the same 404 `unknown_tenancy` contract the main HTTP server path
+      // returns (daemon/server.ts) instead of a misleading legacy_vault 503.
+      if (err instanceof UnknownRequestContextError) {
+        res.statusCode = 404;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'unknown_tenancy', message: err.message }));
         return;
       }
       throw err;

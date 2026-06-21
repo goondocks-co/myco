@@ -10,7 +10,6 @@ import { resolveGroveDir } from '@myco/grove/paths.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import {
   createGrove,
-  ForeignGroveError,
   registerProjectInGrove,
   UnknownGroveError,
   type GroveRecord,
@@ -57,8 +56,8 @@ describe('maintenance API', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
-    // served_by gates compare against currentDaemonVariant(); pin the
-    // default 'service' variant regardless of the ambient shell.
+    // Keep the daemon-variant env out of these cases (ownership is the
+    // home now, not the variant); restore it in afterEach.
     previousVariant = process.env.MYCO_SERVICE_VARIANT;
     delete process.env.MYCO_SERVICE_VARIANT;
     logger = makeLogger(workDir);
@@ -350,8 +349,15 @@ describe('maintenance API', () => {
       cache.closeAll();
     });
 
-    it('throws ForeignGroveError for a Grove served by the other daemon variant, without opening its DB', async () => {
-      const grove = createGrove('Dogfood', mycoHome, { servedBy: 'service-dev' });
+    it('refuses a Grove that lives in another daemon home, without opening its DB', async () => {
+      // Ownership is the home: a Grove created under a different MYCO_HOME
+      // is not present in this handler's home (`mycoHome`), so the
+      // home-scoped lookup returns null and `assertOwnedGrove` throws
+      // UnknownGroveError — the foreign Grove's DB is never opened here.
+      // Proven with two real homes; a no-op gate would open it.
+      const foreignHome = path.join(workDir, 'home-B');
+      fs.mkdirSync(foreignHome, { recursive: true });
+      const grove = createGrove('Dogfood', foreignHome);
       const { cache, handlers } = makeHandlers();
       let caught: unknown;
       try {
@@ -359,7 +365,7 @@ describe('maintenance API', () => {
       } catch (err) {
         caught = err;
       }
-      expect(caught).toBeInstanceOf(ForeignGroveError);
+      expect(caught).toBeInstanceOf(UnknownGroveError);
       expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
       cache.closeAll();
     });

@@ -1,13 +1,18 @@
 /**
- * RC-5: `grove.toml served_by` ownership gate at the on-demand seams.
+ * Ownership is the home, enforced by path.
  *
- * A `grove_id` tool-call pivot (and the daemon's header resolution —
- * covered in tests/daemon + tests/mcp) must refuse a Grove served by the
- * other daemon variant BEFORE the dispatcher opens that Grove's database,
- * otherwise a dev daemon/CLI can create or schema-migrate a prod-served
- * Grove's DB. The client-side resolvers (hooks, stdio bridge, CLI env)
- * must stay non-throwing — a throw there is silently swallowed and drops
- * capture headers.
+ * A daemon runs under one MYCO_HOME and owns every Grove under
+ * `<MYCO_HOME>/groves/`. The on-demand seams — a `grove_id` tool-call
+ * pivot and the daemon's header resolution — must refuse a Grove that
+ * lives in a DIFFERENT home BEFORE the dispatcher opens (and
+ * createSchema-migrates) that Grove's database. Under physical home
+ * separation a foreign-home Grove is simply not present in this home, so
+ * the home-scoped lookup returns null and the seam refuses it. The
+ * `groveServedByThisDaemon` predicate is the soft gate; it must stay a
+ * real predicate (false for a foreign-home record), never a no-op that
+ * always returns "owned". The client-side resolvers (hooks, stdio
+ * bridge, CLI env) must stay non-throwing — a throw there is silently
+ * swallowed and drops capture headers.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
@@ -23,11 +28,13 @@ import {
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
   resolveLegacyRequestContext,
+  UnknownRequestContextError,
   type MycoRequestContext,
 } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import {
   createGrove,
+  groveServedByThisDaemon,
   registerProjectInGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -53,7 +60,7 @@ function createFixture(): {
   requestContext: MycoRequestContext;
   cleanup: () => void;
 } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-served-by-gate-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-gate-'));
   const vaultDir = path.join(root, '.myco');
   fs.mkdirSync(vaultDir, { recursive: true });
   const db: Database = openDatabase(path.join(vaultDir, 'myco.db'));
@@ -87,39 +94,42 @@ async function callToolError(
   }
 }
 
-describe('grove_id pivot served_by ownership gate', () => {
+describe('grove_id pivot home-ownership gate', () => {
   let sandbox: ReturnType<typeof sandboxMycoHome>;
-  let previousVariant: string | undefined;
+  // A second, foreign home on disk — the daemon never points MYCO_HOME at
+  // it, so a Grove created here is invisible to the home-scoped lookup.
+  let foreignHome: string;
 
   beforeEach(() => {
-    sandbox = sandboxMycoHome('myco-served-by-');
-    previousVariant = process.env.MYCO_SERVICE_VARIANT;
-    delete process.env.MYCO_SERVICE_VARIANT;
+    sandbox = sandboxMycoHome('myco-home-gate-');
+    foreignHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-gate-foreign-'));
   });
 
   afterEach(() => {
-    if (previousVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-    else process.env.MYCO_SERVICE_VARIANT = previousVariant;
+    fs.rmSync(foreignHome, { recursive: true, force: true });
     sandbox.restore();
   });
 
-  it('rejects a pivot into a foreign-served Grove before its database is created, and allows same-variant pivots', async () => {
+  it('rejects a pivot into a foreign-home Grove before its database is created, and allows same-home pivots', async () => {
     const fixture = createFixture();
     try {
-      const foreign = createGrove('Dogfood', sandbox.mycoHome, { servedBy: 'service-dev' });
-      const owned = createGrove('Work', sandbox.mycoHome, { servedBy: 'service' });
+      // `foreign` lives under a different MYCO_HOME → not present in this
+      // daemon's home. `owned` lives in this daemon's home.
+      const foreign = createGrove('Dogfood', foreignHome);
+      const owned = createGrove('Work', sandbox.mycoHome);
       const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
       // Driven through callTool so the gate is proven to fire before
       // runWithRequestDatabase opens (and createSchema-migrates) the
-      // target Grove's DB.
+      // target Grove's DB. The foreign-home Grove resolves to null in this
+      // home, so the pivot is refused as an unknown Grove and no DB is
+      // created under THIS home.
       const caught = await callToolError(tools, 'myco_plans', { grove_id: foreign.id });
       expect(isToolError(caught)).toBe(true);
-      expect((caught as { code: string }).code).toBe('foreign_grove');
-      expect((caught as Error).message).toContain('myco grove claim');
+      expect((caught as Error).message).toContain(foreign.id);
       expect(fs.existsSync(resolveGroveDbPath(foreign.id, sandbox.mycoHome))).toBe(false);
 
-      // Same-variant pivot resolves and opens the owned Grove's DB.
+      // Same-home pivot resolves and opens the owned Grove's DB.
       const plans = await tools.callTool('myco_plans', { grove_id: owned.id });
       expect(Array.isArray(plans)).toBe(true);
       expect(fs.existsSync(resolveGroveDbPath(owned.id, sandbox.mycoHome))).toBe(true);
@@ -128,132 +138,147 @@ describe('grove_id pivot served_by ownership gate', () => {
     }
   });
 
-  it('matches the gate to the current daemon variant (service vs service-dev)', async () => {
+  it('admits a same-home Grove regardless of a legacy served_by value', async () => {
+    // Pre-redesign a `service-dev`-labeled record was refused by the prod
+    // variant. Ownership is the home now: an in-home record is owned.
     const fixture = createFixture();
     try {
-      const devGrove = createGrove('Dogfood', sandbox.mycoHome, { servedBy: 'service-dev' });
-      const prodGrove = createGrove('Prod', sandbox.mycoHome, { servedBy: 'service' });
+      const legacy = createGrove('LegacyDev', sandbox.mycoHome, { servedBy: 'service-dev' });
       const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
-
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: devGrove.id }))).toBe(true);
-      const devCaught = await callToolError(tools, 'myco_plans', { grove_id: prodGrove.id });
-      expect((devCaught as { code: string }).code).toBe('foreign_grove');
-      expect((devCaught as Error).message).toContain('service');
-
-      process.env.MYCO_SERVICE_VARIANT = 'service';
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: prodGrove.id }))).toBe(true);
-      const prodCaught = await callToolError(tools, 'myco_plans', { grove_id: devGrove.id });
-      expect((prodCaught as { code: string }).code).toBe('foreign_grove');
-      expect((prodCaught as Error).message).toContain('service-dev');
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  it('treats a legacy grove.toml without served_by as service-owned', async () => {
-    const fixture = createFixture();
-    const legacyId = 'grove_cccccccccccccccccccccccccccccccc';
-    try {
-      const groveDir = path.join(sandbox.mycoHome, 'groves', legacyId);
-      fs.mkdirSync(groveDir, { recursive: true });
-      fs.writeFileSync(path.join(groveDir, 'grove.toml'),
-        `[grove]\nid = "${legacyId}"\nname = "Legacy"\nslug = "legacy"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00Z"\n`);
-      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
-
-      // Normalized to 'service' on read: the production variant passes…
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: legacyId }))).toBe(true);
-
-      // …and the dev variant is refused.
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
-      const caught = await callToolError(tools, 'myco_plans', { grove_id: legacyId });
-      expect((caught as { code: string }).code).toBe('foreign_grove');
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  it('admits a pivot into a service-dev Grove when the variant matches', async () => {
-    const fixture = createFixture();
-    try {
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
-      const devGrove = createGrove('DevOwned', sandbox.mycoHome, { servedBy: 'service-dev' });
-      const prodGrove = createGrove('ProdOwned', sandbox.mycoHome, { servedBy: 'service' });
-      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
-
-      // Prod-owned Grove is refused by the dev variant.
-      const caught = await callToolError(tools, 'myco_plans', { grove_id: prodGrove.id });
-      expect((caught as { code: string }).code).toBe('foreign_grove');
-
-      // Dev-owned Grove is admitted.
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: devGrove.id }))).toBe(true);
+      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: legacy.id }))).toBe(true);
+      expect(fs.existsSync(resolveGroveDbPath(legacy.id, sandbox.mycoHome))).toBe(true);
     } finally {
       fixture.cleanup();
     }
   });
 });
 
-describe('client-side resolvers stay non-throwing for foreign-served Groves', () => {
+describe('groveServedByThisDaemon — home predicate is not a no-op', () => {
   let sandbox: ReturnType<typeof sandboxMycoHome>;
-  let previousVariant: string | undefined;
+  let foreignHome: string;
+
+  beforeEach(() => {
+    sandbox = sandboxMycoHome('myco-home-predicate-');
+    foreignHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-predicate-foreign-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(foreignHome, { recursive: true, force: true });
+    sandbox.restore();
+  });
+
+  it('is true for a Grove in this home and false for a Grove that lives in another home', () => {
+    const owned = createGrove('Owned', sandbox.mycoHome);
+    const foreign = createGrove('Foreign', foreignHome);
+
+    // The foreign record exists on disk (under its own home) but is NOT in
+    // this daemon's home, so the home-scoped predicate reads it as not
+    // owned. A no-op gate that always returned true would fail this line.
+    expect(groveServedByThisDaemon(owned, sandbox.mycoHome)).toBe(true);
+    expect(groveServedByThisDaemon(foreign, sandbox.mycoHome)).toBe(false);
+    // Symmetry: from the foreign home, ownership flips.
+    expect(groveServedByThisDaemon(foreign, foreignHome)).toBe(true);
+    expect(groveServedByThisDaemon(owned, foreignHome)).toBe(false);
+  });
+});
+
+describe('daemon request resolution refuses a foreign-home Grove', () => {
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
+  let foreignHome: string;
   let projectRoot: string;
   let vaultDir: string;
   let foreign: GroveRecord;
   let projectId: string;
 
   beforeEach(() => {
-    sandbox = sandboxMycoHome('myco-served-by-client-');
-    previousVariant = process.env.MYCO_SERVICE_VARIANT;
-    delete process.env.MYCO_SERVICE_VARIANT;
-    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-served-by-proj-'));
+    sandbox = sandboxMycoHome('myco-home-daemon-');
+    foreignHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-daemon-foreign-'));
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-daemon-proj-'));
     vaultDir = path.join(projectRoot, '.myco');
-    const manifest = ensureProjectManifest(vaultDir, { projectName: 'served-by-client' });
-    foreign = createGrove('Dogfood', sandbox.mycoHome, { servedBy: 'service-dev' });
-    // Registered id must match the manifest's minted project id — the
-    // resolver cross-checks the registered root's project.toml.
+    const manifest = ensureProjectManifest(vaultDir, { projectName: 'foreign-home-project' });
+    // The Grove + its registered project live under the FOREIGN home.
+    foreign = createGrove('Dogfood', foreignHome);
     projectId = manifest.project.id;
     registerProjectInGrove(foreign.id, {
       projectId,
       projectName: 'Foreign project',
       projectRoot,
-    }, sandbox.mycoHome);
+    }, foreignHome);
   });
 
   afterEach(() => {
-    if (previousVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-    else process.env.MYCO_SERVICE_VARIANT = previousVariant;
     fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(foreignHome, { recursive: true, force: true });
     sandbox.restore();
   });
 
-  it('requestContextFromEnvironment resolves a foreign-served Grove without throwing (hooks/CLI contract)', () => {
-    const context = requestContextFromEnvironment({
-      MYCO_GROVE_ID: foreign.id,
-      MYCO_PROJECT_ID: projectId,
-    }, vaultDir);
-    expect(context.groveId).toBe(foreign.id);
-    expect(context.tenancySource).toBe('caller');
-  });
-
-  it('requestContextFromHttpHeaders only enforces ownership when the daemon opts in', () => {
+  it('throws unknown-tenancy (404 class) for a foreign-home Grove named by header', () => {
+    // The daemon owns sandbox.mycoHome; the named Grove lives in
+    // foreignHome → the home-scoped lookup returns null and the resolver
+    // fails loud rather than resolving a context whose databasePath points
+    // into a foreign Grove.
     const headers = {
       'x-myco-grove-id': foreign.id,
       'x-myco-project-id': projectId,
     };
+    expect(() => requestContextFromHttpHeaders(headers, vaultDir, { enforceGroveOwnership: true }))
+      .toThrow(UnknownRequestContextError);
+  });
 
-    // Default (client-side / shared) behavior: resolves, no throw.
+  it('still wires the ForeignGroveError → 403 gate (constructable + typed)', () => {
+    // The ownership gate that translates to 403 `foreign_grove` is kept as
+    // a defense-in-depth backstop. Its message no longer points at the
+    // deleted `myco grove claim` flow.
+    const err = new ForeignGroveError(foreign.id, 'service-dev');
+    expect(err.groveId).toBe(foreign.id);
+    expect(err.servedBy).toBe('service-dev');
+    expect(err.message).not.toContain('claim');
+  });
+});
+
+describe('client-side resolvers stay non-throwing for foreign-home Groves', () => {
+  let sandbox: ReturnType<typeof sandboxMycoHome>;
+  let projectRoot: string;
+  let vaultDir: string;
+  let owned: GroveRecord;
+  let projectId: string;
+
+  beforeEach(() => {
+    sandbox = sandboxMycoHome('myco-home-client-');
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-client-proj-'));
+    vaultDir = path.join(projectRoot, '.myco');
+    const manifest = ensureProjectManifest(vaultDir, { projectName: 'home-client' });
+    // Registered in THIS daemon's home — the client-side resolver contract
+    // is non-throwing regardless of ownership enforcement being off.
+    owned = createGrove('Work', sandbox.mycoHome);
+    projectId = manifest.project.id;
+    registerProjectInGrove(owned.id, {
+      projectId,
+      projectName: 'Owned project',
+      projectRoot,
+    }, sandbox.mycoHome);
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    sandbox.restore();
+  });
+
+  it('requestContextFromEnvironment resolves an in-home Grove without throwing (hooks/CLI contract)', () => {
+    const context = requestContextFromEnvironment({
+      MYCO_GROVE_ID: owned.id,
+      MYCO_PROJECT_ID: projectId,
+    }, vaultDir);
+    expect(context.groveId).toBe(owned.id);
+    expect(context.tenancySource).toBe('caller');
+  });
+
+  it('requestContextFromHttpHeaders resolves an in-home Grove without throwing when enforcement is off', () => {
+    const headers = {
+      'x-myco-grove-id': owned.id,
+      'x-myco-project-id': projectId,
+    };
     const context = requestContextFromHttpHeaders(headers, vaultDir);
-    expect(context.groveId).toBe(foreign.id);
-
-    // Daemon-side opt-in: the same headers are refused.
-    let caught: unknown;
-    try {
-      requestContextFromHttpHeaders(headers, vaultDir, { enforceGroveOwnership: true });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(ForeignGroveError);
-    expect((caught as ForeignGroveError).groveId).toBe(foreign.id);
-    expect((caught as ForeignGroveError).servedBy).toBe('service-dev');
+    expect(context.groveId).toBe(owned.id);
   });
 });
