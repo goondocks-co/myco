@@ -37,7 +37,7 @@ import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHa
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
 import { createUpgradeHandlers } from './api/upgrade.js';
-import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
+import { resolveGlobalPrefix, resolveMycoBinary } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { migrateLegacyBackups } from '@myco/backup/migrate.js';
@@ -880,18 +880,6 @@ export async function main(): Promise<void> {
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
       error: errorMessage(err),
-    });
-  }
-
-  // Dev-build detection ran in `cli.ts` before this entry point loaded —
-  // see `activateDevBuildModeIfDetected`. If it produced a CLI entry,
-  // suppress installed-version detection (which expects a global prefix)
-  // and emit the operator-visible log line.
-  const devCliEntry = getDevBuildCliEntry();
-  if (devCliEntry) {
-    globalPrefix = null;
-    logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; update checks exempted', {
-      cli_entry: devCliEntry,
     });
   }
 
@@ -2369,7 +2357,7 @@ export async function main(): Promise<void> {
       localAppData: process.env.LOCALAPPDATA,
       stateDir: daemonService.stateDir,
       daemonPort: server.port,
-      mycoBinary: getDevBuildCliEntry() ?? undefined,
+      mycoBinary: resolveMycoBinary(),
       projectRoot,
     },
   });

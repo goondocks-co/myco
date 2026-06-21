@@ -92,6 +92,7 @@ import {
   isUpdateExempt,
   setDevBuildCliEntry,
   getDevBuildCliEntry,
+  looksLikeMycoBinary,
   resolveMycoBinary,
   resolveRuntimeCommand,
   readProjectReleaseChannel,
@@ -244,13 +245,39 @@ describe('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () 
   });
 });
 
-describe('resolveMycoBinary()', () => {
-  it('returns the recorded dev-build CLI entry when set', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    expect(resolveMycoBinary()).toBe('/Users/dev/.local/bin/myco-dev');
+describe('looksLikeMycoBinary()', () => {
+  it('accepts a path whose basename is exactly `myco`', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/myco')).toBe(true);
   });
 
-  it('returns the literal `myco` fallback when no dev entry is recorded', () => {
+  it('accepts a path whose basename is `myco.exe` (Windows paths use forward slashes on the binary)', () => {
+    // Windows compiled binaries land in paths with forward slashes when
+    // process.execPath is read from a bun binary; use forward slashes here.
+    expect(looksLikeMycoBinary('/c/Program Files/myco/myco.exe')).toBe(true);
+  });
+
+  it('accepts basename matching in a case-insensitive way', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/MYCO')).toBe(true);
+  });
+
+  it('rejects a path whose basename is not myco', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/bun')).toBe(false);
+    expect(looksLikeMycoBinary('/usr/local/bin/node')).toBe(false);
+  });
+});
+
+describe('resolveMycoBinary()', () => {
+  it('returns the supplied execPath when it looks like the myco binary', () => {
+    expect(resolveMycoBinary('/usr/local/bin/myco')).toBe('/usr/local/bin/myco');
+  });
+
+  it('returns `myco` fallback when the supplied path is not a myco binary', () => {
+    expect(resolveMycoBinary('/usr/local/bin/bun')).toBe('myco');
+  });
+
+  it('returns `myco` fallback when called with the test runner execPath (bun)', () => {
+    // The test runner's process.execPath is the bun binary, not myco —
+    // verify the default argument path falls through to the fallback.
     expect(resolveMycoBinary()).toBe('myco');
   });
 });

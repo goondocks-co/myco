@@ -185,24 +185,24 @@ function writeDevBuildCache(entry: DevBuildCacheEntry): void {
   }
 }
 
-function looksLikeMycoBinary(execPath: string): boolean {
+export function looksLikeMycoBinary(execPath: string): boolean {
   const base = path.basename(execPath).toLowerCase();
   return base === 'myco' || base === 'myco.exe';
 }
 
 /**
- * Resolve the myco binary that child-spawned restart/update scripts
- * should invoke to restart the daemon.
+ * Resolve the myco binary for daemon respawn and update scripts.
  *
- * - Dev mode (dev build CLI entry set): use the literal CLI entry path,
- *   so the restart respawns the same dev binary. After an npm update
- *   this intentionally keeps running the dev build — dev mode is opaque
- *   to global updates, which is the correct semantic.
- * - Prod mode (no dev build CLI entry): fall back to the bare `myco`
- *   command, which PATH-resolves to the freshly-updated global install.
+ * When `process.execPath` is the myco binary itself (production install or
+ * compiled binary), return it directly so the daemon restarts via the same
+ * binary. Otherwise fall back to the bare `myco` command, which PATH-resolves
+ * to the global install.
+ *
+ * Accepts an optional `execPath` override so tests can exercise both branches
+ * without depending on the test runner's own execPath.
  */
-export function resolveMycoBinary(): string {
-  return devBuildCliEntry ?? 'myco';
+export function resolveMycoBinary(execPath: string = process.execPath): string {
+  return looksLikeMycoBinary(execPath) ? execPath : 'myco';
 }
 
 /**
