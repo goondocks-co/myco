@@ -2,10 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveVaultDir } from './resolve.js';
 import {
-  daemonVariantFromEnvValue,
   resolveMycoHome,
   PROJECT_MANIFEST_FILENAME,
-  SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord } from '../grove/registry.js';
 
@@ -13,13 +11,14 @@ import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord 
  * Resolve the bootstrap vault directory for daemon startup.
  *
  * Priority:
- *  1. **When `MYCO_SERVICE_VARIANT` is set** (i.e. the daemon is the
+ *  1. **When `MYCO_DAEMON_MANAGED` is set** (i.e. the daemon is the
  *     global, multi-tenant daemon under a service supervisor — launchd,
- *     systemd — with a known variant), there is NO bootstrap project at
- *     all. The global daemon's home is `MYCO_HOME` (`~/.myco`); it serves
- *     every tenant through the per-request `MycoRequestContext` and never
- *     anchors to a "current project". Return `null` so the startup path
- *     materializes the phantom `MYCO_HOME`-scoped home and runs unbound.
+ *     systemd — that emitted this signal via the unit env), there is NO
+ *     bootstrap project at all. The global daemon's home is `MYCO_HOME`
+ *     (`~/.myco`); it serves every tenant through the per-request
+ *     `MycoRequestContext` and never anchors to a "current project".
+ *     Return `null` so the startup path materializes the phantom
+ *     `MYCO_HOME`-scoped home and runs unbound.
  *
  *     This deliberately ignores both the cwd AND the registry. The cwd is
  *     irrelevant (a hook lazy-spawn from inside an unrelated project must
@@ -31,7 +30,7 @@ import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord 
  *     no project. Per-request handlers carry their own caller-supplied
  *     tenancy (and tenant routes reject synthesized contexts), so the
  *     anchor is no longer needed for routing — only the home is, and the
- *     home resolves from the variant + `MYCO_HOME`, never from a project.
+ *     home resolves from `MYCO_HOME`, never from a project.
  *
  *  2. The cwd-walking `resolveVaultDir()` result, IF its parent contains
  *     a `project.toml`. Preserves the existing behavior for variant-less
@@ -43,14 +42,14 @@ import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord 
  *     wants the local registry's first project). Prefers the default
  *     Grove, then falls through to any other Grove in this home.
  *
- * Returns `null` when the global variant is set (always — home-scoped), or
+ * Returns `null` when `MYCO_DAEMON_MANAGED` is set (always — home-scoped), or
  * when no enclosing project AND no registered project is found. The
  * daemon's startup path falls back to a phantom MYCO_HOME-scoped scratch
  * dir so the API can come up and serve tenant requests by their own
  * request context (Decisions 3 and 14 of the global-symbiont-install plan).
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | null {
-  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
+  const managed = process.env.MYCO_DAEMON_MANAGED?.trim();
   const sandboxMode = (process.env.MYCO_LAUNCH_AGENTS_DIR?.trim() ?? '') !== '';
   const cwdVault = resolveVaultDir(cwd);
 
@@ -60,8 +59,8 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | 
   // to an arbitrary registered project (the bug-attractor for tenant-scope
   // leaks). This intentionally ignores the registry — the previous
   // `firstProjectVaultFromRegistry()` anchor is gone from the global path.
-  if (variant) {
-    return null;
+  if (managed) {
+    return null;  // global managed daemon → phantom MYCO_HOME-scoped boot; never anchors to a registered project
   }
 
   // Sandbox mode (MYCO_LAUNCH_AGENTS_DIR set) skips cwd-walk too.
@@ -175,32 +174,20 @@ function hasProjectManifest(vaultDir: string): boolean {
  * Pick the first on-disk registered project for the local registry.
  *
  * NOT part of the global daemon's startup path anymore: a daemon with
- * `MYCO_SERVICE_VARIANT` set never anchors to a project (it runs phantom
+ * `MYCO_DAEMON_MANAGED` set never anchors to a project (it runs phantom
  * from `MYCO_HOME` and serves tenants by request context). The only
  * surviving callers are:
- *   - the variant-less ad-hoc path (`myco daemon` from a non-project cwd
- *     that still wants the local registry's first prod project), and
+ *   - the non-managed ad-hoc path (`myco daemon` from a non-project cwd
+ *     that still wants the local registry's first registered project), and
  *   - the sandbox-mode branch, whose isolated HOME has an empty registry
  *     so this always returns null → phantom-bootstrap.
- *
- * The `served_by` filter is retained for the variant-less prod default —
- * it must not silently bind a dev-served default Grove.
  */
 function firstProjectVaultFromRegistry(): string | null {
   const mycoHome = resolveMycoHome();
-  const targetServedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
 
-  if (targetServedBy === SERVICE_DEV_DIRNAME) {
-    for (const grove of listGroves(mycoHome)) {
-      const vault = firstVaultFromGrove(grove.id, mycoHome);
-      if (vault) return vault;
-    }
-    return null;
-  }
-
-  // Prod variant (or unset): prefer the default Grove, then fall through
-  // to any other Grove. With separate homes there is no cross-variant
-  // pointer collision, so any Grove in this home is a valid candidate.
+  // Prefer the default Grove, then fall through to any other Grove.
+  // With separate homes there is no cross-variant pointer collision,
+  // so any Grove in this home is a valid candidate.
   const defaultId = getDefaultGroveId(mycoHome);
   if (defaultId) {
     const defaultRecord = loadGroveRecord(defaultId, mycoHome);

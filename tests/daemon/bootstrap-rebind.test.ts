@@ -9,9 +9,9 @@
  * A registry-poll watcher (every 5s) detects the first hook-driven
  * project auto-registration and triggers a graceful restart — the next
  * boot resolves a real vault via `resolveBootstrapVaultDir()`. This
- * rebind path is for the VARIANT-LESS greenfield daemon only; the global
- * (MYCO_SERVICE_VARIANT-set) daemon never rebinds — see the
- * "global (variant-pinned) daemon is always home-scoped" block below and
+ * rebind path is for the NON-MANAGED greenfield daemon only; the global
+ * (MYCO_DAEMON_MANAGED-set) daemon never rebinds — see the
+ * "global (managed) daemon is always home-scoped" block below and
  * the watcher guard in daemon/main.ts.
  *
  * Two failure modes are the focus here:
@@ -65,7 +65,7 @@ import {
 import { resolveServiceDir } from '../../packages/myco/src/grove/paths';
 
 let originalHome: string | undefined;
-let originalVariant: string | undefined;
+let originalManaged: string | undefined;
 let tmpHome: string;
 let tmpCwd: string;
 
@@ -73,16 +73,16 @@ beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebind-home-'));
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebind-cwd-'));
   originalHome = process.env.MYCO_HOME;
-  originalVariant = process.env.MYCO_SERVICE_VARIANT;
+  originalManaged = process.env.MYCO_DAEMON_MANAGED;
   process.env.MYCO_HOME = tmpHome;
-  delete process.env.MYCO_SERVICE_VARIANT;
+  delete process.env.MYCO_DAEMON_MANAGED;
 });
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = originalHome;
-  if (originalVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-  else process.env.MYCO_SERVICE_VARIANT = originalVariant;
+  if (originalManaged === undefined) delete process.env.MYCO_DAEMON_MANAGED;
+  else process.env.MYCO_DAEMON_MANAGED = originalManaged;
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(tmpCwd, { recursive: true, force: true });
 });
@@ -291,113 +291,101 @@ describe('rebind precondition — the watcher polls resolveBootstrapVaultDir, no
 });
 
 /**
- * Global (variant-pinned) daemon: always home-scoped, NEVER rebinds.
+ * Global (managed) daemon: always home-scoped, NEVER rebinds.
  *
  * Production user path: `npm install -g` → postinstall registers a
  * managed service → launchd/systemd spawns the daemon with
- * `MYCO_SERVICE_VARIANT` set. The global, multi-tenant daemon has NO
- * bootstrap project at all — its home is MYCO_HOME and it serves every
- * tenant through the per-request `MycoRequestContext`. So it always boots
- * phantom (home-scoped) and stays that way for its whole lifetime, whether
- * the registry is empty or full.
+ * `MYCO_DAEMON_MANAGED=1` set in the unit env. The global, multi-tenant
+ * daemon has NO bootstrap project at all — its home is MYCO_HOME and it
+ * serves every tenant through the per-request `MycoRequestContext`. So it
+ * always boots phantom (home-scoped) and stays that way for its whole
+ * lifetime, whether the registry is empty or full.
  *
  * The old behavior — anchoring to (and rebinding to) the *first registered
  * project* matching the variant — was the bug-attractor that every
  * tenant-scope leak we just fixed leaked *to*. This block locks the new
- * contract: the variant path returns null regardless of registry state, so
+ * contract: the managed path returns null regardless of registry state, so
  * `resolveBootstrapVaultDir` is the watcher signal that NEVER fires for the
  * global daemon (the daemon's rebind watcher is skipped entirely when
- * MYCO_SERVICE_VARIANT is set — see daemon/main.ts).
+ * MYCO_DAEMON_MANAGED is set — see daemon/main.ts).
  */
-describe('global (variant-pinned) daemon is always home-scoped and never rebinds', () => {
-  test('prod variant on empty registry enters phantom mode (does not throw, does not respawn-loop)', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
+describe('global (managed) daemon is always home-scoped and never rebinds', () => {
+  test('managed daemon on empty registry enters phantom mode (does not throw, does not respawn-loop)', () => {
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
       expect(result.isPhantom).toBe(true);
       expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
       expect(fs.existsSync(result.vaultDir)).toBe(true);
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
-  test('dev variant on empty registry enters phantom mode (matches prod-variant behavior)', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
-    try {
-      const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-      expect(result.isPhantom).toBe(true);
-      expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
-    } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
-    }
-  });
-
-  test('dev variant stays home-scoped (null) even when a matching dev Grove is registered', () => {
-    // The whole point: the global dev daemon does NOT rebind to a dev
-    // project. With a fully-registered dev Grove + project on disk, the
-    // plain resolver still returns null — the watcher signal never fires.
+  test('managed daemon stays home-scoped (null) even when Groves are registered', () => {
+    // The whole point: the global managed daemon does NOT rebind to any
+    // project. With fully-registered Groves + projects on disk, the plain
+    // resolver still returns null — the watcher signal never fires.
     const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const prodRoot = makeProjectOnDisk('cross-variant-prod');
     const devRoot = makeProjectOnDisk('cross-variant-dev');
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
-      // Phase 1: only prod Grove registered. Resolver returns null.
+      // Phase 1: only prod Grove registered. Managed daemon returns null.
       writeRegistry(prodGrove);
       writeGroveToml(prodGrove, 'service');
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
-      // Phase 2: dev Grove registered alongside the prod one. The global
+      // Phase 2: dev Grove registered alongside the prod one. The managed
       // daemon STILL returns null — it never anchors to a project.
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
       fs.rmSync(prodRoot, { recursive: true, force: true });
       fs.rmSync(devRoot, { recursive: true, force: true });
     }
   });
 
-  test('prod variant stays home-scoped (null) even when a matching prod default Grove is registered', () => {
-    // Symmetric to the dev case: the global prod daemon never anchors to a
-    // registered prod project. Whether the default Grove is dev-served
-    // (always skipped) or prod-served (the old anchor target), the global
+  test('managed daemon stays home-scoped (null) even when a default Grove is registered', () => {
+    // The global managed daemon never anchors to a registered project.
+    // Whether the default Grove is dev-served or prod-served, the managed
     // path returns null and runs phantom from MYCO_HOME.
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
     const prodRoot = makeProjectOnDisk('symm-prod');
     const devRoot = makeProjectOnDisk('symm-dev');
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
-      // Phase 1: dev Grove registered as default — null (as before).
+      // Phase 1: dev Grove registered as default — null.
       writeRegistry(devGrove);
       writeGroveToml(devGrove, 'service-dev');
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
-      // Phase 2: prod Grove registered AS DEFAULT. Pre-change this was the
-      // anchor the prod daemon bound to; now it stays home-scoped (null).
+      // Phase 2: prod Grove registered as default — still null (managed
+      // daemon ignores the registry entirely).
       writeRegistry(prodGrove);
       writeGroveToml(prodGrove, 'service');
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
       fs.rmSync(prodRoot, { recursive: true, force: true });
       fs.rmSync(devRoot, { recursive: true, force: true });
     }
   });
 
-  test('variant-pinned OrPhantom stays isPhantom=true even when a matching Grove registers', () => {
+  test('managed OrPhantom stays isPhantom=true even when a Grove registers', () => {
     // End-to-end through the helper the daemon actually uses on startup.
-    // The global daemon's bootstrap result is phantom before AND after a
-    // matching-variant Grove registers — it never flips to a project vault.
+    // The managed daemon's bootstrap result is phantom before AND after a
+    // Grove registers — it never flips to a project vault.
     const devGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     const devRoot = makeProjectOnDisk('e2e-dev');
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       const before = resolveBootstrapVaultDirOrPhantom(tmpCwd);
       expect(before.isPhantom).toBe(true);
@@ -408,13 +396,13 @@ describe('global (variant-pinned) daemon is always home-scoped and never rebinds
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
 
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-      // Still phantom, still home-scoped — the global daemon is not a
-      // registry project root.
+      // Still phantom, still home-scoped — the managed daemon has no
+      // bootstrap project.
       expect(after.isPhantom).toBe(true);
       expect(after.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
       expect(after.vaultDir).not.toBe(path.join(devRoot, '.myco'));
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
       fs.rmSync(devRoot, { recursive: true, force: true });
     }
   });
@@ -436,11 +424,11 @@ describe('global (variant-pinned) daemon is always home-scoped and never rebinds
 describe('global daemon phantom bootstrap resolves home-scoped service/log/data paths', () => {
   test('boot DB is under the phantom home and NOT a registry project root', () => {
     // A fully-registered prod Grove + project exists on disk — the old
-    // anchor would have made this the boot vault. The global daemon must
+    // anchor would have made this the boot vault. The managed daemon must
     // ignore it.
     const prodGrove = 'grove_abababababababababababababababab';
     const projRoot = makeProjectOnDisk('global-boot-db');
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       writeRegistry(prodGrove);
       writeGroveToml(prodGrove, 'service');
@@ -467,33 +455,29 @@ describe('global daemon phantom bootstrap resolves home-scoped service/log/data 
       expect(dataPaths.requestContext.projectId).toBeNull();
       expect(dataPaths.requestContext.groveId).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
       fs.rmSync(projRoot, { recursive: true, force: true });
     }
   });
 
   test('service-state and log dir resolve under ~/.myco/service/ for the phantom global daemon', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
-    try {
-      const boot = resolveBootstrapVaultDirOrPhantom(tmpCwd);
-      expect(boot.isPhantom).toBe(true);
+    // No registry, no MYCO_DAEMON_MANAGED needed: greenfield cwd → null → phantom.
+    const boot = resolveBootstrapVaultDirOrPhantom(tmpCwd);
+    expect(boot.isPhantom).toBe(true);
 
-      const serviceDir = resolveServiceDir(tmpHome); // ~/.myco/service
-      const state = resolveDaemonServiceState(boot.vaultDir, {
-        env: { MYCO_HOME: tmpHome },
-      });
-      // Keyed off MYCO_HOME + variant — the phantom vaultDir is irrelevant.
-      expect(state.scope).toBe('global');
-      expect(state.stateDir).toBe(serviceDir);
-      expect(state.statePath.startsWith(serviceDir)).toBe(true);
-      expect(state.lockPath.startsWith(serviceDir)).toBe(true);
+    const serviceDir = resolveServiceDir(tmpHome); // ~/.myco/service
+    const state = resolveDaemonServiceState(boot.vaultDir, {
+      env: { MYCO_HOME: tmpHome },
+    });
+    // Keyed off MYCO_HOME + variant — the phantom vaultDir is irrelevant.
+    expect(state.scope).toBe('global');
+    expect(state.stateDir).toBe(serviceDir);
+    expect(state.statePath.startsWith(serviceDir)).toBe(true);
+    expect(state.lockPath.startsWith(serviceDir)).toBe(true);
 
-      const logDir = resolveDaemonLogDir(boot.vaultDir, {
-        env: { MYCO_HOME: tmpHome },
-      });
-      expect(logDir).toBe(path.join(serviceDir, 'logs'));
-    } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
-    }
+    const logDir = resolveDaemonLogDir(boot.vaultDir, {
+      env: { MYCO_HOME: tmpHome },
+    });
+    expect(logDir).toBe(path.join(serviceDir, 'logs'));
   });
 });
