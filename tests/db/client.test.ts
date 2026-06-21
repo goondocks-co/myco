@@ -97,45 +97,85 @@ describe('SQLite client', () => {
 describe('assertOwnsDatabase — home-path ownership gate', () => {
   // Grove id shape: grove_ + 32 hex chars (matches isGroveEraId).
   const GROVE_ID = 'grove_' + 'a'.repeat(32);
-  const HOME_A = '/tmp/A/.myco';
-  const HOME_B = '/tmp/B/.myco';
+  let tmpRoot: string;
 
   afterEach(() => {
     clearOwnedServiceDirForCurrentProcess();
     try { closeDatabase(); } catch { /* already closed */ }
+    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
+  /** Create a real SQLite file at <home>/groves/<groveId>/myco.db. */
+  function makeGroveDb(mycoHome: string): { db: ReturnType<typeof openDatabase>; dbPath: string } {
+    const groveDir = path.join(mycoHome, 'groves', GROVE_ID);
+    fs.mkdirSync(groveDir, { recursive: true });
+    const dbPath = path.join(groveDir, 'myco.db');
+    const db = openDatabase(dbPath);
+    return { db, dbPath };
+  }
+
   it('allows a Grove DB inside the owning home groves directory', () => {
-    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
-    const db = openDatabase();
-    // Simulate withDatabase being called with a path under HOME_A/groves/<id>/myco.db
-    // by overriding db.filename — bun:sqlite exposes it read-only, so we
-    // exercise assertOwnsDatabase directly via a real in-memory DB whose
-    // filename is :memory: (non-grove → always allowed).  The cross-home
-    // throw case below tests the gate logic with a real grove-shaped path.
-    expect(() => withDatabase(db, () => {})).not.toThrow();
-    db.close();
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const { db } = makeGroveDb(homeA);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('throws Cross-home when a Grove DB is outside the owning home groves directory', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    const homeB = path.join(tmpRoot, 'B', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    // DB physically lives under homeB but the daemon owns homeA.
+    const { db } = makeGroveDb(homeB);
+    try {
+      expect(() => withDatabase(db, () => {})).toThrow(/Cross-home Grove access is forbidden/);
+    } finally {
+      db.close();
+    }
   });
 
   it('allows :memory: when ownership is declared (non-grove early-return)', () => {
-    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
     const db = openDatabase(); // opens :memory:
-    expect(() => withDatabase(db, () => {})).not.toThrow();
-    db.close();
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+    }
   });
 
-  it('allows a non-grove path (not matching grove_<id>/myco.db) when ownership is declared', () => {
-    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
-    // openDatabase with no path opens :memory: — groveIdFromDbPath returns null.
-    const db = openDatabase();
-    expect(() => withDatabase(db, () => {})).not.toThrow();
-    db.close();
+  it('allows a non-grove path when ownership is declared (groveIdFromDbPath returns null)', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    // A real file that is not under groves/<groveId>/myco.db — groveIdFromDbPath returns null.
+    const nonGrovePath = path.join(tmpRoot, 'fixture.db');
+    const db = openDatabase(nonGrovePath);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+      fs.rmSync(nonGrovePath, { force: true });
+    }
   });
 
   it('is a no-op when no ownership is declared', () => {
-    // clearOwnedServiceDirForCurrentProcess already called in afterEach; starting fresh.
-    const db = openDatabase();
-    expect(() => withDatabase(db, () => {})).not.toThrow();
-    db.close();
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeB = path.join(tmpRoot, 'B', '.myco');
+    // No setOwnedServiceDirForCurrentProcess call — gate is off.
+    const { db } = makeGroveDb(homeB);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+    }
   });
 });
