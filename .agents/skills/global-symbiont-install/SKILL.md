@@ -75,6 +75,13 @@ check is needed or wanted. The same rule applies to grove migration fallbacks �
 any "if old grove config exists" path is a trap; remove it at the point the
 walker commits.
 
+**Post-migration hook command shape:** After the launcher-unification migration,
+symbiont hook commands invoke the Myco binary directly (e.g., `myco hook
+session-start --symbiont claude`) rather than via an intermediate launcher
+script. Do not write new hook commands that reference the old shared launcher
+file — that indirection has been retired across all platforms (Mac, Linux,
+Windows).
+
 ## Design Decision 2: Symbiont Page UI — Auto-Detect and Per-Project Disable-Filter Only
 
 The Symbiont page offers no install/uninstall controls. Instead:
@@ -300,3 +307,40 @@ the (buggy) template output — the update pass sees identical content and skips
 them. After fixing a template bug, verify that installed hook files don't
 already match the old buggy template; if they do, a manual force-reinstall is
 required to push the fix.
+
+### Launcher Retirement: Delete-Last Migration Ordering
+
+When retiring the shared global launcher files from `~/.myco/`, the deletion
+must happen **after** all per-project symbiont hook configs have been rewritten
+to use direct binary invocation. `installHookGuard()` in
+`packages/myco/src/symbionts/installer.ts:593` explicitly defers this deletion.
+Deleting the shared launcher before rewriting symbiont configs creates a
+capture-loss window where hook processes still reference the now-missing
+launcher. The correct order is:
+
+1. Rewrite all per-project symbiont hook commands to direct binary form.
+2. Verify all rewrites committed successfully.
+3. Delete the shared global launcher files.
+
+### Legacy `.agents/` Stub Cleanup in Brownfield Projects
+
+The global-install migration must also remove pre-1.0.0 legacy launcher stubs
+from brownfield projects. These stubs (detectable by their "Managed by Myco"
+header comment) are NOT automatically removed by the new install walker — they
+require an explicit cleanup pass. The migration in
+`packages/myco/src/grove/global-config-migration.ts` targets these stubs for
+removal. Without this cleanup, brownfield projects accumulate stale committed
+artifacts that confuse the "is Myco-owned?" ownership predicate. Run the cleanup
+pass as part of the same migration step that rewrites hook commands.
+
+### Cross-Variant Global-Artifact Thrash (Prod + Dev Daemons)
+
+When a production daemon and a dogfood dev daemon run concurrently on the same
+machine, both variants may run the same power jobs that call
+`runSymbiontDetection()` (in `packages/myco/src/cli/bootstrap.ts`) against the
+same machine-global targets (global agent config files, shared hook registrations).
+This creates a thrash where each variant overwrites the other's changes on every
+power-job cycle. The fix is variant-scoped claim transfer or skip logic: the dev
+daemon must not overwrite machine-global artifacts owned by the prod daemon
+variant, or must transfer the subsystem claim before writing. Never assume a
+global write by the dev daemon is safe when prod is also active.

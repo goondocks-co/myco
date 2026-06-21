@@ -266,6 +266,8 @@ async function serviceAwareDaemonEviction(): Promise<void> {
 5. Verify global port release to prevent port collision on restart
 6. Clean up ~/.myco/daemon.json once process confirmed terminated
 
+**Windows platform exception**: On Windows, SIGTERM maps to `TerminateProcess()` — an uncatchable hard kill (see Cross-Cutting Gotchas). Use the cooperative shutdown path instead of SIGTERM on Windows.
+
 ### Five Daemon Restart Failure Modes and Mitigations (All Resolved)
 
 **Critical wisdom**: Daemon restarts during active sessions trigger five distinct failure modes that now have comprehensive mitigations:
@@ -369,4 +371,15 @@ Do **not** use `launchctl stop/start` for development daemon restarts — that t
 
 ### No Protocol-Skew Branches for Co-Shipped Components
 
-The daemon and CLI binary are always co-shipped at the same version. Do not add version-check branches (e.g., `if daemonVersion < X`) to handle protocol differences between the daemon and its own CLI. Protocol-skew guards add permanent dead-code debt and signal that the daemon's HTTP API has diverged from the CLI's expectations — which should never happen in a co-shipped release. If you find yourself writing a version-check branch, the correct fix is to update the API and CLI together in the same PR.
+The hook CLI, daemon, and plugin files are all the same binary in a co-shipped Myco release — version skew between these components is structurally impossible. Do not add version-check branches (e.g., `if daemonVersion < X`) to handle protocol differences between the daemon and its own CLI, hook, or plugin. Protocol-skew guards add permanent dead-code debt and signal that the API has diverged from the caller's expectations — which should never happen in a co-shipped release. If you find yourself writing a version-check branch between hook↔daemon or plugin↔daemon, the correct fix is to update the API and all callers together in the same PR. Any "legacy daemon" code paths added in hooks or plugins to handle mixed-version rollout should be removed once the migration is complete.
+
+### Windows: SIGTERM = TerminateProcess — Use Cooperative Shutdown Instead
+
+**Critical platform gotcha**: On Windows, `process.kill(pid, 'SIGTERM')` maps to `TerminateProcess()` — an uncatchable hard kill. The daemon's SIGTERM handler, graceful drain, and `process.once('SIGTERM', ...)` registration are all bypassed entirely. The graceful shutdown sequence (session drain, buffer flush, port release) never executes.
+
+**Fix**: On Windows, always use the cooperative shutdown path via `requestCooperativeShutdown()` in `packages/myco/src/service/cooperative-shutdown.ts`:
+1. Call `requestCooperativeShutdown(port)` which POSTs to the daemon's shutdown endpoint
+2. Wait for the daemon to drain and exit cleanly (202 ack, then poll for process exit)
+3. Only escalate to a hard kill if the cooperative shutdown times out
+
+The Windows service manager (`packages/myco/src/service/windows.ts`) already uses this pattern via `cooperativeShutdown`. Any code that sends SIGTERM to the daemon process on Windows is silently skipping graceful shutdown.
