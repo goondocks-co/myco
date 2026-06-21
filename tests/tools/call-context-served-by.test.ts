@@ -29,7 +29,6 @@ import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import {
   createGrove,
   registerProjectInGrove,
-  setGroveServedBy,
   type GroveRecord,
 } from '@myco/grove/registry.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
@@ -174,18 +173,20 @@ describe('grove_id pivot served_by ownership gate', () => {
     }
   });
 
-  it('admits a pivot after a claim flips served_by to this variant', async () => {
+  it('admits a pivot into a service-dev Grove when the variant matches', async () => {
     const fixture = createFixture();
     try {
       process.env.MYCO_SERVICE_VARIANT = 'dev';
-      const grove = createGrove('Claimable', sandbox.mycoHome, { servedBy: 'service' });
+      const devGrove = createGrove('DevOwned', sandbox.mycoHome, { servedBy: 'service-dev' });
+      const prodGrove = createGrove('ProdOwned', sandbox.mycoHome, { servedBy: 'service' });
       const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
-      const caught = await callToolError(tools, 'myco_plans', { grove_id: grove.id });
+      // Prod-owned Grove is refused by the dev variant.
+      const caught = await callToolError(tools, 'myco_plans', { grove_id: prodGrove.id });
       expect((caught as { code: string }).code).toBe('foreign_grove');
 
-      setGroveServedBy(grove.id, 'service-dev', sandbox.mycoHome);
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: grove.id }))).toBe(true);
+      // Dev-owned Grove is admitted.
+      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: devGrove.id }))).toBe(true);
     } finally {
       fixture.cleanup();
     }

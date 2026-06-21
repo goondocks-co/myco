@@ -73,8 +73,7 @@ the rollup-to-main-vault design; a per-worktree vault was rejected because it
 fragments dogfood data and contradicts "worktrees attach to the main project."
 
 - Run **one schema-changing worktree at a time**; rebuild the others to match.
-- For genuinely risky schema work, snapshot first with the **`dogfood-grove-claim`**
-  skill so you can roll back.
+- For genuinely risky schema work, use a temp `MYCO_HOME` sandbox so the shared vault is never mutated.
 
 ### A build must succeed first
 The pin points at `packages/myco-<target>/bin/myco` *inside* the worktree, so that
@@ -102,15 +101,13 @@ switching which branch the daemon tracks. After any restart, verify
 **Never** `make dev-link` from a worktree, and **never** run the daemon or migrate
 the shared vault from a worktree — a worktree binary running a migration mutates the
 *shared* Grove vault and breaks the main/other builds (the rollup hazard above). The
-only isolated paths are `dogfood-grove-claim` (snapshot a Grove) or exercising the
-merged code against a **temp git repo with its own `MYCO_HOME`** — neither touches
-the shared vault.
+only isolated path is exercising the merged code against a **temp git repo with its
+own `MYCO_HOME`** — that does not touch the shared vault.
 
 > Myco is the most active source of truth: search the vault ("worktree dogfood")
 > before trusting this skill if they disagree. See also the
 > `daemon-process-lifecycle-management` skill for the canonical build/restart commands.
 
 ## Related
-- `dogfood-grove-claim` — snapshot/rollback a Grove for risky (e.g. schema) testing
 - `make dev-link` / `make dev-unlink` — the main-checkout dev pin (rewrites the
   shared `~/.local/bin/myco-dev` symlink); never run these from a worktree
