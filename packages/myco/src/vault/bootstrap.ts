@@ -38,12 +38,10 @@ import { listGroves, getDefaultGroveId, listRegisteredProjects, loadGroveRecord 
  *     ad-hoc invocations (lazy spawn via `ensureRunning`, `myco daemon`
  *     run by hand from a project directory).
  *
- *  3. The first registered project in a Grove matching the current
- *     service variant — variant-less callers only (ad-hoc `myco daemon`
- *     from a non-project cwd that still wants the local registry's first
- *     project). Dev variant scans for a Grove with
- *     `served_by = "service-dev"`; prod variant (or unset) uses the
- *     default Grove from the registry.
+ *  3. The first registered project in a Grove — variant-less callers
+ *     only (ad-hoc `myco daemon` from a non-project cwd that still
+ *     wants the local registry's first project). Prefers the default
+ *     Grove, then falls through to any other Grove in this home.
  *
  * Returns `null` when the global variant is set (always — home-scoped), or
  * when no enclosing project AND no registered project is found. The
@@ -110,14 +108,9 @@ export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string | 
 const PHANTOM_BOOTSTRAP_DIRNAME = '_unbound-bootstrap';
 
 export function resolvePhantomBootstrapVaultDir(mycoHome = resolveMycoHome()): string {
-  // Per-variant scratch vault: the dev daemon (service-dev) and the prod
-  // daemon (service) anchor to separate dirs, so one daemon's boot-time
-  // manifest cleanup never mutates the vault the other is running against.
-  const variant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
-  const dirname = variant === SERVICE_DEV_DIRNAME
-    ? `${PHANTOM_BOOTSTRAP_DIRNAME}-dev`
-    : PHANTOM_BOOTSTRAP_DIRNAME;
-  return path.join(mycoHome, dirname);
+  // Each MYCO_HOME has exactly one daemon, so the dirname is always the
+  // same — no per-variant suffix needed.
+  return path.join(mycoHome, PHANTOM_BOOTSTRAP_DIRNAME);
 }
 
 /**
@@ -205,16 +198,13 @@ function firstProjectVaultFromRegistry(): string | null {
     return null;
   }
 
-  // Prod variant (or unset): prefer the default Grove unless it is
-  // explicitly served by the dev daemon, then fall through to any
-  // other prod Grove. The served_by check below closes the cross-variant
-  // escape hatch: a user who set a dev Grove as default_grove_id and then
-  // installed the prod daemon must NOT have the prod daemon silently bind
-  // to the dev Grove.
+  // Prod variant (or unset): prefer the default Grove, then fall through
+  // to any other Grove. With separate homes there is no cross-variant
+  // pointer collision, so any Grove in this home is a valid candidate.
   const defaultId = getDefaultGroveId(mycoHome);
   if (defaultId) {
     const defaultRecord = loadGroveRecord(defaultId, mycoHome);
-    if (defaultRecord && defaultRecord.served_by !== 'service-dev') {
+    if (defaultRecord) {
       const vault = firstVaultFromGrove(defaultId, mycoHome);
       if (vault) return vault;
     }

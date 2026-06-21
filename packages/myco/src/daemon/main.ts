@@ -1223,8 +1223,8 @@ export async function main(): Promise<void> {
   // First-start auto-bootstrap. Runs when this daemon variant lacks its
   // default Grove — the durable "has this variant bootstrapped" signal.
   // service-dev still bootstraps on a machine where prod already has,
-  // because each variant owns a distinct default Grove (`default-dev` vs
-  // `default`). PowerManager tick handles re-detection thereafter.
+  // because each home has its own `groves/` tree and a separate `default`
+  // Grove. PowerManager tick handles re-detection thereafter.
   try {
     const decision = shouldRunGlobalBootstrap(resolveMycoHome());
     if (decision.shouldRun) {

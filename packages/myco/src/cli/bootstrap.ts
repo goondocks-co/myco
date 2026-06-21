@@ -40,7 +40,7 @@ import {
 } from '../grove/global-config-migration.js';
 import {
   ensureDefaultGrove,
-  resolveDefaultGroveForVariant,
+  resolveDefaultGrove,
   type DaemonVariant,
   type GroveRecord,
 } from '../grove/registry.js';
@@ -86,20 +86,18 @@ export interface GlobalBootstrapStartupDecision {
 }
 
 /**
- * Startup bootstrap is needed when this daemon variant lacks its default
- * Grove. The default Grove is the durable "has this variant bootstrapped"
- * signal — it persists across daemon restarts, and dev/prod each own a
- * distinct one (so service-dev still bootstraps on a machine where prod has
- * already run). Launcher presence is NOT a trigger: the launcher
- * unification retired the global trampolines, and bootstrap's cleanup step
- * deletes any that linger — keying on their absence would re-run bootstrap
- * (and its migration walker) on every start.
+ * Startup bootstrap is needed when this home lacks a default Grove.
+ * The default Grove is the durable "has this daemon bootstrapped" signal
+ * — it persists across daemon restarts. Launcher presence is NOT a
+ * trigger: the launcher unification retired the global trampolines, and
+ * bootstrap's cleanup step deletes any that linger — keying on their
+ * absence would re-run bootstrap (and its migration walker) on every start.
  */
 export function shouldRunGlobalBootstrap(
   mycoHome: string = resolveMycoHome(),
   servedBy: DaemonVariant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT),
 ): GlobalBootstrapStartupDecision {
-  const defaultGroveAbsent = resolveDefaultGroveForVariant(mycoHome, { servedBy }) === null;
+  const defaultGroveAbsent = resolveDefaultGrove(mycoHome) === null;
   return {
     shouldRun: defaultGroveAbsent,
     defaultGroveAbsent,
@@ -185,10 +183,10 @@ export function runSymbiontDetection(
  *   - Migration walker LAST — it operates on already-registered
  *     projects and doesn't depend on launcher state.
  *
- * Variant-aware: `MYCO_SERVICE_VARIANT=dev` produces a `default-dev`
- * Grove with `served_by=service-dev`; unset or `service` produces
- * `default` / `service`. Dev and prod daemons can coexist on the same
- * machine — each has its own default Grove.
+ * Variant-aware: `MYCO_SERVICE_VARIANT=dev` produces a `default` Grove
+ * with `served_by=service-dev`; unset or `service` produces
+ * `default` / `service`. Dev and prod daemons coexist via separate homes
+ * — each has its own `groves/` tree.
  *
  * Migration is fire-once-per-project. Call sites:
  *   - daemon first-start (greenfield bootstrap)

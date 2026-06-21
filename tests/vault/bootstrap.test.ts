@@ -355,7 +355,7 @@ describe('resolveBootstrapVaultDir', () => {
   });
 });
 
-describe('resolvePhantomBootstrapVaultDir — per-variant isolation', () => {
+describe('resolvePhantomBootstrapVaultDir — single dirname per home', () => {
   let savedVariant: string | undefined;
 
   beforeEach(() => {
@@ -374,26 +374,18 @@ describe('resolvePhantomBootstrapVaultDir — per-variant isolation', () => {
     expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
   });
 
-  test('dev variant anchors to a separate _unbound-bootstrap-dev', () => {
+  test('dev variant also anchors to _unbound-bootstrap (home separation removes the suffix)', () => {
     process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
-  });
-
-  test('dev alias resolves to the same dev anchor', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
-    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
-  });
-
-  test('variant-less daemon uses the prod anchor', () => {
-    delete process.env.MYCO_SERVICE_VARIANT;
     expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
   });
 
-  test('dev and prod anchors never collide', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service';
-    const prod = resolvePhantomBootstrapVaultDir(tmpHome);
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    const dev = resolvePhantomBootstrapVaultDir(tmpHome);
-    expect(prod).not.toBe(dev);
+  test('dev alias resolves to _unbound-bootstrap', () => {
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
+  });
+
+  test('variant-less daemon uses _unbound-bootstrap', () => {
+    delete process.env.MYCO_SERVICE_VARIANT;
+    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
   });
 });
