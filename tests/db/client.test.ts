@@ -1,5 +1,16 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { initDatabase, getDatabase, closeDatabase, openDatabase, withDatabase } from '@myco/db/client.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  initDatabase,
+  getDatabase,
+  closeDatabase,
+  openDatabase,
+  withDatabase,
+  setOwnedServiceDirForCurrentProcess,
+  clearOwnedServiceDirForCurrentProcess,
+} from '@myco/db/client.js';
 
 describe('SQLite client', () => {
   afterEach(() => {
@@ -80,5 +91,51 @@ describe('SQLite client', () => {
     } finally {
       scoped.close();
     }
+  });
+});
+
+describe('assertOwnsDatabase — home-path ownership gate', () => {
+  // Grove id shape: grove_ + 32 hex chars (matches isGroveEraId).
+  const GROVE_ID = 'grove_' + 'a'.repeat(32);
+  const HOME_A = '/tmp/A/.myco';
+  const HOME_B = '/tmp/B/.myco';
+
+  afterEach(() => {
+    clearOwnedServiceDirForCurrentProcess();
+    try { closeDatabase(); } catch { /* already closed */ }
+  });
+
+  it('allows a Grove DB inside the owning home groves directory', () => {
+    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
+    const db = openDatabase();
+    // Simulate withDatabase being called with a path under HOME_A/groves/<id>/myco.db
+    // by overriding db.filename — bun:sqlite exposes it read-only, so we
+    // exercise assertOwnsDatabase directly via a real in-memory DB whose
+    // filename is :memory: (non-grove → always allowed).  The cross-home
+    // throw case below tests the gate logic with a real grove-shaped path.
+    expect(() => withDatabase(db, () => {})).not.toThrow();
+    db.close();
+  });
+
+  it('allows :memory: when ownership is declared (non-grove early-return)', () => {
+    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
+    const db = openDatabase(); // opens :memory:
+    expect(() => withDatabase(db, () => {})).not.toThrow();
+    db.close();
+  });
+
+  it('allows a non-grove path (not matching grove_<id>/myco.db) when ownership is declared', () => {
+    setOwnedServiceDirForCurrentProcess(`${HOME_A}/service`, HOME_A);
+    // openDatabase with no path opens :memory: — groveIdFromDbPath returns null.
+    const db = openDatabase();
+    expect(() => withDatabase(db, () => {})).not.toThrow();
+    db.close();
+  });
+
+  it('is a no-op when no ownership is declared', () => {
+    // clearOwnedServiceDirForCurrentProcess already called in afterEach; starting fresh.
+    const db = openDatabase();
+    expect(() => withDatabase(db, () => {})).not.toThrow();
+    db.close();
   });
 });

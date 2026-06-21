@@ -10,8 +10,7 @@ import { Database } from 'bun:sqlite';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { resolveDevNativeDeps } from '../runtime/native-deps.js';
-import { resolveServiceDirName } from '../grove/paths.js';
-import { loadGroveRecord } from '../grove/registry.js';
+import { resolveGrovesDir, groveIdFromDbPath } from '../grove/paths.js';
 
 const NOT_INITIALIZED_MSG = 'Database not initialized -- call initDatabase() first';
 
@@ -49,19 +48,22 @@ export function clearOwnedServiceDirForCurrentProcess(): void {
 }
 
 /**
- * Throw when `databasePath` belongs to a Grove that is NOT served by
- * the current daemon. No-op when no owner is declared.
+ * Throw when `databasePath` is a Grove DB that falls outside the current
+ * daemon's groves directory. No-op when no owner is declared.
+ *
+ * Non-grove DBs (:memory:, phantom bootstrap, fixtures) pass unconditionally
+ * so test and one-shot paths are never blocked.
  */
 function assertOwnsDatabase(databasePath: string): void {
   if (!ownedServiceDir) return;
-  const groveId = path.basename(path.dirname(databasePath));
-  const record = loadGroveRecord(groveId, ownedServiceDir.mycoHome);
-  if (!record) return; // non-Grove DB or Grove not yet registered; surfaced elsewhere
-  const expected = resolveServiceDirName(ownedServiceDir.stateDir, ownedServiceDir.mycoHome);
-  if (record.served_by !== expected) {
+  // Non-grove DBs (:memory:, phantom bootstrap, fixtures) are always allowed.
+  if (groveIdFromDbPath(databasePath) === null) return;
+  const grovesDir = path.resolve(resolveGrovesDir(ownedServiceDir.mycoHome));
+  const resolved = path.resolve(databasePath);
+  if (resolved !== grovesDir && !resolved.startsWith(grovesDir + path.sep)) {
     throw new Error(
-      `Daemon at ${ownedServiceDir.stateDir} attempted to open Grove ${record.slug} (${record.id}), `
-      + `which is served by ${record.served_by}. Cross-Grove access is forbidden.`,
+      `Daemon at home ${ownedServiceDir.mycoHome} attempted to open a Grove database `
+      + `outside its groves directory: ${databasePath}. Cross-home Grove access is forbidden.`,
     );
   }
 }
