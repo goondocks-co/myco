@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { listGroves, type GroveRecord } from '../grove/registry.js';
-import { resolveMycoHome, currentDaemonVariant } from '../grove/paths.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import {
   resolveGroveBackupDir,
   legacyGroveBackupLocations,
@@ -49,7 +49,7 @@ export interface GroveMigrationResult {
 /** Migrate legacy backups for every Grove this daemon serves. */
 export function migrateLegacyBackups(opts: { mycoHome?: string } = {}): GroveMigrationResult[] {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
-  const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
+  const groves = listGroves(mycoHome);
   return groves.map((grove) => migrateGrove(grove, mycoHome));
 }
 

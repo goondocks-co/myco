@@ -85,9 +85,8 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
   if (!assumeYes) {
     let projectCount = 0;
     try {
-      const { currentDaemonVariant } = await import('../grove/paths.js');
       const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
-      for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+      for (const grove of listGroves(mycoHome)) {
         projectCount += listRegisteredProjects(grove.id, mycoHome).length;
       }
     } catch { /* registry unreadable — the summary still describes the rest */ }
@@ -153,14 +152,10 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     } catch { /* not present */ }
   }
 
-  // --- Clean up project-local artifacts in registered projects whose
-  //     Grove this binary owns. Scoping to the binary's daemon variant
-  //     prevents `myco-dev remove` from touching prod-served projects;
-  //     each binary cleans up its own side. ---
+  // --- Clean up project-local artifacts in registered projects. ---
   try {
-    const { currentDaemonVariant } = await import('../grove/paths.js');
     const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
-    for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+    for (const grove of listGroves(mycoHome)) {
       for (const project of listRegisteredProjects(grove.id, mycoHome)) {
         await cleanProjectLocalArtifacts(project.root, pkgRoot);
       }

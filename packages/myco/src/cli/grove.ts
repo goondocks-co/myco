@@ -10,13 +10,11 @@ import {
   renameGrove,
   resolveGrove,
   setDefaultGrove,
-  type DaemonVariant,
   type ResolvedRegisteredProject,
 } from '@myco/grove/registry.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import {
-  isDevServiceMode,
   resolveMycoHome,
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
@@ -106,8 +104,7 @@ export async function run(args: string[]): Promise<void> {
   if (cmd === 'create') {
     const name = rest.join(' ').trim();
     if (!name) throw new Error('Grove name is required');
-    const servedBy: DaemonVariant = isDevServiceMode() ? 'service-dev' : 'service';
-    const grove = createGrove(name, mycoHome, { servedBy });
+    const grove = createGrove(name, mycoHome, { servedBy: 'service' });
     console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
     return;
   }

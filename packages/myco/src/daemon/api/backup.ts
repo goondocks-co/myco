@@ -31,7 +31,7 @@ import { z } from 'zod';
 import { loadMergedConfig, updateTierConfigRaw, TierConfigUnreadableError } from '../../config/loader.js';
 import { setAtPath, unsetAtPath } from '../../utils/dot-path.js';
 import { assertOwnedGrove, loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
-import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome, currentDaemonVariant } from '../../grove/paths.js';
+import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import path from 'node:path';
 import {
@@ -163,7 +163,7 @@ export function createBackupHandlers(deps: BackupDeps) {
       return inflight.run(key, async (): Promise<RouteResponse> => {
         // "all-groves" means every Grove THIS daemon serves; the peer daemon
         // backs up its own Groves.
-        const groves = listGroves(mycoHome, { servedBy: currentDaemonVariant() });
+        const groves = listGroves(mycoHome);
         const results = groves.map((g) => performBackupForGrove(g));
         const ok = results.filter((r) => r.ok).length;
         return { body: { scope, results, summary: { ok, failed: results.length - ok } } };

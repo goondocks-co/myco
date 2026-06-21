@@ -333,7 +333,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   };
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
-    () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
+    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.

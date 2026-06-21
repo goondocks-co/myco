@@ -27,7 +27,7 @@ function seedTwoGroves(mycoHome: string) {
   }
 }
 
-describe('forEachGrove ownership boundary', () => {
+describe('forEachGrove home-as-filter', () => {
   let mycoHome: string;
   beforeEach(() => {
     mycoHome = mkdtempSync(path.join(tmpdir(), 'myco-feg-'));
@@ -37,28 +37,17 @@ describe('forEachGrove ownership boundary', () => {
     seedTwoGroves(mycoHome);
   });
 
-  it('service-dev daemon visits only service-dev-owned groves', async () => {
+  it('visits all Groves in the home regardless of served_by', async () => {
+    // Home is the boundary; served_by no longer filters forEachGrove.
     const visited: string[] = [];
     const cache = new GroveRuntimeCache();
     await forEachGrove(
       cache,
       noopLogger,
       ({ grove }) => { visited.push(grove.slug); },
-      { mycoHome, daemonStateDir: path.join(mycoHome, 'service-dev') },
+      { mycoHome },
     );
-    expect(visited).toEqual(['dogfood']);
-  });
-
-  it('service daemon visits only service-owned groves', async () => {
-    const visited: string[] = [];
-    const cache = new GroveRuntimeCache();
-    await forEachGrove(
-      cache,
-      noopLogger,
-      ({ grove }) => { visited.push(grove.slug); },
-      { mycoHome, daemonStateDir: path.join(mycoHome, 'service') },
-    );
-    expect(visited).toEqual(['default']);
+    expect(visited.sort()).toEqual(['default', 'dogfood']);
   });
 });
 

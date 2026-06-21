@@ -19,8 +19,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveProjectVaultDir, resolveMycoHome, currentDaemonVariant } from './paths.js';
-import { listGroves, listRegisteredProjects, type DaemonVariant } from './registry.js';
+import { resolveProjectVaultDir, resolveMycoHome } from './paths.js';
+import { listGroves, listRegisteredProjects } from './registry.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
@@ -598,15 +598,8 @@ export interface MigrationPassResult {
 }
 
 /**
- * Iterate every registered project in the Groves THIS DAEMON SERVES and
+ * Iterate every registered project across all Groves in this home and
  * run `migrateProjectToGlobalInstall` for each.
- *
- * Hard scope: invocations stay inside the Grove-ownership boundary
- * (`grove.toml served_by`). Cross-daemon mutation is forbidden by the
- * same rule that gates SQLite access.
- *
- * `servedBy` defaults to the current process's daemon variant; tests
- * and CLI commands run outside a daemon pass it explicitly.
  *
  * Returns the pass result; the caller is responsible for persisting it
  * via `recordMigrationPass` if audit-log coverage is desired.
@@ -614,20 +607,18 @@ export interface MigrationPassResult {
 export function runGlobalInstallMigrationPass(
   options: {
     mycoHome?: string;
-    servedBy?: DaemonVariant;
     manifests?: SymbiontManifest[];
     packageRoot?: string;
   } = {},
 ): MigrationPassResult {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const servedBy = options.servedBy ?? currentDaemonVariant();
   const manifests = options.manifests ?? loadManifests();
   const packageRoot = options.packageRoot ?? resolvePackageRoot();
 
   const passId = cryptoRandomId();
   const outcomes: ProjectMigrationOutcome[] = [];
 
-  for (const grove of listGroves(mycoHome, { servedBy })) {
+  for (const grove of listGroves(mycoHome)) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       if (!fs.existsSync(project.root)) {
         // Off-disk root — record a benign no-op and move on. A separate
@@ -707,12 +698,9 @@ export function runGlobalInstallMigrationPass(
  */
 export function propagateLegacyMachineIdAtStartup(options: {
   mycoHome?: string;
-  servedBy?: DaemonVariant;
 } = {}): string | null {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const servedBy = options.servedBy ?? currentDaemonVariant();
-  const groves = listGroves(mycoHome).filter((g) => g.served_by === servedBy);
-  for (const grove of groves) {
+  for (const grove of listGroves(mycoHome)) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       if (!fs.existsSync(project.root)) continue;
       const vaultDir = resolveProjectVaultDir(project.root);

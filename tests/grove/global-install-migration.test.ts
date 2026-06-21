@@ -293,7 +293,7 @@ describe('propagateLegacyMachineIdAtStartup', () => {
     // No global machine_id yet — simulates the racey daemon-startup window.
     expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
 
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
     expect(sourceRoot).toBe(projectRoot);
     expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
@@ -310,31 +310,32 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       machineId: 'should_not_overwrite',
     });
 
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
     expect(sourceRoot).toBeNull();
     expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
       .toBe('global_pre_existing');
   });
 
-  it('skips Groves not served by this daemon variant', () => {
+  it('scans Groves of any served_by in the home', () => {
+    // Home is the boundary; served_by no longer restricts the scan.
     seedGroveWithLegacyProject(mycoHome, {
       groveId: 'grove_33333333333333333333333333333333',
       projectId: 'proj_33333333333333333333333333333333',
       projectRoot,
-      servedBy: 'service-dev',  // dev-served grove
+      servedBy: 'service-dev',
       machineId: 'dev_only_id',
     });
 
-    // Prod daemon scans only service-served groves.
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
-    expect(sourceRoot).toBeNull();
-    expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
+    expect(sourceRoot).toBe(projectRoot);
+    expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
+      .toBe('dev_only_id');
   });
 
   it('returns null on a greenfield daemon with no registered Groves', () => {
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
     expect(sourceRoot).toBeNull();
     expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
   });

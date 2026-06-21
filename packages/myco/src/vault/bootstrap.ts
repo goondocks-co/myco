@@ -198,8 +198,7 @@ function firstProjectVaultFromRegistry(): string | null {
   const targetServedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
 
   if (targetServedBy === SERVICE_DEV_DIRNAME) {
-    // Dev variant: find any Grove whose grove.toml says served_by = "service-dev".
-    for (const grove of listGroves(mycoHome, { servedBy: 'service-dev' })) {
+    for (const grove of listGroves(mycoHome)) {
       const vault = firstVaultFromGrove(grove.id, mycoHome);
       if (vault) return vault;
     }
@@ -208,19 +207,10 @@ function firstProjectVaultFromRegistry(): string | null {
 
   // Prod variant (or unset): prefer the default Grove unless it is
   // explicitly served by the dev daemon, then fall through to any
-  // other prod Grove. The served_by filter exists to close the
-  // cross-variant escape hatch: a user who set a dev Grove as
-  // default_grove_id and then installed the prod daemon must NOT
-  // have the prod daemon silently bind to the dev Grove. That's
-  // the exact cross-variant violation the variant-pinned design
-  // exists to prevent.
-  //
-  // Groves without a grove.toml at all can't be bound either way —
-  // `listRegisteredProjects` short-circuits on a missing record —
-  // so the loadGroveRecord check below also filters them out, which
-  // matches the pre-fix behavior (a Grove with no grove.toml never
-  // contributed projects, the prior "legacy carve-out" comment was
-  // misleading).
+  // other prod Grove. The served_by check below closes the cross-variant
+  // escape hatch: a user who set a dev Grove as default_grove_id and then
+  // installed the prod daemon must NOT have the prod daemon silently bind
+  // to the dev Grove.
   const defaultId = getDefaultGroveId(mycoHome);
   if (defaultId) {
     const defaultRecord = loadGroveRecord(defaultId, mycoHome);
@@ -229,7 +219,7 @@ function firstProjectVaultFromRegistry(): string | null {
       if (vault) return vault;
     }
   }
-  for (const grove of listGroves(mycoHome, { servedBy: 'service' })) {
+  for (const grove of listGroves(mycoHome)) {
     if (grove.id === defaultId) continue; // already tried above
     const vault = firstVaultFromGrove(grove.id, mycoHome);
     if (vault) return vault;
