@@ -214,8 +214,7 @@ async function runMachineWideUpdate(
   // Global install still owns some local repository files: rules guidance and
   // repo-level ignore entries today, future project-managed surfaces later.
   // Reconcile them by registered Grove ownership, not by the caller's cwd, so
-  // `myco-dev update` only touches service-dev Groves while the published
-  // daemon updates service Groves.
+  // Each MYCO_HOME update only touches Groves under that home.
   try {
     const { reconcileRegisteredManagedProjectFiles } = await import('../symbionts/reconcile.js');
     const outcomes = reconcileRegisteredManagedProjectFiles({ manifests: allManifests });

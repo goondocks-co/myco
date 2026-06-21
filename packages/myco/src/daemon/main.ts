@@ -1220,17 +1220,14 @@ export async function main(): Promise<void> {
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
 
-  // First-start auto-bootstrap. Runs when this daemon variant lacks its
-  // default Grove — the durable "has this variant bootstrapped" signal.
-  // service-dev still bootstraps on a machine where prod already has,
-  // because each home has its own `groves/` tree and a separate `default`
-  // Grove. PowerManager tick handles re-detection thereafter.
+  // First-start auto-bootstrap. Runs when this home lacks a default Grove
+  // — the durable "has this home bootstrapped" signal. Each MYCO_HOME has
+  // its own `groves/` tree. PowerManager tick handles re-detection thereafter.
   try {
     const decision = shouldRunGlobalBootstrap(resolveMycoHome());
     if (decision.shouldRun) {
       logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap required', {
         myco_home: decision.mycoHome,
-        served_by: decision.servedBy,
         default_grove_absent: decision.defaultGroveAbsent,
       });
       const result = runGlobalBootstrap();

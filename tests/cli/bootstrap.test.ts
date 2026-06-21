@@ -156,10 +156,8 @@ describe('runSymbiontDetection', () => {
   // leaves it intact.
   it('does not invoke the migration walker — legacy project-local launchers survive a detection pass', () => {
     clearGroveRegistryCaches();
-    const prevServiceDevMode = process.env.MYCO_SERVICE_DEV_MODE;
-    process.env.MYCO_SERVICE_DEV_MODE = '1';
     try {
-      const grove = createGrove('default', path.join(tmpHome, '.myco'), { servedBy: 'service-dev' });
+      const grove = createGrove('default', path.join(tmpHome, '.myco'));
       const projectRoot = fs.mkdtempSync(path.join(tmpHome, 'legacy-proj-'));
       fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });
       const legacyLauncher = path.join(projectRoot, '.agents', 'myco-run.cjs');
@@ -180,8 +178,6 @@ describe('runSymbiontDetection', () => {
 
       expect(fs.existsSync(legacyLauncher)).toBe(true);
     } finally {
-      if (prevServiceDevMode === undefined) delete process.env.MYCO_SERVICE_DEV_MODE;
-      else process.env.MYCO_SERVICE_DEV_MODE = prevServiceDevMode;
       clearGroveRegistryCaches();
     }
   });
@@ -191,28 +187,23 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
   let tmpHome: string;
   let prevHome: string | undefined;
   let prevMycoHome: string | undefined;
-  let prevServiceVariant: string | undefined;
 
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bootstrap-default-grove-'));
     prevHome = process.env.HOME;
     prevMycoHome = process.env.MYCO_HOME;
-    prevServiceVariant = process.env.MYCO_SERVICE_VARIANT;
     process.env.HOME = tmpHome;
     process.env.MYCO_HOME = path.join(tmpHome, '.myco');
-    delete process.env.MYCO_SERVICE_VARIANT;
     clearGroveRegistryCaches();
   });
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
     if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
     if (prevMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = prevMycoHome;
-    if (prevServiceVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-    else process.env.MYCO_SERVICE_VARIANT = prevServiceVariant;
     clearGroveRegistryCaches();
   });
 
-  it('creates a default Grove on a truly greenfield home (unset variant → served_by=service)', () => {
+  it('creates a default Grove on a truly greenfield home (served_by=service)', () => {
     // Pre-condition: no Groves at all.
     expect(listGroves(path.join(tmpHome, '.myco'))).toEqual([]);
     expect(getDefaultGroveId(path.join(tmpHome, '.myco'))).toBeNull();
@@ -231,35 +222,15 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(reloaded?.served_by).toBe('service');
   });
 
-  it('creates a default Grove for variant=dev (served_by=service-dev)', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
-    clearGroveRegistryCaches();
-
-    const result = runGlobalBootstrap(PKG_ROOT);
-
-    expect(result.defaultGrove.served_by).toBe('service-dev');
-    expect(result.defaultGrove.slug).toBe('default');
-  });
-
-  it('also accepts MYCO_SERVICE_VARIANT=service-dev for documented daemon-dir usage', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    clearGroveRegistryCaches();
-
-    const result = runGlobalBootstrap(PKG_ROOT);
-
-    expect(result.defaultGrove.served_by).toBe('service-dev');
-    expect(result.defaultGrove.slug).toBe('default');
-  });
-
   it('startup bootstrap skips when a default Grove already exists in this home', () => {
     const mycoHome = path.join(tmpHome, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
-    createGrove('default', mycoHome, { servedBy: 'service' });
+    createGrove('default', mycoHome);
     clearGroveRegistryCaches();
 
     // With home separation each daemon owns its own home, so the presence
     // of ANY default Grove means bootstrap has already run.
-    const decision = shouldRunGlobalBootstrap(mycoHome, 'service');
+    const decision = shouldRunGlobalBootstrap(mycoHome);
 
     expect(decision.shouldRun).toBe(false);
     expect(decision.defaultGroveAbsent).toBe(false);
@@ -270,14 +241,14 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     clearGroveRegistryCaches();
 
-    const decision = shouldRunGlobalBootstrap(mycoHome, 'service-dev');
+    const decision = shouldRunGlobalBootstrap(mycoHome);
 
     expect(decision.shouldRun).toBe(true);
     expect(decision.defaultGroveAbsent).toBe(true);
-    expect(decision.servedBy).toBe('service-dev');
+    expect(decision.mycoHome).toBe(mycoHome);
   });
 
-  it('startup bootstrap does NOT re-run once this variant default Grove exists, regardless of launcher state', () => {
+  it('startup bootstrap does NOT re-run once a default Grove exists, regardless of launcher state', () => {
     // The launcher unification retired the global trampolines and bootstrap
     // deletes any that linger; launcher presence/absence is no longer a
     // bootstrap trigger. The default Grove is the sole durable signal — so a
@@ -285,10 +256,10 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     const mycoHome = path.join(tmpHome, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
     fs.writeFileSync(path.join(mycoHome, GLOBAL_HOOK_LAUNCHER_FILENAME), '// stale orphan launcher\n', 'utf-8');
-    createGrove('default', mycoHome, { servedBy: 'service' });
+    createGrove('default', mycoHome);
     clearGroveRegistryCaches();
 
-    const decision = shouldRunGlobalBootstrap(mycoHome, 'service');
+    const decision = shouldRunGlobalBootstrap(mycoHome);
 
     expect(decision.shouldRun).toBe(false);
     expect(decision.defaultGroveAbsent).toBe(false);
@@ -303,29 +274,31 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(listGroves(path.join(tmpHome, '.myco')).length).toBe(1);
   });
 
-  it('dev and prod variants each get a slug=default Grove in their own home', () => {
-    // Prod boots in the default home.
-    const prod = runGlobalBootstrap(PKG_ROOT);
-    expect(prod.defaultGrove.served_by).toBe('service');
-    expect(prod.defaultGrove.slug).toBe('default');
-
-    // Dev boots in a separate home (home separation is the new coexistence
-    // model; each home has exactly one daemon and one default Grove).
-    const devHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bootstrap-dev-'));
+  it('two daemons in distinct homes each get a slug=default Grove in their own home', () => {
+    // Home separation is the coexistence model: each home has exactly one
+    // daemon and one default Grove. The identity is the home path, not a
+    // variant string.
+    const homeA = path.join(tmpHome, '.myco');
+    const homeB = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bootstrap-b-'));
     try {
-      process.env.MYCO_HOME = path.join(devHome, '.myco');
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
+      // Daemon A boots in the default home.
+      const resultA = runGlobalBootstrap(PKG_ROOT);
+      expect(resultA.defaultGrove.served_by).toBe('service');
+      expect(resultA.defaultGrove.slug).toBe('default');
+
+      // Daemon B boots in a separate home.
+      process.env.MYCO_HOME = homeB;
       clearGroveRegistryCaches();
-      const dev = runGlobalBootstrap(PKG_ROOT);
-      expect(dev.defaultGrove.served_by).toBe('service-dev');
-      expect(dev.defaultGrove.slug).toBe('default');
-      expect(dev.defaultGrove.id).not.toBe(prod.defaultGrove.id);
+      const resultB = runGlobalBootstrap(PKG_ROOT);
+      expect(resultB.defaultGrove.served_by).toBe('service');
+      expect(resultB.defaultGrove.slug).toBe('default');
+      expect(resultB.defaultGrove.id).not.toBe(resultA.defaultGrove.id);
 
       // Each home has exactly one Grove.
-      expect(listGroves(path.join(tmpHome, '.myco'))).toHaveLength(1);
-      expect(listGroves(path.join(devHome, '.myco'))).toHaveLength(1);
+      expect(listGroves(homeA)).toHaveLength(1);
+      expect(listGroves(homeB)).toHaveLength(1);
     } finally {
-      fs.rmSync(devHome, { recursive: true, force: true });
+      fs.rmSync(homeB, { recursive: true, force: true });
     }
   });
 
@@ -374,10 +347,8 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
   });
 
   it('preserves the provisioned manifest identity when the first hook registers a project', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    clearGroveRegistryCaches();
     const bootstrap = runGlobalBootstrap(PKG_ROOT);
-    expect(bootstrap.defaultGrove.served_by).toBe('service-dev');
+    expect(bootstrap.defaultGrove.served_by).toBe('service');
 
     const projectRoot = fs.mkdtempSync(path.join(tmpHome, 'born-global-proj-'));
     execFileSync('git', ['init', '--quiet'], { cwd: projectRoot, stdio: 'pipe' });
@@ -398,48 +369,44 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     expect(registered?.grove.id).toBe(bootstrap.defaultGrove.id);
   });
 
-  it('dev and prod each register projects into their own home grove, never cross-home', () => {
-    // With home separation, dev and prod run in separate MYCO_HOME dirs.
+  it('two homes each register projects into their own grove, never cross-home', () => {
+    // With home separation, daemons in distinct homes run independently.
     // Each home has exactly one default Grove; hooks fire against the home
     // owned by that daemon and can never reach the other home's grove.
 
-    const devHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bootstrap-dev-'));
+    const homeA = path.join(tmpHome, '.myco');
+    const homeB = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bootstrap-b-'));
     try {
-      // Phase 1: prod daemon boots in the default home.
-      const prodBootstrap = runGlobalBootstrap(PKG_ROOT);
-      expect(prodBootstrap.defaultGrove.served_by).toBe('service');
-      expect(prodBootstrap.defaultGrove.slug).toBe('default');
+      // Phase 1: daemon A boots in the default home.
+      const bootstrapA = runGlobalBootstrap(PKG_ROOT);
+      expect(bootstrapA.defaultGrove.slug).toBe('default');
 
-      // Phase 2: dev daemon boots in its own home.
-      process.env.MYCO_HOME = path.join(devHome, '.myco');
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
+      // Phase 2: daemon B boots in its own home.
+      process.env.MYCO_HOME = homeB;
       clearGroveRegistryCaches();
-      const devBootstrap = runGlobalBootstrap(PKG_ROOT);
-      expect(devBootstrap.defaultGrove.served_by).toBe('service-dev');
-      expect(devBootstrap.defaultGrove.slug).toBe('default');
-      expect(devBootstrap.defaultGrove.id).not.toBe(prodBootstrap.defaultGrove.id);
+      const bootstrapB = runGlobalBootstrap(PKG_ROOT);
+      expect(bootstrapB.defaultGrove.slug).toBe('default');
+      expect(bootstrapB.defaultGrove.id).not.toBe(bootstrapA.defaultGrove.id);
 
-      // Phase 3: prod hook fires — registers into prod home's grove.
-      const prodProjectRoot = fs.mkdtempSync(path.join(tmpHome, 'prod-proj-'));
-      execFileSync('git', ['init', '--quiet'], { cwd: prodProjectRoot, stdio: 'pipe' });
-      process.env.MYCO_HOME = path.join(tmpHome, '.myco');
-      delete process.env.MYCO_SERVICE_VARIANT;
+      // Phase 3: hook fires against home A — registers into home A's grove.
+      const projectA = fs.mkdtempSync(path.join(tmpHome, 'proj-a-'));
+      execFileSync('git', ['init', '--quiet'], { cwd: projectA, stdio: 'pipe' });
+      process.env.MYCO_HOME = homeA;
       clearGroveRegistryCaches();
-      const prodBuffer = resolveProjectBufferDirFromRoot(prodProjectRoot, path.join(tmpHome, '.myco'));
-      expect(prodBuffer?.groveId).toBe(prodBootstrap.defaultGrove.id);
-      expect(listRegisteredProjects(prodBootstrap.defaultGrove.id, path.join(tmpHome, '.myco'))).toHaveLength(1);
+      const bufferA = resolveProjectBufferDirFromRoot(projectA, homeA);
+      expect(bufferA?.groveId).toBe(bootstrapA.defaultGrove.id);
+      expect(listRegisteredProjects(bootstrapA.defaultGrove.id, homeA)).toHaveLength(1);
 
-      // Phase 4: dev hook fires — registers into dev home's grove.
-      const devProjectRoot = fs.mkdtempSync(path.join(tmpHome, 'dev-proj-'));
-      execFileSync('git', ['init', '--quiet'], { cwd: devProjectRoot, stdio: 'pipe' });
-      process.env.MYCO_HOME = path.join(devHome, '.myco');
-      process.env.MYCO_SERVICE_VARIANT = 'dev';
+      // Phase 4: hook fires against home B — registers into home B's grove.
+      const projectB = fs.mkdtempSync(path.join(tmpHome, 'proj-b-'));
+      execFileSync('git', ['init', '--quiet'], { cwd: projectB, stdio: 'pipe' });
+      process.env.MYCO_HOME = homeB;
       clearGroveRegistryCaches();
-      const devBuffer = resolveProjectBufferDirFromRoot(devProjectRoot, path.join(devHome, '.myco'));
-      expect(devBuffer?.groveId).toBe(devBootstrap.defaultGrove.id);
-      expect(listRegisteredProjects(devBootstrap.defaultGrove.id, path.join(devHome, '.myco'))).toHaveLength(1);
+      const bufferB = resolveProjectBufferDirFromRoot(projectB, homeB);
+      expect(bufferB?.groveId).toBe(bootstrapB.defaultGrove.id);
+      expect(listRegisteredProjects(bootstrapB.defaultGrove.id, homeB)).toHaveLength(1);
     } finally {
-      fs.rmSync(devHome, { recursive: true, force: true });
+      fs.rmSync(homeB, { recursive: true, force: true });
     }
   });
 });

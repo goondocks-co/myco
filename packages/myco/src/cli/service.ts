@@ -3,28 +3,25 @@ import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-builder.js';
 import { serviceLabel } from '../service/labels.js';
-import type { ServiceVariant } from '../service/types.js';
 import { isDefaultMycoHome, resolveMycoHome, resolveServiceDir, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'status';
 
 export interface ParsedServiceArgs {
   action: ServiceAction;
-  variant: ServiceVariant;
 }
 
 const ACTIONS: ServiceAction[] = ['install', 'uninstall', 'start', 'stop', 'restart', 'status'];
 
 export function parseServiceArgs(args: string[]): ParsedServiceArgs {
   if (args.length === 0) {
-    throw new Error('Usage: myco service <install|uninstall|start|stop|restart|status> [--dev]');
+    throw new Error('Usage: myco service <install|uninstall|start|stop|restart|status>');
   }
   const action = args[0] as ServiceAction;
   if (!ACTIONS.includes(action)) {
     throw new Error(`Unknown service action: ${args[0]}`);
   }
-  const variant: ServiceVariant = args.includes('--dev') ? 'dev' : 'prod';
-  return { action, variant };
+  return { action };
 }
 
 /**

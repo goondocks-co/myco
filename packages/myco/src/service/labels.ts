@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { ServiceVariant } from './types.js';
-import { isDefaultMycoHome, resolveMycoHome, SERVICE_DEV_DIRNAME } from '../grove/paths.js';
+import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
 import { isSandboxedServiceUnitDir, resolveServiceUnitDir } from './paths.js';
-import type { DaemonServiceState } from '../daemon/service-state.js';
 
 /**
  * Stable launchd/systemd label for the daemon in the default home (`~/.myco`).
@@ -54,11 +52,3 @@ function homeLabelSuffix(mycoHome: string): string {
   return `.${hash}`;
 }
 
-/**
- * Derive the service variant ('dev' | 'prod') from a resolved
- * `DaemonServiceState`. The variant is encoded in the state dir name:
- * `service-dev/` for contributor dogfood, `service/` for production.
- */
-export function serviceVariantForState(state: DaemonServiceState): ServiceVariant {
-  return path.basename(state.stateDir) === SERVICE_DEV_DIRNAME ? 'dev' : 'prod';
-}

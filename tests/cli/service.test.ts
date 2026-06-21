@@ -7,28 +7,20 @@ const DEFAULT_HOME = path.join(os.homedir(), '.myco');
 const DOGFOOD_HOME = path.join(os.homedir(), '.myco-dev');
 
 describe('parseServiceArgs', () => {
-  test('install (no flags) → variant=prod', () => {
-    expect(parseServiceArgs(['install'])).toEqual({ action: 'install', variant: 'prod' });
+  test('install (no flags) → action=install', () => {
+    expect(parseServiceArgs(['install'])).toEqual({ action: 'install' });
   });
 
-  test('install --dev → variant=dev', () => {
-    expect(parseServiceArgs(['install', '--dev'])).toEqual({ action: 'install', variant: 'dev' });
+  test('uninstall', () => {
+    expect(parseServiceArgs(['uninstall'])).toEqual({ action: 'uninstall' });
   });
 
-  test('uninstall --dev', () => {
-    expect(parseServiceArgs(['uninstall', '--dev'])).toEqual({ action: 'uninstall', variant: 'dev' });
+  test('status', () => {
+    expect(parseServiceArgs(['status'])).toEqual({ action: 'status' });
   });
 
-  test('status defaults to prod', () => {
-    expect(parseServiceArgs(['status'])).toEqual({ action: 'status', variant: 'prod' });
-  });
-
-  test('restart (no flags) → variant=prod', () => {
-    expect(parseServiceArgs(['restart'])).toEqual({ action: 'restart', variant: 'prod' });
-  });
-
-  test('restart --dev → variant=dev', () => {
-    expect(parseServiceArgs(['restart', '--dev'])).toEqual({ action: 'restart', variant: 'dev' });
+  test('restart', () => {
+    expect(parseServiceArgs(['restart'])).toEqual({ action: 'restart' });
   });
 
   test('rejects unknown action', () => {
@@ -55,7 +47,7 @@ describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () =>
 
   test('refuses every mutating verb against the default home when run from a dev-build binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
-      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath, DEFAULT_HOME);
+      const refusal = assertSafeServiceMutation({ action }, devBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
       expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
     }
@@ -63,25 +55,25 @@ describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () =>
 
   test('refuses every mutating verb against the default home from the legacy vendor/<arch>/ layout', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
-      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, legacyDevBuildPath, DEFAULT_HOME);
+      const refusal = assertSafeServiceMutation({ action }, legacyDevBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
       expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
     }
   });
 
   test('allows status against the default home even from a dev-build binary (read-only)', () => {
-    expect(assertSafeServiceMutation({ action: 'status', variant: 'prod' }, devBuildPath, DEFAULT_HOME)).toBeNull();
+    expect(assertSafeServiceMutation({ action: 'status' }, devBuildPath, DEFAULT_HOME)).toBeNull();
   });
 
   test('allows all actions against a non-default (dogfood) home from a dev-build binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
-      expect(assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath, DOGFOOD_HOME)).toBeNull();
+      expect(assertSafeServiceMutation({ action }, devBuildPath, DOGFOOD_HOME)).toBeNull();
     }
   });
 
   test('allows all actions against the default home from the globally installed binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
-      expect(assertSafeServiceMutation({ action, variant: 'prod' }, globalPath, DEFAULT_HOME)).toBeNull();
+      expect(assertSafeServiceMutation({ action }, globalPath, DEFAULT_HOME)).toBeNull();
     }
   });
 });

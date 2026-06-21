@@ -34,7 +34,7 @@ Commands:
   doctor [--fix]          Check vault health and repair issues
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
-  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status) [--dev]
+  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)

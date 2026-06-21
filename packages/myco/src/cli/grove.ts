@@ -104,7 +104,7 @@ export async function run(args: string[]): Promise<void> {
   if (cmd === 'create') {
     const name = rest.join(' ').trim();
     if (!name) throw new Error('Grove name is required');
-    const grove = createGrove(name, mycoHome, { servedBy: 'service' });
+    const grove = createGrove(name, mycoHome);
     console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
     return;
   }

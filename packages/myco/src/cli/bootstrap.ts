@@ -41,10 +41,9 @@ import {
 import {
   ensureDefaultGrove,
   resolveDefaultGrove,
-  type DaemonVariant,
   type GroveRecord,
 } from '../grove/registry.js';
-import { daemonVariantFromEnvValue, resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome } from '../grove/paths.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -81,7 +80,6 @@ export interface BootstrapResult {
 export interface GlobalBootstrapStartupDecision {
   shouldRun: boolean;
   defaultGroveAbsent: boolean;
-  servedBy: DaemonVariant;
   mycoHome: string;
 }
 
@@ -95,13 +93,11 @@ export interface GlobalBootstrapStartupDecision {
  */
 export function shouldRunGlobalBootstrap(
   mycoHome: string = resolveMycoHome(),
-  servedBy: DaemonVariant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT),
 ): GlobalBootstrapStartupDecision {
   const defaultGroveAbsent = resolveDefaultGrove(mycoHome) === null;
   return {
     shouldRun: defaultGroveAbsent,
     defaultGroveAbsent,
-    servedBy,
     mycoHome,
   };
 }
@@ -183,10 +179,8 @@ export function runSymbiontDetection(
  *   - Migration walker LAST — it operates on already-registered
  *     projects and doesn't depend on launcher state.
  *
- * Variant-aware: `MYCO_SERVICE_VARIANT=dev` produces a `default` Grove
- * with `served_by=service-dev`; unset or `service` produces
- * `default` / `service`. Dev and prod daemons coexist via separate homes
- * — each has its own `groves/` tree.
+ * Home-aware: each `MYCO_HOME` has its own `groves/` tree; daemons in
+ * distinct homes coexist without conflict.
  *
  * Migration is fire-once-per-project. Call sites:
  *   - daemon first-start (greenfield bootstrap)
@@ -204,8 +198,7 @@ export function runSymbiontDetection(
 export function runGlobalBootstrap(
   packageRoot: string = resolvePackageRoot(),
 ): BootstrapResult {
-  const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
-  const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
+  const defaultGrove = ensureDefaultGrove();
   const symbionts = runSymbiontDetection(packageRoot);
   // Per-project global-install migration. Sentinel-gated: projects
   // already migrated return alreadyDone immediately. Hot path on every

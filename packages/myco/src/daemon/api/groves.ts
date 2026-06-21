@@ -14,7 +14,6 @@ import {
   loadGroveRecord,
   renameGrove,
   setDefaultGrove,
-  type DaemonVariant,
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
@@ -63,7 +62,7 @@ export interface ProjectTenancyGrove {
   id: string;
   name: string;
   slug: string;
-  served_by: DaemonVariant;
+  served_by: string;
 }
 
 /** Tenancy keys added to a project summary when requested via `include`. */

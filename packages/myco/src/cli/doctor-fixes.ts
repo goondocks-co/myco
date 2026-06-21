@@ -132,7 +132,7 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     const { resolveMycoHome } = await import('../grove/paths.js');
 
     const mycoHome = resolveMycoHome();
-    const refusal = assertSafeServiceMutation({ action: 'install', variant: 'prod' }, process.execPath, mycoHome);
+    const refusal = assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome);
     if (refusal) return [refusal];
 
     // The 'executable missing' check fires precisely when the recorded

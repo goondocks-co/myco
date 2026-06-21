@@ -34,8 +34,8 @@ function setup(): Env {
   fs.mkdirSync(mycoHome, { recursive: true });
   const prev = process.env.MYCO_HOME;
   process.env.MYCO_HOME = mycoHome;
-  // served_by gates compare against currentDaemonVariant(); pin the
-  // default 'service' variant regardless of the ambient shell.
+  // Ownership gates key on MYCO_HOME; pin the isolated home via the env
+  // set above — no variant variable needed.
   const prevVariant = process.env.MYCO_SERVICE_VARIANT;
   delete process.env.MYCO_SERVICE_VARIANT;
   clearGroveRegistryCaches();

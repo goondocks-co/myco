@@ -9,8 +9,7 @@
  * (where daemon.json actually lives) plus the canonical port the daemon
  * will bind. The prior shape derived BOTH from `vaultDir`, which is the
  * legacy per-vault protocol: the global daemon keeps its state under the
- * service dir (`~/.myco/service` or `service-dev`) and derives its port
- * from that dir, so a
+ * service dir (`~/.myco/service`) and derives its port from that dir, so a
  * vault-derived sweep scanned a port nobody uses, read a daemon.json that
  * doesn't exist there, and the cwd-based identity probe could not even
  * recognize a launchd-spawned daemon (cwd never resolves to the bootstrap

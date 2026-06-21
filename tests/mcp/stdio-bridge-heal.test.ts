@@ -67,26 +67,21 @@ function stopServer(srv: Server): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function writeDaemonJson(mycoHome: string, port: number, pid: number, authToken: string): void {
-  // setDevServiceMode default is false; the resolver reads from `service/`.
-  // We write both to be robust against an environment that auto-detects
-  // dev-build mode based on cli path.
-  for (const sub of ['service', 'service-dev']) {
-    const dir = join(mycoHome, sub);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, 'daemon.json'),
-      JSON.stringify({
-        pid,
-        port,
-        command: process.execPath,
-        started: new Date().toISOString(),
-        sessions: [],
-        version: 'fake',
-        auth_token: authToken,
-      }),
-      { encoding: 'utf-8' },
-    );
-  }
+  const dir = join(mycoHome, 'service');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'daemon.json'),
+    JSON.stringify({
+      pid,
+      port,
+      command: process.execPath,
+      started: new Date().toISOString(),
+      sessions: [],
+      version: 'fake',
+      auth_token: authToken,
+    }),
+    { encoding: 'utf-8' },
+  );
 }
 
 // ---------------------------------------------------------------------------
