@@ -313,7 +313,7 @@ function readPinFile(filePath: string): string | null {
  */
 export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
   const channel = loadMachineConfig().daemon.update_channel;
-  return RELEASE_CHANNELS.includes(channel) ? channel : DEFAULT_RELEASE_CHANNEL;
+  return RELEASE_CHANNELS.includes(channel as ReleaseChannel) ? (channel as ReleaseChannel) : DEFAULT_RELEASE_CHANNEL;
 }
 
 /**
@@ -335,6 +335,16 @@ export function writeProjectReleaseChannel(_vaultDir: string | undefined, channe
  */
 export function isUpdateExempt(): boolean {
   return devBuildCliEntry !== null;
+}
+
+/**
+ * Returns true when `daemon.update_channel` is `'manual'`. On a manual-channel
+ * machine all automatic upgrade paths no-op; operator-initiated paths
+ * (POST /api/upgrade/check, POST /api/upgrade/apply, `myco upgrade`) are
+ * unaffected.
+ */
+export function releaseChannelIsManual(): boolean {
+  return loadMachineConfig().daemon.update_channel === 'manual';
 }
 
 /**

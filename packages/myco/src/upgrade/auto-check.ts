@@ -39,7 +39,7 @@ import {
   versionDir,
   versionBinaryPath,
 } from '../install/managed-binary.js';
-import { isUpdateExempt } from '../daemon/update-checker.js';
+import { isUpdateExempt, releaseChannelIsManual } from '../daemon/update-checker.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
@@ -63,6 +63,11 @@ export interface CheckAndStageDeps {
    * Tests that want to exercise non-dev paths should pass `() => false`.
    */
   isDevBuild?: () => boolean;
+  /**
+   * Override the manual-channel gate. Defaults to `releaseChannelIsManual()`.
+   * Tests pass `() => true` to simulate a manual-channel machine.
+   */
+  isManualChannel?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ export interface CheckAndStageDeps {
 
 export type CheckAndStageResult =
   | { status: 'staged'; version: string }
-  | { status: 'noop'; reason: 'dev-build' | 'up-to-date' | 'already-staged' }
+  | { status: 'noop'; reason: 'dev-build' | 'manual-channel' | 'up-to-date' | 'already-staged' }
   | { status: 'error'; error: string };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +116,11 @@ export interface AutoAdoptDeps {
    * Tests pass `() => false` to exercise non-dev paths.
    */
   isDevBuild?: () => boolean;
+  /**
+   * Override the manual-channel gate. Defaults to `releaseChannelIsManual()`.
+   * Tests pass `() => true` to simulate a manual-channel machine.
+   */
+  isManualChannel?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,10 +151,14 @@ export async function checkAndStage(
   },
   deps: CheckAndStageDeps = {},
 ): Promise<CheckAndStageResult> {
-  // Dev builds must never auto-stage or adopt.
+  // Dev builds and manual-channel machines must never auto-stage or adopt.
   const devBuildCheck = deps.isDevBuild ?? isUpdateExempt;
   if (devBuildCheck()) {
     return { status: 'noop', reason: 'dev-build' };
+  }
+  const manualChannelCheck = deps.isManualChannel ?? releaseChannelIsManual;
+  if (manualChannelCheck()) {
+    return { status: 'noop', reason: 'manual-channel' };
   }
 
   const { home, platform, localAppData, logger, channel } = opts;
@@ -312,9 +326,11 @@ export function buildAdoptJobFn(
 ): (ctx: JobRunContext) => Promise<JobOutcome | void> {
   return async (_ctx: JobRunContext): Promise<void> => {
     try {
-      // Dev-build no-op (belt-and-suspenders — checkAndStage also guards).
+      // Dev-build and manual-channel no-ops (belt-and-suspenders — checkAndStage also guards).
       const devBuildCheck = adoptDeps.isDevBuild ?? isUpdateExempt;
       if (devBuildCheck()) return;
+      const manualChannelCheck = adoptDeps.isManualChannel ?? releaseChannelIsManual;
+      if (manualChannelCheck()) return;
 
       const {
         currentVersion,

@@ -34,6 +34,7 @@ const realOperatorCli = await import('@myco/daemon/operator-cli-versions.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
+  releaseChannelIsManual: vi.fn(() => false),
   readCachedCheck: vi.fn(() => null),
   readUpdateConfig: vi.fn(() => ({ channel: 'stable', check_interval_hours: 6 })),
   readProjectReleaseChannel: vi.fn(() => 'stable'),
@@ -79,6 +80,7 @@ afterAll(() => {
 
 import {
   isUpdateExempt,
+  releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
   readProjectReleaseChannel,
@@ -201,6 +203,7 @@ describe('handleUpgradeStatus', () => {
   beforeEach(() => {
     mock.clearAllMocks();
     (isUpdateExempt as AnyMock).mockReturnValue(false);
+    (releaseChannelIsManual as AnyMock).mockReturnValue(false);
     (readCachedCheck as AnyMock).mockReturnValue(null);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
@@ -880,5 +883,69 @@ describe('handleUpgradeChannel', () => {
 
     expect(stable.status).toBeUndefined();
     expect(beta.status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manual channel — automatic gate (T1)
+// ---------------------------------------------------------------------------
+
+describe('manual channel: automatic paths no-op, operator paths proceed', () => {
+  beforeEach(() => {
+    mock.clearAllMocks();
+    (isUpdateExempt as AnyMock).mockReturnValue(false);
+    (releaseChannelIsManual as AnyMock).mockReturnValue(true);
+    (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
+    (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
+    (isCacheStale as AnyMock).mockReturnValue(true); // would trigger background refresh if not gated
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+    (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
+    (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
+    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
+    (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
+    (initiateAdopt as AnyMock).mockResolvedValue(undefined);
+  });
+
+  it('status: skips background refresh and reports auto_eligible:false', async () => {
+    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+
+    // No background registry call made even though cache is stale.
+    expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
+    expect(body.exempt).toBe(false);
+    expect(body.auto_eligible).toBe(false);
+  });
+
+  it('status: auto_eligible:true on non-manual channel', async () => {
+    (releaseChannelIsManual as AnyMock).mockReturnValue(false);
+    (isCacheStale as AnyMock).mockReturnValue(false);
+    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+
+    expect(body.auto_eligible).toBe(true);
+  });
+
+  it('operator POST /api/upgrade/check proceeds under manual channel', async () => {
+    const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeCheck(makeReq());
+
+    // Must reach the live check — not gated out.
+    expect(resolveMycoPackageCheck).toHaveBeenCalled();
+    expect(result.status).toBeUndefined(); // 200 OK
+  });
+
+  it('operator POST /api/upgrade/apply proceeds under manual channel', async () => {
+    // Give the apply path a staged version and a cache with update available.
+    (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
+    const result = await handleUpgradeApply(makeReq());
+
+    // Must reach initiateAdopt — not gated out.
+    expect(initiateAdopt).toHaveBeenCalled();
+    expect(result.status).toBeUndefined(); // 200 OK
   });
 });

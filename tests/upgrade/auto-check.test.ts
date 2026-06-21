@@ -260,6 +260,123 @@ describe('checkAndStage: successful staging', () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkAndStage: manual-channel no-op (T1)
+// ---------------------------------------------------------------------------
+
+describe('checkAndStage: manual-channel no-op', () => {
+  it('returns noop/manual-channel when isManualChannel() is true, even with a newer version', async () => {
+    const stageBinaryMock = mock(async () => ({ error: 'should-not-be-called' }));
+    const result = await checkAndStage(
+      CURRENT_VERSION,
+      makeOpts(),
+      {
+        isDevBuild: () => false,
+        isManualChannel: () => true,
+        resolveRefs: async () => ({
+          assetUrl: 'http://example.com/asset',
+          sha256sumsUrl: 'http://example.com/sums',
+          assetName: 'myco-linux-x64',
+          targetVersion: NEWER_VERSION,
+        }),
+        stageBinary: stageBinaryMock as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
+        existsSync: () => false,
+      },
+    );
+    expect(result.status).toBe('noop');
+    expect((result as { reason: string }).reason).toBe('manual-channel');
+    expect(stageBinaryMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds normally when isManualChannel() is false (stable channel)', async () => {
+    const stageBinaryMock = mock(async (_params: unknown, _deps: unknown) =>
+      ({ versionDir: `/fake/versions/${NEWER_VERSION}`, version: NEWER_VERSION }),
+    );
+    const result = await checkAndStage(
+      CURRENT_VERSION,
+      makeOpts('stable'),
+      {
+        isDevBuild: () => false,
+        isManualChannel: () => false,
+        resolveRefs: async () => ({
+          assetUrl: 'http://x',
+          sha256sumsUrl: 'http://y',
+          assetName: 'myco-linux-x64',
+          targetVersion: NEWER_VERSION,
+        }),
+        stageBinary: stageBinaryMock as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
+        existsSync: () => false,
+      },
+    );
+    expect(result.status).toBe('staged');
+    expect(stageBinaryMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAdoptJobFn: manual-channel no-op (T1)
+// ---------------------------------------------------------------------------
+
+describe('buildAdoptJobFn: manual-channel no-op', () => {
+  it('returns immediately (no-op) when isManualChannel() is true', async () => {
+    const { buildAdoptJobFn } = await import('@myco/upgrade/auto-check.js');
+    const initiateAdoptMock = mock(async () => {});
+
+    const jobFn = buildAdoptJobFn({
+      currentVersion: CURRENT_VERSION,
+      home: tmpHome,
+      platform: PLATFORM,
+      stateDir: tmpHome,
+      daemonPort: 20915,
+      projectRoot: '/project',
+      logger: silentLogger(),
+      isDevBuild: () => false,
+      isManualChannel: () => true,
+      initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
+      resolveServiceLabel: async () => null,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await jobFn({} as any);
+
+    expect(initiateAdoptMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to initiateAdopt when isManualChannel() is false and a staged version exists', async () => {
+    const { buildAdoptJobFn } = await import('@myco/upgrade/auto-check.js');
+    const initiateAdoptMock = mock(async () => {});
+
+    // Stage a fake newer binary so resolveNewestStagedVersion finds something.
+    const { versionsDir: getVersionsDir, versionBinaryPath: getVersionBinaryPath } = await import('@myco/install/managed-binary.js');
+    const vDir = getVersionsDir(tmpHome, PLATFORM);
+    const binPath = getVersionBinaryPath(tmpHome, PLATFORM, NEWER_VERSION);
+    fs.mkdirSync(path.dirname(binPath), { recursive: true });
+    fs.writeFileSync(binPath, '#!/bin/sh\necho myco', { mode: 0o755 });
+
+    const jobFn = buildAdoptJobFn({
+      currentVersion: CURRENT_VERSION,
+      home: tmpHome,
+      platform: PLATFORM,
+      stateDir: tmpHome,
+      daemonPort: 20915,
+      projectRoot: '/project',
+      logger: silentLogger(),
+      isDevBuild: () => false,
+      isManualChannel: () => false,
+      initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
+      resolveServiceLabel: async () => null,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await jobFn({} as any);
+
+    expect(initiateAdoptMock).toHaveBeenCalledTimes(1);
+
+    // Clean up staged binary.
+    fs.rmSync(vDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveNewestStagedVersion
 // ---------------------------------------------------------------------------
 

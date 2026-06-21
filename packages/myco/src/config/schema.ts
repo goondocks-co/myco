@@ -503,8 +503,12 @@ const MachineDaemonSchema = z.object({
    * mental model).
    */
   log_retention_days: z.number().int().min(1).max(365).default(30),
-  /** Update channel — `stable` (default) or `beta` for dogfood/preview builds. */
-  update_channel: z.enum(['stable', 'beta']).default('stable'),
+  /**
+   * Update channel — `stable` (default), `beta` for dogfood/preview builds,
+   * or `manual` to disable all automatic upgrades (operator-only upgrade paths
+   * remain available).
+   */
+  update_channel: z.enum(['stable', 'beta', 'manual']).default('stable'),
   /**
    * How often the daemon checks the release channel for a newer version, in
    * hours. Positive (fractional allowed for dogfood/testing). Default 6. This

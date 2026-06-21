@@ -23,6 +23,7 @@ import semver from 'semver';
 
 import {
   isUpdateExempt,
+  releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
   readProjectReleaseChannel,
@@ -440,10 +441,12 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     }
 
     // Normal flow: serve cached union result; refresh in background if stale.
+    // Manual-channel machines skip the background refresh — they never auto-update.
     const config = readUpdateConfig();
     const cache = readCachedCheck();
+    const autoEligible = !releaseChannelIsManual();
 
-    if (isCacheStale(cache, config.check_interval_hours)) {
+    if (autoEligible && isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget background refresh using the new split checkers.
       const effectiveChannel = snapshot.desiredChannel;
       void (async () => {
@@ -468,6 +471,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       return {
         body: {
           exempt: false,
+          auto_eligible: autoEligible,
           update_available: false,
           revert_available: false,
           running_version: currentVersion,
@@ -483,7 +487,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         },
       };
     }
-    return { body: { exempt: false, ...status } };
+    return { body: { exempt: false, auto_eligible: autoEligible, ...status } };
   }
 
   /**
