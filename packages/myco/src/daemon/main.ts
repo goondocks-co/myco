@@ -870,9 +870,8 @@ export async function main(): Promise<void> {
     logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
   }
 
-  // --- Resolve npm global prefix + detect dev build ---
-  // globalPrefix is used both for installed-version detection (in the status
-  // handler) and for dev-build auto-detection via detectDevBuild().
+  // --- Resolve npm global prefix ---
+  // globalPrefix is used for installed-version detection in the status handler.
   let globalPrefix: string | null = null;
   try {
     globalPrefix = resolveGlobalPrefix();
@@ -2347,9 +2346,8 @@ export async function main(): Promise<void> {
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
     reconciler,
-    // Upgrade auto-check + idle-adopt jobs. Skipped on dev builds inside
-    // the job fns themselves via `isUpdateExempt()`, so these are safe to
-    // register unconditionally here.
+    // Upgrade auto-check + idle-adopt jobs. No-op on manual-channel machines
+    // inside the job fns themselves, so these are safe to register unconditionally.
     upgrade: {
       currentVersion: server.version,
       home: mycoHome,

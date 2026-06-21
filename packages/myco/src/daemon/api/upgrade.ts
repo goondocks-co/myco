@@ -22,7 +22,6 @@ import path from 'node:path';
 import semver from 'semver';
 
 import {
-  isUpdateExempt,
   releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
@@ -384,10 +383,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * restarting/reason fields the card polls).
    */
   async function handleUpgradeStatus(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return { body: { exempt: true, running_version: currentVersion } };
-    }
-
     const snapshot = readVaultSnapshot();
 
     // Version-sync self-restart: when the globally-installed myco is newer
@@ -497,13 +492,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * assembles the union CheckResult, persists to cache, and returns fresh data.
    */
   async function handleUpgradeCheck(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return {
-        status: 400,
-        body: { error: 'update_exempt', message: 'Updates disabled in dev mode' },
-      };
-    }
-
     const snapshot = readVaultSnapshot();
     const config = readUpdateConfig();
     const effectiveChannel = snapshot.desiredChannel;
@@ -642,10 +630,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * or when the revert-to-stable target cannot be resolved/staged.
    */
   async function handleUpgradeApply(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return { status: 400, body: { error: 'update_exempt' } };
-    }
-
     const snapshot = readVaultSnapshot();
     const status = statusFromCacheLocal(currentVersion, globalPrefix, snapshot.desiredChannel);
     if (!status) {

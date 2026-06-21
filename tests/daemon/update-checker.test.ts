@@ -2,12 +2,13 @@
  * Tests for the update checker module (retained exports).
  *
  * Covers:
- * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
- *   module-level state (replaces the old MYCO_CMD env-var dispatch)
  * - readUpdateConfig — reads channel + cadence from the canonical daemon config
  * - isCacheStale — null cache, fresh cache, expired cache
- * - detectDevBuild — realpath comparison against npm global prefix
- * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
+ * - resolveMycoBinary — looksLikeMycoBinary + fallback
+ * - resolveRuntimeCommand — pin file read + trust check
+ * - getRuntimeOrigin / getRuntimeVersionLabel — channel badge helpers
+ * - resolveGlobalPrefix / getInstalledVersion — npm global prefix helpers
+ * - readProjectReleaseChannel / writeProjectReleaseChannel — machine-scoped channel
  *
  * Note: checkForUpdate / statusFromCache were retired from update-checker.ts
  * (Task 7). The composite CheckResult assembly now lives in daemon/api/upgrade.ts.
@@ -89,9 +90,6 @@ mock.module('node:os', () => ({
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import {
-  isUpdateExempt,
-  setDevBuildCliEntry,
-  getDevBuildCliEntry,
   looksLikeMycoBinary,
   resolveMycoBinary,
   resolveRuntimeCommand,
@@ -103,7 +101,6 @@ import {
   getInstalledVersion,
   getRuntimeVersionLabel,
   getRuntimeOrigin,
-  detectDevBuild,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -188,10 +185,6 @@ beforeEach(() => {
   // mocked path without depending on the (unmocked) transitive os.homedir()
   // import inside grove/paths.ts.
   vi.stubEnv('MYCO_HOME', '/mock-home/.myco');
-  // The dev-build CLI entry is module state — reset between tests so
-  // a prior test's "set to dev" doesn't bleed into the next test's
-  // "expect prod" assertion.
-  setDevBuildCliEntry(null);
   vi.mocked(fs.existsSync).mockReturnValue(false);
   vi.mocked(fs.statSync).mockImplementation((p) => {
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
@@ -206,44 +199,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  setDevBuildCliEntry(null);
   // Belt-and-suspenders: bun:test --isolate doesn't actually fork between
   // test files, so a stubbed MYCO_HOME persisting after this file finishes
   // would leak into other tests' module loads. Force-clear it.
   delete process.env.MYCO_HOME;
-});
-
-// ---------------------------------------------------------------------------
-// isUpdateExempt
-// ---------------------------------------------------------------------------
-
-describe('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () => {
-  it('returns false when no dev-build CLI entry has been recorded', () => {
-    expect(isUpdateExempt()).toBe(false);
-    expect(getDevBuildCliEntry()).toBeNull();
-  });
-
-  it('returns true after setDevBuildCliEntry records a path', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    expect(isUpdateExempt()).toBe(true);
-    expect(getDevBuildCliEntry()).toBe('/Users/dev/.local/bin/myco-dev');
-  });
-
-  it('returns false after setDevBuildCliEntry(null) clears the state', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    setDevBuildCliEntry(null);
-    expect(isUpdateExempt()).toBe(false);
-    expect(getDevBuildCliEntry()).toBeNull();
-  });
-
-  it('ignores the legacy MYCO_CMD env var entirely', () => {
-    // Regression guard: the old implementation returned true when
-    // MYCO_CMD was set in the process environment. Dev-mode exemption
-    // now flows through setDevBuildCliEntry exclusively — a stray
-    // MYCO_CMD leaked from a parent shell must have no effect.
-    vi.stubEnv('MYCO_CMD', 'myco-dev');
-    expect(isUpdateExempt()).toBe(false);
-  });
 });
 
 describe('looksLikeMycoBinary()', () => {
@@ -660,80 +619,3 @@ describe('getInstalledVersion()', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// detectDevBuild
-// ---------------------------------------------------------------------------
-
-describe('detectDevBuild()', () => {
-  /** Identity resolver — test paths don't exist, so bypass real realpath. */
-  const identityResolver = (p: string) => p;
-
-  it('returns null when globalPrefix is null', () => {
-    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', identityResolver);
-    expect(result).toBeNull();
-  });
-
-  it('returns null when cliEntry is missing', () => {
-    const result = detectDevBuild('/opt/homebrew', undefined, identityResolver);
-    expect(result).toBeNull();
-  });
-
-  it('returns cliEntry when binary is outside global prefix (dev build)', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      identityResolver,
-    );
-    expect(result).toBe('/home/user/.local/bin/myco-dev');
-  });
-
-  it('returns null when binary is inside global prefix (proper install)', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js',
-      identityResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('does not match on path prefix that is only a string prefix, not a path boundary', () => {
-    // /opt/homebrew-foo should NOT be considered under /opt/homebrew
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/opt/homebrew-foo/bin/myco',
-      identityResolver,
-    );
-    expect(result).toBe('/opt/homebrew-foo/bin/myco');
-  });
-
-  it('resolves symlinks via realpath before comparing', () => {
-    // Simulate a symlink: /home/user/.local/bin/myco-dev → /opt/homebrew/lib/node_modules/...
-    // If we followed the symlink, it would look like a proper install.
-    const symlinkResolver = (p: string) => {
-      if (p === '/home/user/.local/bin/myco-dev') {
-        return '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js';
-      }
-      return p;
-    };
-
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      symlinkResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('returns null when realpath throws', () => {
-    const throwingResolver = () => {
-      throw new Error('ENOENT');
-    };
-
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      throwingResolver,
-    );
-    expect(result).toBeNull();
-  });
-});

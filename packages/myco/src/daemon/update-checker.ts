@@ -6,14 +6,6 @@
  * - Stable channel: compare against dist-tags.latest only.
  * - Beta channel: compare against max(dist-tags.latest, dist-tags.beta).
  *   Beta users can always reach stable (no-downgrade rule).
- * - Dev mode exemption: the daemon records its own CLI entry at startup
- *   via `setDevBuildCliEntry()` when `detectDevBuild()` reports the
- *   running binary is outside the npm global prefix. When set, update
- *   checks are skipped entirely and any child-spawned shell script
- *   (update/restart) uses the recorded CLI entry as its restart
- *   target. This replaced the previous `MYCO_CMD` env-var dispatch,
- *   which was fragile because several symbionts do not propagate
- *   env vars to hook or MCP child processes.
  */
 
 import fs from 'node:fs';
@@ -25,10 +17,8 @@ import { setAtPath } from '../utils/dot-path.js';
 
 import {
   NPM_PACKAGE_NAME,
-  MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   MS_PER_HOUR,
-  DEV_BUILD_CACHE_PATH,
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
   type ReleaseChannel,
@@ -36,9 +26,7 @@ import {
 } from '../constants/update.js';
 import {
   resolveMachineRuntimeCommandPath,
-  setDevServiceMode,
 } from '../grove/paths.js';
-import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -67,123 +55,6 @@ export interface CachedCheck {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Dev-mode exemption
-// ---------------------------------------------------------------------------
-
-/**
- * Module-level state: the CLI entry path of the running daemon when it's
- * a dev build, or null when it's a proper global install.
- *
- * Set once at daemon startup from `main.ts` after `detectDevBuild()`
- * reports its finding. Read by `isUpdateExempt()` (to skip update checks)
- * and by `resolveMycoBinary()` (to choose the restart target for
- * update/restart shell scripts).
- *
- * Test code can reset this via `setDevBuildCliEntry(null)`.
- */
-let devBuildCliEntry: string | null = null;
-
-/**
- * Record the daemon's dev-build CLI entry. Pass `null` to clear.
- * Also pairs `setDevServiceMode` so the service-dir branch in `grove/paths`
- * never drifts from the update-checker's view of the running binary.
- */
-export function setDevBuildCliEntry(cliEntry: string | null): void {
-  devBuildCliEntry = cliEntry;
-  setDevServiceMode(cliEntry !== null);
-}
-
-/**
- * Returns the recorded dev-build CLI entry, or null when the daemon is
- * running from a proper global install.
- */
-export function getDevBuildCliEntry(): string | null {
-  return devBuildCliEntry;
-}
-
-/**
- * Run dev-build detection at CLI startup and record the result via
- * `setDevBuildCliEntry` (which also drives `setDevServiceMode` for the
- * `service-dev/` branch).
- *
- * Cached on disk in `~/.myco/dev-build-cache.json` keyed by the realpath
- * of `process.execPath` plus the running package version. The first call
- * after a reinstall pays the `npm prefix -g` subprocess; subsequent calls
- * read a single small JSON file. This matters because the function fires
- * on every CLI invocation including hooks, where 200-600ms of `npm`
- * startup would be visible per agent action.
- *
- * Uses `process.execPath` (not `argv[1]`) for the same reason `main.ts`
- * does: under the bun-compiled binary, `argv[1]` is a virtual `/$bunfs/`
- * path that `realpath` rejects.
- */
-export function activateDevBuildModeIfDetected(): void {
-  if (!looksLikeMycoBinary(process.execPath)) return;
-
-  let execRealpath: string;
-  try {
-    execRealpath = fs.realpathSync(process.execPath);
-  } catch {
-    return;
-  }
-  const version = getPluginVersion();
-
-  const cached = readDevBuildCache();
-  if (cached && cached.exec_path_realpath === execRealpath && cached.package_version === version) {
-    if (cached.dev_build_cli_entry) setDevBuildCliEntry(cached.dev_build_cli_entry);
-    return;
-  }
-
-  let globalPrefix: string | null = null;
-  try {
-    globalPrefix = resolveGlobalPrefix();
-  } catch {
-    // npm not on PATH or otherwise unresolvable — treat as production
-    // and don't write a cache entry; we'll re-try next invocation.
-    return;
-  }
-  const devEntry = detectDevBuild(globalPrefix, process.execPath, fs.realpathSync);
-  if (devEntry) setDevBuildCliEntry(devEntry);
-  writeDevBuildCache({
-    exec_path_realpath: execRealpath,
-    package_version: version,
-    dev_build_cli_entry: devEntry,
-  });
-}
-
-interface DevBuildCacheEntry {
-  exec_path_realpath: string;
-  package_version: string;
-  dev_build_cli_entry: string | null;
-}
-
-function readDevBuildCache(): DevBuildCacheEntry | null {
-  try {
-    const raw = fs.readFileSync(DEV_BUILD_CACHE_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<DevBuildCacheEntry>;
-    if (
-      typeof parsed?.exec_path_realpath === 'string'
-      && typeof parsed?.package_version === 'string'
-      && (parsed.dev_build_cli_entry === null || typeof parsed.dev_build_cli_entry === 'string')
-    ) {
-      return parsed as DevBuildCacheEntry;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeDevBuildCache(entry: DevBuildCacheEntry): void {
-  try {
-    fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
-    fs.writeFileSync(DEV_BUILD_CACHE_PATH, JSON.stringify(entry, null, 2), 'utf-8');
-  } catch {
-    // Cache write failure is non-fatal; we just pay the subprocess again next run.
-  }
-}
 
 export function looksLikeMycoBinary(execPath: string): boolean {
   const base = path.basename(execPath).toLowerCase();
@@ -330,14 +201,6 @@ export function writeProjectReleaseChannel(_vaultDir: string | undefined, channe
 }
 
 /**
- * Returns true when the daemon is running from a dev build — skip
- * update checks and suppress the Operations UI update banner.
- */
-export function isUpdateExempt(): boolean {
-  return devBuildCliEntry !== null;
-}
-
-/**
  * Returns true when `daemon.update_channel` is `'manual'`. On a manual-channel
  * machine all automatic upgrade paths no-op; operator-initiated paths
  * (POST /api/upgrade/check, POST /api/upgrade/apply, `myco upgrade`) are
@@ -384,46 +247,6 @@ export function getRuntimeVersionLabel(_vaultDir: string | undefined, currentVer
   return currentVersion;
 }
 
-
-/**
- * Detects whether the running daemon is a dev build by comparing the CLI
- * entry point's realpath against the npm global prefix's realpath.
- *
- * Returns the CLI entry path when a dev build is detected (so the caller
- * can record it via `setDevBuildCliEntry()`), or null when no dev build
- * applies.
- *
- * A dev build is any binary whose realpath is NOT under the npm global
- * prefix — direct `myco-dev` invocations, `npm link` installs, local
- * `node dist/cli.js` runs, etc.
- *
- * Returns null when:
- * - globalPrefix is null (npm prefix resolution failed; can't verify)
- * - cliEntry is missing
- * - realpath resolution throws
- * - the binary IS under the global prefix (proper install — normal updates)
- *
- * All inputs are passed explicitly (no defaults) so tests can control the
- * environment without inheriting from the enclosing process.
- */
-export function detectDevBuild(
-  globalPrefix: string | null,
-  cliEntry: string | undefined,
-  realpath: (p: string) => string,
-): string | null {
-  if (!globalPrefix) return null;
-  if (!cliEntry) return null;
-  try {
-    const resolvedEntry = realpath(cliEntry);
-    const resolvedPrefix = realpath(globalPrefix);
-    if (resolvedEntry.startsWith(resolvedPrefix + path.sep) || resolvedEntry === resolvedPrefix) {
-      return null;
-    }
-    return cliEntry;
-  } catch {
-    return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Config helpers

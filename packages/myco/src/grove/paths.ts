@@ -112,9 +112,8 @@ export function resolveLastUpdateVersionPath(mycoHome = resolveMycoHome()): stri
  * `service/` so a contributor's dogfood daemon coexists with a production
  * daemon on the same machine (different paths → different derived ports).
  *
- * Slaved to `setDevBuildCliEntry` in `update-checker.ts` — tests reset by
- * calling that helper with `null`. The two flags MUST stay paired; setting
- * this directly is reserved for the pairing in `update-checker.ts`.
+ * Set explicitly by callers that need the dev-service path. Tests reset it
+ * via `setDevServiceMode(false)` between cases.
  */
 let devServiceMode = false;
 

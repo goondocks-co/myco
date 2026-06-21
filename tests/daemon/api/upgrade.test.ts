@@ -33,7 +33,6 @@ const realMycoChecker = await import('@myco/upgrade/checker.js');
 const realOperatorCli = await import('@myco/daemon/operator-cli-versions.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
-  isUpdateExempt: vi.fn(() => false),
   releaseChannelIsManual: vi.fn(() => false),
   readCachedCheck: vi.fn(() => null),
   readUpdateConfig: vi.fn(() => ({ channel: 'stable', check_interval_hours: 6 })),
@@ -79,7 +78,6 @@ afterAll(() => {
 });
 
 import {
-  isUpdateExempt,
   releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
@@ -202,7 +200,6 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
 describe('handleUpgradeStatus', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (releaseChannelIsManual as AnyMock).mockReturnValue(false);
     (readCachedCheck as AnyMock).mockReturnValue(null);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
@@ -210,16 +207,6 @@ describe('handleUpgradeStatus', () => {
     (isCacheStale as AnyMock).mockReturnValue(false);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
     (getInstalledVersion as AnyMock).mockReturnValue(null);
-  });
-
-  it('returns exempt:true when in dev mode', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeStatus(makeReq());
-
-    expect(result.status).toBeUndefined();
-    expect(result.body).toEqual({ exempt: true, running_version: '1.0.0' });
   });
 
   it('returns status from cache when cache has data', async () => {
@@ -356,7 +343,6 @@ describe('handleUpgradeStatus', () => {
 describe('handleUpgradeStatus — version-sync restart', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readCachedCheck as AnyMock).mockReturnValue(null);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
@@ -462,23 +448,12 @@ describe('handleUpgradeStatus — version-sync restart', () => {
 describe('handleUpgradeCheck', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
     (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
     (getInstalledVersion as AnyMock).mockReturnValue(null);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
-  });
-
-  it('returns 400 when exempt', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeCheck(makeReq());
-
-    expect(result.status).toBe(400);
-    expect((result.body as Record<string, unknown>).error).toBe('update_exempt');
   });
 
   it('calls resolveMycoPackageCheck + checkOperatorCliVersions and returns union', async () => {
@@ -552,7 +527,6 @@ describe('handleUpgradeCheck', () => {
 describe('handleUpgradeApply', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
@@ -561,16 +535,6 @@ describe('handleUpgradeApply', () => {
     (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
     (initiateAdopt as AnyMock).mockResolvedValue(undefined);
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
-  });
-
-  it('returns 400 when exempt', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeApply(makeReq());
-
-    expect(result.status).toBe(400);
-    expect((result.body as Record<string, unknown>).error).toBe('update_exempt');
   });
 
   it('returns 400 when no cache exists (no status)', async () => {
@@ -813,7 +777,6 @@ describe('handleUpgradeApply', () => {
 describe('handleUpgradeChannel', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readCachedCheck as AnyMock).mockReturnValue(null);
@@ -893,7 +856,6 @@ describe('handleUpgradeChannel', () => {
 describe('manual channel: automatic paths no-op, operator paths proceed', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (releaseChannelIsManual as AnyMock).mockReturnValue(true);
     (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });

@@ -78,8 +78,6 @@ function makeAdoptDeps(overrides: Partial<AutoAdoptDeps> = {}): AutoAdoptDeps {
     daemonPort: 19344,
     projectRoot: tmpHome,
     logger: silentLogger(),
-    // Tests bypass the dev-build gate — exercises the full adopt logic.
-    isDevBuild: () => false,
     // Tests override resolveServiceLabel and initiateAdopt to avoid real I/O.
     resolveServiceLabel: async () => null,
     initiateAdopt: mock(async () => {}),
