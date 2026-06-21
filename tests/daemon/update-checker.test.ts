@@ -102,6 +102,7 @@ import {
   resolveGlobalPrefix,
   getInstalledVersion,
   getRuntimeVersionLabel,
+  getRuntimeOrigin,
   detectDevBuild,
   type CachedCheck,
   type UpdateConfig,
@@ -283,38 +284,38 @@ describe('resolveMycoBinary()', () => {
 });
 
 describe('getRuntimeVersionLabel()', () => {
-  it('uses the protocol version for stable runtimes', () => {
+  it('returns the protocol version directly', () => {
     expect(getRuntimeVersionLabel('/vault/.myco', '0.27.19')).toBe('0.27.19');
     expect(execFileSync).not.toHaveBeenCalled();
   });
+});
 
-  it('describes dev runtimes from the nearest git release tag', () => {
-    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
-    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
-    vi.mocked(fs.existsSync).mockImplementation((p) => p === '/repo/.git');
-    vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      expect(cmd).toBe('git');
-      expect(args).toEqual([
-        '-C',
-        '/repo',
-        'describe',
-        '--tags',
-        '--match',
-        'v[0-9]*',
-        '--always',
-        '--dirty',
-      ]);
-      return 'v0.18.1-244-g63fe75a5-dirty\n';
-    });
+describe('getRuntimeOrigin() — source from raw update_channel (not clamped)', () => {
+  // NOTE: fakeStat keys the machine-config cache on content length (mtimeMs=len+1,
+  // size=len). Strings for different channels must differ in length to bust the
+  // cache between test cases. An inline comment achieves this where needed.
+  const MACHINE_CONFIG_PATH = '/mock-home/.myco/config.yaml';
 
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.0')).toBe('v0.18.1-244-g63fe75a5-dirty');
+  it('returns stable when machine config has no channel', () => {
+    mockNoFiles();
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('stable');
   });
 
-  it('falls back to a dev-suffixed protocol version when git metadata is unavailable', () => {
-    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
-    vi.mocked(fs.existsSync).mockReturnValue(false);
+  it('returns beta when update_channel is beta', () => {
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: beta\n');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('beta');
+  });
 
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.1')).toBe('0.25.1+dev');
+  it('returns manual when update_channel is manual (clamp trap: readProjectReleaseChannel would return stable)', () => {
+    // Trailing space makes this distinct in length from the beta case above.
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: manual\n ');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('manual');
+  });
+
+  it('returns stable when update_channel is explicitly stable', () => {
+    // Two trailing spaces make this distinct in length from both beta and manual cases.
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: stable\n  ');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('stable');
   });
 });
 

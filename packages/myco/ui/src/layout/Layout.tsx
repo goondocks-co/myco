@@ -170,22 +170,22 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
 /**
- * Visual indicator that the daemon is running off a dev binary
- * (`make dev-link`, `npm link`, etc.). Nothing rendered for a normal
- * stable/beta install — both run the same managed `~/.myco/bin/myco`,
- * so there is no separate runtime to flag.
+ * Sidebar badge showing the active release channel and version when the
+ * daemon is on a non-stable channel (`beta` or `manual`). Nothing rendered
+ * for `stable` — no signal needed for the default path.
  *
  * Lives in the sidebar so it's persistent across pages — there's no
  * good reason to hunt for it on a settings tab when the question is
- * "am I on the dogfood daemon right now?"
+ * "am I on the dogfood / beta daemon right now?"
  */
 function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
   const { data } = useDaemon();
   const runtime = data?.daemon.runtime;
-  if (!runtime || runtime.source !== 'dev') return null;
+  if (!runtime || runtime.source === 'stable') return null;
 
-  const label = 'DEV';
-  const tooltip = 'Daemon is running from a dev binary (make dev-link / npm link).';
+  const channelLabel = runtime.source.toUpperCase();
+  const version = data?.daemon.version_label ?? data?.daemon.version ?? '';
+  const tooltip = `Daemon channel: ${runtime.source}`;
   const colorClasses = 'bg-tertiary/20 text-tertiary border-tertiary/40';
 
   if (collapsed) {
@@ -197,7 +197,7 @@ function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
         )}
         title={tooltip}
       >
-        {label}
+        {channelLabel}
       </div>
     );
   }
@@ -210,7 +210,7 @@ function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
       )}
       title={tooltip}
     >
-      {label} runtime
+      {channelLabel} {version}
     </div>
   );
 }

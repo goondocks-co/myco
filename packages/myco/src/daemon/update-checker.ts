@@ -348,20 +348,20 @@ export function releaseChannelIsManual(): boolean {
 }
 
 /**
- * Classify how the daemon was launched, for the sidebar runtime badge.
+ * Classify the release channel the daemon is running on, for the sidebar
+ * runtime badge.
  *
- * - `'dev'`    — `detectDevBuild` flagged this binary as outside the npm
- *                global prefix (dogfood `make dev-link`, `npm link`, etc.),
- *                or a project-scope pin at `<vaultDir>/runtime.command`
- *                points the daemon at a hand-built dev binary.
- * - `'stable'` — otherwise; the managed `~/.myco/bin/myco` (stable or beta
- *                channel — both are the same in-place binary) answers.
+ * - `'beta'`   — `daemon.update_channel` is `'beta'` in machine config.
+ * - `'manual'` — `daemon.update_channel` is `'manual'` in machine config
+ *                (operator-pinned; automatic upgrade paths no-op).
+ * - `'stable'` — all other cases (default managed `~/.myco/bin/myco`).
  *
- * The legacy `'beta'` source (a separate `~/.myco/runtime/` npm install) was
- * retired with the native installer: a beta user runs the same managed binary,
- * just resolved from a prerelease release.
+ * Source is derived from the RAW machine-config field, not from
+ * `readProjectReleaseChannel()`, which clamps `manual`→`stable` via
+ * `RELEASE_CHANNELS` (that clamp is load-bearing for release-pull paths and
+ * must NOT be widened here).
  */
-export type RuntimeOrigin = 'stable' | 'dev';
+export type RuntimeOrigin = 'stable' | 'beta' | 'manual';
 
 export interface RuntimeOriginInfo {
   source: RuntimeOrigin;
@@ -369,87 +369,21 @@ export interface RuntimeOriginInfo {
   command: string | null;
 }
 
-interface RuntimeVersionLabelCacheEntry {
-  key: string;
-  label: string;
-  expiresAt: number;
-}
-
-const RUNTIME_VERSION_LABEL_CACHE_MS = 30_000;
-let runtimeVersionLabelCache: RuntimeVersionLabelCacheEntry | null = null;
-
 export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
-  if (devBuildCliEntry !== null) {
-    return { source: 'dev', command: devBuildCliEntry };
-  }
-  return { source: 'stable', command: resolveRuntimeCommand(vaultDir) };
+  const ch = loadMachineConfig().daemon.update_channel;
+  const source = ch === 'beta' || ch === 'manual' ? ch : 'stable';
+  return { source, command: resolveRuntimeCommand(vaultDir) };
 }
 
 /**
- * Human-facing daemon version label.
- *
- * `getPluginVersion()` remains the protocol/update version: compiled dev
- * binaries embed package.json and can legitimately lag release automation.
- * For dogfood/dev runtimes, the UI should instead show where that build sits
- * relative to the nearest release tag, e.g. `v0.18.1-244-g63fe75a5-dirty`.
+ * Human-facing daemon version label. Returns `currentVersion` directly —
+ * the dev git-describe logic was tied to the old `'dev'` origin concept
+ * which this task retires.
  */
-export function getRuntimeVersionLabel(vaultDir: string | undefined, currentVersion: string): string {
-  const runtime = getRuntimeOrigin(vaultDir);
-  if (runtime.source !== 'dev') return currentVersion;
-
-  const cacheKey = `${runtime.source}:${runtime.command ?? ''}:${currentVersion}`;
-  const now = Date.now();
-  if (
-    runtimeVersionLabelCache
-    && runtimeVersionLabelCache.key === cacheKey
-    && runtimeVersionLabelCache.expiresAt > now
-  ) {
-    return runtimeVersionLabelCache.label;
-  }
-
-  const repoRoot = findGitRepoForRuntime(runtime.command ?? process.execPath);
-  const label = repoRoot
-    ? describeGitVersion(repoRoot) ?? `${currentVersion}+dev`
-    : `${currentVersion}+dev`;
-
-  runtimeVersionLabelCache = {
-    key: cacheKey,
-    label,
-    expiresAt: now + RUNTIME_VERSION_LABEL_CACHE_MS,
-  };
-  return label;
+export function getRuntimeVersionLabel(_vaultDir: string | undefined, currentVersion: string): string {
+  return currentVersion;
 }
 
-function findGitRepoForRuntime(runtimeCommand: string): string | null {
-  const resolved = (() => {
-    try {
-      return fs.realpathSync(runtimeCommand);
-    } catch {
-      return runtimeCommand;
-    }
-  })();
-
-  let dir = path.dirname(resolved);
-  while (true) {
-    if (fs.existsSync(path.join(dir, '.git'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-function describeGitVersion(repoRoot: string): string | null {
-  try {
-    const described = execFileSync(
-      'git',
-      ['-C', repoRoot, 'describe', '--tags', '--match', 'v[0-9]*', '--always', '--dirty'],
-      { encoding: 'utf-8', timeout: 2_000 },
-    ).trim();
-    return described || null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Detects whether the running daemon is a dev build by comparing the CLI
