@@ -1,6 +1,6 @@
 /**
  * Subsystem ownership claims — a small, general "this daemon owns <subsystem>
- * on this machine" marker written into the shared `~/.myco/claims/` area.
+ * on this machine" marker written into a machine-global shared claims area.
  *
  * Two daemons can run on one machine — two independent installs in two homes
  * (`~/.myco` and a dogfood `~/.myco-dev`). For machine-global work that both
@@ -23,13 +23,22 @@
  * visible via `myco subsystem list`. Inert for normal single-daemon installs:
  * no operator ever claims, so nothing is ever deferred.
  *
+ * **Shared storage via `resolveClaimsHome()`**: claims are stored under
+ * `resolveClaimsHome()/claims/`, which defaults to `MYCO_HOME` (so the test
+ * suite's sandboxed home keeps claims hermetic). A dogfood daemon running under
+ * a separate `MYCO_HOME` (~/.myco-dev) sets `MYCO_CLAIMS_HOME` to the
+ * canonical `~/.myco` so it shares the prod daemon's claims area — that is how
+ * the dogfood-claims / prod-defers coordination keeps working across the
+ * two-home split. The OWNER token is always the per-daemon home path
+ * (`daemonIdentity`), never the claims home.
+ *
  * General by design — any future machine-global subsystem two daemons might
  * contend over can take a claim with a new subsystem name.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome, expandHome } from '../grove/paths.js';
 
 /** The symbiont-config (hooks/MCP) management subsystem — the first claim user. */
 export const SYMBIONT_CONFIG_SUBSYSTEM = 'symbiont-config';
@@ -52,24 +61,43 @@ export interface SubsystemClaim {
 
 /** Injectable seams so the claim store is unit-testable without a real daemon. */
 export interface ClaimDeps {
-  mycoHome?: string;
+  /**
+   * Override the shared claims storage root (default: `resolveClaimsHome()`).
+   * Tests inject a temp dir here to stay hermetic; the dogfood daemon sets
+   * `MYCO_CLAIMS_HOME` in its environment so prod and dogfood share one area.
+   */
+  claimsHome?: string;
   /** Owner pid to record (default: this process). */
   pid?: number;
   /** Clock (default: Date.now). */
   now?: () => number;
 }
 
-function claimsDir(mycoHome: string): string {
-  return path.join(mycoHome, 'claims');
+/**
+ * The machine-global location for subsystem claims. Defaults to the daemon's
+ * own MYCO_HOME (so the test suite's sandbox home keeps claims hermetic, and a
+ * single-home production install puts them under ~/.myco). A dogfood daemon
+ * running under a SEPARATE MYCO_HOME (~/.myco-dev) sets MYCO_CLAIMS_HOME to
+ * the canonical ~/.myco so it shares the prod daemon's claims area — that is
+ * how the dogfood-claims-symbiont-config / prod-defers coordination (PR #530)
+ * keeps working across the two-home split.
+ */
+export function resolveClaimsHome(): string {
+  const override = process.env.MYCO_CLAIMS_HOME?.trim();
+  return override && override.length > 0 ? path.resolve(expandHome(override)) : resolveMycoHome();
 }
 
-function claimPath(subsystem: string, mycoHome: string): string {
-  return path.join(claimsDir(mycoHome), `${subsystem}.json`);
+function claimsDir(claimsHome: string): string {
+  return path.join(claimsHome, 'claims');
 }
 
-export function readClaim(subsystem: string, mycoHome = resolveMycoHome()): SubsystemClaim | null {
+function claimPath(subsystem: string, claimsHome: string): string {
+  return path.join(claimsDir(claimsHome), `${subsystem}.json`);
+}
+
+export function readClaim(subsystem: string, claimsHome = resolveClaimsHome()): SubsystemClaim | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(claimPath(subsystem, mycoHome), 'utf-8')) as Partial<SubsystemClaim>;
+    const parsed = JSON.parse(fs.readFileSync(claimPath(subsystem, claimsHome), 'utf-8')) as Partial<SubsystemClaim>;
     if (typeof parsed.owner === 'string' && typeof parsed.pid === 'number' && typeof parsed.subsystem === 'string') {
       return parsed as SubsystemClaim;
     }
@@ -81,22 +109,22 @@ export function readClaim(subsystem: string, mycoHome = resolveMycoHome()): Subs
 
 /** Every active claim on this machine, for `myco subsystem list`. */
 export function listSubsystemClaims(deps: ClaimDeps = {}): SubsystemClaim[] {
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const home = deps.claimsHome ?? resolveClaimsHome();
   let entries: string[];
   try {
-    entries = fs.readdirSync(claimsDir(mycoHome));
+    entries = fs.readdirSync(claimsDir(home));
   } catch {
     return [];
   }
   return entries
     .filter((name) => name.endsWith('.json'))
-    .map((name) => readClaim(name.slice(0, -'.json'.length), mycoHome))
+    .map((name) => readClaim(name.slice(0, -'.json'.length), home))
     .filter((claim): claim is SubsystemClaim => claim !== null);
 }
 
 /** Assert ownership of `subsystem` for `owner`. Idempotent (overwrites). Best-effort. */
 export function claimSubsystem(subsystem: string, owner: string, deps: ClaimDeps = {}): void {
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const home = deps.claimsHome ?? resolveClaimsHome();
   const claim: SubsystemClaim = {
     subsystem,
     owner,
@@ -104,17 +132,17 @@ export function claimSubsystem(subsystem: string, owner: string, deps: ClaimDeps
     claimed_at: (deps.now ?? Date.now)(),
   };
   try {
-    fs.mkdirSync(claimsDir(mycoHome), { recursive: true });
-    atomicWriteFileSync(claimPath(subsystem, mycoHome), JSON.stringify(claim, null, 2) + '\n');
+    fs.mkdirSync(claimsDir(home), { recursive: true });
+    atomicWriteFileSync(claimPath(subsystem, home), JSON.stringify(claim, null, 2) + '\n');
   } catch { /* best-effort — a missing claim just means the peer doesn't defer */ }
 }
 
 /** Release a claim. Only the recorded owner may release it. */
 export function releaseSubsystemClaim(subsystem: string, owner: string, deps: ClaimDeps = {}): void {
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  const claim = readClaim(subsystem, mycoHome);
+  const home = deps.claimsHome ?? resolveClaimsHome();
+  const claim = readClaim(subsystem, home);
   if (claim && claim.owner === owner) {
-    try { fs.unlinkSync(claimPath(subsystem, mycoHome)); } catch { /* already gone */ }
+    try { fs.unlinkSync(claimPath(subsystem, home)); } catch { /* already gone */ }
   }
 }
 
@@ -126,7 +154,7 @@ export function releaseSubsystemClaim(subsystem: string, owner: string, deps: Cl
  * process-liveness check.
  */
 export function isClaimedByPeer(subsystem: string, self: string, deps: ClaimDeps = {}): boolean {
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  const claim = readClaim(subsystem, mycoHome);
+  const home = deps.claimsHome ?? resolveClaimsHome();
+  const claim = readClaim(subsystem, home);
   return claim !== null && claim.owner !== self;
 }

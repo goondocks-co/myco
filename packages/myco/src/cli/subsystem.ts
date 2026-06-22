@@ -3,6 +3,7 @@ import {
   releaseSubsystemClaim,
   listSubsystemClaims,
   readClaim,
+  resolveClaimsHome,
   KNOWN_SUBSYSTEMS,
 } from '../daemon/subsystem-claim.js';
 import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
@@ -32,6 +33,7 @@ function assertKnown(subsystem: string): void {
 export async function run(args: string[]): Promise<void> {
   const [cmd, ...rest] = args;
   const mycoHome = resolveMycoHome();
+  const claimsHome = resolveClaimsHome();
 
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stdout.write(USAGE + '\n');
@@ -39,7 +41,7 @@ export async function run(args: string[]): Promise<void> {
   }
 
   if (cmd === 'list') {
-    const claims = listSubsystemClaims({ mycoHome });
+    const claims = listSubsystemClaims({ claimsHome });
     if (claims.length === 0) {
       console.log('No subsystem claims.');
       return;
@@ -57,14 +59,14 @@ export async function run(args: string[]): Promise<void> {
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
     const self = daemonIdentity(mycoHome);
-    const existing = readClaim(subsystem, mycoHome);
+    const existing = readClaim(subsystem, claimsHome);
     if (existing && existing.owner !== self && !rest.includes('--force')) {
       throw new Error(
         `${subsystem} is already claimed by ${existing.owner}. Release it from that `
         + `build (\`myco subsystem release ${subsystem}\`), or pass --force to take it over.`,
       );
     }
-    claimSubsystem(subsystem, self, { mycoHome });
+    claimSubsystem(subsystem, self, { claimsHome });
     console.log(`Claimed ${subsystem} for ${self}.`);
     console.log(`A peer daemon (a different home) now defers ${subsystem} work to this daemon.`);
     console.log(`Run \`myco subsystem release ${subsystem}\` (under this build) when you're done.`);
@@ -76,7 +78,7 @@ export async function run(args: string[]): Promise<void> {
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
     const self = daemonIdentity(mycoHome);
-    const existing = readClaim(subsystem, mycoHome);
+    const existing = readClaim(subsystem, claimsHome);
     if (!existing) {
       console.log(`${subsystem} is not claimed.`);
       return;
@@ -87,7 +89,7 @@ export async function run(args: string[]): Promise<void> {
         + `owning build.`,
       );
     }
-    releaseSubsystemClaim(subsystem, self, { mycoHome });
+    releaseSubsystemClaim(subsystem, self, { claimsHome });
     console.log(`Released ${subsystem} (was owned by ${self}).`);
     return;
   }

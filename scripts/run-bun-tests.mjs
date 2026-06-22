@@ -291,6 +291,7 @@ const NO_ISOLATE_NODE_GROUPS = [
       // entire @myco/daemon/machine-id.js module. Kept here where no such
       // mock exists.
       'tests/daemon/machine-id.test.ts',
+      'tests/daemon/subsystem-claim.test.ts',
       // tests/daemon/event-loop-lag.test.ts intentionally omitted: it uses
       // real timers plus synchronous loop blocking. In the Linux shared Bun
       // daemon-root phase, earlier timer-heavy daemon tests can leave enough
