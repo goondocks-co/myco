@@ -77,7 +77,7 @@ function configureDatabase(db: Database): Database {
   if (currentMode?.toLowerCase() !== 'wal') {
     // WAL switch needs an EXCLUSIVE lock and the WAL/SHM infrastructure. On
     // Linux that initialization can stall when the file was just replaced
-    // (e.g. claim/release restore). Bound the wait to 200ms so the
+    // Bound the wait to 200ms so the
     // configure step can't dominate a test's 5s budget; if we can't switch,
     // run in whatever mode the file is in. The daemon's primary open at
     // startup sets WAL once for its long-lived connection.

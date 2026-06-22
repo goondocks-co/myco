@@ -244,9 +244,8 @@ describe('resolveMycoBinary()', () => {
 });
 
 describe('getRuntimeVersionLabel()', () => {
-  it('returns the protocol version directly', () => {
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.27.19')).toBe('0.27.19');
-    expect(execFileSync).not.toHaveBeenCalled();
+  it('returns the version directly', () => {
+    expect(getRuntimeVersionLabel('0.27.19')).toBe('0.27.19');
   });
 });
 

@@ -400,7 +400,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         if (updateInProgress.inFlight(daemonStateDir)) {
           return {
             body: {
-              exempt: false,
               update_in_progress: true,
               running_version: currentVersion,
               installed_version: installedVersion,
@@ -465,7 +464,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     if (!status) {
       return {
         body: {
-          exempt: false,
           auto_eligible: autoEligible,
           update_available: false,
           revert_available: false,
@@ -482,7 +480,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         },
       };
     }
-    return { body: { exempt: false, auto_eligible: autoEligible, ...status } };
+    return { body: { auto_eligible: autoEligible, ...status } };
   }
 
   /**
@@ -551,7 +549,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       packages,
     };
 
-    return { body: { exempt: false, ...result } };
+    return { body: { ...result } };
   }
 
   /**
@@ -795,7 +793,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     if (!channelStatus) {
       return {
         body: {
-          exempt: false,
           update_available: false,
           revert_available: false,
           running_version: currentVersion,
@@ -811,7 +808,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         },
       };
     }
-    return { body: { exempt: false, ...channelStatus } };
+    return { body: { ...channelStatus } };
   }
 
   return {

@@ -39,15 +39,15 @@ function makeTmpDir(prefix: string): string {
 
 function withEnv(key: string, value: string | undefined, fn: () => void): void {
   const prev = process.env[key];
+  cleanups.push(() => {
+    if (prev === undefined) delete process.env[key];
+    else process.env[key] = prev;
+  });
   if (value === undefined) {
     delete process.env[key];
   } else {
     process.env[key] = value;
   }
-  cleanups.push(() => {
-    if (prev === undefined) delete process.env[key];
-    else process.env[key] = prev;
-  });
   fn();
 }
 

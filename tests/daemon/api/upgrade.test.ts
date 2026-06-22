@@ -2,10 +2,10 @@
  * Tests for the upgrade API route handlers (daemon/api/upgrade.ts).
  *
  * Covers:
- * - handleUpgradeStatus: exempt, version-sync self-restart (restarting/reason),
+ * - handleUpgradeStatus: version-sync self-restart (restarting/reason),
  *   union assembly from cache, stale cache triggers background fetch, null cache fallback
  * - handleUpgradeCheck: live resolveMycoPackageCheck + checkOperatorCliVersions,
- *   union CheckResult assembly, partial failure, 400 when exempt
+ *   union CheckResult assembly, partial failure
  * - handleUpgradeApply: myco → initiateAdopt on staged version; operator CLIs →
  *   spawnUpdateScript; 400/409/422 error cases; beta→stable revert; service label routing
  * - handleUpgradeChannel: writes config + clears cache, 400 for invalid channel
@@ -224,7 +224,6 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     // Fresh cache — no background live check needed
     expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
@@ -240,7 +239,7 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
 
     // Handler returns immediately with cached data; fire-and-forget refresh kicks off
-    expect(result.body).toMatchObject({ exempt: false });
+    expect(result.body).toMatchObject({ update_available: false });
   });
 
   it('returns default status body when no cache exists', async () => {
@@ -251,7 +250,6 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.running_version).toBe('1.0.0');
     expect(body.channel).toBe('stable');
@@ -470,7 +468,7 @@ describe('handleUpgradeCheck', () => {
 
     expect(resolveMycoPackageCheck).toHaveBeenCalledWith('1.0.0', 'stable', '1.0.0');
     expect(checkOperatorCliVersions).toHaveBeenCalled();
-    expect(result.body).toMatchObject({ exempt: false, update_available: true });
+    expect(result.body).toMatchObject({ update_available: true });
   });
 
   it('union packages[] has myco first', async () => {
@@ -520,7 +518,6 @@ describe('handleUpgradeCheck', () => {
     const result = await handleUpgradeCheck(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(typeof body.error).toBe('string');
     expect(body.error as string).toContain('GitHub 503');
     expect((body.packages as unknown[]).length).toBe(0);
@@ -826,7 +823,6 @@ describe('handleUpgradeChannel', () => {
     const result = await handleUpgradeChannel(makeReq({ body: { channel: 'beta' } }));
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.channel).toBe('beta');
     expect(body.channel_scope).toBe('machine');
@@ -834,14 +830,13 @@ describe('handleUpgradeChannel', () => {
     expect(body.last_check).toBe('');
   });
 
-  it('returns cached status with exempt:false after channel change', async () => {
+  it('returns cached status after channel change', async () => {
     (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
     const { handleUpgradeChannel } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
 
     const result = await handleUpgradeChannel(makeReq({ body: { channel: 'stable' } }));
 
-    expect((result.body as Record<string, unknown>).exempt).toBe(false);
     expect((result.body as Record<string, unknown>).update_available).toBe(false);
   });
 
@@ -884,7 +879,6 @@ describe('manual channel: automatic paths no-op, operator paths proceed', () => 
 
     // No background registry call made even though cache is stale.
     expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
-    expect(body.exempt).toBe(false);
     expect(body.auto_eligible).toBe(false);
   });
 

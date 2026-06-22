@@ -93,7 +93,6 @@ export function DaemonStatusPill({ to, className }: { to?: string; className?: s
   const upgradeStatus = useUpgradeStatus();
   const updateAvailable = Boolean(
     upgradeStatus.data
-    && !upgradeStatus.data.exempt
     && (upgradeStatus.data.update_available || upgradeStatus.data.revert_available),
   );
   return (

@@ -532,9 +532,10 @@ export function resolveRequestContextForVault(
 ): MycoRequestContext {
   const result = tryResolveRequestContextForVault(vaultDir, overrides);
   if (result.kind === 'legacy') {
-    // Preserve the historical hard-error contract for callers that
-    // explicitly chose the throwing entry point.
-    throw new Error(result.reason);
+    // Unregistered project root: the vault has no Grove project id.
+    // UnknownRequestContextError maps to 404 at the transport boundary
+    // (server.ts, mcp/http.ts) instead of falling through to the 500 catch-all.
+    throw new UnknownRequestContextError(result.reason);
   }
   return result.context;
 }
@@ -592,7 +593,9 @@ function buildVaultFallback(
 ): { context: MycoRequestContext; manifest: ProjectManifest | null } {
   const result = tryBuildVaultFallback(vaultDir, overrides);
   if (result.kind === 'legacy') {
-    throw new Error(result.reason);
+    // Unregistered project root: maps to 404 at the transport boundary
+    // (server.ts, mcp/http.ts) instead of the 500 catch-all.
+    throw new UnknownRequestContextError(result.reason);
   }
   return { context: result.context, manifest: result.manifest };
 }

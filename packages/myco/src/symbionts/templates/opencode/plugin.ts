@@ -227,9 +227,9 @@ function expandTilde(value: string): string {
 
 /**
  * Resolve this project's Myco home — the daemon it routes to. A trusted
- * `runtime.home` pin (sibling of `runtime.command`) wins so a dogfood project
- * pinned to `~/.myco-dev` reads `~/.myco-dev/service/daemon.json` instead of
- * the prod `~/.myco`. Falls back to `MYCO_HOME`, then `~/.myco`.
+ * `runtime.home` pin wins so a dogfood project pinned to `~/.myco-dev` reads
+ * `~/.myco-dev/service/daemon.json` instead of the prod `~/.myco`. Falls back
+ * to `MYCO_HOME`, then the machine `~/.myco`.
  */
 function resolveMycoHome(directory?: string): string {
   if (directory) {

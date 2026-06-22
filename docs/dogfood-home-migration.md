@@ -35,7 +35,7 @@ This builds the binary, symlinks it, creates `~/.myco-dev/config.yaml`, and writ
 ### 3. Register the myco project under the dev home
 
 ```sh
-MYCO_HOME=~/.myco-dev myco init
+MYCO_HOME=$HOME/.myco-dev myco init
 ```
 
 This registers this repo as a grove under `~/.myco-dev/groves/` so the dev daemon owns it.
@@ -74,7 +74,7 @@ Identify and remove them:
 for dir in ~/.myco/groves/*/; do
   toml="$dir/grove.toml"
   if [ -f "$toml" ]; then
-    served_by=$(grep '^served_by' "$toml" | sed "s/served_by *= *['\"]//;s/['\"].*//")
+    served_by=$(grep '^served_by' "$toml" | grep -oP "(?<=served_by = ')[^']+")
     if [ -n "$served_by" ] && [ "$served_by" != "service" ]; then
       echo "Removing dev-owned grove: $dir (served_by=$served_by)"
       rm -rf "$dir"

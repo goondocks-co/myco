@@ -264,11 +264,9 @@ export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
 }
 
 /**
- * Human-facing daemon version label. Returns `currentVersion` directly —
- * the dev git-describe logic was tied to the old `'dev'` origin concept
- * which this task retires.
+ * Human-facing daemon version label. Returns `currentVersion` directly.
  */
-export function getRuntimeVersionLabel(_vaultDir: string | undefined, currentVersion: string): string {
+export function getRuntimeVersionLabel(currentVersion: string): string {
   return currentVersion;
 }
 

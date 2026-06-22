@@ -1966,7 +1966,7 @@ export async function main(): Promise<void> {
       // Reconcile the Grove that actually owns the (re)assigned project, not the
       // ambient request Grove — membership is machine-wide on the Team page, so a
       // project can be assigned/removed from any Grove. reconcileGrove targets
-      // that Grove (a no-op when served by another daemon variant) and runs the
+      // that Grove (a no-op when the Grove lives in another daemon's home) and runs the
       // full backfill + flush so an assigned project starts syncing immediately
       // and a removed project's rows are purged immediately.
       const groveId = (req.body as { grove_id?: string } | undefined)?.grove_id ?? null;

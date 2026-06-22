@@ -389,8 +389,7 @@ export function ensureDefaultGrove(mycoHome = resolveMycoHome()): GroveRecord {
  *
  * Used by `ensureProjectRegistered` and any other code path that needs
  * to find the default Grove without creating one. Honors the pointer
- * when it matches the current variant, otherwise falls back to the
- * canonical slug lookup (`default`).
+ * — honors the pointer then falls back to the canonical slug lookup (`default`).
  */
 export function resolveDefaultGrove(
   mycoHome = resolveMycoHome(),
