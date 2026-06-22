@@ -21,11 +21,14 @@ import {
   MS_PER_HOUR,
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
+  MACHINE_RUNTIME_HOME_FILENAME,
   type ReleaseChannel,
   type UpdatePackageId,
 } from '../constants/update.js';
 import {
   resolveMachineRuntimeCommandPath,
+  resolveMycoHome,
+  expandHome,
 } from '../grove/paths.js';
 
 // ---------------------------------------------------------------------------
@@ -97,6 +100,23 @@ export function resolveRuntimeCommand(vaultDir?: string): string | null {
 }
 
 /**
+ * Read the layered `runtime.home` pin — the sibling of `runtime.command` —
+ * and return the absolute home it redirects MYCO_HOME to, or null when no pin
+ * applies (the prod `~/.myco` is the implicit default).
+ *
+ * Mirrors `resolveRuntimeCommand`'s layering: when `vaultDir` is supplied,
+ * `<vaultDir>/runtime.home` (the project-scope dogfood pin) is checked first,
+ * then the machine-scope `~/.myco/runtime.home`. Both go through the same G7
+ * trust check (`readPinFile`). `~` in the value is expanded.
+ */
+export function resolveRuntimeHome(vaultDir?: string): string | null {
+  let raw: string | null = null;
+  if (vaultDir) raw = readPinFile(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
+  if (!raw) raw = readPinFile(path.join(resolveMycoHome(), MACHINE_RUNTIME_HOME_FILENAME));
+  return raw ? expandHome(raw) : null;
+}
+
+/**
  * Resolve the runtime pin from a launch cwd, used by the standalone launch
  * preamble. The project-scope pin is found by a pure filesystem upward walk
  * for `<dir>/.myco/runtime.command` (first non-empty wins, stopping at the
@@ -158,12 +178,17 @@ function checkPinTrust(filePath: string): { ok: true } | { ok: false; reason: st
 function readPinFile(filePath: string): string | null {
   const trust = checkPinTrust(filePath);
   if (!trust.ok) {
-    // Best-effort warning — never fatal; a daemon with a poisoned pin falls
-    // back to the PATH-resolved `myco` rather than silently executing it.
-    try {
-      process.stderr.write(`[myco] daemon: ignoring runtime.command pin (${trust.reason}): ${filePath}\n`);
-    } catch {
-      // stderr unavailable — swallow
+    // A missing pin is the normal "no pin → default" case (both runtime.command
+    // and runtime.home are absent on a plain install) — silent. Only a real
+    // trust REFUSAL (foreign owner / group-other-writable) warns: never fatal,
+    // a daemon with a poisoned pin falls back to the default rather than
+    // silently executing it.
+    if (trust.reason !== 'pin file missing') {
+      try {
+        process.stderr.write(`[myco] daemon: ignoring runtime pin (${trust.reason}): ${filePath}\n`);
+      } catch {
+        // stderr unavailable — swallow
+      }
     }
     return null;
   }

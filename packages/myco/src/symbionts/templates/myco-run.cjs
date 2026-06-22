@@ -48,10 +48,41 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 //
 // Machine-scoped: there's exactly one daemon per machine, and the runtime
 // that backs it is a machine-level choice, not per-project.
+//
+// `runtime.home` sits beside the winning `runtime.command` in the same dir: a
+// plaintext, single-line, absolute home path. When present and trusted it sets
+// MYCO_HOME before exec so a project pinned to a dev home (`~/.myco-dev`)
+// reaches the matching daemon. Shares the winning-pin dir and the G7 trust
+// check below — identical to the CLI shim's runtime-redirect.cjs.
 const args = process.argv.slice(2);
-const bin = readLayeredRuntimeCommand() ?? 'myco';
+
+// G7 (security): pin files are exec'd as the user's `myco` binary, so a
+// group/other-writable or foreign-owned pin would let a hostile local user
+// redirect every hook invocation. Refuse any such pin — matches
+// checkRuntimeCommandTrust in bin/runtime-redirect.cjs.
+const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
+
+function checkRuntimePinTrust(filePath) {
+  if (process.platform === 'win32') return { ok: true };
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { ok: false, reason: 'pin file missing' };
+    return { ok: false, reason: `stat failed: ${(err && err.message) || 'unknown'}` };
+  }
+  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (myUid !== null && stat.uid !== myUid) {
+    return { ok: false, reason: `pin file owned by uid ${stat.uid}, expected ${myUid}` };
+  }
+  if ((stat.mode & 0o777) & RUNTIME_COMMAND_INSECURE_MODE_MASK) {
+    return { ok: false, reason: 'pin file writable by group/other' };
+  }
+  return { ok: true };
+}
 
 function readPinFile(filePath) {
+  if (!checkRuntimePinTrust(filePath).ok) return null;
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
@@ -61,8 +92,9 @@ function readPinFile(filePath) {
 function readProjectRuntimeCommand(startDir) {
   let dir = path.resolve(startDir);
   while (true) {
-    const pin = readPinFile(path.join(dir, '.myco', 'runtime.command'));
-    if (pin) return pin;
+    const source = path.join(dir, '.myco', 'runtime.command');
+    const pin = readPinFile(source);
+    if (pin) return { pin, source };
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -71,7 +103,9 @@ function readProjectRuntimeCommand(startDir) {
 
 function readMachineRuntimeCommand() {
   const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
-  return readPinFile(path.join(home, 'runtime.command'));
+  const source = path.join(home, 'runtime.command');
+  const pin = readPinFile(source);
+  return pin ? { pin, source } : null;
 }
 
 function readLayeredRuntimeCommand() {
@@ -82,6 +116,16 @@ function expandHome(value) {
   if (value === '~') return os.homedir();
   if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
   return value;
+}
+
+const found = readLayeredRuntimeCommand();
+const bin = found ? found.pin : 'myco';
+
+// Read the trusted `runtime.home` beside the winning `runtime.command` and set
+// MYCO_HOME before exec. Absent → leave MYCO_HOME as-is (prod default).
+if (found) {
+  const homePin = readPinFile(path.join(path.dirname(found.source), 'runtime.home'));
+  if (homePin) process.env.MYCO_HOME = expandHome(homePin);
 }
 
 function toolNameFromArgs(args) {

@@ -27,6 +27,15 @@ export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json')
  */
 export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
 
+/**
+ * Filename for the runtime home pin — a sibling of `runtime.command` in the
+ * SAME (project or machine) dir. A plaintext, single-line, absolute home path
+ * that redirects MYCO_HOME for that scope, routing the CLI, hooks, MCP, and
+ * symbiont capture plugins at a non-default daemon (e.g. a dogfood `~/.myco-dev`).
+ * Read under the same G7 trust check as `runtime.command`.
+ */
+export const MACHINE_RUNTIME_HOME_FILENAME = 'runtime.home';
+
 /** Filename for the restart reason signal file (lives inside vault .myco/). */
 export const RESTART_REASON_FILENAME = 'restart-reason.json';
 

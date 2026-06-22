@@ -101,6 +101,7 @@ import {
   getInstalledVersion,
   getRuntimeVersionLabel,
   getRuntimeOrigin,
+  resolveRuntimeHome,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -397,6 +398,63 @@ describe('resolveRuntimeCommand()', () => {
       throw err;
     });
     expect(resolveRuntimeCommand()).toBeNull();
+  });
+});
+
+describe('resolveRuntimeHome()', () => {
+  it('returns null when no runtime.home pin exists', () => {
+    mockNoFiles();
+    expect(resolveRuntimeHome()).toBeNull();
+    expect(resolveRuntimeHome('/some/project/.myco')).toBeNull();
+  });
+
+  it('returns the trimmed machine runtime.home when present at ~/.myco/', () => {
+    mockFileContent('/mock-home/.myco/runtime.home', '  /home/me/.myco-dev \n');
+    expect(resolveRuntimeHome()).toBe('/home/me/.myco-dev');
+  });
+
+  it('prefers a project-scope runtime.home over the machine pin', () => {
+    const projectPin = '/proj/.myco/runtime.home';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === projectPin || p === '/mock-home/.myco/runtime.home') return fakeStat(String(p));
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === projectPin) return '/home/me/.myco-proj';
+      if (p === '/mock-home/.myco/runtime.home') return '/home/me/.myco-machine';
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeHome('/proj/.myco')).toBe('/home/me/.myco-proj');
+  });
+
+  it('refuses a group-writable runtime.home pin (G7) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.home';
+    const content = '/home/me/.myco-dev';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100664, // group-writable
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeHome()).toBeNull();
   });
 });
 

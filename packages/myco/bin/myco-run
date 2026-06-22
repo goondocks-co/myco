@@ -24,7 +24,24 @@ function isPackagedInstall(scriptPath) {
   return scriptPath.split(path.sep).includes('node_modules');
 }
 
+// G7 (security): pin files are exec'd as the user's `myco` binary, so a
+// group/other-writable or foreign-owned pin would let a hostile local user
+// redirect the MCP server. Refuse any such pin — matches
+// checkRuntimeCommandTrust in bin/runtime-redirect.cjs.
+const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
+
+function pinIsTrusted(filePath) {
+  if (process.platform === 'win32') return true;
+  let stat;
+  try { stat = fs.statSync(filePath); } catch { return false; }
+  const myUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (myUid !== null && stat.uid !== myUid) return false;
+  if ((stat.mode & 0o777) & RUNTIME_COMMAND_INSECURE_MODE_MASK) return false;
+  return true;
+}
+
 function readPinFile(filePath) {
+  if (!pinIsTrusted(filePath)) return null;
   try {
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
@@ -34,9 +51,9 @@ function readPinFile(filePath) {
 function resolveProjectPin(startDir) {
   let dir = path.resolve(startDir);
   while (true) {
-    const candidate = path.join(dir, '.myco', 'runtime.command');
-    const pin = readPinFile(candidate);
-    if (pin) return pin;
+    const source = path.join(dir, '.myco', 'runtime.command');
+    const pin = readPinFile(source);
+    if (pin) return { pin, source };
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -51,7 +68,9 @@ function expandHome(value) {
 
 function resolveMachinePin() {
   const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
-  return readPinFile(path.join(home, 'runtime.command'));
+  const source = path.join(home, 'runtime.command');
+  const pin = readPinFile(source);
+  return pin ? { pin, source } : null;
 }
 
 function resolveLayeredPin() {
@@ -60,13 +79,20 @@ function resolveLayeredPin() {
 
 function tryRedirectViaAlias(argv) {
   if (process.env.MYCO_RUN_REDIRECTED === '1') return false;
-  const alias = resolveLayeredPin();
-  if (!alias) return false;
+  const found = resolveLayeredPin();
+  if (!found) return false;
+
+  // A trusted `runtime.home` beside the winning command pin redirects the MCP
+  // server's home so a dev-pinned project's tools reach the dev daemon. Absent
+  // → leave MYCO_HOME as-is (prod default).
+  const childEnv = { ...process.env, MYCO_RUN_REDIRECTED: '1' };
+  const homePin = readPinFile(path.join(path.dirname(found.source), 'runtime.home'));
+  if (homePin) childEnv.MYCO_HOME = expandHome(homePin);
 
   try {
-    execFileSync(alias, argv, {
+    execFileSync(found.pin, argv, {
       stdio: 'inherit',
-      env: { ...process.env, MYCO_RUN_REDIRECTED: '1' },
+      env: childEnv,
     });
     process.exit(0);
   } catch (error) {

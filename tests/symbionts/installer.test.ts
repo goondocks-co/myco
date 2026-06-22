@@ -769,6 +769,38 @@ describe('installMcp', () => {
     expect(command).not.toContain('\\');
   });
 
+  it('does NOT inject MYCO_HOME into the MCP env when no runtime.home pin applies', () => {
+    // Daemon-agnostic prod default: a normal/global install leaves the MCP
+    // server env untouched so a shared config never embeds a specific home.
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const myco = (config.mcpServers as Record<string, Record<string, unknown>>).myco;
+    expect(myco.env).toBeUndefined();
+  });
+
+  it('injects MYCO_HOME into the MCP env when a trusted project runtime.home pin redirects the home', () => {
+    // A dogfood project pins itself to a dev home via `<project>/.myco/runtime.home`.
+    // The MCP server is exec'd directly (no runtime-redirect shim), so the
+    // resolved dev home must ride in the MCP entry's env or capture tools hit
+    // the prod daemon.
+    const devHome = path.join(projectRoot, '..', `myco-dev-${path.basename(projectRoot)}`);
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), `${devHome}\n`, 'utf-8');
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const config = readJson(path.join(projectRoot, '.mcp.json'));
+    const myco = (config.mcpServers as Record<string, Record<string, unknown>>).myco;
+    expect((myco.env as Record<string, unknown>).MYCO_HOME).toBe(devHome);
+    // The command still resolves to the daemon-agnostic binary path.
+    expect(myco.command).toBe(PINNED_BINARY);
+
+    fs.rmSync(devHome, { recursive: true, force: true });
+  });
+
   it('writes MCP server to .cursor/mcp.json for Cursor', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
