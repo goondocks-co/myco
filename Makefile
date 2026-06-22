@@ -159,12 +159,22 @@ dev-build:
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.myco
-	@# myco-dev wraps the binary: sets MYCO_HOME=~/.myco-dev and
-	@# MYCO_CLAIMS_HOME=~/.myco, then execs the binary.
-	@# rm -f first: if myco-dev is a symlink to the binary, `printf >` follows it
-	@# and overwrites the binary. Write a fresh regular file.
+	@# Relocate the freshly-built binary to a STANDALONE location, divorced from
+	@# the repo's node_modules — exactly how production runs (~/.myco/bin/myco).
+	@# Running the dev daemon in-repo (node_modules in its ancestry) made dogfood
+	@# diverge from prod: anything the standalone binary can't resolve without a
+	@# node_modules tree (e.g. the Claude Code CLI the harness shells out to)
+	@# worked in dev and broke only in prod. A standalone dev binary closes that
+	@# blindspot so dogfood exercises the production topology.
+	@mkdir -p $(HOME)/.myco-dev/bin
+	@cp -f $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
+	@chmod +x $(HOME)/.myco-dev/bin/myco
+	@# myco-dev wraps the standalone binary: sets MYCO_HOME=~/.myco-dev and
+	@# MYCO_CLAIMS_HOME=~/.myco, then execs it.
+	@# rm -f first: if myco-dev is a symlink to a binary, `printf >` follows it
+	@# and overwrites the target. Write a fresh regular file.
 	@rm -f $(HOME)/.local/bin/myco-dev
-	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(HOME)/.local/bin/myco-dev
+	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
@@ -200,7 +210,7 @@ dev-link: dev-build
 		rm -f $(HOME)/.myco/runtime.command; \
 		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
 	fi
-	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
+	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
@@ -251,6 +261,9 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f $(PWD)/.myco/runtime.command
 	@rm -f $(PWD)/.myco/runtime.home
+	@# Remove the relocated standalone dev binary (a build-artifact copy; the dev
+	@# home's grove data under ~/.myco-dev is preserved).
+	@rm -f $(HOME)/.myco-dev/bin/myco
 	@# Also sweep the legacy machine-scope pin in case the user ran the
 	@# pre-0.25.2 `make dev-link` and never re-linked.
 	@rm -f $(HOME)/.myco/runtime.command
