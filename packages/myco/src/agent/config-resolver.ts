@@ -33,8 +33,15 @@ import { inferHarnessFromProviderType } from './provider-harness.js';
  * matching the resolution order in `resolveRunConfig` below.
  */
 export function hasConfiguredProvider(mycoConfig: MycoConfig, taskName?: string): boolean {
-  const taskProvider = taskName ? mycoConfig.agent.tasks?.[taskName]?.provider : undefined;
-  return !!(taskProvider ?? mycoConfig.agent.provider);
+  const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
+  if (taskConfig?.provider ?? mycoConfig.agent.provider) return true;
+  // No explicit provider configured: a run is still possible when the effective
+  // harness is the default claude-sdk harness, which shells out to the Claude
+  // Code CLI (subscription auth) and needs no provider config. claude-sdk
+  // self-validates the CLI at run time (clear error if absent). A non-claude
+  // harness with no provider genuinely cannot run, so keep blocking that.
+  const harness = taskConfig?.harness ?? mycoConfig.agent.harness ?? HARNESS_CLAUDE_SDK;
+  return harness === HARNESS_CLAUDE_SDK;
 }
 
 // ---------------------------------------------------------------------------
