@@ -15,6 +15,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
+import { hasEmbeddedUi } from './static.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
@@ -1101,6 +1102,10 @@ export async function main(): Promise<void> {
   }
   if (uiDir) {
     logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
+  } else if (hasEmbeddedUi()) {
+    // Standalone binary: no adjacent dist/ui/ on disk, but the dashboard
+    // bundle was compiled in. The server serves it from BUNDLED_UI.
+    logger.debug(LOG_KINDS.DAEMON_START, 'Serving embedded UI bundle (no disk dist/ui)');
   }
 
   // Always-on diagnostic for event-loop pinning. Catches stalls regardless

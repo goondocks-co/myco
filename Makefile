@@ -141,13 +141,13 @@ dev-build:
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
 	@# myco is now a Bun-compiled binary. Steps in order:
-	@#   1. codegen (hook-config.generated.ts from manifests)
-	@#   2. build libsqlite3 for the host target (cached after first run)
-	@#   3. build UI bundle (Vite)
-	@#   4. bun build --compile the host-target entry
-	cd packages/myco && npx tsx scripts/gen-hook-config.ts
+	@#   1. build libsqlite3 for the host target (cached after first run)
+	@#   2. build UI bundle (Vite) — must precede codegen so it can be embedded
+	@#   3. codegen (hook-config + agent defs + static + UI assets, templates)
+	@#   4. bun build --compile the host-target entry (embeds the codegen output)
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
+	cd packages/myco && npm run codegen
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
 	@# After the binary lands in packages/myco-$(HOST_TARGET)/bin/, re-run
 	@# select-binary.mjs so vendor/resolved.json is populated for callers
@@ -222,13 +222,14 @@ WIN_HOST ?= chris@10.211.55.3
 WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPersist=3m -o StrictHostKeyChecking=accept-new
 
 dev-build-windows:
-	cd packages/myco && npx tsx scripts/gen-hook-config.ts && npx tsx scripts/gen-agent-definitions.ts && npx tsx scripts/gen-static-assets.ts && node scripts/gen-templates.mjs
+	@# UI bundle first (served by the daemon, embedded into the binary) — must
+	@# precede codegen so gen-ui-assets can bundle it. Parity with `dev-build`.
+	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
+	cd packages/myco && npm run codegen
 	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
 	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
 	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
 	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
-	@# UI bundle (served by the daemon) — parity with `dev-build`.
-	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
 
 dev-link-windows: dev-build-windows
 	tar -czf /tmp/myco-win-ui.tgz -C packages/myco/dist ui

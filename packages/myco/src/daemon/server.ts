@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
-import { resolveStaticFile } from './static.js';
+import { resolveStaticFile, resolveEmbeddedAsset } from './static.js';
 import { evictDaemons } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
@@ -505,7 +505,8 @@ export class DaemonServer {
       if (proxied) return;
     }
 
-    // No API route matched — serve static files (dashboard SPA)
+    // No API route matched — serve static files (dashboard SPA). Disk is
+    // preferred so dev/npm live UI rebuilds are picked up without recompiling.
     if (this.uiDir && req.method === 'GET') {
       const result = resolveStaticFile(this.uiDir, pathname);
       if (result) {
@@ -533,6 +534,34 @@ export class DaemonServer {
         } catch {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'not found' }));
+        }
+        return;
+      }
+    }
+
+    // No disk dist/ui (standalone binary) — serve the UI bundle compiled into
+    // the binary.
+    if (req.method === 'GET') {
+      const embedded = resolveEmbeddedAsset(pathname);
+      if (embedded) {
+        if (embedded.contentType === 'text/html') {
+          const cacheKey = `embedded:${pathname}`;
+          let injected = this.htmlCache.get(cacheKey);
+          if (injected === undefined) {
+            injected = injectDashboardBootstrap(embedded.body.toString('utf-8'), this.authToken);
+            this.htmlCache.set(cacheKey, injected);
+          }
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': embedded.cacheControl,
+          });
+          res.end(injected);
+        } else {
+          res.writeHead(200, {
+            'Content-Type': embedded.contentType,
+            'Cache-Control': embedded.cacheControl,
+          });
+          res.end(embedded.body);
         }
         return;
       }
