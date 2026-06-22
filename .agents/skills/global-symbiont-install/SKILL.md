@@ -344,3 +344,7 @@ power-job cycle. The fix is variant-scoped claim transfer or skip logic: the dev
 daemon must not overwrite machine-global artifacts owned by the prod daemon
 variant, or must transfer the subsystem claim before writing. Never assume a
 global write by the dev daemon is safe when prod is also active.
+
+### Daemon Rebuild Re-Fires Capture-Only Seed — Clobbers Already-Admitted Project Capabilities
+
+**Development-time gotcha** (session 7bf0bb2d, batches 9332–9338): When rebuilding the daemon on a feature branch and restarting it, the daemon re-fires the capture-only seed for already-admitted projects. The seed overwrites all 4 project capabilities (capture, analysis, etc.) with their initial disabled/default values — even for projects that had been fully enabled via the UI. This looks like a config loss or UI bug but the root cause is a missing admission guard in the seed logic: the seed must check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during development silently disables all capabilities for all registered projects. Workaround while the guard is pending: manually re-enable capabilities via the UI after each rebuild on the feature branch.

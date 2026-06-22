@@ -383,3 +383,28 @@ The hook CLI, daemon, and plugin files are all the same binary in a co-shipped M
 3. Only escalate to a hard kill if the cooperative shutdown times out
 
 The Windows service manager (`packages/myco/src/service/windows.ts`) already uses this pattern via `cooperativeShutdown`. Any code that sends SIGTERM to the daemon process on Windows is silently skipping graceful shutdown.
+
+### Managed Binary Layout: Stable Slot vs Versioned Store (Native Installer)
+
+**Architecture** (`packages/myco/scripts/managed-paths.mjs`): The native installer uses a two-level binary layout under the managed bin directory:
+
+- **Stable slot** (`managedBinaryPath`): `~/.myco/bin/myco` — the live binary the service plist must always point to
+- **Versioned store** (`versionBinaryPath`): `~/.myco/bin/versions/<semver>/myco` — staged/retained release copies
+
+**Adopt = file copy, not symlink.** When adopting a staged version, the binary is copied from the versioned store into the stable slot (implemented in `packages/myco/src/upgrade/apply-binary.ts`). A symlink would be resolved at plist-load time and would silently break if the versioned directory is cleaned up. The three adopt triggers are:
+
+1. **Idle auto-adopt** (`UPGRADE_ADOPT` power job, `packages/myco/src/constants/power-jobs.ts`): fires when a staged version > current is present and the daemon is idle or in sleep state
+2. **Explicit CLI upgrade** command
+3. **Explicit restart via the UI**
+
+Path helpers (`managedBinDir`, `versionsDir`, `versionDir`, `versionBinaryPath`) are the single source of truth in `packages/myco/scripts/managed-paths.mjs`, re-exported by `packages/myco/src/install/managed-binary.ts`.
+
+### launchd KeepAlive Restart Loop When Service Plist Doesn't Point to Stable Slot
+
+**Gotcha** (observed during native installer adoption testing): When auto-adopt copies a new binary into the stable slot (`~/.myco/bin/myco`) and the daemon restarts, launchd `KeepAlive` re-launches the daemon using `ProgramArguments[0]` from the **loaded plist** — not the stable slot path. If the service was originally installed pointing to an npm-managed or versioned binary path in `ProgramArguments`, launchd restarts the old binary on every cycle, silently undoing the adoption.
+
+**Invariant and fix**: The service plist must always use the stable slot (`~/.myco/bin/myco`) in `ProgramArguments`. `buildServiceSpec()` in `packages/myco/src/service/spec-builder.ts` enforces this by refusing Cellar-versioned paths and script-runner executables. When migrating from npm-based to native installer, re-run `ensureSelfInstalledAsService()` in `packages/myco/src/service/self-install.ts` so the plist `ProgramArguments` is updated to point to the stable slot. Never write service plists with hardcoded versioned or Cellar paths.
+
+### Capture-Only Seed Re-Fires on Daemon Rebuild — Resets Already-Admitted Project Capabilities
+
+**Development-time gotcha**: Rebuilding the daemon on a feature branch and restarting it re-fires the capture-only seed for already-admitted projects. The seed resets all 4 project capabilities back to their initial (disabled) state, even for projects that had been fully enabled. This looks like a UI bug or config loss but the root cause is a missing admission guard in the seed logic: the seed should check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during feature development silently disables project capabilities. Workaround while the guard is absent: manually re-enable capabilities via the UI after each rebuild.
