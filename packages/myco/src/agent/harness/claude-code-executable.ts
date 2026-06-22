@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,8 @@ interface ResolveClaudeExecutableDeps {
   realpathSync?: typeof fs.realpathSync;
   existsSync?: typeof fs.existsSync;
   requireFactory?: typeof createRequire;
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 function claudeExecutableName(): string {
@@ -33,6 +36,25 @@ function candidateOptionalPackages(): string[] {
   }
 
   return [];
+}
+
+/**
+ * Known on-disk locations of a user-installed Claude Code CLI, plus PATH dirs.
+ * Checked EXPLICITLY (not only via PATH) because the daemon runs under
+ * launchd's minimal PATH, which omits ~/.local/bin — the native installer's
+ * default CLI location — so a PATH-only lookup would miss it.
+ */
+function systemClaudeCandidates(homeDir: string, env: NodeJS.ProcessEnv): string[] {
+  const name = claudeExecutableName();
+  const candidates = [
+    path.join(homeDir, '.local', 'bin', name),
+    path.join('/opt', 'homebrew', 'bin', name),
+    path.join('/usr', 'local', 'bin', name),
+  ];
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    if (dir.trim()) candidates.push(path.join(dir, name));
+  }
+  return [...new Set(candidates)];
 }
 
 function candidatePackageRoots(
@@ -81,7 +103,9 @@ export function resolveClaudeCodeExecutable(
     deps.execPath !== undefined ||
     deps.realpathSync !== undefined ||
     deps.existsSync !== undefined ||
-    deps.requireFactory !== undefined;
+    deps.requireFactory !== undefined ||
+    deps.homeDir !== undefined ||
+    deps.env !== undefined;
   if (!hasInjectedDeps && cachedResolution) return cachedResolution.value;
 
   const importMetaUrl = deps.importMetaUrl ?? import.meta.url;
@@ -89,6 +113,8 @@ export function resolveClaudeCodeExecutable(
   const realpathSync = deps.realpathSync ?? fs.realpathSync;
   const existsSync = deps.existsSync ?? fs.existsSync;
   const requireFactory = deps.requireFactory ?? createRequire;
+  const homeDir = deps.homeDir ?? os.homedir();
+  const env = deps.env ?? process.env;
 
   for (const origin of candidatePackageRoots(importMetaUrl, execPath, realpathSync)) {
     // Resolve from @goondocks/myco core so requireFromPackage below
@@ -109,6 +135,17 @@ export function resolveClaudeCodeExecutable(
       } catch {
         // Try the next platform candidate or package-root origin.
       }
+    }
+  }
+
+  // Fall back to a user-installed Claude Code CLI. The standalone native
+  // binary has no node_modules tree beside it, so the SDK's bundled optional
+  // package is unreachable; a system install (the one the operator already
+  // runs) is the expected source. Myco does not ship its own copy.
+  for (const candidate of systemClaudeCandidates(homeDir, env)) {
+    if (existsSync(candidate)) {
+      if (!hasInjectedDeps) cachedResolution = { value: candidate };
+      return candidate;
     }
   }
 
