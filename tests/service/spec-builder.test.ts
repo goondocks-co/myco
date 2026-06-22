@@ -40,6 +40,8 @@ describe('buildServiceSpec', () => {
     expect(spec.env.MYCO_HOME).toBe(DEFAULT_HOME);
     expect(spec.env.MYCO_DAEMON_MANAGED).toBe('1');
     expect(spec.env.MYCO_SERVICE_VARIANT).toBeUndefined();
+    // Default home's claims already live in MYCO_HOME — no override needed.
+    expect(spec.env.MYCO_CLAIMS_HOME).toBeUndefined();
   });
 
   test('a non-default home gets a distinct label and its own service/ dir', () => {
@@ -51,6 +53,9 @@ describe('buildServiceSpec', () => {
     expect(spec.variant).toBe('dev');
     expect(spec.stdoutPath).toBe(path.join(home, 'service', 'logs', 'daemon.out.log'));
     expect(spec.env.MYCO_DAEMON_MANAGED).toBe('1');
+    // Non-default (dogfood) home shares the canonical home's claims so its
+    // service daemon defers symbiont-config to the production daemon.
+    expect(spec.env.MYCO_CLAIMS_HOME).toBe(DEFAULT_HOME);
   });
 
   test('two distinct homes get distinct labels and distinct state dirs', () => {

@@ -165,6 +165,10 @@ dev-link: dev-build
 	@# — the dev daemon then defers symbiont-config to prod's ~/.myco claim
 	@# instead of reading its own empty claims. The binary bundles Bun, so the
 	@# caller's Node version is irrelevant.
+	@# rm -f FIRST: a prior dev-link left myco-dev as a SYMLINK to the binary, and
+	@# `printf > symlink` follows it, overwriting the real binary with this wrapper
+	@# — which then execs itself (infinite re-exec). Always write a fresh file.
+	@rm -f $(HOME)/.local/bin/myco-dev
 	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
