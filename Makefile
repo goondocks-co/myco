@@ -106,8 +106,8 @@ collective-ui-dev:
 
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
-	echo "Starting watched daemon with UI dev proxy $$proxy"; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
+	echo "Starting watched daemon with UI dev proxy $$proxy (MYCO_HOME=$(HOME)/.myco-dev)"; \
+	MYCO_HOME=$(HOME)/.myco-dev MYCO_CLAIMS_HOME=$(HOME)/.myco MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
@@ -181,6 +181,14 @@ dev-link: dev-build
 	@# globally-installed binary as users expect.
 	@mkdir -p $(PWD)/.myco
 	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.command
+	@# Set up the dev home directory and pin runtime.home so the daemon reads
+	@# from ~/.myco-dev instead of ~/.myco, keeping dev state isolated.
+	@mkdir -p $(HOME)/.myco-dev
+	@printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
+	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
+	@chmod 0644 $(PWD)/.myco/runtime.home
+	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"
+	@echo "✓ $(PWD)/.myco/runtime.home set to $(HOME)/.myco-dev"
 	@# Sweep any pre-0.25.2 machine-scope pin written by older `make dev-link`
 	@# runs — it would shadow the new project pin from outside the repo.
 	@if [ -f $(HOME)/.myco/runtime.command ]; then \
@@ -236,6 +244,7 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-collective-dev
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f $(PWD)/.myco/runtime.command
+	@rm -f $(PWD)/.myco/runtime.home
 	@# Also sweep the legacy machine-scope pin in case the user ran the
 	@# pre-0.25.2 `make dev-link` and never re-linked.
 	@rm -f $(HOME)/.myco/runtime.command
@@ -244,6 +253,7 @@ dev-unlink:
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"
+	@echo "✓ $(PWD)/.myco/runtime.home removed"
 
 dev-link-worktree: dev-build
 	@mkdir -p $(PWD)/.myco
