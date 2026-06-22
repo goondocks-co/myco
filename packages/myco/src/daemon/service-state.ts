@@ -110,11 +110,9 @@ export interface ResolveDaemonServiceStateOptions {
 }
 
 /**
- * Optional explicit daemon-port override from `<mycoHome>/config.yaml`
- * (`daemon.port`). Returns a valid port in [1024, 65535], or null to derive.
- * Read directly (not via the tiered config loader) so this stays light for
- * the launchers/hooks that call it on every probe; guarded so a missing or
- * malformed file falls back to the derived port.
+ * Reads `daemon.port` from `<mycoHome>/config.yaml` directly (not via the
+ * tiered config loader). Returns a port in [1024, 65535], or null when absent,
+ * out of range, or unreadable.
  */
 function readDaemonPortOverride(mycoHome: string): number | null {
   try {
@@ -131,12 +129,9 @@ function readDaemonPortOverride(mycoHome: string): number | null {
 }
 
 /**
- * The daemon's binding port. An explicit `daemon.port` in the home's
- * `config.yaml` wins; otherwise it is the deterministic hash of the service
- * path. This is the SINGLE resolver every consumer (daemon bind, hooks, MCP,
- * clients) funnels through, so an override converges everywhere — no stale
- * daemon-binds-X-while-hooks-look-at-Y mismatch (the failure mode that
- * retired the pre-Grove `daemon.port`; it is honored here, not at the bind).
+ * The daemon's binding port: `daemon.port` from `<mycoHome>/config.yaml` if
+ * set, else `derivePort(resolveServiceDir(mycoHome))`. All consumers resolve
+ * the port through this function.
  */
 export function resolveGlobalDaemonPort(mycoHome = resolveMycoHome()): number {
   return readDaemonPortOverride(mycoHome) ?? derivePort(resolveServiceDir(mycoHome));

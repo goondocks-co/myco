@@ -488,19 +488,13 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
  * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
  *
  * The daemon's listening port defaults to the deterministic hash of the
- * service path (`derivePort`) so launchers, hooks, and MCP children all
- * converge without per-machine config. An optional `port` override (below)
- * pins an explicit port; it is honored in the single resolver
- * (`resolveGlobalDaemonPort`), so every consumer still converges on it.
- * See `daemon/port.ts`.
+ * service path (`derivePort`); the optional `port` field below overrides it
+ * via `resolveGlobalDaemonPort`. See `daemon/port.ts`.
  */
 const MachineDaemonSchema = z.object({
   /**
-   * Optional explicit listening-port override. Null (default) = derive from
-   * the service path. When set, `resolveGlobalDaemonPort` returns it, so the
-   * daemon binds it AND hooks/MCP/clients resolve the same value — no stale
-   * mismatch. Lets a contributor pin a stable per-home port (e.g. the dogfood
-   * daemon) by editing `<home>/config.yaml`, without forcing it in code.
+   * Optional explicit listening port. Null (default) derives from the service
+   * path; when set, `resolveGlobalDaemonPort` returns it.
    */
   port: z.number().int().min(1024).max(65535).nullable().default(null),
   /** Log verbosity for the daemon process (stdout/stderr). */

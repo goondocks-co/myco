@@ -33,9 +33,7 @@ export const SCOPE_REGISTRY: Record<string, ScopeEntry> = {
   'capture': { home: 'machine', overridableBy: [] },
   'machine_id': { home: 'machine', overridableBy: [] },
   'daemon.stale_session_threshold_ms': { home: 'grove', overridableBy: [] },
-  // Optional explicit port override (default null = derive). Machine-scoped:
-  // one daemon per home binds one port. Honored in resolveGlobalDaemonPort so
-  // every consumer converges on it.
+  // Optional explicit port override; null derives from the service path.
   'daemon.port': { home: 'machine', overridableBy: [] },
   'daemon.log_level': { home: 'machine', overridableBy: [] },
   'daemon.log_retention_days': { home: 'machine', overridableBy: [] },

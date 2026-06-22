@@ -53,8 +53,7 @@ describe('buildServiceSpec', () => {
     expect(spec.variant).toBe('dev');
     expect(spec.stdoutPath).toBe(path.join(home, 'service', 'logs', 'daemon.out.log'));
     expect(spec.env.MYCO_DAEMON_MANAGED).toBe('1');
-    // Non-default (dogfood) home shares the canonical home's claims so its
-    // service daemon defers symbiont-config to the production daemon.
+    // Non-default home reads subsystem claims from the canonical home.
     expect(spec.env.MYCO_CLAIMS_HOME).toBe(DEFAULT_HOME);
   });
 

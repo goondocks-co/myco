@@ -418,11 +418,8 @@ export function updateTierConfigRaw(
  * `relocateMachineFieldsFromProject` (the save-path guard) so both move the
  * exact same set with identical semantics.
  *
- * `daemon.port` is NOT relocated from project configs (a project-tier
- * daemon.port is legacy and stripped). It is an optional machine-tier override
- * (default null = derive) set directly in the home's `config.yaml`, honored via
- * `resolveGlobalDaemonPort` and preserved on save by the scope registry — never
- * migrated in from elsewhere, so a stale legacy value can't surprise a daemon.
+ * `daemon.port` is not relocated: the project-tier value is stripped as legacy,
+ * and the machine-tier value is set directly in the home's `config.yaml`.
  */
 const MACHINE_RELOCATE_FIELDS: ReadonlyArray<readonly [readonly string[], readonly string[]]> = [
   [['daemon', 'log_level'], ['daemon', 'log_level']],

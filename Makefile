@@ -159,15 +159,10 @@ dev-build:
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.myco
-	@# Install myco-dev as a thin wrapper (not a bare symlink) that pins the dev
-	@# home + shared claims, so `myco-dev <cmd>` targets ~/.myco-dev AND any
-	@# hook/launcher that re-execs the runtime.command pin inherits the same env
-	@# — the dev daemon then defers symbiont-config to prod's ~/.myco claim
-	@# instead of reading its own empty claims. The binary bundles Bun, so the
-	@# caller's Node version is irrelevant.
-	@# rm -f FIRST: a prior dev-link left myco-dev as a SYMLINK to the binary, and
-	@# `printf > symlink` follows it, overwriting the real binary with this wrapper
-	@# — which then execs itself (infinite re-exec). Always write a fresh file.
+	@# myco-dev wraps the binary: sets MYCO_HOME=~/.myco-dev and
+	@# MYCO_CLAIMS_HOME=~/.myco, then execs the binary.
+	@# rm -f first: if myco-dev is a symlink to the binary, `printf >` follows it
+	@# and overwrites the binary. Write a fresh regular file.
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev

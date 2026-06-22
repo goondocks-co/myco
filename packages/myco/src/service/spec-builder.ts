@@ -104,12 +104,8 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
       ? '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
       : '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   };
-  // A non-default (dogfood) home shares the canonical ~/.myco subsystem-claims
-  // area so its service daemon DEFERS symbiont-config to the production daemon
-  // — rather than reading its own empty claims, seeing no peer, and managing
-  // (hijacking) the machine-global hook/MCP config. Mirrors the env that
-  // `make daemon-dev` and the dev-link wrapper set. Inert for the default home,
-  // whose claims already live in MYCO_HOME (= the canonical home).
+  // When MYCO_HOME is not the canonical home, point subsystem claims at the
+  // canonical home.
   if (!isDefaultHome) {
     env.MYCO_CLAIMS_HOME = resolveMycoHome({ env: {} });
   }
