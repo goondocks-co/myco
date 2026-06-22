@@ -6,11 +6,14 @@ export const PORT_RANGE_SIZE = 10000;
 /**
  * Derive a deterministic port from a vault path.
  *
- * The single authoritative source of truth for the daemon's binding port.
- * No config override; no fallback. Launchers, hooks, MCP children, and the
- * daemon itself all derive the same value from the service path so they
- * converge without per-machine config lookup. Startup either binds the
- * canonical port or fails loudly (squatter) / steps aside (sibling).
+ * The default binding port: launchers, hooks, MCP children, and the daemon
+ * all derive the same value from the service path so they converge without
+ * per-machine config. An optional explicit override (`daemon.port` in the
+ * home's config) is layered on top in `resolveGlobalDaemonPort` — the single
+ * resolver every consumer funnels through, so the override converges too and
+ * never produces a daemon-binds-X-while-hooks-derive-Y mismatch. Startup
+ * either binds the resolved port or fails loudly (squatter) / steps aside
+ * (sibling).
  */
 export function derivePort(vaultPath: string): number {
   const hash = createHash('md5').update(vaultPath).digest();

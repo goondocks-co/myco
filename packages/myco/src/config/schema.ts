@@ -487,12 +487,22 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
  * Machine tier — one daemon process per machine, one log policy.
  * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
  *
- * The daemon's listening port is NOT configurable: it's deterministically
- * derived from the service path via `derivePort` so launchers, hooks, and
- * MCP children all converge on the same value without per-machine config
- * lookup. See `daemon/port.ts`.
+ * The daemon's listening port defaults to the deterministic hash of the
+ * service path (`derivePort`) so launchers, hooks, and MCP children all
+ * converge without per-machine config. An optional `port` override (below)
+ * pins an explicit port; it is honored in the single resolver
+ * (`resolveGlobalDaemonPort`), so every consumer still converges on it.
+ * See `daemon/port.ts`.
  */
 const MachineDaemonSchema = z.object({
+  /**
+   * Optional explicit listening-port override. Null (default) = derive from
+   * the service path. When set, `resolveGlobalDaemonPort` returns it, so the
+   * daemon binds it AND hooks/MCP/clients resolve the same value — no stale
+   * mismatch. Lets a contributor pin a stable per-home port (e.g. the dogfood
+   * daemon) by editing `<home>/config.yaml`, without forcing it in code.
+   */
+  port: z.number().int().min(1024).max(65535).nullable().default(null),
   /** Log verbosity for the daemon process (stdout/stderr). */
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   /**
@@ -524,21 +534,10 @@ const MachineDaemonSchema = z.object({
 // validation so existing installs keep parsing — the registry value
 // is migrated to the new file the first time `getDefaultGroveId`
 // runs after upgrade.
-//
-// `daemon.port` was a pre-Grove machine-level override of the daemon
-// port. Post-Grove the canonical port is always `derivePort` of the
-// service path; the override silently broke port resolution for users
-// whose stale value didn't match the canonical. Strip it here so old
-// `~/.myco/config.yaml` files keep parsing under strict mode while the
-// runtime ignores the dead field.
 export const MachineConfigSchema = z.preprocess((raw) => {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const { grove: _legacy, daemon, ...rest } = raw as Record<string, unknown>;
-    if (daemon && typeof daemon === 'object' && !Array.isArray(daemon)) {
-      const { port: _deadPort, ...daemonRest } = daemon as Record<string, unknown>;
-      return { ...rest, daemon: daemonRest };
-    }
-    return { ...rest, ...(daemon !== undefined ? { daemon } : {}) };
+    const { grove: _legacy, ...rest } = raw as Record<string, unknown>;
+    return rest;
   }
   return raw;
 }, z.object({

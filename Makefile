@@ -159,9 +159,13 @@ dev-build:
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.myco
-	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
-	@# the Bun runtime, so the caller's Node version is irrelevant.
-	@ln -sf $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.local/bin/myco-dev
+	@# Install myco-dev as a thin wrapper (not a bare symlink) that pins the dev
+	@# home + shared claims, so `myco-dev <cmd>` targets ~/.myco-dev AND any
+	@# hook/launcher that re-execs the runtime.command pin inherits the same env
+	@# — the dev daemon then defers symbiont-config to prod's ~/.myco claim
+	@# instead of reading its own empty claims. The binary bundles Bun, so the
+	@# caller's Node version is irrelevant.
+	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
@@ -184,7 +188,9 @@ dev-link: dev-build
 	@# Set up the dev home directory and pin runtime.home so the daemon reads
 	@# from ~/.myco-dev instead of ~/.myco, keeping dev state isolated.
 	@mkdir -p $(HOME)/.myco-dev
-	@printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
+	@# Create the dev config only if absent so a re-link never clobbers a
+	@# contributor's edits (e.g. a pinned `daemon.port`).
+	@test -f $(HOME)/.myco-dev/config.yaml || printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
 	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
 	@chmod 0644 $(PWD)/.myco/runtime.home
 	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"

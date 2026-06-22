@@ -46,6 +46,7 @@ import {
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { readJsonFile } from '../utils/json.js';
 import { derivePort } from './port.js';
+import YAML from 'yaml';
 
 export class GroveBindingRequiredError extends Error {
   constructor(vaultDir: string) {
@@ -108,8 +109,37 @@ export interface ResolveDaemonServiceStateOptions {
   env?: Record<string, string | undefined>;
 }
 
+/**
+ * Optional explicit daemon-port override from `<mycoHome>/config.yaml`
+ * (`daemon.port`). Returns a valid port in [1024, 65535], or null to derive.
+ * Read directly (not via the tiered config loader) so this stays light for
+ * the launchers/hooks that call it on every probe; guarded so a missing or
+ * malformed file falls back to the derived port.
+ */
+function readDaemonPortOverride(mycoHome: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
+    const doc = YAML.parse(raw) as { daemon?: { port?: unknown } } | null;
+    const port = doc?.daemon?.port;
+    if (typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535) {
+      return port;
+    }
+  } catch {
+    /* missing / malformed config.yaml — fall back to the derived port */
+  }
+  return null;
+}
+
+/**
+ * The daemon's binding port. An explicit `daemon.port` in the home's
+ * `config.yaml` wins; otherwise it is the deterministic hash of the service
+ * path. This is the SINGLE resolver every consumer (daemon bind, hooks, MCP,
+ * clients) funnels through, so an override converges everywhere — no stale
+ * daemon-binds-X-while-hooks-look-at-Y mismatch (the failure mode that
+ * retired the pre-Grove `daemon.port`; it is honored here, not at the bind).
+ */
 export function resolveGlobalDaemonPort(mycoHome = resolveMycoHome()): number {
-  return derivePort(resolveServiceDir(mycoHome));
+  return readDaemonPortOverride(mycoHome) ?? derivePort(resolveServiceDir(mycoHome));
 }
 
 export function resolveDaemonServiceState(
