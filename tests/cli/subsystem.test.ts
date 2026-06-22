@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/subsystem';
-import { readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/daemon/subsystem-claim.js';
+import { readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 
 // `myco subsystem <claim|release|list>` — operator-driven, durable ownership.
 // The owner recorded is this daemon's home (MYCO_HOME), an opaque token; the

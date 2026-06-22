@@ -38,7 +38,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { resolveMycoHome, expandHome } from '../grove/paths.js';
+import { resolveMycoHome, expandHome, daemonIdentity } from './paths.js';
 
 /** The symbiont-config (hooks/MCP) management subsystem — the first claim user. */
 export const SYMBIONT_CONFIG_SUBSYSTEM = 'symbiont-config';
@@ -157,4 +157,28 @@ export function isClaimedByPeer(subsystem: string, self: string, deps: ClaimDeps
   const home = deps.claimsHome ?? resolveClaimsHome();
   const claim = readClaim(subsystem, home);
   return claim !== null && claim.owner !== self;
+}
+
+/**
+ * True when a PEER holds `subsystem`'s claim, so this process must not perform
+ * the subsystem's machine-global work. Reads the ambient environment: `self` is
+ * this daemon's own home identity (`daemonIdentity()`); the claim is read from
+ * `resolveClaimsHome()`. No claim, or a claim owned by this home, returns false.
+ */
+export function shouldDeferSubsystem(subsystem: string): boolean {
+  return isClaimedByPeer(subsystem, daemonIdentity());
+}
+
+/**
+ * Wrap a function so it runs only when this home owns `subsystem` (or no one
+ * does); when a peer holds the claim it returns `onDeferred(...args)` without
+ * invoking `fn`. The single chokepoint for gating a machine-global mutator by
+ * claim ownership — applied at the writer's definition, never copied per caller.
+ */
+export function guardBySubsystemClaim<A extends unknown[], R>(
+  subsystem: string,
+  fn: (...args: A) => R,
+  onDeferred: (...args: A) => R,
+): (...args: A) => R {
+  return (...args: A): R => (shouldDeferSubsystem(subsystem) ? onDeferred(...args) : fn(...args));
 }

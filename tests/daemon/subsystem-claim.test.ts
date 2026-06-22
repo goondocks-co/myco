@@ -9,8 +9,10 @@ import {
   listSubsystemClaims,
   readClaim,
   resolveClaimsHome,
+  shouldDeferSubsystem,
+  guardBySubsystemClaim,
   SYMBIONT_CONFIG_SUBSYSTEM,
-} from '@myco/daemon/subsystem-claim.js';
+} from '@myco/grove/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 // The subsystem-claim primitive: an operator writes a durable claim into the
@@ -151,6 +153,65 @@ describe('resolveClaimsHome — hermeticity', () => {
         expect(claimFile.startsWith(sandbox)).toBe(true);
       });
     });
+  });
+});
+
+describe('shouldDeferSubsystem + guardBySubsystemClaim (ambient-env gate)', () => {
+  // shouldDeferSubsystem reads the ambient env: self = daemonIdentity() (from
+  // MYCO_HOME), the claim from resolveClaimsHome() (MYCO_CLAIMS_HOME → MYCO_HOME).
+  function withHomeAndClaims(home: string, claims: string, fn: () => void): void {
+    withEnv(MYCO_HOME_ENV, home, () => withEnv(MYCO_CLAIMS_HOME_ENV, claims, fn));
+  }
+
+  it('no claim → does not defer (normal single-daemon install)', () => {
+    const home = makeTmpDir('myco-defer-home-');
+    const claims = makeTmpDir('myco-defer-claims-');
+    withHomeAndClaims(home, claims, () => {
+      expect(shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM)).toBe(false);
+    });
+  });
+
+  it('peer holds the claim → defers', () => {
+    const home = makeTmpDir('myco-defer-home-');
+    const claims = makeTmpDir('myco-defer-claims-');
+    const peer = daemonIdentity(makeTmpDir('myco-defer-peer-'));
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome: claims });
+    withHomeAndClaims(home, claims, () => {
+      expect(shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM)).toBe(true);
+    });
+  });
+
+  it('this home owns the claim → does not defer', () => {
+    const home = makeTmpDir('myco-defer-home-');
+    const claims = makeTmpDir('myco-defer-claims-');
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, daemonIdentity(home), { claimsHome: claims });
+    withHomeAndClaims(home, claims, () => {
+      expect(shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM)).toBe(false);
+    });
+  });
+
+  it('guardBySubsystemClaim runs fn when not deferred, onDeferred when a peer owns it, and passes args', () => {
+    const home = makeTmpDir('myco-guard-home-');
+    const claims = makeTmpDir('myco-guard-claims-');
+    const calls: string[] = [];
+    const guarded = guardBySubsystemClaim(
+      SYMBIONT_CONFIG_SUBSYSTEM,
+      (n: number) => { calls.push(`fn:${n}`); return `wrote:${n}`; },
+      (n: number) => { calls.push(`deferred:${n}`); return `skipped:${n}`; },
+    );
+
+    // No claim → fn runs.
+    withHomeAndClaims(home, claims, () => {
+      expect(guarded(1)).toBe('wrote:1');
+    });
+
+    // Peer claims → onDeferred runs, fn does not.
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, daemonIdentity(makeTmpDir('myco-guard-peer-')), { claimsHome: claims });
+    withHomeAndClaims(home, claims, () => {
+      expect(guarded(2)).toBe('skipped:2');
+    });
+
+    expect(calls).toEqual(['fn:1', 'deferred:2']);
   });
 });
 

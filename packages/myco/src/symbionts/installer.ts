@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
+import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
@@ -717,8 +718,19 @@ export class SymbiontInstaller {
     return this.readTemplateFile(path.join(this.manifest.name, filename));
   }
 
+  /**
+   * True when this is a global-scope write and a peer owns the symbiont-config
+   * claim. The single deferral gate shared by install() and uninstall() so a
+   * non-owner never mutates the machine-shared agent config — expressed once,
+   * not copied per entry point.
+   */
+  private deferGlobalSymbiontConfig(): boolean {
+    return this.installScope === 'global' && shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM);
+  }
+
   /** Run all registration steps. */
   install(): InstallResult {
+    if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
       // Agent isn't installed on this machine — skip silently, never
@@ -1097,6 +1109,7 @@ export class SymbiontInstaller {
    * outlives any individual symbiont).
    */
   uninstall(options: { keepProjectContent?: boolean } = {}): InstallResult {
+    if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     const keepProjectContent = options.keepProjectContent === true;
     const result = this.shouldBatchJsonTargets(reg)

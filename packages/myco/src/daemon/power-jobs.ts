@@ -39,9 +39,7 @@ import {
 import {
   resolveMycoHome,
   resolveProjectVaultDir,
-  daemonIdentity,
 } from '@myco/grove/paths.js';
-import { isClaimedByPeer, SYMBIONT_CONFIG_SUBSYSTEM } from './subsystem-claim.js';
 import {
   pauseAwareShouldVisit,
   listRegisteredProjects,
@@ -584,13 +582,6 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       const now = Date.now();
       if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
       lastSymbiontDetectionAt = now;
-      // Defer while a peer daemon (a different home) holds the symbiont-config
-      // claim. On a contributor machine the operator runs `myco subsystem claim
-      // symbiont-config` from the dogfood home so the production daemon stops
-      // rewriting global agent configs out from under the local build. We never
-      // claim here — only read and opt out. No-op for normal single-daemon
-      // installs, where no claim exists.
-      if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, daemonIdentity(mycoHome))) return;
       try {
         const { runSymbiontDetection } = await import('../cli/bootstrap.js');
         const symbionts = runSymbiontDetection();

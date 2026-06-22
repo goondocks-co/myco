@@ -5,7 +5,7 @@ import {
   readClaim,
   resolveClaimsHome,
   KNOWN_SUBSYSTEMS,
-} from '../daemon/subsystem-claim.js';
+} from '../grove/subsystem-claim.js';
 import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
 
 const USAGE = `Usage: myco subsystem <command>
