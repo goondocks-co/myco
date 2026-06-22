@@ -24,13 +24,13 @@ import {
 // listGroves + listRegisteredProjects read from.
 function seedGroveWithLegacyProject(
   mycoHome: string,
-  opts: { groveId: string; projectId: string; projectRoot: string; servedBy: string; machineId: string },
+  opts: { groveId: string; projectId: string; projectRoot: string; machineId: string },
 ): void {
   const groveDir = path.join(mycoHome, 'groves', opts.groveId);
   fs.mkdirSync(path.join(groveDir, 'registry'), { recursive: true });
   fs.writeFileSync(
     path.join(groveDir, 'grove.toml'),
-    `[grove]\nid = "${opts.groveId}"\nname = "Test"\nslug = "test"\nmode = "local"\ncreated_at = "2026-05-26T00:00:00.000Z"\nserved_by = "${opts.servedBy}"\n`,
+    `[grove]\nid = "${opts.groveId}"\nname = "Test"\nslug = "test"\nmode = "local"\ncreated_at = "2026-05-26T00:00:00.000Z"\n`,
     'utf-8',
   );
   fs.writeFileSync(
@@ -287,7 +287,6 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       groveId: 'grove_11111111111111111111111111111111',
       projectId: 'proj_11111111111111111111111111111111',
       projectRoot,
-      servedBy: 'service',
       machineId: 'legacy_startup_id_alpha',
     });
     // No global machine_id yet — simulates the racey daemon-startup window.
@@ -306,7 +305,6 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       groveId: 'grove_22222222222222222222222222222222',
       projectId: 'proj_22222222222222222222222222222222',
       projectRoot,
-      servedBy: 'service',
       machineId: 'should_not_overwrite',
     });
 
@@ -317,13 +315,12 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       .toBe('global_pre_existing');
   });
 
-  it('scans Groves of any served_by in the home', () => {
-    // Home is the boundary; served_by no longer restricts the scan.
+  it('scans all Groves in the home', () => {
+    // Home is the boundary; all Groves in the home are included.
     seedGroveWithLegacyProject(mycoHome, {
       groveId: 'grove_33333333333333333333333333333333',
       projectId: 'proj_33333333333333333333333333333333',
       projectRoot,
-      servedBy: 'service-dev',
       machineId: 'dev_only_id',
     });
 

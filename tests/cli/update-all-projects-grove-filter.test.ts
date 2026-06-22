@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Home-scoping for `runAllProjects`: the MYCO_HOME is the ownership boundary
- * now (not a prod/dev service variant). Every Grove registered under the home
- * belongs to this daemon, so `listGroves(undefined)` (home-scoped, no
- * served_by filter) returns them all. This replaced the old variant-filter
- * that split `service` vs `service-dev` Groves within a single home.
+ * Home-scoping for `runAllProjects`: the MYCO_HOME is the ownership boundary.
+ * Every Grove registered under the home belongs to this daemon, so
+ * `listGroves(undefined)` (home-scoped) returns them all. The raw TOML fixtures
+ * below include a legacy `served_by` key that is ignored on read — it no longer
+ * affects ownership or filtering.
  */
 
 let tmpHome: string;

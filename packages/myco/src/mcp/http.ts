@@ -154,7 +154,6 @@ export function createStreamableMcpHttpHandler(
           error: 'foreign_grove',
           message: err.message,
           grove_id: err.groveId,
-          served_by: err.servedBy,
         }));
         return;
       }

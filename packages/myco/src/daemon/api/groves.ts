@@ -62,7 +62,6 @@ export interface ProjectTenancyGrove {
   id: string;
   name: string;
   slug: string;
-  served_by: string;
 }
 
 /** Tenancy keys added to a project summary when requested via `include`. */
@@ -102,7 +101,6 @@ function tenancyMetadata(
         id: tenancy.grove.id,
         name: tenancy.grove.name,
         slug: tenancy.grove.slug,
-        served_by: tenancy.grove.served_by,
       };
     }
     if (includes.has('team')) metadata.team = tenancy.team;
@@ -297,7 +295,6 @@ export function createCreateGroveHandler(_daemonStateDir: string): RouteHandler 
           slug: grove.slug,
           name: grove.name,
           mode: grove.mode,
-          served_by: grove.served_by,
           created_at: grove.created_at,
         },
       };

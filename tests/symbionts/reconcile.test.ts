@@ -95,14 +95,14 @@ describe('reconcileConfiguredSymbionts (global-install model)', () => {
   it('reconciles every registered project-managed file in the home (home is the filter)', () => {
     // Home is the boundary now: a single daemon owns every Grove under its
     // MYCO_HOME, so reconciliation covers all in-home projects regardless
-    // of any legacy `served_by` value — there is no per-variant filter.
+    // there is no per-variant filter — all Groves in the home are included.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-reconcile-home-'));
     const devRoot = makeGitProjectWithVault();
     const prodRoot = makeGitProjectWithVault();
     created.push(home);
 
-    const devGrove = createGrove('Dogfood', home, { servedBy: 'service-dev' });
-    const prodGrove = createGrove('Production', home, { servedBy: 'service' });
+    const devGrove = createGrove('Dogfood', home);
+    const prodGrove = createGrove('Production', home);
     registerProjectInGrove(devGrove.id, {
       projectId: 'proj_dev',
       projectName: 'Dev',

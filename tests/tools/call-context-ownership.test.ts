@@ -8,7 +8,7 @@
  * createSchema-migrates) that Grove's database. Under physical home
  * separation a foreign-home Grove is simply not present in this home, so
  * the home-scoped lookup returns null and the seam refuses it. The
- * `groveServedByThisDaemon` predicate is the soft gate; it must stay a
+ * `groveOwnedByThisDaemon` predicate is the soft gate; it must stay a
  * real predicate (false for a foreign-home record), never a no-op that
  * always returns "owned". The client-side resolvers (hooks, stdio
  * bridge, CLI env) must stay non-throwing — a throw there is silently
@@ -34,7 +34,7 @@ import {
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import {
   createGrove,
-  groveServedByThisDaemon,
+  groveOwnedByThisDaemon,
   registerProjectInGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -138,22 +138,21 @@ describe('grove_id pivot home-ownership gate', () => {
     }
   });
 
-  it('admits a same-home Grove regardless of a legacy served_by value', async () => {
-    // Pre-redesign a `service-dev`-labeled record was refused by the prod
-    // variant. Ownership is the home now: an in-home record is owned.
+  it('admits any Grove in this home regardless of legacy TOML content', async () => {
+    // Ownership is the home now: an in-home record is owned.
     const fixture = createFixture();
     try {
-      const legacy = createGrove('LegacyDev', sandbox.mycoHome, { servedBy: 'service-dev' });
+      const grove = createGrove('LegacyDev', sandbox.mycoHome);
       const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
-      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: legacy.id }))).toBe(true);
-      expect(fs.existsSync(resolveGroveDbPath(legacy.id, sandbox.mycoHome))).toBe(true);
+      expect(Array.isArray(await tools.callTool('myco_plans', { grove_id: grove.id }))).toBe(true);
+      expect(fs.existsSync(resolveGroveDbPath(grove.id, sandbox.mycoHome))).toBe(true);
     } finally {
       fixture.cleanup();
     }
   });
 });
 
-describe('groveServedByThisDaemon — home predicate is not a no-op', () => {
+describe('groveOwnedByThisDaemon — home predicate is not a no-op', () => {
   let sandbox: ReturnType<typeof sandboxMycoHome>;
   let foreignHome: string;
 
@@ -174,11 +173,11 @@ describe('groveServedByThisDaemon — home predicate is not a no-op', () => {
     // The foreign record exists on disk (under its own home) but is NOT in
     // this daemon's home, so the home-scoped predicate reads it as not
     // owned. A no-op gate that always returned true would fail this line.
-    expect(groveServedByThisDaemon(owned, sandbox.mycoHome)).toBe(true);
-    expect(groveServedByThisDaemon(foreign, sandbox.mycoHome)).toBe(false);
+    expect(groveOwnedByThisDaemon(owned, sandbox.mycoHome)).toBe(true);
+    expect(groveOwnedByThisDaemon(foreign, sandbox.mycoHome)).toBe(false);
     // Symmetry: from the foreign home, ownership flips.
-    expect(groveServedByThisDaemon(foreign, foreignHome)).toBe(true);
-    expect(groveServedByThisDaemon(owned, foreignHome)).toBe(false);
+    expect(groveOwnedByThisDaemon(foreign, foreignHome)).toBe(true);
+    expect(groveOwnedByThisDaemon(owned, foreignHome)).toBe(false);
   });
 });
 
@@ -227,11 +226,11 @@ describe('daemon request resolution refuses a foreign-home Grove', () => {
 
   it('still wires the ForeignGroveError → 403 gate (constructable + typed)', () => {
     // The ownership gate that translates to 403 `foreign_grove` is kept as
-    // a defense-in-depth backstop. Its message no longer points at the
-    // deleted `myco grove claim` flow.
-    const err = new ForeignGroveError(foreign.id, 'service-dev');
+    // a defense-in-depth backstop. Ownership is the home; the error carries
+    // the grove id and a fixed message.
+    const err = new ForeignGroveError(foreign.id);
     expect(err.groveId).toBe(foreign.id);
-    expect(err.servedBy).toBe('service-dev');
+    expect(err.message).toContain(foreign.id);
     expect(err.message).not.toContain('claim');
   });
 });

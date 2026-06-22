@@ -171,7 +171,7 @@ export function createBackupHandlers(deps: BackupDeps) {
     }
 
     // scope.kind === 'grove'. Body-scope grove ids arrive outside the
-    // request-context funnel, so existence and served_by ownership gate
+    // request-context funnel, so existence and home-ownership gate
     // here before the backup opens the Grove DB; throws propagate to the
     // transport (403 foreign_grove / 404 grove_not_found).
     const grove = assertOwnedGrove(scope.grove_id, mycoHome);

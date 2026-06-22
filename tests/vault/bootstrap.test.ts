@@ -65,7 +65,7 @@ describe('resolveBootstrapVaultDir', () => {
     const groveId = 'grove_65b606b9665228ac5f1812d645cdf6fe';
     const projRoot = makeProject('reg1');
     writeRegistry(groveId);
-    writeGroveToml(groveId, 'service');
+    writeGroveToml(groveId);
     writeProjectsToml(groveId, [{ id: 'proj_test', root: projRoot }]);
     // cwd has no enclosing project, registry has one
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(projRoot, '.myco'));
@@ -76,7 +76,7 @@ describe('resolveBootstrapVaultDir', () => {
     const goodRoot = makeProject('good');
     const ghostRoot = '/this/path/does/not/exist';
     writeRegistry(groveId);
-    writeGroveToml(groveId, 'service');
+    writeGroveToml(groveId);
     writeProjectsToml(groveId, [
       { id: 'proj_ghost', root: ghostRoot },
       { id: 'proj_good', root: goodRoot },
@@ -167,12 +167,12 @@ describe('resolveBootstrapVaultDir', () => {
     expect(result.vaultDir).toBe(path.join(projRoot, '.myco'));
   });
 
-  function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
+  function writeGroveToml(groveId: string): void {
     const dir = path.join(tmpHome, 'groves', groveId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'grove.toml'),
-      `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "${servedBy}"\n`,
+      `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\n`,
     );
   }
 
@@ -187,8 +187,8 @@ describe('resolveBootstrapVaultDir', () => {
     const prodRoot = makeProject('prod');
     const devRoot = makeProject('dev');
     writeRegistry(prodGrove); // default = prod
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
     process.env.MYCO_DAEMON_MANAGED = '1';
@@ -207,7 +207,7 @@ describe('resolveBootstrapVaultDir', () => {
     const prodGrove = 'grove_2222222222222222222222222222222a';
     const prodRoot = makeProject('global-prod-default');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(prodGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     process.env.MYCO_DAEMON_MANAGED = '1';
     try {
@@ -223,8 +223,8 @@ describe('resolveBootstrapVaultDir', () => {
     const prodRoot = makeProject('prod2');
     const devRoot = makeProject('dev2');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
     // MYCO_DAEMON_MANAGED unset — non-managed daemon should pick default Grove
@@ -268,8 +268,8 @@ describe('resolveBootstrapVaultDir', () => {
     const prodRoot = makeProject('prod-cwd');
     const devRoot = makeProject('dev-target');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
 
@@ -316,7 +316,7 @@ describe('resolveBootstrapVaultDir', () => {
     const sandboxGrove = 'grove_99999999999999999999999999999999';
     const sandboxProject = makeProject('sandbox-internal');
     writeRegistry(sandboxGrove);
-    writeGroveToml(sandboxGrove, 'service');
+    writeGroveToml(sandboxGrove);
     writeProjectsToml(sandboxGrove, [{ id: 'proj_sandbox', root: sandboxProject }]);
 
     const realProject = makeProject('real-but-cwd');

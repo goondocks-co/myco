@@ -452,36 +452,33 @@ describe('Grove CRUD API', () => {
 
   describe('home boundary enforcement', () => {
     // Ownership is the home, enforced by path: a daemon runs under one
-    // MYCO_HOME and owns every Grove under `<MYCO_HOME>/groves/`,
-    // regardless of the legacy `served_by` value. A Grove in another
-    // home is invisible to the home-scoped lookup (404). These cases use
-    // a SECOND real home (`home-B`) so a no-op gate that always returned
-    // "owned" would fail them.
+    // MYCO_HOME and owns every Grove under `<MYCO_HOME>/groves/`. A Grove
+    // in another home is invisible to the home-scoped lookup (404). These
+    // cases use a SECOND real home (`home-B`) so a no-op gate that always
+    // returned "owned" would fail them.
     function foreignHome(): string {
       const home = path.join(testDir, 'home-B');
       fs.mkdirSync(home, { recursive: true });
       return home;
     }
 
-    it('POST /api/groves always stamps served_by = service (variant collapse)', async () => {
+    it('POST /api/groves creates a Grove and returns its record', async () => {
       const response = await call(createCreateGroveHandler(serviceDir), { body: { name: 'Prod' } });
       expect(response.status).toBe(201);
-      const body = response.body as { id: string; served_by: string };
-      expect(body.served_by).toBe('service');
-      expect(loadGroveRecord(body.id)?.served_by).toBe('service');
+      const body = response.body as { id: string; name: string };
+      expect(body.name).toBe('Prod');
+      expect(loadGroveRecord(body.id)).not.toBeNull();
 
-      // The daemon-state-dir argument no longer steers served_by; both
-      // create calls produce a 'service' record in this home.
+      // Both daemon-state-dir variants create a valid Grove in this home.
       const devResponse = await call(createCreateGroveHandler(serviceDevDir), { body: { name: 'Dogfood' } });
       expect(devResponse.status).toBe(201);
-      const devBody = devResponse.body as { id: string; served_by: string };
-      expect(devBody.served_by).toBe('service');
+      const devBody = devResponse.body as { id: string; name: string };
+      expect(loadGroveRecord(devBody.id)).not.toBeNull();
     });
 
-    it('listGroveSummaries returns every Grove in the home regardless of served_by', () => {
-      // A legacy `service-dev`-labeled record in THIS home is owned now.
+    it('listGroveSummaries returns every Grove in the home', () => {
       createGrove('Prod');
-      createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+      createGrove('Dogfood');
 
       const view = listGroveSummaries({ groveIds: null });
       expect(view.groves.map((g) => g.name).sort()).toEqual(['Dogfood', 'Prod']);
@@ -495,10 +492,9 @@ describe('Grove CRUD API', () => {
       expect(view.groves.map((g) => g.name)).toEqual(['Prod']);
     });
 
-    it('PATCH succeeds for a legacy service-dev Grove in this home', async () => {
-      // Pre-redesign this returned 404; the record is in-home, so it is
-      // owned and renamable under the home boundary.
-      const legacy = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+    it('PATCH succeeds for any Grove in this home', async () => {
+      // The record is in-home, so it is owned and renamable.
+      const legacy = createGrove('Dogfood');
       const response = await call(createRenameGroveHandler(serviceDir), {
         body: { name: 'Renamed' },
         params: { id: legacy.id },

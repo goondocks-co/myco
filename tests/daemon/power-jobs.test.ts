@@ -415,8 +415,8 @@ describe('embedding-reconcile power job', () => {
   });
 
   it('hold counts pending work in all Groves in the same home', () => {
-    // Home is the boundary; all Groves in the home are probed regardless of served_by.
-    const secondGrove = createGrove('Dogfood', fx.mycoHome, { servedBy: 'service-dev' });
+    // Home is the boundary; all Groves in the home are probed.
+    const secondGrove = createGrove('Dogfood', fx.mycoHome);
     ensureGroveDatabase(secondGrove.id, fx.mycoHome);
     const secondDatabasePath = resolveGroveDbPath(secondGrove.id, fx.mycoHome);
 

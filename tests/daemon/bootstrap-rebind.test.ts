@@ -95,12 +95,12 @@ function writeRegistry(defaultGroveId: string): void {
   );
 }
 
-function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
+function writeGroveToml(groveId: string): void {
   const dir = path.join(tmpHome, 'groves', groveId);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'grove.toml'),
-    `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "${servedBy}"\n`,
+    `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\n`,
   );
 }
 
@@ -139,7 +139,7 @@ describe('greenfield phantom → real-project rebind transition', () => {
     const projRoot = makeProjectOnDisk('rebind-target');
     try {
       writeRegistry(groveId);
-      writeGroveToml(groveId, 'service');
+      writeGroveToml(groveId);
       writeProjectsToml(groveId, [{ id: 'proj_rebind', root: projRoot }]);
 
       const after = resolveBootstrapVaultDir(tmpCwd);
@@ -164,7 +164,7 @@ describe('greenfield phantom → real-project rebind transition', () => {
     const projRoot = makeProjectOnDisk('rebind-flip');
     try {
       writeRegistry(groveId);
-      writeGroveToml(groveId, 'service');
+      writeGroveToml(groveId);
       writeProjectsToml(groveId, [{ id: 'proj_flip', root: projRoot }]);
 
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
@@ -197,7 +197,7 @@ describe('no phantom leak after rebind', () => {
     const projRoot = makeProjectOnDisk('leak-check');
     try {
       writeRegistry(groveId);
-      writeGroveToml(groveId, 'service');
+      writeGroveToml(groveId);
       writeProjectsToml(groveId, [{ id: 'proj_leak', root: projRoot }]);
 
       // Every post-rebind resolution must hand back the real vault.
@@ -232,7 +232,7 @@ describe('no phantom leak after rebind', () => {
     const projRoot = makeProjectOnDisk('phantom-persists');
     try {
       writeRegistry(groveId);
-      writeGroveToml(groveId, 'service');
+      writeGroveToml(groveId);
       writeProjectsToml(groveId, [{ id: 'proj_persist', root: projRoot }]);
 
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
@@ -276,7 +276,7 @@ describe('rebind precondition — the watcher polls resolveBootstrapVaultDir, no
     const projRoot = makeProjectOnDisk('watcher-fire');
     try {
       writeRegistry(groveId);
-      writeGroveToml(groveId, 'service');
+      writeGroveToml(groveId);
       writeProjectsToml(groveId, [{ id: 'proj_fire', root: projRoot }]);
       const resolved = resolveBootstrapVaultDir(tmpCwd);
       expect(resolved).toBe(path.join(projRoot, '.myco'));
@@ -334,13 +334,13 @@ describe('global (managed) daemon is always home-scoped and never rebinds', () =
     try {
       // Phase 1: only prod Grove registered. Managed daemon returns null.
       writeRegistry(prodGrove);
-      writeGroveToml(prodGrove, 'service');
+      writeGroveToml(prodGrove);
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
       // Phase 2: dev Grove registered alongside the prod one. The managed
       // daemon STILL returns null — it never anchors to a project.
-      writeGroveToml(devGrove, 'service-dev');
+      writeGroveToml(devGrove);
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
@@ -362,14 +362,14 @@ describe('global (managed) daemon is always home-scoped and never rebinds', () =
     try {
       // Phase 1: dev Grove registered as default — null.
       writeRegistry(devGrove);
-      writeGroveToml(devGrove, 'service-dev');
+      writeGroveToml(devGrove);
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
 
       // Phase 2: prod Grove registered as default — still null (managed
       // daemon ignores the registry entirely).
       writeRegistry(prodGrove);
-      writeGroveToml(prodGrove, 'service');
+      writeGroveToml(prodGrove);
       writeProjectsToml(prodGrove, [{ id: 'proj_p', root: prodRoot }]);
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
@@ -392,7 +392,7 @@ describe('global (managed) daemon is always home-scoped and never rebinds', () =
       expect(before.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
 
       writeRegistry(devGrove);
-      writeGroveToml(devGrove, 'service-dev');
+      writeGroveToml(devGrove);
       writeProjectsToml(devGrove, [{ id: 'proj_d', root: devRoot }]);
 
       const after = resolveBootstrapVaultDirOrPhantom(tmpCwd);
@@ -431,7 +431,7 @@ describe('global daemon phantom bootstrap resolves home-scoped service/log/data 
     process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       writeRegistry(prodGrove);
-      writeGroveToml(prodGrove, 'service');
+      writeGroveToml(prodGrove);
       writeProjectsToml(prodGrove, [{ id: 'proj_boot', root: projRoot }]);
 
       const boot = resolveBootstrapVaultDirOrPhantom(tmpCwd);

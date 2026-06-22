@@ -95,7 +95,7 @@ export async function run(args: string[]): Promise<void> {
     for (const grove of groves) {
       const marker = grove.id === defaultId ? '*' : ' ';
       console.log(
-        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode} ${grove.served_by}`,
+        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode}`,
       );
     }
     return;
@@ -105,7 +105,7 @@ export async function run(args: string[]): Promise<void> {
     const name = rest.join(' ').trim();
     if (!name) throw new Error('Grove name is required');
     const grove = createGrove(name, mycoHome);
-    console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
+    console.log(`Created Grove ${grove.name} (${grove.id})`);
     return;
   }
 

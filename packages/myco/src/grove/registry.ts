@@ -33,12 +33,6 @@ export interface GroveRecord {
   slug: string;
   mode: 'local';
   created_at: string;
-  /**
-   * Which daemon home owns this Grove. Defaults to `'service'` for legacy
-   * records that omit the field; ownership is now keyed on the home path,
-   * not this string.
-   */
-  served_by: string;
 }
 
 export interface RegisteredProject {
@@ -135,14 +129,12 @@ const groveRecordCache = createMtimeCache((metadataPath: string): GroveRecord | 
   const grove = isPlainTable(doc.grove) ? doc.grove as Record<string, unknown> : null;
   if (!grove) return null;
   if (typeof grove.id !== 'string' || typeof grove.name !== 'string' || typeof grove.slug !== 'string') return null;
-  const servedBy = typeof grove.served_by === 'string' ? grove.served_by : 'service';
   return {
     id: grove.id,
     name: grove.name,
     slug: grove.slug,
     mode: 'local',
     created_at: typeof grove.created_at === 'string' ? grove.created_at : new Date(0).toISOString(),
-    served_by: servedBy,
   };
 });
 
@@ -217,7 +209,7 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
  * pivots and the daemon's inbound request resolution — gate cross-Grove
  * access through this before any database is opened or schema-migrated.
  */
-export function groveServedByThisDaemon(
+export function groveOwnedByThisDaemon(
   grove: Pick<GroveRecord, 'id'>,
   mycoHome = resolveMycoHome(),
 ): boolean {
@@ -232,11 +224,8 @@ export function groveServedByThisDaemon(
  * daemon does not own.
  */
 export class ForeignGroveError extends Error {
-  constructor(
-    public readonly groveId: string,
-    public readonly servedBy: string,
-  ) {
-    super(`Grove ${groveId} is served by another daemon (home ${servedBy})`);
+  constructor(public readonly groveId: string) {
+    super(`Grove ${groveId} is served by another daemon`);
     this.name = 'ForeignGroveError';
   }
 }
@@ -266,15 +255,10 @@ export class UnknownGroveError extends Error {
 export function assertOwnedGrove(groveId: string, mycoHome = resolveMycoHome()): GroveRecord {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new UnknownGroveError(groveId);
-  if (!groveServedByThisDaemon(grove, mycoHome)) {
-    throw new ForeignGroveError(grove.id, grove.served_by);
-  }
   return grove;
 }
 
-export interface CreateGroveOptions {
-  servedBy?: string;
-}
+export interface CreateGroveOptions {}
 
 export function createGrove(
   name: string,
@@ -293,7 +277,6 @@ export function createGrove(
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
-    served_by: options.servedBy ?? 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
@@ -329,7 +312,6 @@ export function ensureGroveExistsLocally(
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
-    served_by: 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);

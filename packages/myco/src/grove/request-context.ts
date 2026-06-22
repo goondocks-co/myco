@@ -14,7 +14,7 @@ import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@my
 import {
   findRegisteredProject,
   ForeignGroveError,
-  groveServedByThisDaemon,
+  groveOwnedByThisDaemon,
   loadGroveRecord,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -945,8 +945,8 @@ function buildRegisteredRequestContext(input: {
   sessionId: string | null;
   manifest: ProjectManifest | null;
 }): MycoRequestContext {
-  if (input.enforceGroveOwnership && !groveServedByThisDaemon(input.grove)) {
-    throw new ForeignGroveError(input.grove.id, input.grove.served_by);
+  if (input.enforceGroveOwnership && !groveOwnedByThisDaemon(input.grove)) {
+    throw new ForeignGroveError(input.grove.id);
   }
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);

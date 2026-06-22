@@ -16,14 +16,14 @@ import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 const noopLogger = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} } as unknown as Logger;
 
 function seedTwoGroves(mycoHome: string) {
-  for (const [id, name, slug, served] of [
-    ['grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'Default', 'default', 'service'],
-    ['grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'Dogfood', 'dogfood', 'service-dev'],
+  for (const [id, name, slug] of [
+    ['grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'Default', 'default'],
+    ['grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'Dogfood', 'dogfood'],
   ] as const) {
     const groveDir = path.join(mycoHome, 'groves', id);
     mkdirSync(groveDir, { recursive: true });
     writeFileSync(path.join(groveDir, 'grove.toml'),
-      `[grove]\nid = "${id}"\nname = "${name}"\nslug = "${slug}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00Z"\nserved_by = "${served}"\n`);
+      `[grove]\nid = "${id}"\nname = "${name}"\nslug = "${slug}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00Z"\n`);
   }
 }
 
@@ -37,8 +37,8 @@ describe('forEachGrove home-as-filter', () => {
     seedTwoGroves(mycoHome);
   });
 
-  it('visits all Groves in the home regardless of served_by', async () => {
-    // Home is the boundary; served_by no longer filters forEachGrove.
+  it('visits all Groves in the home', async () => {
+    // Home is the boundary; forEachGrove returns every Grove in the home.
     const visited: string[] = [];
     const cache = new GroveRuntimeCache();
     await forEachGrove(

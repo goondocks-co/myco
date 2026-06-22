@@ -458,17 +458,15 @@ export class DaemonServer {
           // home (`<MYCO_HOME>/groves/`). Refuse before any handler (or DB
           // open) runs. Logged at warn: hook clients swallow 403s silently,
           // so this line is the only daemon-side trace.
-          this.logger.warn(LOG_KINDS.SERVER_ERROR, 'Refused request for foreign-served Grove', {
+          this.logger.warn(LOG_KINDS.SERVER_ERROR, 'Refused request for foreign-home Grove', {
             path: req.url,
             grove_id: error.groveId,
-            served_by: error.servedBy,
           });
           res.writeHead(403, { 'Content-Type': 'application/json', ...versionHeader });
           res.end(JSON.stringify({
             error: 'foreign_grove',
             message: error.message,
             grove_id: error.groveId,
-            served_by: error.servedBy,
           }));
           return;
         }

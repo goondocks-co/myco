@@ -203,7 +203,7 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     clearGroveRegistryCaches();
   });
 
-  it('creates a default Grove on a truly greenfield home (served_by=service)', () => {
+  it('creates a default Grove on a truly greenfield home', () => {
     // Pre-condition: no Groves at all.
     expect(listGroves(path.join(tmpHome, '.myco'))).toEqual([]);
     expect(getDefaultGroveId(path.join(tmpHome, '.myco'))).toBeNull();
@@ -211,7 +211,6 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     const result = runGlobalBootstrap(PKG_ROOT);
 
     expect(result.defaultGrove).toBeDefined();
-    expect(result.defaultGrove.served_by).toBe('service');
     expect(result.defaultGrove.slug).toBe('default');
 
     // The registry pointer now names the new Grove.
@@ -219,7 +218,7 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
 
     // The Grove record actually persisted to disk.
     const reloaded = loadGroveRecord(result.defaultGrove.id, path.join(tmpHome, '.myco'));
-    expect(reloaded?.served_by).toBe('service');
+    expect(reloaded).not.toBeNull();
   });
 
   it('startup bootstrap skips when a default Grove already exists in this home', () => {
@@ -283,14 +282,12 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
     try {
       // Daemon A boots in the default home.
       const resultA = runGlobalBootstrap(PKG_ROOT);
-      expect(resultA.defaultGrove.served_by).toBe('service');
       expect(resultA.defaultGrove.slug).toBe('default');
 
       // Daemon B boots in a separate home.
       process.env.MYCO_HOME = homeB;
       clearGroveRegistryCaches();
       const resultB = runGlobalBootstrap(PKG_ROOT);
-      expect(resultB.defaultGrove.served_by).toBe('service');
       expect(resultB.defaultGrove.slug).toBe('default');
       expect(resultB.defaultGrove.id).not.toBe(resultA.defaultGrove.id);
 
@@ -348,7 +345,6 @@ describe('runGlobalBootstrap — default-Grove ensure (greenfield)', () => {
 
   it('preserves the provisioned manifest identity when the first hook registers a project', () => {
     const bootstrap = runGlobalBootstrap(PKG_ROOT);
-    expect(bootstrap.defaultGrove.served_by).toBe('service');
 
     const projectRoot = fs.mkdtempSync(path.join(tmpHome, 'born-global-proj-'));
     execFileSync('git', ['init', '--quiet'], { cwd: projectRoot, stdio: 'pipe' });
