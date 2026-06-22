@@ -51,8 +51,12 @@ function systemClaudeCandidates(homeDir: string, env: NodeJS.ProcessEnv): string
     path.join('/opt', 'homebrew', 'bin', name),
     path.join('/usr', 'local', 'bin', name),
   ];
+  // PATH dirs cover non-standard installs, but only ABSOLUTE ones: the resolved
+  // binary is spawned with bypassPermissions, so a relative/`.` PATH entry must
+  // never decide what runs (cwd-relative hijack). The trusted dirs above are
+  // checked first and win via the dedupe.
   for (const dir of (env.PATH ?? '').split(path.delimiter)) {
-    if (dir.trim()) candidates.push(path.join(dir, name));
+    if (dir.trim() && path.isAbsolute(dir)) candidates.push(path.join(dir, name));
   }
   return [...new Set(candidates)];
 }

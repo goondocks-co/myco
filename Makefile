@@ -167,7 +167,11 @@ dev-link: dev-build
 	@# worked in dev and broke only in prod. A standalone dev binary closes that
 	@# blindspot so dogfood exercises the production topology.
 	@mkdir -p $(HOME)/.myco-dev/bin
-	@cp -f $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
+	@# rm -f before cp: a running dev daemon may hold this path open. cp would
+	@# rewrite the same inode (ETXTBSY on Linux / corrupt live text pages on
+	@# macOS); removing first gives the new binary a fresh inode.
+	@rm -f $(HOME)/.myco-dev/bin/myco
+	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
 	@chmod +x $(HOME)/.myco-dev/bin/myco
 	@# myco-dev wraps the standalone binary: sets MYCO_HOME=~/.myco-dev and
 	@# MYCO_CLAIMS_HOME=~/.myco, then execs it.
