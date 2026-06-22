@@ -192,7 +192,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     currentVersion: '1.0.0',
     daemonPort: 20915,
     daemonStateDir,
-    home: '/home/user/.myco',
+    home: path.join(os.homedir(), '.myco'),
     platform: 'darwin' as NodeJS.Platform,
     localAppData: undefined,
     scheduleShutdown: vi.fn(),
@@ -397,6 +397,25 @@ describe('handleUpgradeStatus — version-sync restart', () => {
     expect(getInstalledVersion).not.toHaveBeenCalled();
   });
 
+  it('does not trigger restart for a non-default home (separately-pinned install)', async () => {
+    (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+    const scheduleShutdown = vi.fn();
+    const { handleUpgradeStatus } = createUpgradeHandlers(
+      makeDeps({
+        scheduleShutdown,
+        globalPrefix: '/usr/local',
+        home: path.join(os.homedir(), '.myco-dev'),
+      }),
+    );
+
+    const result = await handleUpgradeStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(scheduleShutdown).not.toHaveBeenCalled();
+    expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+  });
+
   it('does not trigger restart when runtime.command pin is set', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
     (resolveRuntimeCommand as AnyMock).mockReturnValue('/vault/runtime/node_modules/.bin/myco');
@@ -572,7 +591,7 @@ describe('handleUpgradeApply', () => {
         source: 'daemon',
         targetVersion: '1.1.0',
         prevVersion: '1.0.0',
-        home: '/home/user/.myco',
+        home: path.join(os.homedir(), '.myco'),
         platform: 'darwin',
         daemonPort: 20915,
       }),

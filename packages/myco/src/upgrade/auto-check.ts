@@ -40,6 +40,7 @@ import {
   versionBinaryPath,
 } from '../install/managed-binary.js';
 import { releaseChannelIsManual } from '../daemon/update-checker.js';
+import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
@@ -111,6 +112,13 @@ export interface AutoAdoptDeps {
    * Tests pass `() => true` to simulate a manual-channel machine.
    */
   isManualChannel?: () => boolean;
+  /**
+   * Override the default-home gate. Defaults to `isDefaultMycoHome`. Only the
+   * default home (~/.myco) self-updates via adopt; a non-default home runs a
+   * separately-pinned binary. Tests pass `() => true` to exercise the adopt path
+   * from a tmpdir home.
+   */
+  isDefaultHome?: (home: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +335,13 @@ export function buildAdoptJobFn(
         projectRoot,
         logger,
       } = adoptDeps;
+
+      // Binary self-update converges the canonical install (~/.myco). A
+      // non-default home runs a separately-pinned binary; adopting a release
+      // there can never converge (the supervisor re-launches the pinned binary),
+      // so never attempt it.
+      const isDefaultHomeCheck = adoptDeps.isDefaultHome ?? isDefaultMycoHome;
+      if (!isDefaultHomeCheck(home)) return;
 
       // inFlight guard: an adopt is already in progress → no-op.
       if (inProgressInFlight(stateDir) !== null) return;

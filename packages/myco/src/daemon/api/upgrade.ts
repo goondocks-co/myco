@@ -54,7 +54,7 @@ import {
   UPDATE_CHECK_CACHE_PATH,
 } from '../../constants/update.js';
 import type { ReleaseChannel, UpdatePackageId } from '../../constants/update.js';
-import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
+import { resolveLastUpdateVersionPath, isDefaultMycoHome } from '../../grove/paths.js';
 import { detectServiceManagedLabel } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
@@ -385,11 +385,15 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
   async function handleUpgradeStatus(_req: RouteRequest): Promise<RouteResponse> {
     const snapshot = readVaultSnapshot();
 
-    // Version-sync self-restart: when the globally-installed myco is newer
-    // than the running daemon (npm updated it while the daemon was running),
-    // respawn via the managed binary path. Skip when a runtime.command pin
-    // is set — restarting a pinned daemon would respawn the same binary and loop.
-    if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null) {
+    // Version-sync self-restart: the npm bootstrap package was updated under a
+    // running daemon (its installed package version > the running version), so
+    // converge the native binary and restart onto it. Skip when a runtime.command
+    // pin is set — restarting a pinned daemon respawns the same binary and loops.
+    // Restricted to the default home: the npm bootstrap converges into ~/.myco,
+    // so only a daemon there should react to the npm package version. A
+    // non-default home is a separate install whose binary is unrelated to the
+    // npm-global package; comparing the two can never converge and would loop.
+    if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null && isDefaultMycoHome(home)) {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
         installedVersion &&

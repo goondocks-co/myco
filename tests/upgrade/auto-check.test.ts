@@ -320,6 +320,7 @@ describe('buildAdoptJobFn: manual-channel no-op', () => {
       projectRoot: '/project',
       logger: silentLogger(),
       isManualChannel: () => false,
+      isDefaultHome: () => true,
       initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
       resolveServiceLabel: async () => null,
     });
