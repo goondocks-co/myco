@@ -95,14 +95,17 @@ check out the feature branch on the **main checkout** and rebuild + restart ther
 `make dev-build && myco-dev restart`. After a worktree teardown + rebase the
 `~/.local/bin/myco-dev` symlink already points at the main binary, so **no
 `make dev-link` is needed** — only re-link if the symlink was removed or you are
-switching which branch the daemon tracks. After any restart, verify
-`~/.myco/service-dev/daemon.json` is not still pointing at a stale worktree binary.
+switching which branch the daemon tracks.
 
-**Never** `make dev-link` from a worktree, and **never** run the daemon or migrate
-the shared vault from a worktree — a worktree binary running a migration mutates the
-*shared* Grove vault and breaks the main/other builds (the rollup hazard above). The
-only isolated path is exercising the merged code against a **temp git repo with its
-own `MYCO_HOME`** — that does not touch the shared vault.
+**The worktree daemon path no longer self-isolates.** The dev daemon variant has
+no separate home — it writes to `~/.myco-dev` regardless of which binary runs it,
+so starting the daemon from a worktree binary would share state with the main
+dev daemon. **Never** `make dev-link` from a worktree, and
+**never** run the daemon or migrate the shared vault from a worktree — a worktree
+binary running a migration mutates the *shared* Grove vault and breaks the main/other
+builds (the rollup hazard above). The only isolated path is exercising the merged
+code against a **separate `MYCO_HOME`** (e.g. a temp git repo with
+`MYCO_HOME=~/.myco-sandbox`) — that does not touch the shared vault.
 
 > Myco is the most active source of truth: search the vault ("worktree dogfood")
 > before trusting this skill if they disagree. See also the

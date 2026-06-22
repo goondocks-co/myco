@@ -11,9 +11,10 @@ import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
 const USAGE = `Usage: myco subsystem <command>
 
 Declare which daemon owns a machine-global subsystem so a peer daemon defers.
-Operator-driven and durable — the claim stands until released, mirroring
-\`myco grove claim\`. Run claim/release under the build whose daemon should own
-the subsystem; the owner recorded is that daemon's home (MYCO_HOME).
+Operator-driven and durable: run claim/release under the build whose daemon
+should own the subsystem. The owner is that daemon's home (MYCO_HOME) and the
+claim persists across restarts until explicitly released. A peer daemon reads
+the claim and opts out of performing the subsystem's work.
 
 Commands:
   claim <subsystem> [--force]   Take ownership for this daemon (its home)

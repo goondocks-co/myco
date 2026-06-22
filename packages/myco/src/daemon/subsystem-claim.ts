@@ -10,8 +10,8 @@
  * defers. The owner is an opaque token — the daemon's home path
  * (`daemonIdentity`) — compared by equality.
  *
- * Deliberately operator-driven, not automatic (mirrors `myco grove claim`): a
- * claim is taken with `myco subsystem claim <name>` and dropped with
+ * Deliberately operator-driven, not automatic: a claim is taken with
+ * `myco subsystem claim <name>` and dropped with
  * `myco subsystem release <name>`. The claim is durable — it persists across
  * daemon restarts and until explicitly released, so the owner is a stated
  * intent rather than a function of which process happens to be alive. The peer
