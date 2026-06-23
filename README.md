@@ -12,7 +12,7 @@
   <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
   <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
   <a href="https://github.com/sponsors/goondocks-co"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-22c55e" alt="Sponsor Myco"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D22-22c55e" alt="Node 22+">
+  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-22c55e" alt="Runs on macOS, Linux, Windows">
   <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20Cline%20%7C%20VS%20Code%20%7C%20Antigravity%20%7C%20Devin%20Desktop%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | Cline | VS Code | Antigravity | Devin Desktop | OpenCode | Pi">
 </p>
 
@@ -49,9 +49,17 @@ curl -fsSL https://myco.sh/install.sh | sh
 myco open
 ```
 
-That installs the npm package, starts the local service, connects supported coding agents, and opens the local dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
+On Windows x64 (PowerShell):
+
+```powershell
+irm https://myco.sh/install.ps1 | iex
+```
+
+Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Then `myco open` launches the dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
 
 You can also open the dashboard directly at [http://localhost:20915/](http://localhost:20915/). If your local install reports a different service URL, `myco open` will open the right one.
+
+Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 
@@ -59,15 +67,11 @@ See [Quickstart](docs/quickstart.md) for setup details and platform notes.
 
 ## Upgrade
 
-Existing users upgrade the main product with npm or from the dashboard Operations page:
+Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page.
 
-```bash
-npm update -g @goondocks/myco
-```
+No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic and dashboard paths are the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
 
-The main package includes the local CLI, service, agent connections, MCP server, dashboard, and built-in intelligence pipeline. Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
-
-Optional operator packages are only needed for infrastructure administration:
+Optional operator packages are only needed for infrastructure administration (these remain npm/Node tools and require Node 22+):
 
 - `@goondocks/myco-team` — provision and manage a team's sync Worker (operators only; teammates join from the dashboard)
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
@@ -172,7 +176,7 @@ Skills evolve as your code does. When a pattern is abandoned, a new gotcha is di
 
 ### Backup & restore
 
-Backups and restores are Grove-scoped. Local backups run automatically during idle periods, and destructive project deletion creates a fresh Grove backup first when backups are enabled. Configure a custom backup directory from the Operations page. Restore preserves existing records and avoids importing duplicates.
+Backups and restores are Grove-scoped. Local backups run automatically during idle periods, and destructive project deletion creates a fresh Grove backup first when backups are enabled. Configure a custom backup directory in the **Backup & Restore** section of the Settings page. Restore preserves existing records and avoids importing duplicates.
 
 ## Health check
 
