@@ -570,14 +570,40 @@ describe('handleUpgradeApply', () => {
     expect((result.body as Record<string, unknown>).error).toBe('no_update_available');
   });
 
-  it('returns 422 when no staged version is found for myco', async () => {
+  it('forward upgrade with nothing pre-staged: resolves + stages the channel latest, then adopts', async () => {
+    // The background auto-check has not staged anything yet (the case right after
+    // a release). An explicit "Upgrade & Restart" must stage on the spot, not
+    // bail — the operator should not have to wait for the next background tick.
     (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
-    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps());
+    const refs = {
+      assetUrl: 'https://example/myco-darwin-arm64',
+      sha256sumsUrl: 'https://example/SHA256SUMS',
+      assetName: 'myco-darwin-arm64',
+      targetVersion: '1.1.0',
+    };
+    const resolveRevertRefs = vi.fn(async () => refs);
+    const stageBinary = vi.fn(async () => ({ versionDir: '/home/user/.myco/bin/versions/1.1.0', version: '1.1.0' }));
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ resolveRevertRefs, stageBinary }));
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(resolveRevertRefs).toHaveBeenCalledWith('stable');
+    expect(stageBinary).toHaveBeenCalledWith(expect.objectContaining({ refs }), expect.anything());
+    expect(initiateAdopt).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'daemon', targetVersion: '1.1.0' }),
+    );
+    expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });
+  });
+
+  it('forward upgrade with nothing pre-staged and no resolvable release → 422 no_release_available', async () => {
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
+    const resolveRevertRefs = vi.fn(async () => null);
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ resolveRevertRefs }));
 
     const result = await handleUpgradeApply(makeReq());
 
     expect(result.status).toBe(422);
-    expect((result.body as Record<string, unknown>).error).toBe('no_staged_version');
+    expect((result.body as Record<string, unknown>).error).toBe('no_release_available');
   });
 
   it('myco update → calls initiateAdopt (not spawnUpdateScript) with staged version', async () => {

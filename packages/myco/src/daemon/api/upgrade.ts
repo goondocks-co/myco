@@ -557,50 +557,55 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
   }
 
   /**
-   * Resolve + stage the stable-channel target for a beta→stable revert.
+   * Resolve the latest release on `channel` and stage it if the versioned binary
+   * is not already on disk. The adopt step requires the binary under
+   * versions/<v>/, so this guarantees it exists.
    *
-   * Mirrors the CLI (`cli/upgrade.ts`): resolve the stable channel's asset refs
-   * DIRECTLY, then stage them if the versioned binary is not already on disk —
-   * intentionally NOT going through `resolveNewestStagedVersion`, whose
-   * strictly-greater scan can never return a stable version below the running
-   * prerelease. The caller then `initiateAdopt`s the returned version, which
-   * bypasses the no-downgrade gate for this explicit revert.
+   * Mirrors the CLI (`cli/upgrade.ts`): resolve the channel's asset refs DIRECTLY
+   * rather than via `resolveNewestStagedVersion` (whose strictly-greater scan
+   * can't return a stable version below a running prerelease, and returns null
+   * when the background auto-check hasn't staged anything yet).
    *
-   * Returns the resolved stable version, or an `{ error }` body for the 422.
+   * Shared by two callers so the resolve→stage→adopt step is expressed once:
+   *   - REVERT-TO-STABLE (`'stable'`): the target is LOWER than the running
+   *     prerelease; the caller's `initiateAdopt` bypasses the no-downgrade gate.
+   *   - FORWARD "Upgrade & Restart": when nothing is pre-staged, stage the
+   *     channel's latest NOW so the operator's explicit click upgrades
+   *     immediately instead of waiting for the next background stage tick.
+   *
+   * Returns the resolved version, or an `{ error }` body for the 422.
    */
-  async function resolveStableRevertTarget(): Promise<
+  async function resolveAndStageChannelTarget(channel: ReleaseChannel): Promise<
     { version: string } | { error: { error: string; message: string } }
   > {
     let refs: AssetRefs | null;
     try {
-      refs = await resolveRevertRefs('stable');
+      refs = await resolveRevertRefs(channel);
     } catch (err) {
       return {
         error: {
-          error: 'revert_resolve_failed',
-          message: `Could not resolve the stable release to revert to: ${err instanceof Error ? err.message : String(err)}`,
+          error: 'release_resolve_failed',
+          message: `Could not resolve the ${channel} release: ${err instanceof Error ? err.message : String(err)}`,
         },
       };
     }
     if (refs === null) {
       return {
         error: {
-          error: 'no_stable_release',
-          message: 'No stable release is available to revert to.',
+          error: 'no_release_available',
+          message: `No ${channel} release is available.`,
         },
       };
     }
 
-    // Stage the resolved stable binary if it is not already on disk. The adopt
-    // step requires the versioned binary to exist under versions/<v>/.
     const vBinPath = versionBinaryPath(home, platform, refs.targetVersion, localAppData);
     if (!fs.existsSync(vBinPath)) {
       const staged = await stageBinaryFn({ refs, home, platform, localAppData }, stageDeps);
       if ('error' in staged) {
         return {
           error: {
-            error: 'revert_stage_failed',
-            message: `Could not stage the stable release ${refs.targetVersion}: ${staged.error}`,
+            error: 'stage_failed',
+            message: `Could not stage the ${channel} release ${refs.targetVersion}: ${staged.error}`,
           },
         };
       }
@@ -686,21 +691,24 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     let mycoTargetVersion: string | null = null;
     if (mycoNeedsBinarySwap) {
       if (enteringStable) {
-        const resolved = await resolveStableRevertTarget();
+        const resolved = await resolveAndStageChannelTarget('stable');
         if ('error' in resolved) {
           return { status: 422, body: resolved.error };
         }
         mycoTargetVersion = resolved.version;
       } else {
+        // Prefer a version the background auto-check already staged (fast adopt).
+        // If none is staged yet — the common case right after a release, before
+        // the next background tick — resolve + stage the channel's latest NOW so
+        // the operator's explicit "Upgrade & Restart" upgrades on the spot
+        // instead of bailing with "try again in a moment".
         mycoTargetVersion = resolveNewestStagedVersion(home, platform, currentVersion, localAppData);
         if (mycoTargetVersion === null) {
-          return {
-            status: 422,
-            body: {
-              error: 'no_staged_version',
-              message: 'No staged version found. The background auto-check has not yet staged a binary. Try again in a moment.',
-            },
-          };
+          const resolved = await resolveAndStageChannelTarget(snapshot.desiredChannel);
+          if ('error' in resolved) {
+            return { status: 422, body: resolved.error };
+          }
+          mycoTargetVersion = resolved.version;
         }
       }
     }
