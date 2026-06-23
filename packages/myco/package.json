@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco",
-  "version": "0.25.0",
+  "version": "0.0.0-dev",
   "description": "Collective agent intelligence — Claude Code plugin",
   "type": "module",
   "bin": {
@@ -72,11 +72,11 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@goondocks/myco-darwin-arm64": "0.25.0",
-    "@goondocks/myco-darwin-x64": "0.25.0",
-    "@goondocks/myco-linux-arm64": "0.25.0",
-    "@goondocks/myco-linux-x64": "0.25.0",
-    "@goondocks/myco-windows-x64": "0.25.0"
+    "@goondocks/myco-darwin-arm64": "0.0.0-dev",
+    "@goondocks/myco-darwin-x64": "0.0.0-dev",
+    "@goondocks/myco-linux-arm64": "0.0.0-dev",
+    "@goondocks/myco-linux-x64": "0.0.0-dev",
+    "@goondocks/myco-windows-x64": "0.0.0-dev"
   },
   "devDependencies": {
     "@goondocks/myco-shared": "*",

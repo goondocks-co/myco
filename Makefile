@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-link-worktree dev-unlink dev-unlink-worktree ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-packages build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -23,6 +23,9 @@ build-packages:
 # Alias retained for backward compatibility with existing automation.
 build-fast: build
 
+# Builds the repo artifacts only (including packages/myco-<target>/bin/myco). It
+# does NOT update the running dev daemon — that runs a standalone COPY in
+# ~/.myco-dev/bin. To rebuild AND refresh the dogfood daemon, use `make dev-deploy`.
 build-only:
 	npm run build
 
@@ -84,7 +87,7 @@ install:
 
 ui-dev:
 	@port=$${MYCO_DAEMON_PORT:-$$(node -e ' \
-		var fs=require("fs"),p=require("path"),v=p.join(require("os").homedir(),".myco/vaults/myco"); \
+		var fs=require("fs"),p=require("path"),v=p.join(require("os").homedir(),".myco/service"); \
 		try{console.log(JSON.parse(fs.readFileSync(p.join(v,"daemon.json"),"utf-8")).port);process.exit(0)}catch{} \
 		try{var y=fs.readFileSync(p.join(v,"myco.yaml"),"utf-8"),m=y.match(/^\\s*port:\\s*(\\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
 		console.log(19200)')}; \
@@ -175,8 +178,8 @@ dev-link: dev-build
 	@chmod +x $(HOME)/.myco-dev/bin/myco
 	@# myco-dev wraps the standalone binary: sets MYCO_HOME=~/.myco-dev and
 	@# MYCO_CLAIMS_HOME=~/.myco, then execs it.
-	@# rm -f first: if myco-dev is a symlink to a binary, `printf >` follows it
-	@# and overwrites the target. Write a fresh regular file.
+	@# rm -f first, then write a fresh wrapper script — never append to or follow
+	@# an existing file here (an older install may have left a symlink at this path).
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
@@ -208,8 +211,8 @@ dev-link: dev-build
 	@chmod 0644 $(PWD)/.myco/runtime.home
 	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"
 	@echo "✓ $(PWD)/.myco/runtime.home set to $(HOME)/.myco-dev"
-	@# Sweep any pre-0.25.2 machine-scope pin written by older `make dev-link`
-	@# runs — it would shadow the new project pin from outside the repo.
+	@# Sweep any machine-scope pin: dev mode uses a PROJECT-scope pin (above), so a
+	@# leftover ~/.myco/runtime.command would shadow it from outside the repo.
 	@if [ -f $(HOME)/.myco/runtime.command ]; then \
 		rm -f $(HOME)/.myco/runtime.command; \
 		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
@@ -228,6 +231,21 @@ dev-link: dev-build
 		myco-dev update --all-projects || echo "⚠ 'myco-dev update --all-projects' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
 	else \
 		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
+	fi
+
+# Build, deploy, AND restart the dogfood daemon in one step. `dev-link` only
+# COPIES the fresh binary into ~/.myco-dev/bin; a daemon already running keeps
+# the OLD binary until it restarts. Run this (not `build-only`) after changing
+# daemon code so the running dev daemon actually reflects it.
+dev-deploy: dev-link
+	@# Restart only AFTER the deploy. The success line is gated on the restart
+	@# actually confirming healthy — never claim "restarted" when it didn't.
+	@if "$(HOME)/.local/bin/myco-dev" restart; then \
+		echo "✓ rebuilt → deployed to $(HOME)/.myco-dev/bin/myco → dev daemon restarted"; \
+	else \
+		echo "⚠ rebuilt + deployed to $(HOME)/.myco-dev/bin/myco, but 'myco-dev restart' did not confirm healthy."; \
+		echo "  launchd may still be respawning the daemon — verify with: myco-dev service status (or the dashboard)."; \
+		echo "  If it stays down, re-run: myco-dev restart"; \
 	fi
 
 # Windows dogfood — the same shape as `dev-build` / `dev-link`, for a remote
@@ -268,10 +286,10 @@ dev-unlink:
 	@# Remove the relocated standalone dev binary (a build-artifact copy; the dev
 	@# home's grove data under ~/.myco-dev is preserved).
 	@rm -f $(HOME)/.myco-dev/bin/myco
-	@# Also sweep the legacy machine-scope pin in case the user ran the
-	@# pre-0.25.2 `make dev-link` and never re-linked.
+	@# Also sweep any machine-scope pin an older dev-link may have written, so an
+	@# uninstall fully clears dev routing.
 	@rm -f $(HOME)/.myco/runtime.command
-	@echo "✓ myco-dev symlink removed"
+	@echo "✓ myco-dev wrapper + ~/.myco-dev/bin/myco removed"
 	@echo "✓ myco-team-dev symlink removed"
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"

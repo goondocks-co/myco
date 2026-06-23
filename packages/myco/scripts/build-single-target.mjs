@@ -34,8 +34,35 @@ if (!fs.existsSync(entry)) {
   process.exit(1);
 }
 
-const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
-const mycoVersion = pkgJson.version;
+const pkgPath = path.join(pkgRoot, 'package.json');
+const pkgRaw = fs.readFileSync(pkgPath, 'utf-8');
+const pkgJson = JSON.parse(pkgRaw);
+
+// The per-target entry embeds `pkg.version` at compile time via
+// `setPluginVersion(pkg.version)`, so the binary's reported version is whatever
+// package.json says when bun compiles it. Releases get a concrete version
+// written here by scripts/sync-package-versions.mjs before the build; dev builds
+// carry the `0.0.0-dev` placeholder. For dev, stamp the git description so a
+// locally-built / dogfood binary reports the ACTUAL checkout (e.g.
+// `0.0.0-dev+1.2.0-1-g430a7e7b`) instead of the bare placeholder. Temporarily
+// rewrite package.json for the compile, then restore the exact original bytes in
+// `finally`. Keep the format identical to the runtime fallback in src/version.ts.
+const DEV_VERSION_PLACEHOLDER = '0.0.0-dev';
+let stampedPkg = false;
+if (pkgJson.version === DEV_VERSION_PLACEHOLDER) {
+  const described = spawnSync(
+    'git',
+    ['describe', '--tags', '--always', '--dirty', '--match', 'myco/v*'],
+    { cwd: pkgRoot, encoding: 'utf-8' },
+  );
+  const raw = described.status === 0 ? (described.stdout ?? '').trim() : '';
+  if (raw) {
+    const describe = raw.replace(/^myco\/v/, '').replace(/[^0-9A-Za-z.-]/g, '');
+    fs.writeFileSync(pkgPath, `${JSON.stringify({ ...pkgJson, version: `${DEV_VERSION_PLACEHOLDER}+${describe}` }, null, 2)}\n`);
+    stampedPkg = true;
+  }
+}
+const mycoVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
 
 // Compile the binary directly into its per-platform npm package
 // (`packages/myco-<target>/bin/`). The core package's postinstall then uses
@@ -53,9 +80,17 @@ const outfile = path.join(outputDir, binaryName);
 const bunTarget = process.env.BASELINE === '1' ? `bun-${target}-baseline` : `bun-${target}`;
 
 process.stdout.write(`[build:binary] ${target} (${bunTarget}) -> ${outfile} (version ${mycoVersion})\n`);
-const result = spawnSync(
-  'bun',
-  ['build', '--compile', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
-  { stdio: 'inherit', cwd: pkgRoot, env: process.env },
-);
-process.exit(result.status ?? 1);
+let status = 1;
+try {
+  const result = spawnSync(
+    'bun',
+    ['build', '--compile', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
+    { stdio: 'inherit', cwd: pkgRoot, env: process.env },
+  );
+  status = result.status ?? 1;
+} finally {
+  // Restore the exact original package.json bytes so the working tree (and any
+  // release-stamped version) is never left mutated by a dev build.
+  if (stampedPkg) fs.writeFileSync(pkgPath, pkgRaw);
+}
+process.exit(status);
