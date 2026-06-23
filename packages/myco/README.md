@@ -4,8 +4,17 @@
 
 Install it once to run the local dashboard and service, connect supported coding agents, capture project knowledge, and use the built-in intelligence pipeline.
 
+Myco is a self-contained native binary — **no Node runtime is required to run it**. The recommended install downloads the binary directly:
+
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
+curl -fsSL https://myco.sh/install.sh | sh        # macOS / Linux
+irm https://myco.sh/install.ps1 | iex             # Windows x64 (PowerShell)
+```
+
+This npm package is a thin bootstrap that converges to the same native binary, for people who prefer installing through npm (this path needs Node 22+):
+
+```bash
+npm install -g @goondocks/myco
 ```
 
 Open a git project in any supported agent and Myco registers it automatically when the agent starts working there.
@@ -23,11 +32,7 @@ macOS is the primary supported platform. Linux and Windows are in beta. On Windo
 
 ## Upgrade
 
-```bash
-npm update -g @goondocks/myco
-```
-
-The Operations page can also detect and apply updates for installed Myco packages on the same machine.
+Myco keeps itself up to date automatically — the local service self-updates from your release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page, or run `myco upgrade` (with `--channel stable|beta`) for advanced or scripted use. No `npm update` is required.
 
 ## Learn more
 

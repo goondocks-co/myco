@@ -99,7 +99,7 @@ Store your Cloudflare API token in `secrets.env`.
 
 ## Backup & restore
 
-Independent of Team Sync, Myco creates local backups for resilience. Configure the backup directory on the **Operations** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution, so you can pull a teammate's backup without losing who said what.
+Independent of Team Sync, Myco creates local backups for resilience. Configure the backup directory in the **Backup & Restore** section of the **Settings** page, or click **Backup Now** for an on-demand backup. Restore supports a dry-run preview, and cross-machine restore preserves attribution, so you can pull a teammate's backup without losing who said what.
 
 Backups include all knowledge but exclude logs, tool-call activity, and vector embeddings (rebuilt automatically after restore).
 

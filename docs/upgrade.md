@@ -1,24 +1,23 @@
 # Upgrading Myco
 
-Myco upgrades are a single command. The npm package carries the CLI, local service, dashboard, agent connections, and built-in intelligence features. Update the package, then restart Myco when you want the new version to take over.
+Myco keeps itself up to date. It's a self-contained native binary, and the local service self-updates from your release channel in the background while it's idle — no command to run, no Node required. The binary carries the CLI, local service, dashboard, agent connections, and built-in intelligence features.
 
 ## TL;DR
 
-```bash
-npm install -g @goondocks/myco@latest
-```
+Nothing to do — Myco upgrades itself automatically. When you want to take an update now rather than wait for the idle self-update, open the **Upgrade** section of the dashboard's **Settings** page and click **Upgrade & Restart**.
 
-That's it. The next time Myco restarts, it updates your local service, preserves your existing agent settings, and brings registered projects forward. No per-project command is required.
-
-To force the new version to take effect immediately:
+For advanced or scripted use, a CLI is available:
 
 ```bash
-myco restart
+myco upgrade                  # upgrade on the current channel
+myco upgrade --channel beta   # switch to and upgrade on the beta channel
 ```
 
-## What the package upgrade does
+The dashboard is Myco's primary interface; the CLI is for bootstrap and advanced use.
 
-After `npm install -g @goondocks/myco@latest` and the next Myco restart:
+## What the upgrade does
+
+When Myco self-updates (automatically, from the Settings page's Upgrade section, or via `myco upgrade`):
 
 1. **Updates Myco's local service and dashboard** to the new version.
 2. **Refreshes supported agent connections** while preserving settings you already had in those agents.
@@ -33,7 +32,7 @@ Myco v1.0 makes agent and embedding configuration **Grove-scoped** — one setti
 
 **Breaking change.** On the first restart after upgrading to v1.0, Myco removes agent and embedding settings from every project's `myco.yaml` and resets those projects to the Grove's configuration. The fields reset are the agent provider, harness, model, per-task overrides, the scheduling toggles, and the embedding provider, model, and base URL.
 
-Most projects carried these values only because older Myco wrote them per-project, so the Grove already holds the same configuration and the reset changes nothing you can observe. If a project ran a genuinely different agent or embedding setup, reconfigure it at the **Grove** scope from the dashboard's Settings and Operations pages after the upgrade.
+Most projects carried these values only because older Myco wrote them per-project, so the Grove already holds the same configuration and the reset changes nothing you can observe. If a project ran a genuinely different agent or embedding setup, reconfigure it at the **Grove** scope from the dashboard's **Settings** page after the upgrade.
 
 Need a per-project value for a specific field? Use the scope pill on that field in the dashboard to opt it back to project scope. Layering is opt-in per field — nothing is project-scoped by default.
 
@@ -43,10 +42,9 @@ The previous values are not lost: the pre-upgrade `myco.yaml` is in your git his
 
 If you previously had per-project `.agents/` installs:
 
-1. `npm install -g @goondocks/myco@latest`.
-2. Let Myco restart (or run `myco restart`).
-3. Myco archives older Myco-owned per-project files in place.
-4. Per-project overrides now live in the dashboard's **Symbionts** page. You can disable a symbiont in a specific project from there.
+1. Let Myco self-update, or trigger **Upgrade & Restart** from the Settings page's Upgrade section.
+2. Myco archives older Myco-owned per-project files in place.
+3. Per-project overrides now live in the dashboard's **Symbionts** page. You can disable a symbiont in a specific project from there.
 
 After the upgrade, verify with `myco doctor`. It reports anything Myco could not update automatically.
 
@@ -56,7 +54,7 @@ The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No
 
 ## Optional operator packages
 
-If you also installed one of the standalone operator CLIs, they upgrade independently. The Operations page in the dashboard detects updates for them too and offers a one-click apply.
+If you also installed one of the standalone operator CLIs, they upgrade independently. The Upgrade section of the dashboard's Settings page detects updates for them too and offers a one-click apply.
 
 ```bash
 npm update -g @goondocks/myco-team       # team-sync operator CLI
@@ -85,12 +83,7 @@ See [Lifecycle](lifecycle.md) for the contributor workflow.
 
 ## Rollback
 
-Myco archives older Myco-owned per-project files rather than deleting them. To return to a previous version, reinstall that version and restart:
-
-```bash
-npm install -g @goondocks/myco@<previous-version>
-myco restart
-```
+Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco can fall back to the prior version. To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [Lifecycle](lifecycle.md) for how channels work.
 
 If you want to remove Myco entirely:
 
@@ -103,9 +96,9 @@ Removal preserves user-pre-existing keys in shared agent config files.
 
 ## Common failure modes
 
-### Myco didn't pick up the new code
+### Myco didn't pick up the new version
 
-Myco does not auto-restart on `npm install`. Run `myco restart` explicitly.
+The self-updater applies an update and restarts the service on the next idle window. To take it immediately, click **Upgrade & Restart** in the Settings page's Upgrade section, or run `myco restart` after `myco upgrade`.
 
 ### Dashboard shows "Connecting to Myco..."
 
