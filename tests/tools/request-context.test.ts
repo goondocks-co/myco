@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,7 @@ import {
   rowProjectIdFromRequestContext,
   projectScopeFromRequestContext,
   resolveLegacyRequestContext,
+  resolveRequestContextForVault,
 } from '@myco/grove/request-context.js';
 import { GLOBAL_SCOPE } from '@myco/grove/ids.js';
 
@@ -825,5 +826,46 @@ describe('tool request context', () => {
         expect(resolved.projectId).toBe(projectId);
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 500 → 404: unregistered project root throws UnknownRequestContextError
+// ---------------------------------------------------------------------------
+
+describe('unregistered vault throws UnknownRequestContextError (maps to 404)', () => {
+  let tmp: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unregistered-'));
+    savedHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(tmp, 'home');
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = savedHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('resolveRequestContextForVault throws UnknownRequestContextError for a vault with no manifest', () => {
+    // A vault directory with no project.toml — has no Grove project id.
+    const vaultDir = path.join(tmp, 'project', '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+
+    expect(() => resolveRequestContextForVault(vaultDir))
+      .toThrow(UnknownRequestContextError);
+  });
+
+  it('requestContextFromEnvironment (buildVaultFallback) throws UnknownRequestContextError for a vault with no manifest', () => {
+    // requestContextFromEnvironment calls buildVaultFallback(fallbackVaultDir).
+    // A vault with no project.toml has no Grove project id — must surface as
+    // UnknownRequestContextError (404) not a generic Error (500).
+    const vaultDir = path.join(tmp, 'project', '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+
+    expect(() => requestContextFromEnvironment({}, vaultDir))
+      .toThrow(UnknownRequestContextError);
   });
 });

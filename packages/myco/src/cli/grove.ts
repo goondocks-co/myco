@@ -10,15 +10,11 @@ import {
   renameGrove,
   resolveGrove,
   setDefaultGrove,
-  setGroveServedBy,
-  type DaemonVariant,
   type ResolvedRegisteredProject,
 } from '@myco/grove/registry.js';
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
-import { claimGroveForDogfood, releaseClaimedGrove } from '@myco/grove/claim.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import {
-  isDevServiceMode,
   resolveMycoHome,
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
@@ -70,8 +66,6 @@ Commands:
   rename <name|id> <new-name>                Rename a Grove
   delete <name|id> [--force]                 Delete a Grove (use --force to drop a non-empty Grove)
   move <project-id-or-slug> --grove <ref>    Move a registered project into another Grove
-  claim <name|id>                            Claim a Grove for dogfooding with the dev daemon
-  release <name|id>                          Release a claimed Grove and restore its pre-claim state
   migrate-project [--grove <name|id>]        Import and activate an existing project vault
   archive-legacy [--project <path>]          Move post-activation legacy data into .myco/.archive-<ts>/
 
@@ -101,7 +95,7 @@ export async function run(args: string[]): Promise<void> {
     for (const grove of groves) {
       const marker = grove.id === defaultId ? '*' : ' ';
       console.log(
-        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode} ${grove.served_by}`,
+        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode}`,
       );
     }
     return;
@@ -110,9 +104,8 @@ export async function run(args: string[]): Promise<void> {
   if (cmd === 'create') {
     const name = rest.join(' ').trim();
     if (!name) throw new Error('Grove name is required');
-    const servedBy: DaemonVariant = isDevServiceMode() ? 'service-dev' : 'service';
-    const grove = createGrove(name, mycoHome, { servedBy });
-    console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
+    const grove = createGrove(name, mycoHome);
+    console.log(`Created Grove ${grove.name} (${grove.id})`);
     return;
   }
 
@@ -227,56 +220,6 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  if (cmd === 'claim') {
-    const ref = rest[0];
-    if (!ref) throw new Error('Grove name or id is required');
-    if (!isDevServiceMode()) {
-      throw new Error(
-        'myco grove claim must run under the dev daemon (service-dev). '
-        + 'Use the dogfood build of `myco` to claim a Grove.',
-      );
-    }
-    const grove = resolveGrove(ref, mycoHome);
-    if (grove.served_by !== 'service') {
-      throw new Error(
-        `Grove ${grove.name} is served by ${grove.served_by}; only Groves served by `
-        + `'service' can be claimed for dogfood.`,
-      );
-    }
-    const projects = listRegisteredProjects(grove.id, mycoHome);
-    const result = claimGroveForDogfood(grove.id, mycoHome);
-    console.log('Grove claimed for dogfooding:');
-    console.log(`  Grove:    ${grove.name} (${grove.slug})`);
-    console.log(`  Snapshot: ${result.manifest.snapshot_db_path}`);
-    console.log(`  Projects: ${projects.length} paused → resumed under dev ownership`);
-    console.log(`  ${result.snapshot_size_summary}`);
-    console.log('');
-    console.log(`The dev daemon now serves this Grove. Run \`myco grove release ${grove.slug}\``);
-    console.log("when you're done to restore the Grove to its pre-claim state.");
-    console.log('Release will also undo any new Groves, project moves, and project');
-    console.log('manifest edits made during the claim window.');
-    return;
-  }
-
-  if (cmd === 'release') {
-    const ref = rest[0];
-    if (!ref) throw new Error('Grove name or id is required');
-    if (!isDevServiceMode()) {
-      throw new Error(
-        'myco grove release must run under the dev daemon (service-dev). '
-        + 'Use the dogfood build of `myco` to release a claimed Grove.',
-      );
-    }
-    const grove = resolveGrove(ref, mycoHome);
-    const result = releaseClaimedGrove(grove.id, mycoHome);
-    console.log('Grove released:');
-    console.log(`  Grove:    ${grove.name} (${grove.slug})`);
-    console.log(`  Restored: ${result.manifest.snapshot_db_path}`);
-    console.log(`  Archive:  ${result.archive_dir}`);
-    console.log(`  served_by → ${result.manifest.original_served_by}`);
-    return;
-  }
-
   if (cmd === 'force-resume-project') {
     const projectRef = rest[0];
     if (!projectRef) throw new Error('Project id or slug is required');
@@ -289,24 +232,6 @@ export async function run(args: string[]): Promise<void> {
     console.log(
       `Force-resumed project ${found.project.name} in Grove ${found.grove.name} (${found.grove.slug})`,
     );
-    return;
-  }
-
-  if (cmd === 'set-served-by') {
-    const ref = rest[0];
-    const variant = rest[1];
-    if (!ref) throw new Error('Grove name or id is required');
-    if (!rest.includes('--force')) {
-      throw new Error('set-served-by is a recovery command. Pass --force to confirm.');
-    }
-    if (variant !== 'service' && variant !== 'service-dev') {
-      throw new Error(
-        `Invalid served_by variant: ${variant ?? '(none)'} (expected 'service' or 'service-dev')`,
-      );
-    }
-    const grove = resolveGrove(ref, mycoHome);
-    const updated = setGroveServedBy(grove.id, variant as DaemonVariant, mycoHome);
-    console.log(`Grove ${updated.name} served_by → ${updated.served_by}`);
     return;
   }
 

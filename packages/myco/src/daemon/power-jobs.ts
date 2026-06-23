@@ -39,9 +39,7 @@ import {
 import {
   resolveMycoHome,
   resolveProjectVaultDir,
-  currentDaemonVariant,
 } from '@myco/grove/paths.js';
-import { isClaimedByPeer, SYMBIONT_CONFIG_SUBSYSTEM } from './subsystem-claim.js';
 import {
   pauseAwareShouldVisit,
   listRegisteredProjects,
@@ -84,7 +82,7 @@ export interface UpgradeJobDeps {
   daemonPort: number;
   /**
    * Myco binary path used for the direct-spawn restart fallback.
-   * Defaults to `resolveMycoBinary()` (i.e. the dev-build entry or `'myco'`).
+   * Defaults to `resolveMycoBinary()` (i.e. `process.execPath` when it is the myco binary, else `'myco'`).
    */
   mycoBinary?: string;
   /** Project root for direct-spawn restart cwd. */
@@ -333,7 +331,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
   };
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
-    () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
+    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
@@ -584,13 +582,6 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       const now = Date.now();
       if (now - lastSymbiontDetectionAt < SYMBIONT_DETECTION_INTERVAL_MS) return;
       lastSymbiontDetectionAt = now;
-      // Defer while a peer daemon variant holds the symbiont-config claim. On a
-      // contributor machine the operator runs `myco subsystem claim
-      // symbiont-config` under the dogfood build so the production daemon stops
-      // rewriting global agent configs out from under the local build. We never
-      // claim here — only read and opt out. No-op for normal single-daemon
-      // installs, where no claim exists.
-      if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, currentDaemonVariant())) return;
       try {
         const { runSymbiontDetection } = await import('../cli/bootstrap.js');
         const symbionts = runSymbiontDetection();

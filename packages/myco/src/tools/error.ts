@@ -32,11 +32,10 @@ export type ToolErrorCode =
    */
   | 'legacy_vault'
   /**
-   * A `grove_id` pivot targeted a Grove whose `grove.toml served_by`
-   * names the other daemon variant. Rejected before the target Grove's
-   * database is opened (or schema-migrated). Distinct code so clients
-   * can surface the claim path (`myco grove claim`) instead of a
-   * generic failure.
+   * A `grove_id` pivot targeted a Grove that lives in another daemon's
+   * home (`<MYCO_HOME>/groves/`). Rejected before the target Grove's
+   * database is opened (or schema-migrated). Distinct code so clients can
+   * surface the foreign-home reason instead of a generic failure.
    */
   | 'foreign_grove'
   | 'tool_call_failed';

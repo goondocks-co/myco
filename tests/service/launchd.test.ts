@@ -166,7 +166,17 @@ describe('LaunchdServiceManager', () => {
 
   test('restart throws when launchctl exits non-zero', async () => {
     runner.exitOverrides.set('kickstart', { stdout: 'Could not find specified service', exitCode: 3 });
-    await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/kickstart failed.*exit 3/i);
+    await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/kickstart.*failed.*exit 3/i);
+  });
+
+  test('start throws when launchctl exits non-zero (no silent success)', async () => {
+    runner.exitOverrides.set('kickstart', { stdout: 'Could not find specified service', exitCode: 3 });
+    await expect(mgr.start('co.goondocks.missing')).rejects.toThrow(/kickstart.*failed.*exit 3/i);
+  });
+
+  test('install throws when launchctl bootstrap fails (no silent success)', async () => {
+    runner.exitOverrides.set('bootstrap', { stdout: 'Bootstrap failed: 5: Input/output error', exitCode: 5 });
+    await expect(mgr.install(spec(home))).rejects.toThrow(/bootstrap.*failed.*exit 5/i);
   });
 
   test('restartShellCommand returns the literal `launchctl kickstart -k gui/<uid>/<label>`', () => {

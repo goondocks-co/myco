@@ -17,16 +17,6 @@ export const UPDATE_CONFIG_PATH = path.join(MYCO_GLOBAL_DIR, 'update.yaml');
 export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json');
 
 /**
- * Path to the cached dev-build verdict.
- *
- * Avoids spawning `npm prefix -g` (200-600ms cold start) on every CLI
- * invocation. The cache is keyed by the running binary's realpath plus
- * the package version, so any reinstall, version bump, or symlink retarget
- * invalidates it automatically.
- */
-export const DEV_BUILD_CACHE_PATH = path.join(MYCO_GLOBAL_DIR, 'dev-build-cache.json');
-
-/**
  * Filename for the machine-scope runtime command pin (lives in `~/.myco/`).
  *
  * Single source of truth for which `myco` binary the launcher shims exec.
@@ -36,6 +26,15 @@ export const DEV_BUILD_CACHE_PATH = path.join(MYCO_GLOBAL_DIR, 'dev-build-cache.
  * pin file itself remains.)
  */
 export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
+
+/**
+ * Filename for the runtime home pin — a sibling of `runtime.command` in the
+ * SAME (project or machine) dir. A plaintext, single-line, absolute home path
+ * that redirects MYCO_HOME for that scope, routing the CLI, hooks, MCP, and
+ * symbiont capture plugins at a non-default daemon (e.g. a dogfood `~/.myco-dev`).
+ * Read under the same G7 trust check as `runtime.command`.
+ */
+export const MACHINE_RUNTIME_HOME_FILENAME = 'runtime.home';
 
 /** Filename for the restart reason signal file (lives inside vault .myco/). */
 export const RESTART_REASON_FILENAME = 'restart-reason.json';

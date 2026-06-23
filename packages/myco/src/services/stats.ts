@@ -200,7 +200,7 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
         pid: daemonPid,
         port: daemonPort,
         version: daemonVersion,
-        version_label: getRuntimeVersionLabel(vaultDir, daemonVersion),
+        version_label: getRuntimeVersionLabel(daemonVersion),
         uptime_seconds: daemonUptimeSeconds,
         active_sessions: active_session_ids,
         runtime: getRuntimeOrigin(vaultDir),

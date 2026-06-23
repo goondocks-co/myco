@@ -176,7 +176,7 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
 
 ### Integration Points
 
-- **Transcript mining**: Extract plans from session transcripts, generate tag-based logical keys via `extractPlansFromTranscript()`
+- **Transcript mining**: Extract tagged plans from session transcripts via `extractTaggedPlans()`, then persist each result via `captureTaggedPlan()` in `packages/myco/src/daemon/plan-capture.ts`
 - **MCP agents**: Direct agent calls via `myco_plans` with `op: "save"` through the MCP tool surface
 - **File scanning**: Periodic file system scans for new plan files using path-based logical keys; filtered by `selectAuthoredPlanWrites()` to agent-authored writes only
 
@@ -191,11 +191,11 @@ Handle plans captured from multiple channels with the same logical identity thro
 const existingPlan = getPlanByLogicalKey(input.logicalKey);
 
 if (existingPlan && input.logger && existingPlan.source_path !== input.sourcePath) {
-  input.logger.warn('Plan overwrite detected', {
+  input.logger.warn(LOG_KINDS.CAPTURE_PLAN, 'Plan overwritten mid-session', {
     logical_key: input.logicalKey,
-    old_source: existingPlan.source_path,
+    prior_source: existingPlan.source_path,
     new_source: input.sourcePath,
-    kind: LOG_KINDS.PLAN_CAPTURE_CONFLICT
+    prior_updated_at: existingPlan.updated_at,
   });
 }
 

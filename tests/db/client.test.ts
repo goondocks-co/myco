@@ -1,5 +1,16 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { initDatabase, getDatabase, closeDatabase, openDatabase, withDatabase } from '@myco/db/client.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  initDatabase,
+  getDatabase,
+  closeDatabase,
+  openDatabase,
+  withDatabase,
+  setOwnedServiceDirForCurrentProcess,
+  clearOwnedServiceDirForCurrentProcess,
+} from '@myco/db/client.js';
 
 describe('SQLite client', () => {
   afterEach(() => {
@@ -79,6 +90,92 @@ describe('SQLite client', () => {
         .get()).toBeTruthy();
     } finally {
       scoped.close();
+    }
+  });
+});
+
+describe('assertOwnsDatabase — home-path ownership gate', () => {
+  // Grove id shape: grove_ + 32 hex chars (matches isGroveEraId).
+  const GROVE_ID = 'grove_' + 'a'.repeat(32);
+  let tmpRoot: string;
+
+  afterEach(() => {
+    clearOwnedServiceDirForCurrentProcess();
+    try { closeDatabase(); } catch { /* already closed */ }
+    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  /** Create a real SQLite file at <home>/groves/<groveId>/myco.db. */
+  function makeGroveDb(mycoHome: string): { db: ReturnType<typeof openDatabase>; dbPath: string } {
+    const groveDir = path.join(mycoHome, 'groves', GROVE_ID);
+    fs.mkdirSync(groveDir, { recursive: true });
+    const dbPath = path.join(groveDir, 'myco.db');
+    const db = openDatabase(dbPath);
+    return { db, dbPath };
+  }
+
+  it('allows a Grove DB inside the owning home groves directory', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const { db } = makeGroveDb(homeA);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('throws Cross-home when a Grove DB is outside the owning home groves directory', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    const homeB = path.join(tmpRoot, 'B', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    // DB physically lives under homeB but the daemon owns homeA.
+    const { db } = makeGroveDb(homeB);
+    try {
+      expect(() => withDatabase(db, () => {})).toThrow(/Cross-home Grove access is forbidden/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('allows :memory: when ownership is declared (non-grove early-return)', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const db = openDatabase(); // opens :memory:
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('allows a non-grove path when ownership is declared (groveIdFromDbPath returns null)', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeA = path.join(tmpRoot, 'A', '.myco');
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    // A real file that is not under groves/<groveId>/myco.db — groveIdFromDbPath returns null.
+    const nonGrovePath = path.join(tmpRoot, 'fixture.db');
+    const db = openDatabase(nonGrovePath);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
+      fs.rmSync(nonGrovePath, { force: true });
+    }
+  });
+
+  it('is a no-op when no ownership is declared', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-gate-'));
+    const homeB = path.join(tmpRoot, 'B', '.myco');
+    // No setOwnedServiceDirForCurrentProcess call — gate is off.
+    const { db } = makeGroveDb(homeB);
+    try {
+      expect(() => withDatabase(db, () => {})).not.toThrow();
+    } finally {
+      db.close();
     }
   });
 });

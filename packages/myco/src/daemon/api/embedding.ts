@@ -339,7 +339,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<PerGroveResultBase & T> {
     // Body-scope grove ids arrive outside the request-context funnel, so
-    // existence and served_by ownership gate here — BEFORE
+    // existence and home-ownership gate here — BEFORE
     // wrapPerGroveResult (which would swallow the refusal into a result
     // row) and before the cache opens the Grove DB and builds an
     // embedding runtime on it. Throws propagate to the transport

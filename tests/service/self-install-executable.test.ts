@@ -1,8 +1,10 @@
 /**
  * Tests for managed-binary executable resolution in ensureSelfInstalledAsService.
  *
- * Covers `defaultServiceExecutable`: prod variant prefers `~/.myco/bin/myco` when present;
- * dev variant always uses `process.execPath` (dogfood guard).
+ * Covers `defaultServiceExecutable`: the DEFAULT home (`~/.myco`) prefers
+ * `~/.myco/bin/myco` when present; a non-default (dogfood) home always uses
+ * `process.execPath` (dogfood guard — it must never re-point at the default
+ * home's managed binary).
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -10,7 +12,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultServiceExecutable, ensureSelfInstalledAsService } from '../../packages/myco/src/service/self-install';
+import { managedBinaryPath } from '../../packages/myco/src/install/managed-binary';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
+
+const DEFAULT_HOME = path.join(os.homedir(), '.myco');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,35 +64,35 @@ class CapturingLogger {
 // ---------------------------------------------------------------------------
 
 describe('defaultServiceExecutable', () => {
-  test('prod + managed binary present → returns the managed binary path', () => {
-    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
-    const result = defaultServiceExecutable('prod', mycoHome, 'darwin');
-    expect(result).toBe(binPath);
+  // The managed-binary preference is keyed on the DEFAULT home now (not a
+  // prod/dev variant). A non-default (dogfood) home ALWAYS returns
+  // process.execPath — even when a managed binary exists in that home — so a
+  // dogfood unit is never re-pointed at the default home's managed binary.
+
+  test('non-default (dogfood) home + managed binary present → returns process.execPath (dogfood guard)', () => {
+    const { mycoHome } = makeTempHomeWithManagedBinary();
+    // Even though a managed binary exists under this home, a non-default home
+    // must NOT use it — the daemon runs the binary it was launched as.
+    expect(defaultServiceExecutable(mycoHome, 'darwin')).toBe(process.execPath);
   });
 
-  test('prod + managed binary absent → returns process.execPath', () => {
+  test('non-default (dogfood) home + managed binary absent → returns process.execPath', () => {
     const home = makeTempHomeEmpty();
-    const result = defaultServiceExecutable('prod', home, 'darwin');
-    expect(result).toBe(process.execPath);
+    expect(defaultServiceExecutable(home, 'darwin')).toBe(process.execPath);
   });
 
-  test('dev + managed binary present → returns process.execPath (dogfood guard)', () => {
-    const { home } = makeTempHomeWithManagedBinary();
-    // Even though managed binary exists, dev variant must NOT use it.
-    const result = defaultServiceExecutable('dev', home, 'darwin');
-    expect(result).toBe(process.execPath);
+  test('default home prefers the managed binary at <home>/bin when it exists, else process.execPath', () => {
+    // Keyed on the default home — pin the branch logic against the real
+    // managed-binary path without writing into the user's ~/.myco/bin.
+    const managed = managedBinaryPath(DEFAULT_HOME, 'darwin', process.env.LOCALAPPDATA);
+    const expected = fs.existsSync(managed) ? managed : process.execPath;
+    expect(defaultServiceExecutable(DEFAULT_HOME, 'darwin')).toBe(expected);
   });
 
-  test('dev + managed binary absent → returns process.execPath', () => {
-    const home = makeTempHomeEmpty();
-    const result = defaultServiceExecutable('dev', home, 'darwin');
-    expect(result).toBe(process.execPath);
-  });
-
-  test('works on linux platform (uses <mycoHome>/bin path)', () => {
-    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
-    const result = defaultServiceExecutable('prod', mycoHome, 'linux');
-    expect(result).toBe(binPath);
+  test('default home managed-binary preference also applies on linux', () => {
+    const managed = managedBinaryPath(DEFAULT_HOME, 'linux', process.env.LOCALAPPDATA);
+    const expected = fs.existsSync(managed) ? managed : process.execPath;
+    expect(defaultServiceExecutable(DEFAULT_HOME, 'linux')).toBe(expected);
   });
 });
 
@@ -110,7 +115,7 @@ describe('ensureSelfInstalledAsService executable threading', () => {
       await ensureSelfInstalledAsService(logger, {
         executable: managedBin,
         manager: mgr,
-        variant: 'prod',
+        mycoHome: tmpHome,
       });
 
       expect(mgr.installCalls).toHaveLength(1);
@@ -125,50 +130,38 @@ describe('ensureSelfInstalledAsService executable threading', () => {
     const { home, binPath } = makeTempHomeWithManagedBinary();
     const logger = new CapturingLogger();
     const mgr = new FakeServiceManager();
+    const mycoHome = path.join(home, '.myco');
 
-    const origHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = path.join(home, '.myco');
+    await ensureSelfInstalledAsService(logger, {
+      executable: binPath,
+      manager: mgr,
+      mycoHome,
+    });
 
-    try {
-      await ensureSelfInstalledAsService(logger, {
-        executable: binPath,
-        manager: mgr,
-        variant: 'prod',
-      });
-
-      expect(mgr.installCalls).toHaveLength(1);
-      expect(mgr.installCalls[0].executable).toBe(binPath);
-      expect(logger.warns).toHaveLength(0);
-    } finally {
-      if (origHome === undefined) delete process.env.MYCO_HOME;
-      else process.env.MYCO_HOME = origHome;
-    }
+    expect(mgr.installCalls).toHaveLength(1);
+    expect(mgr.installCalls[0].executable).toBe(binPath);
+    expect(logger.warns).toHaveLength(0);
   });
 
-  test('prod without explicit override resolves the managed binary via resolveMycoHome (default wiring)', async () => {
-    const { mycoHome, binPath } = makeTempHomeWithManagedBinary();
+  test('without an explicit override the executable resolves via defaultServiceExecutable for the home', async () => {
+    const { mycoHome } = makeTempHomeWithManagedBinary();
     const logger = new CapturingLogger();
     const mgr = new FakeServiceManager();
 
-    const origHome = process.env.MYCO_HOME;
-    // The default wiring uses resolveMycoHome(), which honors $MYCO_HOME — no
-    // os.homedir() mock needed (the old default read os.homedir() directly).
-    process.env.MYCO_HOME = mycoHome;
+    // No `executable` override — the default wiring resolves it from the home
+    // via defaultServiceExecutable(mycoHome). For a non-default (dogfood) home
+    // that is process.execPath — under the test runner that's the `bun` wrapper,
+    // which buildServiceSpec rejects (script-runner guard), so the install is
+    // skipped with a warn rather than installing a wrapper as the daemon.
+    expect(defaultServiceExecutable(mycoHome)).toBe(process.execPath);
+    await ensureSelfInstalledAsService(logger, {
+      manager: mgr,
+      mycoHome,
+    });
 
-    try {
-      // No `executable` override — the default wiring must resolve it.
-      await ensureSelfInstalledAsService(logger, {
-        manager: mgr,
-        variant: 'prod',
-      });
-
-      expect(mgr.installCalls).toHaveLength(1);
-      expect(mgr.installCalls[0].executable).toBe(binPath);
-      expect(logger.warns).toHaveLength(0);
-    } finally {
-      if (origHome === undefined) delete process.env.MYCO_HOME;
-      else process.env.MYCO_HOME = origHome;
-    }
+    expect(mgr.installCalls).toHaveLength(0);
+    expect(logger.warns).toHaveLength(1);
+    expect(String(logger.warns[0].meta?.error)).toMatch(/script-runner|standalone daemon binary|executable not found/);
   });
 });
 

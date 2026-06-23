@@ -20,7 +20,6 @@ import {
   resolveProjectBufferDir,
   resolveMycoHome,
   resolveGrovesDir,
-  currentDaemonVariant,
 } from '../grove/paths.js';
 import { isGroveEraId } from '../grove/ids.js';
 import {
@@ -140,7 +139,7 @@ export function resolveBufferDirForProjectId(
   mycoHome = resolveMycoHome(),
 ): string | null {
   if (!projectId || !isGroveEraId(projectId, 'project')) return null;
-  for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+  for (const grove of listGroves(mycoHome)) {
     const project = getRegisteredProjectInGrove(grove.id, projectId, mycoHome, { includeArchived: true });
     if (project) return resolveProjectBufferDir(grove.id, projectId, mycoHome);
   }
@@ -153,7 +152,7 @@ export function listAllProjectBufferDirs(mycoHome = resolveMycoHome()): string[]
   // filtering here keeps the reconciler from enumerating peer
   // daemons' buffers in the first place.
   const out: string[] = [];
-  for (const grove of listGroves(mycoHome, { servedBy: currentDaemonVariant() })) {
+  for (const grove of listGroves(mycoHome)) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       out.push(resolveProjectBufferDir(grove.id, project.project_id, mycoHome));
     }

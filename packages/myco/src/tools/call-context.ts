@@ -38,8 +38,7 @@ import {
 } from '@myco/grove/ids.js';
 import {
   findRegisteredProject,
-  ForeignGroveError,
-  groveServedByThisDaemon,
+  groveOwnedByThisDaemon,
   loadGroveRecord,
 } from '@myco/grove/registry.js';
 import {
@@ -115,16 +114,14 @@ export function resolveCallContext(
   if (!grove) {
     throw new ToolError('invalid_input', `Unknown Grove: ${groveId}`);
   }
-  // Ownership gate: a pivot into a Grove served by the other daemon
-  // variant must be refused BEFORE the dispatcher opens (and
-  // schema-migrates) that Grove's database — a dev daemon pivoting into
-  // a prod-served Grove would otherwise create or roll its schema. The
-  // ToolError envelope carries the typed MCP code; the message is the
-  // canonical ForeignGroveError prose.
-  if (!groveServedByThisDaemon(grove)) {
+  // Ownership gate: a pivot into a Grove that lives in another daemon's
+  // home must be refused BEFORE the dispatcher opens (and schema-migrates)
+  // that Grove's database — a daemon pivoting into a foreign-home Grove
+  // would otherwise create or roll its schema.
+  if (!groveOwnedByThisDaemon(grove, mycoHome)) {
     throw new ToolError(
       'foreign_grove',
-      new ForeignGroveError(grove.id, grove.served_by).message,
+      `Grove ${grove.id} is served by another daemon`,
     );
   }
 

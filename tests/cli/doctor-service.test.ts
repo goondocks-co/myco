@@ -54,7 +54,7 @@ describe('evaluateServiceCheck', () => {
 
   // --- managed-binary assertion (Task 10) ---
 
-  test('prod variant + service executable is NOT the managed binary → warn', () => {
+  test('default home + service executable is NOT the managed binary → warn', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-doc-mb-'));
     // Create a managed binary at a canonical path
     const managedDir = path.join(tmpDir, 'managed', 'bin');
@@ -69,24 +69,24 @@ describe('evaluateServiceCheck', () => {
 
     const status: ServiceStatus = { installed: true, running: true, pid: 1234, lastExitCode: 0, unitPath: '/x' };
     const check = evaluateServiceCheck('co.goondocks.myco', status, serviceBin, {
-      variant: 'prod',
+      isDefaultHome: true,
       managedBinary: managedBin,
     });
     expect(check.status).toBe('warn');
     expect(check.detail).toMatch(/non-managed binary|managed binary|myco update|myco service install/i);
   });
 
-  test('prod variant + service executable equals the managed binary → ok', () => {
+  test('default home + service executable equals the managed binary → ok', () => {
     const managedBin = goodBin();
     const status: ServiceStatus = { installed: true, running: true, pid: 1234, lastExitCode: 0, unitPath: '/x' };
     const check = evaluateServiceCheck('co.goondocks.myco', status, managedBin, {
-      variant: 'prod',
+      isDefaultHome: true,
       managedBinary: managedBin,
     });
     expect(check.status).toBe('ok');
   });
 
-  test('dev variant + non-managed service executable → NOT warned (dogfood guard)', () => {
+  test('non-default (dogfood) home + non-managed service executable → NOT warned (dogfood guard)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'svc-doc-dev-'));
     const managedBin = path.join(tmpDir, 'managed', 'bin', 'myco');
     fs.mkdirSync(path.dirname(managedBin), { recursive: true });
@@ -98,11 +98,11 @@ describe('evaluateServiceCheck', () => {
     fs.writeFileSync(devBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
     const status: ServiceStatus = { installed: true, running: true, pid: 1234, lastExitCode: 0, unitPath: '/x' };
-    const check = evaluateServiceCheck('co.goondocks.myco-dev', status, devBin, {
-      variant: 'dev',
+    const check = evaluateServiceCheck('co.goondocks.myco.0be20de4', status, devBin, {
+      isDefaultHome: false,
       managedBinary: managedBin,
     });
-    // Dev variant must NOT warn about running a non-managed binary
+    // A non-default (dogfood) home must NOT warn about running a non-managed binary
     expect(check.status).toBe('ok');
   });
 

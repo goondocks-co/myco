@@ -34,6 +34,9 @@ The Myco capture pipeline can fail silently while the daemon appears healthy—s
 
 **Detection steps:**
 
+0. **Check `~/.myco/logs/launcher.log` first:**
+   The global launcher appends a timestamped one-line record to this file on every hook launch failure (ENOENT, signal kills, path-resolution errors, binary exec errors). This is the fastest way to rule out hook-layer failure before inspecting daemon internals. If the file is absent, zero hook launch failures have occurred — the hook is reaching the daemon. If entries are present, diagnose the launch error before proceeding to daemon-side checks.
+
 1. **Check daemon health vs readiness:**
    ```bash
    # Liveness check - should respond quickly
@@ -418,6 +421,10 @@ const key = eventDedupKey(event);
 **Three-tier recovery probe before forced restart:** `DaemonClient.daemonConfirmedAlive()` in `packages/myco/src/hooks/client.ts` probes `DAEMON_RECOVERY_PROBE_ATTEMPTS = 3` times across three tiers — daemon.json state file, daemon.lock lifecycle lock (alternate port check), and health-endpoint discovery — before concluding a service manager restart is needed. A genuinely dead daemon fails each probe with immediate connection refusal; `DAEMON_RECOVERY_PROBE_DELAY_MS` pauses absorb momentarily-busy daemons. Don't treat a delayed restart decision as evidence that recovery failed.
 
 **No-protocol-skew contract:** Hook buffer-fallback logic in `packages/myco/src/hooks/send-event.ts` is vintage-blind — it does not inspect hook or daemon version numbers. This is safe because the update installer rewrites every hook and plugin file synchronously before restarting the daemon, ensuring hooks and daemon always co-ship at the same version. The only skew window is seconds-long during an in-flight update, and content-keyed convergence collapses any duplicate buffered events on replay.
+
+**Dev daemon `symbiont-config` claim hijacks global Claude Code capture (field incident 2026-06-17):** A dogfood `service-dev` daemon holding the `symbiont-config` subsystem claim can silently embed its own dev binary path into global agent hook config, causing ALL Claude Code capture machine-wide to be dropped for non-dogfood projects while Pi/MCP agents continue capturing normally. Root cause: `packages/myco/src/symbionts/installer.ts`'s `resolveManagedBinaryPath()` previously fell back to the daemon's own executable path, letting a dev daemon embed its binary path into shared global settings. Fix (2026-06-17): `resolveManagedBinaryPath()` now resolves in daemon-agnostic priority order — machine runtime pin → converged managed binary → daemon executable as absolute last resort — preventing this class of cross-daemon contamination. Recovery: re-run symbiont install on affected projects to regenerate hooks with the correct managed binary path.
+
+**Windows bare-git ENOENT = P1 silent capture loss:** Windows GUI agents (Claude Desktop, Cursor) inherit a stripped PATH that excludes Git's installation directory. Any bare `git` spawn on the critical capture path — such as in the Pi plugin's commit-range detection or the release-provenance reconciler — throws `ENOENT` on Windows and silently drops the entire capture event. Fix: probe and cache the absolute path to the git binary at startup rather than relying on PATH, or guard git-dependent capture code with an explicit PATH expansion for Windows. Do not assume `git` is resolvable on PATH in Windows GUI agent environments.
 
 **Silent Failure Patterns:**
 - **Multiple simultaneous bugs:** The May 15 incident had three independent failures. Fix one layer, then re-test the full pipeline.

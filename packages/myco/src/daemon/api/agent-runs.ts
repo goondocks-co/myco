@@ -14,7 +14,7 @@ import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listWriteIntents, countWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { buildTaskInstruction, isInstructionRequiredTask, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
-import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
+import { hasConfiguredProvider, resolveTaskDefinitionExecution } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { notify } from '@myco/notifications/notify.js';
@@ -187,7 +187,18 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
     const mycoConfig = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
-    if (!hasConfiguredProvider(mycoConfig, task)) {
+    // User-initiated manual run: the default claude-sdk harness (subscription
+    // auth via the Claude Code CLI) is runnable with no explicit provider. The
+    // automatic Cortex path keeps the strict check (no auto-default per grove).
+    // Pass the task definition's harness so admission matches the executor's
+    // resolution — never admit a run the executor would route to a non-claude
+    // harness that has no provider.
+    const definitionExecution = resolveTaskDefinitionExecution(task, vaultDir);
+    if (!hasConfiguredProvider(mycoConfig, task, {
+      allowDefaultHarness: true,
+      definitionHarness: definitionExecution.harness,
+      definitionProviderType: definitionExecution.providerType,
+    })) {
       return {
         status: 400,
         body: {

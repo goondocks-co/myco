@@ -14,7 +14,7 @@ import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@my
 import {
   findRegisteredProject,
   ForeignGroveError,
-  groveServedByThisDaemon,
+  groveOwnedByThisDaemon,
   loadGroveRecord,
   type GroveRecord,
 } from '@myco/grove/registry.js';
@@ -116,9 +116,9 @@ export interface RequestContextAuthOptions {
    */
   expectedAuthToken?: string | null;
   /**
-   * Enforce `grove.toml served_by` ownership on the Grove this request
-   * resolves to: when the Grove is served by the other daemon variant
-   * (per `currentDaemonVariant()`), throw {@link ForeignGroveError}
+   * Enforce home ownership on the Grove this request resolves to: when the
+   * Grove lives in another daemon's home (it does not load from this
+   * daemon's `<MYCO_HOME>/groves/`), throw {@link ForeignGroveError}
    * instead of returning a context whose `databasePath` points into a
    * foreign Grove. Opt-in, set ONLY where the daemon resolves inbound
    * requests (the HTTP API and `/mcp` transports). The same resolver
@@ -532,9 +532,10 @@ export function resolveRequestContextForVault(
 ): MycoRequestContext {
   const result = tryResolveRequestContextForVault(vaultDir, overrides);
   if (result.kind === 'legacy') {
-    // Preserve the historical hard-error contract for callers that
-    // explicitly chose the throwing entry point.
-    throw new Error(result.reason);
+    // Unregistered project root: the vault has no Grove project id.
+    // UnknownRequestContextError maps to 404 at the transport boundary
+    // (server.ts, mcp/http.ts) instead of falling through to the 500 catch-all.
+    throw new UnknownRequestContextError(result.reason);
   }
   return result.context;
 }
@@ -592,7 +593,9 @@ function buildVaultFallback(
 ): { context: MycoRequestContext; manifest: ProjectManifest | null } {
   const result = tryBuildVaultFallback(vaultDir, overrides);
   if (result.kind === 'legacy') {
-    throw new Error(result.reason);
+    // Unregistered project root: maps to 404 at the transport boundary
+    // (server.ts, mcp/http.ts) instead of the 500 catch-all.
+    throw new UnknownRequestContextError(result.reason);
   }
   return { context: result.context, manifest: result.manifest };
 }
@@ -942,8 +945,8 @@ function buildRegisteredRequestContext(input: {
   sessionId: string | null;
   manifest: ProjectManifest | null;
 }): MycoRequestContext {
-  if (input.enforceGroveOwnership && !groveServedByThisDaemon(input.grove)) {
-    throw new ForeignGroveError(input.grove.id, input.grove.served_by);
+  if (input.enforceGroveOwnership && !groveOwnedByThisDaemon(input.grove)) {
+    throw new ForeignGroveError(input.grove.id);
   }
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);

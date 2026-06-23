@@ -210,6 +210,11 @@ jobs:
           name: libsqlite3-${{ matrix.target }}
           path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
 
+      # Build the dashboard UI bundle BEFORE codegen so gen-ui-assets embeds
+      # it into the binary. build:ui runs its own `npm ci` in ui/ (the root
+      # `npm ci --ignore-scripts` above does not install the ui/ workspace).
+      - run: npm run build:ui -w @goondocks/myco
+
       - run: npm run codegen -w @goondocks/myco
 
       - name: Compile myco binary

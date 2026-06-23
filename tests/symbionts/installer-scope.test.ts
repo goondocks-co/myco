@@ -16,6 +16,8 @@ import path from 'node:path';
 
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
+import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { daemonIdentity } from '@myco/grove/paths.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -62,6 +64,33 @@ describe('SymbiontInstaller installScope=global', () => {
     });
     // No `~/.claude/` created on behalf of the agent.
     expect(fs.existsSync(path.join(tmpHome, '.claude'))).toBe(false);
+  });
+
+  it('defers a global install (writes nothing) when a peer owns the symbiont-config claim', () => {
+    fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
+
+    // A peer home owns the claim, shared via MYCO_CLAIMS_HOME. This daemon's
+    // identity is MYCO_HOME (tmpHome/.myco), so it must defer.
+    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-claims-'));
+    const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-peer-')));
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
+    const prevClaims = process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_CLAIMS_HOME = claimsHome;
+    try {
+      const installer = new SymbiontInstaller(
+        getManifest('claude-code'), tmpHome, PKG_ROOT, false, undefined, null, 'global',
+      );
+      const result = installer.install();
+      expect(result).toEqual({
+        hooks: false, mcp: false, skills: false, settings: false,
+        instructions: false, pluginPackage: false, pluginManifest: false,
+      });
+      // The deferred install wrote nothing into the agent's global config.
+      expect(fs.existsSync(path.join(tmpHome, '.claude', 'settings.json'))).toBe(false);
+    } finally {
+      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
+      fs.rmSync(claimsHome, { recursive: true, force: true });
+    }
   });
 
   it('installs claude-code into ~/.claude/settings.json when detectionDir exists', () => {
@@ -155,6 +184,59 @@ describe('SymbiontInstaller installScope=global', () => {
       expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-cli.cjs'))).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('defers a global uninstall (strips nothing) when a peer owns the symbiont-config claim', () => {
+    fs.mkdirSync(path.join(tmpHome, '.claude'), { recursive: true });
+    const settingsPath = path.join(tmpHome, '.claude', 'settings.json');
+
+    // Install with NO peer claim first so the Myco-managed block exists.
+    new SymbiontInstaller(
+      getManifest('claude-code'), tmpHome, PKG_ROOT, false, undefined, null, 'global',
+    ).install();
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8')).mcpServers?.myco).toBeDefined();
+
+    // Now a peer owns the claim → a global uninstall must defer, not strip.
+    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-uninstall-claims-'));
+    const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-uninstall-peer-')));
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
+    const prevClaims = process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_CLAIMS_HOME = claimsHome;
+    try {
+      const result = new SymbiontInstaller(
+        getManifest('claude-code'), tmpHome, PKG_ROOT, false, undefined, null, 'global',
+      ).uninstall();
+      expect(result).toEqual({
+        hooks: false, mcp: false, skills: false, settings: false,
+        instructions: false, pluginPackage: false, pluginManifest: false,
+      });
+      // The managed block survived — the deferred uninstall stripped nothing.
+      expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8')).mcpServers?.myco).toBeDefined();
+    } finally {
+      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
+      fs.rmSync(claimsHome, { recursive: true, force: true });
+    }
+  });
+
+  it('project scope still writes under a peer claim — the gate is global-only', () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-scope-proj-claim-'));
+    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proj-claims-'));
+    const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proj-peer-')));
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
+    const prevClaims = process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_CLAIMS_HOME = claimsHome;
+    try {
+      fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+      new SymbiontInstaller(
+        getManifest('claude-code'), projectRoot, PKG_ROOT, false, undefined, null, 'project',
+      ).install();
+      // installScope === 'global' is false → project writes proceed despite the claim.
+      expect(fs.existsSync(path.join(projectRoot, 'AGENTS.md'))).toBe(true);
+    } finally {
+      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(claimsHome, { recursive: true, force: true });
     }
   });
 });

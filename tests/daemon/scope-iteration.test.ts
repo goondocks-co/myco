@@ -31,7 +31,6 @@ describe('scope-iteration', () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-iteration-'));
     mycoHome = path.join(workDir, 'home');
     fs.mkdirSync(mycoHome, { recursive: true });
-    // The service dir must exist so resolveServiceDirName can validate it.
     fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;

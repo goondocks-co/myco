@@ -308,7 +308,7 @@ describe('Grove CRUD API', () => {
       });
       expect(archive.status).toBeUndefined();
       expect(listGroveSummaries().groves[0]!.projects).toHaveLength(0);
-      expect(listGroveSummaries({ groveIds: null }, undefined, { includeArchived: true }).groves[0]!.projects[0]!.status).toBe('archived');
+      expect(listGroveSummaries({ groveIds: null }, { includeArchived: true }).groves[0]!.projects[0]!.status).toBe('archived');
 
       const unarchive = await call(createUnarchiveProjectHandler(serviceDir), {
         params: { id: grove.id, projectId },
@@ -450,61 +450,85 @@ describe('Grove CRUD API', () => {
     });
   });
 
-  describe('served_by boundary enforcement', () => {
-    it('POST /api/groves stamps served_by from the calling daemon', async () => {
+  describe('home boundary enforcement', () => {
+    // Ownership is the home, enforced by path: a daemon runs under one
+    // MYCO_HOME and owns every Grove under `<MYCO_HOME>/groves/`. A Grove
+    // in another home is invisible to the home-scoped lookup (404). These
+    // cases use a SECOND real home (`home-B`) so a no-op gate that always
+    // returned "owned" would fail them.
+    function foreignHome(): string {
+      const home = path.join(testDir, 'home-B');
+      fs.mkdirSync(home, { recursive: true });
+      return home;
+    }
+
+    it('POST /api/groves creates a Grove and returns its record', async () => {
       const response = await call(createCreateGroveHandler(serviceDir), { body: { name: 'Prod' } });
       expect(response.status).toBe(201);
-      const body = response.body as { id: string; served_by: string };
-      expect(body.served_by).toBe('service');
-      const record = loadGroveRecord(body.id);
-      expect(record?.served_by).toBe('service');
+      const body = response.body as { id: string; name: string };
+      expect(body.name).toBe('Prod');
+      expect(loadGroveRecord(body.id)).not.toBeNull();
 
+      // Both daemon-state-dir variants create a valid Grove in this home.
       const devResponse = await call(createCreateGroveHandler(serviceDevDir), { body: { name: 'Dogfood' } });
       expect(devResponse.status).toBe(201);
-      const devBody = devResponse.body as { id: string; served_by: string };
-      expect(devBody.served_by).toBe('service-dev');
-      const devRecord = loadGroveRecord(devBody.id);
-      expect(devRecord?.served_by).toBe('service-dev');
+      const devBody = devResponse.body as { id: string; name: string };
+      expect(loadGroveRecord(devBody.id)).not.toBeNull();
     });
 
-    it('listGroveSummaries filters out Groves served by another daemon', () => {
+    it('listGroveSummaries returns every Grove in the home', () => {
       createGrove('Prod');
-      createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+      createGrove('Dogfood');
 
-      const prodView = listGroveSummaries({ groveIds: null }, 'service');
-      expect(prodView.groves.map((g) => g.name).sort()).toEqual(['Prod']);
-
-      const devView = listGroveSummaries({ groveIds: null }, 'service-dev');
-      expect(devView.groves.map((g) => g.name).sort()).toEqual(['Dogfood']);
+      const view = listGroveSummaries({ groveIds: null });
+      expect(view.groves.map((g) => g.name).sort()).toEqual(['Dogfood', 'Prod']);
     });
 
-    it('PATCH returns 404 for a Grove served by a different daemon', async () => {
-      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+    it('listGroveSummaries never sees a Grove that lives in another home', () => {
+      createGrove('Prod');
+      createGrove('Foreign', foreignHome());
+
+      const view = listGroveSummaries({ groveIds: null });
+      expect(view.groves.map((g) => g.name)).toEqual(['Prod']);
+    });
+
+    it('PATCH succeeds for any Grove in this home', async () => {
+      // The record is in-home, so it is owned and renamable.
+      const legacy = createGrove('Dogfood');
       const response = await call(createRenameGroveHandler(serviceDir), {
         body: { name: 'Renamed' },
-        params: { id: dev.id },
+        params: { id: legacy.id },
+      });
+      expect(response.status).toBeUndefined();
+      expect(loadGroveRecord(legacy.id)?.name).toBe('Renamed');
+    });
+
+    it('PATCH returns 404 for a Grove that lives in another home', async () => {
+      const foreign = createGrove('Foreign', foreignHome());
+      const response = await call(createRenameGroveHandler(serviceDir), {
+        body: { name: 'Renamed' },
+        params: { id: foreign.id },
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
-      // Untouched.
-      expect(loadGroveRecord(dev.id)?.name).toBe('Dogfood');
+      expect(loadGroveRecord(foreign.id, path.join(testDir, 'home-B'))?.name).toBe('Foreign');
     });
 
-    it('DELETE returns 404 for a Grove served by a different daemon', async () => {
-      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+    it('DELETE returns 404 for a Grove that lives in another home', async () => {
+      const foreign = createGrove('Foreign', foreignHome());
       const response = await call(createDeleteGroveHandler(serviceDir), {
-        params: { id: dev.id },
+        params: { id: foreign.id },
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
-      expect(loadGroveRecord(dev.id)).not.toBeNull();
+      expect(loadGroveRecord(foreign.id, path.join(testDir, 'home-B'))).not.toBeNull();
     });
 
-    it('move returns 404 when target Grove is served by a different daemon', async () => {
+    it('move returns 404 when the target Grove lives in another home', async () => {
       const source = createGrove('Source');
-      const target = createGrove('DevTarget', undefined, { servedBy: 'service-dev' });
+      const target = createGrove('ForeignTarget', foreignHome());
       const projectId = createProjectId();
-      const projectRoot = path.join(testDir, 'cross-daemon-project');
+      const projectRoot = path.join(testDir, 'cross-home-project');
       fs.mkdirSync(resolveProjectVaultDir(projectRoot), { recursive: true });
       registerProjectInGrove(source.id, {
         projectId,
@@ -519,22 +543,23 @@ describe('Grove CRUD API', () => {
       expect((response.body as { error: { code: string } }).error.code).toBe('target_grove_not_found');
     });
 
-    it('move returns 404 when source Grove is served by a different daemon', async () => {
-      const devSource = createGrove('DevSource', undefined, { servedBy: 'service-dev' });
+    it('move returns project_not_found when the source project lives in another home', async () => {
+      const foreignSource = createGrove('ForeignSource', foreignHome());
       const target = createGrove('Target');
       const projectId = createProjectId();
-      const projectRoot = path.join(testDir, 'dev-source-project');
+      const projectRoot = path.join(testDir, 'foreign-source-project');
       fs.mkdirSync(resolveProjectVaultDir(projectRoot), { recursive: true });
-      registerProjectInGrove(devSource.id, {
+      registerProjectInGrove(foreignSource.id, {
         projectId,
         projectName: 'Hidden',
         projectRoot,
-      });
+      }, path.join(testDir, 'home-B'));
 
       const response = await call(createMoveProjectHandler(serviceDir), {
         params: { id: target.id, projectId },
       });
-      // From this daemon's perspective, the project doesn't exist.
+      // `findRegisteredProject` walks only this daemon's home, so the
+      // foreign-home project is not found.
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
     });
@@ -553,7 +578,7 @@ describe('Grove CRUD API', () => {
       expect(body.id).toBe(second.id);
       expect(body.is_default).toBe(true);
 
-      const summaries = listGroveSummaries({ groveIds: null }, 'service');
+      const summaries = listGroveSummaries({ groveIds: null });
       const defaulted = summaries.groves.find((g) => g.id === second.id);
       const previous = summaries.groves.find((g) => g.id === first.id);
       expect(defaulted?.is_default).toBe(true);
@@ -568,13 +593,22 @@ describe('Grove CRUD API', () => {
       expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
     });
 
-    it('returns 404 for a Grove served by a different daemon', async () => {
-      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+    it('returns 404 for a Grove that lives in another daemon home', async () => {
+      // Ownership is the home: a Grove created under a different MYCO_HOME
+      // is not present in this daemon's home, so the home-scoped lookup
+      // returns null → 404. Proven with two real homes.
+      const foreignHome = path.join(testDir, 'home-B');
+      fs.mkdirSync(foreignHome, { recursive: true });
+      const foreign = createGrove('Foreign', foreignHome);
+
       const response = await call(createSetDefaultGroveHandler(serviceDir), {
-        params: { id: dev.id },
+        params: { id: foreign.id },
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
+      // The foreign Grove is untouched and was never promoted in this home.
+      expect(loadGroveRecord(foreign.id)).toBeNull();
+      expect(loadGroveRecord(foreign.id, foreignHome)?.name).toBe('Foreign');
     });
   });
 });

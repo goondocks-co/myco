@@ -4,7 +4,6 @@ import path from 'node:path';
 
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { assertGroveEraId, isGroveEraId } from './ids.js';
-import type { DaemonVariant } from './registry.js';
 
 /**
  * True when two filesystem paths point at the same file or directory —
@@ -38,7 +37,6 @@ export function pathsEquivalent(a: string, b: string): boolean {
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
 export const SERVICE_DIRNAME = 'service';
-export const SERVICE_DEV_DIRNAME = 'service-dev';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_DB_FILENAME = 'myco.db';
@@ -62,6 +60,26 @@ export function resolveMycoHome(options: MycoHomeOptions = {}): string {
   const configured = env[MYCO_HOME_ENV]?.trim();
   if (configured) return path.resolve(expandHome(configured, options.homeDir));
   return path.join(options.homeDir ?? os.homedir(), '.myco');
+}
+
+/**
+ * True when `mycoHome` resolves to the canonical default home (`~/.myco`),
+ * ignoring any `MYCO_HOME` override. This home is the production install every
+ * released user shares; a non-default home (e.g. `~/.myco-dev`) is the dogfood
+ * path. Used to key the default-home service label and the dev-build guard.
+ */
+export function isDefaultMycoHome(mycoHome: string): boolean {
+  return path.resolve(mycoHome) === resolveMycoHome({ env: {} });
+}
+
+/**
+ * The daemon's identity token — its resolved home path. An opaque,
+ * equality-compared owner used for subsystem claims: two independent installs
+ * in two homes own subsystems distinctly. Two daemons sharing one home are the
+ * same identity (only one should run per home).
+ */
+export function daemonIdentity(mycoHome: string = resolveMycoHome()): string {
+  return path.resolve(mycoHome);
 }
 
 /**
@@ -107,57 +125,8 @@ export function resolveLastUpdateVersionPath(mycoHome = resolveMycoHome()): stri
   return path.join(mycoHome, 'last-update-version');
 }
 
-/**
- * Process-level switch routing the daemon to `service-dev/` instead of
- * `service/` so a contributor's dogfood daemon coexists with a production
- * daemon on the same machine (different paths → different derived ports).
- *
- * Slaved to `setDevBuildCliEntry` in `update-checker.ts` — tests reset by
- * calling that helper with `null`. The two flags MUST stay paired; setting
- * this directly is reserved for the pairing in `update-checker.ts`.
- */
-let devServiceMode = false;
-
-export function setDevServiceMode(value: boolean): void {
-  devServiceMode = value;
-}
-
-export function isDevServiceMode(): boolean {
-  return devServiceMode;
-}
-
-/**
- * The current daemon variant — `'service'` for a production install,
- * `'service-dev'` for a contributor's dogfood daemon. Source of truth
- * for "which Groves does this daemon own?" filters across walker, CLI
- * cleanup, reconciler, and API handlers. Every consumer that scopes
- * work to its own Groves MUST call this rather than re-deriving the
- * ternary in place — that's how a fresh walker last leaked across the
- * Grove-ownership boundary.
- */
-export function currentDaemonVariant(): DaemonVariant {
-  if (process.env.MYCO_SERVICE_VARIANT !== undefined) {
-    return daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
-  }
-  return devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
-}
-
-export function daemonVariantFromEnvValue(value: string | undefined | null): DaemonVariant {
-  const normalized = value?.trim();
-  return normalized === 'dev' || normalized === SERVICE_DEV_DIRNAME
-    ? SERVICE_DEV_DIRNAME
-    : SERVICE_DIRNAME;
-}
-
-export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonVariant {
-  const rel = path.relative(mycoHome, stateDir);
-  if (rel === 'service') return 'service';
-  if (rel === 'service-dev') return 'service-dev';
-  throw new Error(`Unrecognized daemon service dir: ${stateDir} (mycoHome=${mycoHome})`);
-}
-
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, currentDaemonVariant());
+  return path.join(mycoHome, SERVICE_DIRNAME);
 }
 
 export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {

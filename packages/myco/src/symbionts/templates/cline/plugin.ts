@@ -7,7 +7,7 @@
 // local Myco daemon over HTTP. It has no external runtime imports so Cline keeps
 // working in projects where Myco is absent or the daemon is down.
 
-import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -56,12 +56,69 @@ function pickString(record: unknown, keys: readonly string[]): string | undefine
   return undefined;
 }
 
-function resolveMycoHome(): string {
+const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
+
+/**
+ * Read a `runtime.home` pin only when it passes the same G7 trust check the
+ * CLI shim uses (`checkRuntimeCommandTrust` in bin/runtime-redirect.cjs): a
+ * group/other-writable or foreign-owned pin is refused so a hostile local user
+ * can't redirect capture to a daemon they control. Returns the trimmed value
+ * (an absolute home path) or null.
+ */
+function readTrustedPin(filePath: string): string | null {
+  try {
+    if (process.platform !== "win32") {
+      const stat = statSync(filePath);
+      const myUid = typeof process.getuid === "function" ? process.getuid() : null;
+      if (myUid !== null && stat.uid !== myUid) return null;
+      if ((stat.mode & 0o777) & RUNTIME_PIN_INSECURE_MODE_MASK) return null;
+    }
+    const raw = readFileSync(filePath, "utf-8").trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the `runtime.home` pin for a project: walk up from `directory` for a
+ * project pin (`<dir>/.myco/runtime.home`), then the machine pin
+ * (`~/.myco/runtime.home`). Mirrors the layered resolution in
+ * bin/runtime-redirect.cjs. Returns the absolute home path or null.
+ */
+function readRuntimeHomePin(directory: string): string | null {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
+    if (pin) return expandTilde(pin);
+    const parent = join(dir, "..");
+    if (resolve(parent) === dir) break;
+    dir = resolve(parent);
+  }
+  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
+  return machine ? expandTilde(machine) : null;
+}
+
+function expandTilde(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/**
+ * Resolve this project's Myco home — the daemon it routes to. A trusted
+ * `runtime.home` pin wins so a dogfood project pinned to `~/.myco-dev` reads
+ * `~/.myco-dev/service/daemon.json` instead of the prod `~/.myco`. Falls back
+ * to `MYCO_HOME`, then the machine `~/.myco`.
+ */
+function resolveMycoHome(directory?: string): string {
+  if (directory) {
+    const pinned = readRuntimeHomePin(directory);
+    if (pinned) return pinned;
+  }
   const configured = process.env.MYCO_HOME?.trim();
   if (!configured) return join(homedir(), ".myco");
-  if (configured === "~") return homedir();
-  if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
-  return configured;
+  return expandTilde(configured);
 }
 
 function readTomlString(raw: string, section: string, key: string): string | null {
@@ -116,21 +173,12 @@ function buildRequestContextHeaders(directory: string, sessionId?: string): Reco
   }
 }
 
-function resolveGroveServedBy(directory: string): "service" | "service-dev" {
-  try {
-    const projectToml = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    const groveId = readTomlString(projectToml, "grove", "id");
-    if (!groveId) return "service";
-    const groveToml = readFileSync(join(resolveMycoHome(), "groves", groveId, "grove.toml"), "utf-8");
-    return readTomlString(groveToml, "grove", "served_by") === "service-dev" ? "service-dev" : "service";
-  } catch {
-    return "service";
-  }
-}
-
 function resolveDaemonStatePath(directory: string): string {
   if (!projectUsesGrove(directory)) return join(directory, ".myco", "daemon.json");
-  return join(resolveMycoHome(), resolveGroveServedBy(directory), "daemon.json");
+  // One daemon per home: the HOME is the discriminator, the daemon always
+  // lives under `service/`. A dev-pinned project resolves a dev home via the
+  // `runtime.home` pin and reads that daemon instead of prod.
+  return join(resolveMycoHome(directory), "service", "daemon.json");
 }
 
 function readDaemonState(directory: string): { port: number | null; authToken: string | null } {
@@ -226,7 +274,7 @@ async function postJson(
 function resolveBufferDir(directory: string): string | null {
   const ids = readProjectAndGroveIds(directory);
   if (!ids) return null;
-  return join(resolveMycoHome(), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
 }
 
 function bufferEvent(directory: string, sessionId: string, event: Record<string, unknown>): void {

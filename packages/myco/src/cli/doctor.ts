@@ -23,7 +23,7 @@ import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { manifestToolTransport } from '../symbionts/capabilities.js';
 import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
-import type { ServiceStatus, ServiceVariant } from '../service/types.js';
+import type { ServiceStatus } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
 
 // --- Named constants (no magic literals) ---
@@ -477,8 +477,9 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
 
 /** Optional context for the managed-binary assertion in evaluateServiceCheck. */
 export interface ServiceManagedBinaryOptions {
-  /** The detected install variant. Only 'prod' triggers the managed-binary assertion. */
-  variant: ServiceVariant;
+  /** True for the default home (`~/.myco`) — only then does the managed-binary
+   *  assertion apply. A dogfood home runs its dev binary, not `~/.myco/bin/myco`. */
+  isDefaultHome: boolean;
   /** Canonical managed binary path (e.g. `~/.myco/bin/myco`). */
   managedBinary: string;
 }
@@ -520,10 +521,10 @@ export function evaluateServiceCheck(
     };
   }
 
-  // Assert the service is pointed at the managed binary (prod variant only).
-  // A dogfood 'dev' daemon legitimately runs its dev binary from
+  // Assert the service is pointed at the managed binary (default home only).
+  // A dogfood daemon (non-default home) legitimately runs its dev binary from
   // packages/myco-<arch>/bin/myco, not ~/.myco/bin/myco — do NOT warn for it.
-  if (managedOptions && managedOptions.variant === 'prod') {
+  if (managedOptions && managedOptions.isDefaultHome) {
     // Use realpathSync to follow symlinks before comparing: a symlinked service
     // exec or managed binary would otherwise false-positive a "non-managed binary" warn.
     const realpath = (p: string): string => {
@@ -554,18 +555,19 @@ export function evaluateServiceCheck(
 async function checkService(): Promise<DoctorCheck> {
   const { getServiceManager } = await import('../service/manager.js');
   const { serviceLabel } = await import('../service/labels.js');
-  const { detectInstallVariant, resolveServiceExecutable } = await import('./service.js');
+  const { resolveServiceExecutable } = await import('./service.js');
+  const { isDefaultMycoHome } = await import('../grove/paths.js');
   const { managedBinaryPath } = await import('../install/managed-binary.js');
   const mgr = getServiceManager();
   if (!mgr.supported) {
     return { name: 'Service', status: 'warn', detail: `unsupported platform (${mgr.platformName}) — daemon uses lazy spawn`, fixable: false };
   }
-  const variant = detectInstallVariant();
-  const label = serviceLabel(variant);
+  const mycoHome = resolveMycoHome();
+  const label = serviceLabel(mycoHome);
   const status = await mgr.status(label);
-  const serviceExec = resolveServiceExecutable(variant);
-  const managedBinary = managedBinaryPath(resolveMycoHome(), process.platform, process.env.LOCALAPPDATA);
-  return evaluateServiceCheck(label, status, serviceExec, { variant, managedBinary });
+  const serviceExec = resolveServiceExecutable(mycoHome);
+  const managedBinary = managedBinaryPath(mycoHome, process.platform, process.env.LOCALAPPDATA);
+  return evaluateServiceCheck(label, status, serviceExec, { isDefaultHome: isDefaultMycoHome(mycoHome), managedBinary });
 }
 
 /**

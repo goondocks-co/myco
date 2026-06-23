@@ -4,26 +4,27 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Smoke test for the variant-filtering logic in runAllProjects.
- * Mocks a registry with one Grove served_by=service and one served_by=service-dev,
- * each with a project. Asserts the helper produces the right target list per variant.
+ * Home-scoping for `runAllProjects`: the MYCO_HOME is the ownership boundary.
+ * Every Grove registered under the home belongs to this daemon, so
+ * `listGroves(undefined)` (home-scoped) returns them all. The raw TOML fixtures
+ * below include a legacy `served_by` key that is ignored on read — it no longer
+ * affects ownership or filtering.
  */
 
 let tmpHome: string;
 let originalHome: string | undefined;
-let originalVariant: string | undefined;
 
 function writeRegistry(defaultGroveId: string): void {
   fs.mkdirSync(path.join(tmpHome, 'groves'), { recursive: true });
   fs.writeFileSync(path.join(tmpHome, 'groves', 'registry.yaml'), `default_grove_id: ${defaultGroveId}\n`);
 }
 
-function writeGrove(groveId: string, slug: string, name: string, servedBy: 'service' | 'service-dev'): void {
+function writeGrove(groveId: string, slug: string, name: string): void {
   const dir = path.join(tmpHome, 'groves', groveId);
   fs.mkdirSync(path.join(dir, 'registry'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'grove.toml'),
-    `[grove]\nid = "${groveId}"\nname = "${name}"\nslug = "${slug}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "${servedBy}"\n`,
+    `[grove]\nid = "${groveId}"\nname = "${name}"\nslug = "${slug}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "service"\n`,
   );
 }
 
@@ -39,69 +40,37 @@ function writeProject(groveId: string, projectId: string, projectName: string, r
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-grove-'));
   originalHome = process.env.MYCO_HOME;
-  originalVariant = process.env.MYCO_SERVICE_VARIANT;
   process.env.MYCO_HOME = tmpHome;
 });
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = originalHome;
-  if (originalVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-  else process.env.MYCO_SERVICE_VARIANT = originalVariant;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
-describe('runAllProjects Grove ownership filter', () => {
-  test('prod variant sees only Groves served_by service', async () => {
-    const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-    writeRegistry(prodGrove);
-    writeGrove(prodGrove, 'prod', 'Production', 'service');
-    writeGrove(devGrove, 'dev', 'Dogfood', 'service-dev');
-    writeProject(prodGrove, 'proj_prod', 'prod-app', '/nonexistent/prod-app');
-    writeProject(devGrove, 'proj_dev', 'dev-app', '/nonexistent/dev-app');
+describe('runAllProjects home scoping', () => {
+  test('home-scoped listGroves returns every Grove + project under the home', async () => {
+    const groveA = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const groveB = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    writeRegistry(groveA);
+    writeGrove(groveA, 'app', 'App');
+    writeGrove(groveB, 'lib', 'Lib');
+    writeProject(groveA, 'proj_app', 'app', '/nonexistent/app');
+    writeProject(groveB, 'proj_lib', 'lib', '/nonexistent/lib');
 
     const { listGroves, listRegisteredProjects } = await import('../../packages/myco/src/grove/registry');
-    const { serviceVariantToDirName } = await import('../../packages/myco/src/service/labels');
-    const { isDevServiceMode, setDevServiceMode } = await import('../../packages/myco/src/grove/paths');
 
-    // Ensure prod mode
-    setDevServiceMode(false);
-    try {
-      const variantProd = isDevServiceMode() ? 'dev' : 'prod';
-      const prodGroves = listGroves(undefined, { servedBy: serviceVariantToDirName(variantProd) });
-      const prodProjects = prodGroves.flatMap((g) => listRegisteredProjects(g.id));
+    const groves = listGroves(undefined);
+    const projects = groves.flatMap((g) => listRegisteredProjects(g.id));
 
-      expect(prodGroves.map((g) => g.id)).toEqual([prodGrove]);
-      expect(prodProjects.map((p) => p.name)).toEqual(['prod-app']);
-    } finally {
-      setDevServiceMode(false);
-    }
+    expect(groves.map((g) => g.id).sort()).toEqual([groveA, groveB].sort());
+    expect(projects.map((p) => p.name).sort()).toEqual(['app', 'lib']);
   });
 
-  test('dev variant sees only Groves served_by service-dev', async () => {
-    const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
-    const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
-    writeRegistry(prodGrove);
-    writeGrove(prodGrove, 'prod', 'Production', 'service');
-    writeGrove(devGrove, 'dev', 'Dogfood', 'service-dev');
-    writeProject(prodGrove, 'proj_prod2', 'prod-app', '/nonexistent/prod-app');
-    writeProject(devGrove, 'proj_dev2', 'dev-app', '/nonexistent/dev-app');
-
-    const { listGroves, listRegisteredProjects } = await import('../../packages/myco/src/grove/registry');
-    const { serviceVariantToDirName } = await import('../../packages/myco/src/service/labels');
-    const { setDevServiceMode, isDevServiceMode } = await import('../../packages/myco/src/grove/paths');
-
-    setDevServiceMode(true);
-    try {
-      const variantDev = isDevServiceMode() ? 'dev' : 'prod';
-      const devGroves = listGroves(undefined, { servedBy: serviceVariantToDirName(variantDev) });
-      const devProjects = devGroves.flatMap((g) => listRegisteredProjects(g.id));
-
-      expect(devGroves.map((g) => g.id)).toEqual([devGrove]);
-      expect(devProjects.map((p) => p.name)).toEqual(['dev-app']);
-    } finally {
-      setDevServiceMode(false);
-    }
+  test('a fresh home with no Groves yields nothing', async () => {
+    writeRegistry('grove_cccccccccccccccccccccccccccccccc');
+    const { listGroves } = await import('../../packages/myco/src/grove/registry');
+    expect(listGroves(undefined)).toEqual([]);
   });
 });

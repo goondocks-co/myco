@@ -10,7 +10,8 @@
 //
 // Contract: the snippet assumes the containing file has already defined
 //   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
-//   - `resolveMycoHome(): string` — the user's Myco home (`~/.myco`)
+//   - `resolveMycoHome(directory?: string): string` — the project's Myco home
+//     (`~/.myco`, or a dev home when a trusted `runtime.home` pin redirects it)
 //   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
 //   - no other imports from the outer file
 // and exposes
@@ -89,7 +90,7 @@ function readProjectAndGroveIds(directory: string): { projectId: string; groveId
 function resolveBufferDir(directory: string): string | null {
   const ids = readProjectAndGroveIds(directory);
   if (!ids) return null;
-  return join(resolveMycoHome(), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
 }
 
 /**

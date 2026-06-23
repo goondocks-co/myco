@@ -3,20 +3,22 @@ import {
   releaseSubsystemClaim,
   listSubsystemClaims,
   readClaim,
+  resolveClaimsHome,
   KNOWN_SUBSYSTEMS,
-} from '../daemon/subsystem-claim.js';
-import { resolveMycoHome, currentDaemonVariant } from '@myco/grove/paths.js';
+} from '../grove/subsystem-claim.js';
+import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
 
 const USAGE = `Usage: myco subsystem <command>
 
-Declare which daemon variant owns a machine-global subsystem so a peer daemon
-defers. Operator-driven and durable — the claim stands until released, mirroring
-\`myco grove claim\`. Run claim/release under the build whose daemon should own
-the subsystem (the dogfood build → owner 'service-dev').
+Declare which daemon owns a machine-global subsystem so a peer daemon defers.
+Operator-driven and durable: run claim/release under the build whose daemon
+should own the subsystem. The owner is that daemon's home (MYCO_HOME) and the
+claim persists across restarts until explicitly released. A peer daemon reads
+the claim and opts out of performing the subsystem's work.
 
 Commands:
-  claim <subsystem> [--force]   Take ownership for this build's daemon variant
-  release <subsystem>           Relinquish a claim this variant owns
+  claim <subsystem> [--force]   Take ownership for this daemon (its home)
+  release <subsystem>           Relinquish a claim this daemon owns
   list                          Show active claims on this machine
 
 Subsystems: ${KNOWN_SUBSYSTEMS.join(', ')}`;
@@ -32,6 +34,7 @@ function assertKnown(subsystem: string): void {
 export async function run(args: string[]): Promise<void> {
   const [cmd, ...rest] = args;
   const mycoHome = resolveMycoHome();
+  const claimsHome = resolveClaimsHome();
 
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stdout.write(USAGE + '\n');
@@ -39,7 +42,7 @@ export async function run(args: string[]): Promise<void> {
   }
 
   if (cmd === 'list') {
-    const claims = listSubsystemClaims({ mycoHome });
+    const claims = listSubsystemClaims({ claimsHome });
     if (claims.length === 0) {
       console.log('No subsystem claims.');
       return;
@@ -56,17 +59,17 @@ export async function run(args: string[]): Promise<void> {
     const subsystem = rest[0];
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
-    const self = currentDaemonVariant();
-    const existing = readClaim(subsystem, mycoHome);
+    const self = daemonIdentity(mycoHome);
+    const existing = readClaim(subsystem, claimsHome);
     if (existing && existing.owner !== self && !rest.includes('--force')) {
       throw new Error(
         `${subsystem} is already claimed by ${existing.owner}. Release it from that `
         + `build (\`myco subsystem release ${subsystem}\`), or pass --force to take it over.`,
       );
     }
-    claimSubsystem(subsystem, self, { mycoHome });
+    claimSubsystem(subsystem, self, { claimsHome });
     console.log(`Claimed ${subsystem} for ${self}.`);
-    console.log(`A peer daemon variant now defers ${subsystem} work to this build's daemon.`);
+    console.log(`A peer daemon (a different home) now defers ${subsystem} work to this daemon.`);
     console.log(`Run \`myco subsystem release ${subsystem}\` (under this build) when you're done.`);
     return;
   }
@@ -75,8 +78,8 @@ export async function run(args: string[]): Promise<void> {
     const subsystem = rest[0];
     if (!subsystem) throw new Error('Subsystem name is required');
     assertKnown(subsystem);
-    const self = currentDaemonVariant();
-    const existing = readClaim(subsystem, mycoHome);
+    const self = daemonIdentity(mycoHome);
+    const existing = readClaim(subsystem, claimsHome);
     if (!existing) {
       console.log(`${subsystem} is not claimed.`);
       return;
@@ -87,7 +90,7 @@ export async function run(args: string[]): Promise<void> {
         + `owning build.`,
       );
     }
-    releaseSubsystemClaim(subsystem, self, { mycoHome });
+    releaseSubsystemClaim(subsystem, self, { claimsHome });
     console.log(`Released ${subsystem} (was owned by ${self}).`);
     return;
   }

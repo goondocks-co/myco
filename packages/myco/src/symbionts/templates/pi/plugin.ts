@@ -21,7 +21,7 @@
 // from Myco packages — only use pi's own exports and Node.js built-ins.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
@@ -61,12 +61,69 @@ const REQUEST_CONTEXT_HEADERS = {
 
 let cachedDaemonPort: { statePath: string; port: number | null } | undefined = undefined;
 
-function resolveMycoHome(): string {
+const RUNTIME_PIN_INSECURE_MODE_MASK = 0o022;
+
+/**
+ * Read a `runtime.home` pin only when it passes the same G7 trust check the
+ * CLI shim uses (`checkRuntimeCommandTrust` in bin/runtime-redirect.cjs): a
+ * group/other-writable or foreign-owned pin is refused so a hostile local user
+ * can't redirect capture to a daemon they control. Returns the trimmed value
+ * (an absolute home path) or null.
+ */
+function readTrustedPin(filePath: string): string | null {
+  try {
+    if (process.platform !== "win32") {
+      const stat = statSync(filePath);
+      const myUid = typeof process.getuid === "function" ? process.getuid() : null;
+      if (myUid !== null && stat.uid !== myUid) return null;
+      if ((stat.mode & 0o777) & RUNTIME_PIN_INSECURE_MODE_MASK) return null;
+    }
+    const raw = readFileSync(filePath, "utf-8").trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the `runtime.home` pin for a project: walk up from `directory` for a
+ * project pin (`<dir>/.myco/runtime.home`), then the machine pin
+ * (`~/.myco/runtime.home`). Mirrors the layered resolution in
+ * bin/runtime-redirect.cjs. Returns the absolute home path or null.
+ */
+function readRuntimeHomePin(directory: string): string | null {
+  let dir = resolve(directory);
+  while (true) {
+    const pin = readTrustedPin(join(dir, ".myco", "runtime.home"));
+    if (pin) return expandTilde(pin);
+    const parent = join(dir, "..");
+    if (resolve(parent) === dir) break;
+    dir = resolve(parent);
+  }
+  const machine = readTrustedPin(join(homedir(), ".myco", "runtime.home"));
+  return machine ? expandTilde(machine) : null;
+}
+
+function expandTilde(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/**
+ * Resolve this project's Myco home — the daemon it routes to. A trusted
+ * `runtime.home` pin wins so a dogfood project pinned to `~/.myco-dev` reads
+ * `~/.myco-dev/service/daemon.json` instead of the prod `~/.myco`. Falls back
+ * to `MYCO_HOME`, then the machine `~/.myco`.
+ */
+function resolveMycoHome(directory?: string): string {
+  if (directory) {
+    const pinned = readRuntimeHomePin(directory);
+    if (pinned) return pinned;
+  }
   const configured = process.env.MYCO_HOME?.trim();
   if (!configured) return join(homedir(), ".myco");
-  if (configured === "~") return homedir();
-  if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
-  return configured;
+  return expandTilde(configured);
 }
 
 function projectUsesGrove(directory: string): boolean {
@@ -127,39 +184,15 @@ function withRequestContextHeaders(directory: string, init?: RequestInit): Reque
   return { ...init, headers };
 }
 
-/**
- * Read the Grove served_by daemon variant ("service" or "service-dev")
- * for a project. Returns "service" when grove.toml is missing or
- * doesn't declare served_by — the conservative default that matches
- * production single-daemon installs.
- */
-function resolveGroveServedBy(directory: string): "service" | "service-dev" {
-  try {
-    const projectToml = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    const groveId = readTomlString(projectToml, "grove", "id");
-    if (!groveId) return "service";
-    const groveToml = readFileSync(
-      join(resolveMycoHome(), "groves", groveId, "grove.toml"),
-      "utf-8",
-    );
-    const servedBy = readTomlString(groveToml, "grove", "served_by");
-    return servedBy === "service-dev" ? "service-dev" : "service";
-  } catch {
-    return "service";
-  }
-}
-
 function resolveDaemonStatePath(directory: string): string {
   if (!projectUsesGrove(directory)) {
     return join(directory, ".myco", "daemon.json");
   }
-  // The plugin runs in pi's runtime and has no awareness of which
-  // daemon variant owns this project's Grove. Read served_by from
-  // grove.toml to route correctly — without this, a dogfood grove
-  // (served_by: service-dev) silently fails because the plugin talks
+  // One daemon per home: the HOME is the discriminator, the daemon always
+  // lives under `service/`. A dogfood project pinned to a dev home via the
+  // `runtime.home` pin reads that home's daemon — without this it would talk
   // to the prod daemon, which refuses cross-Grove access.
-  const variant = resolveGroveServedBy(directory);
-  return join(resolveMycoHome(), variant, "daemon.json");
+  return join(resolveMycoHome(directory), "service", "daemon.json");
 }
 
 function readDaemonPortFromDisk(statePath: string): number | null {
@@ -365,7 +398,8 @@ async function execMycoTool(
 //
 // Contract: the snippet assumes the containing file has already defined
 //   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
-//   - `resolveMycoHome(): string` — the user's Myco home (`~/.myco`)
+//   - `resolveMycoHome(directory?: string): string` — the project's Myco home
+//     (`~/.myco`, or a dev home when a trusted `runtime.home` pin redirects it)
 //   - imports for `readFileSync`, `appendFileSync`, `mkdirSync`, `join`
 //   - no other imports from the outer file
 // and exposes
@@ -444,7 +478,7 @@ function readProjectAndGroveIds(directory: string): { projectId: string; groveId
 function resolveBufferDir(directory: string): string | null {
   const ids = readProjectAndGroveIds(directory);
   if (!ids) return null;
-  return join(resolveMycoHome(), "groves", ids.groveId, "projects", ids.projectId, "buffer");
+  return join(resolveMycoHome(directory), "groves", ids.groveId, "projects", ids.projectId, "buffer");
 }
 
 /**

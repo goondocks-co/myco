@@ -19,7 +19,6 @@ export interface UpgradePackageStatus {
 }
 
 export interface UpgradeStatus {
-  exempt: boolean;
   running_version: string;
   update_available?: boolean;
   revert_available?: boolean;

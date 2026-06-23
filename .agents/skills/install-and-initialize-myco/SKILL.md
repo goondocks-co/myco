@@ -108,8 +108,6 @@ myco doctor
 
 Doctor flags agents whose config directory (`.claude/`, `.cursor/`, etc.) exists in the project but whose MCP entry is missing or stale. It does NOT flag agents that are installed globally but have no config directory here — binary presence without a project config directory is not a problem.
 
-For runtime launch failures that don't appear in doctor output (e.g., a hook that silently exits without firing), also check `~/.myco/logs/launcher.log` — the global launcher appends a diagnostic line on every failed hook invocation, including signal kills and spawn errors.
-
 **Note:** Doctor warns (rather than errors) when LLM or embedding providers are unconfigured. Data-collection mode is a valid post-init state — unconfigured providers mean the agent pipeline won't run, but session capture continues normally. These warnings are expected immediately after daemon startup.
 
 ### 4. Configure Myco Agent (Optional)
@@ -276,6 +274,7 @@ Myco applies a **UI-first philosophy**: CLI handles installation, teardown, and 
 | Tear down global install | CLI (`myco remove`, `packages/myco/src/cli/remove.ts`) |
 | Check vault health | CLI (`myco doctor`, `packages/myco/src/cli/doctor.ts`) |
 | Invoke MCP tools from scripts | CLI (`myco tool call`, `packages/myco/src/cli/tool.ts`) |
+| Manage subsystem ownership (claim/release) | CLI (`myco subsystem claim`, `packages/myco/src/cli/subsystem.ts`) |
 | Re-detect newly installed agents | UI ("Re-detect now" button) |
 | Override symbiont config per project | UI (Symbionts page) |
 
@@ -330,9 +329,9 @@ This is the canonical way to invoke Cortex or any Myco MCP tool from a script or
 
 **Global detection lag.** The manifest-driven detection system runs periodically rather than continuously. If a newly installed symbiont isn't immediately detected, wait for the next detection cycle or restart the daemon to force detection. The detection interval is configurable in the daemon settings.
 
-**Hook errors trace to `~/.myco/logs/launcher.log`, not `myco doctor`.** When a `PreToolUse` hook silently fails — the agent reports no error but the hook didn't fire — the global launcher at `~/.myco/launcher.cjs` writes a one-line diagnostic to `~/.myco/logs/launcher.log` on every launch failure, including signal kills (`signal=SIGKILL`), binary-not-found (`code=ENOENT`), and spawn-class errors. Check this log **before** anything else when hooks appear to silently no-op. `myco doctor` detects configuration issues but does not surface runtime launch failures; `~/.myco/logs/launcher.log` is the only trace for those.
+**Third-party CLIs masquerading as hook failures.** If hooks appear to be signal-killed or exit abnormally, the cause may not be Myco at all. Third-party CLI tools installed on the machine (e.g., GitKraken's `gk` binary) can intercept a `PreToolUse` hook environment and exit abnormally when launched in an unexpected subprocess context, producing symptoms that look identical to a Myco launch failure. Run `myco doctor` to confirm hook files point to the expected Myco binary path and check the daemon logs for hook-invocation errors.
 
-**Third-party CLIs masquerading as hook failures.** If hooks appear to be signal-killed or exit abnormally, the cause may not be Myco at all. Third-party CLI tools installed on the machine (e.g., GitKraken's `gk` binary) can intercept a `PreToolUse` hook environment and exit abnormally when launched in an unexpected subprocess context, producing symptoms that look identical to a Myco launcher failure. To rule out Myco: check `~/.myco/logs/launcher.log` — if the log has no entries for the affected session, the launcher completed normally and the kill came from a downstream process. Run `myco doctor` to confirm hook files point to the expected Myco binary path.
+**Hook invocation errors bypass `myco doctor`.** When a `PreToolUse` hook silently fails at runtime — the agent reports no error but capture didn't happen — `myco doctor` only catches configuration issues. Runtime hook failures (signal kills, binary-not-found, spawn errors) appear in daemon logs (`~/.myco/logs/`) rather than doctor output. If hooks appear to silently no-op after doctor reports clean, check daemon logs next.
 
 ### Development Environment Gotchas
 

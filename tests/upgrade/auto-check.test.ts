@@ -2,7 +2,7 @@
  * Tests for `upgrade/auto-check.ts`:
  *
  *   checkAndStage — stages when newer / no-ops when up-to-date /
- *                   already-staged / dev-build
+ *                   already-staged / manual-channel
  *   resolveNewestStagedVersion — semver sort + filter
  *
  * All I/O is hermetic (no network, no real fs writes for the noop paths).
@@ -22,7 +22,6 @@ import {
   markAdoptFailed,
   type CheckAndStageDeps,
 } from '@myco/upgrade/auto-check.js';
-import * as updateChecker from '@myco/daemon/update-checker.js';
 import { versionBinaryPath, versionsDir } from '@myco/install/managed-binary.js';
 
 // ---------------------------------------------------------------------------
@@ -59,7 +58,6 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
-  // Restore the isUpdateExempt shim if it was patched.
   mock.restore();
 });
 
@@ -77,35 +75,6 @@ function makeOpts(channel: 'stable' | 'beta' = 'stable') {
 }
 
 // ---------------------------------------------------------------------------
-// checkAndStage: dev-build no-op
-// ---------------------------------------------------------------------------
-
-describe('checkAndStage: dev-build no-op', () => {
-  it('returns noop/dev-build when isDevBuild() is true, even with a newer version', async () => {
-    const stageBinaryMock = mock(async () => ({ error: 'should-not-be-called' }));
-    const result = await checkAndStage(
-      CURRENT_VERSION,
-      makeOpts(),
-      {
-        isDevBuild: () => true, // simulate dev build
-        resolveRefs: async () => ({
-          assetUrl: 'http://example.com/asset',
-          sha256sumsUrl: 'http://example.com/sums',
-          assetName: 'myco-linux-x64',
-          targetVersion: NEWER_VERSION,
-        }),
-        stageBinary: stageBinaryMock as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
-        existsSync: () => false,
-      },
-    );
-    expect(result.status).toBe('noop');
-    expect((result as { reason: string }).reason).toBe('dev-build');
-    // stageBinary must not have been called.
-    expect(stageBinaryMock).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // checkAndStage: up-to-date no-op
 // ---------------------------------------------------------------------------
 
@@ -115,7 +84,6 @@ describe('checkAndStage: up-to-date no-op', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => ({
           assetUrl: 'http://x',
           sha256sumsUrl: 'http://y',
@@ -135,7 +103,6 @@ describe('checkAndStage: up-to-date no-op', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => ({
           assetUrl: 'http://x',
           sha256sumsUrl: 'http://y',
@@ -155,7 +122,6 @@ describe('checkAndStage: up-to-date no-op', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => null,
         stageBinary: mock(async () => ({ error: 'should-not-reach' })) as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
         existsSync: () => false,
@@ -180,7 +146,6 @@ describe('checkAndStage: already-staged no-op', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => ({
           assetUrl: 'http://x',
           sha256sumsUrl: 'http://y',
@@ -207,7 +172,6 @@ describe('checkAndStage: successful staging', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => ({
           assetUrl: 'http://x',
           sha256sumsUrl: 'http://y',
@@ -229,7 +193,6 @@ describe('checkAndStage: successful staging', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => ({
           assetUrl: 'http://x',
           sha256sumsUrl: 'http://y',
@@ -249,13 +212,126 @@ describe('checkAndStage: successful staging', () => {
       CURRENT_VERSION,
       makeOpts(),
       {
-        isDevBuild: () => false,
         resolveRefs: async () => { throw new Error('network down'); },
         existsSync: () => false,
       },
     );
     expect(result.status).toBe('error');
     expect((result as { error: string }).error).toContain('network down');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkAndStage: manual-channel no-op (T1)
+// ---------------------------------------------------------------------------
+
+describe('checkAndStage: manual-channel no-op', () => {
+  it('returns noop/manual-channel when isManualChannel() is true, even with a newer version', async () => {
+    const stageBinaryMock = mock(async () => ({ error: 'should-not-be-called' }));
+    const result = await checkAndStage(
+      CURRENT_VERSION,
+      makeOpts(),
+      {
+        isManualChannel: () => true,
+        resolveRefs: async () => ({
+          assetUrl: 'http://example.com/asset',
+          sha256sumsUrl: 'http://example.com/sums',
+          assetName: 'myco-linux-x64',
+          targetVersion: NEWER_VERSION,
+        }),
+        stageBinary: stageBinaryMock as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
+        existsSync: () => false,
+      },
+    );
+    expect(result.status).toBe('noop');
+    expect((result as { reason: string }).reason).toBe('manual-channel');
+    expect(stageBinaryMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds normally when isManualChannel() is false (stable channel)', async () => {
+    const stageBinaryMock = mock(async (_params: unknown, _deps: unknown) =>
+      ({ versionDir: `/fake/versions/${NEWER_VERSION}`, version: NEWER_VERSION }),
+    );
+    const result = await checkAndStage(
+      CURRENT_VERSION,
+      makeOpts('stable'),
+      {
+        isManualChannel: () => false,
+        resolveRefs: async () => ({
+          assetUrl: 'http://x',
+          sha256sumsUrl: 'http://y',
+          assetName: 'myco-linux-x64',
+          targetVersion: NEWER_VERSION,
+        }),
+        stageBinary: stageBinaryMock as typeof import('@myco/upgrade/apply-binary.js').stageBinary,
+        existsSync: () => false,
+      },
+    );
+    expect(result.status).toBe('staged');
+    expect(stageBinaryMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildAdoptJobFn: manual-channel no-op (T1)
+// ---------------------------------------------------------------------------
+
+describe('buildAdoptJobFn: manual-channel no-op', () => {
+  it('returns immediately (no-op) when isManualChannel() is true', async () => {
+    const { buildAdoptJobFn } = await import('@myco/upgrade/auto-check.js');
+    const initiateAdoptMock = mock(async () => {});
+
+    const jobFn = buildAdoptJobFn({
+      currentVersion: CURRENT_VERSION,
+      home: tmpHome,
+      platform: PLATFORM,
+      stateDir: tmpHome,
+      daemonPort: 20915,
+      projectRoot: '/project',
+      logger: silentLogger(),
+      isManualChannel: () => true,
+      initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
+      resolveServiceLabel: async () => null,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await jobFn({} as any);
+
+    expect(initiateAdoptMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds to initiateAdopt when isManualChannel() is false and a staged version exists', async () => {
+    const { buildAdoptJobFn } = await import('@myco/upgrade/auto-check.js');
+    const initiateAdoptMock = mock(async () => {});
+
+    // Stage a fake newer binary so resolveNewestStagedVersion finds something.
+    const { versionsDir: getVersionsDir, versionBinaryPath: getVersionBinaryPath } = await import('@myco/install/managed-binary.js');
+    const vDir = getVersionsDir(tmpHome, PLATFORM);
+    const binPath = getVersionBinaryPath(tmpHome, PLATFORM, NEWER_VERSION);
+    fs.mkdirSync(path.dirname(binPath), { recursive: true });
+    fs.writeFileSync(binPath, '#!/bin/sh\necho myco', { mode: 0o755 });
+
+    const jobFn = buildAdoptJobFn({
+      currentVersion: CURRENT_VERSION,
+      home: tmpHome,
+      platform: PLATFORM,
+      stateDir: tmpHome,
+      daemonPort: 20915,
+      projectRoot: '/project',
+      logger: silentLogger(),
+      isManualChannel: () => false,
+      isDefaultHome: () => true,
+      initiateAdopt: initiateAdoptMock as typeof import('@myco/upgrade/adopt.js').initiateAdopt,
+      resolveServiceLabel: async () => null,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await jobFn({} as any);
+
+    expect(initiateAdoptMock).toHaveBeenCalledTimes(1);
+
+    // Clean up staged binary.
+    fs.rmSync(vDir, { recursive: true, force: true });
   });
 });
 

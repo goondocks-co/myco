@@ -291,3 +291,17 @@ for (const manifest of manifests) {
 ln -sf ../../.agents/skills/my-skill .claude/skills/my-skill
 ln -sf ../../.agents/skills/my-skill .cursor/skills/my-skill
 ```
+
+### Cline MCP Config Path: `~/.cline/data/settings/cline_mcp_settings.json`
+
+**Cline's documented MCP path is wrong.** Early Cline integration assumed `~/.cline/mcp.json` based on Cline documentation, but live dogfooding of Cline CLI 3.0.24 confirmed the actual runtime path is `~/.cline/data/settings/cline_mcp_settings.json`. Both paths appear in `packages/myco/src/symbionts/manifests.generated.ts` (primary at line 424, fallback at line 427). The installer writes to the primary path; read-time resolution should check the primary path first before falling back. When debugging Cline MCP registration failures, always check `~/.cline/data/settings/cline_mcp_settings.json` first.
+
+### `service-dev` Daemon Claim Hijacks Machine-Wide Claude Code Capture
+
+**Symptom**: "Claude capture is dead on prod" — sessions dropped for all real projects on the machine, while other agents (e.g., Pi) keep capturing normally.
+
+**Root cause**: A dogfood `service-dev` daemon holding the `symbiont-config` subsystem claim silently hijacks Claude Code capture machine-wide. The prod daemon's symbiont-config handler yields to the first claimant, so all non-dogfood project sessions are dropped.
+
+**Fix**: The `service-dev` daemon must scope its `symbiont-config` subsystem claim to dogfood projects only, or defer the claim to the prod daemon when the prod daemon is active. Do not run a `service-dev` daemon with an unrestricted `symbiont-config` claim alongside a prod daemon — it will silently break capture for every non-dogfood project on the machine.
+
+**Detection**: If Claude capture is dead across all projects but Pi and other agents are healthy, check whether a `service-dev` daemon is running and holding the `symbiont-config` claim.

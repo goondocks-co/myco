@@ -39,7 +39,6 @@ import {
   resolveMycoHome,
   resolveGroveDir,
   resolveProjectVaultDir,
-  resolveServiceDirName,
 } from '@myco/grove/paths.js';
 import {
   listGroves,
@@ -72,11 +71,10 @@ export interface ForEachGroveOptions {
   /** Override Myco home for tests; defaults to the resolved global home. */
   mycoHome?: string;
   /**
-   * The current daemon's service dir (`~/.myco/service` or `~/.myco/service-dev`).
-   * Iteration is filtered to Groves whose `served_by` matches the service-dir name.
-   * Required — there is no "all Groves" mode for daemon iterators.
+   * @deprecated No longer used; the home is the grove filter. Kept for
+   * call-site compatibility until T9 removes all pass-throughs.
    */
-  daemonStateDir: string;
+  daemonStateDir?: string;
   /** Tag included in the per-Grove failure log so operators can identify the caller. */
   jobName?: string;
   /**
@@ -127,8 +125,7 @@ export async function forEachGrove(
   options: ForEachGroveOptions,
 ): Promise<ScopeIterationSummary> {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const servedBy = resolveServiceDirName(options.daemonStateDir, mycoHome);
-  const allGroves = listGroves(mycoHome, { servedBy });
+  const allGroves = listGroves(mycoHome);
 
   // Apply the optional pre-open filter before any cache touch so cold
   // Groves don't displace warm entries. Filtering happens here rather

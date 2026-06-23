@@ -24,13 +24,13 @@ import {
 // listGroves + listRegisteredProjects read from.
 function seedGroveWithLegacyProject(
   mycoHome: string,
-  opts: { groveId: string; projectId: string; projectRoot: string; servedBy: string; machineId: string },
+  opts: { groveId: string; projectId: string; projectRoot: string; machineId: string },
 ): void {
   const groveDir = path.join(mycoHome, 'groves', opts.groveId);
   fs.mkdirSync(path.join(groveDir, 'registry'), { recursive: true });
   fs.writeFileSync(
     path.join(groveDir, 'grove.toml'),
-    `[grove]\nid = "${opts.groveId}"\nname = "Test"\nslug = "test"\nmode = "local"\ncreated_at = "2026-05-26T00:00:00.000Z"\nserved_by = "${opts.servedBy}"\n`,
+    `[grove]\nid = "${opts.groveId}"\nname = "Test"\nslug = "test"\nmode = "local"\ncreated_at = "2026-05-26T00:00:00.000Z"\n`,
     'utf-8',
   );
   fs.writeFileSync(
@@ -287,13 +287,12 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       groveId: 'grove_11111111111111111111111111111111',
       projectId: 'proj_11111111111111111111111111111111',
       projectRoot,
-      servedBy: 'service',
       machineId: 'legacy_startup_id_alpha',
     });
     // No global machine_id yet — simulates the racey daemon-startup window.
     expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
 
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
     expect(sourceRoot).toBe(projectRoot);
     expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
@@ -306,35 +305,34 @@ describe('propagateLegacyMachineIdAtStartup', () => {
       groveId: 'grove_22222222222222222222222222222222',
       projectId: 'proj_22222222222222222222222222222222',
       projectRoot,
-      servedBy: 'service',
       machineId: 'should_not_overwrite',
     });
 
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
     expect(sourceRoot).toBeNull();
     expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
       .toBe('global_pre_existing');
   });
 
-  it('skips Groves not served by this daemon variant', () => {
+  it('scans all Groves in the home', () => {
+    // Home is the boundary; all Groves in the home are included.
     seedGroveWithLegacyProject(mycoHome, {
       groveId: 'grove_33333333333333333333333333333333',
       projectId: 'proj_33333333333333333333333333333333',
       projectRoot,
-      servedBy: 'service-dev',  // dev-served grove
       machineId: 'dev_only_id',
     });
 
-    // Prod daemon scans only service-served groves.
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
 
-    expect(sourceRoot).toBeNull();
-    expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
+    expect(sourceRoot).toBe(projectRoot);
+    expect(fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim())
+      .toBe('dev_only_id');
   });
 
   it('returns null on a greenfield daemon with no registered Groves', () => {
-    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome, servedBy: 'service' });
+    const sourceRoot = propagateLegacyMachineIdAtStartup({ mycoHome });
     expect(sourceRoot).toBeNull();
     expect(fs.existsSync(path.join(mycoHome, 'machine_id'))).toBe(false);
   });

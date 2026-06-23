@@ -53,7 +53,51 @@ describe('resolveClaudeCodeExecutable', () => {
     expect(executable).toBe(executablePath);
   });
 
-  it('returns undefined when no optional native package is present', () => {
+  it('falls back to a system-installed claude in ~/.local/bin for the standalone native binary', () => {
+    // The standalone binary lives at ~/.myco/bin/myco with no node_modules
+    // ancestor, so the bundled-package walk fails. The CLI the operator already
+    // runs (~/.local/bin/claude) is the source. ~/.local/bin is checked
+    // EXPLICITLY because the daemon's launchd PATH omits it.
+    const home = '/Users/test';
+    const systemClaude = path.join(home, '.local', 'bin', expectedExecutableName());
+    const executable = resolveClaudeCodeExecutable({
+      importMetaUrl: runtimeModuleUrl(),
+      execPath: '/Users/test/.myco/bin/myco',
+      realpathSync: (value) => value as ReturnType<typeof Bun.file>,
+      existsSync: (value) => value === systemClaude,
+      requireFactory: () => ({
+        resolve() {
+          throw new Error('no node_modules tree beside the standalone binary');
+        },
+      }) as NodeJS.Require,
+      homeDir: home,
+      env: { PATH: '' },
+    });
+
+    expect(executable).toBe(systemClaude);
+  });
+
+  it('finds a system claude on PATH when not in a known install dir', () => {
+    const home = '/Users/test';
+    const pathClaude = path.join('/custom/bin', expectedExecutableName());
+    const executable = resolveClaudeCodeExecutable({
+      importMetaUrl: runtimeModuleUrl(),
+      execPath: '/Users/test/.myco/bin/myco',
+      realpathSync: (value) => value as ReturnType<typeof Bun.file>,
+      existsSync: (value) => value === pathClaude,
+      requireFactory: () => ({
+        resolve() {
+          throw new Error('missing');
+        },
+      }) as NodeJS.Require,
+      homeDir: home,
+      env: { PATH: `/usr/sbin${path.delimiter}/custom/bin` },
+    });
+
+    expect(executable).toBe(pathClaude);
+  });
+
+  it('returns undefined when neither a bundled package nor a system claude is present', () => {
     const executable = resolveClaudeCodeExecutable({
       importMetaUrl: runtimeModuleUrl(),
       execPath: '/opt/homebrew/lib/node_modules/@goondocks/myco/vendor/darwin-arm64/myco',
@@ -64,6 +108,8 @@ describe('resolveClaudeCodeExecutable', () => {
           throw new Error('missing');
         },
       }) as NodeJS.Require,
+      homeDir: '/Users/test',
+      env: { PATH: '' },
     });
 
     expect(executable).toBeUndefined();

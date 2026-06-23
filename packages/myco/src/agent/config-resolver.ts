@@ -32,9 +32,81 @@ import { inferHarnessFromProviderType } from './provider-harness.js';
  * global default (`agent.provider`). Per-task overrides take precedence,
  * matching the resolution order in `resolveRunConfig` below.
  */
-export function hasConfiguredProvider(mycoConfig: MycoConfig, taskName?: string): boolean {
-  const taskProvider = taskName ? mycoConfig.agent.tasks?.[taskName]?.provider : undefined;
-  return !!(taskProvider ?? mycoConfig.agent.provider);
+type ProviderType = Parameters<typeof inferHarnessFromProviderType>[0];
+
+/**
+ * Single source of truth for the effective harness from the layered config.
+ * Both the executor (`resolveRunConfig`) and the manual-run admission guard
+ * (`hasConfiguredProvider`) resolve through this so they cannot drift — the
+ * exact "guard admits a run the executor can't run" gap this guards against.
+ *
+ * Precedence (highest first): per-task myco.yaml harness → its provider type →
+ * global myco.yaml harness → its provider type → the task definition's harness →
+ * its provider type → the claude-sdk default.
+ */
+export function resolveEffectiveHarness(opts: {
+  taskHarness?: HarnessId;
+  taskProviderType?: ProviderType;
+  globalHarness?: HarnessId;
+  globalProviderType?: ProviderType;
+  definitionHarness?: HarnessId;
+  definitionProviderType?: ProviderType;
+}): HarnessId {
+  return opts.taskHarness
+    ?? inferHarnessFromProviderType(opts.taskProviderType)
+    ?? opts.globalHarness
+    ?? inferHarnessFromProviderType(opts.globalProviderType)
+    ?? opts.definitionHarness
+    ?? inferHarnessFromProviderType(opts.definitionProviderType)
+    ?? HARNESS_CLAUDE_SDK;
+}
+
+/**
+ * The task definition's intrinsic execution harness/provider (from the YAML task
+ * registry merged with user vault tasks). The manual-run admission guard needs
+ * it to match the executor's harness resolution; `resolveRunConfig` reads the
+ * same `config.execution` itself.
+ */
+export function resolveTaskDefinitionExecution(
+  taskName: string | undefined,
+  vaultDir: string,
+): { harness?: HarnessId; providerType?: ProviderType } {
+  if (!taskName) return {};
+  const execution = loadAllTasks(resolveDefinitionsDir(), vaultDir).get(taskName)?.execution;
+  return { harness: execution?.harness, providerType: execution?.provider?.type };
+}
+
+/**
+ * Whether an agent run may proceed under `mycoConfig`.
+ *
+ * Strict by default: an explicit provider (per-task or global) must be set.
+ * Automatic runs (e.g. Cortex per-grove) use the strict form so a grove with no
+ * provider is not silently auto-run.
+ *
+ * `allowDefaultHarness` is for USER-INITIATED manual runs (POST /api/agent/run):
+ * there, no explicit provider is fine when the effective harness is the default
+ * claude-sdk, which shells out to the Claude Code CLI (subscription auth) and
+ * needs no provider config. claude-sdk self-validates the CLI at run time with a
+ * clear, actionable error if it is absent. A non-claude harness (incl. one
+ * pinned by the task definition — pass it via `definitionHarness`/
+ * `definitionProviderType`) with no provider genuinely cannot run and is still
+ * blocked, so the guard never admits a run the executor would reject.
+ */
+export function hasConfiguredProvider(
+  mycoConfig: MycoConfig,
+  taskName?: string,
+  opts?: { allowDefaultHarness?: boolean; definitionHarness?: HarnessId; definitionProviderType?: ProviderType },
+): boolean {
+  const taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
+  if (taskConfig?.provider ?? mycoConfig.agent.provider) return true;
+  if (!opts?.allowDefaultHarness) return false;
+  const harness = resolveEffectiveHarness({
+    taskHarness: taskConfig?.harness,
+    globalHarness: mycoConfig.agent.harness,
+    definitionHarness: opts.definitionHarness,
+    definitionProviderType: opts.definitionProviderType,
+  });
+  return harness === HARNESS_CLAUDE_SDK;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,13 +276,14 @@ export function resolveRunConfig(
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
     defaultReasoningLevel = mycoConfig.agent.reasoningLevel;
     const globalProvider = mycoConfig.agent.provider;
-    harness = taskConfig?.harness
-      ?? inferHarnessFromProviderType(taskConfig?.provider?.type)
-      ?? mycoConfig.agent.harness
-      ?? inferHarnessFromProviderType(globalProvider?.type)
-      ?? config.execution?.harness
-      ?? inferHarnessFromProviderType(config.execution?.provider?.type)
-      ?? HARNESS_CLAUDE_SDK;
+    harness = resolveEffectiveHarness({
+      taskHarness: taskConfig?.harness,
+      taskProviderType: taskConfig?.provider?.type,
+      globalHarness: mycoConfig.agent.harness,
+      globalProviderType: globalProvider?.type,
+      definitionHarness: config.execution?.harness,
+      definitionProviderType: config.execution?.provider?.type,
+    });
 
     if (taskConfig?.provider) {
       taskProviderOverride = toProviderConfig(taskConfig.provider);

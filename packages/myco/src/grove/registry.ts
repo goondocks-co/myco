@@ -8,7 +8,6 @@ import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, createProjectId, isGroveEraId } from './ids.js';
 import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
 import {
-  currentDaemonVariant,
   pathsEquivalent,
   resolveGlobalConfigPath,
   resolveGroveDir,
@@ -20,7 +19,6 @@ import {
   resolveGroveRootsPath,
   resolveGrovesDir,
   resolveMycoHome,
-  daemonVariantFromEnvValue,
 } from './paths.js';
 import { slugifyGroveName } from './ids.js';
 import {
@@ -29,19 +27,12 @@ import {
 } from './registry-resolve.js';
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 
-export type DaemonVariant = 'service' | 'service-dev';
-
 export interface GroveRecord {
   id: string;
   name: string;
   slug: string;
   mode: 'local';
   created_at: string;
-  /**
-   * Which daemon's service dir owns this Grove. Reads default to
-   * `'service'` for records that omit the field.
-   */
-  served_by: DaemonVariant;
 }
 
 export interface RegisteredProject {
@@ -138,14 +129,12 @@ const groveRecordCache = createMtimeCache((metadataPath: string): GroveRecord | 
   const grove = isPlainTable(doc.grove) ? doc.grove as Record<string, unknown> : null;
   if (!grove) return null;
   if (typeof grove.id !== 'string' || typeof grove.name !== 'string' || typeof grove.slug !== 'string') return null;
-  const servedBy: DaemonVariant = grove.served_by === 'service-dev' ? 'service-dev' : 'service';
   return {
     id: grove.id,
     name: grove.name,
     slug: grove.slug,
     mode: 'local',
     created_at: typeof grove.created_at === 'string' ? grove.created_at : new Date(0).toISOString(),
-    served_by: servedBy,
   };
 });
 
@@ -193,26 +182,11 @@ export function clearGroveRegistryCaches(): void {
   legacyGlobalConfigCache.clear();
 }
 
-export interface ListGrovesOptions {
-  /**
-   * Restrict to Groves owned by a specific service dir. Omit to enumerate
-   * every Grove on disk — only the registry-advertisement endpoint and the
-   * one-shot deploy migration script should pass nothing.
-   */
-  servedBy?: DaemonVariant;
-}
-
-export function listGroves(
-  mycoHome = resolveMycoHome(),
-  options: ListGrovesOptions = {},
-): GroveRecord[] {
-  const all = groveDirEntriesCache.get(resolveGrovesDir(mycoHome))
+export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
+  return groveDirEntriesCache.get(resolveGrovesDir(mycoHome))
     .map((name) => loadGroveRecord(name, mycoHome))
-    .filter((record): record is GroveRecord => !!record);
-  const filtered = options.servedBy
-    ? all.filter((g) => g.served_by === options.servedBy)
-    : all;
-  return filtered.sort((a, b) => a.name.localeCompare(b.name));
+    .filter((record): record is GroveRecord => !!record)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): GroveRecord | null {
@@ -226,37 +200,32 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
 }
 
 /**
- * True when this process's daemon variant owns the Grove. Reads always
- * normalize `served_by` to `'service' | 'service-dev'` (legacy records
- * without the field read as `'service'`), so plain equality is the whole
- * ownership predicate. On-demand seams — tool-call Grove pivots and the
- * daemon's inbound request resolution — gate cross-Grove access through
- * this before any database is opened or schema-migrated.
+ * True when this daemon owns the Grove. Ownership is the home: a daemon
+ * runs under one `MYCO_HOME` and only the Groves under
+ * `<MYCO_HOME>/groves/` are its own. The predicate re-derives ownership
+ * by a home-scoped lookup of the Grove's id — a record that lives in a
+ * different home resolves to `null` here and reads as not-owned even if
+ * it was loaded from disk elsewhere. On-demand seams — tool-call Grove
+ * pivots and the daemon's inbound request resolution — gate cross-Grove
+ * access through this before any database is opened or schema-migrated.
  */
-export function groveServedByThisDaemon(
-  grove: Pick<GroveRecord, 'served_by'>,
-  variant: DaemonVariant = currentDaemonVariant(),
+export function groveOwnedByThisDaemon(
+  grove: Pick<GroveRecord, 'id'>,
+  mycoHome = resolveMycoHome(),
 ): boolean {
-  return grove.served_by === variant;
+  return loadGroveRecord(grove.id, mycoHome) !== null;
 }
 
 /**
- * A request resolved to a Grove that is served by the other daemon
- * variant. Thrown by daemon-side request resolution when Grove-ownership
- * enforcement is enabled; transports translate it into a 403
- * `foreign_grove` error so the caller never reaches a database the
- * daemon does not own. Crossing the boundary deliberately is what
- * `myco grove claim` is for.
+ * A request resolved to a Grove that lives in a different daemon's home
+ * (`<MYCO_HOME>/groves/`). Thrown by daemon-side request resolution when
+ * Grove-ownership enforcement is enabled; transports translate it into a
+ * 403 `foreign_grove` error so the caller never reaches a database the
+ * daemon does not own.
  */
 export class ForeignGroveError extends Error {
-  constructor(
-    public readonly groveId: string,
-    public readonly servedBy: DaemonVariant,
-  ) {
-    super(
-      `Grove ${groveId} is served by another daemon (${servedBy}); `
-      + 'claim it first (myco grove claim)',
-    );
+  constructor(public readonly groveId: string) {
+    super(`Grove ${groveId} is served by another daemon`);
     this.name = 'ForeignGroveError';
   }
 }
@@ -279,22 +248,17 @@ export class UnknownGroveError extends Error {
  * OUTSIDE the request-context funnel (body `ActionScope.grove_id`, URL
  * `:id` params). Throws {@link UnknownGroveError} when no record exists —
  * so an unknown id can never create `groves/<id>/` as a side effect of a
- * DB open — and {@link ForeignGroveError} when the Grove is served by the
- * other daemon variant. Call it BEFORE any `cache.getDatabase` /
+ * DB open — and {@link ForeignGroveError} when the Grove lives in a
+ * different daemon's home. Call it BEFORE any `cache.getDatabase` /
  * `resolveGroveDbPath` on the named Grove.
  */
 export function assertOwnedGrove(groveId: string, mycoHome = resolveMycoHome()): GroveRecord {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new UnknownGroveError(groveId);
-  if (!groveServedByThisDaemon(grove)) {
-    throw new ForeignGroveError(grove.id, grove.served_by);
-  }
   return grove;
 }
 
-export interface CreateGroveOptions {
-  servedBy?: DaemonVariant;
-}
+export interface CreateGroveOptions {}
 
 export function createGrove(
   name: string,
@@ -313,7 +277,6 @@ export function createGrove(
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
-    served_by: options.servedBy ?? 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
@@ -349,7 +312,6 @@ export function ensureGroveExistsLocally(
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
-    served_by: 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
@@ -367,97 +329,59 @@ function uniqueSlug(base: string, mycoHome: string): string {
 }
 
 /**
- * Ensure a default Grove exists matching the requested variant.
+ * Ensure a default Grove exists for this home.
  *
- * Variant-aware: dev daemons and prod daemons each need their own
- * default Grove with the matching `served_by` so the cross-variant
- * walker boundary (R3.0) and rebind filter both keep working. A single
- * machine can host both — they get distinct slugs (`default` for prod,
- * `default-dev` for dev) so they coexist in the registry.
- *
- * The pointer `default_grove_id` always names the variant's own
- * default — for a dev daemon, it's the dev Grove; for prod, it's the
- * prod Grove. Variant lookup is filtered by `served_by`, NOT by the
- * pointer, so the pointer can safely co-exist between variants.
+ * Each MYCO_HOME has its own `groves/` tree, so the default Grove is
+ * always slug `default` — there is no cross-variant collision to avoid.
  *
  * Called from `runGlobalBootstrap()` — fires at daemon first-start so
  * the default Grove is guaranteed to exist before any hook tries to
- * register a project into it. Idempotent: an existing matching default
- * Grove is returned unchanged.
+ * register a project into it. Idempotent: an existing default Grove is
+ * returned unchanged.
  */
-export function ensureDefaultGrove(
-  mycoHome = resolveMycoHome(),
-  options: { servedBy?: 'service' | 'service-dev' } = {},
-): GroveRecord {
-  const servedBy = options.servedBy ?? 'service';
-  const slug = servedBy === 'service-dev' ? 'default-dev' : 'default';
+export function ensureDefaultGrove(mycoHome = resolveMycoHome()): GroveRecord {
+  const slug = 'default';
 
-  // 1. Honor an explicit default pointer when it names a Grove matching
-  //    the current variant. Users can `setDefaultGrove(non-default-slug)`
-  //    and have that decision survive across daemon restarts.
+  // 1. Honor an explicit default pointer when it exists.
+  //    Users can `setDefaultGrove(non-default-slug)` and have that decision
+  //    survive across daemon restarts.
   const pointedId = getDefaultGroveId(mycoHome);
   if (pointedId) {
     const pointed = loadGroveRecord(pointedId, mycoHome);
-    if (pointed && pointed.served_by === servedBy) return pointed;
+    if (pointed) return pointed;
   }
 
-  // 2. No pointer (or it names a wrong-variant Grove) — look for a
-  //    variant-matching Grove by its canonical slug.
-  const matching = listGroves(mycoHome, { servedBy }).find(
-    (grove) => grove.slug === slug,
-  );
+  // 2. No pointer (or it names a missing Grove) — look for an existing
+  //    Grove by the canonical slug.
+  const matching = listGroves(mycoHome).find((grove) => grove.slug === slug);
   if (matching) {
-    // Promote to the default pointer when there's no pointer at all,
-    // OR the existing pointer is for a different variant (preserves
-    // intentional cross-variant pointer assignment).
-    const pointedRecord = pointedId ? loadGroveRecord(pointedId, mycoHome) : null;
-    if (!pointedRecord || pointedRecord.served_by !== servedBy) {
-      setDefaultGrove(matching.id, mycoHome);
-    }
+    if (!pointedId) setDefaultGrove(matching.id, mycoHome);
     return matching;
   }
 
   // 3. No matching Grove yet — create it.
-  const created = createGrove(slug, mycoHome, { servedBy });
-  // Promote to the default pointer when there's no pointer at all OR
-  // the existing pointer names a wrong-variant Grove. Symmetric with
-  // step 2's promotion logic — the just-created Grove is the right
-  // owner of the pointer for this variant. (Coexisting dev+prod
-  // installs see the pointer thrash on each daemon boot; that's
-  // expected, and variant-aware project resolution must not depend
-  // on the pointer alone — see `resolveDefaultGroveForVariant`.)
-  const pointedRecord = pointedId ? loadGroveRecord(pointedId, mycoHome) : null;
-  if (!pointedRecord || pointedRecord.served_by !== servedBy) {
-    setDefaultGrove(created.id, mycoHome);
-  }
+  const created = createGrove(slug, mycoHome);
+  if (!pointedId) setDefaultGrove(created.id, mycoHome);
   return created;
 }
 
 /**
- * Read-only variant-aware default-Grove lookup. Sister of
- * `ensureDefaultGrove`: no side effects, returns null when no
- * matching Grove exists.
+ * Read-only default-Grove lookup. Sister of `ensureDefaultGrove`: no
+ * side effects, returns null when no matching Grove exists.
  *
- * Used by `ensureProjectRegistered` and any other code path that
- * needs to find "this variant's default Grove" without creating one.
- * Honors the pointer when it matches the variant, otherwise falls
- * back to the canonical slug lookup (`default` for prod, `default-dev`
- * for dev). NEVER returns a wrong-variant Grove — the cross-variant
- * boundary that `firstProjectVaultFromRegistry` enforces at the vault
- * resolver layer applies here too.
+ * Used by `ensureProjectRegistered` and any other code path that needs
+ * to find the default Grove without creating one. Honors the pointer
+ * — honors the pointer then falls back to the canonical slug lookup (`default`).
  */
-export function resolveDefaultGroveForVariant(
+export function resolveDefaultGrove(
   mycoHome = resolveMycoHome(),
-  options: { servedBy?: 'service' | 'service-dev' } = {},
 ): GroveRecord | null {
-  const servedBy = options.servedBy ?? 'service';
   const pointedId = getDefaultGroveId(mycoHome);
   if (pointedId) {
     const pointed = loadGroveRecord(pointedId, mycoHome);
-    if (pointed && pointed.served_by === servedBy) return pointed;
+    if (pointed) return pointed;
   }
-  const slug = servedBy === 'service-dev' ? 'default-dev' : 'default';
-  return listGroves(mycoHome, { servedBy }).find((g) => g.slug === slug) ?? null;
+  return listGroves(mycoHome).find((g) => g.slug === 'default') ?? null;
 }
 
 export function resolveGrove(ref: string | undefined, mycoHome = resolveMycoHome()): GroveRecord {
@@ -697,15 +621,9 @@ export function ensureProjectRegistered(
   if (existing) return existing;
   if (!isSafeProjectRoot(projectRoot)) return null;
 
-  // Variant-aware default Grove lookup. `getDefaultGroveId()` is
-  // variant-blind by design (the pointer is shared between dev and
-  // prod on coexisting installs); reading it directly would let a
-  // wrong-variant pointer steal projects from another variant's
-  // Grove. `resolveDefaultGroveForVariant` honors the pointer only
-  // when its target matches the current variant, otherwise falls
-  // back to the canonical slug lookup.
-  const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
-  const grove = resolveDefaultGroveForVariant(mycoHome, { servedBy });
+  // Each MYCO_HOME owns its own grove tree — look up the default Grove
+  // directly by pointer or canonical slug.
+  const grove = resolveDefaultGrove(mycoHome);
   if (!grove) return null;
 
   const projectName = path.basename(path.resolve(projectRoot));
@@ -1052,27 +970,6 @@ export function renameGrove(
   // required for path resolvers — but we keep slug semantics on the
   // `GroveRecord` so callers projecting URL / display slugs see the
   // refreshed value.
-  writeGroveRecord(updated, mycoHome);
-  return updated;
-}
-
-/**
- * Set a Grove's `served_by` daemon variant. Atomic write via the
- * shared `writeGroveRecord` path. Used by the dogfood claim/release
- * workflow to flip ownership between the production daemon and the
- * dev daemon.
- */
-export function setGroveServedBy(
-  groveId: string,
-  servedBy: DaemonVariant,
-  mycoHome = resolveMycoHome(),
-): GroveRecord {
-  if (servedBy !== 'service' && servedBy !== 'service-dev') {
-    throw new Error(`Invalid served_by variant: ${servedBy}`);
-  }
-  const existing = loadGroveRecord(groveId, mycoHome);
-  if (!existing) throw new Error(`Unknown Grove: ${groveId}`);
-  const updated: GroveRecord = { ...existing, served_by: servedBy };
   writeGroveRecord(updated, mycoHome);
   return updated;
 }

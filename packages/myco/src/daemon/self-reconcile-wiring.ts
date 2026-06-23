@@ -2,8 +2,9 @@ import type { DaemonLogger } from './logger.js';
 import type { DaemonServer } from './server.js';
 import type { DaemonServiceState } from './service-state.js';
 import type { DaemonStateAuthority } from './daemon-state-authority.js';
+import path from 'node:path';
 import { reconcileSelf } from './self-reconcile.js';
-import { serviceLabel, serviceVariantForState } from '../service/labels.js';
+import { serviceLabel } from '../service/labels.js';
 import { getServiceManager } from '../service/manager.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -93,7 +94,7 @@ export function startSelfReconcileLoop(
 
 /** Fire-and-forget supervisor restart via `ServiceManager.restart(label)`. */
 function requestSupervisorRestart(logger: DaemonLogger, daemonService: DaemonServiceState): void {
-  const label = serviceLabel(serviceVariantForState(daemonService));
+  const label = serviceLabel(path.dirname(daemonService.stateDir));
   const serviceManager = getServiceManager();
   if (!serviceManager.supported) {
     logger.warn(

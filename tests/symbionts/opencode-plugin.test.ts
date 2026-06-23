@@ -152,6 +152,48 @@ describe('opencode plugin runtime hooks', () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
+  it('routes daemon reads to a dev home named by a runtime.home pin (no MYCO_HOME set)', async () => {
+    // The plugin runs inside opencode's host process, which does NOT carry
+    // MYCO_HOME. A dogfood project pins itself to a dev home via the
+    // `runtime.home` sibling of `runtime.command`; capture must reach THAT
+    // daemon (`<devHome>/service/daemon.json`), not the prod `~/.myco`.
+    delete process.env.MYCO_HOME;
+    const devHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-devhome-'));
+    fs.mkdirSync(path.join(devHome, 'service'), { recursive: true });
+    fs.writeFileSync(path.join(devHome, 'service', 'daemon.json'), JSON.stringify({ port: 49999 }));
+
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-pinned-'));
+    fs.mkdirSync(path.join(directory, '.myco'), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, '.myco', 'project.toml'),
+      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n\n[grove]\nid = "grv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nslug = "work"\nname = "Work"\n',
+      'utf-8',
+    );
+    // The pin that redirects this project's home to the dev daemon.
+    fs.writeFileSync(path.join(directory, '.myco', 'runtime.home'), devHome);
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const client = {
+      app: { log: vi.fn().mockResolvedValue(undefined) },
+      session: {
+        messages: vi.fn().mockResolvedValue({
+          data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'done' }] }],
+        }),
+      },
+    };
+
+    const plugin = await MycoPlugin({ client, directory, worktree: directory });
+    await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'ses-opencode-pinned' } } });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:49999/events/stop');
+
+    fs.rmSync(devHome, { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
   it('normalizes tool metadata before posting tool_use events', async () => {
     const directory = createProjectDir();
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));

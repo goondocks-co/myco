@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { loadManifests, resolvePackageRoot } from './detect.js';
 import { SymbiontInstaller, type ManagedProjectFilesResult } from './installer.js';
-import { listGroves, listRegisteredProjects, type DaemonVariant } from '../grove/registry.js';
-import { currentDaemonVariant, resolveMycoHome } from '../grove/paths.js';
+import { listGroves, listRegisteredProjects } from '../grove/registry.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import type { SymbiontManifest } from './manifest-schema.js';
 
 export interface ManagedProjectFilesOutcome {
@@ -62,19 +62,17 @@ export function reconcileManagedProjectFiles(
 export function reconcileRegisteredManagedProjectFiles(
   options: {
     mycoHome?: string;
-    servedBy?: DaemonVariant;
     manifests?: SymbiontManifest[];
     packageRoot?: string;
   } = {},
 ): ManagedProjectFilesOutcome[] {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const servedBy = options.servedBy ?? currentDaemonVariant();
   const manifests = options.manifests ?? loadManifests();
   const packageRoot = options.packageRoot ?? resolvePackageRoot();
   const outcomes: ManagedProjectFilesOutcome[] = [];
   if (manifests.length === 0) return outcomes;
 
-  for (const grove of listGroves(mycoHome, { servedBy })) {
+  for (const grove of listGroves(mycoHome)) {
     for (const project of listRegisteredProjects(grove.id, mycoHome)) {
       try {
         const result = reconcileManagedProjectFiles(

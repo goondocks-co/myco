@@ -159,6 +159,45 @@ describe('Cline Myco plugin template', () => {
     });
   });
 
+  it('routes daemon reads to a dev home named by a runtime.home pin (no MYCO_HOME set)', async () => {
+    // Cline runs inside the host process, which does NOT carry MYCO_HOME. A
+    // dogfood project pins itself to a dev home via the `runtime.home` sibling
+    // of `runtime.command`; capture must reach `<devHome>/service/daemon.json`,
+    // not the prod `~/.myco`.
+    delete process.env.MYCO_HOME;
+    const devHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cline-devhome-'));
+    fs.mkdirSync(path.join(devHome, 'service'), { recursive: true });
+    fs.writeFileSync(path.join(devHome, 'service', 'daemon.json'), JSON.stringify({ port: 48888, auth_token: 'tok' }));
+
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cline-pinned-'));
+    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    fs.writeFileSync(
+      path.join(project, '.myco', 'project.toml'),
+      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n\n[grove]\nid = "grv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nslug = "work"\nname = "Work"\n',
+      'utf-8',
+    );
+    fs.writeFileSync(path.join(project, '.myco', 'runtime.home'), devHome);
+
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    MycoClinePlugin.setup({}, {
+      session: { sessionId: 'setup-session' },
+      workspaceInfo: { rootPath: project, latestGitBranchName: 'feature/cline' },
+    });
+
+    await MycoClinePlugin.hooks.beforeModel(makeContext(project, 'conversation-pinned'));
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((url) => new URL(url).port === '48888')).toBe(true);
+
+    fs.rmSync(devHome, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
+  });
+
   it('summarizes tool output and mirrors buffer fallback decisions', () => {
     expect(summarizeToolOutput('x'.repeat(250))).toBe(`${'x'.repeat(200)}...`);
     expect(summarizeToolOutput({ ok: true })).toBe('{"ok":true}');

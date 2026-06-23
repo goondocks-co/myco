@@ -20,6 +20,7 @@ type Helpers = {
   readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => Found | null;
   readProjectRuntimeCommand: (startDir: string, traceRefusal?: (reason: string) => void) => Found | null;
   readLayeredRuntimeCommand: (startDir: string, env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => Found | null;
+  readRuntimeHomeBeside: (commandSource: string, traceRefusal?: (reason: string) => void) => string | null;
   pointsAtSelf: (target: string, selfPath: string) => boolean;
   checkRuntimeCommandTrust: (filePath: string) => { ok: boolean; reason?: string };
 };
@@ -193,6 +194,47 @@ describe('readLayeredRuntimeCommand', () => {
     const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
     const { readLayeredRuntimeCommand } = loadModule();
     expect(readLayeredRuntimeCommand(tmpRoot, { MYCO_HOME: home })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readRuntimeHomeBeside — the runtime.home sibling of the winning command pin
+// ---------------------------------------------------------------------------
+
+describe('readRuntimeHomeBeside', () => {
+  it('returns null when no runtime.home sits beside the command pin', () => {
+    const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
+    const { readRuntimeHomeBeside } = loadModule();
+    expect(readRuntimeHomeBeside(commandSource)).toBeNull();
+  });
+
+  it('returns the absolute home when a trusted runtime.home sits beside the command pin', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.home'), '/home/user/.myco-dev\n');
+    const { readRuntimeHomeBeside } = loadModule();
+    expect(readRuntimeHomeBeside(commandSource)).toBe('/home/user/.myco-dev');
+  });
+
+  it('expands a leading ~ in the runtime.home value', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.home'), '~/.myco-dev');
+    const { readRuntimeHomeBeside } = loadModule();
+    expect(readRuntimeHomeBeside(commandSource)).toBe(path.join(os.homedir(), '.myco-dev'));
+  });
+
+  it('refuses (returns null + traces) a group-writable runtime.home', () => {
+    if (!POSIX) return;
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    const commandSource = path.join(tmpRoot, '.myco', 'runtime.command');
+    const homePin = path.join(tmpRoot, '.myco', 'runtime.home');
+    fs.writeFileSync(homePin, '/home/user/.myco-dev');
+    fs.chmodSync(homePin, 0o664);
+    const traces: string[] = [];
+    const { readRuntimeHomeBeside } = loadModule();
+    expect(readRuntimeHomeBeside(commandSource, (reason) => traces.push(reason))).toBeNull();
+    expect(traces.some((t) => t.includes('writable by group/other'))).toBe(true);
   });
 });
 
@@ -451,5 +493,77 @@ describe('maybeRedirect (integration)', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stderr).toContain('[myco] redirect: skip (MYCO_REDIRECTED already set)');
+  });
+
+  // -------------------------------------------------------------------------
+  // runtime.home — the winning pin's sibling carries MYCO_HOME to the re-exec
+  // -------------------------------------------------------------------------
+
+  /** A pinned binary that prints the MYCO_HOME it was exec'd with. */
+  function makeHomeEchoBinary(name: string): string {
+    const pinned = path.join(tmpRoot, name);
+    fs.writeFileSync(pinned, '#!/bin/sh\nprintf "home=%s" "${MYCO_HOME}"\n', { mode: 0o755 });
+    return pinned;
+  }
+
+  it('carries a trusted project runtime.home into the re-exec as MYCO_HOME', () => {
+    if (!POSIX) return;
+    const { shimPath } = makeShim();
+    const home = makeMycoHome();
+    const pinned = makeHomeEchoBinary('home-echo.sh');
+
+    // Project-scope pin + sibling runtime.home pointing at a dev home.
+    const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-'));
+    const devHome = fs.mkdtempSync(path.join(tmpRoot, 'dev-home-'));
+    fs.mkdirSync(path.join(projectRoot, '.myco'));
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), pinned);
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.home'), devHome);
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe(`home=${devHome}`);
+  });
+
+  it('leaves MYCO_HOME at the inherited prod default when no runtime.home pin exists', () => {
+    if (!POSIX) return;
+    const { shimPath } = makeShim();
+    const home = makeMycoHome();
+    const pinned = makeHomeEchoBinary('home-echo-absent.sh');
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: tmpRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    // No runtime.home beside the machine pin → the child inherits the prod home.
+    expect(res.stdout).toBe(`home=${home}`);
+  });
+
+  it('refuses an untrusted (group-writable) runtime.home — MYCO_HOME stays prod', () => {
+    if (!POSIX) return;
+    const { shimPath } = makeShim();
+    const home = makeMycoHome();
+    const pinned = makeHomeEchoBinary('home-echo-untrusted.sh');
+    const devHome = fs.mkdtempSync(path.join(tmpRoot, 'dev-home-untrusted-'));
+
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
+    const homePin = path.join(home, 'runtime.home');
+    fs.writeFileSync(homePin, devHome);
+    fs.chmodSync(homePin, 0o664); // group-writable → refused by G7
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: tmpRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    // The untrusted dev-home pin is refused; the child keeps the prod home.
+    expect(res.stdout).toBe(`home=${home}`);
   });
 });

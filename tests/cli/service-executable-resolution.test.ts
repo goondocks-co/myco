@@ -19,28 +19,28 @@ describe('resolveServiceExecutable', () => {
     else process.env.MYCO_HOME = originalHome;
   });
 
-  test('returns daemon.json command for dev variant when present', () => {
-    const dir = path.join(tmpHome, 'service-dev');
+  test('returns daemon.json command from the given home when present', () => {
+    const dir = path.join(tmpHome, 'service');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1, port: 1, command: '/abs/path/to/myco' }));
-    expect(resolveServiceExecutable('dev')).toBe('/abs/path/to/myco');
+    expect(resolveServiceExecutable(tmpHome)).toBe('/abs/path/to/myco');
   });
 
-  test('returns daemon.json command for prod variant when present', () => {
+  test('reads the <home>/service/ dir for the running daemon command', () => {
     const dir = path.join(tmpHome, 'service');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1, port: 1, command: '/abs/myco-prod' }));
-    expect(resolveServiceExecutable('prod')).toBe('/abs/myco-prod');
+    expect(resolveServiceExecutable(tmpHome)).toBe('/abs/myco-prod');
   });
 
   test('falls back to process.execPath when daemon.json missing', () => {
-    expect(resolveServiceExecutable('prod')).toBe(process.execPath);
+    expect(resolveServiceExecutable(tmpHome)).toBe(process.execPath);
   });
 
   test('falls back to process.execPath when daemon.json has no command field', () => {
-    const dir = path.join(tmpHome, 'service-dev');
+    const dir = path.join(tmpHome, 'service');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1, port: 1 }));
-    expect(resolveServiceExecutable('dev')).toBe(process.execPath);
+    expect(resolveServiceExecutable(tmpHome)).toBe(process.execPath);
   });
 });

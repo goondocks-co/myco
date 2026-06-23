@@ -418,8 +418,8 @@ export function updateTierConfigRaw(
  * `relocateMachineFieldsFromProject` (the save-path guard) so both move the
  * exact same set with identical semantics.
  *
- * `daemon.port` is intentionally absent — it is machine-derived and must NEVER
- * be re-written into machine config (see migrateLegacyProjectFields).
+ * `daemon.port` is not relocated: the project-tier value is stripped as legacy,
+ * and the machine-tier value is set directly in the home's `config.yaml`.
  */
 const MACHINE_RELOCATE_FIELDS: ReadonlyArray<readonly [readonly string[], readonly string[]]> = [
   [['daemon', 'log_level'], ['daemon', 'log_level']],

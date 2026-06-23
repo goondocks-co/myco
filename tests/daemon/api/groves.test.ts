@@ -171,7 +171,7 @@ describe('Grove discovery API', () => {
     const body = response.body as {
       projects: Array<{
         project_id: string;
-        grove: { id: string; name: string; slug: string; served_by: string };
+        grove: { id: string; name: string; slug: string };
         team: { team_id: string } | null;
       }>;
     };
@@ -181,7 +181,6 @@ describe('Grove discovery API', () => {
       id: grove.id,
       name: grove.name,
       slug: grove.slug,
-      served_by: grove.served_by,
     });
     expect(body.projects[0].team).toEqual({ team_id: teamId });
   });

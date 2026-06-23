@@ -15,7 +15,7 @@ import {
   registerProjectInGrove,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
-import { resolveGroveDbPath, setDevServiceMode } from '@myco/grove/paths.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import { vi } from '../helpers/vi-shim.js';
 import { run } from '@myco/cli/grove.js';
@@ -202,35 +202,28 @@ describe('myco grove CLI', () => {
     log.mockRestore();
   });
 
-  it('grove create stamps served_by from the running daemon variant', async () => {
-    setDevServiceMode(true);
-    try {
-      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-      await run(['create', 'DevOne']);
-      const created = listGrovesByName('DevOne');
-      expect(created?.served_by).toBe('service-dev');
-      expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('served_by service-dev');
-      log.mockRestore();
-    } finally {
-      setDevServiceMode(false);
-    }
-
-    const log2 = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('grove create logs the grove name and id (no served_by)', async () => {
+    // Ownership is the home now; the create confirmation no longer echoes a
+    // variant string.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await run(['create', 'ProdOne']);
     const prod = listGrovesByName('ProdOne');
-    expect(prod?.served_by).toBe('service');
-    expect(log2.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('served_by service');
-    log2.mockRestore();
+    expect(prod).not.toBeNull();
+    const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(out).toContain('ProdOne');
+    expect(out).not.toContain('served_by');
+    log.mockRestore();
   });
 
-  it('grove list includes served_by per row', async () => {
-    createGrove('Alpha', home, { servedBy: 'service' });
-    createGrove('Beta', home, { servedBy: 'service-dev' });
+  it('grove list includes name, slug, id, and mode per row', async () => {
+    createGrove('Alpha', home);
+    createGrove('Beta', home);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await run(['list']);
     const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(out).toMatch(/Alpha \(alpha\).*service\b/);
-    expect(out).toMatch(/Beta \(beta\).*service-dev/);
+    expect(out).toMatch(/Alpha \(alpha\)/);
+    expect(out).toMatch(/Beta \(beta\)/);
+    expect(out).not.toContain('served_by');
     log.mockRestore();
   });
 

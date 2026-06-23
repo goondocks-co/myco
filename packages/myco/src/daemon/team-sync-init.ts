@@ -808,9 +808,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * (re)assigned project is `body.grove_id`, not the request-context Grove; this
    * targets THAT Grove. Reuses the same forEachGrove fan-out as flushAllGroves
    * (filtered to one Grove via `shouldVisitGrove`) so DB pinning + the served-by
-   * boundary are handled identically: a Grove served by another daemon variant
-   * is not in this daemon's `listGroves(servedBy)` set, so this is a no-op for it
-   * and the owning daemon's flush-tick backstop covers it (no cross-service write).
+   * boundary are handled identically: a Grove in another daemon's home
+   * is not in this daemon's `listGroves()` set, so this is a no-op for it
+   * and the owning daemon's flush-tick backstop covers it (no cross-home write).
    * Runs the full per-Grove `reconcileClient` (membership + non-member purge +
    * self-row + backfill + flush) so an assigned project starts syncing — and a
    * removed project's rows are purged — without waiting for the next flush tick.

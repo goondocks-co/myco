@@ -307,10 +307,18 @@ function prepareClaudeRun(setup: HarnessScopeSetup): PreparedClaudeRun {
     CLAUDE_CODE_PLUGIN_CACHE_DIR:
       process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
   };
+  const claudeCodeExecutable = resolveClaudeCodeExecutable();
+  if (!claudeCodeExecutable) {
+    throw new Error(
+      'Claude Code CLI not found. The claude-sdk runtime shells out to the Claude Code CLI, ' +
+        'which Myco does not bundle. Install Claude Code (https://claude.com/claude-code), ' +
+        'or switch the agent runtime to the OpenAI provider.',
+    );
+  }
   return {
     toolServer,
     env,
-    claudeCodeExecutable: resolveClaudeCodeExecutable(),
+    claudeCodeExecutable,
     localProvider: isLocalProvider(setup.provider),
   };
 }

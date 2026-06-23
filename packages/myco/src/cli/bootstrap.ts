@@ -40,11 +40,10 @@ import {
 } from '../grove/global-config-migration.js';
 import {
   ensureDefaultGrove,
-  resolveDefaultGroveForVariant,
-  type DaemonVariant,
+  resolveDefaultGrove,
   type GroveRecord,
 } from '../grove/registry.js';
-import { daemonVariantFromEnvValue, resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome } from '../grove/paths.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -81,29 +80,24 @@ export interface BootstrapResult {
 export interface GlobalBootstrapStartupDecision {
   shouldRun: boolean;
   defaultGroveAbsent: boolean;
-  servedBy: DaemonVariant;
   mycoHome: string;
 }
 
 /**
- * Startup bootstrap is needed when this daemon variant lacks its default
- * Grove. The default Grove is the durable "has this variant bootstrapped"
- * signal — it persists across daemon restarts, and dev/prod each own a
- * distinct one (so service-dev still bootstraps on a machine where prod has
- * already run). Launcher presence is NOT a trigger: the launcher
- * unification retired the global trampolines, and bootstrap's cleanup step
- * deletes any that linger — keying on their absence would re-run bootstrap
- * (and its migration walker) on every start.
+ * Startup bootstrap is needed when this home lacks a default Grove.
+ * The default Grove is the durable "has this daemon bootstrapped" signal
+ * — it persists across daemon restarts. Launcher presence is NOT a
+ * trigger: the launcher unification retired the global trampolines, and
+ * bootstrap's cleanup step deletes any that linger — keying on their
+ * absence would re-run bootstrap (and its migration walker) on every start.
  */
 export function shouldRunGlobalBootstrap(
   mycoHome: string = resolveMycoHome(),
-  servedBy: DaemonVariant = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT),
 ): GlobalBootstrapStartupDecision {
-  const defaultGroveAbsent = resolveDefaultGroveForVariant(mycoHome, { servedBy }) === null;
+  const defaultGroveAbsent = resolveDefaultGrove(mycoHome) === null;
   return {
     shouldRun: defaultGroveAbsent,
     defaultGroveAbsent,
-    servedBy,
     mycoHome,
   };
 }
@@ -185,10 +179,8 @@ export function runSymbiontDetection(
  *   - Migration walker LAST — it operates on already-registered
  *     projects and doesn't depend on launcher state.
  *
- * Variant-aware: `MYCO_SERVICE_VARIANT=dev` produces a `default-dev`
- * Grove with `served_by=service-dev`; unset or `service` produces
- * `default` / `service`. Dev and prod daemons can coexist on the same
- * machine — each has its own default Grove.
+ * Home-aware: each `MYCO_HOME` has its own `groves/` tree; daemons in
+ * distinct homes coexist without conflict.
  *
  * Migration is fire-once-per-project. Call sites:
  *   - daemon first-start (greenfield bootstrap)
@@ -206,8 +198,7 @@ export function runSymbiontDetection(
 export function runGlobalBootstrap(
   packageRoot: string = resolvePackageRoot(),
 ): BootstrapResult {
-  const servedBy = daemonVariantFromEnvValue(process.env.MYCO_SERVICE_VARIANT);
-  const defaultGrove = ensureDefaultGrove(undefined, { servedBy });
+  const defaultGrove = ensureDefaultGrove();
   const symbionts = runSymbiontDetection(packageRoot);
   // Per-project global-install migration. Sentinel-gated: projects
   // already migrated return alreadyDone immediately. Hot path on every

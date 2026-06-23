@@ -4,8 +4,8 @@
  * checkAndStage   — resolves the channel target via release-resolver;
  *                   if the target is strictly newer than `currentVersion` AND
  *                   not already staged, stages the binary via `stageBinary`.
- *                   No-ops on dev builds (`isUpdateExempt()`), when already
- *                   staged, or when the resolved version is not strictly newer.
+ *                   No-ops on manual-channel machines, when already staged,
+ *                   or when the resolved version is not strictly newer.
  *
  * buildAdoptJobFn — returns the `RunnerJob` fn body for `upgrade-adopt`.
  *                   Registered as `runIn: ['idle', 'sleep']` so it only fires
@@ -39,7 +39,8 @@ import {
   versionDir,
   versionBinaryPath,
 } from '../install/managed-binary.js';
-import { isUpdateExempt } from '../daemon/update-checker.js';
+import { releaseChannelIsManual } from '../daemon/update-checker.js';
+import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
@@ -59,10 +60,10 @@ export interface CheckAndStageDeps {
   /** Check if a path exists (defaults to fs.existsSync). */
   existsSync?: (p: string) => boolean;
   /**
-   * Override the dev-build exemption gate. Defaults to `isUpdateExempt()`.
-   * Tests that want to exercise non-dev paths should pass `() => false`.
+   * Override the manual-channel gate. Defaults to `releaseChannelIsManual()`.
+   * Tests pass `() => true` to simulate a manual-channel machine.
    */
-  isDevBuild?: () => boolean;
+  isManualChannel?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ export interface CheckAndStageDeps {
 
 export type CheckAndStageResult =
   | { status: 'staged'; version: string }
-  | { status: 'noop'; reason: 'dev-build' | 'up-to-date' | 'already-staged' }
+  | { status: 'noop'; reason: 'manual-channel' | 'up-to-date' | 'already-staged' }
   | { status: 'error'; error: string };
 
 // ---------------------------------------------------------------------------
@@ -107,10 +108,17 @@ export interface AutoAdoptDeps {
   /** Override initiateAdopt for testing. */
   initiateAdopt?: typeof initiateAdopt;
   /**
-   * Override the dev-build exemption gate. Defaults to `isUpdateExempt()`.
-   * Tests pass `() => false` to exercise non-dev paths.
+   * Override the manual-channel gate. Defaults to `releaseChannelIsManual()`.
+   * Tests pass `() => true` to simulate a manual-channel machine.
    */
-  isDevBuild?: () => boolean;
+  isManualChannel?: () => boolean;
+  /**
+   * Override the default-home gate. Defaults to `isDefaultMycoHome`. Only the
+   * default home (~/.myco) self-updates via adopt; a non-default home runs a
+   * separately-pinned binary. Tests pass `() => true` to exercise the adopt path
+   * from a tmpdir home.
+   */
+  isDefaultHome?: (home: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +130,7 @@ export interface AutoAdoptDeps {
  * and not already staged, download+verify+stage it into `versions/<v>/`.
  *
  * NO-OPS when:
- *   - `isUpdateExempt()` — dev build; dogfood daemon must never auto-stage.
+ *   - `releaseChannelIsManual()` — manual-channel machine; operator must initiate.
  *   - The resolved version is not strictly > currentVersion.
  *   - The versioned binary already exists on disk (already staged or adopted).
  *
@@ -141,10 +149,10 @@ export async function checkAndStage(
   },
   deps: CheckAndStageDeps = {},
 ): Promise<CheckAndStageResult> {
-  // Dev builds must never auto-stage or adopt.
-  const devBuildCheck = deps.isDevBuild ?? isUpdateExempt;
-  if (devBuildCheck()) {
-    return { status: 'noop', reason: 'dev-build' };
+  // Manual-channel machines must never auto-stage or adopt.
+  const manualChannelCheck = deps.isManualChannel ?? releaseChannelIsManual;
+  if (manualChannelCheck()) {
+    return { status: 'noop', reason: 'manual-channel' };
   }
 
   const { home, platform, localAppData, logger, channel } = opts;
@@ -312,9 +320,9 @@ export function buildAdoptJobFn(
 ): (ctx: JobRunContext) => Promise<JobOutcome | void> {
   return async (_ctx: JobRunContext): Promise<void> => {
     try {
-      // Dev-build no-op (belt-and-suspenders — checkAndStage also guards).
-      const devBuildCheck = adoptDeps.isDevBuild ?? isUpdateExempt;
-      if (devBuildCheck()) return;
+      // Manual-channel no-op (belt-and-suspenders — checkAndStage also guards).
+      const manualChannelCheck = adoptDeps.isManualChannel ?? releaseChannelIsManual;
+      if (manualChannelCheck()) return;
 
       const {
         currentVersion,
@@ -327,6 +335,13 @@ export function buildAdoptJobFn(
         projectRoot,
         logger,
       } = adoptDeps;
+
+      // Binary self-update converges the canonical install (~/.myco). A
+      // non-default home runs a separately-pinned binary; adopting a release
+      // there can never converge (the supervisor re-launches the pinned binary),
+      // so never attempt it.
+      const isDefaultHomeCheck = adoptDeps.isDefaultHome ?? isDefaultMycoHome;
+      if (!isDefaultHomeCheck(home)) return;
 
       // inFlight guard: an adopt is already in progress → no-op.
       if (inProgressInFlight(stateDir) !== null) return;

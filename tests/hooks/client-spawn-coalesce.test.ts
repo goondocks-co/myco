@@ -7,16 +7,20 @@ import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
 
 // Pin MYCO_HOME to an isolated temp dir BEFORE importing anything that
 // resolves daemon state paths. Without this, `resolveServiceDaemonStatePath`
-// returns the user's real `~/.myco/service{,-dev}/daemon.json` and the
-// tests would (a) delete a running daemon's state file and (b) be poisoned
-// by a real daemon's live pid when the dev-service-mode tests flip on.
+// returns the user's real `~/.myco/service/daemon.json` and the
+// tests would delete a running daemon's state file.
 const TEST_MYCO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-spawn-coalesce-home-'));
 const PRIOR_MYCO_HOME = process.env.MYCO_HOME;
 process.env.MYCO_HOME = TEST_MYCO_HOME;
 
-import { resolveServiceDaemonStatePath, setDevServiceMode } from '@myco/grove/paths';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
+import { serviceLabel } from '@myco/service/labels';
 import * as childProcessActual__ns from 'node:child_process';
 import { FakeServiceManager, noServiceManager } from '../helpers/fake-service-manager';
+
+// The label for the test home — a hash-suffixed label since TEST_MYCO_HOME is
+// not the canonical default home (~/.myco).
+const TEST_LABEL = serviceLabel(TEST_MYCO_HOME);
 
 // Mock child_process.spawn at module-boundary so the `spawn` import inside
 // hooks/client.ts resolves to our spy. vi.spyOn doesn't work here — the
@@ -67,7 +71,6 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
   });
 
   afterEach(() => {
-    setDevServiceMode(false);
     try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -171,7 +174,6 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
   let statePath: string;
 
   beforeEach(() => {
-    setDevServiceMode(false);
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-svc-defer-'));
     statePath = resolveServiceDaemonStatePath();
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
@@ -180,7 +182,6 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
   });
 
   afterEach(() => {
-    setDevServiceMode(false);
     try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -195,8 +196,8 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
 
   it('service installed AND running: no raw spawn, no start call', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', {
+    mgr.installed.add(TEST_LABEL);
+    mgr.statuses.set(TEST_LABEL, {
       installed: true, running: true, pid: 4242, lastExitCode: null, unitPath: '/x.plist',
     });
     await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
@@ -206,40 +207,31 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
 
   it('service installed but NOT running: calls mgr.start(label), no raw spawn', async () => {
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', {
+    mgr.installed.add(TEST_LABEL);
+    mgr.statuses.set(TEST_LABEL, {
       installed: true, running: false, pid: null, lastExitCode: 0, unitPath: '/x.plist',
     });
     await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(mgr.startCalls).toEqual(['co.goondocks.myco']);
+    expect(mgr.startCalls).toEqual([TEST_LABEL]);
   });
 
-  it('dev variant installed and not running: starts the dev label', async () => {
+  it('client ignores a foreign-home service and starts its own label', async () => {
+    // Two distinct homes → two distinct labels. The client keyed on this home
+    // only checks for its own label and ignores any other home's label.
     const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', {
-      installed: true, running: false, pid: null, lastExitCode: null, unitPath: '/x.plist',
+    const foreignLabel = 'co.goondocks.myco.ffffffff'; // arbitrary other-home label
+    mgr.installed.add(foreignLabel);
+    mgr.statuses.set(foreignLabel, {
+      installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/foreign.plist',
     });
-    setDevServiceMode(true);
-    await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(mgr.startCalls).toEqual(['co.goondocks.myco-dev']);
-  });
-
-  it('prod client ignores installed dev service and starts prod service', async () => {
-    const mgr = new FakeServiceManager();
-    mgr.installed.add('co.goondocks.myco-dev');
-    mgr.statuses.set('co.goondocks.myco-dev', {
-      installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/dev.plist',
-    });
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', {
-      installed: true, running: false, pid: null, lastExitCode: 78, unitPath: '/prod.plist',
+    mgr.installed.add(TEST_LABEL);
+    mgr.statuses.set(TEST_LABEL, {
+      installed: true, running: false, pid: null, lastExitCode: 78, unitPath: '/own.plist',
     });
     await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(mgr.startCalls).toEqual(['co.goondocks.myco']);
+    expect(mgr.startCalls).toEqual([TEST_LABEL]);
   });
 
   it('unsupported platform: falls back to legacy raw spawn', async () => {
@@ -254,8 +246,8 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
       override async start(_label: string): Promise<void> { throw new Error('boom'); }
     }
     const mgr = new ThrowingStart();
-    mgr.installed.add('co.goondocks.myco');
-    mgr.statuses.set('co.goondocks.myco', {
+    mgr.installed.add(TEST_LABEL);
+    mgr.statuses.set(TEST_LABEL, {
       installed: true, running: false, pid: null, lastExitCode: null, unitPath: null,
     });
     // Must not throw.

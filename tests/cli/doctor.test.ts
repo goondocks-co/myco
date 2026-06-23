@@ -514,10 +514,7 @@ describe('doctor --fix migration retry', () => {
   it('re-runs the walker per failed project and reports succeeded when the prior error clears', async () => {
     await withScopedDb(async (db) => {
       const mycoHome = path.join(tmpHome, '.myco');
-      // 'service' is the default daemon variant returned by
-      // currentDaemonVariant() — match it so the walker scopes to the
-      // Grove we just created.
-      const grove = createGrove('default', mycoHome, { servedBy: 'service' });
+      const grove = createGrove('default', mycoHome);
       registerProjectInGrove(grove.id, {
         projectId: 'proj_retry_ok',
         projectName: 'retry-ok',

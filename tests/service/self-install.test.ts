@@ -3,10 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureSelfInstalledAsService } from '../../packages/myco/src/service/self-install';
+import { serviceLabel } from '../../packages/myco/src/service/labels';
 import { LaunchdServiceManager, type LaunchctlRunner } from '../../packages/myco/src/service/launchd';
 import { getServiceManager } from '../../packages/myco/src/service/manager';
 import { SERVICE_UNIT_DIR_ENV } from '../../packages/myco/src/service/paths';
 import { FakeServiceManager } from '../helpers/fake-service-manager';
+
+// The default home (`~/.myco`) yields the canonical `co.goondocks.myco` label;
+// a non-default home (dogfood) yields a distinct, hash-suffixed label.
+const DEFAULT_HOME = path.join(os.homedir(), '.myco');
 
 // Local alias matches the legacy test naming. The shared fake exposes the
 // same call-tracking arrays (installCalls, uninstallCalls, ...) and treats
@@ -50,28 +55,30 @@ afterEach(() => {
 });
 
 describe('ensureSelfInstalledAsService', () => {
-  test('installs the prod variant when the platform supports it and no unit exists', async () => {
+  test('installs the default-home daemon when the platform supports it and no unit exists', async () => {
     const mgr = new FakeManager();
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(1);
     expect(mgr.installCalls[0].label).toBe('co.goondocks.myco');
     expect(mgr.installCalls[0].variant).toBe('prod');
     expect(logger.infos.some((e) => e.message.includes('Installed managed service'))).toBe(true);
   });
 
-  test('installs the dev variant when requested', async () => {
+  test('installs a non-default (dogfood) home daemon with a distinct label', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dogfood-'));
     const mgr = new FakeManager();
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'dev', executable: fakeBinary() });
-    expect(mgr.installCalls[0].label).toBe('co.goondocks.myco-dev');
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: home, executable: fakeBinary() });
+    expect(mgr.installCalls[0].label).toBe(serviceLabel(home));
+    expect(mgr.installCalls[0].label).not.toBe('co.goondocks.myco');
     expect(mgr.installCalls[0].variant).toBe('dev');
   });
 
   test('passes the current spec to install when a unit is already present, so content-compare can refresh a stale unit file', async () => {
     const mgr = new FakeManager({ preInstalled: true });
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(1);
     expect(mgr.installCalls[0].label).toBe('co.goondocks.myco');
     expect(logger.infos.some((e) => e.message.includes('Wrote updated managed service'))).toBe(true);
@@ -80,7 +87,7 @@ describe('ensureSelfInstalledAsService', () => {
   test('calls install without force (a supervisor reload would terminate the calling daemon)', async () => {
     const mgr = new FakeManager({ preInstalled: true });
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(1);
     expect(mgr.installOptions[0]?.force).toBeFalsy();
   });
@@ -90,7 +97,7 @@ describe('ensureSelfInstalledAsService', () => {
     mgr.installResultOverride = { changed: false, supervisorReloaded: false };
     mgr.installed.add('co.goondocks.myco');
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(logger.infos.some((e) => e.message.includes('managed service'))).toBe(false);
     expect(logger.debugs.some((e) => e.message.includes('unchanged'))).toBe(true);
   });
@@ -98,7 +105,7 @@ describe('ensureSelfInstalledAsService', () => {
   test('skips and logs info when the platform is unsupported', async () => {
     const mgr = new FakeManager({ supported: false, platformName: 'unsupported (win32)' });
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(0);
     expect(mgr.statusCalls).toBe(0);
     expect(logger.infos.some((e) => e.message.includes('Skipping service install'))).toBe(true);
@@ -108,7 +115,7 @@ describe('ensureSelfInstalledAsService', () => {
     const mgr = new FakeManager();
     mgr.install = async () => { throw new Error('launchctl exploded'); };
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
     expect(logger.warns).toHaveLength(1);
     expect(logger.warns[0].meta?.error).toBe('launchctl exploded');
   });
@@ -119,7 +126,7 @@ describe('ensureSelfInstalledAsService', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-bun-'));
     const bun = path.join(dir, 'bun');
     fs.writeFileSync(bun, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: bun });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: bun });
     expect(mgr.installCalls).toHaveLength(0);
     expect(logger.warns).toHaveLength(1);
     expect(String(logger.warns[0].meta?.error)).toMatch(/script-runner|standalone daemon binary/);
@@ -150,13 +157,14 @@ describe('ensureSelfInstalledAsService', () => {
       ? new Set(fs.readdirSync(realLaunchAgentsBefore))
       : new Set<string>();
 
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: DEFAULT_HOME, executable: fakeBinary() });
 
     // Sandbox dir got the plist.
     const sandboxPlists = fs.readdirSync(sandboxAgentsDir).filter((f) => f.endsWith('.plist'));
     expect(sandboxPlists.length).toBeGreaterThan(0);
     // Plist name carries the sandbox label suffix so two parallel sandboxes
-    // can't race for the same launchd registration.
+    // can't race for the same launchd registration. The default home keeps the
+    // canonical base label (`co.goondocks.myco`) with only the sandbox suffix.
     expect(sandboxPlists[0]).toMatch(/^co\.goondocks\.myco\.sandbox-[0-9a-f]{8}\.plist$/);
 
     // Real ~/Library/LaunchAgents/ was not mutated.
@@ -171,16 +179,16 @@ describe('ensureSelfInstalledAsService', () => {
     expect(bootstrapCall![2].startsWith(sandboxAgentsDir)).toBe(true);
   });
 
-  // Variant-pinned regression for the canonical-plist hijack. Repro from the
-  // smoke matrix: `MYCO_SERVICE_VARIANT=dev` explicitly set on the parent
-  // daemon, which then bootstraps the sandbox plist; launchd's RunAtLoad
-  // immediately spawns a child daemon from that plist. If the plist
-  // EnvironmentVariables block does NOT carry MYCO_LAUNCH_AGENTS_DIR, the
-  // child resolves to the real `~/Library/LaunchAgents/`, computes the
-  // canonical (un-suffixed) label, and overwrites the user's real
-  // co.goondocks.myco-dev.plist with sandbox MYCO_HOME paths.
-  test('sandbox install with variant=dev writes a plist whose env propagates MYCO_LAUNCH_AGENTS_DIR (no canonical-plist hijack via supervisor-spawned child)', async () => {
+  // Regression for the canonical-plist hijack. Repro from the smoke matrix:
+  // a dogfood (non-default-home) daemon bootstraps the sandbox plist;
+  // launchd's RunAtLoad immediately spawns a child daemon from that plist. If
+  // the plist EnvironmentVariables block does NOT carry MYCO_LAUNCH_AGENTS_DIR,
+  // the child resolves to the real `~/Library/LaunchAgents/`, computes the
+  // un-suffixed label, and overwrites the user's real plist with sandbox
+  // MYCO_HOME paths.
+  test('sandbox install of a dogfood home writes a plist whose env propagates MYCO_LAUNCH_AGENTS_DIR (no canonical-plist hijack via supervisor-spawned child)', async () => {
     if (process.platform !== 'darwin') return;
+    const dogfoodHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dogfood-home-'));
     const sandboxAgentsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sandbox-launchagents-dev-'));
     process.env[SERVICE_UNIT_DIR_ENV] = sandboxAgentsDir;
 
@@ -199,17 +207,17 @@ describe('ensureSelfInstalledAsService', () => {
     };
 
     const logger = new CapturingLogger();
-    await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'dev', executable: fakeBinary() });
+    await ensureSelfInstalledAsService(logger, { manager: mgr, mycoHome: dogfoodHome, executable: fakeBinary() });
 
     expect(capturedSpec).not.toBeNull();
-    // Sandbox-suffixed label.
-    expect(capturedSpec!.label).toMatch(/^co\.goondocks\.myco-dev\.sandbox-[0-9a-f]{8}$/);
+    // The home suffix (distinct dogfood home) and sandbox suffix stack.
+    expect(capturedSpec!.label).toMatch(/^co\.goondocks\.myco\.[0-9a-f]{8}\.sandbox-[0-9a-f]{8}$/);
     // The plist env block MUST carry MYCO_LAUNCH_AGENTS_DIR so the supervisor-
     // spawned child daemon inherits the sandbox isolation and does NOT fall
     // back to the real ~/Library/LaunchAgents/.
     expect(capturedSpec!.env[SERVICE_UNIT_DIR_ENV]).toBe(sandboxAgentsDir);
-    // Sanity: the standard env block is intact.
-    expect(capturedSpec!.env.MYCO_SERVICE_VARIANT).toBe('dev');
-    expect(capturedSpec!.env.MYCO_HOME).toContain(path.basename(process.env.MYCO_HOME ?? '.myco'));
+    // Sanity: the standard env block is intact (managed signal + home).
+    expect(capturedSpec!.env.MYCO_DAEMON_MANAGED).toBe('1');
+    expect(capturedSpec!.env.MYCO_HOME).toBe(dogfoodHome);
   });
 });

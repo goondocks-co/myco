@@ -21,9 +21,6 @@
  *                          Switching to `stable` while running a beta adopts the
  *                          stable target (the beta→stable revert path).
  *
- * Dev-build guard: `myco upgrade` REFUSES on a dev/source checkout
- * (`isUpdateExempt()` → true). `--check` still reports.
- *
  * CLI path for adopt (via `initiateAdopt`):
  *   POSIX — inline orchestration (this process is not the image being replaced)
  *   win32 — re-execs via `resolveOrchestratorBinary` (temp copy of self)
@@ -51,7 +48,6 @@ import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import {
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
-  isUpdateExempt,
 } from '../daemon/update-checker.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
@@ -90,8 +86,6 @@ export interface UpgradeDeps {
   stageDeps?: StageBinaryDeps;
   /** Inject initiateAdopt (for testing the adopt path). */
   initiateAdopt?: typeof initiateAdopt;
-  /** Override the dev-build exemption check. */
-  isDevBuild?: () => boolean;
   /** Override the current version. */
   currentVersion?: string;
   /** Override myco home dir. */
@@ -189,15 +183,6 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   if (isCheck) {
     await runCheck(channel, deps);
     return;
-  }
-
-  // Dev-build guard for upgrade (not check). Refuse before any side effects.
-  const devBuildCheck = deps.isDevBuild ?? isUpdateExempt;
-  if (devBuildCheck()) {
-    console.error(
-      'myco upgrade: running a dev build — upgrade is managed by your checkout, not the binary installer.',
-    );
-    process.exit(1);
   }
 
   // Persist channel change now that we are on the actual-upgrade path.

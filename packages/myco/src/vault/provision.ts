@@ -23,8 +23,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveProjectVaultDir, currentDaemonVariant } from '../grove/paths.js';
-import { resolveDefaultGroveForVariant } from '../grove/registry.js';
+import { resolveProjectVaultDir } from '../grove/paths.js';
+import { resolveDefaultGrove } from '../grove/registry.js';
 import { ensureProjectManifest } from '../config/project-manifest.js';
 import { ensureVaultGitignoreCurrent } from './gitignore.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -101,8 +101,7 @@ export function ensureProjectVault(
   // Resolve the local default Grove for this daemon variant. Callers
   // that need a non-default Grove can pass `options.groveSlug` (test
   // fixtures and future "claim" operations).
-  const variant = currentDaemonVariant();
-  const defaultGrove = resolveDefaultGroveForVariant(undefined, { servedBy: variant });
+  const defaultGrove = resolveDefaultGrove(undefined);
   const projectName = options.projectName ?? path.basename(projectRoot);
 
   const manifest = ensureProjectManifest(vaultDir, {

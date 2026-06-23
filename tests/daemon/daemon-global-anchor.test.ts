@@ -52,22 +52,22 @@ describe('daemon-global anchor context', () => {
 describe('phantom bootstrap mints no project id', () => {
   let tmpHome: string;
   let prevHome: string | undefined;
-  let prevVariant: string | undefined;
+  let prevManaged: string | undefined;
 
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-phantom-home-'));
     prevHome = process.env.MYCO_HOME;
-    prevVariant = process.env.MYCO_SERVICE_VARIANT;
+    prevManaged = process.env.MYCO_DAEMON_MANAGED;
     process.env.MYCO_HOME = tmpHome;
-    // A service variant forces the project-less phantom boot path.
-    process.env.MYCO_SERVICE_VARIANT = 'service';
+    // MYCO_DAEMON_MANAGED forces the project-less phantom boot path.
+    process.env.MYCO_DAEMON_MANAGED = '1';
   });
 
   afterEach(() => {
     if (prevHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = prevHome;
-    if (prevVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-    else process.env.MYCO_SERVICE_VARIANT = prevVariant;
+    if (prevManaged === undefined) delete process.env.MYCO_DAEMON_MANAGED;
+    else process.env.MYCO_DAEMON_MANAGED = prevManaged;
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 

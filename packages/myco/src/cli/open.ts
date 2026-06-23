@@ -1,17 +1,18 @@
-import { connectToDaemon } from './shared.js';
 import { openBrowser } from './open-browser.js';
+import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
+import { probeMycoDaemon } from '../daemon/eviction.js';
 
-export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const client = await connectToDaemon(vaultDir);
+export async function run(_args: string[]): Promise<void> {
+  const port = resolveGlobalDaemonPort();
 
-  const info = client.getInfo();
-  if (!info) {
-    console.error('Could not read daemon state. Try: myco restart');
+  if (!(await probeMycoDaemon(port))) {
+    console.error(
+      `No Myco daemon is answering on port ${port}. Install the platform service with: myco service install`,
+    );
     process.exit(1);
   }
 
-  const url = `http://localhost:${info.port}/`;
-
+  const url = `http://localhost:${port}/`;
   openBrowser(url);
   console.log(`Opened ${url}`);
 }

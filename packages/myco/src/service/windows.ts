@@ -3,15 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderWindowsServiceScript } from './windows-task.js';
-import { spawnCombinedOutput } from './run-command.js';
+import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import { requestCooperativeShutdown } from './cooperative-shutdown.js';
-import { SERVICE_LABEL_DEV } from './labels.js';
 import {
-  resolveMycoHome,
+  resolveServiceDir,
   DAEMON_STATE_FILENAME,
-  SERVICE_DIRNAME,
-  SERVICE_DEV_DIRNAME,
 } from '../grove/paths.js';
 import type {
   InstallOptions,
@@ -22,14 +19,15 @@ import type {
 } from './types.js';
 
 /**
- * Read the running daemon's loopback port from `daemon.json` for a service
- * label. Returns null when the file is absent/unreadable — the caller then
- * skips the cooperative drain and goes straight to `schtasks /end`.
+ * Read the running daemon's loopback port from `daemon.json`. Returns null when
+ * the file is absent/unreadable — the caller then skips the cooperative drain
+ * and goes straight to `schtasks /end`. The daemon's state dir derives from its
+ * home (`<MYCO_HOME>/service/`); this manager only ever drains the daemon in
+ * its own home, so the `_label` argument is informational.
  */
-function readDaemonPortForLabel(label: string): number | null {
+function readDaemonPortForLabel(_label: string): number | null {
   try {
-    const dirName = label.startsWith(SERVICE_LABEL_DEV) ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
-    const statePath = path.join(resolveMycoHome(), dirName, DAEMON_STATE_FILENAME);
+    const statePath = path.join(resolveServiceDir(), DAEMON_STATE_FILENAME);
     const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as { port?: number };
     return typeof parsed.port === 'number' ? parsed.port : null;
   } catch {
@@ -151,10 +149,10 @@ export class WindowsTaskServiceManager implements ServiceManager {
     // launch at logon. The embedded quotes are part of the argv value (the runner
     // spawns schtasks without a shell), which is how schtasks delimits a spaced
     // executable path.
-    const result = await this.runner.run(['/create', '/tn', spec.label, '/tr', `"${scriptPath}"`, ...trigger, '/rl', 'limited', '/f']);
-    if (result.exitCode !== 0) {
-      throw new Error(`schtasks /create /tn ${spec.label} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
-    }
+    assertRunSucceeded(
+      await this.runner.run(['/create', '/tn', spec.label, '/tr', `"${scriptPath}"`, ...trigger, '/rl', 'limited', '/f']),
+      `schtasks /create /tn ${spec.label}`,
+    );
     return { changed: true, supervisorReloaded: true };
   }
 
@@ -166,7 +164,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
   }
 
   async start(label: string): Promise<void> {
-    await this.runner.run(['/run', '/tn', label]);
+    assertRunSucceeded(await this.runner.run(['/run', '/tn', label]), `schtasks /run /tn ${label}`);
   }
 
   async stop(label: string): Promise<void> {
@@ -177,10 +175,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
   async restart(label: string): Promise<void> {
     await this.drainBeforeEnd(label);
     await this.runner.run(['/end', '/tn', label]);
-    const result = await this.runner.run(['/run', '/tn', label]);
-    if (result.exitCode !== 0) {
-      throw new Error(`schtasks /run /tn ${label} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
-    }
+    assertRunSucceeded(await this.runner.run(['/run', '/tn', label]), `schtasks /run /tn ${label}`);
   }
 
   restartShellCommand(label: string): string {

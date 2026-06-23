@@ -2,10 +2,10 @@
  * Tests for the upgrade API route handlers (daemon/api/upgrade.ts).
  *
  * Covers:
- * - handleUpgradeStatus: exempt, version-sync self-restart (restarting/reason),
+ * - handleUpgradeStatus: version-sync self-restart (restarting/reason),
  *   union assembly from cache, stale cache triggers background fetch, null cache fallback
  * - handleUpgradeCheck: live resolveMycoPackageCheck + checkOperatorCliVersions,
- *   union CheckResult assembly, partial failure, 400 when exempt
+ *   union CheckResult assembly, partial failure
  * - handleUpgradeApply: myco → initiateAdopt on staged version; operator CLIs →
  *   spawnUpdateScript; 400/409/422 error cases; beta→stable revert; service label routing
  * - handleUpgradeChannel: writes config + clears cache, 400 for invalid channel
@@ -33,7 +33,7 @@ const realMycoChecker = await import('@myco/upgrade/checker.js');
 const realOperatorCli = await import('@myco/daemon/operator-cli-versions.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
-  isUpdateExempt: vi.fn(() => false),
+  releaseChannelIsManual: vi.fn(() => false),
   readCachedCheck: vi.fn(() => null),
   readUpdateConfig: vi.fn(() => ({ channel: 'stable', check_interval_hours: 6 })),
   readProjectReleaseChannel: vi.fn(() => 'stable'),
@@ -78,7 +78,7 @@ afterAll(() => {
 });
 
 import {
-  isUpdateExempt,
+  releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
   readProjectReleaseChannel,
@@ -94,6 +94,8 @@ import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import { checkOperatorCliVersions } from '@myco/daemon/operator-cli-versions.js';
 import { createUpgradeHandlers } from '@myco/daemon/api/upgrade.js';
+import { serviceLabel } from '@myco/service/labels.js';
+import { resolveMycoHome } from '@myco/grove/paths.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager.js';
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context.js';
@@ -109,7 +111,12 @@ type AnyMock = ReturnType<typeof vi.fn>;
 // Pre-installed service helper
 // ---------------------------------------------------------------------------
 
-function installedServiceManager(label: string, shellCmd: string): FakeServiceManager {
+// The runner sets a hermetic sandbox MYCO_HOME, so the daemon's service label
+// is the home-derived label for that sandbox — resolve it the same way the
+// production code does so detectServiceManagedLabel(mgr) finds the seeded fake.
+const HOME_LABEL = serviceLabel(resolveMycoHome());
+
+function installedServiceManager(shellCmd: string, label: string = HOME_LABEL): FakeServiceManager {
   const mgr = new FakeServiceManager();
   mgr.installed.add(label);
   mgr.statuses.set(label, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
@@ -185,7 +192,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     currentVersion: '1.0.0',
     daemonPort: 20915,
     daemonStateDir,
-    home: '/home/user/.myco',
+    home: path.join(os.homedir(), '.myco'),
     platform: 'darwin' as NodeJS.Platform,
     localAppData: undefined,
     scheduleShutdown: vi.fn(),
@@ -200,23 +207,13 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
 describe('handleUpgradeStatus', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
+    (releaseChannelIsManual as AnyMock).mockReturnValue(false);
     (readCachedCheck as AnyMock).mockReturnValue(null);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (isCacheStale as AnyMock).mockReturnValue(false);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
     (getInstalledVersion as AnyMock).mockReturnValue(null);
-  });
-
-  it('returns exempt:true when in dev mode', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeStatus(makeReq());
-
-    expect(result.status).toBeUndefined();
-    expect(result.body).toEqual({ exempt: true, running_version: '1.0.0' });
   });
 
   it('returns status from cache when cache has data', async () => {
@@ -227,7 +224,6 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     // Fresh cache — no background live check needed
     expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
@@ -243,7 +239,7 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
 
     // Handler returns immediately with cached data; fire-and-forget refresh kicks off
-    expect(result.body).toMatchObject({ exempt: false });
+    expect(result.body).toMatchObject({ update_available: false });
   });
 
   it('returns default status body when no cache exists', async () => {
@@ -254,7 +250,6 @@ describe('handleUpgradeStatus', () => {
     const result = await handleUpgradeStatus(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.running_version).toBe('1.0.0');
     expect(body.channel).toBe('stable');
@@ -353,7 +348,6 @@ describe('handleUpgradeStatus', () => {
 describe('handleUpgradeStatus — version-sync restart', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readCachedCheck as AnyMock).mockReturnValue(null);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
@@ -403,6 +397,25 @@ describe('handleUpgradeStatus — version-sync restart', () => {
     expect(getInstalledVersion).not.toHaveBeenCalled();
   });
 
+  it('does not trigger restart for a non-default home (separately-pinned install)', async () => {
+    (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+    const scheduleShutdown = vi.fn();
+    const { handleUpgradeStatus } = createUpgradeHandlers(
+      makeDeps({
+        scheduleShutdown,
+        globalPrefix: '/usr/local',
+        home: path.join(os.homedir(), '.myco-dev'),
+      }),
+    );
+
+    const result = await handleUpgradeStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(scheduleShutdown).not.toHaveBeenCalled();
+    expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+  });
+
   it('does not trigger restart when runtime.command pin is set', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
     (resolveRuntimeCommand as AnyMock).mockReturnValue('/vault/runtime/node_modules/.bin/myco');
@@ -421,7 +434,7 @@ describe('handleUpgradeStatus — version-sync restart', () => {
   it('passes the service label into spawnRestartScript when service-managed', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.1.0');
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
-    const mgr = installedServiceManager('co.goondocks.myco', 'launchctl kickstart -k gui/501/co.goondocks.myco');
+    const mgr = installedServiceManager(`launchctl kickstart -k gui/501/${HOME_LABEL}`);
     const { handleUpgradeStatus } = createUpgradeHandlers(
       makeDeps({ globalPrefix: '/usr/local', serviceManager: mgr }),
     );
@@ -430,7 +443,7 @@ describe('handleUpgradeStatus — version-sync restart', () => {
 
     expect(spawnRestartScript).toHaveBeenCalledTimes(1);
     const call = (spawnRestartScript as AnyMock).mock.calls[0][0] as Record<string, unknown>;
-    expect(call.serviceManagedLabel).toBe('co.goondocks.myco');
+    expect(call.serviceManagedLabel).toBe(HOME_LABEL);
   });
 
   it('passes runLocalUpdate:true when stamp does not match installed version', async () => {
@@ -459,23 +472,12 @@ describe('handleUpgradeStatus — version-sync restart', () => {
 describe('handleUpgradeCheck', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
     (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
     (getInstalledVersion as AnyMock).mockReturnValue(null);
     (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
-  });
-
-  it('returns 400 when exempt', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeCheck(makeReq());
-
-    expect(result.status).toBe(400);
-    expect((result.body as Record<string, unknown>).error).toBe('update_exempt');
   });
 
   it('calls resolveMycoPackageCheck + checkOperatorCliVersions and returns union', async () => {
@@ -485,7 +487,7 @@ describe('handleUpgradeCheck', () => {
 
     expect(resolveMycoPackageCheck).toHaveBeenCalledWith('1.0.0', 'stable', '1.0.0');
     expect(checkOperatorCliVersions).toHaveBeenCalled();
-    expect(result.body).toMatchObject({ exempt: false, update_available: true });
+    expect(result.body).toMatchObject({ update_available: true });
   });
 
   it('union packages[] has myco first', async () => {
@@ -535,7 +537,6 @@ describe('handleUpgradeCheck', () => {
     const result = await handleUpgradeCheck(makeReq());
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(typeof body.error).toBe('string');
     expect(body.error as string).toContain('GitHub 503');
     expect((body.packages as unknown[]).length).toBe(0);
@@ -549,7 +550,6 @@ describe('handleUpgradeCheck', () => {
 describe('handleUpgradeApply', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
@@ -558,16 +558,6 @@ describe('handleUpgradeApply', () => {
     (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
     (initiateAdopt as AnyMock).mockResolvedValue(undefined);
     (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
-  });
-
-  it('returns 400 when exempt', async () => {
-    (isUpdateExempt as AnyMock).mockReturnValue(true);
-    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps());
-
-    const result = await handleUpgradeApply(makeReq());
-
-    expect(result.status).toBe(400);
-    expect((result.body as Record<string, unknown>).error).toBe('update_exempt');
   });
 
   it('returns 400 when no cache exists (no status)', async () => {
@@ -580,14 +570,40 @@ describe('handleUpgradeApply', () => {
     expect((result.body as Record<string, unknown>).error).toBe('no_update_available');
   });
 
-  it('returns 422 when no staged version is found for myco', async () => {
+  it('forward upgrade with nothing pre-staged: resolves + stages the channel latest, then adopts', async () => {
+    // The background auto-check has not staged anything yet (the case right after
+    // a release). An explicit "Upgrade & Restart" must stage on the spot, not
+    // bail — the operator should not have to wait for the next background tick.
     (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
-    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps());
+    const refs = {
+      assetUrl: 'https://example/myco-darwin-arm64',
+      sha256sumsUrl: 'https://example/SHA256SUMS',
+      assetName: 'myco-darwin-arm64',
+      targetVersion: '1.1.0',
+    };
+    const resolveRevertRefs = vi.fn(async () => refs);
+    const stageBinary = vi.fn(async () => ({ versionDir: '/home/user/.myco/bin/versions/1.1.0', version: '1.1.0' }));
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ resolveRevertRefs, stageBinary }));
+
+    const result = await handleUpgradeApply(makeReq());
+
+    expect(resolveRevertRefs).toHaveBeenCalledWith('stable');
+    expect(stageBinary).toHaveBeenCalledWith(expect.objectContaining({ refs }), expect.anything());
+    expect(initiateAdopt).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'daemon', targetVersion: '1.1.0' }),
+    );
+    expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });
+  });
+
+  it('forward upgrade with nothing pre-staged and no resolvable release → 422 no_release_available', async () => {
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue(null);
+    const resolveRevertRefs = vi.fn(async () => null);
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ resolveRevertRefs }));
 
     const result = await handleUpgradeApply(makeReq());
 
     expect(result.status).toBe(422);
-    expect((result.body as Record<string, unknown>).error).toBe('no_staged_version');
+    expect((result.body as Record<string, unknown>).error).toBe('no_release_available');
   });
 
   it('myco update → calls initiateAdopt (not spawnUpdateScript) with staged version', async () => {
@@ -601,7 +617,7 @@ describe('handleUpgradeApply', () => {
         source: 'daemon',
         targetVersion: '1.1.0',
         prevVersion: '1.0.0',
-        home: '/home/user/.myco',
+        home: path.join(os.homedir(), '.myco'),
         platform: 'darwin',
         daemonPort: 20915,
       }),
@@ -763,13 +779,13 @@ describe('handleUpgradeApply', () => {
   });
 
   it('passes service label to initiateAdopt when service-managed', async () => {
-    const mgr = installedServiceManager('co.goondocks.myco', 'launchctl kickstart -k gui/501/co.goondocks.myco');
+    const mgr = installedServiceManager(`launchctl kickstart -k gui/501/${HOME_LABEL}`);
     const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ serviceManager: mgr }));
 
     await handleUpgradeApply(makeReq());
 
     expect(initiateAdopt).toHaveBeenCalledWith(
-      expect.objectContaining({ serviceManagedLabel: 'co.goondocks.myco' }),
+      expect.objectContaining({ serviceManagedLabel: HOME_LABEL }),
     );
   });
 
@@ -810,7 +826,6 @@ describe('handleUpgradeApply', () => {
 describe('handleUpgradeChannel', () => {
   beforeEach(() => {
     mock.clearAllMocks();
-    (isUpdateExempt as AnyMock).mockReturnValue(false);
     (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
     (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
     (readCachedCheck as AnyMock).mockReturnValue(null);
@@ -853,7 +868,6 @@ describe('handleUpgradeChannel', () => {
     const result = await handleUpgradeChannel(makeReq({ body: { channel: 'beta' } }));
     const body = result.body as Record<string, unknown>;
 
-    expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.channel).toBe('beta');
     expect(body.channel_scope).toBe('machine');
@@ -861,14 +875,13 @@ describe('handleUpgradeChannel', () => {
     expect(body.last_check).toBe('');
   });
 
-  it('returns cached status with exempt:false after channel change', async () => {
+  it('returns cached status after channel change', async () => {
     (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
     const { handleUpgradeChannel } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
 
     const result = await handleUpgradeChannel(makeReq({ body: { channel: 'stable' } }));
 
-    expect((result.body as Record<string, unknown>).exempt).toBe(false);
     expect((result.body as Record<string, unknown>).update_available).toBe(false);
   });
 
@@ -880,5 +893,67 @@ describe('handleUpgradeChannel', () => {
 
     expect(stable.status).toBeUndefined();
     expect(beta.status).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// manual channel — automatic gate (T1)
+// ---------------------------------------------------------------------------
+
+describe('manual channel: automatic paths no-op, operator paths proceed', () => {
+  beforeEach(() => {
+    mock.clearAllMocks();
+    (releaseChannelIsManual as AnyMock).mockReturnValue(true);
+    (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
+    (readUpdateConfig as AnyMock).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    (readProjectReleaseChannel as AnyMock).mockReturnValue('stable');
+    (isCacheStale as AnyMock).mockReturnValue(true); // would trigger background refresh if not gated
+    (resolveRuntimeCommand as AnyMock).mockReturnValue(null);
+    (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
+    (resolveMycoPackageCheck as AnyMock).mockResolvedValue(MYCO_PKG_UPDATE);
+    (checkOperatorCliVersions as AnyMock).mockResolvedValue([]);
+    (resolveNewestStagedVersion as AnyMock).mockReturnValue('1.1.0');
+    (spawnUpdateScript as AnyMock).mockReturnValue('/tmp/myco-update-123.sh');
+    (initiateAdopt as AnyMock).mockResolvedValue(undefined);
+  });
+
+  it('status: skips background refresh and reports auto_eligible:false', async () => {
+    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+
+    // No background registry call made even though cache is stale.
+    expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
+    expect(body.auto_eligible).toBe(false);
+  });
+
+  it('status: auto_eligible:true on non-manual channel', async () => {
+    (releaseChannelIsManual as AnyMock).mockReturnValue(false);
+    (isCacheStale as AnyMock).mockReturnValue(false);
+    const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeStatus(makeReq());
+    const body = result.body as Record<string, unknown>;
+
+    expect(body.auto_eligible).toBe(true);
+  });
+
+  it('operator POST /api/upgrade/check proceeds under manual channel', async () => {
+    const { handleUpgradeCheck } = createUpgradeHandlers(makeDeps());
+    const result = await handleUpgradeCheck(makeReq());
+
+    // Must reach the live check — not gated out.
+    expect(resolveMycoPackageCheck).toHaveBeenCalled();
+    expect(result.status).toBeUndefined(); // 200 OK
+  });
+
+  it('operator POST /api/upgrade/apply proceeds under manual channel', async () => {
+    // Give the apply path a staged version and a cache with update available.
+    (readCachedCheck as AnyMock).mockReturnValue(makeUpdateCache());
+    const { handleUpgradeApply } = createUpgradeHandlers(makeDeps({ globalPrefix: '/usr/local' }));
+    const result = await handleUpgradeApply(makeReq());
+
+    // Must reach initiateAdopt — not gated out.
+    expect(initiateAdopt).toHaveBeenCalled();
+    expect(result.status).toBeUndefined(); // 200 OK
   });
 });

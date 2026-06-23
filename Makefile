@@ -106,8 +106,8 @@ collective-ui-dev:
 
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
-	echo "Starting watched daemon with UI dev proxy $$proxy"; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
+	echo "Starting watched daemon with UI dev proxy $$proxy (MYCO_HOME=$(HOME)/.myco-dev)"; \
+	MYCO_HOME=$(HOME)/.myco-dev MYCO_CLAIMS_HOME=$(HOME)/.myco MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
@@ -141,13 +141,13 @@ dev-build:
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
 	@# myco is now a Bun-compiled binary. Steps in order:
-	@#   1. codegen (hook-config.generated.ts from manifests)
-	@#   2. build libsqlite3 for the host target (cached after first run)
-	@#   3. build UI bundle (Vite)
-	@#   4. bun build --compile the host-target entry
-	cd packages/myco && npx tsx scripts/gen-hook-config.ts
+	@#   1. build libsqlite3 for the host target (cached after first run)
+	@#   2. build UI bundle (Vite) — must precede codegen so it can be embedded
+	@#   3. codegen (hook-config + agent defs + static + UI assets, templates)
+	@#   4. bun build --compile the host-target entry (embeds the codegen output)
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
+	cd packages/myco && npm run codegen
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
 	@# After the binary lands in packages/myco-$(HOST_TARGET)/bin/, re-run
 	@# select-binary.mjs so vendor/resolved.json is populated for callers
@@ -159,9 +159,26 @@ dev-build:
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.myco
-	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
-	@# the Bun runtime, so the caller's Node version is irrelevant.
-	@ln -sf $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.local/bin/myco-dev
+	@# Relocate the freshly-built binary to a STANDALONE location, divorced from
+	@# the repo's node_modules — exactly how production runs (~/.myco/bin/myco).
+	@# Running the dev daemon in-repo (node_modules in its ancestry) made dogfood
+	@# diverge from prod: anything the standalone binary can't resolve without a
+	@# node_modules tree (e.g. the Claude Code CLI the harness shells out to)
+	@# worked in dev and broke only in prod. A standalone dev binary closes that
+	@# blindspot so dogfood exercises the production topology.
+	@mkdir -p $(HOME)/.myco-dev/bin
+	@# rm -f before cp: a running dev daemon may hold this path open. cp would
+	@# rewrite the same inode (ETXTBSY on Linux / corrupt live text pages on
+	@# macOS); removing first gives the new binary a fresh inode.
+	@rm -f $(HOME)/.myco-dev/bin/myco
+	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco
+	@chmod +x $(HOME)/.myco-dev/bin/myco
+	@# myco-dev wraps the standalone binary: sets MYCO_HOME=~/.myco-dev and
+	@# MYCO_CLAIMS_HOME=~/.myco, then execs it.
+	@# rm -f first: if myco-dev is a symlink to a binary, `printf >` follows it
+	@# and overwrites the target. Write a fresh regular file.
+	@rm -f $(HOME)/.local/bin/myco-dev
+	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
@@ -181,13 +198,23 @@ dev-link: dev-build
 	@# globally-installed binary as users expect.
 	@mkdir -p $(PWD)/.myco
 	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.command
+	@# Set up the dev home directory and pin runtime.home so the daemon reads
+	@# from ~/.myco-dev instead of ~/.myco, keeping dev state isolated.
+	@mkdir -p $(HOME)/.myco-dev
+	@# Create the dev config only if absent so a re-link never clobbers a
+	@# contributor's edits (e.g. a pinned `daemon.port`).
+	@test -f $(HOME)/.myco-dev/config.yaml || printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
+	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
+	@chmod 0644 $(PWD)/.myco/runtime.home
+	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"
+	@echo "✓ $(PWD)/.myco/runtime.home set to $(HOME)/.myco-dev"
 	@# Sweep any pre-0.25.2 machine-scope pin written by older `make dev-link`
 	@# runs — it would shadow the new project pin from outside the repo.
 	@if [ -f $(HOME)/.myco/runtime.command ]; then \
 		rm -f $(HOME)/.myco/runtime.command; \
 		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
 	fi
-	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
+	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
@@ -214,13 +241,14 @@ WIN_HOST ?= chris@10.211.55.3
 WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPersist=3m -o StrictHostKeyChecking=accept-new
 
 dev-build-windows:
-	cd packages/myco && npx tsx scripts/gen-hook-config.ts && npx tsx scripts/gen-agent-definitions.ts && npx tsx scripts/gen-static-assets.ts && node scripts/gen-templates.mjs
+	@# UI bundle first (served by the daemon, embedded into the binary) — must
+	@# precede codegen so gen-ui-assets can bundle it. Parity with `dev-build`.
+	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
+	cd packages/myco && npm run codegen
 	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
 	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
 	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
 	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
-	@# UI bundle (served by the daemon) — parity with `dev-build`.
-	cd packages/myco/ui && { test -d node_modules || npm ci; } && npx vite build
 
 dev-link-windows: dev-build-windows
 	tar -czf /tmp/myco-win-ui.tgz -C packages/myco/dist ui
@@ -236,6 +264,10 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-collective-dev
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f $(PWD)/.myco/runtime.command
+	@rm -f $(PWD)/.myco/runtime.home
+	@# Remove the relocated standalone dev binary (a build-artifact copy; the dev
+	@# home's grove data under ~/.myco-dev is preserved).
+	@rm -f $(HOME)/.myco-dev/bin/myco
 	@# Also sweep the legacy machine-scope pin in case the user ran the
 	@# pre-0.25.2 `make dev-link` and never re-linked.
 	@rm -f $(HOME)/.myco/runtime.command
@@ -244,6 +276,7 @@ dev-unlink:
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"
+	@echo "✓ $(PWD)/.myco/runtime.home removed"
 
 dev-link-worktree: dev-build
 	@mkdir -p $(PWD)/.myco
