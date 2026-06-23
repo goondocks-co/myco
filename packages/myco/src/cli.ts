@@ -163,8 +163,7 @@ async function main(): Promise<void> {
 
   // open and restart target the global daemon and require no project myco.yaml.
   if (cmd === 'open') {
-    const vaultDir = resolveVaultDir();
-    return (await import('./cli/open.js')).run(args, vaultDir);
+    return (await import('./cli/open.js')).run(args);
   }
   if (cmd === 'restart') {
     const vaultDir = resolveVaultDir();
