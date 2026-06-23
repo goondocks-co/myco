@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
-import { spawnCombinedOutput } from './run-command.js';
+import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
@@ -85,8 +85,14 @@ export class LaunchdServiceManager implements ServiceManager {
     atomicWriteFileSync(plistPath, rendered);
 
     if (existing === null) {
-      await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
-      await this.runner.run(['enable', this.domainTarget(spec.label)]);
+      assertRunSucceeded(
+        await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]),
+        `launchctl bootstrap gui/${this.uid}`,
+      );
+      assertRunSucceeded(
+        await this.runner.run(['enable', this.domainTarget(spec.label)]),
+        `launchctl enable ${this.domainTarget(spec.label)}`,
+      );
       return { changed: true, supervisorReloaded: true };
     }
 
@@ -97,8 +103,14 @@ export class LaunchdServiceManager implements ServiceManager {
       return { changed: true, supervisorReloaded: false };
     }
     await this.runner.run(['bootout', this.domainTarget(spec.label)]);
-    await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
-    await this.runner.run(['enable', this.domainTarget(spec.label)]);
+    assertRunSucceeded(
+      await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]),
+      `launchctl bootstrap gui/${this.uid}`,
+    );
+    assertRunSucceeded(
+      await this.runner.run(['enable', this.domainTarget(spec.label)]),
+      `launchctl enable ${this.domainTarget(spec.label)}`,
+    );
     return { changed: true, supervisorReloaded: true };
   }
 
@@ -109,7 +121,10 @@ export class LaunchdServiceManager implements ServiceManager {
   }
 
   async start(label: string): Promise<void> {
-    await this.runner.run(['kickstart', '-k', this.domainTarget(label)]);
+    assertRunSucceeded(
+      await this.runner.run(['kickstart', '-k', this.domainTarget(label)]),
+      `launchctl kickstart -k ${this.domainTarget(label)}`,
+    );
   }
 
   async stop(label: string): Promise<void> {
@@ -120,10 +135,10 @@ export class LaunchdServiceManager implements ServiceManager {
     // kickstart -k SIGTERMs the running instance then starts it again.
     // Requires the service to be installed (loaded). We don't check first
     // because launchctl returns a clear error if not.
-    const result = await this.runner.run(['kickstart', '-k', this.domainTarget(label)]);
-    if (result.exitCode !== 0) {
-      throw new Error(`launchctl kickstart failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
-    }
+    assertRunSucceeded(
+      await this.runner.run(['kickstart', '-k', this.domainTarget(label)]),
+      `launchctl kickstart -k ${this.domainTarget(label)}`,
+    );
   }
 
   restartShellCommand(label: string): string {
