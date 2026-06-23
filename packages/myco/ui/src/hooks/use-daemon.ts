@@ -33,7 +33,7 @@ export interface StatsResponse {
     version_label?: string;
     uptime_seconds: number;
     active_sessions: string[];
-    runtime?: { source: 'stable' | 'dev'; command: string | null };
+    runtime?: { source: 'stable' | 'beta' | 'manual'; command: string | null };
   };
   vault: {
     path: string;

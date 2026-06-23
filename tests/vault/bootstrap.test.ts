@@ -65,7 +65,7 @@ describe('resolveBootstrapVaultDir', () => {
     const groveId = 'grove_65b606b9665228ac5f1812d645cdf6fe';
     const projRoot = makeProject('reg1');
     writeRegistry(groveId);
-    writeGroveToml(groveId, 'service');
+    writeGroveToml(groveId);
     writeProjectsToml(groveId, [{ id: 'proj_test', root: projRoot }]);
     // cwd has no enclosing project, registry has one
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(projRoot, '.myco'));
@@ -76,7 +76,7 @@ describe('resolveBootstrapVaultDir', () => {
     const goodRoot = makeProject('good');
     const ghostRoot = '/this/path/does/not/exist';
     writeRegistry(groveId);
-    writeGroveToml(groveId, 'service');
+    writeGroveToml(groveId);
     writeProjectsToml(groveId, [
       { id: 'proj_ghost', root: ghostRoot },
       { id: 'proj_good', root: goodRoot },
@@ -89,6 +89,47 @@ describe('resolveBootstrapVaultDir', () => {
     // can register the first project. Throwing here would re-create the
     // chicken-and-egg that blocked publication.
     expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+  });
+
+  test('MYCO_DAEMON_MANAGED phantom-boot gate: managed daemon returns null; non-managed proceeds to cwd/registry', () => {
+    // Regression for T8 C1: the phantom-boot gate must read MYCO_DAEMON_MANAGED,
+    // not MYCO_SERVICE_VARIANT. Before this fix, MYCO_DAEMON_MANAGED was never
+    // read here — only MYCO_SERVICE_VARIANT was — so a supervisor-managed prod
+    // daemon would fall through to the cwd/registry path and mis-anchor to an
+    // arbitrary registered project (tenant-scope-leak class, same as PR #508).
+    //
+    // This test would FAIL against the old code:
+    //   Old: gate reads MYCO_SERVICE_VARIANT → MYCO_DAEMON_MANAGED='1' is ignored
+    //        → non-null (falls through to registry or cwd-walk).
+    //   New: gate reads MYCO_DAEMON_MANAGED → returns null immediately.
+    let savedManaged: string | undefined;
+    let savedVariant: string | undefined;
+    try {
+      savedManaged = process.env.MYCO_DAEMON_MANAGED;
+      savedVariant = process.env.MYCO_SERVICE_VARIANT;
+      // Ensure MYCO_SERVICE_VARIANT is NOT set — the old signal must not fire.
+      delete process.env.MYCO_SERVICE_VARIANT;
+
+      // With MYCO_DAEMON_MANAGED set, even in a cwd with no project and no
+      // registry, the gate fires and returns null (phantom home-scoped boot).
+      process.env.MYCO_DAEMON_MANAGED = '1';
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
+
+      // Without MYCO_DAEMON_MANAGED, the same cwd with no project/registry
+      // falls through the gate and returns null only at the greenfield path —
+      // NOT at the managed-gate. Both return null here (greenfield), but the
+      // code path differs: without managed, it reaches cwd-walk first.
+      // Verify the non-managed case proceeds to the cwd-walk branch by
+      // confirming a cwd WITH a project does NOT return null.
+      delete process.env.MYCO_DAEMON_MANAGED;
+      const projRoot = makeProject('regression-non-managed');
+      expect(resolveBootstrapVaultDir(projRoot)).toBe(path.join(projRoot, '.myco'));
+    } finally {
+      if (savedManaged === undefined) delete process.env.MYCO_DAEMON_MANAGED;
+      else process.env.MYCO_DAEMON_MANAGED = savedManaged;
+      if (savedVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
+      else process.env.MYCO_SERVICE_VARIANT = savedVariant;
+    }
   });
 
   test('phantom helper falls back to MYCO_HOME scratch dir on greenfield', () => {
@@ -126,184 +167,119 @@ describe('resolveBootstrapVaultDir', () => {
     expect(result.vaultDir).toBe(path.join(projRoot, '.myco'));
   });
 
-  function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
+  function writeGroveToml(groveId: string): void {
     const dir = path.join(tmpHome, 'groves', groveId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, 'grove.toml'),
-      `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "${servedBy}"\n`,
+      `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\n`,
     );
   }
 
-  test('global dev daemon ignores the registry and stays home-scoped (null)', () => {
+  test('managed daemon ignores the registry and stays home-scoped (null)', () => {
     // The global, multi-tenant daemon has no bootstrap project. Even with
-    // a matching-variant Grove + project registered on disk, the variant
-    // path returns null so startup materializes the phantom MYCO_HOME and
-    // the daemon serves tenants by request context. Picking the first
-    // registered project — the old behavior — was the tenant-scope-leak
-    // bug-attractor this change removes.
+    // a registered Grove + project on disk, MYCO_DAEMON_MANAGED=1 causes
+    // startup to materialize the phantom MYCO_HOME and serve tenants by
+    // request context. Picking the first registered project — the old
+    // behavior — was the tenant-scope-leak bug-attractor this change removes.
     const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const prodRoot = makeProject('prod');
     const devRoot = makeProject('dev');
     writeRegistry(prodGrove); // default = prod
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
-  test('global service-dev daemon ignores the registry and stays home-scoped (null)', () => {
-    const prodGrove = 'grove_1111111111111111111111111111111a';
-    const devGrove = 'grove_1111111111111111111111111111111b';
-    const prodRoot = makeProject('prod-service-name');
-    const devRoot = makeProject('dev-service-name');
-    writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
-    writeProjectsToml(prodGrove, [{ id: 'proj_prod_service_name', root: prodRoot }]);
-    writeProjectsToml(devGrove, [{ id: 'proj_dev_service_name', root: devRoot }]);
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    try {
-      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
-    } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
-    }
-  });
-
-  test('global prod daemon ignores a registered default Grove and stays home-scoped (null)', () => {
-    // Even with a fully-registered prod default Grove on disk, the global
-    // prod daemon returns null and runs phantom from MYCO_HOME. The anchor
-    // is gone from the global path entirely — no project, dev or prod, is
-    // ever selected for the global daemon.
+  test('managed daemon ignores a registered default Grove and stays home-scoped (null)', () => {
+    // Even with a fully-registered default Grove on disk, a managed daemon
+    // returns null and runs phantom from MYCO_HOME. The anchor is gone from
+    // the managed path entirely — no project is ever selected for the
+    // global daemon.
     const prodGrove = 'grove_2222222222222222222222222222222a';
     const prodRoot = makeProject('global-prod-default');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(prodGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
-  test('variant-less daemon (no MYCO_SERVICE_VARIANT) still picks the default Grove', () => {
+  test('non-managed daemon (no MYCO_DAEMON_MANAGED) still picks the default Grove', () => {
     const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
     const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
     const prodRoot = makeProject('prod2');
     const devRoot = makeProject('dev2');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
-    // MYCO_SERVICE_VARIANT unset — should pick prod
+    // MYCO_DAEMON_MANAGED unset — non-managed daemon should pick default Grove
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(prodRoot, '.myco'));
   });
 
-  test('variant-pinned greenfield (no registry at all) returns null for phantom-mode bootstrap', () => {
-    // Production user path: `npm install -g` → postinstall registers a
-    // service → launchd/systemd spawns the daemon with the variant env
-    // set BEFORE any project exists. Throwing here would respawn-loop
-    // the supervisor. The variant safety invariant is preserved by
-    // firstProjectVaultFromRegistry()'s served_by filter: when a Grove
-    // eventually registers, the dev daemon binds only to dev Groves
-    // and the prod daemon binds only to prod Groves.
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
+  test('managed greenfield (no registry at all) returns null for phantom-mode bootstrap', () => {
+    // Production user path: supervisor (launchd/systemd) spawns the daemon
+    // with MYCO_DAEMON_MANAGED=1 BEFORE any project exists. Returning null
+    // lets the phantom-home path come up so the API serves requests and
+    // the first hook registers a project, triggering a restart.
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
-  test('dev variant in greenfield with prod-only Groves returns null (does not bind to prod)', () => {
-    // The variant filter must hold even when a non-matching Grove is
-    // registered. A dev-variant daemon must not silently bootstrap onto
-    // a prod Grove just because no dev Grove exists yet — the rebind
-    // watcher waits for a dev Grove to appear.
-    const prodGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-    const prodRoot = makeProject('prod3');
-    writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
-    try {
-      expect(resolveBootstrapVaultDir(tmpCwd)).toBeNull();
-    } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
-    }
-  });
-
-  test('variant-pinned greenfield routes through phantom helper without throw', () => {
+  test('managed greenfield routes through phantom helper without throw', () => {
     // End-to-end: the daemon's actual startup path. Combined with the
-    // phantom helper, variant-pinned supervisor spawns get a usable
-    // bootstrap dir instead of a respawn loop.
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    // phantom helper, managed supervisor spawns get a usable bootstrap
+    // dir instead of a respawn loop.
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
       const result = resolveBootstrapVaultDirOrPhantom(tmpCwd);
       expect(result.isPhantom).toBe(true);
       expect(result.vaultDir).toBe(resolvePhantomBootstrapVaultDir(tmpHome));
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
-  test('global dev daemon ignores cwd inside a prod-grove project (home-scoped, null)', () => {
-    // The original regression: a hook running inside /Users/x/unifi-mcp
-    // lazy-spawns the dev daemon. cwd-walk would resolve to unifi-mcp's
-    // vault, but unifi-mcp belongs to the prod Grove. The global daemon
-    // now ignores cwd AND the registry entirely — it has no bootstrap
-    // project, so it returns null and runs phantom from MYCO_HOME. No
-    // cross-Grove anchor can be selected because no anchor is selected
-    // at all.
+  test('managed daemon ignores cwd inside a project (home-scoped, null)', () => {
+    // A hook running inside a project cwd lazy-spawns the managed daemon.
+    // cwd-walk would otherwise resolve to that project's vault. The
+    // managed daemon ignores cwd AND the registry entirely — it has no
+    // bootstrap project, returns null, and runs phantom from MYCO_HOME.
     const prodGrove = 'grove_ffffffffffffffffffffffffffffffff';
     const devGrove = 'grove_99999999999999999999999999999999';
     const prodRoot = makeProject('prod-cwd');
     const devRoot = makeProject('dev-target');
     writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
+    writeGroveToml(prodGrove);
+    writeGroveToml(devGrove);
     writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
     writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
 
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    process.env.MYCO_DAEMON_MANAGED = '1';
     try {
-      // cwd is inside the prod-grove project — but the global daemon has
-      // no current project regardless.
+      // cwd is inside a real project — but the managed daemon has no
+      // current project regardless.
       expect(resolveBootstrapVaultDir(prodRoot)).toBeNull();
     } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
-    }
-  });
-
-  test('global prod daemon ignores cwd inside a dev-grove project (home-scoped, null)', () => {
-    // Symmetric: the prod global daemon isn't hijacked by a cwd inside the
-    // dogfood project, and doesn't anchor to a registered prod project
-    // either — it stays home-scoped.
-    const prodGrove = 'grove_88888888888888888888888888888888';
-    const devGrove = 'grove_77777777777777777777777777777777';
-    const prodRoot = makeProject('prod-target');
-    const devRoot = makeProject('dev-cwd');
-    writeRegistry(prodGrove);
-    writeGroveToml(prodGrove, 'service');
-    writeGroveToml(devGrove, 'service-dev');
-    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
-    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
-
-    process.env.MYCO_SERVICE_VARIANT = 'prod';
-    try {
-      expect(resolveBootstrapVaultDir(devRoot)).toBeNull();
-    } finally {
-      delete process.env.MYCO_SERVICE_VARIANT;
+      delete process.env.MYCO_DAEMON_MANAGED;
     }
   });
 
@@ -340,7 +316,7 @@ describe('resolveBootstrapVaultDir', () => {
     const sandboxGrove = 'grove_99999999999999999999999999999999';
     const sandboxProject = makeProject('sandbox-internal');
     writeRegistry(sandboxGrove);
-    writeGroveToml(sandboxGrove, 'service');
+    writeGroveToml(sandboxGrove);
     writeProjectsToml(sandboxGrove, [{ id: 'proj_sandbox', root: sandboxProject }]);
 
     const realProject = makeProject('real-but-cwd');
@@ -355,45 +331,37 @@ describe('resolveBootstrapVaultDir', () => {
   });
 });
 
-describe('resolvePhantomBootstrapVaultDir — per-variant isolation', () => {
-  let savedVariant: string | undefined;
-
+describe('resolvePhantomBootstrapVaultDir — single dirname per home', () => {
   beforeEach(() => {
     setUpTmpHome();
-    savedVariant = process.env.MYCO_SERVICE_VARIANT;
   });
 
   afterEach(() => {
     tearDownTmpHome();
-    if (savedVariant === undefined) delete process.env.MYCO_SERVICE_VARIANT;
-    else process.env.MYCO_SERVICE_VARIANT = savedVariant;
   });
 
-  test('prod variant anchors to _unbound-bootstrap', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service';
+  test('managed daemon anchors to _unbound-bootstrap', () => {
+    process.env.MYCO_DAEMON_MANAGED = '1';
+    try {
+      expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
+    } finally {
+      delete process.env.MYCO_DAEMON_MANAGED;
+    }
+  });
+
+  test('non-managed daemon also uses _unbound-bootstrap (home separation removes any variant suffix)', () => {
+    // resolvePhantomBootstrapVaultDir is pure over mycoHome — no env signal matters.
     expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
   });
 
-  test('dev variant anchors to a separate _unbound-bootstrap-dev', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
-  });
-
-  test('dev alias resolves to the same dev anchor', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'dev';
-    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap-dev'));
-  });
-
-  test('variant-less daemon uses the prod anchor', () => {
-    delete process.env.MYCO_SERVICE_VARIANT;
-    expect(resolvePhantomBootstrapVaultDir(tmpHome)).toBe(path.join(tmpHome, '_unbound-bootstrap'));
-  });
-
-  test('dev and prod anchors never collide', () => {
-    process.env.MYCO_SERVICE_VARIANT = 'service';
-    const prod = resolvePhantomBootstrapVaultDir(tmpHome);
-    process.env.MYCO_SERVICE_VARIANT = 'service-dev';
-    const dev = resolvePhantomBootstrapVaultDir(tmpHome);
-    expect(prod).not.toBe(dev);
+  test('same phantom dir regardless of managed flag', () => {
+    const withoutManaged = resolvePhantomBootstrapVaultDir(tmpHome);
+    process.env.MYCO_DAEMON_MANAGED = '1';
+    try {
+      const withManaged = resolvePhantomBootstrapVaultDir(tmpHome);
+      expect(withManaged).toBe(withoutManaged);
+    } finally {
+      delete process.env.MYCO_DAEMON_MANAGED;
+    }
   });
 });

@@ -22,7 +22,7 @@ import path from 'node:path';
 import semver from 'semver';
 
 import {
-  isUpdateExempt,
+  releaseChannelIsManual,
   readCachedCheck,
   readUpdateConfig,
   readProjectReleaseChannel,
@@ -54,7 +54,7 @@ import {
   UPDATE_CHECK_CACHE_PATH,
 } from '../../constants/update.js';
 import type { ReleaseChannel, UpdatePackageId } from '../../constants/update.js';
-import { resolveLastUpdateVersionPath } from '../../grove/paths.js';
+import { resolveLastUpdateVersionPath, isDefaultMycoHome } from '../../grove/paths.js';
 import { detectServiceManagedLabel } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
@@ -383,17 +383,17 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * restarting/reason fields the card polls).
    */
   async function handleUpgradeStatus(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return { body: { exempt: true, running_version: currentVersion } };
-    }
-
     const snapshot = readVaultSnapshot();
 
-    // Version-sync self-restart: when the globally-installed myco is newer
-    // than the running daemon (npm updated it while the daemon was running),
-    // respawn via the managed binary path. Skip when a runtime.command pin
-    // is set — restarting a pinned daemon would respawn the same binary and loop.
-    if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null) {
+    // Version-sync self-restart: the npm bootstrap package was updated under a
+    // running daemon (its installed package version > the running version), so
+    // converge the native binary and restart onto it. Skip when a runtime.command
+    // pin is set — restarting a pinned daemon respawns the same binary and loops.
+    // Restricted to the default home: the npm bootstrap converges into ~/.myco,
+    // so only a daemon there should react to the npm package version. A
+    // non-default home is a separate install whose binary is unrelated to the
+    // npm-global package; comparing the two can never converge and would loop.
+    if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null && isDefaultMycoHome(home)) {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
         installedVersion &&
@@ -404,7 +404,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         if (updateInProgress.inFlight(daemonStateDir)) {
           return {
             body: {
-              exempt: false,
               update_in_progress: true,
               running_version: currentVersion,
               installed_version: installedVersion,
@@ -440,10 +439,12 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     }
 
     // Normal flow: serve cached union result; refresh in background if stale.
+    // Manual-channel machines skip the background refresh — they never auto-update.
     const config = readUpdateConfig();
     const cache = readCachedCheck();
+    const autoEligible = !releaseChannelIsManual();
 
-    if (isCacheStale(cache, config.check_interval_hours)) {
+    if (autoEligible && isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget background refresh using the new split checkers.
       const effectiveChannel = snapshot.desiredChannel;
       void (async () => {
@@ -467,7 +468,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     if (!status) {
       return {
         body: {
-          exempt: false,
+          auto_eligible: autoEligible,
           update_available: false,
           revert_available: false,
           running_version: currentVersion,
@@ -483,7 +484,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         },
       };
     }
-    return { body: { exempt: false, ...status } };
+    return { body: { auto_eligible: autoEligible, ...status } };
   }
 
   /**
@@ -493,13 +494,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * assembles the union CheckResult, persists to cache, and returns fresh data.
    */
   async function handleUpgradeCheck(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return {
-        status: 400,
-        body: { error: 'update_exempt', message: 'Updates disabled in dev mode' },
-      };
-    }
-
     const snapshot = readVaultSnapshot();
     const config = readUpdateConfig();
     const effectiveChannel = snapshot.desiredChannel;
@@ -559,54 +553,59 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       packages,
     };
 
-    return { body: { exempt: false, ...result } };
+    return { body: { ...result } };
   }
 
   /**
-   * Resolve + stage the stable-channel target for a beta→stable revert.
+   * Resolve the latest release on `channel` and stage it if the versioned binary
+   * is not already on disk. The adopt step requires the binary under
+   * versions/<v>/, so this guarantees it exists.
    *
-   * Mirrors the CLI (`cli/upgrade.ts`): resolve the stable channel's asset refs
-   * DIRECTLY, then stage them if the versioned binary is not already on disk —
-   * intentionally NOT going through `resolveNewestStagedVersion`, whose
-   * strictly-greater scan can never return a stable version below the running
-   * prerelease. The caller then `initiateAdopt`s the returned version, which
-   * bypasses the no-downgrade gate for this explicit revert.
+   * Mirrors the CLI (`cli/upgrade.ts`): resolve the channel's asset refs DIRECTLY
+   * rather than via `resolveNewestStagedVersion` (whose strictly-greater scan
+   * can't return a stable version below a running prerelease, and returns null
+   * when the background auto-check hasn't staged anything yet).
    *
-   * Returns the resolved stable version, or an `{ error }` body for the 422.
+   * Shared by two callers so the resolve→stage→adopt step is expressed once:
+   *   - REVERT-TO-STABLE (`'stable'`): the target is LOWER than the running
+   *     prerelease; the caller's `initiateAdopt` bypasses the no-downgrade gate.
+   *   - FORWARD "Upgrade & Restart": when nothing is pre-staged, stage the
+   *     channel's latest NOW so the operator's explicit click upgrades
+   *     immediately instead of waiting for the next background stage tick.
+   *
+   * Returns the resolved version, or an `{ error }` body for the 422.
    */
-  async function resolveStableRevertTarget(): Promise<
+  async function resolveAndStageChannelTarget(channel: ReleaseChannel): Promise<
     { version: string } | { error: { error: string; message: string } }
   > {
     let refs: AssetRefs | null;
     try {
-      refs = await resolveRevertRefs('stable');
+      refs = await resolveRevertRefs(channel);
     } catch (err) {
       return {
         error: {
-          error: 'revert_resolve_failed',
-          message: `Could not resolve the stable release to revert to: ${err instanceof Error ? err.message : String(err)}`,
+          error: 'release_resolve_failed',
+          message: `Could not resolve the ${channel} release: ${err instanceof Error ? err.message : String(err)}`,
         },
       };
     }
     if (refs === null) {
       return {
         error: {
-          error: 'no_stable_release',
-          message: 'No stable release is available to revert to.',
+          error: 'no_release_available',
+          message: `No ${channel} release is available.`,
         },
       };
     }
 
-    // Stage the resolved stable binary if it is not already on disk. The adopt
-    // step requires the versioned binary to exist under versions/<v>/.
     const vBinPath = versionBinaryPath(home, platform, refs.targetVersion, localAppData);
     if (!fs.existsSync(vBinPath)) {
       const staged = await stageBinaryFn({ refs, home, platform, localAppData }, stageDeps);
       if ('error' in staged) {
         return {
           error: {
-            error: 'revert_stage_failed',
-            message: `Could not stage the stable release ${refs.targetVersion}: ${staged.error}`,
+            error: 'stage_failed',
+            message: `Could not stage the ${channel} release ${refs.targetVersion}: ${staged.error}`,
           },
         };
       }
@@ -638,10 +637,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
    * or when the revert-to-stable target cannot be resolved/staged.
    */
   async function handleUpgradeApply(_req: RouteRequest): Promise<RouteResponse> {
-    if (isUpdateExempt()) {
-      return { status: 400, body: { error: 'update_exempt' } };
-    }
-
     const snapshot = readVaultSnapshot();
     const status = statusFromCacheLocal(currentVersion, globalPrefix, snapshot.desiredChannel);
     if (!status) {
@@ -696,21 +691,24 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     let mycoTargetVersion: string | null = null;
     if (mycoNeedsBinarySwap) {
       if (enteringStable) {
-        const resolved = await resolveStableRevertTarget();
+        const resolved = await resolveAndStageChannelTarget('stable');
         if ('error' in resolved) {
           return { status: 422, body: resolved.error };
         }
         mycoTargetVersion = resolved.version;
       } else {
+        // Prefer a version the background auto-check already staged (fast adopt).
+        // If none is staged yet — the common case right after a release, before
+        // the next background tick — resolve + stage the channel's latest NOW so
+        // the operator's explicit "Upgrade & Restart" upgrades on the spot
+        // instead of bailing with "try again in a moment".
         mycoTargetVersion = resolveNewestStagedVersion(home, platform, currentVersion, localAppData);
         if (mycoTargetVersion === null) {
-          return {
-            status: 422,
-            body: {
-              error: 'no_staged_version',
-              message: 'No staged version found. The background auto-check has not yet staged a binary. Try again in a moment.',
-            },
-          };
+          const resolved = await resolveAndStageChannelTarget(snapshot.desiredChannel);
+          if ('error' in resolved) {
+            return { status: 422, body: resolved.error };
+          }
+          mycoTargetVersion = resolved.version;
         }
       }
     }
@@ -807,7 +805,6 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     if (!channelStatus) {
       return {
         body: {
-          exempt: false,
           update_available: false,
           revert_available: false,
           running_version: currentVersion,
@@ -823,7 +820,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         },
       };
     }
-    return { body: { exempt: false, ...channelStatus } };
+    return { body: { ...channelStatus } };
   }
 
   return {

@@ -43,6 +43,9 @@ const ALLOWLIST: readonly string[] = [
   // Auto-update check cadence — an internal daemon setting. The Upgrade card
   // surfaces only the channel (daemon.update_channel), not the poll interval.
   'daemon.check_interval_hours',
+  // Daemon port — derived from the service path by default; an override is
+  // edited directly in config.yaml, not surfaced as a settings card.
+  'daemon.port',
 ];
 
 function isAllowlisted(key: string): boolean {

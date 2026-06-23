@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -10,36 +10,24 @@ import {
 } from '@myco/db/client.js';
 
 describe('withDatabase ownership assertion', () => {
-  let mycoHome: string;
+  let homeA: string;
+  let homeB: string;
+  const groveId = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
   beforeEach(() => {
-    mycoHome = mkdtempSync(path.join(tmpdir(), 'myco-wdb-'));
-    mkdirSync(path.join(mycoHome, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), { recursive: true });
-    writeFileSync(
-      path.join(mycoHome, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'grove.toml'),
-      `[grove]\nid = "grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "Default"\nslug = "default"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00Z"\nserved_by = "service"\n`,
-    );
-    mkdirSync(path.join(mycoHome, 'service-dev'), { recursive: true });
-    setOwnedServiceDirForCurrentProcess(path.join(mycoHome, 'service-dev'), mycoHome);
+    homeA = mkdtempSync(path.join(tmpdir(), 'myco-home-A-'));
+    homeB = mkdtempSync(path.join(tmpdir(), 'myco-home-B-'));
+    mkdirSync(path.join(homeA, 'groves', groveId), { recursive: true });
+    mkdirSync(path.join(homeB, 'groves', groveId), { recursive: true });
   });
 
   afterEach(() => {
     clearOwnedServiceDirForCurrentProcess();
   });
 
-  it('throws when scoping a DB whose Grove is served by a different daemon', () => {
-    const dbPath = path.join(mycoHome, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'myco.db');
-    const db = openDatabase(dbPath);
-    try {
-      expect(() => withDatabase(db, () => 'unreachable')).toThrow(/served by/);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('does not throw when no owner is declared (tests / one-shot scripts)', async () => {
-    clearOwnedServiceDirForCurrentProcess();
-    const dbPath = path.join(mycoHome, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'myco.db');
+  it('allows opening a Grove DB under the owning home', async () => {
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const dbPath = path.join(homeA, 'groves', groveId, 'myco.db');
     const db = openDatabase(dbPath);
     try {
       const result = await withDatabase(db, async () => 'ok');
@@ -49,10 +37,42 @@ describe('withDatabase ownership assertion', () => {
     }
   });
 
-  it('does not throw when daemon owns the Grove', async () => {
-    mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
-    setOwnedServiceDirForCurrentProcess(path.join(mycoHome, 'service'), mycoHome);
-    const dbPath = path.join(mycoHome, 'groves', 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'myco.db');
+  it('throws with "Cross-home" when opening a Grove DB from a foreign home', () => {
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const foreignDbPath = path.join(homeB, 'groves', groveId, 'myco.db');
+    const db = openDatabase(foreignDbPath);
+    try {
+      expect(() => withDatabase(db, () => 'unreachable')).toThrow(/Cross-home/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('allows :memory: regardless of declared owner', () => {
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    const db = openDatabase(); // defaults to :memory:
+    try {
+      expect(() => withDatabase(db, () => 'ok')).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('allows non-grove paths regardless of declared owner', async () => {
+    setOwnedServiceDirForCurrentProcess(path.join(homeA, 'service'), homeA);
+    // A path that looks like a DB but has no grove-id segment.
+    const db = openDatabase(path.join(homeA, 'state.db'));
+    try {
+      const result = await withDatabase(db, async () => 'ok');
+      expect(result).toBe('ok');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not throw when no owner is declared (tests / one-shot scripts)', async () => {
+    clearOwnedServiceDirForCurrentProcess();
+    const dbPath = path.join(homeA, 'groves', groveId, 'myco.db');
     const db = openDatabase(dbPath);
     try {
       const result = await withDatabase(db, async () => 'ok');

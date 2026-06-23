@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import { getServiceManager } from './manager.js';
 import { buildServiceSpec } from './spec-builder.js';
 import { serviceLabel } from './labels.js';
-import { isDevServiceMode, resolveMycoHome } from '../grove/paths.js';
+import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
-import type { ServiceManager, ServiceVariant } from './types.js';
+import type { ServiceManager } from './types.js';
 
 interface MinimalLogger {
   debug(kind: string, message: string, meta?: Record<string, unknown>): void;
@@ -17,32 +17,31 @@ export interface SelfInstallOptions {
   executable?: string;
   /** Override the manager factory (used by tests). */
   manager?: ServiceManager;
-  /** Override the variant resolver (used by tests). */
-  variant?: ServiceVariant;
+  /** Override MYCO_HOME (used by tests). Defaults to the live resolver. */
+  mycoHome?: string;
 }
 
 /**
  * Returns the executable path the OS service should use.
  *
- * For the prod variant, prefers the managed binary at `~/.myco/bin/myco` when
- * it exists — so a self-update's in-place swap of that binary takes effect on
- * the next supervisor restart without the service unit needing rewriting.
+ * For the DEFAULT home (`~/.myco`), prefers the managed binary at
+ * `~/.myco/bin/myco` when it exists — so a self-update's in-place swap of that
+ * binary takes effect on the next supervisor restart without the service unit
+ * needing rewriting.
  *
- * The dev variant ALWAYS returns `process.execPath` (the dev-build binary).
- * This is a correctness requirement, not an optimisation: if a prod install
- * also exists on the same machine, a dogfood `service-dev` daemon must never
- * have its unit re-pointed at the prod `~/.myco/bin/myco` — that would
- * silently run released code as the `service-dev` unit, violating strict
- * variant isolation (AGENTS.md).
+ * A non-default home (dogfood, e.g. `~/.myco-dev`) ALWAYS returns
+ * `process.execPath` (the running dev-build binary). This is a correctness
+ * requirement, not an optimisation: a dogfood daemon must never have its unit
+ * re-pointed at the default home's `~/.myco/bin/myco` — that would silently run
+ * released code as the dogfood unit, violating home isolation (AGENTS.md).
  *
  * `mycoHome` and `platform` are injectable for deterministic testing.
  */
 export function defaultServiceExecutable(
-  variant: ServiceVariant,
   mycoHome: string = resolveMycoHome(),
   platform: NodeJS.Platform = process.platform,
 ): string {
-  if (variant === 'prod') {
+  if (isDefaultMycoHome(mycoHome)) {
     const managed = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
     if (fs.existsSync(managed)) return managed;
   }
@@ -73,30 +72,30 @@ export async function ensureSelfInstalledAsService(
       return;
     }
 
-    const variant = opts.variant ?? (isDevServiceMode() ? 'dev' : 'prod');
-    const label = serviceLabel(variant);
+    const mycoHome = opts.mycoHome ?? resolveMycoHome();
+    const label = serviceLabel(mycoHome);
     const wasInstalled = await mgr.isInstalled(label);
 
-    const executable = opts.executable ?? defaultServiceExecutable(variant);
-    const spec = buildServiceSpec({ variant, executable });
+    const executable = opts.executable ?? defaultServiceExecutable(mycoHome);
+    const spec = buildServiceSpec({ mycoHome, executable });
 
     // `force: true` would terminate the calling daemon.
     const result = await mgr.install(spec);
 
     if (!result.changed) {
       logger.debug('daemon.service_install', `Managed service ${label} unchanged`, {
-        variant, platform: mgr.platformName, executable,
+        home: mycoHome, platform: mgr.platformName, executable,
       });
       return;
     }
     if (!wasInstalled) {
       logger.info('daemon.service_install', `Installed managed service ${label}`, {
-        variant, platform: mgr.platformName, executable,
+        home: mycoHome, platform: mgr.platformName, executable,
       });
       return;
     }
     logger.info('daemon.service_install', `Wrote updated managed service ${label}`, {
-      variant,
+      home: mycoHome,
       platform: mgr.platformName,
       executable,
       supervisor_reloaded: result.supervisorReloaded,

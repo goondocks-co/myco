@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
-import { spawnCombinedOutput } from './run-command.js';
+import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from './paths.js';
 import type {
   InstallOptions,
@@ -75,8 +75,11 @@ export class SystemdUserServiceManager implements ServiceManager {
 
     // `daemon-reload` only re-reads unit files; it doesn't restart
     // running services. Always safe to call regardless of `opts.force`.
-    await this.runner.run(['--user', 'daemon-reload']);
-    await this.runner.run(['--user', 'enable', `${spec.label}.service`]);
+    assertRunSucceeded(await this.runner.run(['--user', 'daemon-reload']), 'systemctl --user daemon-reload');
+    assertRunSucceeded(
+      await this.runner.run(['--user', 'enable', `${spec.label}.service`]),
+      `systemctl --user enable ${spec.label}.service`,
+    );
     return { changed: true, supervisorReloaded: true };
   }
 
@@ -89,7 +92,10 @@ export class SystemdUserServiceManager implements ServiceManager {
   }
 
   async start(label: string): Promise<void> {
-    await this.runner.run(['--user', 'start', `${label}.service`]);
+    assertRunSucceeded(
+      await this.runner.run(['--user', 'start', `${label}.service`]),
+      `systemctl --user start ${label}.service`,
+    );
   }
 
   async stop(label: string): Promise<void> {
@@ -98,10 +104,7 @@ export class SystemdUserServiceManager implements ServiceManager {
 
   async restart(label: string): Promise<void> {
     const unit = `${label}.service`;
-    const result = await this.runner.run(['--user', 'restart', unit]);
-    if (result.exitCode !== 0) {
-      throw new Error(`systemctl --user restart ${unit} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
-    }
+    assertRunSucceeded(await this.runner.run(['--user', 'restart', unit]), `systemctl --user restart ${unit}`);
   }
 
   restartShellCommand(label: string): string {

@@ -414,27 +414,28 @@ describe('embedding-reconcile power job', () => {
     expect(jobHoldsDeepSleep(job)).toBe(false);
   });
 
-  it('hold ignores pending work in Groves served by a different daemon', () => {
-    const devGrove = createGrove('Dogfood', fx.mycoHome, { servedBy: 'service-dev' });
-    ensureGroveDatabase(devGrove.id, fx.mycoHome);
-    const devDatabasePath = resolveGroveDbPath(devGrove.id, fx.mycoHome);
+  it('hold counts pending work in all Groves in the same home', () => {
+    // Home is the boundary; all Groves in the home are probed.
+    const secondGrove = createGrove('Dogfood', fx.mycoHome);
+    ensureGroveDatabase(secondGrove.id, fx.mycoHome);
+    const secondDatabasePath = resolveGroveDbPath(secondGrove.id, fx.mycoHome);
 
     const managers = new Map<string, { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn>; reconcileSlice: ReturnType<typeof vi.fn> }>([
       [fx.databasePath, { totalPendingCount: () => 0, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })), reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })) }],
-      [devDatabasePath, { totalPendingCount: () => 5, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })), reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })) }],
+      [secondDatabasePath, { totalPendingCount: () => 5, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })), reconcileSlice: vi.fn(async () => ({ processed: 0, remaining: 0 })) }],
     ]);
     const factory: EmbeddingRuntimeFactory = (_db, dbPath) => ({
       vectorStore: { close() {} } as never,
       embeddingManager: managers.get(dbPath)! as never,
     });
-    fx.cache.getEmbeddingRuntime(devDatabasePath, factory);
+    fx.cache.getEmbeddingRuntime(secondDatabasePath, factory);
 
     const deps = buildDeps(fx);
     deps.embeddingRuntimeFactory = factory;
     registerPowerJobs(pm as never, deps);
 
     const job = pm.find('embedding-reconcile');
-    expect(jobHoldsDeepSleep(job)).toBe(false);
+    expect(jobHoldsDeepSleep(job)).toBe(true);
   });
 
   it('hold does not hold deep sleep when toggle is off, even with pending work', () => {

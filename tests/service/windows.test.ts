@@ -34,6 +34,7 @@ class StubRunner implements SchtasksRunner {
   taskExists = false;
   taskStatus = 'Ready';
   lastResult = '0';
+  runExitCode = 0;
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
     if (args[0] === '/query') {
@@ -45,6 +46,9 @@ class StubRunner implements SchtasksRunner {
     }
     if (args[0] === '/create') this.taskExists = true;
     if (args[0] === '/delete') this.taskExists = false;
+    if (args[0] === '/run' && this.runExitCode !== 0) {
+      return { stdout: 'ERROR: The system cannot find the path specified.', exitCode: this.runExitCode };
+    }
     return { stdout: '', exitCode: 0 };
   }
 }
@@ -121,6 +125,13 @@ describe('WindowsTaskServiceManager', () => {
     // Unchanged spec + existing task -> no rewrite.
     const r2 = await mgr.install(spec);
     expect(r2.changed).toBe(false);
+  });
+
+  test('start throws when schtasks /run exits non-zero (no silent success)', async () => {
+    const runner = new StubRunner();
+    runner.runExitCode = 1;
+    const mgr = new WindowsTaskServiceManager({ runner, scriptDir: tmp('myco-wt-') });
+    await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/schtasks \/run.*failed.*exit 1/i);
   });
 
   test('quotes the /tr action so a spaced script dir does not split at logon (P2)', async () => {

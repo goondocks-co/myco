@@ -1,15 +1,13 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import type { ServiceVariant } from './types.js';
-import { isDevServiceMode, SERVICE_DIRNAME, SERVICE_DEV_DIRNAME } from '../grove/paths.js';
+import { isDefaultMycoHome, resolveMycoHome } from '../grove/paths.js';
 import { isSandboxedServiceUnitDir, resolveServiceUnitDir } from './paths.js';
-import type { DaemonServiceState } from '../daemon/service-state.js';
 
-/** Stable launchd/systemd label for the production daemon. */
+/**
+ * Stable launchd/systemd label for the daemon in the default home (`~/.myco`).
+ * Existing installs depend on this byte string — never change it.
+ */
 export const SERVICE_LABEL_PROD = 'co.goondocks.myco';
-
-/** Stable launchd/systemd label for the contributor dogfood daemon. */
-export const SERVICE_LABEL_DEV = 'co.goondocks.myco-dev';
 
 /**
  * When the unit dir is overridden via `MYCO_LAUNCH_AGENTS_DIR` (sandbox /
@@ -26,24 +24,31 @@ function sandboxLabelSuffix(): string {
   return `.sandbox-${hash}`;
 }
 
-export function serviceLabel(variant: ServiceVariant): string {
-  const base = variant === 'dev' ? SERVICE_LABEL_DEV : SERVICE_LABEL_PROD;
-  return `${base}${sandboxLabelSuffix()}`;
-}
-
-export function detectInstallVariant(): ServiceVariant {
-  return isDevServiceMode() ? 'dev' : 'prod';
-}
-
-export function serviceVariantToDirName(variant: ServiceVariant): typeof SERVICE_DIRNAME | typeof SERVICE_DEV_DIRNAME {
-  return variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
+/**
+ * The launchd/systemd label for the daemon that owns `mycoHome`.
+ *
+ * The daemon's identity is its home, not a prod/dev variant: two independent
+ * installs in two homes (`~/.myco`, `~/.myco-dev`) get distinct labels
+ * automatically. The DEFAULT home (`~/.myco`) produces exactly
+ * {@link SERVICE_LABEL_PROD} so existing installs keep their registration; any
+ * other home appends a short stable hash of the resolved home path so the two
+ * cannot clobber each other's `launchctl bootstrap` in the shared `gui/<uid>`
+ * domain.
+ *
+ * The sandbox suffix (smoke-test / `MYCO_LAUNCH_AGENTS_DIR` installs) still
+ * stacks on top — orthogonal to the home distinction.
+ */
+export function serviceLabel(mycoHome: string = resolveMycoHome()): string {
+  return `${SERVICE_LABEL_PROD}${homeLabelSuffix(mycoHome)}${sandboxLabelSuffix()}`;
 }
 
 /**
- * Derive the service variant ('dev' | 'prod') from a resolved
- * `DaemonServiceState`. The variant is encoded in the state dir name:
- * `service-dev/` for contributor dogfood, `service/` for production.
+ * Empty for the default home (so `~/.myco` → `co.goondocks.myco` byte-for-byte),
+ * a short stable hash for any other home so distinct homes get distinct labels.
  */
-export function serviceVariantForState(state: DaemonServiceState): ServiceVariant {
-  return path.basename(state.stateDir) === SERVICE_DEV_DIRNAME ? 'dev' : 'prod';
+function homeLabelSuffix(mycoHome: string): string {
+  if (isDefaultMycoHome(mycoHome)) return '';
+  const hash = createHash('sha256').update(path.resolve(mycoHome)).digest('hex').slice(0, 8);
+  return `.${hash}`;
 }
+

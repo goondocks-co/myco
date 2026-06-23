@@ -78,11 +78,12 @@ function makeAdoptDeps(overrides: Partial<AutoAdoptDeps> = {}): AutoAdoptDeps {
     daemonPort: 19344,
     projectRoot: tmpHome,
     logger: silentLogger(),
-    // Tests bypass the dev-build gate — exercises the full adopt logic.
-    isDevBuild: () => false,
     // Tests override resolveServiceLabel and initiateAdopt to avoid real I/O.
     resolveServiceLabel: async () => null,
     initiateAdopt: mock(async () => {}),
+    // tmpHome is not the real ~/.myco; treat it as the canonical install so the
+    // adopt path runs. The non-default-home gate is exercised separately.
+    isDefaultHome: () => true,
     ...overrides,
   };
 }
@@ -125,6 +126,17 @@ describe('adoptJobFn: basic adopt path', () => {
     await fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2000 } });
 
     expect(initiateAdoptMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call initiateAdopt for a non-default home (separately-pinned install)', async () => {
+    writeStagedBinary(STAGED);
+    const initiateAdoptMock = mock(async () => {});
+    const deps = makeAdoptDeps({ initiateAdopt: initiateAdoptMock, isDefaultHome: () => false });
+    const fn = buildAdoptJobFn(deps);
+    await fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 2000 } });
+
+    expect(initiateAdoptMock).not.toHaveBeenCalled();
+    expect(updateInProgress.inFlight(stateDir)).toBeNull();
   });
 
   it('does NOT call initiateAdopt when staged version <= current', async () => {

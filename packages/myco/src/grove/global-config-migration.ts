@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { resolveHomeDir } from './paths.js';
+import { guardBySubsystemClaim, SYMBIONT_CONFIG_SUBSYSTEM } from './subsystem-claim.js';
 
 export interface GlobalConfigMigrationOutcome {
   filePath: string;
@@ -344,7 +345,7 @@ function isMycoEscapedLauncherCommand(command: string): boolean {
  * Run every global-config scrub. Idempotent across passes; safe to call from
  * `runGlobalBootstrap` and `myco update`.
  */
-export function runGlobalConfigMigration(): GlobalConfigMigrationResult {
+function runGlobalConfigMigrationImpl(): GlobalConfigMigrationResult {
   const outcomes: GlobalConfigMigrationOutcome[] = [
     scrubGeminiTrustedHooks(),
     ...scrubKnownEscapedSmokeLaunchers(),
@@ -354,3 +355,11 @@ export function runGlobalConfigMigration(): GlobalConfigMigrationResult {
     noOp: outcomes.every((o) => o.entriesRemoved === 0),
   };
 }
+
+/** Scrubs the machine-global agent config; a non-owner of the symbiont-config
+ *  claim defers. Gated once here, not at each caller. */
+export const runGlobalConfigMigration = guardBySubsystemClaim(
+  SYMBIONT_CONFIG_SUBSYSTEM,
+  runGlobalConfigMigrationImpl,
+  (): GlobalConfigMigrationResult => ({ outcomes: [], noOp: true }),
+);

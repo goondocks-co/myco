@@ -15,6 +15,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
+import { hasEmbeddedUi } from './static.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
@@ -37,7 +38,7 @@ import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHa
 import { handleRestart } from './api/restart.js';
 import { createIntentHandlers } from './api/intent.js';
 import { createUpgradeHandlers } from './api/upgrade.js';
-import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
+import { resolveGlobalPrefix, resolveMycoBinary } from './update-checker.js';
 import { getMachineId } from '@myco/machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { migrateLegacyBackups } from '@myco/backup/migrate.js';
@@ -664,11 +665,11 @@ export async function main(): Promise<void> {
   const { resolveBootstrapVaultDirOrPhantom } = await import('../vault/bootstrap.js');
   const { vaultDir: bootstrapVaultDir, isPhantom: bootstrapIsPhantom } =
     resolveBootstrapVaultDirOrPhantom();
-  // The global, multi-tenant daemon (run under a service supervisor with
-  // MYCO_SERVICE_VARIANT set) has no bootstrap project. It always boots
-  // phantom (home-scoped to MYCO_HOME) and serves every tenant by request
-  // context — it never anchors to, nor rebinds to, a registered project.
-  const isGlobalDaemon = (process.env.MYCO_SERVICE_VARIANT?.trim() ?? '') !== '';
+  // The global, multi-tenant daemon (run under a service supervisor, which
+  // sets MYCO_DAEMON_MANAGED=1 in the unit env) has no bootstrap project. It
+  // always boots phantom (home-scoped to MYCO_HOME) and serves every tenant by
+  // request context — it never anchors to, nor rebinds to, a registered project.
+  const isGlobalDaemon = (process.env.MYCO_DAEMON_MANAGED?.trim() ?? '') !== '';
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   // BEFORE the first getMachineId() call mints a fresh value, scan every
@@ -870,9 +871,8 @@ export async function main(): Promise<void> {
     logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
   }
 
-  // --- Resolve npm global prefix + detect dev build ---
-  // globalPrefix is used both for installed-version detection (in the status
-  // handler) and for dev-build auto-detection via detectDevBuild().
+  // --- Resolve npm global prefix ---
+  // globalPrefix is used for installed-version detection in the status handler.
   let globalPrefix: string | null = null;
   try {
     globalPrefix = resolveGlobalPrefix();
@@ -880,18 +880,6 @@ export async function main(): Promise<void> {
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
       error: errorMessage(err),
-    });
-  }
-
-  // Dev-build detection ran in `cli.ts` before this entry point loaded —
-  // see `activateDevBuildModeIfDetected`. If it produced a CLI entry,
-  // suppress installed-version detection (which expects a global prefix)
-  // and emit the operator-visible log line.
-  const devCliEntry = getDevBuildCliEntry();
-  if (devCliEntry) {
-    globalPrefix = null;
-    logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; update checks exempted', {
-      cli_entry: devCliEntry,
     });
   }
 
@@ -1114,6 +1102,10 @@ export async function main(): Promise<void> {
   }
   if (uiDir) {
     logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
+  } else if (hasEmbeddedUi()) {
+    // Standalone binary: no adjacent dist/ui/ on disk, but the dashboard
+    // bundle was compiled in. The server serves it from BUNDLED_UI.
+    logger.debug(LOG_KINDS.DAEMON_START, 'Serving embedded UI bundle (no disk dist/ui)');
   }
 
   // Always-on diagnostic for event-loop pinning. Catches stalls regardless
@@ -1233,17 +1225,14 @@ export async function main(): Promise<void> {
   // vault regardless of how many times the daemon starts.
   await runPendingMigrationTasks({ db: getDatabase(), embeddingManager, logger });
 
-  // First-start auto-bootstrap. Runs when this daemon variant lacks its
-  // default Grove — the durable "has this variant bootstrapped" signal.
-  // service-dev still bootstraps on a machine where prod already has,
-  // because each variant owns a distinct default Grove (`default-dev` vs
-  // `default`). PowerManager tick handles re-detection thereafter.
+  // First-start auto-bootstrap. Runs when this home lacks a default Grove
+  // — the durable "has this home bootstrapped" signal. Each MYCO_HOME has
+  // its own `groves/` tree. PowerManager tick handles re-detection thereafter.
   try {
     const decision = shouldRunGlobalBootstrap(resolveMycoHome());
     if (decision.shouldRun) {
       logger.info(LOG_KINDS.DAEMON_START, 'First-start global bootstrap required', {
         myco_home: decision.mycoHome,
-        served_by: decision.servedBy,
         default_grove_absent: decision.defaultGroveAbsent,
       });
       const result = runGlobalBootstrap();
@@ -1982,7 +1971,7 @@ export async function main(): Promise<void> {
       // Reconcile the Grove that actually owns the (re)assigned project, not the
       // ambient request Grove — membership is machine-wide on the Team page, so a
       // project can be assigned/removed from any Grove. reconcileGrove targets
-      // that Grove (a no-op when served by another daemon variant) and runs the
+      // that Grove (a no-op when the Grove lives in another daemon's home) and runs the
       // full backfill + flush so an assigned project starts syncing immediately
       // and a removed project's rows are purged immediately.
       const groveId = (req.body as { grove_id?: string } | undefined)?.grove_id ?? null;
@@ -2359,9 +2348,8 @@ export async function main(): Promise<void> {
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
     reconciler,
-    // Upgrade auto-check + idle-adopt jobs. Skipped on dev builds inside
-    // the job fns themselves via `isUpdateExempt()`, so these are safe to
-    // register unconditionally here.
+    // Upgrade auto-check + idle-adopt jobs. No-op on manual-channel machines
+    // inside the job fns themselves, so these are safe to register unconditionally.
     upgrade: {
       currentVersion: server.version,
       home: mycoHome,
@@ -2369,7 +2357,7 @@ export async function main(): Promise<void> {
       localAppData: process.env.LOCALAPPDATA,
       stateDir: daemonService.stateDir,
       daemonPort: server.port,
-      mycoBinary: getDevBuildCliEntry() ?? undefined,
+      mycoBinary: resolveMycoBinary(),
       projectRoot,
     },
   });
@@ -2490,7 +2478,7 @@ export async function main(): Promise<void> {
   // resolves a real vault via `resolveBootstrapVaultDir()` and brings up
   // the full Grove-bound surface (sqlite, embeddings, scope iteration).
   //
-  // The GLOBAL daemon (MYCO_SERVICE_VARIANT set) is excluded: it has no
+  // The GLOBAL daemon (MYCO_DAEMON_MANAGED set) is excluded: it has no
   // bootstrap project and never rebinds to one. Its home is MYCO_HOME and
   // every request carries its own tenancy, so it stays phantom (home-
   // scoped) for its whole lifetime. Running the rebind poll for the global

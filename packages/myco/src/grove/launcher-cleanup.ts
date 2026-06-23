@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMycoHome } from './paths.js';
+import { guardBySubsystemClaim, SYMBIONT_CONFIG_SUBSYSTEM } from './subsystem-claim.js';
 
 export const GLOBAL_HOOK_LAUNCHER_FILENAME = 'launcher.cjs';
 export const GLOBAL_MCP_LAUNCHER_FILENAME = 'mcp-launcher.cjs';
@@ -24,7 +25,7 @@ export interface RetiredLauncherReport { removed: string[] }
 
 /** Delete any retired launcher trampolines from a previous release. Idempotent,
  *  best-effort — a missing file is success; a stale file is inert (never executed). */
-export function removeRetiredGlobalLaunchers(mycoHome = resolveMycoHome()): RetiredLauncherReport {
+function removeRetiredGlobalLaunchersImpl(mycoHome = resolveMycoHome()): RetiredLauncherReport {
   const report: RetiredLauncherReport = { removed: [] };
   for (const filename of RETIRED_LAUNCHER_FILENAMES) {
     const target = path.join(mycoHome, filename);
@@ -34,3 +35,11 @@ export function removeRetiredGlobalLaunchers(mycoHome = resolveMycoHome()): Reti
   }
   return report;
 }
+
+/** Cleanup mutates `~/.myco` (machine-global); a non-owner of the symbiont-config
+ *  claim defers. Gated once here, not at each caller. */
+export const removeRetiredGlobalLaunchers = guardBySubsystemClaim(
+  SYMBIONT_CONFIG_SUBSYSTEM,
+  removeRetiredGlobalLaunchersImpl,
+  (): RetiredLauncherReport => ({ removed: [] }),
+);

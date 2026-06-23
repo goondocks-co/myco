@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { expandHome, resolveMycoHome } from '../grove/paths.js';
+import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
@@ -17,7 +18,7 @@ import {
 import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
-import { resolveRuntimeCommand } from '../daemon/update-checker.js';
+import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
 import { managedBinaryPath } from '../install/managed-binary.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
@@ -670,7 +671,35 @@ export class SymbiontInstaller {
       }
       return value;
     };
-    return substitute(template) as Record<string, unknown>;
+    const resolved = substitute(template) as Record<string, unknown>;
+    this.injectMcpHomeEnv(resolved);
+    return resolved;
+  }
+
+  /**
+   * Inject `MYCO_HOME` into each MCP server entry's `env` when a `runtime.home`
+   * pin redirects this project to a non-default daemon home (e.g. a dogfood
+   * `~/.myco-dev`). The MCP server is exec'd directly by the host agent as
+   * `<binary> mcp`; the self-contained binary's entry does NOT run the
+   * `runtime-redirect.cjs` shim, so without this the MCP server binds to the
+   * prod home and a dev-pinned project's tools hit the wrong daemon.
+   *
+   * No pin → no injection: the daemon-agnostic prod default (see
+   * `resolveManagedBinaryPath`) is preserved so a global config never embeds a
+   * dev home. Mirrors the CLI/hook redirect: same layered pin, same trust check.
+   */
+  private injectMcpHomeEnv(servers: Record<string, unknown>): void {
+    const home = resolveRuntimeHome(this.vaultDir);
+    if (!home) return;
+    for (const entry of Object.values(servers)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const server = entry as Record<string, unknown>;
+      const env = (server.env && typeof server.env === 'object')
+        ? (server.env as Record<string, unknown>)
+        : {};
+      env.MYCO_HOME = home;
+      server.env = env;
+    }
   }
 
   /** Load a JSON template file for this symbiont. Returns null if not found. */
@@ -689,8 +718,19 @@ export class SymbiontInstaller {
     return this.readTemplateFile(path.join(this.manifest.name, filename));
   }
 
+  /**
+   * True when this is a global-scope write and a peer owns the symbiont-config
+   * claim. The single deferral gate shared by install() and uninstall() so a
+   * non-owner never mutates the machine-shared agent config — expressed once,
+   * not copied per entry point.
+   */
+  private deferGlobalSymbiontConfig(): boolean {
+    return this.installScope === 'global' && shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM);
+  }
+
   /** Run all registration steps. */
   install(): InstallResult {
+    if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     if (this.capabilities.detectionGate && !this.isAvailableForScope()) {
       // Agent isn't installed on this machine — skip silently, never
@@ -1069,6 +1109,7 @@ export class SymbiontInstaller {
    * outlives any individual symbiont).
    */
   uninstall(options: { keepProjectContent?: boolean } = {}): InstallResult {
+    if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
     const keepProjectContent = options.keepProjectContent === true;
     const result = this.shouldBatchJsonTargets(reg)

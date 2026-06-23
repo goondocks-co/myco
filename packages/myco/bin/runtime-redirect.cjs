@@ -14,6 +14,12 @@
 // This mirrors the layered config hierarchy: project pin overrides machine
 // pin, machine pin applies as fallback.
 //
+// `runtime.home` (a sibling of the winning `runtime.command` in the same dir)
+// is a plaintext, single-line, absolute home path. When present and trusted it
+// sets `MYCO_HOME` on the re-exec'd child so a project pinned to a dev home
+// routes every CLI invocation at the matching daemon. It shares the winning-pin
+// dir and the G7 trust check below.
+//
 // G7 (security): `runtime.command` files are exec'd as the user's `myco`
 // binary. A sloppy umask that leaves either file group/other-writable would
 // let a hostile local user redirect every `myco` command. Both layers go
@@ -29,6 +35,7 @@ const { execFileSync } = require('node:child_process');
 
 const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
 const RUNTIME_COMMAND_FILENAME = 'runtime.command';
+const RUNTIME_HOME_FILENAME = 'runtime.home';
 
 function checkRuntimeCommandTrust(filePath) {
   if (process.platform === 'win32') return { ok: true };
@@ -106,6 +113,22 @@ function expandHome(value) {
   return value;
 }
 
+/**
+ * Read the `runtime.home` pin that sits beside the winning `runtime.command`
+ * file. A project pinned to a dev home (`~/.myco-dev`) writes both files in the
+ * same `.myco/` dir; the home pin is the sibling of the command pin so it
+ * inherits the SAME winning-layer resolution and the SAME G7 trust check.
+ *
+ * Returns the absolute `MYCO_HOME` value (a plain single-line path) when a
+ * trusted pin is present, or null when absent / untrusted (untrusted pins are
+ * refused exactly like an untrusted `runtime.command`).
+ */
+function readRuntimeHomeBeside(commandSource, traceRefusal) {
+  const filePath = path.join(path.dirname(commandSource), RUNTIME_HOME_FILENAME);
+  const home = readPinAt(filePath, traceRefusal);
+  return home ? expandHome(home) : null;
+}
+
 function pointsAtSelf(target, selfPath) {
   if (!target.includes(path.sep)) return false;
   try {
@@ -147,11 +170,22 @@ function maybeRedirect(selfPath, env = process.env, startDir = process.cwd()) {
     return false;
   }
 
+  // A trusted `runtime.home` beside the winning command pin redirects this
+  // invocation's home to a non-default daemon (e.g. a dogfood `~/.myco-dev`).
+  // Absent → leave MYCO_HOME as-is (prod default). Untrusted → refused inside
+  // readRuntimeHomeBeside, same as an untrusted runtime.command.
+  const pinnedHome = readRuntimeHomeBeside(found.source, (reason) => trace(`home refused (${reason})`));
+  const childEnv = { ...env, MYCO_REDIRECTED: '1' };
+  if (pinnedHome) {
+    trace(`MYCO_HOME → ${pinnedHome} (via ${path.join(path.dirname(found.source), RUNTIME_HOME_FILENAME)})`);
+    childEnv.MYCO_HOME = pinnedHome;
+  }
+
   trace(`${selfPath} → ${found.pin} (via ${found.source})`);
   try {
     execFileSync(found.pin, process.argv.slice(2), {
       stdio: 'inherit',
-      env: { ...env, MYCO_REDIRECTED: '1' },
+      env: childEnv,
     });
     process.exit(0);
   } catch (err) {
@@ -167,6 +201,7 @@ module.exports = {
   readProjectRuntimeCommand,
   readMachineRuntimeCommand,
   readLayeredRuntimeCommand,
+  readRuntimeHomeBeside,
   pointsAtSelf,
   maybeRedirect,
   checkRuntimeCommandTrust,

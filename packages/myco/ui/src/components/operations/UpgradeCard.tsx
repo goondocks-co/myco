@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { ArrowUpCircle, RefreshCw, CheckCircle2, AlertCircle, Shield } from 'lucide-react';
+import { ArrowUpCircle, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
@@ -167,22 +167,6 @@ export function UpgradeCard() {
   const latestBadge = upgradeBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
   const runtimeSummary =
     'This machine runs the managed Myco binary at ~/.myco/bin/myco. Switching channels swaps that same binary in place — Beta installs the latest prerelease, Stable steps back to the latest stable release.';
-
-  // State 2: exempt (dev mode)
-  if (status.exempt) {
-    return (
-      <Surface level="low" className="p-6 space-y-4">
-        <div className="flex items-center gap-2">
-          <Shield className="h-4 w-4 text-primary" />
-          <SectionHeader>Upgrade</SectionHeader>
-        </div>
-        <p className="font-sans text-sm text-on-surface-variant">
-          Upgrades are disabled in development mode.{' '}
-          <span className="font-mono text-xs text-outline">{status.running_version}</span>
-        </p>
-      </Surface>
-    );
-  }
 
   return (
     <Surface level="low" className="p-6 space-y-4">

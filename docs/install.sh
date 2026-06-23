@@ -293,15 +293,26 @@ case ":${PATH}:" in
 esac
 
 # ---------------------------------------------------------------------------
-# First run — daemon self-installs the service (best-effort)
+# First run — install the managed service so the dashboard is reachable
 # ---------------------------------------------------------------------------
-"${BIN_DIR}/myco" doctor >/dev/null 2>&1 || true
+if "${BIN_DIR}/myco" service install >/dev/null 2>&1; then
+  SERVICE_OK=1
+else
+  SERVICE_OK=0
+fi
 
 echo ""
 success "Myco installed to ${BIN_DIR}/myco"
 echo ""
-echo "  Open the dashboard to confirm setup and configure intelligence providers:"
-echo ""
-echo "    myco open"
-echo "    http://localhost:20915/"
+if [ "$SERVICE_OK" = "1" ]; then
+  echo "  Open the dashboard to confirm setup and configure intelligence providers:"
+  echo ""
+  echo "    myco open"
+  echo "    http://localhost:20915/"
+else
+  warn "Could not start the Myco service automatically. Bring it up with:"
+  echo ""
+  echo "    myco service install"
+  echo "    myco open"
+fi
 echo ""

@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
-import { activateDevBuildModeIfDetected } from './daemon/update-checker.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 loadEnv();
-activateDevBuildModeIfDetected();
 
 const USAGE = `Usage: myco <command> [args]
 
@@ -36,7 +34,7 @@ Commands:
   doctor [--fix]          Check vault health and repair issues
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
-  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status) [--dev]
+  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
@@ -111,6 +109,9 @@ async function main(): Promise<void> {
   // Internal: spawned detached by the daemon to run the cross-platform update/
   // restart orchestration after the daemon exits (see upgrade/orchestrator.ts).
   if (cmd === '__apply-update') return (await import('./upgrade/orchestrator.js')).run(args);
+  // Internal: spawned detached (from a temp-copy binary) by `myco remove --purge`
+  // to delete the managed install dir once this process releases its exe lock.
+  if (cmd === '__finish-uninstall') return (await import('./cli/finish-uninstall.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');
@@ -163,6 +164,15 @@ async function main(): Promise<void> {
   if (cmd === 'upgrade') return (await import('./cli/upgrade.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
 
+  // open and restart target the global daemon and require no project myco.yaml.
+  if (cmd === 'open') {
+    return (await import('./cli/open.js')).run(args);
+  }
+  if (cmd === 'restart') {
+    const vaultDir = resolveVaultDir();
+    return (await import('./cli/restart.js')).run(args, vaultDir);
+  }
+
   // Honor the runtime pin before the myco.yaml gate so a pinned binary is
   // re-exec'd even on a host with no project vault; the pinned binary owns the
   // gate decision after re-exec.
@@ -197,8 +207,6 @@ async function main(): Promise<void> {
     }
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
     case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
-    case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
-    case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);

@@ -487,12 +487,16 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
  * Machine tier — one daemon process per machine, one log policy.
  * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
  *
- * The daemon's listening port is NOT configurable: it's deterministically
- * derived from the service path via `derivePort` so launchers, hooks, and
- * MCP children all converge on the same value without per-machine config
- * lookup. See `daemon/port.ts`.
+ * The daemon's listening port defaults to the deterministic hash of the
+ * service path (`derivePort`); the optional `port` field below overrides it
+ * via `resolveGlobalDaemonPort`. See `daemon/port.ts`.
  */
 const MachineDaemonSchema = z.object({
+  /**
+   * Optional explicit listening port. Null (default) derives from the service
+   * path; when set, `resolveGlobalDaemonPort` returns it.
+   */
+  port: z.number().int().min(1024).max(65535).nullable().default(null),
   /** Log verbosity for the daemon process (stdout/stderr). */
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   /**
@@ -503,8 +507,12 @@ const MachineDaemonSchema = z.object({
    * mental model).
    */
   log_retention_days: z.number().int().min(1).max(365).default(30),
-  /** Update channel — `stable` (default) or `beta` for dogfood/preview builds. */
-  update_channel: z.enum(['stable', 'beta']).default('stable'),
+  /**
+   * Update channel — `stable` (default), `beta` for dogfood/preview builds,
+   * or `manual` to disable all automatic upgrades (operator-only upgrade paths
+   * remain available).
+   */
+  update_channel: z.enum(['stable', 'beta', 'manual']).default('stable'),
   /**
    * How often the daemon checks the release channel for a newer version, in
    * hours. Positive (fractional allowed for dogfood/testing). Default 6. This
@@ -520,21 +528,10 @@ const MachineDaemonSchema = z.object({
 // validation so existing installs keep parsing — the registry value
 // is migrated to the new file the first time `getDefaultGroveId`
 // runs after upgrade.
-//
-// `daemon.port` was a pre-Grove machine-level override of the daemon
-// port. Post-Grove the canonical port is always `derivePort` of the
-// service path; the override silently broke port resolution for users
-// whose stale value didn't match the canonical. Strip it here so old
-// `~/.myco/config.yaml` files keep parsing under strict mode while the
-// runtime ignores the dead field.
 export const MachineConfigSchema = z.preprocess((raw) => {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const { grove: _legacy, daemon, ...rest } = raw as Record<string, unknown>;
-    if (daemon && typeof daemon === 'object' && !Array.isArray(daemon)) {
-      const { port: _deadPort, ...daemonRest } = daemon as Record<string, unknown>;
-      return { ...rest, daemon: daemonRest };
-    }
-    return { ...rest, ...(daemon !== undefined ? { daemon } : {}) };
+    const { grove: _legacy, ...rest } = raw as Record<string, unknown>;
+    return rest;
   }
   return raw;
 }, z.object({

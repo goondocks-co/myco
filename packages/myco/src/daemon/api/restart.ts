@@ -7,7 +7,8 @@ import type { ProgressTracker } from './progress.js';
 import { RESTART_RESPONSE_FLUSH_MS } from '../../constants.js';
 import { getServiceManager } from '../../service/manager.js';
 import { serviceLabel } from '../../service/labels.js';
-import type { ServiceManager, ServiceStatus, ServiceVariant } from '../../service/types.js';
+import { resolveMycoHome } from '../../grove/paths.js';
+import type { ServiceManager, ServiceStatus } from '../../service/types.js';
 
 const RestartBodySchema = z.object({
   force: z.boolean().optional(),
@@ -28,10 +29,11 @@ export interface RestartHandlerDeps {
  * Build the argv for the detached restart child, spawned against the binary
  * directly on EVERY platform (no shell, no quoting, no POSIX `sleep`).
  *
- * - Service-managed → `[…cliEntry] service restart [--dev]`, which routes
- *   through the platform manager (launchctl kickstart -k / systemctl --user
- *   restart / schtasks /end + /run). That primitive SIGTERMs us atomically and
- *   the supervisor respawns us — no thundering-herd race with KeepAlive.
+ * - Service-managed → `[…cliEntry] service restart`, which routes through the
+ *   platform manager (launchctl kickstart -k / systemctl --user restart /
+ *   schtasks /end + /run). That primitive SIGTERMs us atomically and the
+ *   supervisor respawns us — no thundering-herd race with KeepAlive. The child
+ *   inherits MYCO_HOME, so `service restart` targets this daemon's home.
  * - Not service-managed → `[…cliEntry] daemon`; the respawned daemon waits on
  *   the lifecycle-lock release for the exiting one, so no startup delay needed.
  */
@@ -41,35 +43,31 @@ export function buildRestartArgv(
 ): string[] {
   const base = cliEntry !== null ? [cliEntry] : [];
   if (serviceManagedLabel) {
-    const dev = serviceManagedLabel.endsWith('-dev') ? ['--dev'] : [];
-    return [...base, 'service', 'restart', ...dev];
+    return [...base, 'service', 'restart'];
   }
   return [...base, 'daemon'];
 }
 
-/** Find the first installed service across variants and return its label and
- *  current status. Process-agnostic — used by client-side surfaces
- *  (DaemonClient.spawnDaemon) that only need to know "is there a service
- *  supervisor that owns the daemon for our variant" without checking PID. */
-const SERVICE_VARIANTS: ServiceVariant[] = ['dev', 'prod'];
-
+/** Find the installed service for a home and return its label and current
+ *  status. There is exactly one managed service per home (its identity IS the
+ *  home), so this checks the single `serviceLabel(mycoHome)`. Process-agnostic —
+ *  used by client-side surfaces (DaemonClient.spawnDaemon) that only need to
+ *  know "is there a service supervisor that owns this home's daemon" without
+ *  checking PID. */
 export async function findInstalledServiceLabel(
   mgr: ServiceManager,
-  variant?: ServiceVariant,
+  mycoHome: string = resolveMycoHome(),
 ): Promise<{ label: string; status: ServiceStatus } | null> {
   if (!mgr.supported) return null;
-  for (const candidate of variant ? [variant] : SERVICE_VARIANTS) {
-    const label = serviceLabel(candidate);
-    const installed = await mgr.isInstalled(label).catch(() => false);
-    if (!installed) continue;
-    const status = await mgr.status(label).catch(() => null);
-    if (status) return { label, status };
-    return {
-      label,
-      status: { installed: true, running: false, pid: null, lastExitCode: null, unitPath: null },
-    };
-  }
-  return null;
+  const label = serviceLabel(mycoHome);
+  const installed = await mgr.isInstalled(label).catch(() => false);
+  if (!installed) return null;
+  const status = await mgr.status(label).catch(() => null);
+  if (status) return { label, status };
+  return {
+    label,
+    status: { installed: true, running: false, pid: null, lastExitCode: null, unitPath: null },
+  };
 }
 
 /** Probe whether THIS process is the currently-running service-managed daemon.
@@ -84,10 +82,8 @@ export async function detectServiceManagedLabel(
 ): Promise<string | null> {
   // Platform-agnostic: the manager owns the "is this me?" decision
   // (`isManagedDaemon`) — POSIX pid-matches, Windows reads its env marker.
-  for (const variant of SERVICE_VARIANTS) {
-    const found = await findInstalledServiceLabel(mgr, variant);
-    if (found && mgr.isManagedDaemon(found.label, found.status, myPid)) return found.label;
-  }
+  const found = await findInstalledServiceLabel(mgr);
+  if (found && mgr.isManagedDaemon(found.label, found.status, myPid)) return found.label;
   return null;
 }
 

@@ -2,12 +2,13 @@
  * Tests for the update checker module (retained exports).
  *
  * Covers:
- * - isUpdateExempt / setDevBuildCliEntry — dev-mode exemption via
- *   module-level state (replaces the old MYCO_CMD env-var dispatch)
  * - readUpdateConfig — reads channel + cadence from the canonical daemon config
  * - isCacheStale — null cache, fresh cache, expired cache
- * - detectDevBuild — realpath comparison against npm global prefix
- * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
+ * - resolveMycoBinary — looksLikeMycoBinary + fallback
+ * - resolveRuntimeCommand — pin file read + trust check
+ * - getRuntimeOrigin / getRuntimeVersionLabel — channel badge helpers
+ * - resolveGlobalPrefix / getInstalledVersion — npm global prefix helpers
+ * - readProjectReleaseChannel / writeProjectReleaseChannel — machine-scoped channel
  *
  * Note: checkForUpdate / statusFromCache were retired from update-checker.ts
  * (Task 7). The composite CheckResult assembly now lives in daemon/api/upgrade.ts.
@@ -89,9 +90,7 @@ mock.module('node:os', () => ({
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import {
-  isUpdateExempt,
-  setDevBuildCliEntry,
-  getDevBuildCliEntry,
+  looksLikeMycoBinary,
   resolveMycoBinary,
   resolveRuntimeCommand,
   readProjectReleaseChannel,
@@ -101,7 +100,8 @@ import {
   resolveGlobalPrefix,
   getInstalledVersion,
   getRuntimeVersionLabel,
-  detectDevBuild,
+  getRuntimeOrigin,
+  resolveRuntimeHome,
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
@@ -186,10 +186,6 @@ beforeEach(() => {
   // mocked path without depending on the (unmocked) transitive os.homedir()
   // import inside grove/paths.ts.
   vi.stubEnv('MYCO_HOME', '/mock-home/.myco');
-  // The dev-build CLI entry is module state — reset between tests so
-  // a prior test's "set to dev" doesn't bleed into the next test's
-  // "expect prod" assertion.
-  setDevBuildCliEntry(null);
   vi.mocked(fs.existsSync).mockReturnValue(false);
   vi.mocked(fs.statSync).mockImplementation((p) => {
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
@@ -204,90 +200,81 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  setDevBuildCliEntry(null);
   // Belt-and-suspenders: bun:test --isolate doesn't actually fork between
   // test files, so a stubbed MYCO_HOME persisting after this file finishes
   // would leak into other tests' module loads. Force-clear it.
   delete process.env.MYCO_HOME;
 });
 
-// ---------------------------------------------------------------------------
-// isUpdateExempt
-// ---------------------------------------------------------------------------
-
-describe('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () => {
-  it('returns false when no dev-build CLI entry has been recorded', () => {
-    expect(isUpdateExempt()).toBe(false);
-    expect(getDevBuildCliEntry()).toBeNull();
+describe('looksLikeMycoBinary()', () => {
+  it('accepts a path whose basename is exactly `myco`', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/myco')).toBe(true);
   });
 
-  it('returns true after setDevBuildCliEntry records a path', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    expect(isUpdateExempt()).toBe(true);
-    expect(getDevBuildCliEntry()).toBe('/Users/dev/.local/bin/myco-dev');
+  it('accepts a path whose basename is `myco.exe` (Windows paths use forward slashes on the binary)', () => {
+    // Windows compiled binaries land in paths with forward slashes when
+    // process.execPath is read from a bun binary; use forward slashes here.
+    expect(looksLikeMycoBinary('/c/Program Files/myco/myco.exe')).toBe(true);
   });
 
-  it('returns false after setDevBuildCliEntry(null) clears the state', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    setDevBuildCliEntry(null);
-    expect(isUpdateExempt()).toBe(false);
-    expect(getDevBuildCliEntry()).toBeNull();
+  it('accepts basename matching in a case-insensitive way', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/MYCO')).toBe(true);
   });
 
-  it('ignores the legacy MYCO_CMD env var entirely', () => {
-    // Regression guard: the old implementation returned true when
-    // MYCO_CMD was set in the process environment. Dev-mode exemption
-    // now flows through setDevBuildCliEntry exclusively — a stray
-    // MYCO_CMD leaked from a parent shell must have no effect.
-    vi.stubEnv('MYCO_CMD', 'myco-dev');
-    expect(isUpdateExempt()).toBe(false);
+  it('rejects a path whose basename is not myco', () => {
+    expect(looksLikeMycoBinary('/usr/local/bin/bun')).toBe(false);
+    expect(looksLikeMycoBinary('/usr/local/bin/node')).toBe(false);
   });
 });
 
 describe('resolveMycoBinary()', () => {
-  it('returns the recorded dev-build CLI entry when set', () => {
-    setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
-    expect(resolveMycoBinary()).toBe('/Users/dev/.local/bin/myco-dev');
+  it('returns the supplied execPath when it looks like the myco binary', () => {
+    expect(resolveMycoBinary('/usr/local/bin/myco')).toBe('/usr/local/bin/myco');
   });
 
-  it('returns the literal `myco` fallback when no dev entry is recorded', () => {
+  it('returns `myco` fallback when the supplied path is not a myco binary', () => {
+    expect(resolveMycoBinary('/usr/local/bin/bun')).toBe('myco');
+  });
+
+  it('returns `myco` fallback when called with the test runner execPath (bun)', () => {
+    // The test runner's process.execPath is the bun binary, not myco —
+    // verify the default argument path falls through to the fallback.
     expect(resolveMycoBinary()).toBe('myco');
   });
 });
 
 describe('getRuntimeVersionLabel()', () => {
-  it('uses the protocol version for stable runtimes', () => {
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.27.19')).toBe('0.27.19');
-    expect(execFileSync).not.toHaveBeenCalled();
+  it('returns the version directly', () => {
+    expect(getRuntimeVersionLabel('0.27.19')).toBe('0.27.19');
+  });
+});
+
+describe('getRuntimeOrigin() — source from raw update_channel (not clamped)', () => {
+  // NOTE: fakeStat keys the machine-config cache on content length (mtimeMs=len+1,
+  // size=len). Strings for different channels must differ in length to bust the
+  // cache between test cases. An inline comment achieves this where needed.
+  const MACHINE_CONFIG_PATH = '/mock-home/.myco/config.yaml';
+
+  it('returns stable when machine config has no channel', () => {
+    mockNoFiles();
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('stable');
   });
 
-  it('describes dev runtimes from the nearest git release tag', () => {
-    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
-    vi.mocked(fs.realpathSync).mockImplementation((p) => String(p));
-    vi.mocked(fs.existsSync).mockImplementation((p) => p === '/repo/.git');
-    vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      expect(cmd).toBe('git');
-      expect(args).toEqual([
-        '-C',
-        '/repo',
-        'describe',
-        '--tags',
-        '--match',
-        'v[0-9]*',
-        '--always',
-        '--dirty',
-      ]);
-      return 'v0.18.1-244-g63fe75a5-dirty\n';
-    });
-
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.0')).toBe('v0.18.1-244-g63fe75a5-dirty');
+  it('returns beta when update_channel is beta', () => {
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: beta\n');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('beta');
   });
 
-  it('falls back to a dev-suffixed protocol version when git metadata is unavailable', () => {
-    setDevBuildCliEntry('/repo/packages/myco-darwin-arm64/bin/myco');
-    vi.mocked(fs.existsSync).mockReturnValue(false);
+  it('returns manual when update_channel is manual (clamp trap: readProjectReleaseChannel would return stable)', () => {
+    // Trailing space makes this distinct in length from the beta case above.
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: manual\n ');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('manual');
+  });
 
-    expect(getRuntimeVersionLabel('/vault/.myco', '0.25.1')).toBe('0.25.1+dev');
+  it('returns stable when update_channel is explicitly stable', () => {
+    // Two trailing spaces make this distinct in length from both beta and manual cases.
+    mockFileContent(MACHINE_CONFIG_PATH, 'daemon:\n  update_channel: stable\n  ');
+    expect(getRuntimeOrigin('/vault/.myco').source).toBe('stable');
   });
 });
 
@@ -410,6 +397,63 @@ describe('resolveRuntimeCommand()', () => {
       throw err;
     });
     expect(resolveRuntimeCommand()).toBeNull();
+  });
+});
+
+describe('resolveRuntimeHome()', () => {
+  it('returns null when no runtime.home pin exists', () => {
+    mockNoFiles();
+    expect(resolveRuntimeHome()).toBeNull();
+    expect(resolveRuntimeHome('/some/project/.myco')).toBeNull();
+  });
+
+  it('returns the trimmed machine runtime.home when present at ~/.myco/', () => {
+    mockFileContent('/mock-home/.myco/runtime.home', '  /home/me/.myco-dev \n');
+    expect(resolveRuntimeHome()).toBe('/home/me/.myco-dev');
+  });
+
+  it('prefers a project-scope runtime.home over the machine pin', () => {
+    const projectPin = '/proj/.myco/runtime.home';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === projectPin || p === '/mock-home/.myco/runtime.home') return fakeStat(String(p));
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === projectPin) return '/home/me/.myco-proj';
+      if (p === '/mock-home/.myco/runtime.home') return '/home/me/.myco-machine';
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeHome('/proj/.myco')).toBe('/home/me/.myco-proj');
+  });
+
+  it('refuses a group-writable runtime.home pin (G7) and returns null', () => {
+    if (process.platform === 'win32') return;
+    const pinPath = '/mock-home/.myco/runtime.home';
+    const content = '/home/me/.myco-dev';
+    vi.mocked(fs.statSync).mockImplementation((p) => {
+      if (p === pinPath) {
+        return {
+          uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+          mode: 0o100664, // group-writable
+          mtimeMs: content.length + 1,
+          size: content.length,
+        } as unknown as fs.Stats;
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
+      if (p === pinPath) return content;
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+    expect(resolveRuntimeHome()).toBeNull();
   });
 });
 
@@ -632,80 +676,3 @@ describe('getInstalledVersion()', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// detectDevBuild
-// ---------------------------------------------------------------------------
-
-describe('detectDevBuild()', () => {
-  /** Identity resolver — test paths don't exist, so bypass real realpath. */
-  const identityResolver = (p: string) => p;
-
-  it('returns null when globalPrefix is null', () => {
-    const result = detectDevBuild(null, '/home/user/.local/bin/myco-dev', identityResolver);
-    expect(result).toBeNull();
-  });
-
-  it('returns null when cliEntry is missing', () => {
-    const result = detectDevBuild('/opt/homebrew', undefined, identityResolver);
-    expect(result).toBeNull();
-  });
-
-  it('returns cliEntry when binary is outside global prefix (dev build)', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      identityResolver,
-    );
-    expect(result).toBe('/home/user/.local/bin/myco-dev');
-  });
-
-  it('returns null when binary is inside global prefix (proper install)', () => {
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js',
-      identityResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('does not match on path prefix that is only a string prefix, not a path boundary', () => {
-    // /opt/homebrew-foo should NOT be considered under /opt/homebrew
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/opt/homebrew-foo/bin/myco',
-      identityResolver,
-    );
-    expect(result).toBe('/opt/homebrew-foo/bin/myco');
-  });
-
-  it('resolves symlinks via realpath before comparing', () => {
-    // Simulate a symlink: /home/user/.local/bin/myco-dev → /opt/homebrew/lib/node_modules/...
-    // If we followed the symlink, it would look like a proper install.
-    const symlinkResolver = (p: string) => {
-      if (p === '/home/user/.local/bin/myco-dev') {
-        return '/opt/homebrew/lib/node_modules/@goondocks/myco/dist/cli.js';
-      }
-      return p;
-    };
-
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      symlinkResolver,
-    );
-    expect(result).toBeNull();
-  });
-
-  it('returns null when realpath throws', () => {
-    const throwingResolver = () => {
-      throw new Error('ENOENT');
-    };
-
-    const result = detectDevBuild(
-      '/opt/homebrew',
-      '/home/user/.local/bin/myco-dev',
-      throwingResolver,
-    );
-    expect(result).toBeNull();
-  });
-});

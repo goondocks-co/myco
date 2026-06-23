@@ -1,11 +1,13 @@
 /**
- * RC-5 served_by gate on the embedding action endpoints' single-Grove arm.
+ * Home-ownership gate on the embedding action endpoints' single-Grove arm.
  *
  * The body-scope `grove_id` arrives outside the request-context funnel, so
- * the handlers themselves must refuse foreign-served and unknown Groves
+ * the handlers themselves must refuse foreign-home and unknown Groves
  * BEFORE the runtime cache opens the Grove DB and builds an embedding
- * runtime on it. Throws propagate to the daemon transport (403
- * foreign_grove / 404 grove_not_found).
+ * runtime on it. Ownership is the home: a Grove under a different
+ * MYCO_HOME is not present here, so `assertOwnedGrove` throws
+ * UnknownGroveError, which the daemon transport maps to 404
+ * grove_not_found.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -17,7 +19,7 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { createEmbeddingActionHandlers } from '@myco/daemon/api/embedding.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
-import { createGrove, ForeignGroveError, UnknownGroveError } from '@myco/grove/registry.js';
+import { createGrove, UnknownGroveError } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
@@ -36,7 +38,7 @@ function stubEmbeddingFactory() {
   };
 }
 
-describe('embedding scope-aware actions — served_by ownership gate', () => {
+describe('embedding scope-aware actions — home ownership gate', () => {
   let workDir: string;
   let mycoHome: string;
   let previousMycoHome: string | undefined;
@@ -50,8 +52,8 @@ describe('embedding scope-aware actions — served_by ownership gate', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
-    // served_by gates compare against currentDaemonVariant(); pin the
-    // default 'service' variant regardless of the ambient shell.
+    // Keep the daemon-variant env out of these cases (ownership is the
+    // home now, not the variant); restore it in afterEach.
     previousVariant = process.env.MYCO_SERVICE_VARIANT;
     delete process.env.MYCO_SERVICE_VARIANT;
     logger = new DaemonLogger(path.join(workDir, 'logs'), { level: 'error' });
@@ -80,7 +82,7 @@ describe('embedding scope-aware actions — served_by ownership gate', () => {
     });
   }
 
-  it('runs against a Grove served by this daemon variant', async () => {
+  it('runs against a Grove owned by this daemon (same home)', async () => {
     const grove = createGrove('alpha', mycoHome);
     ensureGroveDatabase(grove.id, mycoHome);
     const handlers = makeHandlers();
@@ -95,8 +97,14 @@ describe('embedding scope-aware actions — served_by ownership gate', () => {
     expect(body.summary.ok).toBe(1);
   });
 
-  it('refuses a foreign-served Grove before creating its DB or embedding runtime (RC-5)', async () => {
-    const grove = createGrove('dogfood', mycoHome, { servedBy: 'service-dev' });
+  it('refuses a Grove in another home before creating its DB or embedding runtime', async () => {
+    // Two real homes: the Grove lives under home B but the handler owns
+    // home A (`mycoHome`), so the home-scoped lookup returns null and
+    // `assertOwnedGrove` throws UnknownGroveError. A no-op gate would open
+    // the foreign DB and build a runtime on it.
+    const foreignHome = path.join(workDir, 'home-B');
+    fs.mkdirSync(foreignHome, { recursive: true });
+    const grove = createGrove('dogfood', foreignHome);
     const handlers = makeHandlers();
 
     let caught: unknown;
@@ -109,7 +117,7 @@ describe('embedding scope-aware actions — served_by ownership gate', () => {
     }
     // Thrown BEFORE wrapPerGroveResult, so the refusal is not swallowed
     // into an ok:false result row; the foreign DB was never opened.
-    expect(caught).toBeInstanceOf(ForeignGroveError);
+    expect(caught).toBeInstanceOf(UnknownGroveError);
     expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
   });
 

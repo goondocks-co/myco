@@ -24,15 +24,10 @@ import { vi } from '../helpers/vi-shim.js';
 // Module mocks (must precede import of the module under test)
 // ---------------------------------------------------------------------------
 
-// Mock isUpdateExempt and writeProjectReleaseChannel in the update-checker module.
-// These are read at call time via deps override or directly, so we control
-// them via the `isDevBuild` dep injection and the real writeProjectReleaseChannel
-// path needs to be stubbed to avoid real fs writes.
+// Stub update-checker so writeProjectReleaseChannel doesn't touch real fs.
 mock.module('@myco/daemon/update-checker.js', () => ({
-  isUpdateExempt: () => false,
   readProjectReleaseChannel: () => 'stable',
   writeProjectReleaseChannel: (_vaultDir: string, _channel: string) => { /* no-op */ },
-  activateDevBuildModeIfDetected: () => {},
 }));
 
 // Mock grove/paths so resolveMycoHome doesn't touch the real filesystem.
@@ -98,7 +93,6 @@ function makeRefs(version: string): AssetRefs {
 /** Deps that override everything network/fs-touching. */
 function makeDeps(overrides: Partial<UpgradeDeps> = {}): UpgradeDeps {
   return {
-    isDevBuild: () => false,
     currentVersion: '1.0.0',
     home: '/fake/home',
     platform: 'linux',
@@ -285,18 +279,18 @@ describe('myco upgrade --check', () => {
     expect(deps.initiateAdopt).not.toHaveBeenCalled();
   });
 
-  it('--check works even on dev builds (does not refuse)', async () => {
-    const deps = makeDeps({ isDevBuild: () => true });
-    // Should not throw with the dev-build refusal message before runCheck is called.
-    // It may throw from the checker (no network), but NOT from the dev-build guard.
-    try {
-      await run(['--check'], deps);
-    } catch {
-      // Expected from missing network
-    }
-    // If it exited, verify the error is NOT the dev-build refusal.
-    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
-    expect(errOutput).not.toContain('running a dev build');
+  it('--check never stages or adopts even when a newer version is available', async () => {
+    // checkFn dep short-circuits the live network call so the test stays hermetic.
+    const fakeCheckResult = {
+      update_available: true,
+      latest_version: '1.1.0',
+      revert_available: false,
+      latest_stable: '1.1.0',
+    };
+    const deps = makeDeps({ checkFn: vi.fn(async () => fakeCheckResult) as unknown as UpgradeDeps['checkFn'] });
+    await run(['--check'], deps);
+    expect(deps.stageBinary).not.toHaveBeenCalled();
+    expect(deps.initiateAdopt).not.toHaveBeenCalled();
   });
 
   it('positive: calls checkFn + prints update available + never stages or adopts', async () => {
@@ -457,34 +451,7 @@ describe('myco upgrade <version> / --target-version: specific version refs', () 
 });
 
 // ---------------------------------------------------------------------------
-// 5. Dev-build guard
-// ---------------------------------------------------------------------------
-
-describe('myco upgrade: dev-build guard', () => {
-  it('refuses with a clear message when isDevBuild returns true', async () => {
-    const deps = makeDeps({ isDevBuild: () => true });
-    await expect(run([], deps)).rejects.toThrow('__exit__');
-    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
-    expect(errOutput).toContain('running a dev build');
-    expect(deps.stageBinary).not.toHaveBeenCalled();
-    expect(deps.initiateAdopt).not.toHaveBeenCalled();
-  });
-
-  it('dev-build with --check does NOT refuse', async () => {
-    const deps = makeDeps({ isDevBuild: () => true });
-    // Wrap — checker may throw from network, but dev-build guard must not fire before it
-    try {
-      await run(['--check'], deps);
-    } catch {
-      /* expected: no network */
-    }
-    const errOutput = (console.error as ReturnType<typeof vi.fn>).mock.calls.flat().join(' ');
-    expect(errOutput).not.toContain('running a dev build');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. --channel: persists channel + beta→stable revert
+// 5. --channel: persists channel + beta→stable revert
 // ---------------------------------------------------------------------------
 
 describe('myco upgrade --channel', () => {
@@ -507,13 +474,6 @@ describe('myco upgrade --channel', () => {
     expect((deps.writeChannel as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe('beta');
     // persist must come before resolve
     expect(callOrder.indexOf('persist:beta')).toBeLessThan(callOrder.indexOf('resolve:beta'));
-  });
-
-  it('--channel on a dev build does NOT persist (refuses before side effects)', async () => {
-    const deps = makeDeps({ isDevBuild: () => true });
-    await expect(run(['--channel', 'beta'], deps)).rejects.toThrow('__exit__');
-    expect(deps.writeChannel).not.toHaveBeenCalled();
-    expect(deps.stageBinary).not.toHaveBeenCalled();
   });
 
   it('--check --channel beta does NOT persist (report-only, no side effects)', async () => {

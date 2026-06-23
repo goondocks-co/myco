@@ -27,7 +27,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { listGroves, type GroveRecord } from '@myco/grove/registry.js';
-import { resolveMycoHome, resolveGroveDbPath, resolveServiceDirName } from '@myco/grove/paths.js';
+import { resolveMycoHome, resolveGroveDbPath } from '@myco/grove/paths.js';
 import { withDatabase } from '@myco/db/client.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 
@@ -45,8 +45,8 @@ const PROBE_WARN_INTERVAL_MS = 60 * 60 * 1000;
 export interface GrovePendingProbeDeps {
   cache: GroveRuntimeCache;
   logger: DaemonLogger;
-  /** The current daemon's service dir; enforces the served-by boundary. */
-  daemonStateDir: string;
+  /** @deprecated No longer used; the home is the grove filter. Kept for call-site compatibility until T9. */
+  daemonStateDir?: string;
   /** Override Myco home (tests); defaults to the resolved global home. */
   mycoHome?: string;
   /** Warn LOG_KIND used when a Grove's count throws. */
@@ -71,15 +71,14 @@ interface ProbeCache {
 }
 
 /**
- * Build a multi-Grove pending probe. `mycoHome`/`servedBy` are resolved once
- * at factory call (not per invocation) since neither changes for the daemon's
- * lifetime. The returned closure walks every served Grove, sums
- * `countForGrove`, short-circuits on the first positive, and caches the
- * result (zero AND non-zero) for `ttlMs`.
+ * Build a multi-Grove pending probe. `mycoHome` is resolved once at factory
+ * call (not per invocation) since it does not change for the daemon's lifetime.
+ * The returned closure walks every Grove in the home, sums `countForGrove`,
+ * short-circuits on the first positive, and caches the result (zero AND
+ * non-zero) for `ttlMs`.
  */
 export function makeGrovePendingProbe(deps: GrovePendingProbeDeps): () => number {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
   const ttlMs = deps.ttlMs ?? GROVE_PENDING_PROBE_TTL_MS;
   let cache: ProbeCache | null = null;
   // Per-Grove last-warn timestamps so a persistently-broken Grove surfaces
@@ -89,7 +88,7 @@ export function makeGrovePendingProbe(deps: GrovePendingProbeDeps): () => number
   return () => {
     if (cache && Date.now() < cache.expiresAt) return cache.total;
     let total = 0;
-    for (const grove of listGroves(mycoHome, { servedBy })) {
+    for (const grove of listGroves(mycoHome)) {
       try {
         const databasePath = resolveGroveDbPath(grove.id, mycoHome);
         const db = deps.cache.getDatabase(databasePath);

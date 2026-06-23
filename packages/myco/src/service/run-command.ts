@@ -16,6 +16,16 @@
 
 import { spawn } from 'node:child_process';
 
+/** Throw with the command and its output when a supervisor shell-out exits non-zero. */
+export function assertRunSucceeded(
+  result: { stdout: string; exitCode: number },
+  command: string,
+): void {
+  if (result.exitCode !== 0) {
+    throw new Error(`${command} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
+  }
+}
+
 /**
  * Spawn a command and return its combined stdout+stderr decoded once, plus the
  * exit code. Used by the launchd/systemd service runners, whose shell-outs were

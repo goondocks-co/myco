@@ -19,9 +19,8 @@
   ],
   "scripts": {
     "postinstall": "node scripts/select-binary.mjs",
-    "codegen": "tsx scripts/gen-hook-config.ts && tsx scripts/gen-agent-definitions.ts && tsx scripts/gen-static-assets.ts && node scripts/gen-templates.mjs",
-    "prebuild": "npm run codegen",
-    "build": "node scripts/clean-core.mjs && node scripts/build-single-target.mjs && npm run build:ui && npm run build:verify",
+    "codegen": "tsx scripts/gen-hook-config.ts && tsx scripts/gen-agent-definitions.ts && tsx scripts/gen-static-assets.ts && tsx scripts/gen-ui-assets.ts && node scripts/gen-templates.mjs",
+    "build": "npm run build:ui && npm run codegen && node scripts/clean-core.mjs && npm run build:binary && npm run build:verify",
     "build:binaries": "node scripts/clean-core.mjs && node scripts/build-all-targets.mjs",
     "build:binary": "node scripts/build-single-target.mjs",
     "build:ui": "if [ -d ui ]; then cd ui && { test -d node_modules || npm ci; } && npx vite build; fi",
@@ -68,7 +67,7 @@
     "gray-matter": "^4.0.3",
     "semver": "^7.8.4",
     "shell-quote": "^1.8.4",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.7.0",
     "yaml": "^2.8.4",
     "zod": "^4.4.3"
   },

@@ -17,7 +17,7 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache';
 import { createDatabaseMaintenanceHandlers } from '@myco/daemon/api/database';
 import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager';
 import { ensureGroveDatabase } from '@myco/grove/database';
-import { createGrove, ForeignGroveError, UnknownGroveError } from '@myco/grove/registry';
+import { createGrove, UnknownGroveError } from '@myco/grove/registry';
 import { resolveGroveDbPath, resolveGroveDir } from '@myco/grove/paths';
 import { assertGroveProjectId } from '@myco/grove/ids';
 import type { RouteRequest } from '@myco/daemon/router';
@@ -53,8 +53,8 @@ describe('database scope-aware actions', () => {
     process.env.MYCO_HOME = mycoHome;
     previousAuthToken = process.env.MYCO_DAEMON_AUTH;
     process.env.MYCO_DAEMON_AUTH = ALL_GROVES_TOKEN;
-    // served_by gates compare against currentDaemonVariant(); pin the
-    // default 'service' variant regardless of the ambient shell.
+    // Keep the daemon-variant env out of these cases (ownership is the
+    // home now, not the variant); restore it in afterEach.
     previousVariant = process.env.MYCO_SERVICE_VARIANT;
     delete process.env.MYCO_SERVICE_VARIANT;
     logger = makeLogger(workDir);
@@ -195,8 +195,13 @@ describe('database scope-aware actions', () => {
     expect(res.status === 403).toBe(false);
   });
 
-  it('refuses kind=grove for a foreign-served Grove before creating its DB (RC-5)', async () => {
-    const grove = createGrove('dogfood', mycoHome, { servedBy: 'service-dev' });
+  it('refuses kind=grove for a Grove in another home before creating its DB (RC-5)', async () => {
+    // Ownership is the home: a Grove under a different MYCO_HOME is not
+    // present here, so `assertOwnedGrove` throws UnknownGroveError and the
+    // DB open never happens. Two real homes — a no-op gate would open it.
+    const foreignHome = path.join(workDir, 'home-B');
+    fs.mkdirSync(foreignHome, { recursive: true });
+    const grove = createGrove('dogfood', foreignHome);
     const handlers = makeHandlers();
 
     let caught: unknown;
@@ -206,13 +211,15 @@ describe('database scope-aware actions', () => {
       caught = err;
     }
     // Thrown (not soft-failed into a result row) so the daemon transport
-    // can map it to 403 foreign_grove; and the DB open never happened.
-    expect(caught).toBeInstanceOf(ForeignGroveError);
+    // can map it to 404 grove_not_found; and the DB open never happened.
+    expect(caught).toBeInstanceOf(UnknownGroveError);
     expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
   });
 
-  it('refuses kind=grove vacuum for a foreign-served Grove (single-Grove vacuum arm)', async () => {
-    const grove = createGrove('dogfood', mycoHome, { servedBy: 'service-dev' });
+  it('refuses kind=grove vacuum for a Grove in another home (single-Grove vacuum arm)', async () => {
+    const foreignHome = path.join(workDir, 'home-B');
+    fs.mkdirSync(foreignHome, { recursive: true });
+    const grove = createGrove('dogfood', foreignHome);
     const handlers = makeHandlers();
 
     let caught: unknown;
@@ -221,7 +228,7 @@ describe('database scope-aware actions', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(ForeignGroveError);
+    expect(caught).toBeInstanceOf(UnknownGroveError);
     expect(fs.existsSync(resolveGroveDbPath(grove.id, mycoHome))).toBe(false);
   });
 

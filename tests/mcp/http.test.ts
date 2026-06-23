@@ -222,7 +222,7 @@ describe('streamable HTTP MCP', () => {
     });
   });
 
-  it('rejects a foreign-served Grove with 403 foreign_grove, not the legacy_vault 503', async () => {
+  it('rejects a Grove that lives in another home, not the legacy_vault 503', async () => {
     const previousHome = process.env.MYCO_HOME;
     const previousVariant = process.env.MYCO_SERVICE_VARIANT;
     // Env mutation and fixture setup live inside the try so a setup
@@ -232,13 +232,16 @@ describe('streamable HTTP MCP', () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-foreign-'));
       tmpDirs.push(tmp);
       const home = path.join(tmp, 'home');
+      const foreignHome = path.join(tmp, 'home-B');
+      fs.mkdirSync(foreignHome, { recursive: true });
+      // This handler runs under home A (MYCO_HOME); the Grove + project
+      // live under home B, so home-scoped resolution must refuse them up
+      // front rather than misclassifying as legacy_vault.
       process.env.MYCO_HOME = home;
       const projectRoot = path.join(tmp, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
       const vaultDir = path.join(projectRoot, '.myco');
       fs.mkdirSync(vaultDir, { recursive: true });
-      // The Grove is served by the dev daemon; this handler runs as the
-      // 'service' variant, so resolution must refuse it up front.
-      const grove = createGrove('Dogfood', home, { servedBy: 'service-dev' });
+      const grove = createGrove('Dogfood', foreignHome);
       saveProjectManifest(vaultDir, {
         project: { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Project B' },
         grove: { binding_id: 'gbind-b', slug: grove.slug, mode: 'local' },
@@ -248,7 +251,7 @@ describe('streamable HTTP MCP', () => {
         projectName: 'Project B',
         projectRoot,
         bindingId: 'gbind-b',
-      }, home);
+      }, foreignHome);
       const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient() });
       const url = await listen((req, res) => {
         void handler(req, res);
@@ -270,11 +273,12 @@ describe('streamable HTTP MCP', () => {
         },
         body,
       });
-      expect(response.status).toBe(403);
-      const payload = await response.json() as { error?: string; grove_id?: string; served_by?: string };
-      expect(payload.error).toBe('foreign_grove');
-      expect(payload.grove_id).toBe(grove.id);
-      expect(payload.served_by).toBe('service-dev');
+      // A foreign-home Grove is unknown to this daemon → 404 unknown_tenancy.
+      // The regression this guards is that it is NOT the legacy_vault 503.
+      expect(response.status).toBe(404);
+      const payload = await response.json() as { error?: string };
+      expect(payload.error).toBe('unknown_tenancy');
+      expect(payload.error).not.toBe('legacy_vault');
     } finally {
       if (previousHome === undefined) delete process.env.MYCO_HOME;
       else process.env.MYCO_HOME = previousHome;

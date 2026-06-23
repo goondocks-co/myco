@@ -22,9 +22,10 @@ import path from 'node:path';
 export const VAULT_GITIGNORE = `# Per-user, per-machine config overrides
 local.yaml
 
-# Project-scope runtime pin written by \`make dev-link\`. Per-machine,
+# Project-scope runtime pins written by \`make dev-link\`. Per-machine,
 # never committed.
 runtime.command
+runtime.home
 
 # Per-machine ephemera; canonical copies live in ~/.myco/
 buffer/

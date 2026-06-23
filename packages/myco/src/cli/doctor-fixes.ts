@@ -125,29 +125,30 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
   // modes — not installed, and installed-but-executable-missing. Runs
   // once even when both checks matched.
   'service-reinstall': async () => {
-    const { detectInstallVariant, resolveServiceExecutable, assertSafeServiceMutation } = await import('./service.js');
+    const { resolveServiceExecutable, assertSafeServiceMutation } = await import('./service.js');
     const { buildServiceSpec } = await import('../service/spec-builder.js');
     const { getServiceManager } = await import('../service/manager.js');
     const { serviceLabel } = await import('../service/labels.js');
+    const { resolveMycoHome } = await import('../grove/paths.js');
 
-    const variant = detectInstallVariant();
-    const refusal = assertSafeServiceMutation({ action: 'install', variant }, process.execPath);
+    const mycoHome = resolveMycoHome();
+    const refusal = assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome);
     if (refusal) return [refusal];
 
     // The 'executable missing' check fires precisely when the recorded
     // command is gone, and buildServiceSpec throws on a missing path —
     // fall back to the running binary.
-    let executable = resolveServiceExecutable(variant);
+    let executable = resolveServiceExecutable(mycoHome);
     if (!fs.existsSync(executable)) executable = process.execPath;
 
     let spec: import('../service/types.js').ServiceSpec;
     try {
-      spec = buildServiceSpec({ variant, executable });
+      spec = buildServiceSpec({ mycoHome, executable });
     } catch (err) {
       return [err instanceof Error ? err.message : String(err)];
     }
     const mgr = getServiceManager();
-    const label = serviceLabel(variant);
+    const label = serviceLabel(mycoHome);
     // A throwing manager must surface as a failed action, not escape
     // fix() — an uncaught throw would discard the other fixers' action
     // reports and skip the post-fix recheck.

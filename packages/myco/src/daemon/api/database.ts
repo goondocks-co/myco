@@ -68,7 +68,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<PerGroveResultBase & T> {
     // Body-scope grove ids arrive outside the request-context funnel, so
-    // existence and served_by ownership gate here — BEFORE the cache
+    // existence and home-path ownership gate here — BEFORE the cache
     // opens (and schema-migrates) the Grove DB. An unknown id must not
     // create groves/<id>/ as a side effect; throws propagate to the
     // transport (403 foreign_grove / 404 grove_not_found).

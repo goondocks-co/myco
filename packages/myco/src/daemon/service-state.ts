@@ -46,6 +46,7 @@ import {
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { readJsonFile } from '../utils/json.js';
 import { derivePort } from './port.js';
+import YAML from 'yaml';
 
 export class GroveBindingRequiredError extends Error {
   constructor(vaultDir: string) {
@@ -108,8 +109,32 @@ export interface ResolveDaemonServiceStateOptions {
   env?: Record<string, string | undefined>;
 }
 
+/**
+ * Reads `daemon.port` from `<mycoHome>/config.yaml` directly (not via the
+ * tiered config loader). Returns a port in [1024, 65535], or null when absent,
+ * out of range, or unreadable.
+ */
+function readDaemonPortOverride(mycoHome: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
+    const doc = YAML.parse(raw) as { daemon?: { port?: unknown } } | null;
+    const port = doc?.daemon?.port;
+    if (typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535) {
+      return port;
+    }
+  } catch {
+    /* missing / malformed config.yaml — fall back to the derived port */
+  }
+  return null;
+}
+
+/**
+ * The daemon's binding port: `daemon.port` from `<mycoHome>/config.yaml` if
+ * set, else `derivePort(resolveServiceDir(mycoHome))`. All consumers resolve
+ * the port through this function.
+ */
 export function resolveGlobalDaemonPort(mycoHome = resolveMycoHome()): number {
-  return derivePort(resolveServiceDir(mycoHome));
+  return readDaemonPortOverride(mycoHome) ?? derivePort(resolveServiceDir(mycoHome));
 }
 
 export function resolveDaemonServiceState(

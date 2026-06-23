@@ -220,7 +220,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     try {
       // Residual front-door hazard: outside the daemon (CLI `myco tool
       // call`), the BASE context's database opens in-process with no
-      // served_by ownership check — only cross-Grove `grove_id` pivots are
+      // home-ownership check — only cross-Grove `grove_id` pivots are
       // gated (resolveCallContext throws `foreign_grove`). Gating the base
       // context is tracked in the RC-5 remediation plan.
       db = openDatabase(context.databasePath);

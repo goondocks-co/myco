@@ -120,6 +120,16 @@ describe('SystemdUserServiceManager', () => {
     await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/systemctl.*restart.*exit 5/i);
   });
 
+  test('start throws when systemctl exits non-zero (no silent success)', async () => {
+    runner.exitOverrides.set('start', { stdout: 'Failed to connect to bus', exitCode: 1 });
+    await expect(mgr.start('co.goondocks.myco')).rejects.toThrow(/systemctl.*start.*exit 1/i);
+  });
+
+  test('install throws when systemctl enable fails (no silent success)', async () => {
+    runner.exitOverrides.set('enable', { stdout: 'Failed to connect to bus', exitCode: 1 });
+    await expect(mgr.install(spec(home))).rejects.toThrow(/systemctl.*enable.*exit 1/i);
+  });
+
   test('restartShellCommand returns the literal `systemctl --user restart <label>.service`', () => {
     // Baked into the detached update / restart script after the daemon exits.
     expect(mgr.restartShellCommand('co.goondocks.myco')).toBe(

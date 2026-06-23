@@ -335,12 +335,14 @@ $json = $markerObj | ConvertTo-Json
 [System.IO.File]::WriteAllText($Marker, $json, (New-Object System.Text.UTF8Encoding($false)))
 
 # ---------------------------------------------------------------------------
-# First run — daemon self-installs the service (best-effort)
+# First run — install the managed service so the dashboard is reachable
 # ---------------------------------------------------------------------------
+$ServiceOk = $true
 try {
-    & $Exe doctor | Out-Null
+    & $Exe service install | Out-Null
+    if ($LASTEXITCODE -ne 0) { $ServiceOk = $false }
 } catch {
-    # Non-fatal: installer succeeded even if doctor has transient issues
+    $ServiceOk = $false
 }
 
 # ---------------------------------------------------------------------------
@@ -349,10 +351,17 @@ try {
 Write-Host ""
 Write-Host "Myco installed to $Exe" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Open the dashboard to confirm setup and configure intelligence providers:"
-Write-Host ""
-Write-Host "    myco open"
-Write-Host "    http://localhost:20915/"
+if ($ServiceOk) {
+    Write-Host "  Open the dashboard to confirm setup and configure intelligence providers:"
+    Write-Host ""
+    Write-Host "    myco open"
+    Write-Host "    http://localhost:20915/"
+} else {
+    Write-Host "  Could not start the Myco service automatically. Bring it up with:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    myco service install"
+    Write-Host "    myco open"
+}
 Write-Host ""
 Write-Host "  Optional operator CLIs (npm):"
 Write-Host "    npm install -g @goondocks/myco-team        # https://github.com/$Repo/blob/main/docs/team-sync.md"
