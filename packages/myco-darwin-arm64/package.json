@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco-darwin-arm64",
-  "version": "0.25.0",
+  "version": "0.0.0-dev",
   "description": "macOS arm64 binary for @goondocks/myco. Installed automatically as an optional dependency.",
   "type": "module",
   "files": [
