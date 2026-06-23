@@ -109,6 +109,9 @@ async function main(): Promise<void> {
   // Internal: spawned detached by the daemon to run the cross-platform update/
   // restart orchestration after the daemon exits (see upgrade/orchestrator.ts).
   if (cmd === '__apply-update') return (await import('./upgrade/orchestrator.js')).run(args);
+  // Internal: spawned detached (from a temp-copy binary) by `myco remove --purge`
+  // to delete the managed install dir once this process releases its exe lock.
+  if (cmd === '__finish-uninstall') return (await import('./cli/finish-uninstall.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');

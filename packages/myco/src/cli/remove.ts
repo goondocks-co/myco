@@ -122,6 +122,19 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     console.log(`  ⚠ Service uninstall skipped: ${(err as Error).message}`);
   }
 
+  // --- Stop the daemon before deleting its files. Unregistering the service
+  //     kills the process on launchd/systemd but not on Windows (schtasks
+  //     /delete leaves the spawned daemon running), where it keeps the home
+  //     locked → EBUSY on purge. A cooperative shutdown releases those handles
+  //     on every platform (no-op once the service stop already killed it). ---
+  try {
+    const { resolveGlobalDaemonPort } = await import('../daemon/service-state.js');
+    const { requestCooperativeShutdown } = await import('../service/cooperative-shutdown.js');
+    if (await requestCooperativeShutdown(resolveGlobalDaemonPort(mycoHome))) {
+      console.log('  ✓ Stopped running daemon');
+    }
+  } catch { /* no daemon answering — nothing to stop */ }
+
   // --- Remove per-symbiont global config blocks. ---
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
@@ -165,17 +178,59 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
 
   // --- Purge (--purge) ---
   if (purge) {
+    let purgeOk = true;
     try {
       fs.rmSync(mycoHome, { recursive: true, force: true });
       console.log(`  ✓ Purged ${mycoHome}`);
     } catch (err) {
       console.error(`  ✗ Failed to purge ${mycoHome}: ${(err as Error).message}`);
+      purgeOk = false;
     }
+    if (!(await removeManagedInstallDir(mycoHome))) purgeOk = false;
+    // A failed purge must not report success — automation reads the exit code.
+    if (!purgeOk) process.exitCode = 1;
   } else {
     console.log(`  – Preserved Grove DB + captured data at ${mycoHome} (use --purge to delete)`);
   }
 
   console.log('\nMyco global install removed.');
+}
+
+/**
+ * Remove the managed binary's install dir when it lives OUTSIDE the purged home
+ * (win32: `%LOCALAPPDATA%\Myco`; on POSIX the bin dir is `<home>/bin`, already
+ * gone with the home — detected by path, not by platform name). A process can't
+ * delete its own running executable, so when the dir holds the running binary
+ * the deletion is finished by a detached temp-copy — the same mechanism the
+ * updater uses to mutate a running binary. Returns false only on an unexpected
+ * failure, not when the detached finisher was scheduled.
+ */
+async function removeManagedInstallDir(mycoHome: string): Promise<boolean> {
+  const { managedBinDir } = await import('../install/managed-binary.js');
+  const binDir = managedBinDir(mycoHome, process.platform, process.env.LOCALAPPDATA);
+  const rel = path.relative(mycoHome, binDir);
+  const underHome = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  if (underHome) return true; // removed with the home purge above
+
+  const installRoot = path.dirname(binDir);
+  if (!fs.existsSync(installRoot)) return true;
+  try {
+    fs.rmSync(installRoot, { recursive: true, force: true });
+    console.log(`  ✓ Removed ${installRoot}`);
+    return true;
+  } catch {
+    // The running binary locks its own image — finish after this process exits.
+    try {
+      const { resolveOrchestratorBinary } = await import('../upgrade/spawn.js');
+      const { spawnDetached } = await import('../upgrade/orchestrator.js');
+      spawnDetached(resolveOrchestratorBinary(), ['__finish-uninstall', installRoot]);
+      console.log(`  ✓ Scheduled removal of ${installRoot} after exit`);
+      return true;
+    } catch (err) {
+      console.error(`  ✗ Failed to remove ${installRoot}: ${(err as Error).message}`);
+      return false;
+    }
+  }
 }
 
 async function cleanProjectLocalArtifacts(projectRoot: string, pkgRoot: string): Promise<void> {
