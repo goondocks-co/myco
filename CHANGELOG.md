@@ -2,6 +2,23 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-06-23
+
+### Headline
+
+**Node-free native installer.** Myco now ships as a self-contained native binary — no Node runtime is required to run it. `curl -fsSL https://myco.sh/install.sh | sh` (macOS/Linux) and `irm https://myco.sh/install.ps1 | iex` (Windows x64) download the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), register a managed per-user service, and connect supported agents. `npm install -g @goondocks/myco` still works as a thin bootstrap that converges to the same native binary.
+
+### Added
+
+- **Single-binary self-update.** The local service keeps itself up to date from its release channel in the background while idle. Upgrades can also be triggered from the **Upgrade** section of the dashboard's Settings page or with the new `myco upgrade` CLI (`--channel stable|beta`). `npm update` is no longer part of the main upgrade path.
+- **Daemon coexistence.** A development Myco service can run alongside the released production service on the same machine — variant-aware Grove binding keeps their Groves, services, and upgrades isolated.
+- **Cross-platform service lifecycle.** Managed per-user service install and supervision across launchd (macOS), systemd (Linux), and Task Scheduler (Windows), validated on macOS, Linux, and Windows x64.
+
+### Changed
+
+- **Install no longer requires Node.** The installer downloads a native binary instead of installing the npm package. Node 22+ is now needed only for the optional npm install path and the operator CLIs (`@goondocks/myco-team`, `@goondocks/myco-collective`).
+- Platform support: macOS is the primary supported platform; Linux and Windows are in beta. Windows is x64 only — Windows on ARM is not supported.
+
 ## [Unreleased]
 
 ### Headline
@@ -131,4 +148,5 @@ The license changed from MIT to Apache 2.0 on 2026-04-29. No code action require
 
 ---
 
-[Unreleased]: https://github.com/goondocks-co/myco/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/goondocks-co/myco/compare/myco/v1.2.0...HEAD
+[1.2.0]: https://github.com/goondocks-co/myco/releases/tag/myco/v1.2.0

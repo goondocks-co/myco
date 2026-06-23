@@ -4,7 +4,7 @@ Myco runs a local background service that captures session activity, processes i
 
 ## Install and bootstrap
 
-The service is installed for the current user the first time the npm package lands on a machine. The supported path is macOS, with Linux and Windows in beta. On Windows, only x64 is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
+The service is installed for the current user the first time the Myco native binary lands on a machine — the installer downloads it to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows) and registers a managed per-user service (launchd on macOS, systemd on Linux, Task Scheduler on Windows). No Node runtime is required. The supported path is macOS, with Linux and Windows in beta. On Windows, only x64 is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 When the service starts:
 
@@ -113,16 +113,17 @@ myco remove --purge # Additionally remove ~/.myco/ itself
 
 ## Updates
 
-Myco installs a single global npm package and runs one local service serving every Grove on the machine. To upgrade:
+Myco runs as a single native binary and one local service serving every Grove on the machine. It keeps itself up to date:
 
 ### How to update
 
-- **From the Operations page** — when a new version is available, an **Update & Restart** button appears. Click it to install the new package and restart Myco.
-- **From the command line** — `npm install -g @goondocks/myco@latest` installs the new version. Run `myco restart` to make it take effect immediately, otherwise it picks up on the next restart.
+- **Automatically** — the service self-updates from your release channel in the background while it's idle. Nothing to run.
+- **From the Settings page** — the **Upgrade** section shows the running version and, when a new version is available, an **Upgrade & Restart** button. Click it to apply the update and restart Myco immediately.
+- **From the command line (advanced)** — `myco upgrade` (with `--channel stable|beta`) applies an update for scripted use. The dashboard is the primary interface; the CLI is for bootstrap and advanced use.
 
-Both paths end at the same state: the globally installed Myco package is at the new version, and the next restart updates your local service and connected agents.
+All three paths end at the same state: the installed Myco binary is at the new version, and the next restart updates your local service and connected agents.
 
-If you also installed one of the optional standalone operator CLIs, the Operations page detects and applies those package updates alongside `@goondocks/myco`. Manual npm updates are still available, but they are no longer the normal path once those packages are installed:
+If you also installed one of the optional standalone operator CLIs, the Settings page's Upgrade section detects and applies those package updates too. They remain npm/Node tools and can also be updated directly:
 
 - `npm update -g @goondocks/myco-team`
 - `npm update -g @goondocks/myco-collective`
@@ -131,13 +132,11 @@ See [Upgrading Myco](upgrade.md) for the full upgrade walkthrough.
 
 ### Stable and Beta channels
 
-The Operations page has a **Stable**/**Beta** toggle that controls which release line this project follows. Channel selection is per-project — switching one project to Beta does not affect your other projects or your machine-global `myco` install.
+The Upgrade section of the Settings page has a **Stable**/**Beta** toggle that controls which release line this machine follows. This machine runs one managed Myco binary at `~/.myco/bin/myco`, and switching channels swaps that same binary in place — Beta installs the latest prerelease, Stable steps back to the latest stable release.
 
-**Switching to Beta.** Click **Beta**. Myco installs the latest beta release for that project and uses it for the dashboard, agent connections, and intelligence pipeline. Your other projects continue running whatever version they're on.
+**Switching to Beta.** Click **Beta**. Myco installs the latest beta release and uses it for the dashboard, agent connections, and intelligence pipeline across every Grove on the machine.
 
-**Reverting to Stable.** Click **Revert to Stable & Restart**. Myco removes the project's Beta install, ensures the machine-global install is at the latest stable version, and restarts the service. The project returns to the same Stable version a fresh `npm install -g @goondocks/myco` would give you.
-
-**Machine-wide Beta preferences.** Any existing machine-wide Beta preference applies to each project by default. Click **Stable** on any project's Operations page to opt that project out.
+**Reverting to Stable.** Click **Revert to Stable & Restart**. Myco steps the binary back to the latest stable release and restarts the service. You return to the same Stable version a fresh install would give you.
 
 ## Configuration
 

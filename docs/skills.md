@@ -97,7 +97,7 @@ agent:
 
 The generate and evolve tasks only run when there's work to do (approved candidates waiting, or active skills that might have drifted). They don't wake the daemon if there's nothing to process.
 
-You can also trigger any skill task manually from the dashboard's Operations page.
+You can also trigger any skill task manually from the **Agent** page's **Run Task** dialog.
 
 ## Configuration
 

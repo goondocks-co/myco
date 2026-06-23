@@ -72,13 +72,7 @@ Once connected:
 
 ### Existing Myco users
 
-If you already use Myco locally, your normal upgrade path does not change:
-
-```bash
-npm update -g @goondocks/myco
-```
-
-That updates the main Myco CLI, service, agent connections, and dashboard. Users who are only *connecting* to an existing team don't need anything else.
+If you already use Myco locally, your normal upgrade path does not change: Myco keeps the main product up to date automatically (or you can update from the dashboard's **Operations** page). That covers the main Myco CLI, service, agent connections, and dashboard. Users who are only *connecting* to an existing team don't need anything else.
 
 ### Team operators
 
@@ -119,7 +113,7 @@ npm update -g @goondocks/myco-team
 myco-team update --team-id <id>
 ```
 
-Project-local Myco installs still update through `@goondocks/myco`. Once the standalone Team or Collective CLI is installed on a machine, the main Myco Operations page also detects and applies those package updates for you.
+The main Myco product keeps itself up to date automatically (or from the **Upgrade** section of the dashboard's **Settings** page). Once the standalone Team or Collective CLI is installed on a machine, that same Upgrade section also detects and applies those package updates for you.
 
 ## Daily use
 

@@ -66,7 +66,7 @@ The map refreshes itself when the underlying file descriptions drift — and sho
 
 Once LLM descriptions are on, every described file is also embedded for semantic search. Agents call `myco_search` with `type=canopy` to find files by what they *do*: "where does session capture happen?" returns the right file even if the words "session capture" appear nowhere in it.
 
-The same results show up in the Cortex Operations page and as a **Canopy** facet in the dashboard's universal search — the agent's view and your view are the same view.
+The same results show up in the **Cortex** page and as a **Canopy** facet in the dashboard's universal search — the agent's view and your view are the same view.
 
 ## Configuration
 
