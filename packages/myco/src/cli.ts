@@ -161,6 +161,16 @@ async function main(): Promise<void> {
   if (cmd === 'upgrade') return (await import('./cli/upgrade.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
 
+  // open and restart target the global daemon and require no project myco.yaml.
+  if (cmd === 'open') {
+    const vaultDir = resolveVaultDir();
+    return (await import('./cli/open.js')).run(args, vaultDir);
+  }
+  if (cmd === 'restart') {
+    const vaultDir = resolveVaultDir();
+    return (await import('./cli/restart.js')).run(args, vaultDir);
+  }
+
   // Honor the runtime pin before the myco.yaml gate so a pinned binary is
   // re-exec'd even on a host with no project vault; the pinned binary owns the
   // gate decision after re-exec.
@@ -195,8 +205,6 @@ async function main(): Promise<void> {
     }
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
     case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
-    case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
-    case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);
