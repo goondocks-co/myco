@@ -23,6 +23,10 @@ describe('parseServiceArgs', () => {
     expect(parseServiceArgs(['restart'])).toEqual({ action: 'restart' });
   });
 
+  test('reconcile', () => {
+    expect(parseServiceArgs(['reconcile'])).toEqual({ action: 'reconcile' });
+  });
+
   test('rejects unknown action', () => {
     expect(() => parseServiceArgs(['frobnicate'])).toThrow(/unknown.*frobnicate/i);
   });
@@ -46,7 +50,7 @@ describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () =>
   const globalPath = '/opt/homebrew/lib/node_modules/@goondocks/myco-darwin-arm64/bin/myco';
 
   test('refuses every mutating verb against the default home when run from a dev-build binary', () => {
-    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'reconcile'] as const) {
       const refusal = assertSafeServiceMutation({ action }, devBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
       expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
@@ -54,7 +58,7 @@ describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () =>
   });
 
   test('refuses every mutating verb against the default home from the legacy vendor/<arch>/ layout', () => {
-    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'reconcile'] as const) {
       const refusal = assertSafeServiceMutation({ action }, legacyDevBuildPath, DEFAULT_HOME);
       expect(refusal).not.toBeNull();
       expect(refusal!).toMatch(/Refusing to .* the default-home \(~\/\.myco\) service from a dev-build binary/);
@@ -66,13 +70,13 @@ describe('assertSafeServiceMutation (default-home-from-dev-binary fence)', () =>
   });
 
   test('allows all actions against a non-default (dogfood) home from a dev-build binary', () => {
-    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'reconcile'] as const) {
       expect(assertSafeServiceMutation({ action }, devBuildPath, DOGFOOD_HOME)).toBeNull();
     }
   });
 
   test('allows all actions against the default home from the globally installed binary', () => {
-    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'reconcile'] as const) {
       expect(assertSafeServiceMutation({ action }, globalPath, DEFAULT_HOME)).toBeNull();
     }
   });

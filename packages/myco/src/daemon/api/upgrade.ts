@@ -55,7 +55,7 @@ import {
 } from '../../constants/update.js';
 import type { ReleaseChannel, UpdatePackageId } from '../../constants/update.js';
 import { resolveLastUpdateVersionPath, isDefaultMycoHome } from '../../grove/paths.js';
-import { detectServiceManagedLabel } from './restart.js';
+import { resolveRestartServiceLabel } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -412,7 +412,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
         }
         restartInitiated = true;
         const runLocalUpdate = !isStampMatching(installedVersion);
-        const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
+        const serviceManagedLabel = await resolveRestartServiceLabel(serviceManager);
         spawnRestartScript({
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
@@ -713,7 +713,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       }
     }
 
-    const serviceManagedLabel = await detectServiceManagedLabel(serviceManager);
+    const serviceManagedLabel = await resolveRestartServiceLabel(serviceManager);
     const reportedVersion = mycoTargetVersion ?? status.latest_version;
 
     // Operator CLIs: spawn update script (npm path).

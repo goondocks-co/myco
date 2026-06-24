@@ -87,11 +87,9 @@ export interface ServiceManager {
    *  unsupported platform. */
   restartShellCommand(label: string): string;
   status(label: string): Promise<ServiceStatus>;
-  /** Whether the current process is the daemon THIS manager started for `label`.
-   *  The one genuinely platform-specific bit of restart routing: launchd/systemd
-   *  match the reported `status.pid` to `myPid`; Windows can't (schtasks exposes
-   *  no action PID, so `status.pid` is always null) and instead reads the
-   *  `MYCO_SERVICE_MANAGED` marker the launcher .cmd exports. Lives on the
-   *  interface so `detectServiceManagedLabel` stays platform-agnostic. */
-  isManagedDaemon(label: string, status: ServiceStatus, myPid: number): boolean;
+  /** Optional: bootout + remove superseded units whose target binary is gone
+   *  (old version dirs, removed dev-build worktrees) so the supervisor stops
+   *  respawning dead units. Implemented where stale units accumulate (launchd);
+   *  absent elsewhere. `keepLabel` guards the unit the caller is managing. */
+  pruneSupersededUnits?(keepLabel?: string): Promise<string[]>;
 }

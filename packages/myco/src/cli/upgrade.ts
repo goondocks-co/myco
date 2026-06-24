@@ -249,10 +249,13 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   const projectRoot = deps.projectRoot ?? process.cwd();
   const daemonPort = deps.daemonPort ?? resolveGlobalDaemonPort();
 
-  // Resolve service-managed label at adopt time.
+  // Resolve the restart-routing label at adopt time, keyed on the installed
+  // unit (not pid-identity): the CLI never shares the daemon's pid, so a
+  // pid-match would always miss and force an unsupervised direct spawn even on
+  // a service-managed machine.
   const { getServiceManager } = await import('../service/manager.js');
-  const { detectServiceManagedLabel } = await import('../daemon/api/restart.js');
-  const serviceManagedLabel = await detectServiceManagedLabel(getServiceManager());
+  const { resolveRestartServiceLabel } = await import('../daemon/api/restart.js');
+  const serviceManagedLabel = await resolveRestartServiceLabel(getServiceManager());
 
   const adoptOpts: InitiateAdoptOpts = {
     source: 'cli',

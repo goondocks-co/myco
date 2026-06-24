@@ -50,6 +50,18 @@ export const POWER_JOB_NAMES = {
    * live session). `deep_sleep` doesn't tick, so it is also excluded.
    */
   UPGRADE_ADOPT: 'upgrade-adopt',
+  /**
+   * Detached-daemon self-heal: when this (lock-holding) daemon detects that a
+   * supervisor unit is installed for its home but the supervisor-tracked PID is
+   * NOT us — the detached-usurper signature behind the launchd respawn loop — it
+   * spawns `myco service reconcile`, which cooperatively stops us and
+   * re-bootstraps exactly one supervisor-tracked daemon.
+   *
+   * Idle/sleep only and two-tick latched so a transient status read can't
+   * trigger it; gated on the MYCO_DAEMON_MANAGED marker so a hand-run
+   * `myco daemon` is never auto-reconciled.
+   */
+  SERVICE_RECONCILE: 'service-reconcile',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

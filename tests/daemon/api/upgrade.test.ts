@@ -113,13 +113,15 @@ type AnyMock = ReturnType<typeof vi.fn>;
 
 // The runner sets a hermetic sandbox MYCO_HOME, so the daemon's service label
 // is the home-derived label for that sandbox — resolve it the same way the
-// production code does so detectServiceManagedLabel(mgr) finds the seeded fake.
+// production code does so resolveRestartServiceLabel(mgr) finds the seeded fake.
 const HOME_LABEL = serviceLabel(resolveMycoHome());
 
 function installedServiceManager(shellCmd: string, label: string = HOME_LABEL): FakeServiceManager {
   const mgr = new FakeServiceManager();
   mgr.installed.add(label);
-  mgr.statuses.set(label, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
+  // Tracked PID deliberately != process.pid: restart routing keys on the
+  // installed unit, never on a pid-match, so the label must still resolve.
+  mgr.statuses.set(label, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
   mgr.restartShellCommands.set(label, shellCmd);
   return mgr;
 }

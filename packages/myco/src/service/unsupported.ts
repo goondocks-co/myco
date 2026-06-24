@@ -29,8 +29,4 @@ export class UnsupportedServiceManager implements ServiceManager {
   async status(_label: string): Promise<ServiceStatus> {
     return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
   }
-
-  isManagedDaemon(_label: string, _status: ServiceStatus, _myPid: number): boolean {
-    return false;
-  }
 }

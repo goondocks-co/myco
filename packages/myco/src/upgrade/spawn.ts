@@ -44,8 +44,9 @@ export interface InstallParams {
    * preventing the thundering-herd race between a manually-spawned daemon
    * child and the supervisor's KeepAlive/Restart policy.
    *
-   * Null (or absent) means non-service-managed — the orchestrator respawns the
-   * daemon directly. Callers derive this from `detectServiceManagedLabel()`.
+   * Null (or absent) means no supervisor owns this home — the orchestrator
+   * respawns the daemon directly. Callers derive this from
+   * `resolveRestartServiceLabel()` (keyed on the installed unit, not pid).
    */
   serviceManagedLabel?: string | null;
   /**

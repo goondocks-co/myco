@@ -70,21 +70,30 @@ export async function findInstalledServiceLabel(
   };
 }
 
-/** Probe whether THIS process is the currently-running service-managed daemon.
- *  Returns the label if so, otherwise null.
+/**
+ * Resolve the service label to ROUTE A RESTART THROUGH for a home, or null when
+ * no supervisor owns this home's daemon (the caller then respawns directly).
  *
- *  Exported so other detached-script paths (update-installer post-install
- *  respawn, sibling-version-sync restart) can share a single detection
- *  implementation. Pass `process.pid` from the caller; defaults to it. */
-export async function detectServiceManagedLabel(
+ * Restart routing keys on supervisor INSTALLATION (the plist/unit exists for
+ * `mycoHome`), NOT on pid-identity. A daemon that has DETACHED from its launchd
+ * job — live pid ≠ the supervisor-tracked pid, e.g. after a prior direct-spawn
+ * restart — must still restart via the supervisor's native primitive
+ * (`launchctl kickstart -k` / `systemctl --user restart`) so the supervisor
+ * RE-ADOPTS it. Pid-identity matching returns null in exactly that detached
+ * state, stranding the daemon on a detached direct-spawn that re-detaches on
+ * every restart; keying on the installed unit heals it. It is also the only
+ * correct answer off the daemon process — the CLI never shares the daemon's
+ * pid — so `myco upgrade` from the CLI routes through the supervisor too.
+ *
+ * Exported so every restart path (this handler, version-sync, upgrade/adopt)
+ * shares one resolver and the routing rule lives in exactly one place.
+ */
+export async function resolveRestartServiceLabel(
   mgr: ServiceManager,
-  myPid: number = process.pid,
+  mycoHome: string = resolveMycoHome(),
 ): Promise<string | null> {
-  // Platform-agnostic: the manager owns the "is this me?" decision
-  // (`isManagedDaemon`) — POSIX pid-matches, Windows reads its env marker.
-  const found = await findInstalledServiceLabel(mgr);
-  if (found && mgr.isManagedDaemon(found.label, found.status, myPid)) return found.label;
-  return null;
+  const found = await findInstalledServiceLabel(mgr, mycoHome);
+  return found?.label ?? null;
 }
 
 export async function handleRestart(
@@ -103,7 +112,7 @@ export async function handleRestart(
   }
 
   const mgr = deps.serviceManager ?? getServiceManager();
-  const serviceManagedLabel = await detectServiceManagedLabel(mgr);
+  const serviceManagedLabel = await resolveRestartServiceLabel(mgr);
 
   // Schedule: respond → wait for flush → SIGTERM self → child starts after parent exits.
   // When service-managed, the child calls `myco service restart`, which uses
