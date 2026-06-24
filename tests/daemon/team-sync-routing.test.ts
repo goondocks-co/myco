@@ -123,6 +123,7 @@ describe('team-sync DRAIN routing from the registry', () => {
   let bootVaultDir: string;
   let previousMycoHome: string | undefined;
   let previousTeamHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -134,8 +135,10 @@ describe('team-sync DRAIN routing from the registry', () => {
     fs.mkdirSync(bootVaultDir, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     previousTeamHome = process.env.MYCO_TEAM_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueByTeam.clear();
     workerBoundsByTag.clear();
@@ -148,6 +151,8 @@ describe('team-sync DRAIN routing from the registry', () => {
     else process.env.MYCO_HOME = previousMycoHome;
     if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
     else process.env.MYCO_TEAM_HOME = previousTeamHome;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

@@ -69,6 +69,8 @@ describe('team-sync flush fan-out across Groves', () => {
   let mycoHome: string;
   let bootVaultDir: string;
   let previousMycoHome: string | undefined;
+  let previousTeamHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -79,8 +81,11 @@ describe('team-sync flush fan-out across Groves', () => {
     fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
     fs.mkdirSync(bootVaultDir, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueBatchByGrove.clear();
     projectByGrove.clear();
@@ -91,7 +96,10 @@ describe('team-sync flush fan-out across Groves', () => {
   afterEach(() => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
-    delete process.env.MYCO_TEAM_HOME;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

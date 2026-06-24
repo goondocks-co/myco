@@ -102,6 +102,7 @@ describe('initTeamSync.reconcileClient', () => {
   let tmpDir: string;
   let vaultDir: string;
   let previousMycoHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
 
   const logger = {
     info: vi.fn(),
@@ -115,8 +116,10 @@ describe('initTeamSync.reconcileClient', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-sync-init-'));
     vaultDir = path.join(tmpDir, '.myco');
     previousMycoHome = process.env.MYCO_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
     process.env.MYCO_TEAM_HOME = path.join(tmpDir, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     fs.mkdirSync(vaultDir, { recursive: true });
     connectMock.mockResolvedValue({});
     rebuildMock.mockResolvedValue(undefined);
@@ -145,6 +148,8 @@ describe('initTeamSync.reconcileClient', () => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
     delete process.env.MYCO_TEAM_HOME;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
   });
 
   async function registerRegistryTeam(name = 'Registry Team') {
@@ -566,6 +571,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
   let tmpDir: string;
   let vaultDir: string;
   let previousMycoHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
 
   const logger = {
     info: vi.fn(),
@@ -616,8 +622,10 @@ describe('initTeamSync.rebuildFromLocal', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebuild-from-local-'));
     vaultDir = path.join(tmpDir, '.myco');
     previousMycoHome = process.env.MYCO_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
     process.env.MYCO_TEAM_HOME = path.join(tmpDir, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     fs.mkdirSync(vaultDir, { recursive: true });
     rebuildMock.mockResolvedValue(undefined);
     listPendingMock.mockReturnValue([]);
@@ -630,6 +638,8 @@ describe('initTeamSync.rebuildFromLocal', () => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
     delete process.env.MYCO_TEAM_HOME;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
   });
 
   async function registerRegistryTeam() {
