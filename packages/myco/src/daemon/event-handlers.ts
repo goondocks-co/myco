@@ -9,7 +9,7 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/team/context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, liveContentOrdinal, normalizePromptForHash, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 import fs from 'node:fs';
@@ -288,9 +288,10 @@ export function handleUserPrompt(
     closeOpenBatches(sessionId, now);
   }
 
-  const batch = insertBatchStateless({
+  const { row: batch, created } = insertBatchStateless({
     session_id: sessionId,
     user_prompt: prompt ?? null,
+    ordinal: prompt != null ? liveContentOrdinal(sessionId, incomingOrigin, prompt) : undefined,
     started_at: now,
     // System batches are point-in-time records: born closed so they are never
     // the active turn. Human batches stay open (ended_at left null).
@@ -304,10 +305,14 @@ export function handleUserPrompt(
 
   const promptNumber = batch.prompt_number!;
 
-  try {
-    const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
-    createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
-  } catch { /* lineage best-effort */ }
+  // Skip lineage when the row was deduped — it was created (with lineage) by
+  // the first insert of this turn.
+  if (created) {
+    try {
+      const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
+      createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
+    } catch { /* lineage best-effort */ }
+  }
 
   // `sessions.prompt_count` cache bump is folded into
   // `insertBatchStateless` so it's atomic with the row write —
@@ -349,18 +354,32 @@ export function syncTranscriptPromptBatches(
   const machineId = getTeamMachineId();
 
   const insertTail = getDatabase().transaction(() => {
-    for (let i = existingBatchCount; i < prompts.length; i++) {
+    // content_hash ordinal = occurrence index over the FULL prompt list (origin
+    // is always HUMAN here), so each prompt hashes the same on every re-POST of
+    // the growing list and genuine repeats get distinct ordinals.
+    const occurrenceByText = new Map<string, number>();
+    for (let i = 0; i < prompts.length; i++) {
       const prompt = prompts[i];
-      if (typeof prompt !== 'string' || prompt.trim().length === 0) continue;
-      const batch = insertBatchStateless({
+      const insertable = typeof prompt === 'string' && prompt.trim().length > 0;
+      let ordinal = 0;
+      if (insertable) {
+        const key = normalizePromptForHash(prompt);
+        ordinal = occurrenceByText.get(key) ?? 0;
+        occurrenceByText.set(key, ordinal + 1);
+      }
+      // Only the new tail is inserted; earlier indices already have rows.
+      if (i < existingBatchCount || !insertable) continue;
+      const { row: batch, created } = insertBatchStateless({
         session_id: sessionId,
         user_prompt: prompt,
+        ordinal,
         started_at: now,
         created_at: now,
         machine_id: machineId,
         kind: BATCH_KIND.INITIAL,
         parent_prompt_batch_id: null,
       });
+      if (!created) continue;
       try {
         const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
         createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);

@@ -5,11 +5,12 @@
  * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, isUniqueConstraintError } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { sha256Hex } from '@myco/canopy/hash.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,6 +116,77 @@ export function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
     return value as PromptBatchOrigin;
   }
   return PROMPT_BATCH_ORIGIN.HUMAN;
+}
+
+// ---------------------------------------------------------------------------
+// content_hash dedup guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical normalization for the content_hash prompt body: trim of the full
+ * prompt (not a prefix). Used by every content_hash producer and by the
+ * ordinal counts so they key identically.
+ */
+export function normalizePromptForHash(text: string | null | undefined): string {
+  return (text ?? '').trim();
+}
+
+/** Inputs to {@link promptBatchContentHash}. */
+export interface PromptBatchHashInput {
+  sessionId: string;
+  origin: PromptBatchOrigin;
+  /**
+   * 0-based occurrence index of this turn among same-(normalized text, origin)
+   * turns in the session, by capture order. Caller-supplied and stable per
+   * turn: the miner uses its in-pass positional index, the live path uses
+   * {@link liveContentOrdinal}. Distinguishes a genuine repeat (next index,
+   * preserved) from a re-insert of the same turn (same index, deduped).
+   */
+  ordinal: number;
+  userPrompt: string | null | undefined;
+}
+
+/**
+ * Deterministic dedup key for a prompt batch. Backs the partial UNIQUE indexes
+ * on `prompt_batches (content_hash)` / `(project_id, content_hash)`.
+ *
+ * `session_id` scopes the key to one session (the index is project-scoped;
+ * session_id makes same-text turns in different sessions never collide).
+ * `origin` keeps a synthesized `system` batch from colliding with a human
+ * prompt of the same text. `ordinal` distinguishes genuine repeats.
+ */
+export function promptBatchContentHash(input: PromptBatchHashInput): string {
+  const canonical = [
+    input.sessionId,
+    input.origin,
+    String(input.ordinal),
+    normalizePromptForHash(input.userPrompt),
+  ].join(' ');
+  return sha256Hex(canonical);
+}
+
+/**
+ * Content ordinal for an incoming live prompt: the count of batches already
+ * committed in this session whose (origin, normalized text) matches. Reflects
+ * insertion order, which equals the turn's transcript position only when
+ * captured in order — live-path only, not valid for backfill / out-of-order
+ * callers. The miner derives its own positional ordinal independently.
+ */
+export function liveContentOrdinal(
+  sessionId: string,
+  origin: PromptBatchOrigin,
+  userPrompt: string | null | undefined,
+): number {
+  const db = getDatabase();
+  const norm = normalizePromptForHash(userPrompt);
+  const rows = db.prepare(
+    `SELECT user_prompt FROM prompt_batches WHERE session_id = ? AND origin = ?`,
+  ).all(sessionId, origin) as Array<{ user_prompt: string | null }>;
+  let n = 0;
+  for (const row of rows) {
+    if (normalizePromptForHash(row.user_prompt) === norm) n += 1;
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +786,21 @@ export interface StatelessBatchInsert {
   kind?: string;                            // defaults to 'initial'
   origin?: PromptBatchOrigin;               // defaults to 'human'
   parent_prompt_batch_id?: number | null;   // defaults to null
+  /**
+   * Transcript-positional occurrence index for the dedup `content_hash`
+   * (see {@link PromptBatchHashInput}). When supplied alongside a non-null
+   * `user_prompt`, the row gets a `content_hash` and the insert becomes
+   * idempotent on it. Omit to leave `content_hash` NULL (no dedup) — used by
+   * transient rows like the recovered sentinel.
+   */
+  ordinal?: number;
+}
+
+/** Result of {@link insertBatchStateless}: the row plus whether it was newly created. */
+export interface StatelessBatchInsertResult {
+  row: BatchRow;
+  /** False when an existing row with the same content_hash was returned (deduped). */
+  created: boolean;
 }
 
 /**
@@ -741,8 +828,21 @@ export interface StatelessBatchInsert {
  *
  * FTS5 index is kept in sync automatically via database triggers.
  */
-export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
+export function insertBatchStateless(data: StatelessBatchInsert): StatelessBatchInsertResult {
   const db = getDatabase();
+
+  const origin = data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN;
+  // Dedup key is only meaningful with both a position AND a body. Transient
+  // rows (the recovered sentinel) omit `ordinal` and stay NULL → no dedup.
+  const contentHash =
+    data.ordinal != null && data.user_prompt != null
+      ? promptBatchContentHash({
+          sessionId: data.session_id,
+          origin,
+          ordinal: data.ordinal,
+          userPrompt: data.user_prompt,
+        })
+      : null;
 
   const tx = db.transaction(() => {
     const info = db.prepare(
@@ -756,7 +856,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
          (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
          ?, NULL,
          NULL, ?, ?, ?,
-         ?, ?, NULL, ?, ?
+         ?, ?, ?, ?, ?
        )`,
     ).run(
       data.session_id,
@@ -764,7 +864,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
       data.session_id,
       data.parent_prompt_batch_id ?? null,
       data.kind ?? 'initial',
-      data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
+      origin,
       data.session_id,
       data.user_prompt ?? null,
       data.started_at ?? null,
@@ -774,6 +874,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
       data.status ?? (data.ended_at != null ? STATUS_COMPLETED : DEFAULT_STATUS),
       DEFAULT_ACTIVITY_COUNT,
       DEFAULT_PROCESSED,
+      contentHash,
       data.created_at,
       data.machine_id ?? getTeamMachineId(),
     );
@@ -795,11 +896,30 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
     return batchId;
   });
 
-  const batchId = tx();
+  let batchId: number;
+  try {
+    batchId = tx();
+  } catch (err) {
+    // A row with this content_hash already exists (the UNIQUE index fired). The
+    // INSERT rolled back the whole transaction, so prompt_count was not bumped —
+    // return the existing row with created: false.
+    if (contentHash != null && isUniqueConstraintError(err)) {
+      const existing = db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE session_id = ? AND content_hash = ?`,
+      ).get(data.session_id, contentHash) as Record<string, unknown> | undefined;
+      if (existing) {
+        return { row: toBatchRow(existing), created: false };
+      }
+    }
+    throw err;
+  }
 
-  return toBatchRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,
-  );
+  return {
+    row: toBatchRow(
+      db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(batchId) as Record<string, unknown>,
+    ),
+    created: true,
+  };
 }
 
 /**
@@ -1035,13 +1155,30 @@ export function replaceRecoveredBatchUserPrompt(
 ): boolean {
   if (!realPrompt) return false;
   const db = getDatabase();
-  const info = db.prepare(
+  // The sentinel is the session's first turn (ordinal 0); stamp the matching
+  // content_hash so a later re-mine of this turn dedups against it.
+  const sessionRow = db
+    .prepare(`SELECT session_id FROM prompt_batches WHERE id = ?`)
+    .get(batchId) as { session_id: string } | undefined;
+  const contentHash = sessionRow
+    ? promptBatchContentHash({ sessionId: sessionRow.session_id, origin, ordinal: 0, userPrompt: realPrompt })
+    : null;
+  const runUpdate = (hash: string | null) => db.prepare(
     `UPDATE prompt_batches
-       SET user_prompt = ?, kind = ?, origin = ?
+       SET user_prompt = ?, kind = ?, origin = ?, content_hash = ?
        WHERE id = ?
          AND user_prompt = ?`,
-  ).run(realPrompt, BATCH_KIND.INITIAL, origin, batchId, RECOVERED_BATCH_SENTINEL);
-  return info.changes > 0;
+  ).run(realPrompt, BATCH_KIND.INITIAL, origin, hash, batchId, RECOVERED_BATCH_SENTINEL);
+  try {
+    return runUpdate(contentHash).changes > 0;
+  } catch (err) {
+    // Another row already owns this content_hash (a multi-sentinel session whose
+    // turns share text, or a turn already re-mined). Replacing the prompt is the
+    // primary job and must never throw — fall back to leaving content_hash NULL
+    // (the prefix-bucket path still dedups that turn on re-mine).
+    if (isUniqueConstraintError(err)) return runUpdate(null).changes > 0;
+    throw err;
+  }
 }
 
 /**

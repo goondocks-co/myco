@@ -380,9 +380,9 @@ describe('stateless DB functions', () => {
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-      const b1 = insertBatchStateless({ session_id: sessionId, user_prompt: 'first', created_at: now });
-      const b2 = insertBatchStateless({ session_id: sessionId, user_prompt: 'second', created_at: now });
-      const b3 = insertBatchStateless({ session_id: sessionId, user_prompt: 'third', created_at: now });
+      const { row: b1 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'first', created_at: now });
+      const { row: b2 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'second', created_at: now });
+      const { row: b3 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'third', created_at: now });
 
       expect(b1.prompt_number).toBe(1);
       expect(b2.prompt_number).toBe(2);
@@ -400,7 +400,7 @@ describe('stateless DB functions', () => {
       insertBatch({ session_id: sessionId, prompt_number: 2, user_prompt: 'old-2', started_at: now, ended_at: now, status: 'completed', created_at: now });
 
       // Stateless insert should pick up prompt_number = 3
-      const b3 = insertBatchStateless({ session_id: sessionId, user_prompt: 'new-after-restart', created_at: now });
+      const { row: b3 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'new-after-restart', created_at: now });
       expect(b3.prompt_number).toBe(3);
     });
 
@@ -414,7 +414,7 @@ describe('stateless DB functions', () => {
 
       insertBatchStateless({ session_id: session1, user_prompt: 's1-first', created_at: now });
       insertBatchStateless({ session_id: session1, user_prompt: 's1-second', created_at: now });
-      const s2b1 = insertBatchStateless({ session_id: session2, user_prompt: 's2-first', created_at: now });
+      const { row: s2b1 } = insertBatchStateless({ session_id: session2, user_prompt: 's2-first', created_at: now });
 
       // Session 2 should start at 1, not 3
       expect(s2b1.prompt_number).toBe(1);
@@ -426,7 +426,7 @@ describe('stateless DB functions', () => {
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-      const batch = insertBatchStateless({ session_id: sessionId, user_prompt: 'test', created_at: now });
+      const { row: batch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'test', created_at: now });
       expect(batch.status).toBe('active');
       expect(batch.ended_at).toBeNull();
       expect(batch.activity_count).toBe(0);
@@ -443,7 +443,7 @@ describe('stateless DB functions', () => {
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
       // Create an open batch
-      const batch = insertBatchStateless({ session_id: sessionId, user_prompt: 'do something', created_at: now });
+      const { row: batch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'do something', created_at: now });
 
       // Insert activity — should auto-link to the open batch
       const activity = insertActivityWithBatch({
@@ -489,7 +489,7 @@ describe('stateless DB functions', () => {
 
       // Create two open batches
       insertBatchStateless({ session_id: sessionId, user_prompt: 'first', created_at: now });
-      const batch2 = insertBatchStateless({ session_id: sessionId, user_prompt: 'second', created_at: now });
+      const { row: batch2 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'second', created_at: now });
 
       // Activity should link to the most recent (highest id) open batch
       const activity = insertActivityWithBatch({
@@ -509,7 +509,7 @@ describe('stateless DB functions', () => {
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
       // Create a batch and close it.
-      const batch = insertBatchStateless({ session_id: sessionId, user_prompt: 'closed', created_at: now });
+      const { row: batch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'closed', created_at: now });
       closeOpenBatches(sessionId, now + 1);
 
       // Inline subquery now picks the most-recent batch (open first, then
@@ -602,8 +602,8 @@ describe('daemon-restart resilience', () => {
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
     // Pre-restart: 2 batches
-    const b1 = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre-1', created_at: now });
-    const b2 = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre-2', created_at: now });
+    const { row: b1 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre-1', created_at: now });
+    const { row: b2 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre-2', created_at: now });
     expect(b1.prompt_number).toBe(1);
     expect(b2.prompt_number).toBe(2);
 
@@ -614,8 +614,8 @@ describe('daemon-restart resilience', () => {
     // No in-memory state carried over. The DB is the only source of truth.
 
     // Post-restart: new batches should continue from 3
-    const b3 = insertBatchStateless({ session_id: sessionId, user_prompt: 'post-1', created_at: now + 2 });
-    const b4 = insertBatchStateless({ session_id: sessionId, user_prompt: 'post-2', created_at: now + 3 });
+    const { row: b3 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'post-1', created_at: now + 2 });
+    const { row: b4 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'post-2', created_at: now + 3 });
     expect(b3.prompt_number).toBe(3);
     expect(b4.prompt_number).toBe(4);
 
@@ -632,7 +632,7 @@ describe('daemon-restart resilience', () => {
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
     // Pre-restart: open a batch, add an activity
-    const preBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
+    const { row: preBatch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
     const preActivity = insertActivityWithBatch({
       session_id: sessionId,
       tool_name: 'Write',
@@ -646,7 +646,7 @@ describe('daemon-restart resilience', () => {
     closeOpenBatches(sessionId, now + 1);
 
     // Post-restart: new batch, new activity
-    const postBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'post', created_at: now + 2 });
+    const { row: postBatch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'post', created_at: now + 2 });
     const postActivity = insertActivityWithBatch({
       session_id: sessionId,
       tool_name: 'Bash',
@@ -669,7 +669,7 @@ describe('daemon-restart resilience', () => {
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
     // Pre-restart: open batch, close it. Represents the turn that just ended.
-    const preBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
+    const { row: preBatch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
     closeOpenBatches(sessionId, now + 1);
 
     // ---- Late tool_use arrives between turns (or after restart) ----
@@ -687,7 +687,7 @@ describe('daemon-restart resilience', () => {
     expect(activitiesMid[0].prompt_batch_id).toBe(preBatch.id);
 
     // Now open a new real batch — subsequent activities link correctly to it.
-    const postBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'post', created_at: now + 3 });
+    const { row: postBatch } = insertBatchStateless({ session_id: sessionId, user_prompt: 'post', created_at: now + 3 });
     handleToolUse(sessionId, 'claude-code', 'Write', {}, 'ok', TEST_PROJECT_ROOT);
     const finalActivities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(finalActivities.length).toBe(2);
@@ -721,17 +721,17 @@ describe('daemon-restart resilience', () => {
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
     // Restart 1: 2 batches
-    const r1b1 = insertBatchStateless({ session_id: sessionId, user_prompt: 'r1-1', created_at: now });
-    const r1b2 = insertBatchStateless({ session_id: sessionId, user_prompt: 'r1-2', created_at: now + 1 });
+    const { row: r1b1 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'r1-1', created_at: now });
+    const { row: r1b2 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'r1-2', created_at: now + 1 });
     closeOpenBatches(sessionId, now + 2);
 
     // Restart 2: 1 batch
-    const r2b1 = insertBatchStateless({ session_id: sessionId, user_prompt: 'r2-1', created_at: now + 3 });
+    const { row: r2b1 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'r2-1', created_at: now + 3 });
     closeOpenBatches(sessionId, now + 4);
 
     // Restart 3: 2 batches
-    const r3b1 = insertBatchStateless({ session_id: sessionId, user_prompt: 'r3-1', created_at: now + 5 });
-    const r3b2 = insertBatchStateless({ session_id: sessionId, user_prompt: 'r3-2', created_at: now + 6 });
+    const { row: r3b1 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'r3-1', created_at: now + 5 });
+    const { row: r3b2 } = insertBatchStateless({ session_id: sessionId, user_prompt: 'r3-2', created_at: now + 6 });
 
     expect(r1b1.prompt_number).toBe(1);
     expect(r1b2.prompt_number).toBe(2);

@@ -18,7 +18,7 @@ describe('findOpenParentBatch', () => {
   });
 
   it('returns the open initial batch', () => {
-    const b = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
+    const { row: b } = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
     const found = findOpenParentBatch('s1');
     expect(found).not.toBeNull();
     expect(found!.id).toBe(b.id);
@@ -26,14 +26,14 @@ describe('findOpenParentBatch', () => {
   });
 
   it('returns null when the batch is closed (ended_at set)', () => {
-    const b = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
+    const { row: b } = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
     const db = getDatabase();
     db.prepare(`UPDATE prompt_batches SET ended_at = ? WHERE id = ?`).run(nowSec(), b.id);
     expect(findOpenParentBatch('s1')).toBeNull();
   });
 
   it('returns the parent, never a steering child', () => {
-    const parent = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
+    const { row: parent } = insertBatchStateless({ session_id: 's1', created_at: nowSec(), kind: 'initial' });
     insertBatchStateless({
       session_id: 's1',
       created_at: nowSec(),

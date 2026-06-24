@@ -12,7 +12,7 @@
  *   myco:inject:subagent:<sessionId>:<agentIdOrType>
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, isUniqueConstraintError } from '@myco/db/client.js';
 import { insertActivity, type ActivityRow } from '@myco/db/queries/activities.js';
 import { getLatestBatch, incrementActivityCount } from '@myco/db/queries/batches.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -228,11 +228,4 @@ export function getSessionInjectedSporeIds(sessionId: string): Set<string> {
     }
   }
   return ids;
-}
-
-function isUniqueConstraintError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const code = (err as { code?: string }).code ?? '';
-  const message = (err as { message?: string }).message ?? '';
-  return code.startsWith('SQLITE_CONSTRAINT') && message.includes('UNIQUE');
 }
