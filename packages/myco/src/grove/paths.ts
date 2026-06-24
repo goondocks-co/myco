@@ -166,23 +166,39 @@ export function resolveGroveDir(groveId: string, mycoHome = resolveMycoHome()): 
   return path.join(resolveGrovesDir(mycoHome), assertGroveIdSafe(groveId));
 }
 
+export const TEAM_HOME_DIRNAME = '.myco-team';
+export const MYCO_TEAM_HOME_ENV = 'MYCO_TEAM_HOME';
+
+/**
+ * Machine-scoped home for the team registry. Independent of MYCO_HOME so a
+ * machine running more than one daemon home (~/.myco + ~/.myco-dev) shares one
+ * team registry — mirrors the Collective home (~/.myco-collective). Override
+ * via MYCO_TEAM_HOME for hermetic tests. Default: ~/.myco-team.
+ */
+export function resolveTeamsHome(options: MycoHomeOptions = {}): string {
+  const env = options.env ?? process.env;
+  const override = env[MYCO_TEAM_HOME_ENV]?.trim();
+  if (override) return path.resolve(expandHome(override, options.homeDir));
+  return path.join(options.homeDir ?? os.homedir(), TEAM_HOME_DIRNAME);
+}
+
 export const TEAMS_DIRNAME = 'teams';
 
-export function resolveTeamsDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, TEAMS_DIRNAME);
+export function resolveTeamsDir(): string {
+  return path.join(resolveTeamsHome(), TEAMS_DIRNAME);
 }
 
-export function resolveTeamDir(teamId: string, mycoHome = resolveMycoHome()): string {
+export function resolveTeamDir(teamId: string): string {
   assertGroveEraId(teamId, 'team');
-  return path.join(resolveTeamsDir(mycoHome), teamId);
+  return path.join(resolveTeamsDir(), teamId);
 }
 
-export function resolveTeamConfigPath(teamId: string, mycoHome = resolveMycoHome()): string {
-  return path.join(resolveTeamDir(teamId, mycoHome), 'team.json');
+export function resolveTeamConfigPath(teamId: string): string {
+  return path.join(resolveTeamDir(teamId), 'team.json');
 }
 
-export function resolveTeamSecretsPath(teamId: string, mycoHome = resolveMycoHome()): string {
-  return path.join(resolveTeamDir(teamId, mycoHome), 'secrets.env');
+export function resolveTeamSecretsPath(teamId: string): string {
+  return path.join(resolveTeamDir(teamId), 'secrets.env');
 }
 
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {

@@ -36,6 +36,7 @@ describe('teamRotateTokens', () => {
     originalExistsSync = fs.existsSync.bind(fs);
     originalMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = path.join(tempDir, 'home');
+    process.env.MYCO_TEAM_HOME = path.join(tempDir, 'home');
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(
@@ -108,6 +109,7 @@ describe('teamRotateTokens', () => {
     execHandlers.length = 0;
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -120,8 +122,8 @@ describe('teamRotateTokens', () => {
     const expectedPackageVersion = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
     ) as { version: string };
-    const deployment = teamRegistry.readDeployment(TEAM_ID, path.join(tempDir, 'home'));
-    const secrets = teamRegistry.readSecrets(TEAM_ID, path.join(tempDir, 'home'));
+    const deployment = teamRegistry.readDeployment(TEAM_ID);
+    const secrets = teamRegistry.readSecrets(TEAM_ID);
 
     expect(deployment?.package_version).toBe(expectedPackageVersion.version);
     expect(secrets.MYCO_TEAM_API_KEY).toBeDefined();

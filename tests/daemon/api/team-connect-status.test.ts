@@ -65,6 +65,7 @@ describe('createTeamHandlers.handleStatus', () => {
     // Sandbox MYCO_HOME so the v8 merged-config loader doesn't pick up
     // the dev machine's Grove tier and drop the project-tier `team:` block.
     process.env.MYCO_HOME = path.join(tempDir, '.myco-home');
+    process.env.MYCO_TEAM_HOME = path.join(tempDir, '.myco-team-home');
     fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
     vaultDir = path.join(tempDir, 'project', '.myco');
 
@@ -95,6 +96,7 @@ describe('createTeamHandlers.handleStatus', () => {
     process.env.PATH = originalPath;
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -132,10 +134,10 @@ describe('createTeamHandlers.handleStatus', () => {
       mcp_endpoint: null,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
-    }, mycoHome);
+    });
     // has_team_key / team_key now come from the selected Team's registry
     // secrets, not the retired per-Grove connection store.
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key');
     const groveDir = resolveGroveDir(grove.id, mycoHome);
     fs.mkdirSync(groveDir, { recursive: true });
     // cached_team_package_version reads the team/config.json under the resolved
@@ -248,10 +250,10 @@ describe('createTeamHandlers.handleStatus', () => {
       mcp_endpoint: null,
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
-    }, mycoHome);
+    });
     const groveDir = resolveGroveDir(grove.id, mycoHome);
     fs.mkdirSync(groveDir, { recursive: true });
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'test-api-key');
 
     // Client whose health() probe populated incompatible bounds: worker speaks
     // protocol 3 and floors clients at 2; this daemon is older → client_too_old.

@@ -58,7 +58,7 @@ import { DaemonLogger } from '@myco/daemon/logger.js';
 import { withDatabase } from '@myco/db/client.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { createGrove, type GroveRecord } from '@myco/grove/registry.js';
-import { resolveGroveDir } from '@myco/grove/paths.js';
+import { resolveGroveDir, resolveTeamSecretsPath } from '@myco/grove/paths.js';
 import { enqueueOutbox, listPending } from '@myco/db/queries/team-outbox.js';
 import { getSyncableProjectIds } from '@myco/db/queries/team-sync-state.js';
 import { teamRegistry } from '@myco/team/registry.js';
@@ -80,6 +80,7 @@ describe('team-sync flush fan-out across Groves', () => {
     fs.mkdirSync(bootVaultDir, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueBatchByGrove.clear();
     projectByGrove.clear();
@@ -90,6 +91,7 @@ describe('team-sync flush fan-out across Groves', () => {
   afterEach(() => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -133,9 +135,8 @@ describe('team-sync flush fan-out across Groves', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: grove.id, project_id: projectId }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-for-${grove.id}`, mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-for-${grove.id}`);
     return grove;
   }
 
@@ -272,10 +273,10 @@ describe('team-sync flush fan-out across Groves', () => {
     // getOrBuildTeamClient returns null for that team, so Grove One's rows
     // stay pending (never dropped); Grove Two still drains on the same tick.
     const teamOne = teamRegistry
-      .list(mycoHome)
+      .list()
       .find((t) => t.projects.some((p) => p.grove_id === groveOne.id))!;
     fs.writeFileSync(
-      path.join(mycoHome, 'teams', teamOne.team_id, 'secrets.env'),
+      resolveTeamSecretsPath(teamOne.team_id),
       '',
       'utf-8',
     );
