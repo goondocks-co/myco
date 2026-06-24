@@ -2,7 +2,7 @@ import { describe, expect, it, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
+import { migrateTeamsHomeIfNeeded, defaultLegacyTeamHomes } from '@myco/team/migrate-home.js';
 
 const TEAM_ID = 'team_' + 'c'.repeat(32);
 function writeTeam(home: string, teamId: string, json: Record<string, unknown>, secret = 'MYCO_TEAM_API_KEY=abc\n') {
@@ -123,5 +123,26 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(result!.gapFilled.length).toBe(0);
     expect(result!.conflicted.length).toBe(0);
     expect(result!.retiredHomes.length).toBe(0);
+  });
+});
+
+describe('defaultLegacyTeamHomes env override', () => {
+  it('UNSET: returns default homes including .myco and .myco-dev', () => {
+    // Pass env: {} so MYCO_HOME does not leak in from the runner
+    const homes = defaultLegacyTeamHomes('/fake/home', {});
+    expect(homes.some((h) => h === '/fake/home/.myco')).toBe(true);
+    expect(homes.some((h) => h === '/fake/home/.myco-dev')).toBe(true);
+  });
+
+  it('EMPTY: returns [] when MYCO_TEAM_LEGACY_HOMES is an empty string', () => {
+    const homes = defaultLegacyTeamHomes('/fake/home', { MYCO_TEAM_LEGACY_HOMES: '' });
+    expect(homes).toEqual([]);
+  });
+
+  it('EXPLICIT: returns only the listed paths when MYCO_TEAM_LEGACY_HOMES is set', () => {
+    const homes = defaultLegacyTeamHomes('/fake/home', {
+      MYCO_TEAM_LEGACY_HOMES: '/a' + path.delimiter + '/b',
+    });
+    expect(homes).toEqual(['/a', '/b']);
   });
 });

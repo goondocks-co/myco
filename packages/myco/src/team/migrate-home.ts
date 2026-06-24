@@ -7,6 +7,8 @@ import { pathsEquivalent, resolveTeamsDir, TEAMS_DIRNAME } from '../grove/paths.
 
 const BAK_SUFFIX = '.bak-pre-myco-team';
 
+const MYCO_TEAM_LEGACY_HOMES_ENV = 'MYCO_TEAM_LEGACY_HOMES';
+
 export interface MigrateTeamsResult {
   copied: string[]; gapFilled: string[]; conflicted: string[]; retiredHomes: string[];
 }
@@ -14,11 +16,20 @@ export interface MigrateTeamsResult {
 type Disposition = 'copied' | 'gapFilled' | 'conflicted' | 'noop';
 
 /**
- * Legacy machine homes to sweep, passed explicitly (NOT recomputed from $HOME:
- * Bun's os.homedir() ignores $HOME set after launch). Defaults to the known
- * sibling homes plus the current MYCO_HOME if set.
+ * Legacy machine homes to sweep. Passed explicitly (NOT recomputed from $HOME:
+ * Bun's os.homedir() ignores $HOME set after launch). Honors the
+ * MYCO_TEAM_LEGACY_HOMES env override for test hermeticity: when set, ONLY the
+ * listed (path.delimiter-separated) homes are scanned, and an empty string means
+ * "scan nothing" — this is how the test runner stops a test that boots
+ * initTeamSync from sweeping the developer's real ~/.myco. Unset (production):
+ * the known sibling homes plus the current MYCO_HOME.
  */
 export function defaultLegacyTeamHomes(homeDir: string = os.homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
+  const override = env[MYCO_TEAM_LEGACY_HOMES_ENV];
+  if (override !== undefined) {
+    const trimmed = override.trim();
+    return trimmed === '' ? [] : trimmed.split(path.delimiter).map((h) => path.resolve(h.trim())).filter(Boolean);
+  }
   const homes = [path.join(homeDir, '.myco'), path.join(homeDir, '.myco-dev')];
   const current = env.MYCO_HOME?.trim();
   if (current) homes.push(path.resolve(current));
