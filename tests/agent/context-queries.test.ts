@@ -96,7 +96,7 @@ describe('executeContextQueries', () => {
     // For vault_unprocessed we need a settled (closed, processed_at IS NULL)
     // batch. The dispatcher would normally create this; we go through the
     // stateless insert path and close the batch by hand.
-    const batch = insertBatchStateless({
+    const { row: batch } = insertBatchStateless({
       session_id: 'sess-a',
       project_id: PROJECT_A,
       user_prompt: 'A test prompt',

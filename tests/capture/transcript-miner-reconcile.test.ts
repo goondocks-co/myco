@@ -530,3 +530,61 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(taskNotif.response_summary).toBeNull();
   });
 });
+
+describe('TranscriptMiner content_hash dedup (positional ordinal)', () => {
+  let tmpDir: string;
+  let transcriptPath: string;
+
+  beforeAll(() => { setupTestDb(); });
+  afterAll(teardownTestDb);
+
+  beforeEach(() => {
+    cleanTestDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miner-dedup-'));
+    transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    seedSession({ id: 's-dedup', agent: 'claude-code' });
+  });
+
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  // Each text becomes its own ended human turn.
+  const writeTurns = (texts: string[]) => {
+    const events: unknown[] = [];
+    texts.forEach((text, i) => {
+      events.push({ type: 'user', promptId: `p${i}`, message: { role: 'user', content: [{ type: 'text', text }] } });
+      events.push({ type: 'assistant', message: { stop_reason: 'end_turn' } });
+    });
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  };
+  const mine = () => new TranscriptMiner().reconcileBatchKinds('s-dedup', { agent: 'claude-code', transcriptPath });
+  const humanBatches = () =>
+    listBatchesBySession('s-dedup', { scope: ALL_PROJECTS_SCOPE }).filter((b) => b.origin === 'human');
+
+  it('preserves a genuine repeated prompt as two rows with distinct content_hash', () => {
+    writeTurns(['deploy', 'deploy']);
+    mine();
+    const rows = humanBatches();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.content_hash).not.toBeNull();
+    expect(rows[1]!.content_hash).not.toBeNull();
+    expect(rows[0]!.content_hash).not.toBe(rows[1]!.content_hash);
+  });
+
+  it('re-mining the same transcript adds no rows', () => {
+    writeTurns(['deploy', 'deploy']);
+    mine();
+    expect(humanBatches()).toHaveLength(2);
+    mine(); // fresh miner instance — re-reads + re-snapshots
+    expect(humanBatches()).toHaveLength(2);
+  });
+
+  it('a live-captured turn does not block a genuine repeat on mine', () => {
+    // The ordinal must advance for the consumed (live) turn so the second
+    // occurrence gets ordinal 1 and a distinct hash rather than colliding.
+    handleUserPrompt('s-dedup', 'deploy', { kind: 'initial' });
+    expect(humanBatches()).toHaveLength(1);
+    writeTurns(['deploy', 'deploy']);
+    mine();
+    expect(humanBatches()).toHaveLength(2);
+  });
+});

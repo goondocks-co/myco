@@ -193,3 +193,15 @@ export function changesSince(db: Database): number {
   const row = db.prepare('SELECT changes() AS c').get() as { c: number };
   return row.c;
 }
+
+/**
+ * True when a thrown error is a SQLite UNIQUE-constraint violation. Matches on
+ * the extended result code (`err.code` starts with `SQLITE_CONSTRAINT`) and the
+ * `UNIQUE` marker in `err.message`; works for better-sqlite3 and bun:sqlite.
+ */
+export function isUniqueConstraintError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: string }).code ?? '';
+  const message = (err as { message?: string }).message ?? '';
+  return code.startsWith('SQLITE_CONSTRAINT') && message.includes('UNIQUE');
+}
