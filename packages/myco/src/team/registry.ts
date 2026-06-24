@@ -11,16 +11,29 @@ import {
   resolveTeamConfigPath,
 } from '../grove/paths.js';
 
-export interface TeamProjectRef { grove_id: string; project_id: string; }
+export interface TeamProjectRef {
+  grove_id: string;
+  project_id: string;
+}
 
 export interface TeamRecord {
-  team_id: string; name: string; worker_url: string; domain: string | null;
-  mcp_endpoint: string | null; created_at: string; projects: TeamProjectRef[];
+  team_id: string;
+  name: string;
+  worker_url: string;
+  domain: string | null;
+  mcp_endpoint: string | null;
+  created_at: string;
+  projects: TeamProjectRef[];
 }
 
 export interface TeamDeploymentRecord {
-  team_id: string; worker_name: string; worker_url: string; package_version: string;
-  created_at: string; last_upgraded: string; config_version: number;
+  team_id: string;
+  worker_name: string;
+  worker_url: string;
+  package_version: string;
+  created_at: string;
+  last_upgraded: string;
+  config_version: number;
 }
 
 function resolveTeamDeploymentPath(teamId: string): string {

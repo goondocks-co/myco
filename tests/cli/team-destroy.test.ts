@@ -27,6 +27,7 @@ describe('teamDestroy', () => {
   let tempDir: string;
   let vaultDir: string;
   let originalMycoHome: string | undefined;
+  let originalTeamHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
@@ -34,6 +35,7 @@ describe('teamDestroy', () => {
     execHandlers.length = 0;
     execCalls.length = 0;
     originalMycoHome = process.env.MYCO_HOME;
+    originalTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = path.join(tempDir, 'home');
     process.env.MYCO_TEAM_HOME = path.join(tempDir, 'home');
 
@@ -67,7 +69,8 @@ describe('teamDestroy', () => {
   afterEach(() => {
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
-    delete process.env.MYCO_TEAM_HOME;
+    if (originalTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = originalTeamHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();

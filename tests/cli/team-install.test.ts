@@ -80,6 +80,7 @@ describe('teamInit', () => {
   let sourceDir: string;
   let previousHome: string | undefined;
   let previousMycoHome: string | undefined;
+  let previousTeamHome: string | undefined;
   let previousPackageRoot: string | undefined;
   let previousExit: typeof process.exit;
   let previousConsoleError: typeof console.error;
@@ -97,6 +98,7 @@ describe('teamInit', () => {
 
     previousHome = process.env.HOME;
     previousMycoHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
     previousPackageRoot = process.env.MYCO_TEAM_PACKAGE_ROOT;
     previousExit = process.exit;
     previousConsoleError = console.error;
@@ -129,7 +131,8 @@ describe('teamInit', () => {
     else process.env.HOME = previousHome;
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
-    delete process.env.MYCO_TEAM_HOME;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
     if (previousPackageRoot === undefined) delete process.env.MYCO_TEAM_PACKAGE_ROOT;
     else process.env.MYCO_TEAM_PACKAGE_ROOT = previousPackageRoot;
     process.exit = previousExit;
