@@ -34,6 +34,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { JobRunner } from './job-runner.js';
+import { migrateTeamsHomeIfNeeded } from '../team/migrate-home.js';
 import { TeamSyncClient, type VersionCompat } from './team-sync.js';
 import {
   listPending,
@@ -169,6 +170,12 @@ export function planConfigSeed(
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
+  try {
+    migrateTeamsHomeIfNeeded();
+  } catch (err) {
+    deps.logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'team-home migration failed (continuing)', { error: (err as Error).message });
+  }
+
   const { machineId, logger, daemonStateDir, requestContext: defaultRequestContext } = deps;
 
   /** Boolean convenience over `memberProjectIdsForGrove`, used by the deep-sleep `pending` probe. */

@@ -98,6 +98,13 @@ mock.module('@myco/daemon/team-sync.js', () => ({
   },
 }));
 
+// Stub out the startup migration so unit tests are not affected by real
+// ~/.myco/teams/ data on the developer's machine.
+mock.module('@myco/team/migrate-home.js', () => ({
+  migrateTeamsHomeIfNeeded: vi.fn(() => ({ copied: [], gapFilled: [], conflicted: [], retiredHomes: [] })),
+  defaultLegacyTeamHomes: vi.fn(() => []),
+}));
+
 describe('initTeamSync.reconcileClient', () => {
   let tmpDir: string;
   let vaultDir: string;

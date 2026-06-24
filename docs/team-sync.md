@@ -70,6 +70,10 @@ A **team selector** in the top-right scopes what you're viewing to one of your t
 
 To stop syncing to a team, open the **Teams** tab and choose **Leave team**. That removes the team from this machine and clears its pending queue — it does not touch the team's cloud Worker or your local data, and other members are unaffected. (To tear the cloud infrastructure down entirely, the operator runs `myco-team destroy --team-id <id>`.)
 
+## Team config storage
+
+Team configuration (registration details, worker URL, API keys) lives at `~/.myco-team/teams/<team_id>/` — a machine-scoped directory shared by every myco daemon on this machine. Set `MYCO_TEAM_HOME` to override the location (used by the test suite and advanced multi-home setups). You don't need to manage this directory directly; `myco-team install` and the dashboard **Teams** tab handle it.
+
 ## Machine identity
 
 Every synced record is tagged with a **machine identity** — a deterministic `{github_username}_{machine_hash}` (e.g. `chris_a7b3c2`). This attributes knowledge to its source and lets you tell "my data" from "team data". It's generated once per machine and cached at `.myco/machine_id`. Nothing to configure.
