@@ -410,3 +410,6 @@ function PRMergeController({ prId, checks }: { prId: string; checks: PRMergeChec
 
 ### Durable Selection vs Route Selection
 **Do not confuse the durable selection (via `useActiveProjectSelection()`) with route params**. Route params change on every navigation; the durable selection persists until the user explicitly picks a new project. A boundary with `persist={false}` exposes a specific project to its subtree without overwriting the durable selection. Machine-scoped pages must wrap with `GlobalSelectionBoundary` — never with a project `ProjectSelectionBoundary` — so `requestContextHeadersFromSelection()` injects no project headers and the request is correctly machine-wide.
+
+### UI Embed Build Order Is Strictly Sequential
+**`build:ui` must run before `codegen`, which must run before `build:binary`**. The `codegen` step includes `packages/myco/scripts/gen-ui-assets.ts`, which reads the Vite-compiled output and generates `packages/myco/src/ui-assets.generated.ts` — the file that embeds the React bundle into the TypeScript source tree for binary compilation. If codegen runs before the Vite build, it emits an empty or stale asset map, silently producing a binary with no bundled UI. Always run the full `npm run build` (which sequences `build:ui && codegen && build:binary`) rather than invoking the script directly.

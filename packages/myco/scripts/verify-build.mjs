@@ -43,6 +43,7 @@ const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
 const binaryPath = path.join(platformPkgDir, 'bin', binaryName);
 if (!fs.existsSync(binaryPath)) fail(`missing host binary: ${binaryPath}`);
 
+const DEV_VERSION_PLACEHOLDER = '0.0.0-dev';
 const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
 const expectedVersion = pkg.version;
 let bakedVersion;
@@ -51,12 +52,19 @@ try {
 } catch (err) {
   fail(`cannot probe binary --version (${binaryPath}): ${err.message}`);
 }
-if (bakedVersion !== expectedVersion) {
+// Dev builds stamp the git description (`0.0.0-dev+<describe>`) into the binary
+// while package.json keeps the placeholder — build-single-target.mjs restores it
+// after compile. Accept that; require an exact match only for release builds
+// (where sync-package-versions has written a concrete version into package.json).
+const versionOk =
+  bakedVersion === expectedVersion ||
+  (expectedVersion === DEV_VERSION_PLACEHOLDER && bakedVersion.startsWith(`${DEV_VERSION_PLACEHOLDER}+`));
+if (!versionOk) {
   fail(
     `binary version mismatch — package.json says ${expectedVersion} but ` +
-    `${binaryPath} --version reports ${bakedVersion}. The binary was likely ` +
-    `compiled before \`sync-package-versions.mjs\` bumped the manifest. ` +
-    `Re-run \`npm run build:binary\` after the version bump.`,
+    `${binaryPath} --version reports ${bakedVersion}. For a release build the ` +
+    `binary was likely compiled before \`sync-package-versions.mjs\` bumped the ` +
+    `manifest — re-run \`npm run build:binary\` after the version bump.`,
   );
 }
 
