@@ -9,6 +9,7 @@ import {
   setBatchPromptNumber,
   populateBatchResponses,
   rehomeSystemActivitiesToHumanAnchor,
+  normalizePromptForHash,
   PROMPT_PREFIX_MATCH_CHARS,
   BATCH_KIND,
   PROMPT_BATCH_ORIGIN,
@@ -308,6 +309,18 @@ export class TranscriptMiner {
     let currentParentId: number | null = null;
     let currentParentOrigin: PromptBatchOrigin | null = null;
 
+    // content_hash ordinal source: the 0-based occurrence index of each
+    // (origin, normalized text) pair in transcript order, advanced for every
+    // record (consumed or inserted) so a later genuine repeat gets the next
+    // index rather than colliding with the earlier turn.
+    const occurrenceByKey = new Map<string, number>();
+    const takeOrdinal = (origin: PromptBatchOrigin, text: string): number => {
+      const key = `${origin} ${normalizePromptForHash(text)}`;
+      const ordinal = occurrenceByKey.get(key) ?? 0;
+      occurrenceByKey.set(key, ordinal + 1);
+      return ordinal;
+    };
+
     // Resolve a record's effective kind + parent against the open turn.
     // A steering/interrupt record normally nests under the open initial
     // batch. Two cases force it to start its own initial turn instead:
@@ -343,6 +356,11 @@ export class TranscriptMiner {
     };
 
     for (const record of records) {
+      // Advance the positional ordinal for this record's slot BEFORE the
+      // consume check so consumed (already-captured) records still occupy
+      // their transcript position — otherwise a later genuine repeat would
+      // collide with an earlier turn's hash.
+      const ordinal = takeOrdinal(record.origin, record.text);
       const existing = buckets.consume(record.text);
 
       if (existing) {
@@ -368,9 +386,10 @@ export class TranscriptMiner {
       }
       const now = epochSeconds();
       const isSystemOrigin = record.origin !== PROMPT_BATCH_ORIGIN.HUMAN;
-      const created = insertBatchStateless({
+      const { row: created, created: didInsert } = insertBatchStateless({
         session_id: sessionId,
         user_prompt: record.text,
+        ordinal,
         started_at: now,
         // System / agent_dispatch batches are born CLOSED point-in-time records,
         // identical to the live handleUserPrompt path. Born OPEN, a miner-created
@@ -384,11 +403,16 @@ export class TranscriptMiner {
         origin: record.origin,
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
       });
-      inserted++;
-      try {
-        const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
-        createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
-      } catch { /* lineage best-effort */ }
+      // On a dedup (didInsert === false) the row already exists with its
+      // lineage, so skip the counter and lineage write; the row still serves
+      // as the steering anchor below.
+      if (didInsert) {
+        inserted++;
+        try {
+          const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
+          createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
+        } catch { /* lineage best-effort */ }
+      }
       // Only a HUMAN initial batch becomes the open anchor (see existing-branch
       // note above) — system batches never claim the steering anchor.
       if (effectiveKind === BATCH_KIND.INITIAL && record.origin === PROMPT_BATCH_ORIGIN.HUMAN) {

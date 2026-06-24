@@ -655,7 +655,7 @@ describe('machine_id fix: insertBatchStateless', () => {
       machine_id: 'correct-machine',
     });
 
-    const batch = insertBatchStateless({
+    const { row: batch } = insertBatchStateless({
       session_id: 'sess-mid',
       user_prompt: 'test prompt',
       created_at: now,
@@ -673,7 +673,7 @@ describe('machine_id fix: insertBatchStateless', () => {
       id: 'sess-mid2', agent: 'test', started_at: now, created_at: now,
     });
 
-    const batch = insertBatchStateless({
+    const { row: batch } = insertBatchStateless({
       session_id: 'sess-mid2',
       user_prompt: 'test prompt',
       created_at: now,
