@@ -192,6 +192,16 @@ export interface ApplyUpdateDeps {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * How many times `runAdopt` restarts onto the new binary and re-watches health
+ * before restoring the previous version. >1 so a single transient failure (a
+ * respawn racing the restart) converges instead of immediately rolling back —
+ * the convergence the manual one-shot apply needs and the idle auto-adopt
+ * previously provided only via its next-tick retry. Kept small so a genuinely
+ * broken binary still rolls back promptly.
+ */
+const ADOPT_RESTART_ATTEMPTS = 2;
+
+/**
  * Spawn `<bin> <args>` cross-platform without letting the shell word-split a
  * spaced binary path.
  *
@@ -530,20 +540,36 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     return;
   }
 
-  // --- Step 4: restart onto the new binary ---
+  // --- Step 4+5: restart onto the new binary, then confirm it reaches the
+  // target version — RETRIED a bounded number of times before restoring.
   // Past this point the daemon MUST come back. Wrap in try/catch so an
   // unexpected throw (e.g. a deps bug) still ends in a final restart attempt.
   try {
-    await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
-
-    // --- Step 5: health-watch ---
-    const healthy = await pollHealthForAdopt(
-      deps,
-      p.daemonPort,
-      p.targetVersion,
-      p.maxHealthAttempts,
-      p.healthIntervalMs,
-    );
+    // A single restart can fail to "take" transiently (a respawn racing the
+    // restart during the shutdown window, the supervisor not yet re-adopting).
+    // Retrying the restart+health-watch makes BOTH entry points converge through
+    // this one shared path: the manual one-shot apply now lands reliably instead
+    // of relying on the idle auto-adopt's next-tick retry to eventually fix it.
+    // The binary was already copied in Step 3, so each retry only re-restarts —
+    // never re-copies. A genuinely broken binary that never reaches the target
+    // version exhausts the attempts and falls through to the restore below.
+    let healthy = false;
+    for (let attempt = 1; attempt <= ADOPT_RESTART_ATTEMPTS; attempt += 1) {
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+      healthy = await pollHealthForAdopt(
+        deps,
+        p.daemonPort,
+        p.targetVersion,
+        p.maxHealthAttempts,
+        p.healthIntervalMs,
+      );
+      if (healthy || attempt === ADOPT_RESTART_ATTEMPTS) break;
+      try {
+        process.stderr.write(
+          `[myco] adopt: ${p.targetVersion} not healthy after restart attempt ${attempt}/${ADOPT_RESTART_ATTEMPTS} — retrying\n`,
+        );
+      } catch { /* best-effort */ }
+    }
 
     if (healthy) {
       // Success: prune old versions, clear error, clear sentinel.
@@ -573,7 +599,8 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
       );
     }
     writeError(
-      `new binary ${p.targetVersion} failed to become healthy after ${p.maxHealthAttempts} attempts — rollback to ${p.prevVersion} applied`,
+      `new binary ${p.targetVersion} failed to become healthy after ${ADOPT_RESTART_ATTEMPTS} restart attempts `
+      + `(${p.maxHealthAttempts} health polls each) — rollback to ${p.prevVersion} applied`,
     );
     clearSentinel();
     await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
