@@ -54,7 +54,7 @@ function wrap(mod: Record<string, AnyFn>, name: string, argIdxs: number[]) {
 }
 const FS = fs as unknown as Record<string, AnyFn>;
 // single-path mutators → guard arg0
-for (const n of ['writeFileSync','appendFileSync','mkdirSync','rmSync','rmdirSync','unlinkSync','chmodSync','chownSync','truncateSync','lchmodSync']) wrap(FS, n, [0]);
+for (const n of ['writeFileSync','appendFileSync','mkdirSync','rmSync','rmdirSync','unlinkSync','chmodSync','chownSync','truncateSync','lchmodSync','lchownSync']) wrap(FS, n, [0]);
 // two-path → guard the destination (and both for rename)
 wrap(FS, 'copyFileSync', [1]);
 wrap(FS, 'cpSync', [1]);
@@ -70,6 +70,27 @@ wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutati
       const isWrite = typeof args[1] === 'number' ? true : /[wa+]/.test(f);
       if (isWrite) { const hit = offending(args[0]); if (hit) deny('openSync', hit); }
       return origOpen.apply(this, args);
+    } as AnyFn;
+  }
+}
+// createWriteStream opens for writing on call — guard arg0
+wrap(FS, 'createWriteStream', [0]);
+// callback-form fs writers — same path-arg indices as their sync counterparts
+for (const n of ['writeFile','appendFile','mkdir','rm','rmdir','unlink','chmod','chown','truncate']) wrap(FS, n, [0]);
+wrap(FS, 'copyFile', [1]);
+wrap(FS, 'cp', [1]);
+wrap(FS, 'symlink', [1]);
+wrap(FS, 'link', [1]);
+wrap(FS, 'rename', [0, 1]);
+// callback-form open: guard arg0 only when flags indicate a write
+{
+  const origOpenCb = FS.open;
+  if (typeof origOpenCb === 'function') {
+    FS.open = function (this: unknown, ...args: unknown[]) {
+      const f = typeof args[1] === 'string' ? args[1] : '';
+      const isWrite = typeof args[1] === 'number' ? true : /[wa+]/.test(f);
+      if (isWrite) { const hit = offending(args[0]); if (hit) deny('open', hit); }
+      return origOpenCb.apply(this, args);
     } as AnyFn;
   }
 }

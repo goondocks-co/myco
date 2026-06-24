@@ -37,4 +37,13 @@ describe('sandbox preload — fence (live-config writes throw)', () => {
     const ok = path.join(os.tmpdir(), 'myco-sandbox-ok-' + process.pid);
     expect(() => { fs.mkdirSync(ok, { recursive: true }); fs.writeFileSync(path.join(ok, 'f'), 'x'); fs.rmSync(ok, { recursive: true, force: true }); }).not.toThrow();
   });
+  it('createWriteStream into ~/.myco throws', () => {
+    expect(() => fs.createWriteStream(probe('.myco/__leak__'))).toThrow(/TEST SAFETY/);
+  });
+  it('callback-form fs.writeFile into ~/.myco throws synchronously', () => {
+    expect(() => fs.writeFile(probe('.myco/__leak__'), 'x', () => {})).toThrow(/TEST SAFETY/);
+  });
+  it('callback-form fs.mkdir into ~/.myco-team throws', () => {
+    expect(() => fs.mkdir(probe('.myco-team/x'), { recursive: true }, () => {})).toThrow(/TEST SAFETY/);
+  });
 });
