@@ -167,6 +167,8 @@ Every SKILL.md must contain all six required fields in its YAML frontmatter:
 
 ## Diagnosing vault_write_skill Rejections
 
+**3-gate dedup check runs before any file is written:** (1) same-name match routes to the evolve path rather than rejecting outright, (2) fulfilled-candidate guard rejects if the `candidate_id` already links to a different skill, (3) Jaccard description similarity gate rejects at threshold 0.4. If the DB write fails after the file is created, the file is atomically removed to prevent orphans.
+
 The tool returns a descriptive error identifying the failing constraint:
 
 | Error | Fix |
@@ -177,6 +179,8 @@ The tool returns a descriptive error identifying the failing constraint:
 | `missing name with myco: prefix` | Ensure `name: myco:<skill-name>` in frontmatter |
 | `name contains path traversal` | Remove `/`, `\`, or `..` from the name parameter |
 | `exceeds 500 lines` | Trim content or split into sub-skills |
+| `Candidate ... is already fulfilled by skill "..."` | The `candidate_id` is already linked to a different skill. Write to that skill's name to evolve it, or omit `candidate_id`. |
+| `Description overlaps with existing active skill "..." (Jaccard X.XX, threshold 0.4)` | Proposed description is too similar to an existing skill. Reframe to cover a distinct procedure, or write to the existing skill's name to evolve it. |
 
 ### allowed-tools Contamination
 
