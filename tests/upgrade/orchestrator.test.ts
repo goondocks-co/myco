@@ -143,6 +143,8 @@ function makeParams(overrides: Partial<ApplyAdoptParams> = {}): ApplyAdoptParams
     projectRoot: '/home/user/project',
     maxHealthAttempts: 3,
     healthIntervalMs: 5,
+    // Keep the adopt-event side-channel hermetic (default is machine-global).
+    updateEventsPath: path.join(tmpDir, 'update-events.jsonl'),
     ...overrides,
   };
 }

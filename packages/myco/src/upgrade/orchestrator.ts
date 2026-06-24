@@ -39,10 +39,12 @@ import { spawn } from 'node:child_process';
 
 import {
   UPDATE_ERROR_PATH,
+  UPDATE_EVENTS_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
 } from '../constants/update.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
+import { appendUpdateEvent, type UpdateEventLevel } from './update-events.js';
 import type { ServiceManager } from '../service/types.js';
 
 // ---------------------------------------------------------------------------
@@ -111,6 +113,9 @@ export interface ApplyAdoptParams {
   healthIntervalMs: number;
   /** Error side-channel path. Defaults to UPDATE_ERROR_PATH; overridable for tests. */
   errorPath?: string;
+  /** Adopt-event side-channel path. Defaults to UPDATE_EVENTS_PATH; overridable
+   *  for hermetic tests (the default is machine-global, not MYCO_HOME-scoped). */
+  updateEventsPath?: string;
   /**
    * Absolute path to the `update.in-progress` sentinel. Cleared on every
    * abort/restore exit path so a failed adopt never locks out future updates
@@ -445,9 +450,18 @@ async function resolvePruneVersions(
 // Adopt path
 // ---------------------------------------------------------------------------
 
+interface HealthWatchResult {
+  healthy: boolean;
+  /** Last version /health reported (null = never reachable in the window). The
+   *  key adopt-failure discriminator: a window stuck on the OLD version means
+   *  the restart never brought up the target; null means the daemon stayed
+   *  down; the target with healthy=false would mean a version-match bug. */
+  lastSeenVersion: string | null;
+}
+
 /**
- * Poll /health up to `maxHealthAttempts` times for `targetVersion`.
- * Returns true on success.
+ * Poll /health up to `maxHealthAttempts` times for `targetVersion`, reporting
+ * the last version it saw so the caller can log WHY a watch failed.
  */
 async function pollHealthForAdopt(
   deps: ApplyUpdateDeps,
@@ -455,17 +469,21 @@ async function pollHealthForAdopt(
   targetVersion: string,
   maxHealthAttempts: number,
   healthIntervalMs: number,
-): Promise<boolean> {
+): Promise<HealthWatchResult> {
+  let lastSeenVersion: string | null = null;
   for (let i = 0; i < maxHealthAttempts; i += 1) {
     if (i > 0) await deps.sleep(healthIntervalMs);
     try {
       const body = await deps.probeHealth(daemonPort);
-      if (body && body.version === targetVersion) return true;
+      if (body) {
+        lastSeenVersion = body.version ?? lastSeenVersion;
+        if (body.version === targetVersion) return { healthy: true, lastSeenVersion };
+      }
     } catch {
       /* probe failure → not yet healthy */
     }
   }
-  return false;
+  return { healthy: false, lastSeenVersion };
 }
 
 /**
@@ -480,6 +498,17 @@ async function pollHealthForAdopt(
 async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<void> {
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
 
+  // Observability side-channel — the daemon replays these into log_entries on
+  // its next startup (see update-events.ts). Path is injectable for hermetic tests.
+  const eventsPath = p.updateEventsPath ?? UPDATE_EVENTS_PATH;
+  const event = (level: UpdateEventLevel, message: string, data?: Record<string, unknown>): void =>
+    appendUpdateEvent(eventsPath, level, message, data);
+
+  event('info', 'adopt started', {
+    from: p.prevVersion, to: p.targetVersion, platform: p.platform,
+    daemon_port: p.daemonPort, service_managed_label: p.serviceManagedLabel ?? null,
+  });
+
   const errorPath = p.errorPath ?? UPDATE_ERROR_PATH;
   const writeError = (message: string): void => {
     writeFileSafe(errorPath, JSON.stringify({ error: message }));
@@ -493,6 +522,9 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
   // --- Step 1: cooperative stop ---
   const cooperativeShutdown = await resolveRequestCooperativeShutdown(deps);
   const stopConfirmed = await cooperativeShutdown(p.daemonPort);
+  event('info', stopConfirmed ? 'cooperative stop confirmed' : 'cooperative stop NOT confirmed', {
+    daemon_port: p.daemonPort,
+  });
 
   // --- Step 2: cross-platform stop-confirm gate ---
   // win32 invariant: NEVER copy over a live image (Windows locks running .exe
@@ -555,23 +587,29 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     // version exhausts the attempts and falls through to the restore below.
     let healthy = false;
     for (let attempt = 1; attempt <= ADOPT_RESTART_ATTEMPTS; attempt += 1) {
+      event('info', 'restart onto target', {
+        attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
+        service_managed_label: p.serviceManagedLabel ?? null,
+      });
       await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
-      healthy = await pollHealthForAdopt(
+      const watch = await pollHealthForAdopt(
         deps,
         p.daemonPort,
         p.targetVersion,
         p.maxHealthAttempts,
         p.healthIntervalMs,
       );
+      healthy = watch.healthy;
+      event(healthy ? 'info' : 'warn', healthy ? 'target healthy' : 'health-watch did not reach target', {
+        attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
+        last_seen_version: watch.lastSeenVersion, // OLD version = restart never took; null = daemon stayed down
+        health_polls: p.maxHealthAttempts, poll_interval_ms: p.healthIntervalMs,
+      });
       if (healthy || attempt === ADOPT_RESTART_ATTEMPTS) break;
-      try {
-        process.stderr.write(
-          `[myco] adopt: ${p.targetVersion} not healthy after restart attempt ${attempt}/${ADOPT_RESTART_ATTEMPTS} — retrying\n`,
-        );
-      } catch { /* best-effort */ }
     }
 
     if (healthy) {
+      event('info', 'adopt succeeded', { version: p.targetVersion, from: p.prevVersion });
       // Success: prune old versions, clear error, clear sentinel.
       // The daemon-startup clear fires when the new daemon sees targetVersion ==
       // sentinel.targetVersion — but we also clear here so the sentinel is gone
@@ -602,6 +640,9 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
       `new binary ${p.targetVersion} failed to become healthy after ${ADOPT_RESTART_ATTEMPTS} restart attempts `
       + `(${p.maxHealthAttempts} health polls each) — rollback to ${p.prevVersion} applied`,
     );
+    event('error', 'rollback applied', {
+      target: p.targetVersion, restored: p.prevVersion, restart_attempts: ADOPT_RESTART_ATTEMPTS,
+    });
     clearSentinel();
     await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
   } catch (err) {
