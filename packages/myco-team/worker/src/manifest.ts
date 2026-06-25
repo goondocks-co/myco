@@ -5,8 +5,8 @@
  * (machine_id, project_id, table) partition without pulling every row.
  * Two modes:
  *
- *   summary=1  → { count, cheap_agg } — fast aggregate for a coarse
- *                 drift check before deciding whether to page.
+ *   summary=1  → { count } — fast aggregate for a coarse drift check
+ *                 before deciding whether to page.
  *   (default)  → { items, next_cursor? } — cursor-paged { id,
  *                 project_id, content_hash? } for the daemon to diff
  *                 against local state.
@@ -74,7 +74,6 @@ export interface ManifestSummaryResponse {
   machine_id: string;
   project_id?: string;
   count: number;
-  cheap_agg: number;
 }
 
 export interface ManifestItem {
@@ -88,7 +87,6 @@ export interface ManifestPageResponse {
   machine_id: string;
   project_id?: string;
   count: number;
-  cheap_agg: number;
   items: ManifestItem[];
   next_cursor?: string;
 }
@@ -142,20 +140,19 @@ export async function queryManifest(
 
   if (summary) {
     const sql = projectId
-      ? `SELECT COUNT(*) AS count, MAX(rowid) AS cheap_agg FROM ${table} WHERE machine_id = ? AND project_id = ?`
-      : `SELECT COUNT(*) AS count, MAX(rowid) AS cheap_agg FROM ${table} WHERE machine_id = ?`;
+      ? `SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ? AND project_id = ?`
+      : `SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ?`;
 
     const row = await (projectId
       ? db.prepare(sql).bind(machineId, projectId)
       : db.prepare(sql).bind(machineId)
-    ).first<{ count: number; cheap_agg: number | null }>();
+    ).first<{ count: number }>();
 
     return {
       table,
       machine_id: machineId,
       ...(projectId != null ? { project_id: projectId } : {}),
       count: Number(row?.count ?? 0),
-      cheap_agg: Number(row?.cheap_agg ?? 0),
     };
   }
 
@@ -179,22 +176,21 @@ export async function queryManifest(
   const items = hasMore ? allItems.slice(0, limit) : allItems;
   const nextCursor = hasMore ? String(items[items.length - 1].id) : undefined;
 
-  // Also fetch count + cheap_agg for the summary fields.
+  // Also fetch count for the summary field on paged responses.
   const aggSql = projectId
-    ? `SELECT COUNT(*) AS count, MAX(rowid) AS cheap_agg FROM ${table} WHERE machine_id = ? AND project_id = ?`
-    : `SELECT COUNT(*) AS count, MAX(rowid) AS cheap_agg FROM ${table} WHERE machine_id = ?`;
+    ? `SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ? AND project_id = ?`
+    : `SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ?`;
 
   const aggRow = await (projectId
     ? db.prepare(aggSql).bind(machineId, projectId)
     : db.prepare(aggSql).bind(machineId)
-  ).first<{ count: number; cheap_agg: number | null }>();
+  ).first<{ count: number }>();
 
   return {
     table,
     machine_id: machineId,
     ...(projectId != null ? { project_id: projectId } : {}),
     count: Number(aggRow?.count ?? 0),
-    cheap_agg: Number(aggRow?.cheap_agg ?? 0),
     items,
     ...(nextCursor !== undefined ? { next_cursor: nextCursor } : {}),
   };

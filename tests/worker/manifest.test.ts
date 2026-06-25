@@ -2,7 +2,7 @@
  * Tests for GET /manifest — content-addressed drift reconcile endpoint.
  *
  * Verifies:
- *   - summary=1 returns { count, cheap_agg } scoped to (machine_id, [project_id])
+ *   - summary=1 returns { count } scoped to (machine_id, [project_id])
  *   - paged results are ordered by id with correct next_cursor
  *   - content_hash present only on the 4 content-hash tables
  *   - WORKER_CONTENT_HASH_TABLES parity: every member has content_hash in schema DDL
@@ -85,7 +85,7 @@ const ENTITIES_ROWS: FakeRow[] = [
  * Minimal fake D1 that parses the SQL the manifest handler issues and
  * answers from in-memory fixture rows. Supports the two query shapes:
  *
- *   SELECT COUNT(*) AS count, MAX(rowid) AS cheap_agg FROM <table>
+ *   SELECT COUNT(*) AS count FROM <table>
  *     WHERE machine_id = ? [AND project_id = ?]
  *
  *   SELECT id, project_id[, content_hash] FROM <table>
@@ -115,11 +115,8 @@ function createFakeD1(tableData: Record<string, FakeRow[]>): ManifestDb {
           });
 
           const count = filtered.length;
-          const maxRowid = filtered.length > 0
-            ? Math.max(...filtered.map((r) => r.rowid ?? 0))
-            : 0;
 
-          return { count, cheap_agg: maxRowid } as T;
+          return { count } as T;
         },
         async all<T>(): Promise<{ results: T[] }> {
           const tableMatch = sql.match(/FROM\s+(\w+)/i);
@@ -337,7 +334,7 @@ describe('parseManifestParams', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /manifest?summary=1 — scoping', () => {
-  it('returns count and cheap_agg scoped to machine_id only (no project_id)', async () => {
+  it('returns count scoped to machine_id only (no project_id)', async () => {
     const params = {
       machineId: MACHINE_A,
       table: 'sessions',
@@ -352,8 +349,6 @@ describe('GET /manifest?summary=1 — scoping', () => {
     expect(result.count).toBe(3);
     expect(result.machine_id).toBe(MACHINE_A);
     expect('project_id' in result).toBe(false);
-    // cheap_agg is MAX(rowid) for MACHINE_A rows: max rowid = 3
-    expect(result.cheap_agg).toBe(3);
   });
 
   it('excludes the other machine from the count', async () => {
@@ -388,8 +383,6 @@ describe('GET /manifest?summary=1 — scoping', () => {
     // MACHINE_A + PROJECT_1: sess-a1, sess-a2
     expect(result.count).toBe(2);
     expect(result.project_id).toBe(PROJECT_1);
-    // cheap_agg = MAX(rowid) for sess-a1 (rowid=1) and sess-a2 (rowid=2) = 2
-    expect(result.cheap_agg).toBe(2);
   });
 
   it('excludes the other project when project_id is given', async () => {
@@ -409,14 +402,13 @@ describe('GET /manifest?summary=1 — scoping', () => {
     expect(r2.count).toBe(1); // sess-a3
   });
 
-  it('returns cheap_agg=0 when no rows match', async () => {
+  it('returns count=0 when no rows match', async () => {
     const params = {
       machineId: 'machine-unknown', table: 'sessions',
       projectId: null, cursor: null, limit: 200, summary: true,
     };
     const result = await queryManifest(fakeDb, params);
     expect(result.count).toBe(0);
-    expect(result.cheap_agg).toBe(0);
   });
 });
 

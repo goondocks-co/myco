@@ -366,6 +366,14 @@ export interface ReconcilePartitionArgs {
   table: string;
   operatorConfirmed: boolean;
   passAggregate: PassAggregate;
+  /**
+   * When true, skip the count-equality fast path and always run the full ID diff.
+   * Used by the 6h periodic backstop and the operator on-demand reconcile to
+   * catch equal-count / different-set drift (e.g. one local delete + one local
+   * add that nets the same count). The frequent poll path keeps forceFullDiff
+   * false so per-partition summary fetches stay cheap.
+   */
+  forceFullDiff?: boolean;
 }
 
 /** Page size for paged manifest fetches. */
@@ -395,7 +403,7 @@ export async function reconcilePartition(
   args: ReconcilePartitionArgs,
 ): Promise<void> {
   const { client, logger } = deps;
-  const { machineId, projectId, table, operatorConfirmed, passAggregate } = args;
+  const { machineId, projectId, table, operatorConfirmed, passAggregate, forceFullDiff = false } = args;
 
   // 1. Probe-before-feature-detect (MF2). An unprobed client reports undefined;
   // learn the version via health() rather than silently skipping.
@@ -421,15 +429,20 @@ export async function reconcilePartition(
     return;
   }
 
-  // 3. Cheap count check (fast path). Compare D1 count to local count; equal →
-  // no-op. (cheap_agg is MAX(rowid) on the D1 side and is NOT comparable to any
-  // local rowid sequence — the skip condition is COUNT equality only.)
+  // 3. Local partition. When forceFullDiff is false (the frequent poll path),
+  // a cheap summary fetch gates paging: equal counts → no-op. When
+  // forceFullDiff is true (the 6h backstop and operator-confirmed paths), skip
+  // the count check so equal-count / different-set drift is always caught.
   const local = deps.localPartition(machineId, projectId, table);
   const localCount = local.length;
-  const summary = await client.getManifest(machineId, table, { projectId, summary: true });
-  const d1Count = summary.count;
-  if (d1Count === localCount) {
-    return;
+
+  let d1Count = 0;
+  if (!forceFullDiff) {
+    const summary = await client.getManifest(machineId, table, { projectId, summary: true });
+    d1Count = summary.count;
+    if (d1Count === localCount) {
+      return;
+    }
   }
 
   // 4. Full diff. Page the manifest (strict project scope) until exhausted.
@@ -444,6 +457,12 @@ export async function reconcilePartition(
     if (resp.items) manifestItems.push(...resp.items);
     cursor = resp.next_cursor;
   } while (cursor);
+
+  if (forceFullDiff) {
+    // No summary was fetched; derive d1Count from the full paged result
+    // (total paged items = D1 partition count) so the safety gate is accurate.
+    d1Count = manifestItems.length;
+  }
 
   const diff = (deps.diff ?? diffPartition)(local, manifestItems);
 

@@ -289,7 +289,6 @@ export interface ManifestItem {
  * Paged mode (default): `items` is present; `next_cursor` is present
  * only when more pages remain.
  *
- * `cheap_agg` is MAX(rowid), 0 when the partition is empty.
  * `project_id` echoes the request's project_id; absent when the request
  * omitted it.
  */
@@ -298,7 +297,6 @@ export interface ManifestResponse {
   machine_id: string;
   project_id?: string;
   count: number;
-  cheap_agg: number;
   items?: ManifestItem[];
   next_cursor?: string;
 }
@@ -548,7 +546,7 @@ export class TeamSyncClient {
   /**
    * Fetch a per-partition manifest from the worker's GET /manifest endpoint.
    *
-   * Summary mode (`summary: true`): returns count + cheap_agg only — no items.
+   * Summary mode (`summary: true`): returns count only — no items.
    * Paged mode (default): returns a page of {id, project_id?, content_hash?}
    * items. Pagination continues while `next_cursor` is present in the response.
    */

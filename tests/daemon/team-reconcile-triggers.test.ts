@@ -215,6 +215,7 @@ describe('team-sync reconcile triggers', () => {
     table: string;
     operatorConfirmed: boolean;
     passAggregate: { count: number };
+    forceFullDiff: boolean | undefined;
   }> {
     return reconcilePartitionSpy.mock.calls.map((c) => (c as unknown[])[1] as never);
   }
@@ -351,5 +352,33 @@ describe('team-sync reconcile triggers', () => {
     // The flush still ran despite the reconcile failure — listPending is touched
     // only by the flush drain, so its invocation proves flushPending executed.
     expect(listPendingMock).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // forceFullDiff threading: backstop/operator → true, poll path → false
+  // ---------------------------------------------------------------------------
+
+  it('reconcileAllGroves (backstop/operator) reaches reconcilePartition with forceFullDiff:true', async () => {
+    const a = await registerGroveWithProjects('force-diff-grove', ['p-fd']);
+    groveScopesForMock = [{ id: a.grove.id }];
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileAllGroves({} as never, false);
+
+    const args = reconcileArgs();
+    expect(args.length).toBeGreaterThan(0);
+    expect(args.every((a2) => a2.forceFullDiff === true)).toBe(true);
+  });
+
+  it('reconcileClient poll path reaches reconcilePartition with forceFullDiff:false', async () => {
+    const { grove } = await registerGroveWithProjects('poll-path-grove', ['p-pp']);
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-pp'));
+    await flushAsync();
+
+    const args = reconcileArgs();
+    expect(args.length).toBeGreaterThan(0);
+    expect(args.every((a2) => a2.forceFullDiff === false)).toBe(true);
   });
 });

@@ -50,14 +50,12 @@ const SUMMARY_BODY = {
   table: 'spores',
   machine_id: 'test_abc123',
   count: 5,
-  cheap_agg: 42,
 };
 
 const PAGED_BODY = {
   table: 'sessions',
   machine_id: 'test_abc123',
   count: 3,
-  cheap_agg: 100,
   items: [
     { id: 'sess-001', project_id: 'proj_aaa', content_hash: 'abc123' },
     { id: 'sess-002', project_id: 'proj_aaa', content_hash: 'def456' },
@@ -83,7 +81,6 @@ describe('TeamSyncClient.getManifest', () => {
       expect(result.table).toBe('spores');
       expect(result.machine_id).toBe('test_abc123');
       expect(result.count).toBe(5);
-      expect(result.cheap_agg).toBe(42);
       expect('items' in result).toBe(false);
 
       const calledUrl = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
@@ -134,7 +131,6 @@ describe('TeamSyncClient.getManifest', () => {
       expect(result.table).toBe('sessions');
       expect(result.machine_id).toBe('test_abc123');
       expect(result.count).toBe(3);
-      expect(result.cheap_agg).toBe(100);
       expect(result.items).toHaveLength(3);
       expect(result.next_cursor).toBe('cursor-xyz');
 

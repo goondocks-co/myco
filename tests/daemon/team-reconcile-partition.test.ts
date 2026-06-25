@@ -53,7 +53,6 @@ function makeHarness(opts: {
   local: PartitionRow[];
   pages: ManifestResponse[];
   summaryCount: number;
-  summaryAgg?: number;
   pending?: Set<string>;
   membershipSeeded?: boolean;
   upsertPayload?: (table: string, id: string) => string | null;
@@ -87,14 +86,13 @@ function makeHarness(opts: {
           table: _table,
           machine_id: _machineId,
           count: opts.summaryCount,
-          cheap_agg: opts.summaryAgg ?? 0,
         };
       }
       const idx = harness.pageCalls;
       harness.pageCalls += 1;
       const page = opts.pages[idx];
       if (!page) {
-        return { table: _table, machine_id: _machineId, count: 0, cheap_agg: 0, items: [] };
+        return { table: _table, machine_id: _machineId, count: 0, items: [] };
       }
       return page;
     },
@@ -137,7 +135,7 @@ function manifest(id: string, projectId?: string, hash?: string): ManifestItem {
 }
 
 function page(items: ManifestItem[], count: number, nextCursor?: string): ManifestResponse {
-  const r: ManifestResponse = { table: 'spores', machine_id: 'm1', count, cheap_agg: 0, items };
+  const r: ManifestResponse = { table: 'spores', machine_id: 'm1', count, items };
   if (nextCursor) r.next_cursor = nextCursor;
   return r;
 }
@@ -427,6 +425,49 @@ describe('reconcilePartition — pagination', () => {
     expect(h.pageCalls).toBe(3);
     // 'd' is local-only → one upsert.
     expect(h.enqueued.filter((e) => e.row_id === 'd').length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// forceFullDiff: equal-count, different-set gap closure
+// ---------------------------------------------------------------------------
+
+describe('reconcilePartition — forceFullDiff gap closure', () => {
+  // 5 shared rows so a 1-delete doesn't hit the 20% fraction cap (1/6 ≈ 16.7%).
+  const baseShared = settled(5); // {s0..s4}
+
+  it('forceFullDiff:false + equal counts → count-match fast path, no diff, no enqueue', async () => {
+    const h = makeHarness({
+      protocolVersion: 3,
+      local: [...baseShared.local, { id: 'B' }],           // 6 local
+      pages: [page([...baseShared.manifest, manifest('A', 'p1')], 6)], // 6 D1
+      summaryCount: 6,  // D1 count == local count → fast-path skip
+    });
+    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 }, forceFullDiff: false });
+    // Count-equality fast path: summary fetched, no paging, no enqueue.
+    expect(h.summaryCalls).toBe(1);
+    expect(h.pageCalls).toBe(0);
+    expect(h.enqueued.length).toBe(0);
+  });
+
+  it('forceFullDiff:true + equal counts → full diff runs, seeds delete for D1-orphan and upsert for local-only', async () => {
+    const h = makeHarness({
+      protocolVersion: 3,
+      local: [...baseShared.local, { id: 'B' }],           // 6 local: s0-s4 + B
+      pages: [page([...baseShared.manifest, manifest('A', 'p1')], 6)], // 6 D1: s0-s4 + A
+      summaryCount: 6,  // same count — would skip without forceFullDiff
+    });
+    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 }, forceFullDiff: true });
+    // Summary skipped; paging ran.
+    expect(h.summaryCalls).toBe(0);
+    expect(h.pageCalls).toBe(1);
+    // A is D1-orphan → delete; B is local-only → upsert.
+    const deletes = h.enqueued.filter((e) => e.operation === 'delete');
+    const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
+    expect(deletes.length).toBe(1);
+    expect(deletes[0].row_id).toBe('A');
+    expect(upserts.length).toBe(1);
+    expect(upserts[0].row_id).toBe('B');
   });
 });
 

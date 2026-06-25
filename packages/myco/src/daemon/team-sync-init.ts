@@ -812,6 +812,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     groveId: string | null,
     operatorConfirmed: boolean,
     passAggregate: PassAggregate,
+    forceFullDiff: boolean,
   ): Promise<void> {
     try {
       const memberProjectIds = memberProjectIdsForGrove(groveId);
@@ -839,7 +840,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           try {
             await reconcilePartition(
               { ...baseDeps, client },
-              { machineId, projectId, table, operatorConfirmed, passAggregate },
+              { machineId, projectId, table, operatorConfirmed, passAggregate, forceFullDiff },
             );
           } catch (partitionErr) {
             logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Reconcile partition failed (skipping)', {
@@ -887,7 +888,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     if (reconcileTriggerInFlight.has(key)) return; // a pass is already running for this grove
     reconcileTriggerLastRunAt.set(key, now);
     reconcileTriggerInFlight.add(key);
-    void runReconcilePass(groveId, false, { count: 0 }).finally(() => {
+    void runReconcilePass(groveId, false, { count: 0 }, false).finally(() => {
       reconcileTriggerInFlight.delete(key);
     });
   }
@@ -908,7 +909,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       cache,
       logger,
       async ({ grove, db }) => {
-        await withDatabase(db, () => runReconcilePass(grove.id, operatorConfirmed, passAggregate));
+        // Always forceFullDiff=true: the backstop and on-demand operator paths
+        // must catch equal-count / different-set drift that the poll path misses.
+        await withDatabase(db, () => runReconcilePass(grove.id, operatorConfirmed, passAggregate, true));
       },
       { daemonStateDir, jobName: 'team-sync-reconcile' },
     );
