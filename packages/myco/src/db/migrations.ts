@@ -122,6 +122,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 60, migrate: (db) => migrateV59ToV60(db) },
   { version: 61, migrate: (db) => migrateV60ToV61(db) },
   { version: 62, migrate: (db) => migrateV61ToV62(db) },
+  { version: 63, migrate: (db) => migrateV62ToV63(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3896,6 +3897,71 @@ function migrateV61ToV62(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(62, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Frozen at the v63 revision: the membership-only delete triggers. Per the
+ * frozen-DDL rules above, this never references the live TEAM_DELETE_TRIGGERS
+ * constant — later edits to the live DDL would silently change this migration's
+ * semantics. The trigger snapshot must stay byte-equivalent (after whitespace
+ * normalization) to the live TEAM_DELETE_TRIGGERS so fresh and migrated vaults
+ * converge (tests/db/migration-matrix.test.ts).
+ *
+ * Later additions to the live TEAM_DELETE_TRIGGER_TABLES must NOT appear here:
+ * a CREATE TRIGGER on a table that does not exist yet at this point in the
+ * chain throws and bricks the upgrade (the v41 failure class).
+ */
+const V63_TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+const V63_TEAM_DELETE_TRIGGERS: readonly string[] = V63_TEAM_DELETE_TRIGGER_TABLES.map(
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN OLD.project_id IN (SELECT project_id FROM team_sync_membership)
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
+/**
+ * v62 -> v63: drop the `enabled` gate from the per-table delete triggers.
+ *
+ * The triggers previously fired only WHEN team_sync_state.enabled = 1. That
+ * flag is auto-derived and transiently flips to 0 (e.g. the ~/.myco-team
+ * home-move window when membership momentarily resolves empty). A delete during
+ * that window was silently dropped, and — unlike an upsert, whose source row
+ * persists and re-backfills — a deleted row leaves no local trace, so it became
+ * a permanent D1 orphan. Re-gate on the stable `team_sync_membership`
+ * projection alone (kept from being wiped on a transient registry read) so a
+ * member project's delete is always tombstoned regardless of the volatile flag;
+ * membership gating for what actually ships stays on the push/flush path.
+ * ALTER does not refresh trigger bodies, so DROP + recreate is required.
+ */
+function migrateV62ToV63(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    for (const table of V63_TEAM_DELETE_TRIGGER_TABLES) {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+    }
+    for (const trg of V63_TEAM_DELETE_TRIGGERS) {
+      db.exec(trg);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(63, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
