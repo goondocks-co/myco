@@ -213,12 +213,22 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         });
         continue;
       }
+      // A per-item timeout aborts THIS item's controller (not the run-level
+      // one, which the rethrow above already handled). Its abort reason can
+      // surface as a message matching a connection pattern (e.g. /timeout/),
+      // but a per-item timeout is a per-item content-budget failure, NOT a
+      // provider outage — it must fall through to the normal failed/skip path
+      // and never open the circuit. A genuine harness connection error does not
+      // abort the per-item controller, so this guard won't suppress real outages.
+      const perItemTimedOut = controller.signal.aborted && !runAbortController?.signal.aborted;
       // Connection-class failure: the provider endpoint was never reached (or
       // dropped mid-request), so this item was not evaluated. Don't count it as
       // a content failure, and open the circuit — grinding the remaining items
-      // against a dead endpoint is futile.
+      // against a dead endpoint is futile. The `isConnectionError(reason)`
+      // message-fallback is a best-effort net for adapters that don't set
+      // `telemetry.kind`; per-item timeouts are deliberately excluded above.
       const kind = err instanceof HarnessExecutionError ? err.telemetry?.kind : undefined;
-      if (kind === 'connection' || isConnectionError(reason)) {
+      if (!perItemTimedOut && (kind === 'connection' || isConnectionError(reason))) {
         result.unavailable += 1;
         result.providerUnavailable = true;
         logger?.info('agent.map.item-unavailable', `Map phase "${phase.name}" item hit provider outage — circuit open, halting batch`, {
