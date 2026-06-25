@@ -1566,7 +1566,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     'vault_scan_skill_contamination',
     'Read-only lint for proposed SKILL.md content. Returns hard and warn spans; live skill write gates reject either kind.',
     {
-      content: z.string().describe('Full SKILL.md content to scan, including frontmatter. The scanner ignores non-description frontmatter, code blocks, inline code, and explicit history sections.'),
+      content: z.string().describe('Full SKILL.md content to scan, including frontmatter. The scanner ignores non-description frontmatter, code blocks, benign inline code, and explicit history sections; semantic contract checks still inspect inline command/field/status facts.'),
       strict: z.boolean().optional().describe('Retained for callers that label strict scans. ok=false whenever either hard or warn spans are present, matching live write gates.'),
     },
     async (args) => {

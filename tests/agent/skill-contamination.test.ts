@@ -118,15 +118,19 @@ describe('skill contamination scanner', () => {
     ]));
   });
 
-  it('ignores non-description frontmatter, fenced code, inline code, and historical sections', () => {
+  it('ignores non-description frontmatter, fenced code, benign inline code, negated semantic commands, and historical sections', () => {
     const content = skill([
       'The durable procedure has no release snapshot.',
       '```',
       'Critical discovery (v0.27.17): fenced changelog text is allowed.',
+      'myco skill lint',
+      'status = "settled"',
       '```',
       'Inline `v1.2.0` command examples are ignored.',
+      'Do not run `myco skill lint`; use the npm strict skill lint command instead.',
       '## Old patterns',
       'Critical discovery (v0.27.17): historical note kept deliberately.',
+      'Generated survey candidates should be pending or approved.',
       '## Current procedure',
       'Follow the current workflow.',
     ].join('\n'), 'x-note: v1.2.0\n');
@@ -188,5 +192,72 @@ describe('skill contamination scanner', () => {
         text: '(v0.27.17)',
       }),
     ]);
+  });
+
+  it('hard-flags invented Myco skill lint commands', () => {
+    const content = skill('Run `myco skill lint` before writing generated skill content.');
+
+    const result = scanForContamination(content);
+
+    expect(result.hard).toEqual([
+      expect.objectContaining({
+        kind: 'invented-myco-skill-lint-command',
+        text: 'myco skill lint',
+      }),
+    ]);
+    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
+      expect.stringContaining('invented-myco-skill-lint-command'),
+    ]));
+  });
+
+  it('does not treat positive invented-command instructions as corrective negation', () => {
+    const content = skill('Never skip `myco skill lint` before writing generated skill content.');
+
+    expect(scanForContamination(content).hard).toEqual([
+      expect.objectContaining({
+        kind: 'invented-myco-skill-lint-command',
+        text: 'myco skill lint',
+      }),
+    ]);
+  });
+
+  it('hard-flags invalid skill lifecycle semantic facts', () => {
+    const content = skill([
+      'Treat inactive session rows as status = "settled" after capture.',
+      'Generated survey candidates should be pending or approved before generation.',
+      'Skill-survey produces pending candidates.',
+      'Skill-survey generates approved candidates.',
+      'Read skill_candidates.evidence_metadata to inspect survey evidence.',
+    ].join('\n'));
+
+    const result = scanForContamination(content);
+
+    expect(result.hard).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'invalid-session-status', text: 'status = "settled"' }),
+      expect.objectContaining({ kind: 'invalid-survey-candidate-status', text: 'Generated survey candidates should be pending or approved' }),
+      expect.objectContaining({ kind: 'invalid-survey-candidate-status', text: 'Skill-survey produces pending candidates' }),
+      expect.objectContaining({ kind: 'invalid-survey-candidate-status', text: 'Skill-survey generates approved candidates' }),
+      expect.objectContaining({ kind: 'invalid-skill-candidate-field', text: 'skill_candidates.evidence_metadata' }),
+    ]));
+    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
+      expect.stringContaining('invalid-session-status'),
+      expect.stringContaining('invalid-survey-candidate-status'),
+      expect.stringContaining('invalid-skill-candidate-field'),
+    ]));
+  });
+
+  it('allows correct skill lifecycle semantic facts', () => {
+    const content = skill([
+      'Run npm run lint:skills:strict -- --json before accepting generated skill content.',
+      'Tasks reading transcripts must gate on settled sessions.',
+      'Treat inactive session rows as completed/non-active session history.',
+      'Skill-survey creates candidates with status identified.',
+      'Skill-survey candidates start identified and become approved after human review.',
+      'Approval is a later human dashboard step before generation.',
+      'Use the actual skill candidate evidence fields such as source_ids, evidence_bundle_id, quality_score, quality_failures, and coverage_matches.',
+    ].join('\n'));
+
+    expect(scanForContamination(content)).toEqual({ hard: [], warn: [] });
+    expect(validateSkillContent(content, 'test-skill')).toEqual([]);
   });
 });

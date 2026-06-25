@@ -108,4 +108,30 @@ describe('lint-skill-content script', () => {
     expect(result.stdout).toContain('Skill content lint: 0 files, 0 hard, 0 warnings (strict).');
     expect(result.stderr).toContain('Skill content lint target did not match any SKILL.md file: does-not-exist');
   });
+
+  it('fails on hard semantic contract violations', () => {
+    const root = makeSkillDir([
+      'Run `myco skill lint` before writing generated skills.',
+      'Generated survey candidates should be pending or approved.',
+      'Session lifecycle rows can use status = "settled".',
+      'Read skill_candidates.evidence_metadata for evidence.',
+    ].join('\n'));
+
+    const result = runLint(['--json', root]);
+
+    expect(result.status).toBe(1);
+    const parsed = JSON.parse(result.stdout) as {
+      ok: boolean;
+      hard_count: number;
+      reports: Array<{ hard: Array<{ kind: string }> }>;
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.hard_count).toBe(4);
+    expect(parsed.reports[0].hard.map((span) => span.kind)).toEqual(expect.arrayContaining([
+      'invented-myco-skill-lint-command',
+      'invalid-survey-candidate-status',
+      'invalid-session-status',
+      'invalid-skill-candidate-field',
+    ]));
+  });
 });

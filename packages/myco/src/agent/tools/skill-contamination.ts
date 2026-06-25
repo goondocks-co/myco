@@ -57,6 +57,16 @@ const SHORT_HEX_ID_PATTERN = /\b[0-9a-f]{8,16}\b/gi;
 const TEMPORAL_ADVERB_PATTERN = /\b(?:recently|currently|latest)\b/gi;
 const BRANCH_NAME_PATTERN = /\b(?:ck|feat|feature|fix|bugfix|chore|refactor|test|release)\/[A-Za-z0-9._/-]*[A-Za-z0-9_-]\b/g;
 const STATE_ID_PATTERN = /\b(?:(?:session|decision|bug[_-]fix|gotcha|wisdom|discovery|trade[_-]off|architecture|pattern)[_-][A-Za-z0-9_-]*\d[A-Za-z0-9_-]*|spore[_-][A-Za-z0-9_-]+[-_][A-Za-z0-9_-]+)\b/gi;
+const INVENTED_MYCO_SKILL_LINT_COMMAND_PATTERN = /\bmyco\s+(?:(?:skill|skills)\s+lint|skill-?lint)\b/gi;
+const SETTLED_STATUS_ASSIGNMENT_PATTERN = /\bstatus\s*(?:=|:)\s*['"`]?\bsettled\b['"`]?/gi;
+const SURVEY_CANDIDATE_STATUS_PATTERNS = [
+  /\b(?:skill-?survey|survey)\s+(?:creates?|produces?|generates?|emits?|returns?)\s+(?:pending|approved)\s+candidates?\b/gi,
+  /\b(?:generated|created|produced)\s+(?:skill-?survey|survey)\s+candidates?\b[^\n.]{0,120}\b(?:should\s+be|with\s+status|status\s*(?:=|:)|as|are)\s+[`'"-]?(?:pending|approved)\b(?:[^\n.]{0,80}\b(?:or|and)\s+[`'"-]?(?:pending|approved)\b)?/gi,
+  /\b(?:skill-?survey|survey)\s+(?:creates?|produces?|generates?|emits?|returns?)\b[^\n.]{0,120}\bcandidates?\b[^\n.]{0,120}\b(?:with\s+status|status\s*(?:=|:)|as|in)\s+[`'"-]?(?:pending|approved)\b/gi,
+  /\b(?:skill-?survey|survey)\s+candidates?\b[^\n.]{0,120}\b(?:are|should\s+be)\s+[`'"-]?(?:pending|approved)\b/gi,
+];
+const SKILL_CANDIDATES_EVIDENCE_METADATA_PATTERN = /\bskill_candidates\.evidence_metadata\b/gi;
+const CORRECTIVE_MYCO_SKILL_LINT_CONTEXT_PATTERN = /\b(?:do\s+not|don't|avoid)\s+(?:(?:run|running|using)\s+)?[`'"]?$/i;
 
 const MARKER_PATTERN = /\b(?:as of|since|shipped in|introduced in|added in|landed in|post-?(?:PR|#)|we\s+(?:decided|chose)|superseded[\s\S]{0,40}?\sin|deprecated as of|discovery|new\s+(?:operational\s+)?pattern)\b/gi;
 const ARTIFACT_PATTERN = /\bv\d+\.\d+(?:\.\d+)?\+?\b|\bPR\s+#?\d+\b|#\d{2,}\b/gi;
@@ -236,19 +246,100 @@ function shouldSkipBareDottedVersion(content: string, start: number): boolean {
   return prior === 'v' || prior === 'V' || prior === '.' || /\d/.test(prior ?? '');
 }
 
+function hasNegatedInstructionContext(content: string, start: number): boolean {
+  const lineStart = content.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const before = content.slice(lineStart, start).toLowerCase();
+  return CORRECTIVE_MYCO_SKILL_LINT_CONTEXT_PATTERN.test(before);
+}
+
+function addSemanticContractFindings(
+  content: string,
+  searchable: string,
+  hard: SkillContaminationSpan[],
+  excludedRanges: Range[],
+): void {
+  const occupied: Range[] = [...excludedRanges];
+
+  for (const match of searchable.matchAll(INVENTED_MYCO_SKILL_LINT_COMMAND_PATTERN)) {
+    if (match.index === undefined) continue;
+    if (hasNegatedInstructionContext(content, match.index)) continue;
+    addSpan(
+      hard,
+      occupied,
+      'invented-myco-skill-lint-command',
+      content,
+      match.index,
+      match.index + match[0].length,
+      'Myco has no `myco skill lint` command; use `npm run lint:skills:strict -- --json` for strict skill linting.',
+    );
+  }
+
+  for (const match of searchable.matchAll(SETTLED_STATUS_ASSIGNMENT_PATTERN)) {
+    if (match.index === undefined) continue;
+    addSpan(
+      hard,
+      occupied,
+      'invalid-session-status',
+      content,
+      match.index,
+      match.index + match[0].length,
+      'Session lifecycle status `settled` does not exist; refer to settled/non-active sessions as completed or non-active/completed.',
+    );
+  }
+
+  for (const pattern of SURVEY_CANDIDATE_STATUS_PATTERNS) {
+    for (const match of searchable.matchAll(pattern)) {
+      if (match.index === undefined) continue;
+      addSpan(
+        hard,
+        occupied,
+        'invalid-survey-candidate-status',
+        content,
+        match.index,
+        match.index + match[0].length,
+        'skill-survey creates candidates with status `identified`; `approved` is a later human/dashboard transition and `pending` is not the survey-created state.',
+      );
+    }
+  }
+
+  for (const match of searchable.matchAll(SKILL_CANDIDATES_EVIDENCE_METADATA_PATTERN)) {
+    if (match.index === undefined) continue;
+    addSpan(
+      hard,
+      occupied,
+      'invalid-skill-candidate-field',
+      content,
+      match.index,
+      match.index + match[0].length,
+      '`skill_candidates.evidence_metadata` does not exist; use the actual skill candidate evidence fields such as source_ids, evidence_bundle_id, quality_score, quality_failures, and coverage_matches.',
+    );
+  }
+}
+
 export function scanForContamination(content: string): SkillContaminationScanResult {
   const frontmatter = frontmatterRange(content);
   const frontmatterDescriptionRanges = collectFrontmatterDescriptionRanges(content);
+  const nonDescriptionFrontmatterRanges = frontmatter
+    ? subtractRanges(frontmatter, frontmatterDescriptionRanges)
+    : [];
   const ignoredRanges = [
-    ...(frontmatter ? subtractRanges(frontmatter, frontmatterDescriptionRanges) : []),
+    ...nonDescriptionFrontmatterRanges,
     ...collectRegexRanges(content, FENCED_CODE_PATTERN),
     ...collectRegexRanges(content, INLINE_CODE_PATTERN),
     ...collectHistorySectionRanges(content),
   ];
+  const semanticIgnoredRanges = [
+    ...nonDescriptionFrontmatterRanges,
+    ...collectRegexRanges(content, FENCED_CODE_PATTERN),
+    ...collectHistorySectionRanges(content),
+  ];
   const searchable = maskIgnoredRanges(content, ignoredRanges);
+  const semanticSearchable = maskIgnoredRanges(content, semanticIgnoredRanges);
   const hard: SkillContaminationSpan[] = [];
   const warn: SkillContaminationSpan[] = [];
   const occupied: Range[] = [...ignoredRanges];
+
+  addSemanticContractFindings(content, semanticSearchable, hard, semanticIgnoredRanges);
 
   for (const match of searchable.matchAll(PARENTHETICAL_MYCO_VERSION_PATTERN)) {
     if (match.index === undefined) continue;

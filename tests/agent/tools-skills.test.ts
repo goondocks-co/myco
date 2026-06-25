@@ -2520,6 +2520,59 @@ describe('vault skill tools', () => {
       expect(parsed.generation).toBe(2);
     });
 
+    it('rejects skill writes with hard semantic contract violations', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const result = await t.handler(
+        {
+          name: 'semantic-contract-bad',
+          display_name: 'Semantic Contract Bad',
+          description: 'Test semantic contract rejection',
+          content: validSkillContent('semantic-contract-bad', [
+            '# Semantic Contract Bad',
+            '',
+            'Run `myco skill lint` before writing generated skills.',
+            'Generated survey candidates should be pending or approved.',
+            'Treat inactive session rows as status = "settled".',
+            'Read skill_candidates.evidence_metadata for survey evidence.',
+          ].join('\n')),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
+      expect(parsed.error).toContain('Skill validation failed');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('invented-myco-skill-lint-command'),
+        expect.stringContaining('invalid-survey-candidate-status'),
+        expect.stringContaining('invalid-session-status'),
+        expect.stringContaining('invalid-skill-candidate-field'),
+      ]));
+    });
+
+    it('accepts skill writes with correct semantic contract facts', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      const result = await t.handler(
+        {
+          name: 'semantic-contract-good',
+          display_name: 'Semantic Contract Good',
+          description: 'Test semantic contract acceptance',
+          content: validSkillContent('semantic-contract-good', [
+            '# Semantic Contract Good',
+            '',
+            'Run npm run lint:skills:strict -- --json before accepting generated skill content.',
+            'Treat inactive session rows as completed/non-active session history.',
+            'Skill-survey creates candidates with status identified.',
+            'Approval is a later human dashboard step before generation.',
+          ].join('\n')),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as { error?: string; name?: string };
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.name).toBe('semantic-contract-good');
+    });
+
     // -----------------------------------------------------------------------
     // Dedup gates — prevent sibling skills for the same topic.
     // -----------------------------------------------------------------------
