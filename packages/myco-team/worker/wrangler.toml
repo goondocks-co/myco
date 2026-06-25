@@ -10,7 +10,7 @@ compatibility_flags = [ "nodejs_compat", "global_fetch_strictly_public" ]
 # See packages/myco/src/constants.ts SYNC_PROTOCOL_VERSION /
 # MIN_COMPAT_CLIENT_VERSION — these MUST stay in lockstep. Worker
 # code reads these as strings and parseInt's them at request time.
-SYNC_PROTOCOL_VERSION = "2"
+SYNC_PROTOCOL_VERSION = "3"
 MIN_COMPAT_CLIENT_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"
 MYCO_SCHEMA_VERSION = "<MYCO_SCHEMA_VERSION>"
