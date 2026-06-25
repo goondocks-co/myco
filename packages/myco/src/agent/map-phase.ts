@@ -17,6 +17,8 @@ import { interpolate } from '@myco/utils/interpolate.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
+import { probeProviderAvailable } from './harness/provider-health.js';
+import { isConnectionError } from './harness/classify-error.js';
 import {
   HarnessExecutionError,
   type AgentHarness,
@@ -48,6 +50,13 @@ export interface ExecuteMapPhaseInput {
   logger?: RunLogger;
   /** Run-level abort controller. Aborting it stops current and future map items. */
   runAbortController?: AbortController;
+  /**
+   * Provider reachability probe, run once before the source fetch. Injectable
+   * for tests; defaults to {@link probeProviderAvailable}. When it returns
+   * false the phase short-circuits with `providerUnavailable: true` and zero
+   * items — no source fetch, no per-item harness calls against a dead endpoint.
+   */
+  probeAvailable?: (p: ProviderConfig | undefined) => Promise<boolean>;
 }
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
@@ -61,6 +70,24 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
   }
 
   throwIfRunAborted(runAbortController);
+  const probe = input.probeAvailable ?? probeProviderAvailable;
+  if (!(await probe(provider))) {
+    logger?.info('agent.map.provider-unavailable', `Map phase "${phase.name}" skipped — provider unavailable`, {
+      runId, phase: phase.name,
+    });
+    return {
+      itemCount: 0,
+      written: 0,
+      skipped: 0,
+      failed: 0,
+      abandoned: 0,
+      skipReasons: {},
+      writeAfterThrow: 0,
+      providerUnavailable: true,
+      unavailable: 0,
+      usage: {},
+    };
+  }
   const items = await fetchSourceItems({ phase, allTools, params });
   throwIfRunAborted(runAbortController);
   logger?.debug('agent.map.fetched', `Map phase "${phase.name}" fetched ${items.length} items`, {
@@ -76,6 +103,8 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     abandoned: 0,
     skipReasons: {},
     writeAfterThrow: 0,
+    providerUnavailable: false,
+    unavailable: 0,
     usage: {},
   };
 
@@ -183,6 +212,19 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
           runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
         });
         continue;
+      }
+      // Connection-class failure: the provider endpoint was never reached (or
+      // dropped mid-request), so this item was not evaluated. Don't count it as
+      // a content failure, and open the circuit — grinding the remaining items
+      // against a dead endpoint is futile.
+      const kind = err instanceof HarnessExecutionError ? err.telemetry?.kind : undefined;
+      if (kind === 'connection' || isConnectionError(reason)) {
+        result.unavailable += 1;
+        result.providerUnavailable = true;
+        logger?.info('agent.map.item-unavailable', `Map phase "${phase.name}" item hit provider outage — circuit open, halting batch`, {
+          runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
+        });
+        break;
       }
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
         runId, phase: phase.name, item: (item as any)?.path ?? null, reason,

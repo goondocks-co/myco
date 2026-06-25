@@ -224,6 +224,20 @@ export interface MapPhaseResult {
    */
   writeAfterThrow: number;
   /**
+   * True when the phase short-circuited on provider connectivity: either the
+   * pre-fetch health probe reported the provider unreachable, or a per-item
+   * invocation hit a connection-class error and opened the circuit. Lets the
+   * phase loop record the phase as connectivity-skipped rather than a content
+   * failure.
+   */
+  providerUnavailable: boolean;
+  /**
+   * Count of items that hit a connection-class error (provider outage) before
+   * the circuit opened. Tracked separately from `failed` so an unreachable
+   * provider is never conflated with genuine content failures.
+   */
+  unavailable: number;
+  /**
    * Aggregated harness usage across all per-item invocations. Token counts
    * sum across items; durations sum; cost sums where the harness reports
    * one. Map-mode runs were previously synthesizing zeros here, leaving
