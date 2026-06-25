@@ -101,7 +101,14 @@ export function deleteProjectPermanently(
     // OLD.project_id is a member), so the per-project member set must be present
     // on this freshly-opened handle too — otherwise a member project's delete
     // would silently skip journaling.
-    setProjectSyncMembership(memberProjectIdsForGrove(groveId), db);
+    const memberResolution = memberProjectIdsForGrove(groveId);
+    // Only write membership when the registry was successfully read. An
+    // indeterminate read leaves the prior membership in place — that is the
+    // best available outcome, since replacing it with a known-wrong empty
+    // list would cause member-project deletes to silently skip D1 journaling.
+    if (memberResolution.resolved) {
+      setProjectSyncMembership(memberResolution.projectIds, db);
+    }
     // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
     // fires that table's `_team_ad` trigger, which journals the delete to
     // team_outbox when this Grove's team_sync_state.enabled = 1. No manual

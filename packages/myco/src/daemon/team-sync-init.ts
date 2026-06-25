@@ -47,10 +47,21 @@ import {
   countPending,
   purgePendingOutbox,
   purgeNonMemberOutbox,
+  enqueueOutbox,
+  localPartition,
+  pendingRowIdsForPartition,
+  sanitizeSyncPayload,
+  RECONCILE_ELIGIBLE_TABLES,
 } from '@myco/db/queries/team-outbox.js';
+import {
+  reconcilePartition as reconcilePartitionImplDefault,
+  createReconcileFlushMutex,
+  type ReconcileLogger,
+  type ReconcilePartitionDeps,
+} from './team-reconcile.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
-import { memberProjectIdsForGrove, machineHasAnyTeam } from '@myco/grove/project-tenancy.js';
+import { memberProjectIdsForGrove, machineHasAnyTeamResolved } from '@myco/grove/project-tenancy.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -81,6 +92,13 @@ export interface TeamSyncDeps {
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
   requestContext?: MycoRequestContext;
+  /**
+   * Test-only seam for the per-partition reconcile orchestrator. Defaults to
+   * the real `reconcilePartition`; tests inject a spy to assert the trigger
+   * wiring (which partitions get reconciled, with which forceFullDiff) without
+   * doing real manifest/outbox I/O.
+   */
+  reconcilePartitionImpl?: typeof reconcilePartitionImplDefault;
 }
 
 export interface TeamSyncResult {
@@ -116,6 +134,14 @@ export interface TeamSyncResult {
    * flag write (no push, no client) so all Groves start the session in lockstep.
    */
   reconcileAllGroveFlags: (cache: GroveRuntimeCache) => Promise<void>;
+  /**
+   * Run the automatic symmetric reconcile pass across every owned
+   * (grove, project) partition (always full-diff). Used by the periodic backstop
+   * and the on-demand immediacy trigger; both run the same fully-automatic
+   * reconcile. Deletes are bounded by settledness + cross-pass drift stability
+   * inside `reconcilePartition`, so there is no per-call magnitude knob here.
+   */
+  reconcileAllGroves: (cache: GroveRuntimeCache) => Promise<void>;
   registerFlushJob: (runner: JobRunner, cache: GroveRuntimeCache) => void;
 }
 
@@ -133,6 +159,34 @@ export interface TeamFlushAggregate {
   batches: number;
   errors: number;
 }
+
+/**
+ * Low cadence for the periodic reconcile backstop job. The trigger paths handle
+ * the common cases (boot, team reactions, membership changes); the backstop only
+ * needs to catch drift no trigger noticed, so a 6-hour floor keeps the manifest
+ * traffic negligible while still self-healing within a day.
+ */
+const TEAM_SYNC_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Per-grove rate limit for the reconcileClient-triggered reconcile pass.
+ *
+ * A reconcile pass does roughly one summary manifest fetch per
+ * (project × eligible-table) partition, and reconcileClient is invoked on every
+ * Team-page read poll (status/members/queue-stats/sync-summary/dlq) which fires
+ * every 5-10s while a Team page is open. Without a rate limit an open Team page
+ * sustains a continuous stream of full reconcile passes (worker load + latency).
+ *
+ * 2 minutes is ~12-24x the poll interval, so it collapses the burst of polls an
+ * open Team page produces into at most one pass per grove per 2 minutes — over a
+ * 90% cut in poll-path manifest traffic — while keeping drift-healing on an
+ * actively-watched page far tighter than the 6h periodic backstop. This is a
+ * pure rate limit (an in-memory last-run timestamp), NOT a synthetic transition
+ * flag, so it does not reintroduce SF2. The FIRST call after connect has no
+ * prior timestamp and always runs, preserving connect-time auto-heal; the
+ * The on-demand trigger path and the periodic backstop bypass it entirely.
+ */
+const TEAM_SYNC_RECONCILE_TRIGGER_THROTTLE_MS = 2 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Config-seed planner
@@ -178,9 +232,59 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   const { machineId, logger, daemonStateDir, requestContext: defaultRequestContext } = deps;
 
+  // The per-partition reconcile orchestrator (test-injectable; defaults to the
+  // real implementation). Bound once so every reconcile call site uses the
+  // same impl.
+  const reconcilePartition = deps.reconcilePartitionImpl ?? reconcilePartitionImplDefault;
+
+  // ONE reconcile↔flush mutex for this team-sync instance (MF3). The same
+  // object guards both the reconcile-seed path (threaded into reconcilePartition
+  // deps) AND the flush-drain path (flushPending wraps its body in it), so a
+  // reconcile that is mid-seed and a flush that is mid-drain never interleave.
+  const reconcileFlushMutex = createReconcileFlushMutex();
+
+  // Rate-limit + single-flight state for the reconcileClient-triggered reconcile
+  // pass, keyed per grove (empty string for the null/boot grove). The automatic
+  // poll path (reconcileTeamRoute → reconcileClient) hits this on every Team-page
+  // poll, so it must NOT each launch a full per-partition summary-fetch pass.
+  //   - last-run timestamp → throttle window (see the constant above).
+  //   - in-flight set → single-flight, so overlapping polls don't pile up
+  //     concurrent passes for the same grove.
+  // The on-demand path (reconcileAllGroves) and the periodic backstop call
+  // runReconcilePass directly and bypass both guards.
+  const reconcileTriggerLastRunAt = new Map<string, number>();
+  const reconcileTriggerInFlight = new Set<string>();
+
+  // Adapt the daemon logger (info(kind, msg, fields)) to the reconcile module's
+  // minimal info/warn(message) surface, tagging team-sync log kinds.
+  const reconcilePartitionLogger: ReconcileLogger = {
+    info: (message) => logger.info(LOG_KINDS.TEAM_SYNC_START, message),
+    warn: (message) => logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, message),
+  };
+
+  /**
+   * Build the sanitized upsert payload for a local row by id, matching the push
+   * pipeline's shape (`sanitizeSyncPayload(table, row)` — the same call syncRow
+   * and backfill use). Returns null when the row vanished between diff and seed.
+   *
+   * Runs INSIDE the reconcile↔flush mutex, so it MUST stay cheap + synchronous:
+   * better-sqlite3 reads are synchronous — never hold the lock across async I/O.
+   * `table` is only ever an allow-listed RECONCILE_ELIGIBLE_TABLES name (the
+   * reconcile pass is the sole caller), the SQL-injection safety boundary.
+   */
+  function buildUpsertPayload(table: string, id: string): string | null {
+    const db = getDatabase();
+    const row = db
+      .prepare(`SELECT * FROM ${table} WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return JSON.stringify(sanitizeSyncPayload(table, row));
+  }
+
   /** Boolean convenience over `memberProjectIdsForGrove`, used by the deep-sleep `pending` probe. */
   function groveParticipates(groveId: string | null): boolean {
-    return memberProjectIdsForGrove(groveId).length > 0;
+    const resolution = memberProjectIdsForGrove(groveId);
+    return resolution.resolved && resolution.projectIds.length > 0;
   }
 
   function participatingTeamIds(groveId: string | null): string[] {
@@ -401,21 +505,37 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * machine-scoped self row to that team's worker, so a just-joined teammate
    * appears in the Members roster before assigning any project.
    */
+  /**
+   * Drain entry point. Serializes the whole drain against the reconcile-seed
+   * path via the shared mutex (MF3): a reconcile that is part-way through seeding
+   * deletes/upserts into the outbox must not have the flush drain a half-seeded
+   * batch, and the flush must not mark rows sent while reconcile is mid-decision.
+   */
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
+    return reconcileFlushMutex.runExclusive(() => flushPendingInner(requestContext));
+  }
+
+  async function flushPendingInner(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
 
     const groveId = requestContext?.groveId ?? null;
     const teams = teamRegistry.list();
-    const memberProjectIds = memberProjectIdsForGrove(groveId);
+    const memberResolution = memberProjectIdsForGrove(groveId);
+    const memberProjectIds = memberResolution.resolved ? memberResolution.projectIds : [];
     // The registry is now the write-path gate: keep delete triggers + syncRow
     // in lockstep with whether this Grove feeds any team via project membership,
     // every tick. The per-project member set + non-member purge self-correct on
     // every served Grove regardless of which entry point last reconciled them.
     // (Machine-scoped self rows reach the outbox through backfillUnsynced, which
     // bypasses this flag, so a joined-no-project Grove still queues its self row.)
-    setTeamSyncEnabled(memberProjectIds.length > 0);
-    setProjectSyncMembership(memberProjectIds);
-    purgeNonMemberOutbox(memberProjectIds);
+    // Only act when the registry was successfully read: a failed/indeterminate
+    // read must not flip enabled off or purge rows for projects that may still
+    // be members.
+    if (memberResolution.resolved) {
+      setTeamSyncEnabled(memberProjectIds.length > 0);
+      setProjectSyncMembership(memberProjectIds);
+      purgeNonMemberOutbox(memberProjectIds);
+    }
     // Short-circuit only when this machine has joined no team at all — there is
     // nowhere to route any row. With ≥1 registered team we must still drain
     // machine-scoped rows even if no project participates.
@@ -678,38 +798,171 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
   }
 
-  async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
-    const groveId = requestContext?.groveId ?? null;
-    const memberProjectIds = memberProjectIdsForGrove(groveId);
-    const participates = memberProjectIds.length > 0;
-
-    // (1) Reconcile the per-Grove gate state read by syncRow / backfillRows /
-    //     delete triggers: the enablement flag AND the per-project member set.
-    setTeamSyncEnabled(participates);
-    setProjectSyncMembership(memberProjectIds);
-
-    // (2) Drop outbox rows for non-member projects (sent or pending). Always
-    //     runs — self-heals historical bloat and prevents the re-enqueue loop.
+  /**
+   * Reconcile every owned (this grove, member project) × reconcile-eligible
+   * table partition for the CURRENTLY-SCOPED grove DB. Runs only when the grove
+   * has ≥1 member project — that single signal is both `participates` and
+   * `membershipSeeded` (the member-project set IS the seeded membership), so a
+   * non-member grove is a no-op and deletes are gated until membership is known.
+   *
+   * Each partition is reconciled against its owning team's worker; a project
+   * whose team client can't be built this tick is skipped (left for a later
+   * pass), never deleted. Delete blast radius is bounded inside reconcilePartition
+   * by settledness + cross-pass drift stability — no per-pass accumulator is
+   * threaded here. Non-throwing: any error is logged so a reconcile failure never
+   * aborts the caller (boot, flush job, or request handler).
+   */
+  async function runReconcilePass(
+    groveId: string | null,
+    forceFullDiff: boolean,
+  ): Promise<void> {
     try {
-      const purged = purgeNonMemberOutbox(memberProjectIds);
-      if (purged > 0) {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
-          grove_id: groveId,
-          purged,
-        });
+      const memberResolution = memberProjectIdsForGrove(groveId);
+      // participates && membershipSeeded both reduce to a non-empty member set.
+      // An unresolved (indeterminate) registry read also short-circuits: we
+      // cannot reconcile without knowing which projects are members.
+      if (!memberResolution.resolved || memberResolution.projectIds.length === 0) return;
+      const memberProjectIds = memberResolution.projectIds;
+
+      const membershipByProject = teamRegistry.membershipByProject();
+      const baseDeps: Omit<ReconcilePartitionDeps, 'client'> = {
+        localPartition,
+        pendingRowIdsForPartition,
+        enqueueOutbox,
+        buildUpsertPayload,
+        membershipSeeded: true,
+        mutex: reconcileFlushMutex,
+        logger: reconcilePartitionLogger,
+      };
+
+      for (const projectId of memberProjectIds) {
+        const teamId = membershipByProject.get(projectId);
+        const client = teamId ? getOrBuildTeamClient(teamId) : null;
+        // No reachable/configured team worker for this project this pass — skip
+        // (its rows stay as-is for a later pass), never delete on a missing peer.
+        if (!client) continue;
+        for (const table of RECONCILE_ELIGIBLE_TABLES) {
+          try {
+            await reconcilePartition(
+              { ...baseDeps, client },
+              { machineId, projectId, table, forceFullDiff },
+            );
+          } catch (partitionErr) {
+            logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Reconcile partition failed (skipping)', {
+              grove_id: groveId,
+              project_id: projectId,
+              table,
+              error: (partitionErr as Error).message,
+            });
+          }
+        }
       }
     } catch (err) {
-      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Non-member outbox purge failed', {
+      logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Team-sync reconcile pass failed', {
         grove_id: groveId,
         error: (err as Error).message,
       });
+    }
+  }
+
+  /**
+   * Trigger the AUTOMATIC reconcile pass from the reconcileClient path without
+   * adding latency to the (frequently-polled) Team-page read handlers.
+   *
+   * Two guards keep the poll path cheap (see the rate-limit constant): a per-grove
+   * throttle window and a per-grove single-flight set. When neither guard skips,
+   * the pass is dispatched FIRE-AND-FORGET — the read handler never awaits it, so
+   * the per-partition summary fetches never sit on the response path. This mirrors
+   * the JobRunner's single-flight + non-blocking dispatch discipline; the pass is
+   * async I/O so it yields at every await and can't starve the loop. The
+   * AsyncLocalStorage database scope active at the call site is captured by the
+   * promise, so getDatabase() inside the background pass still resolves to this
+   * grove's DB. runReconcilePass is non-throwing, so the detached promise always
+   * resolves (no unhandled rejection); the .finally only clears the in-flight key.
+   *
+   * The poll path keeps forceFullDiff false (cheap count-first). The on-demand
+   * path and the periodic backstop call runReconcilePass / reconcileAllGroves
+   * directly, so they are never throttled.
+   */
+  function triggerReconcilePass(groveId: string | null): void {
+    const key = groveId ?? '';
+    const now = Date.now();
+    const last = reconcileTriggerLastRunAt.get(key) ?? 0;
+    if (now - last < TEAM_SYNC_RECONCILE_TRIGGER_THROTTLE_MS) return; // throttled
+    if (reconcileTriggerInFlight.has(key)) return; // a pass is already running for this grove
+    reconcileTriggerLastRunAt.set(key, now);
+    reconcileTriggerInFlight.add(key);
+    void runReconcilePass(groveId, false).finally(() => {
+      reconcileTriggerInFlight.delete(key);
+    });
+  }
+
+  /**
+   * Fan the automatic symmetric reconcile pass across every registered Grove.
+   * Mirrors flushAllGroves's forEachGrove fan-out (per-Grove DB pinned + scoped
+   * via withDatabase, per-Grove failures isolated). Always full-diff so equal-
+   * count / different-set drift the poll path misses is caught; delete blast
+   * radius is bounded per-partition by settledness + cross-pass drift stability.
+   */
+  async function reconcileAllGroves(cache: GroveRuntimeCache): Promise<void> {
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, db }) => {
+        await withDatabase(db, () => runReconcilePass(grove.id, true));
+      },
+      { daemonStateDir, jobName: 'team-sync-reconcile' },
+    );
+  }
+
+  async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
+    const groveId = requestContext?.groveId ?? null;
+    const memberResolution = memberProjectIdsForGrove(groveId);
+    const memberProjectIds = memberResolution.resolved ? memberResolution.projectIds : [];
+    const participates = memberResolution.resolved && memberProjectIds.length > 0;
+
+    // (1) Reconcile the per-Grove gate state read by syncRow / backfillRows /
+    //     delete triggers: the enablement flag AND the per-project member set.
+    //     Only when the registry was successfully read — a failed/indeterminate
+    //     read must not flip enabled off (D1 orphan risk) or clear membership.
+    if (memberResolution.resolved) {
+      setTeamSyncEnabled(participates);
+      setProjectSyncMembership(memberProjectIds);
+    }
+
+    // (2) Drop outbox rows for non-member projects (sent or pending). Only
+    //     when membership is confirmed: purging with an empty list when the
+    //     registry was unreadable would discard rows for projects that may
+    //     still be members.
+    if (memberResolution.resolved) {
+      try {
+        const purged = purgeNonMemberOutbox(memberProjectIds);
+        if (purged > 0) {
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
+            grove_id: groveId,
+            purged,
+          });
+        }
+      } catch (err) {
+        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Non-member outbox purge failed', {
+          grove_id: groveId,
+          error: (err as Error).message,
+        });
+      }
     }
 
     // (3) Machine in NO team: also clear leftover machine-scoped (self-row)
     //     pending rows that the project-scoped purge above leaves behind, then
     //     stop — there is nowhere to route. Without this the Team page would
     //     keep surfacing "N pending failures" against a Grove in no Team.
-    if (!machineHasAnyTeam()) {
+    //     Only purge on a confirmed read — an indeterminate result (e.g.
+    //     registry mid-migration/unreadable) must not delete rows that may
+    //     belong to a team we couldn't observe.
+    const machineTeamRes = machineHasAnyTeamResolved();
+    if (!machineTeamRes.resolved) {
+      return; // indeterminate — leave all state, including pending rows, untouched
+    }
+    if (!machineTeamRes.hasTeam) {
       try {
         purgePendingOutbox();
       } catch (err) {
@@ -734,6 +987,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       const backfilled = backfillUnsynced(machineId);
       if (backfilled > 0) {
         logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
+      }
+      // (6) Re-enable the symmetric reconcile delete/upsert seed after backfill
+      //     whenever this grove participates (≥1 member project ⇒ participates &&
+      //     membershipSeeded). This is dispatched throttled + fire-and-forget
+      //     (triggerReconcilePass): the Team-page read poll path calls
+      //     reconcileClient on every poll, so the per-partition summary fetches
+      //     must not run on every poll nor block the handler response. Delete
+      //     blast radius is bounded per-partition by settledness + cross-pass
+      //     drift stability; the seed and this flush serialize via the shared
+      //     mutex (MF3) so the reconcile-seeded rows drain on this or the next
+      //     flush tick.
+      if (participates) {
+        triggerReconcilePass(groveId);
       }
       await flushPending(requestContext);
     } catch (err) {
@@ -856,10 +1122,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       logger,
       async ({ grove, databasePath, db, groveHome }) => {
         await withDatabase(db, async () => {
-          const memberProjectIds = memberProjectIdsForGrove(grove.id);
-          setTeamSyncEnabled(memberProjectIds.length > 0);
-          setProjectSyncMembership(memberProjectIds);
-          purgeNonMemberOutbox(memberProjectIds);
+          const memberResolution = memberProjectIdsForGrove(grove.id);
+          // Only write state when the registry was successfully read. A
+          // failed/indeterminate read (e.g. mid-migration directory unavailable)
+          // must not flip enabled off and silence delete-trigger journaling.
+          if (memberResolution.resolved) {
+            const memberProjectIds = memberResolution.projectIds;
+            setTeamSyncEnabled(memberProjectIds.length > 0);
+            setProjectSyncMembership(memberProjectIds);
+            purgeNonMemberOutbox(memberProjectIds);
+          }
         });
       },
       { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
@@ -893,6 +1165,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     flushAllGroves,
     reconcileGrove,
     reconcileAllGroveFlags,
+    reconcileAllGroves,
     registerFlushJob: (runner, cache) => {
       // Registered unconditionally; registry participation is checked at run
       // time so Team selection changes take effect without a daemon restart.
@@ -912,6 +1185,28 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         },
         fn: async () => {
           await flushAllGroves(cache);
+        },
+      });
+
+      // Periodic symmetric-reconcile BACKSTOP. The trigger paths (reconcileClient
+      // on boot / team reactions / membership changes) cover the common cases;
+      // this housekeeping job re-runs the full-diff automatic reconcile across
+      // every Grove on a low cadence so drift that no trigger noticed (a restore,
+      // a missed delete) self-heals. Same registration shape as the flush job;
+      // 'housekeeping' kind keeps it in the background lane so a long pass can't
+      // starve foreground drain/scheduler work, and the JobRunner runs the fn
+      // fire-and-forget so the dispatch tick is never blocked. idle/sleep only —
+      // active-time reconcile is covered by the request-driven trigger path.
+      let lastReconcileAt = 0;
+      runner.register({
+        name: 'team-sync-reconcile',
+        runIn: ['idle', 'sleep'],
+        kind: 'housekeeping',
+        fn: async () => {
+          const now = Date.now();
+          if (now - lastReconcileAt < TEAM_SYNC_RECONCILE_INTERVAL_MS) return;
+          lastReconcileAt = now;
+          await reconcileAllGroves(cache);
         },
       });
     },

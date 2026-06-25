@@ -15,6 +15,7 @@ import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
 import { SYNCED_TABLES, requiresGroveProjectId, stampSyncedAtAtIngestion, type SyncedTable } from './synced-tables';
+import { parseManifestParams, queryManifest } from './manifest';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1728,6 +1729,22 @@ async function handleSyncSummary(request: Request, env: Env): Promise<Response> 
 }
 
 /**
+ * `GET /manifest` — content-addressed drift summary for symmetric reconcile.
+ *
+ * Returns a cheap aggregate (summary=1) or cursor-paged item list for a
+ * (machine_id, table[, project_id]) partition. Purely read-only — no writes
+ * to D1. All reconcile decisions live daemon-side.
+ */
+async function handleManifest(request: Request, env: Env): Promise<Response> {
+  const params = parseManifestParams(new URL(request.url));
+  if ('error' in params) {
+    return errorResponse(params.error, params.status);
+  }
+  const result = await queryManifest(env.MYCO_TEAM_DB, params);
+  return jsonResponse(result);
+}
+
+/**
  * `GET /members` — the team's member roster, synced from every node's
  * local `team_members` rows. Returns the union across all machines so the
  * daemon can render the Members tab for the selected team rather than the
@@ -2124,6 +2141,9 @@ export default {
       }
       if (method === 'GET' && path === '/sync-summary') {
         return await handleSyncSummary(request, env);
+      }
+      if (method === 'GET' && path === '/manifest') {
+        return await handleManifest(request, env);
       }
       if (method === 'GET' && path === '/members') {
         return await handleListMembers(env);

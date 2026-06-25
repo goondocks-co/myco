@@ -35,23 +35,61 @@ export function resolveProjectTenancy(projectId: string): ProjectTenancy {
 }
 
 /**
+ * Discriminated result from `memberProjectIdsForGrove`. `resolved: true` means
+ * the team registry was successfully read (even if the project list is empty —
+ * that is a confirmed non-member state). `resolved: false` means the registry
+ * directory exists but could not be read (indeterminate — callers must NOT
+ * treat this as confirmed-empty and must leave any enabled/membership state
+ * unchanged).
+ */
+export type MemberProjectResolution =
+  | { resolved: true; projectIds: string[] }
+  | { resolved: false };
+
+/**
  * Member projects (assigned to any team) that live in this grove. The authority
  * computation that `reconcileClient` projects into `team_sync_membership`.
+ *
+ * Returns a discriminated result so callers can distinguish a confirmed
+ * non-member state (`resolved: true, projectIds: []`) from an indeterminate
+ * read failure (`resolved: false`). Only the former should disable team sync.
  */
-export function memberProjectIdsForGrove(groveId: string | null): string[] {
-  if (!groveId) return [];
-  return [
-    ...new Set(
-      teamRegistry.list()
-        .flatMap((t) => t.projects)
-        .filter((p) => p.grove_id === groveId)
-        .map((p) => p.project_id),
-    ),
-  ];
+export function memberProjectIdsForGrove(groveId: string | null): MemberProjectResolution {
+  if (!groveId) return { resolved: true, projectIds: [] };
+  const result = teamRegistry.listResolved();
+  if (!result.resolved) return { resolved: false };
+  return {
+    resolved: true,
+    projectIds: [
+      ...new Set(
+        result.teams
+          .flatMap((t) => t.projects)
+          .filter((p) => p.grove_id === groveId)
+          .map((p) => p.project_id),
+      ),
+    ],
+  };
 }
 
 /** True when this machine has joined at least one team. */
 export const machineHasAnyTeam = (): boolean => teamRegistry.list().length > 0;
+
+/**
+ * Discriminated variant of `machineHasAnyTeam`. Returns `{ resolved: false }`
+ * when the team directory exists but cannot be read (e.g. ENOTDIR during a
+ * migration window). Callers that must not act on an unconfirmed "no teams"
+ * state — such as paths that would delete pending outbox rows — should use
+ * this instead of `machineHasAnyTeam()`.
+ */
+export type MachineTeamResolution =
+  | { resolved: true; hasTeam: boolean }
+  | { resolved: false };
+
+export function machineHasAnyTeamResolved(): MachineTeamResolution {
+  const result = teamRegistry.listResolved();
+  if (!result.resolved) return { resolved: false };
+  return { resolved: true, hasTeam: result.teams.length > 0 };
+}
 
 /**
  * The "check" at assignment boundaries: a project may only be referenced by a

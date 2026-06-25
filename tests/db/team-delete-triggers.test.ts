@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createSchema } from '@myco/db/schema.js';
-import { setTeamSyncEnabled } from '@myco/db/queries/team-sync-state.js';
+import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
+import { listPending, purgeNonMemberOutbox } from '@myco/db/queries/team-outbox.js';
 import { setupTestDb, teardownTestDb, cleanTestDb } from '../helpers/db.js';
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, withDatabase } from '@myco/db/client.js';
 import { deleteSessionCascade } from '@myco/db/queries/sessions.js';
 import { SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { TEAM_SYNC_OBSERVED_TABLES } from '@myco/db/queries/team-outbox.js';
@@ -55,6 +56,26 @@ describe('team delete triggers', () => {
     expect(JSON.parse(rows[0].payload as string)).toEqual({ id: 'sp1', machine_id: 'local' });
   });
 
+  it('journals a member-project delete even when team_sync_state.enabled = 0 (transient-pause regression)', () => {
+    // Membership is the stable participation signal; `enabled` is the volatile
+    // auto-derived flag that transiently flips to 0 (e.g. the ~/.myco-team
+    // home-move window). A delete during that window must still tombstone, or
+    // it leaves no local trace and becomes a permanent D1 orphan.
+    const db = newDb();
+    setTeamSyncEnabled(false, db);
+    markProjectMember(db, 'proj_x');
+    db.prepare(
+      `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+       VALUES ('sp_paused', 'proj_x', 'user', 'decision', 'active', 'c', 1, 'local')`,
+    ).run();
+    db.prepare(`DELETE FROM spores WHERE id = 'sp_paused'`).run();
+    const rows = db.prepare(
+      `SELECT row_id FROM team_outbox WHERE table_name = 'spores' AND operation = 'delete'`,
+    ).all() as Array<{ row_id: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0].row_id).toBe('sp_paused');
+  });
+
   it('an INTEGER-PK delete journals row_id as the decimal string of the id', () => {
     const db = newDb();
     setTeamSyncEnabled(true, db);
@@ -71,8 +92,11 @@ describe('team delete triggers', () => {
     expect(JSON.parse(row.payload).id).toBe(101);
   });
 
-  it('deletes do NOT journal when sync is disabled (default)', () => {
+  it('deletes do NOT journal for a non-member project (even with sync enabled)', () => {
     const db = newDb();
+    setTeamSyncEnabled(true, db);
+    // proj_x is NOT a member — the membership gate must suppress the tombstone
+    // so never-team data cannot accumulate unbounded in the outbox.
     db.prepare(
       `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
        VALUES ('sp2', 'proj_x', 'user', 'decision', 'active', 'c', 1, 'local')`,
@@ -181,14 +205,17 @@ describe('structural guard: every synced table has a delete trigger', () => {
   });
 });
 
-describe('write gate is per-Grove (no singleton bleed)', () => {
-  it('enabled in Grove A, disabled in Grove B → deletes journal only in A', () => {
+describe('membership gate is per-Grove and independent of the enabled flag', () => {
+  it('member in Grove A (enabled off) journals; non-member in Grove B (enabled on) does not', () => {
     const a = newDb();
     const b = newDb();
-    setTeamSyncEnabled(true, a);
-    setTeamSyncEnabled(false, b);
+    // enabled is set OPPOSITE to each Grove's membership to prove the trigger
+    // follows stable membership, not the volatile flag (no singleton bleed:
+    // membership lives in each Grove's own DB).
+    setTeamSyncEnabled(false, a); // member, but flag transiently off
+    setTeamSyncEnabled(true, b);  // non-member, but flag on
     markProjectMember(a, 'proj_x');
-    markProjectMember(b, 'proj_x');
+    // Grove B intentionally has no membership row.
 
     for (const [db, id] of [[a, 'spA'], [b, 'spB']] as const) {
       db.prepare(
@@ -200,7 +227,61 @@ describe('write gate is per-Grove (no singleton bleed)', () => {
 
     const aDeletes = a.prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE operation='delete'`).get() as { n: number };
     const bDeletes = b.prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE operation='delete'`).get() as { n: number };
-    expect(aDeletes.n).toBe(1);
-    expect(bDeletes.n).toBe(0);
+    expect(aDeletes.n).toBe(1); // member journals despite enabled = 0
+    expect(bDeletes.n).toBe(0); // non-member suppressed despite enabled = 1
+  });
+});
+
+describe('captured member tombstones are push-eligible; non-member rows never accumulate', () => {
+  it('a member delete captured while enabled = 0 is pending and project-routed (the flush will push it)', () => {
+    withDatabase(newDb(), () => {
+      const db = getDatabase();
+      setTeamSyncEnabled(false, db);
+      setProjectSyncMembership(['proj_x'], db);
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+         VALUES ('sp_push', 'proj_x', 'user', 'decision', 'active', 'c', 1, 'local')`,
+      ).run();
+      db.prepare(`DELETE FROM spores WHERE id = 'sp_push'`).run();
+
+      // The drain (initTeamSync) selects pending rows via listPending and routes
+      // them by project_id; a tombstone that is pending with the member's
+      // project_id is exactly what the flush pushes.
+      const pending = listPending().filter((r) => r.operation === 'delete' && r.table_name === 'spores');
+      expect(pending.length).toBe(1);
+      expect(pending[0].row_id).toBe('sp_push');
+      expect(pending[0].project_id).toBe('proj_x');
+      expect(pending[0].sent_at).toBeNull();
+    });
+  });
+
+  it('a non-member delete is never captured, and historical non-member tombstones are swept', () => {
+    withDatabase(newDb(), () => {
+      const db = getDatabase();
+      setTeamSyncEnabled(true, db);
+      setProjectSyncMembership(['proj_member'], db);
+
+      // Live non-member delete → trigger suppressed, nothing to push or prune.
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+         VALUES ('sp_out', 'proj_outsider', 'user', 'decision', 'active', 'c', 1, 'local')`,
+      ).run();
+      db.prepare(`DELETE FROM spores WHERE id = 'sp_out'`).run();
+      expect(
+        (db.prepare(`SELECT COUNT(*) AS n FROM team_outbox WHERE operation='delete'`).get() as { n: number }).n,
+      ).toBe(0);
+
+      // A historical non-member tombstone (enqueued before the gate existed) is
+      // pruned by the sweep so it cannot accumulate unbounded.
+      db.prepare(
+        `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+         VALUES ('spores', 'legacy_out', 'delete', '{"id":"legacy_out"}', 'local', 'proj_outsider', 1)`,
+      ).run();
+      const removed = purgeNonMemberOutbox(['proj_member']);
+      expect(removed).toBe(1);
+      expect(
+        (db.prepare(`SELECT COUNT(*) AS n FROM team_outbox`).get() as { n: number }).n,
+      ).toBe(0);
+    });
   });
 });

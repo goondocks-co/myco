@@ -2099,6 +2099,20 @@ export async function main(): Promise<void> {
     const result = await teamSync.rebuildFromLocal(req.requestContext);
     return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
+  // POST /api/team/reconcile — on-demand symmetric reconcile. An immediacy
+  // trigger only: it runs the SAME fully-automatic full-diff reconcile across
+  // every owned (grove, project) partition that the periodic backstop runs, just
+  // now instead of on the next tick. There is no operator power — deletes are
+  // bounded by settledness + cross-pass drift stability inside reconcilePartition
+  // (an orphan must persist across two passes before it is deleted), so a single
+  // on-demand pass heals only drift already observed on a prior pass.
+  server.registerRoute('POST', '/api/team/reconcile', async (req) => {
+    // One pass over every owned grove. We do NOT also call reconcileTeamRoute(req)
+    // here — that would run a redundant pass over the request grove on top of the
+    // all-groves fan-out below. Targeting a single grove is future UI work.
+    await teamSync.reconcileAllGroves(runtimeCache);
+    return { status: 200, body: { ok: true } };
+  });
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),
