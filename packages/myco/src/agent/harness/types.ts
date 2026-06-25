@@ -125,7 +125,7 @@ export interface HarnessScopeRunInput {
  * from generic failures, so this classification matters at the phase
  * checkpoint level.
  */
-export type HarnessErrorKind = 'max-turns' | 'other';
+export type HarnessErrorKind = 'max-turns' | 'connection' | 'other';
 
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;
