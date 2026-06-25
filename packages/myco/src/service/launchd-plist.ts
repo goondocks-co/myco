@@ -32,8 +32,19 @@ export function renderLaunchdPlist(spec: ServiceSpec): string {
     .map(([k, v]) => `    ${tag('key', escapeXml(k))}\n    ${tag('string', escapeXml(v))}`)
     .join('\n');
 
+  // Respawn ONLY on an unsuccessful exit (non-zero code or a signal), matching
+  // systemd's `Restart=on-failure` and the Windows launcher's `errorlevel equ 0
+  // -> stop`. A bare `<true/>` respawns even a deliberate step-aside `exit(0)`,
+  // which hot-loops the job (~1/10s) when a sibling daemon holds the lock. With
+  // `SuccessfulExit=false`, clean exits (step-aside, `daemon kill`, cooperative
+  // shutdown) stay down while real crashes (non-zero) still restart.
   const keepAlive = spec.keepAlive
-    ? `  <key>KeepAlive</key>\n  <true/>\n  <key>ThrottleInterval</key>\n  ${tag('integer', String(spec.throttleSeconds))}\n`
+    ? `  <key>KeepAlive</key>\n`
+      + `  <dict>\n`
+      + `    <key>SuccessfulExit</key>\n`
+      + `    <false/>\n`
+      + `  </dict>\n`
+      + `  <key>ThrottleInterval</key>\n  ${tag('integer', String(spec.throttleSeconds))}\n`
     : '';
 
   const resourceLimits =

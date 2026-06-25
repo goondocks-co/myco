@@ -363,8 +363,8 @@ export function buildAdoptJobFn(
       // knows whether to let the supervisor restart or do a direct spawn.
       const resolveServiceLabel = adoptDeps.resolveServiceLabel ?? (async () => {
         const { getServiceManager } = await import('../service/manager.js');
-        const { detectServiceManagedLabel } = await import('../daemon/api/restart.js');
-        return detectServiceManagedLabel(getServiceManager());
+        const { resolveRestartServiceLabel } = await import('../daemon/api/restart.js');
+        return resolveRestartServiceLabel(getServiceManager());
       });
       const serviceManagedLabel = await resolveServiceLabel();
 

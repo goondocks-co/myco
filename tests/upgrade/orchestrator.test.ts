@@ -58,6 +58,8 @@ interface AdoptRecorder {
 
 interface AdoptRecorderOpts {
   healthSequence?: Array<{ version?: string } | null>;
+  /** Version the daemon.json cross-check reports (null = absent/stale). */
+  daemonState?: { version?: string } | null;
   stopConfirmed?: boolean;
   adoptThrows?: Error;
   platform?: NodeJS.Platform;
@@ -98,6 +100,7 @@ function makeAdoptDeps(opts: AdoptRecorderOpts = {}): AdoptRecorder {
     probeHealth: vi.fn(async () => {
       return healthQueue.length > 0 ? healthQueue.shift()! : null;
     }),
+    probeDaemonState: vi.fn(() => opts.daemonState ?? null),
     sleep: vi.fn(async () => {}),
     adoptStaged: vi.fn(async (params: { version: string }) => {
       rec.adoptCalls.push({ version: params.version });
@@ -143,6 +146,8 @@ function makeParams(overrides: Partial<ApplyAdoptParams> = {}): ApplyAdoptParams
     projectRoot: '/home/user/project',
     maxHealthAttempts: 3,
     healthIntervalMs: 5,
+    // Keep the adopt-event side-channel hermetic (default is machine-global).
+    updateEventsPath: path.join(tmpDir, 'update-events.jsonl'),
     ...overrides,
   };
 }
@@ -239,13 +244,16 @@ describe('runAdopt — crash-loop (health never reaches target → restore + res
     expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
   });
 
-  it('restarts twice: once for the new binary, once after restore', async () => {
+  it('restarts ADOPT_RESTART_ATTEMPTS times before giving up, then once after restore', async () => {
+    // Convergence retry: a single failed restart is retried before rolling back,
+    // so a genuinely-unhealthy binary is restarted twice (2 attempts) and then
+    // once more on the restored prev version = 3 total.
     const rec = makeAdoptDeps({
       healthSequence: [null, null, null],
     });
     await run([writeParamsFile(makeParams())], rec.deps);
 
-    expect(rec.restartCount).toBe(2);
+    expect(rec.restartCount).toBe(3);
   });
 
   it('writes the error side-channel describing the rollback', async () => {
@@ -286,7 +294,8 @@ describe('runAdopt — crash-loop (health never reaches target → restore + res
     await run([writeParamsFile(makeParams())], rec.deps);
 
     expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
-    expect(rec.restartCount).toBe(2);
+    // 2 adopt restart attempts + 1 restore restart.
+    expect(rec.restartCount).toBe(3);
   });
 
   it('reaches target on a later attempt (after some nulls) → success, no restore', async () => {
@@ -298,6 +307,40 @@ describe('runAdopt — crash-loop (health never reaches target → restore + res
     expect(rec.restoreCalls).toEqual([]);
     expect(rec.restartCount).toBe(1);
     expect(rec.pruneCalls.length).toBe(1);
+  });
+
+  it('FLAKY-PROBE RESCUE: /health stays dark but daemon.json shows the target → success, no rollback', async () => {
+    // The actual root cause of the manual-button rollback: a healthy new daemon
+    // whose HTTP /health probe flakes for the entire watch (seen live: /health
+    // served the target for 100+s while the orchestrator's probe got null). The
+    // daemon.json cross-check (recorded version + live pid) must confirm the adopt
+    // instead of rolling back a demonstrably-running new version.
+    const rec = makeAdoptDeps({
+      healthSequence: [null, null, null], // HTTP probe dead the whole window
+      daemonState: { version: '1.2.3' },  // but the daemon recorded the target
+    });
+    await run([writeParamsFile(makeParams())], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([]);  // NO rollback
+    expect(rec.restartCount).toBe(1);       // landed on attempt 1 via daemon-state
+    expect(rec.pruneCalls.length).toBe(1);  // success path
+  });
+
+  it('CONVERGENCE: first restart never reaches target, a retried restart does → success, no restore', async () => {
+    // The manual one-shot apply and the idle auto-adopt both flow through here;
+    // this proves a single transient restart failure (e.g. a respawn racing the
+    // restart) converges via the bounded retry instead of rolling back — so the
+    // manual button lands without waiting for the idle auto-adopt to re-try.
+    // First health-watch (maxHealthAttempts=3) sees only nulls; the SECOND
+    // restart's health-watch reports the target on its first probe.
+    const rec = makeAdoptDeps({
+      healthSequence: [null, null, null, { version: '1.2.3' }],
+    });
+    await run([writeParamsFile(makeParams({ maxHealthAttempts: 3 }))], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([]);       // no rollback
+    expect(rec.restartCount).toBe(2);           // attempt 1 + attempt 2 (which succeeds)
+    expect(rec.pruneCalls.length).toBe(1);      // success path pruned
   });
 });
 
@@ -318,7 +361,7 @@ describe('runAdopt — non-service (serviceManagedLabel:null) CR-1 guarantees', 
     expect(spawnedBin).toBe(params.mycoBinary);
   });
 
-  it('crash-loop: still restarts twice (once for new binary, once after restore) — never strands DOWN', async () => {
+  it('crash-loop: restarts on every attempt then once after restore — never strands DOWN', async () => {
     const sentinelPath = path.join(tmpDir, 'update.in-progress');
     fs.writeFileSync(sentinelPath, JSON.stringify({
       targetVersion: '1.2.3', startedAt: Date.now(), initiator: 'api/update/apply',
@@ -327,8 +370,9 @@ describe('runAdopt — non-service (serviceManagedLabel:null) CR-1 guarantees', 
     const rec = makeAdoptDeps({ healthSequence: [null, null, null] });
     await run([writeParamsFile(makeParams({ serviceManagedLabel: null, inProgressSentinelPath: sentinelPath }))], rec.deps);
 
-    // Must have restarted twice — the daemon NEVER stays down on non-service.
-    expect(rec.restartCount).toBe(2);
+    // ADOPT_RESTART_ATTEMPTS (2) restart attempts + 1 restore restart = 3 — the
+    // daemon NEVER stays down on the non-service path.
+    expect(rec.restartCount).toBe(3);
     expect(rec.restoreCalls).toEqual([{ version: '1.1.0' }]);
     // clearSentinel is unconditional — must fire on the non-service path too (CR-1).
     expect(fs.existsSync(sentinelPath)).toBe(false);

@@ -134,6 +134,13 @@ export const LOG_KINDS = {
   TEAM_SYNC_ERROR: 'team-sync.error',
   TEAM_SYNC_REJECTED: 'team-sync.rejected',
 
+  // Self-update / adopt orchestration. Emitted by the DETACHED orchestrator
+  // process into a side-channel, then replayed into log_entries by the daemon
+  // on its next startup (it cannot write the grove DB itself — it is restarting
+  // the daemon that owns it). One kind keeps the adopt sequence filterable; the
+  // message/metadata distinguish start / restart-attempt / health / outcome.
+  UPGRADE_ADOPT: 'upgrade.adopt',
+
   // Release provenance
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance.reconcile',
 

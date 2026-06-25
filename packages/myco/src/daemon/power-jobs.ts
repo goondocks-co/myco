@@ -857,8 +857,8 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       // runs when we actually have a staged version ready to adopt).
       resolveServiceLabel: async () => {
         const { getServiceManager } = await import('../service/manager.js');
-        const { detectServiceManagedLabel } = await import('./api/restart.js');
-        return detectServiceManagedLabel(getServiceManager());
+        const { resolveRestartServiceLabel } = await import('./api/restart.js');
+        return resolveRestartServiceLabel(getServiceManager());
       },
       mycoBinary: upg.mycoBinary ?? resolveMycoBinary(),
       projectRoot: upg.projectRoot,
@@ -871,6 +871,46 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       fn: buildAdoptJobFn(adoptDeps),
     });
   }
+
+  // service-reconcile: a daemon that direct-spawned (detached from its launchd
+  // job) keeps the lock and serves while the supervisor job hot-loops respawning
+  // step-aside daemons. This job — which only runs INSIDE the lock-holding
+  // daemon — detects that signature and hands off to the supervisor by spawning
+  // `myco service reconcile` (cooperative stop + re-bootstrap of one tracked
+  // daemon). See POWER_JOB_NAMES.SERVICE_RECONCILE.
+  let serviceReconcileLatched = false;
+  runner.register({
+    name: POWER_JOB_NAMES.SERVICE_RECONCILE,
+    runIn: ['idle', 'sleep'],
+    kind: 'housekeeping',
+    fn: async () => {
+      // Only a daemon that believes it is supervisor-managed (marker set in the
+      // unit env, inherited across an orchestrator direct-spawn) is a candidate;
+      // a hand-run `myco daemon` (no marker) is never auto-reconciled.
+      if (!process.env.MYCO_DAEMON_MANAGED?.trim()) { serviceReconcileLatched = false; return; }
+      const { getServiceManager } = await import('../service/manager.js');
+      const mgr = getServiceManager();
+      if (!mgr.supported) { serviceReconcileLatched = false; return; }
+      const { findInstalledServiceLabel } = await import('./api/restart.js');
+      const found = await findInstalledServiceLabel(mgr, mycoHome);
+      // Detached-usurper signature: a unit is installed and running, but the
+      // supervisor-tracked PID is NOT us (we are the live lock-holder). Any other
+      // shape (no unit, not running, or the supervisor already tracks us) is
+      // healthy. Only the clear "running under a different PID" case acts.
+      const detached = !!found && found.status.running
+        && found.status.pid !== null && found.status.pid !== process.pid;
+      if (!detached) { serviceReconcileLatched = false; return; }
+      // Two-tick latch so a single transient launchctl status read can't trigger
+      // a needless self-restart.
+      if (!serviceReconcileLatched) { serviceReconcileLatched = true; return; }
+      serviceReconcileLatched = false;
+      logger.warn(LOG_KINDS.DAEMON_START, 'Detached from supervisor job — spawning `service reconcile`', {
+        tracked_pid: found!.status.pid, my_pid: process.pid, label: found!.label,
+      });
+      const { spawnDetached } = await import('../upgrade/orchestrator.js');
+      spawnDetached(resolveMycoBinary(), ['service', 'reconcile'], mycoHome);
+    },
+  });
 
   const canopy = registerCanopyJobs(runner, {
     logger,

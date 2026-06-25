@@ -170,6 +170,7 @@ import {
   epochSeconds,
 } from '../constants.js';
 import { RESTART_REASON_FILENAME } from '../constants/update.js';
+import { drainUpdateEvents } from '../upgrade/update-events.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { agentRunNotificationLink } from '../notifications/links.js';
@@ -959,6 +960,17 @@ export async function main(): Promise<void> {
   logger.setPersistFn((entry) => {
     insertLogEntry(logEntryToInsert(entry, daemonLogProjectId));
   });
+
+  // --- Replay adopt-orchestrator events into log_entries ---
+  // The detached adopt orchestrator (stdio:'ignore') cannot write the grove DB
+  // it is restarting, so it appends its restart / health-watch / rollback events
+  // to a side-channel. Drain them here — AFTER persistFn is wired — so the whole
+  // self-upgrade sequence lands in log_entries (and the log viewer) under
+  // `upgrade.adopt`, instead of vanishing into /dev/null. Mirrors the
+  // restart-reason ingestion above.
+  for (const ev of drainUpdateEvents()) {
+    logger.log(ev.level, LOG_KINDS.UPGRADE_ADOPT, ev.message, { ...ev.data, orchestrator_ts: ev.ts });
+  }
 
   // Reconcile log entries missed while daemon was down
   const lastLogTimestamp = getMaxTimestamp();
