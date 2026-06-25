@@ -980,10 +980,17 @@ export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
  * Team-sync delete triggers — one per synced table.
  *
  * Auto-journal every local delete into `team_outbox` so the one-way push
- * to D1 mirrors deletions. Gated on the Grove's own `team_sync_state.enabled`
- * (NULL/absent row => disabled). Widens the FTS auto-sync-trigger pattern
- * above. `entity_mentions` is intentionally absent — no single `id` column,
- * never reaches D1.
+ * to D1 mirrors deletions. Gated solely on stable team membership: the row's
+ * project must be in `team_sync_membership`. The volatile
+ * `team_sync_state.enabled` flag is deliberately NOT consulted — it is
+ * auto-derived and transiently flips to 0 (e.g. the ~/.myco-team home-move
+ * window), and a delete dropped during that window leaves no local trace, so
+ * it would become a permanent D1 orphan. Membership is the stable signal
+ * (kept from being wiped on a transient registry read), so a paused/transition
+ * window delays a push but never loses a member's delete; push-side membership
+ * gating still bounds what actually ships. Widens the FTS auto-sync-trigger
+ * pattern above. `entity_mentions` is intentionally absent — no single `id`
+ * column, never reaches D1.
  */
 export const TEAM_DELETE_TRIGGER_TABLES = [
   'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
@@ -999,8 +1006,7 @@ export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLE
   (table) => `
   CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
   AFTER DELETE ON ${table}
-  WHEN (SELECT enabled FROM team_sync_state) = 1
-    AND OLD.project_id IN (SELECT project_id FROM team_sync_membership)
+  WHEN OLD.project_id IN (SELECT project_id FROM team_sync_membership)
   BEGIN
     INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
     VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
