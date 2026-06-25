@@ -40,14 +40,24 @@ function filesEqual(a: string, b: string): boolean {
   try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; }
 }
 
-/** Fill missing files into dst; archive (never overwrite) a divergent file. Dest wins. */
+/**
+ * Fill missing files/subdirs into dst; archive (never overwrite) a divergent file. Dest wins.
+ * A team dir is NOT flat: it holds the `worker` deploy subdir (wrangler source + node_modules
+ * + cached account binding). Subdirs are copied as a whole subtree when absent at dst.
+ */
 function reconcileTeamDir(src: string, dst: string): Disposition {
   const existed = fs.existsSync(dst);
   fs.mkdirSync(dst, { recursive: true });
   let filled = false, conflicted = false;
-  for (const file of fs.readdirSync(src)) {
-    const sf = path.join(src, file), df = path.join(dst, file);
-    if (!fs.statSync(sf).isFile()) continue; // team dirs are flat
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const sf = path.join(src, entry.name), df = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      // Copy the whole subtree (e.g. the `worker` deploy dir) when absent at dst;
+      // dest wins if present (do not deep-merge node_modules). cpSync is EXDEV-safe.
+      if (!fs.existsSync(df)) { fs.cpSync(sf, df, { recursive: true }); filled = true; }
+      continue;
+    }
+    if (!entry.isFile()) continue; // skip sockets/fifos/symlinks (none expected in a team dir)
     if (!fs.existsSync(df)) { fs.copyFileSync(sf, df); filled = true; }
     else if (!filesEqual(sf, df)) { fs.copyFileSync(sf, df + BAK_SUFFIX); conflicted = true; }
   }
@@ -55,11 +65,17 @@ function reconcileTeamDir(src: string, dst: string): Disposition {
   return conflicted ? 'conflicted' : !existed ? 'copied' : filled ? 'gapFilled' : 'noop';
 }
 
-/** Every legacy file present at dst byte-identical, or archived. */
+/** Every legacy file present at dst byte-identical (or archived); every legacy subdir present. */
 function verifyCopied(src: string, dst: string): boolean {
-  for (const file of fs.readdirSync(src)) {
-    const sf = path.join(src, file), df = path.join(dst, file);
-    if (!fs.statSync(sf).isFile()) continue;
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const sf = path.join(src, entry.name), df = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      // cpSync throws on a failed copy, so dst presence after reconcile means the subtree
+      // landed; existence is sufficient (avoid a deep byte-walk of node_modules).
+      if (!fs.existsSync(df)) return false;
+      continue;
+    }
+    if (!entry.isFile()) continue;
     if (!fs.existsSync(df)) return false;
     if (!filesEqual(sf, df) && !fs.existsSync(df + BAK_SUFFIX)) return false;
   }

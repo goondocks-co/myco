@@ -37,6 +37,32 @@ describe('migrateTeamsHomeIfNeeded', () => {
     expect(migrateTeamsHomeIfNeeded([legacy]).copied.length).toBe(0);
   });
 
+  it('copies a non-flat team dir: the worker/ deploy subtree is migrated, not dropped', () => {
+    legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
+    dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
+    process.env.MYCO_TEAM_HOME = dest;
+    writeTeam(legacy, TEAM_ID, { team_id: TEAM_ID, name: 'L', projects: [] });
+    // Real team dirs are NOT flat — they hold a `worker/` deploy subdir (wrangler
+    // source + node_modules + cached account binding). The migration must copy it.
+    const worker = path.join(legacy, 'teams', TEAM_ID, 'worker');
+    fs.mkdirSync(path.join(worker, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(worker, 'node_modules', '.cache'), { recursive: true });
+    fs.writeFileSync(path.join(worker, 'wrangler.toml'), 'name="t"\n');
+    fs.writeFileSync(path.join(worker, 'src', 'index.ts'), 'export default {}\n');
+    fs.writeFileSync(path.join(worker, 'node_modules', '.cache', 'acct.json'), '{"id":"x"}');
+
+    const res = migrateTeamsHomeIfNeeded([legacy]);
+
+    expect(res.copied).toContain(TEAM_ID);
+    const dstWorker = path.join(dest, 'teams', TEAM_ID, 'worker');
+    expect(fs.readFileSync(path.join(dstWorker, 'wrangler.toml'), 'utf-8')).toBe('name="t"\n');
+    expect(fs.readFileSync(path.join(dstWorker, 'src', 'index.ts'), 'utf-8')).toBe('export default {}\n');
+    expect(fs.readFileSync(path.join(dstWorker, 'node_modules', '.cache', 'acct.json'), 'utf-8')).toBe('{"id":"x"}');
+    // verify-before-retire passed (subtree present at dst) so the source was retired with its worker/
+    expect(fs.existsSync(path.join(legacy, 'teams'))).toBe(false);
+    expect(fs.existsSync(path.join(legacy, 'teams.bak-pre-myco-team', TEAM_ID, 'worker', 'src', 'index.ts'))).toBe(true);
+  });
+
   it('gap-fills: copies missing files into a pre-existing dest team dir', () => {
     legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-'));
     dest = fs.mkdtempSync(path.join(os.tmpdir(), 'teamhome-'));
