@@ -8,8 +8,11 @@ compatibility_flags = [ "nodejs_compat", "global_fetch_strictly_public" ]
 
 [vars]
 # See packages/myco/src/constants.ts SYNC_PROTOCOL_VERSION /
-# MIN_COMPAT_CLIENT_VERSION — these MUST stay in lockstep. Worker
-# code reads these as strings and parseInt's them at request time.
+# MIN_COMPAT_CLIENT_VERSION. The worker's advertised version may lead
+# the daemon's claimed version (worker=3, daemon claims 2). Clients
+# are accepted when MIN_COMPAT_CLIENT_VERSION <= client_version <=
+# SYNC_PROTOCOL_VERSION. Worker code reads these as strings and
+# parseInt's them at request time.
 SYNC_PROTOCOL_VERSION = "3"
 MIN_COMPAT_CLIENT_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"

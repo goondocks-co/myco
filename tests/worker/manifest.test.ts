@@ -25,6 +25,7 @@ import {
   type ManifestItem,
 } from '@myco-team-worker/manifest';
 import { SYNCED_TABLES } from '@myco-team-worker/synced-tables';
+import { RECONCILE_ELIGIBLE_TABLES } from '@myco/db/queries/team-outbox.js';
 
 // ---------------------------------------------------------------------------
 // Schema DDL source — read to verify WORKER_CONTENT_HASH_TABLES parity
@@ -226,6 +227,17 @@ describe('WORKER_CONTENT_HASH_TABLES parity with schema.ts', () => {
       expect(
         MANIFEST_ELIGIBLE_TABLES.has(table),
         `${table} is in WORKER_CONTENT_HASH_TABLES but not in MANIFEST_ELIGIBLE_TABLES`,
+      ).toBe(true);
+    }
+  });
+
+  it('RECONCILE_ELIGIBLE_TABLES is a subset of MANIFEST_ELIGIBLE_TABLES', () => {
+    // Guards against a daemon-only addition to the reconcile set that the worker's
+    // /manifest doesn't serve — such a table would 400 at runtime on every reconcile pass.
+    for (const table of RECONCILE_ELIGIBLE_TABLES) {
+      expect(
+        MANIFEST_ELIGIBLE_TABLES.has(table),
+        `${table} is in RECONCILE_ELIGIBLE_TABLES but not in MANIFEST_ELIGIBLE_TABLES`,
       ).toBe(true);
     }
   });

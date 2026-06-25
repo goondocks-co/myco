@@ -836,10 +836,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         // (its rows stay as-is for a later pass), never delete on a missing peer.
         if (!client) continue;
         for (const table of RECONCILE_ELIGIBLE_TABLES) {
-          await reconcilePartition(
-            { ...baseDeps, client },
-            { machineId, projectId, table, operatorConfirmed, passAggregate },
-          );
+          try {
+            await reconcilePartition(
+              { ...baseDeps, client },
+              { machineId, projectId, table, operatorConfirmed, passAggregate },
+            );
+          } catch (partitionErr) {
+            logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Reconcile partition failed (skipping)', {
+              grove_id: groveId,
+              project_id: projectId,
+              table,
+              error: (partitionErr as Error).message,
+            });
+          }
         }
       }
     } catch (err) {
