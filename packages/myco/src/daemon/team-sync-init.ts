@@ -139,7 +139,7 @@ export interface TeamSyncResult {
    * (grove, project) partition (always full-diff). Used by the periodic backstop
    * and the on-demand immediacy trigger; both run the same fully-automatic
    * reconcile. Deletes are bounded by settledness + cross-pass drift stability
-   * inside `reconcilePartition`, so there is no operator/magnitude knob here.
+   * inside `reconcilePartition`, so there is no per-call magnitude knob here.
    */
   reconcileAllGroves: (cache: GroveRuntimeCache) => Promise<void>;
   registerFlushJob: (runner: JobRunner, cache: GroveRuntimeCache) => void;
@@ -184,7 +184,7 @@ const TEAM_SYNC_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * pure rate limit (an in-memory last-run timestamp), NOT a synthetic transition
  * flag, so it does not reintroduce SF2. The FIRST call after connect has no
  * prior timestamp and always runs, preserving connect-time auto-heal; the
- * operator path and the periodic backstop bypass it entirely.
+ * The on-demand trigger path and the periodic backstop bypass it entirely.
  */
 const TEAM_SYNC_RECONCILE_TRIGGER_THROTTLE_MS = 2 * 60 * 1000;
 

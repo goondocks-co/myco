@@ -348,7 +348,7 @@ describe('team-sync reconcile triggers', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // forceFullDiff threading: backstop/operator → true, poll path → false
+  // forceFullDiff threading: backstop/on-demand → true, poll path → false
   // ---------------------------------------------------------------------------
 
   it('reconcileAllGroves (backstop/on-demand) reaches reconcilePartition with forceFullDiff:true', async () => {

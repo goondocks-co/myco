@@ -336,7 +336,11 @@ const MANIFEST_PAGE_LIMIT = 500;
  */
 const priorDeleteCandidates = new Map<string, Set<string>>();
 
-/** Stable partition key for the cross-pass drift map. */
+/**
+ * Stable partition key for the cross-pass drift map. NUL-separated to match
+ * the sibling `rejectionKey` convention and eliminate any collision risk from
+ * ids that contain spaces.
+ */
 function partitionKey(machineId: string, projectId: string, table: string): string {
   return `${machineId} ${projectId} ${table}`;
 }
@@ -404,7 +408,7 @@ export async function reconcilePartition(
 
   // 3. Local partition. When forceFullDiff is false (the frequent poll path),
   // a cheap summary fetch gates paging: equal counts → no-op. When
-  // forceFullDiff is true (the 6h backstop and operator-confirmed paths), skip
+  // forceFullDiff is true (the 6h backstop and on-demand trigger paths), skip
   // the count check so equal-count / different-set drift is always caught.
   const local = deps.localPartition(machineId, projectId, table);
   const localCount = local.length;
@@ -416,6 +420,13 @@ export async function reconcilePartition(
     if (d1Count === localCount) {
       // No drift this pass — drop any candidate carried from a prior pass so a
       // since-resolved orphan can never linger as a stale second-pass match.
+      //
+      // NOTE: clearing here on a count-equal (not just zero-diff) pass can reset
+      // the cross-pass accumulator even for an equal-count / different-set partition
+      // (one local add + one local delete that nets the same count). That only DELAYS
+      // healing by one pass, not permanently blocks it: the accompanying upsert for the
+      // new local row lands in this same pass, D1 counts diverge on the next summary
+      // fetch, and the full diff then deletes the orphan as a first-sighting candidate.
       priorDeleteCandidates.delete(key);
       return;
     }

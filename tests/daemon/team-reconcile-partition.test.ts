@@ -340,7 +340,7 @@ describe('reconcilePartition — cross-pass drift stability', () => {
     const h2 = await runPasses(opts, 2);
     const deletes = h2.enqueued.filter((e) => e.operation === 'delete');
     expect(deletes.length).toBe(ORPHANS);
-    // No safety block was logged — a large settled drift is NOT operator-gated.
+    // No safety block was logged — a large settled drift is NOT magnitude-gated.
     expect(h2.logs.some((l) => /blocked/i.test(l))).toBe(false);
   });
 
