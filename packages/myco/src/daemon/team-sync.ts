@@ -271,6 +271,46 @@ export interface TeamMembersListResponse {
   members: TeamMemberWire[];
 }
 
+/**
+ * One item in a paged /manifest response.
+ * `content_hash` is present only for content-hashed tables
+ * (sessions, prompt_batches, spores, plans); absent for others.
+ */
+export interface ManifestItem {
+  id: string;
+  project_id?: string;
+  content_hash?: string;
+}
+
+/**
+ * Response from the worker's GET /manifest endpoint.
+ *
+ * Summary mode (`summary=1`): `items` and `next_cursor` are absent.
+ * Paged mode (default): `items` is present; `next_cursor` is present
+ * only when more pages remain.
+ *
+ * `cheap_agg` is MAX(rowid), 0 when the partition is empty.
+ * `project_id` echoes the request's project_id; absent when the request
+ * omitted it.
+ */
+export interface ManifestResponse {
+  table: string;
+  machine_id: string;
+  project_id?: string;
+  count: number;
+  cheap_agg: number;
+  items?: ManifestItem[];
+  next_cursor?: string;
+}
+
+/** Options accepted by `getManifest`. */
+export interface GetManifestOptions {
+  projectId?: string;
+  cursor?: string;
+  limit?: number;
+  summary?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -503,6 +543,40 @@ export class TeamSyncClient {
       ? `/sync-summary?machine_id=${encodeURIComponent(machineId)}`
       : '/sync-summary';
     return await this.request('GET', path) as TeamRemoteSyncSummaryResponse;
+  }
+
+  /**
+   * Fetch a per-partition manifest from the worker's GET /manifest endpoint.
+   *
+   * Summary mode (`summary: true`): returns count + cheap_agg only — no items.
+   * Paged mode (default): returns a page of {id, project_id?, content_hash?}
+   * items. Pagination continues while `next_cursor` is present in the response.
+   */
+  async getManifest(
+    machineId: string,
+    table: string,
+    options: GetManifestOptions,
+  ): Promise<ManifestResponse> {
+    const params = new URLSearchParams();
+    params.set('machine_id', machineId);
+    params.set('table', table);
+    if (options.projectId != null) params.set('project_id', options.projectId);
+    if (options.cursor != null) params.set('cursor', options.cursor);
+    if (options.limit != null) params.set('limit', String(options.limit));
+    if (options.summary) params.set('summary', '1');
+    return await this.request('GET', `/manifest?${params.toString()}`, undefined, {
+      timeoutMs: TEAM_REQUEST_TIMEOUT_MS,
+    }) as ManifestResponse;
+  }
+
+  /**
+   * Returns true when the worker has advertised sync protocol version >= 3,
+   * indicating that the GET /manifest endpoint is available.
+   * Returns false if the version has not been probed yet (undefined) or is < 3.
+   */
+  supportsManifest(): boolean {
+    const version = this.getWorkerProtocolVersion();
+    return version !== undefined && version >= 3;
   }
 
   /**
