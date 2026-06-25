@@ -36,7 +36,7 @@ Setup is automatic. Installing the global `myco` binary brings up the daemon and
 
 ## CLI Tool Reference
 
-The stable portable path is the `myco` CLI on your PATH. Prefer `myco tool call …`: the binary walks up from the working directory for a `.myco/runtime.command` pin before dispatching, so it automatically honors dogfood aliases, worktree-local runtimes, and renamed binaries. (The project-local `.agents/myco-cli.cjs` launcher that earlier versions shipped is retired — the global install no longer writes it.) When `myco` is not on PATH — e.g. GUI- or launchd-spawned agents whose environment omits `~/.local/bin` — fall back to the absolute global launcher the hooks themselves use: `node ~/.myco/launcher.cjs tool call …`, which performs the same layered pin resolution. Host MCP tools (`myco_*`) are the other fallback when the agent exposes Myco cleanly.
+The stable portable path is the `myco` CLI on your PATH. Prefer `myco tool call …`: the binary walks up from the working directory for a `.myco/runtime.command` pin before dispatching, so it automatically honors dogfood aliases, worktree-local runtimes, and renamed binaries. The retired Node launchers (`~/.myco/launcher.cjs`, `~/.myco/mcp-launcher.cjs`, and the old project-local `.agents/myco-cli.cjs`) are no longer installed. When `myco` is not on PATH — e.g. GUI- or launchd-spawned agents whose environment omits the install bin dir — invoke the installed self-contained binary directly (POSIX: `~/.myco/bin/myco`; Windows: `%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted `runtime.command` pin. Host MCP tools (`myco_*`) are the other fallback when the agent exposes Myco cleanly.
 
 Myco CLI:
 
@@ -325,7 +325,7 @@ Prefer the `myco` CLI from the initialized project root:
 myco <command> [args]
 ```
 
-The binary honors project and worktree runtime pins — it walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH, use the absolute global launcher `node ~/.myco/launcher.cjs <command> [args]`, which resolves the same pins.
+The binary honors project and worktree runtime pins — it walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH, invoke the installed self-contained binary directly (POSIX: `~/.myco/bin/myco`; Windows: `%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted `runtime.command` pin. Do not invoke a Node launcher.
 
 ### Reprocessing sessions
 

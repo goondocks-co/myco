@@ -8,8 +8,8 @@ description: >-
   scope and should restart fresh. PREPARE compresses the current session's
   intention (why we're here, what we're doing, gotchas, dead ends, decisions)
   into a ≤1500-token digest saved on a Myco plan. RECEIVE takes a plan ID,
-  rehydrates the context, loads the suggested skills, marks the referenced plans
-  in progress, and resumes the work.
+  rehydrates the context, reads and marks the referenced plans in progress, loads
+  the suggested skills, and resumes the work.
 allowed-tools: Read, Bash, Grep, Glob
 user-invocable: true
 argument-hint: prepare [plan-id] | receive <plan-id>
@@ -42,9 +42,14 @@ block — a plan never accumulates stale handoffs):
 ```markdown
 <!-- myco-handoff:start -->
 ## Handoff — <YYYY-MM-DD>
+- **Generated:** <ISO-8601 timestamp>
 - **Source session:** <session-id>
-- **Referenced plans:** <plan-id>, <plan-id>
-- **Suggested skills:** myco, <skill>, <skill>
+- **Source checkout:** <cwd>; branch <branch>; HEAD <short-sha>; dirty <yes/no + summary>
+- **Referenced plans:** <plan-id> (<title>; role: work/spec/context; status: <status>)
+- **Suggested skills:** myco (required; why: <reason>; fallback: <path/tool>), <skill> (optional; why: <reason>; fallback: <path/tool>)
+- **Evidence anchors:** <files, commands/tests, spores, sessions, search result ids, retrieve hints>
+- **Resume queries:** <targeted myco_search queries, or "none">
+- **Cortex:** use injected guidance if present; otherwise run `myco_cortex({"op":"instructions"})`
 
 ### Digest
 <≤1500-token intention-focused narrative>
@@ -55,6 +60,12 @@ block — a plan never accumulates stale handoffs):
 
 Drive Myco via the ambient MCP tools (`myco_plans`, `myco_sessions`,
 `myco_cortex`, `myco_search`). On a host without MCP, fall back to
-`myco tool call <tool> --json --input '{...}'` via Bash. Load suggested skills
-with the `Skill` tool. Your current session ID is injected at session start
-(look for the `Session::` line); if you cannot find it, ask the user.
+`myco tool call <tool> --json --input '{...}'` via Bash; use `--input @file.json`
+for multiline markdown. If `myco` is not on PATH, invoke the installed
+self-contained binary directly (POSIX: `~/.myco/bin/myco`; Windows:
+`%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted
+`runtime.command` pin. Do not invoke a Node launcher. Load suggested skills with
+the host's skill mechanism; if unavailable, read bundled skill files from
+`packages/myco/skills/<name>/SKILL.md` or `.agents/skills/<name>/SKILL.md`.
+Your current session ID is injected at session start (look for the `Session::`
+line); if you cannot find it, ask the user.

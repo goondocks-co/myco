@@ -40,6 +40,9 @@ Key source files:
 - `packages/myco/src/cli/service.ts` — `assertSafeServiceMutation()`, `resolveServiceExecutable()`
 - `packages/myco/src/daemon/update-checker.ts` — `resolveMycoBinary()`, `releaseChannelIsManual()`
 
+Additional service-identity functions added in the daemon-coexistence redesign
+(v1.2.1+): `serviceLabel()`, `defaultServiceExecutable()`, `ensureSelfInstalledAsService()`.
+
 Quick diagnostic — check upgrade status on a running daemon:
 ```bash
 curl -s http://localhost:<port>/api/upgrade/status | jq '{update_available, channel, channel_scope, running_version}'
@@ -256,6 +259,48 @@ not installation path. The dev daemon sets `MYCO_HOME=~/.myco-dev` in its launch
 All service management, grove binding, and upgrade state derives from this value.
 No binary needs to inspect its own path to determine which kind of daemon it is.
 
+### Home-Identity Label Model (`serviceLabel()`)
+
+The OS service label (launchd on macOS, systemd --user on Linux) is derived from the
+`MYCO_HOME` path — not from a prod/dev variant enum. This is the core change from the
+daemon-coexistence redesign (v1.2.1+), implemented via `serviceLabel(mycoHome)`:
+
+- **Default home** (`~/.myco`) → `SERVICE_LABEL_PROD` — the stable constant for the
+  production daemon label. Existing installs depend on this value; it must never change.
+- **Non-default home** (e.g., `~/.myco-dev`) → `SERVICE_LABEL_PROD` + a `.{8-char-hash}`
+  suffix derived from a SHA-256 hash of the resolved home path.
+
+This prevents two daemon instances with different `MYCO_HOME` values from clobbering
+each other's `launchctl bootstrap` registration in the shared `gui/<uid>` domain. Always
+obtain labels via `serviceLabel(mycoHome)` — never hardcode the label string.
+
+### Non-Default Home Always Uses `process.execPath` for Service Executable
+
+`defaultServiceExecutable(mycoHome, platform)` governs which binary the service unit
+points at (added in v1.2.1 daemon-coexistence redesign):
+
+- **Default home** (`~/.myco`): prefers `managedBinaryPath()` (`~/.myco/bin/myco`) when
+  it exists; falls back to `process.execPath`. This means a self-update's in-place binary
+  swap takes effect on next supervisor restart without rewriting the service unit.
+- **Non-default home** (e.g., `~/.myco-dev`): **always** returns `process.execPath`, never
+  `managedBinaryPath()`. This is a correctness invariant: a dogfood daemon must never have
+  its unit pointed at the prod managed binary — that would silently run released code as
+  the dogfood unit, violating home isolation.
+
+### Daemon Startup Self-Install (`ensureSelfInstalledAsService()`)
+
+The daemon self-installs as an OS service at startup. At launch it checks whether the
+platform supervisor already has a unit for this home's `serviceLabel()`. If not (or if
+the unit spec changed), it installs/updates one via `buildServiceSpec()`. On subsequent
+restarts it finds the unit present and no-ops (idempotent).
+
+The function also calls `mgr.pruneSupersededUnits()` to sweep away units whose target
+binary is gone (old version directories, removed dev-build worktrees), so the supervisor
+stops respawning dead processes.
+
+Self-install is non-fatal: failures log at `warn` and the daemon continues serving.
+Use `myco doctor` to surface installation gaps.
+
 ### `MYCO_CLAIMS_HOME` for Subsystem Claims Sharing
 
 When `MYCO_HOME` is not the canonical home, `buildServiceSpec()` automatically injects
@@ -276,15 +321,17 @@ to the canonical home — so prod and dogfood share one global symbiont state ar
 collision. This is set automatically by `buildServiceSpec()`; you do not need to write
 it into the dev plist manually.
 
-### Four Consumers of Daemon Identity
+### Five Consumers of Daemon Identity
 
-| Consumer               | Current mechanism                                           |
-|------------------------|-------------------------------------------------------------|
-| Service-dir routing    | Derived from `MYCO_HOME` (default → prod, else dev)        |
-| Port assignment        | Derived from `MYCO_HOME` / service-dir                     |
-| Grove binding          | `MYCO_HOME`                                                 |
-| Subsystem claims       | `MYCO_CLAIMS_HOME` (auto-set by `buildServiceSpec()`)      |
-| Service mutation guard | `looksLikeDevBuildExecutable` + `isDefaultMycoHome`        |
+| Consumer               | Current mechanism                                                    |
+|------------------------|----------------------------------------------------------------------|
+| OS service label       | `serviceLabel(mycoHome)` — hash of home path; stable per home        |
+| Service executable     | `defaultServiceExecutable(mycoHome)` — prod prefers managed slot     |
+| Service-dir routing    | Derived from `MYCO_HOME` (default → prod, else dev)                 |
+| Port assignment        | Derived from `MYCO_HOME` / service-dir                              |
+| Grove binding          | `MYCO_HOME`                                                          |
+| Subsystem claims       | `MYCO_CLAIMS_HOME` (auto-set by `buildServiceSpec()`)               |
+| Service mutation guard | `looksLikeDevBuildExecutable` + `isDefaultMycoHome`                 |
 
 Upgrade exemption is NOT a consumer — it is only suppressed by `channel: manual`.
 A dev daemon in `~/.myco-dev` runs its own upgrade pipeline without exemption.
@@ -294,10 +341,12 @@ A dev daemon in `~/.myco-dev` runs its own upgrade pipeline without exemption.
 1. Add `MYCO_HOME=<new-home>` to the daemon's plist environment.
 2. Verify `isDefaultMycoHome(newHome)` returns `false` — so `assertSafeServiceMutation`
    does not block the new instance from managing its own home.
-3. `MYCO_CLAIMS_HOME` is set automatically by `buildServiceSpec()` when the home is
+3. The service label is derived automatically via `serviceLabel(newHome)` — do not
+   hardcode a label string.
+4. `MYCO_CLAIMS_HOME` is set automatically by `buildServiceSpec()` when the home is
    non-default. Confirm the new instance builds its plist via `buildServiceSpec()`
    rather than constructing the env manually.
-4. Do NOT add path-based detection to upgrade or exemption logic.
+5. Do NOT add path-based detection to upgrade or exemption logic.
 
 ## Cross-Cutting Gotchas
 
@@ -330,3 +379,14 @@ binary at `~/.myco/bin/myco` per `MYCO_HOME`. The channel is not per-grove.
 The `<UpgradeCard/>` and the Stable/Beta channel toggle are on the **Settings page**
 (`/settings` → Upgrade section). The Operations page hosts only database/file health
 for the grove's SQLite store. When writing docs, reference "Settings page → Upgrade section."
+
+**Service labels are per-home, not per-variant.** Never hardcode the prod service label
+string for a non-default-home daemon. Always obtain it via `serviceLabel(mycoHome)`.
+Hardcoding the prod label for a dev daemon causes `launchctl bootstrap` to clobber the
+prod registration in the shared `gui/<uid>` domain.
+
+**Non-default home daemons never point their service unit at the managed binary.**
+`defaultServiceExecutable()` returns `process.execPath` unconditionally for non-default
+homes. Code that calls `managedBinaryPath()` and writes the result into a plist for a
+dev/dogfood home is a bug — it would silently point the dogfood unit at the prod binary
+after the prod binary is installed, violating home isolation.
