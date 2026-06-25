@@ -515,6 +515,25 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
  */
 export const REBUILD_TABLES = [...TEAM_SYNC_BACKFILL_TABLES, 'skill_usage'] as const;
 
+/**
+ * Tables eligible for symmetric reconcile (the daemon's project-partition diff
+ * against the worker's GET /manifest). Mirrors the worker-side
+ * MANIFEST_ELIGIBLE_TABLES (`src/worker/src/manifest.ts`) — the synced set minus
+ * the id-less `entity_mentions` — further restricted to PROJECT-scoped tables.
+ *
+ * Reconcile runs strictly per (machine_id, project_id) partition, so the
+ * machine-scoped `team_members` table (no `project_id` column; maintained via
+ * reconcileSelfMember + backfill) is excluded — interpolating it into the
+ * project-scoped partition query would reference a non-existent column.
+ *
+ * Only these names may be interpolated into the reconcile path's table-name SQL
+ * (`localPartition`, `buildUpsertPayload`); the allow-list is the SQL-injection
+ * safety boundary — never pass an arbitrary table name into that path.
+ */
+export const RECONCILE_ELIGIBLE_TABLES: readonly string[] = REBUILD_TABLES.filter(
+  (t) => t !== 'team_members',
+);
+
 // Canonical synced/observed set now lives in the dependency-free schema-ddl
 // module (so the migration chain can import it without pulling db/client →
 // bun:sqlite into the worker-CLI bundle). Imported above for internal use and

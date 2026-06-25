@@ -2099,6 +2099,18 @@ export async function main(): Promise<void> {
     const result = await teamSync.rebuildFromLocal(req.requestContext);
     return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
+  // POST /api/team/reconcile — operator-confirmed symmetric reconcile. Runs the
+  // count-first reconcile across every owned (grove, project) partition with
+  // operatorConfirmed=true: the settledness guards (empty local set, unseeded
+  // membership) still block, but the magnitude caps (per-partition floor,
+  // fraction, aggregate) are bypassed so an operator can heal large genuine
+  // drift the automatic path leaves for a human. The automatic path runs
+  // continuously via reconcileClient triggers + the team-sync-reconcile backstop.
+  server.registerRoute('POST', '/api/team/reconcile', async (req) => {
+    await reconcileTeamRoute(req);
+    const result = await teamSync.reconcileAllGroves(runtimeCache, true);
+    return { status: 200, body: { ok: true, deletes: result.deletes } };
+  });
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),

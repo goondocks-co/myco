@@ -1,0 +1,295 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { vi } from '../helpers/vi-shim.js';
+import { initTeamSync } from '@myco/daemon/team-sync-init.js';
+
+// Reconcile-eligible table allow-list the trigger pass iterates. Mocked to a
+// small set so call counts stay legible (real list is 13 project-scoped tables).
+const MOCK_RECONCILE_TABLES = ['sessions', 'spores'];
+
+const {
+  enqueueBatchMock,
+  listPendingMock,
+  backfillUnsyncedMock,
+  upsertSelfMemberMock,
+  setTeamSyncEnabledMock,
+  setProjectSyncMembershipMock,
+  purgeNonMemberOutboxMock,
+  purgePendingOutboxMock,
+  localPartitionMock,
+  pendingRowIdsForPartitionMock,
+  enqueueOutboxMock,
+  forEachGroveMock,
+} = vi.hoisted(() => ({
+  enqueueBatchMock: vi.fn(),
+  listPendingMock: vi.fn(() => []),
+  backfillUnsyncedMock: vi.fn(() => 0),
+  upsertSelfMemberMock: vi.fn(),
+  setTeamSyncEnabledMock: vi.fn(),
+  setProjectSyncMembershipMock: vi.fn(),
+  purgeNonMemberOutboxMock: vi.fn(() => 0),
+  purgePendingOutboxMock: vi.fn(() => 0),
+  localPartitionMock: vi.fn(() => []),
+  pendingRowIdsForPartitionMock: vi.fn(() => new Set<string>()),
+  enqueueOutboxMock: vi.fn(),
+  forEachGroveMock: vi.fn(),
+}));
+
+mock.module('@myco/db/queries/team-outbox.js', () => ({
+  listPending: listPendingMock,
+  markSent: vi.fn(),
+  markSourceRowsSynced: vi.fn(),
+  pruneOld: vi.fn(),
+  backfillUnsynced: backfillUnsyncedMock,
+  backfillAll: vi.fn(),
+  backfillAllForRebuild: vi.fn(),
+  discardRows: vi.fn(),
+  countPending: vi.fn(() => 0),
+  countPendingByTable: vi.fn(() => ({})),
+  purgePendingOutbox: purgePendingOutboxMock,
+  purgeNonMemberOutbox: purgeNonMemberOutboxMock,
+  enqueueOutbox: enqueueOutboxMock,
+  localPartition: localPartitionMock,
+  pendingRowIdsForPartition: pendingRowIdsForPartitionMock,
+  sanitizeSyncPayload: (_table: string, row: object) => row,
+  RECONCILE_ELIGIBLE_TABLES: MOCK_RECONCILE_TABLES,
+}));
+
+mock.module('@myco/db/queries/team-members.js', () => ({
+  upsertSelfMember: upsertSelfMemberMock,
+}));
+
+mock.module('@myco/db/queries/team-sync-state.js', () => ({
+  setTeamSyncEnabled: setTeamSyncEnabledMock,
+  setProjectSyncMembership: setProjectSyncMembershipMock,
+}));
+
+mock.module('@myco/db/client.js', () => ({
+  getDatabase: () => ({
+    transaction: (fn: () => void) => () => fn(),
+  }),
+  withDatabase: <T>(_db: unknown, fn: () => T) => fn(),
+}));
+
+mock.module('@myco/daemon/team-sync.js', () => ({
+  TeamSyncClient: class {
+    rebuild = vi.fn();
+    enqueueBatch = enqueueBatchMock;
+    health = vi.fn();
+    getVersionCompat = vi.fn(() => 'unknown');
+    getWorkerProtocolVersion = vi.fn(() => 3);
+    supportsManifest = vi.fn(() => true);
+    getManifest = vi.fn();
+  },
+}));
+
+// forEachGrove is mocked so the multi-grove fan-out (periodic + on-demand)
+// drives a test-controlled set of grove scopes without opening real SQLite DBs.
+// The body is invoked once per scope, exactly as the real iterator would.
+let groveScopesForMock: Array<{ id: string }> = [];
+mock.module('@myco/daemon/scope-iteration.js', () => ({
+  forEachGrove: forEachGroveMock,
+}));
+
+describe('team-sync reconcile triggers', () => {
+  let tmpDir: string;
+  let vaultDir: string;
+  let previousMycoHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
+
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+
+  // Per-test spy injected as the per-partition reconcile orchestrator.
+  const reconcilePartitionSpy = vi.fn(async () => {});
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    groveScopesForMock = [];
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-reconcile-triggers-'));
+    vaultDir = path.join(tmpDir, '.myco');
+    previousMycoHome = process.env.MYCO_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
+    process.env.MYCO_HOME = path.join(tmpDir, 'home');
+    process.env.MYCO_TEAM_HOME = path.join(tmpDir, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
+    fs.mkdirSync(vaultDir, { recursive: true });
+    enqueueBatchMock.mockResolvedValue({ accepted: 0, rejected: [] });
+    listPendingMock.mockReturnValue([]);
+    backfillUnsyncedMock.mockReturnValue(0);
+    upsertSelfMemberMock.mockReturnValue({ inserted: false, row: {} });
+    // Default fan-out: replay whatever scopes the test registered.
+    forEachGroveMock.mockImplementation(
+      async (
+        _cache: unknown,
+        _logger: unknown,
+        body: (scope: { grove: { id: string; slug: string }; groveHome: string; databasePath: string; db: object }) => Promise<void>,
+      ) => {
+        for (const g of groveScopesForMock) {
+          await body({ grove: { id: g.id, slug: 'slug' }, groveHome: '', databasePath: '', db: {} });
+        }
+        return { attempted: groveScopesForMock.length, ok: groveScopesForMock.length, failed: 0 };
+      },
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
+  });
+
+  /** Register a team owning `projectIds` in a fresh grove; returns the grove + ids. */
+  async function registerGroveWithProjects(name: string, projectIds: string[]) {
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createTeamId } = await import('../../packages/myco/src/grove/ids.js');
+    const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
+    const mycoHome = process.env.MYCO_HOME!;
+    const grove = createGrove(name, mycoHome);
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name,
+      worker_url: 'https://team.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: projectIds.map((project_id) => ({ grove_id: grove.id, project_id })),
+    });
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
+    return { grove, teamId };
+  }
+
+  function makeTeamSync() {
+    return initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: true, worker_url: 'https://team.example.workers.dev' } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(tmpDir, 'service'),
+      reconcilePartitionImpl: reconcilePartitionSpy as never,
+    });
+  }
+
+  function requestContext(groveId: string, projectId: string) {
+    return {
+      projectRoot: tmpDir,
+      projectVaultDir: vaultDir,
+      projectId,
+      groveId,
+      machineId: 'machine-1',
+      sessionId: null,
+      databasePath: path.join(tmpDir, groveId, 'myco.db'),
+      source: 'headers',
+    } as const;
+  }
+
+  /** Distinct args[1] objects passed to the reconcile spy. */
+  function reconcileArgs(): Array<{
+    projectId: string;
+    table: string;
+    operatorConfirmed: boolean;
+    passAggregate: { count: number };
+  }> {
+    return reconcilePartitionSpy.mock.calls.map((c) => (c as unknown[])[1] as never);
+  }
+
+  it('reconcileClient reconciles every owned (grove, project) × eligible table after backfill', async () => {
+    const { grove } = await registerGroveWithProjects('owns-two', ['p-a', 'p-b']);
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
+
+    // 2 projects × 2 eligible tables = 4 partition reconciles.
+    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
+    const args = reconcileArgs();
+    expect(new Set(args.map((a) => a.projectId))).toEqual(new Set(['p-a', 'p-b']));
+    expect(new Set(args.map((a) => a.table))).toEqual(new Set(MOCK_RECONCILE_TABLES));
+    // Automatic (re-enable-after-backfill) path is never operator-confirmed.
+    expect(args.every((a) => a.operatorConfirmed === false)).toBe(true);
+    // ONE shared per-pass aggregate threads through every partition.
+    const aggregates = new Set(args.map((a) => a.passAggregate));
+    expect(aggregates.size).toBe(1);
+    // Reconcile runs only after the backfill it follows.
+    expect(backfillUnsyncedMock).toHaveBeenCalled();
+  });
+
+  it('the periodic team-sync-reconcile job runs automatic, threading one shared passAggregate across all partitions', async () => {
+    const a = await registerGroveWithProjects('grove-a', ['p-a']);
+    const b = await registerGroveWithProjects('grove-b', ['p-b']);
+    groveScopesForMock = [{ id: a.grove.id }, { id: b.grove.id }];
+    const teamSync = makeTeamSync();
+
+    const jobs: Array<{ name: string; kind: string; runIn: string[]; fn: (ctx: unknown) => Promise<unknown> }> = [];
+    const runner = { register: (j: (typeof jobs)[number]) => jobs.push(j) } as never;
+    teamSync.registerFlushJob(runner, {} as never);
+
+    const reconcileJob = jobs.find((j) => j.name === 'team-sync-reconcile');
+    expect(reconcileJob).toBeDefined();
+    expect(reconcileJob!.kind).toBe('housekeeping');
+
+    await reconcileJob!.fn({ sliceBudget: { maxItems: 0, softDeadlineMs: 0 } });
+
+    // 2 groves × 1 project × 2 tables = 4 partition reconciles.
+    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
+    const args = reconcileArgs();
+    expect(args.every((a2) => a2.operatorConfirmed === false)).toBe(true);
+    expect(new Set(args.map((a2) => a2.projectId))).toEqual(new Set(['p-a', 'p-b']));
+    // A single accumulator object reaches every partition across BOTH groves so
+    // cross-partition deletes can't sum past the aggregate cap.
+    expect(new Set(args.map((a2) => a2.passAggregate)).size).toBe(1);
+  });
+
+  it('the on-demand entrypoint reconciles operator-confirmed across all groves', async () => {
+    const a = await registerGroveWithProjects('grove-a', ['p-a']);
+    groveScopesForMock = [{ id: a.grove.id }];
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileAllGroves({} as never, true);
+
+    expect(reconcilePartitionSpy).toHaveBeenCalledTimes(MOCK_RECONCILE_TABLES.length);
+    const args = reconcileArgs();
+    expect(args.every((a2) => a2.operatorConfirmed === true)).toBe(true);
+    expect(new Set(args.map((a2) => a2.passAggregate)).size).toBe(1);
+  });
+
+  it('does not reconcile a grove with no member projects (not participates / not membershipSeeded)', async () => {
+    // The machine joined a team via ANOTHER grove, so machineHasAnyTeam() is
+    // true, but THIS grove owns no member project — both `participates` and
+    // `membershipSeeded` reduce to an empty member set, so reconcile is skipped.
+    await registerGroveWithProjects('elsewhere', ['p-elsewhere']);
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const hereGrove = createGrove('here', process.env.MYCO_HOME!);
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileClient(requestContext(hereGrove.id, 'p-here'));
+
+    expect(reconcilePartitionSpy).not.toHaveBeenCalled();
+    // Backfill still runs (it carries the machine-scoped self-row); reconcile
+    // is the only thing gated off here.
+    expect(backfillUnsyncedMock).toHaveBeenCalled();
+  });
+
+  it('the periodic job skips a grove with no member projects', async () => {
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const empty = createGrove('empty', process.env.MYCO_HOME!);
+    groveScopesForMock = [{ id: empty.id }];
+    const teamSync = makeTeamSync();
+
+    await teamSync.reconcileAllGroves({} as never, false);
+
+    expect(reconcilePartitionSpy).not.toHaveBeenCalled();
+  });
+});
