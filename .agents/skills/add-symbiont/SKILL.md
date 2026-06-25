@@ -21,7 +21,7 @@ Not all agents can be wired via the same procedure. Before starting, identify wh
 | Class | Description | Example agents |
 |-------|-------------|----------------|
 | **Class 1 — Config-File** | Agent is configured via JSON or TOML files in a project directory. Hooks, MCP entries, and instructions are written by `SymbiontInstaller` as file I/O. | Claude Code, Cursor, Windsurf, Codex, Gemini CLI, VS Code Copilot |
-| **Class 2 — Plugin-API** | Agent exposes a plugin registration API; it cannot be configured by writing files into a config directory. Requires a dedicated, agent-specific installation path in `SymbiontInstaller` — the standard Steps 1–8 below do NOT apply. | opencode (v0.15.0+, 7th symbiont, implemented) |
+| **Class 2 — Plugin-API** | Agent exposes a plugin registration API; it cannot be configured by writing files into a config directory. Requires a dedicated, agent-specific installation path in `SymbiontInstaller` — the standard Steps 1–8 below do NOT apply. | opencode |
 
 **If you are adding a Class 2 agent:** the steps below describe the Class 1 path only. Class 2 integration requires a separate SymbiontInstaller code path for plugin registration — consult the opencode implementation as the reference. Do not attempt to adapt the file-based manifest/hook steps for a plugin-API agent.
 

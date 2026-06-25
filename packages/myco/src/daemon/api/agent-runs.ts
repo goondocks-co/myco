@@ -137,6 +137,7 @@ export interface AgentRunDeps {
 
 export function createAgentRunHandlers(deps: AgentRunDeps) {
   const { vaultDir, resolveEmbeddingManager, logger, getTeamClient } = deps;
+  const vaultDirForRequest = (req: RouteRequest): string => req.requestContext?.projectVaultDir ?? vaultDir;
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
@@ -163,6 +164,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     } = parsedBody.data;
     const scope = projectScopeFromRequestContext(req.requestContext);
     const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
+    const runVaultDir = vaultDirForRequest(req);
 
     // `force` is opt-in per task and currently only meaningful for
     // skill-survey (bypasses the incremental watermark). For any other
@@ -186,14 +188,14 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
-    const mycoConfig = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
+    const mycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
     // User-initiated manual run: the default claude-sdk harness (subscription
     // auth via the Claude Code CLI) is runnable with no explicit provider. The
     // automatic Cortex path keeps the strict check (no auto-default per grove).
     // Pass the task definition's harness so admission matches the executor's
     // resolution — never admit a run the executor would route to a non-claude
     // harness that has no provider.
-    const definitionExecution = resolveTaskDefinitionExecution(task, vaultDir);
+    const definitionExecution = resolveTaskDefinitionExecution(task, runVaultDir);
     if (!hasConfiguredProvider(mycoConfig, task, {
       allowDefaultHarness: true,
       definitionHarness: definitionExecution.harness,
@@ -221,10 +223,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         ? { ...(configuredTaskParams ?? {}), force: true }
         : configuredTaskParams;
       try {
-        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       } catch {
-        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         const fallbackTaskParams = force && task === SKILL_SURVEY_TASK ? { force: true } : undefined;
         built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       }
@@ -249,7 +251,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
-    const resultPromise = dispatchAgentRun(vaultDir, {
+    const resultPromise = dispatchAgentRun(runVaultDir, {
       task,
       instruction,
       agentId: effectiveAgentId,
@@ -269,28 +271,31 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     resultPromise
       .then((result) => {
         const taskName = task ?? 'agent run';
+        const notificationOptions = req.requestContext?.projectId
+          ? { projectId: req.requestContext.projectId }
+          : undefined;
         if (result.status === 'failed') {
-          notify(vaultDir, {
+          notify(runVaultDir, {
             domain: 'agents',
             type: 'agent.task.failure',
             title: `Task failed: ${taskName}`,
             message: result.error ?? 'Unknown error',
             link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
-          }, mycoConfig);
+          }, mycoConfig, notificationOptions);
           logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
             runId: result.runId,
             error: result.error ?? 'No error message',
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
         } else {
-          notify(vaultDir, {
+          notify(runVaultDir, {
             domain: 'agents',
             type: 'agent.task.success',
             title: `Task completed: ${taskName}`,
             link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
-          }, mycoConfig);
+          }, mycoConfig, notificationOptions);
           logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {
             runId: result.runId,
             status: result.status,
@@ -395,8 +400,9 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     const { mode } = ResumeRunBody.parse(req.body ?? {});
     const embeddingManager = resolveEmbeddingManager(req.requestContext);
+    const runVaultDir = vaultDirForRequest(req);
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
-    const resultPromise = dispatchAgentRun(vaultDir, {
+    const resultPromise = dispatchAgentRun(runVaultDir, {
       agentId: run.agent_id,
       task: run.task ?? undefined,
       instruction: run.instruction ?? undefined,

@@ -19,7 +19,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 # Upgrade Path Safety Profile
 
 This skill governs the discipline around validating and releasing version-to-version
-upgrades in the Myco native installer (e.g., v1.1.2 → v1.2.0). The procedures were
+upgrades in the Myco native installer. The procedures were
 established under real conditions during the `feat/native-installer` branch and apply
 to any upgrade cycle involving binary replacement, installer mechanics, or auto-adopt
 channels.
@@ -63,7 +63,7 @@ users will hit.
    changes before running the upgrade command.
 
 **Rationale:** "That is our best way to test this as it would be in the wild."
-(session 7bf0bb2d, batch 9620). Testing from an in-dev state introduces artefacts —
+Testing from an in-dev state introduces artefacts —
 leftover processes, partial file states, contaminated `MYCO_HOME` — that real users
 never have.
 
@@ -89,9 +89,7 @@ Local flakiness reflects environment state, not code bugs.
 3. **Treat CI green as the merge gate**, not local green.
 4. **Log the local reliability issue** as a follow-up, not a blocker.
 
-**Rationale:** "The real goal is to get the upgrade from 1.1.2 to 1.2.0 working
-correctly. If the tests can't run locally reliably, that is an issue we have to
-solve, but that is secondary." (session 7bf0bb2d, batch 9674).
+**Rationale:** "The real goal is to get the upgrade path working correctly. If the tests can't run locally reliably, that is an issue we have to solve, but that is secondary."
 
 **Caveat:** This is about sequencing, not abandonment. Local test reliability still
 needs a follow-up — it signals real environment hygiene issues (e.g., launchd
@@ -116,7 +114,7 @@ you publish.
 - Test the upgrade path against your in-dev binary before publishing
 - Conflate "local test green" with "upgrade path correct"
 
-**Example outcome (beta.4, v1.1.2→v1.2.0):** After merge and publish, testing
+**Example outcome:** After merge and publish, testing
 against the published artifact confirmed end-to-end: convergence layout correct,
 `.myco/.myco` absent, `MYCO_HOME` honored, `~/.myco/bin/myco` byte-identical
 before/after upgrade.

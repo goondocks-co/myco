@@ -211,7 +211,7 @@ Skills are loaded by Claude Code when the frontmatter `description` matches the 
 1. **File present?** Check `.agents/skills/<name>/SKILL.md` exists on disk
 2. **`user-invocable: true`?** Open the file and verify this field is present and true
 3. **Description broad enough?** The description is the only matching signal. Too narrow = fewer matches. Compare it to the actual task context.
-4. **Description degraded?** Check if the skill was recently evolved — the rewrite may have shortened the description (see Over-Evolution section below). Compare with the previous generation.
+4. **Description degraded?** Check if the skill was evolved in the last run — the rewrite may have shortened the description (see Over-Evolution section below). Compare with the previous generation.
 5. **allowed-tools correct?** Confirm `allowed-tools` lists Claude Code tools only
 6. **Still in staging?** Check if the skill is stuck in `.myco/staging/` awaiting promotion
 7. **Symlinks present?** For hand-authored skills, verify `.claude/skills/` and `.cursor/skills/` symlinks exist
@@ -244,7 +244,7 @@ The rewritten skill passes all validation checks but is structurally degraded.
 - **No-op run detection:** When no skills qualify for evolution after pre-filtering (either due to recent assessment or lack of new knowledge), the entire run becomes a no-op — the agent reports completion without making any changes
 - **Watermark rotation:** The `last_assessed_at` watermark is updated even when a skill is classified as CURRENT, ensuring proper rotation coverage in subsequent runs and preventing the same skill from being unnecessarily re-assessed
 
-**Practical implications:** This watermark system explains why skill-evolve runs often complete quickly with "no changes needed" — either all candidate skills have been recently assessed, or new vault knowledge doesn't warrant updates. The system is designed to be efficient and avoid redundant work, making frequent skill-evolve runs safe and cost-effective.
+**Practical implications:** This watermark system explains why skill-evolve runs often complete quickly with "no changes needed" — either all candidate skills have already been assessed, or new vault knowledge doesn't warrant updates. The system is designed to be efficient and avoid redundant work, making frequent skill-evolve runs safe and cost-effective.
 
 ## Budget Sizing for skill-evolve Runs
 

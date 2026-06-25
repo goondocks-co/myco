@@ -147,13 +147,19 @@ From the dashboard's **Operations** page you can kick off any task on demand —
 From the CLI:
 
 ```bash
-myco agent run vault-evolve      # Run the default pipeline now
-myco agent run skill-survey            # Survey for new skill candidates
+myco task run vault-evolve       # Run the default pipeline now
+myco task run skill-survey       # Survey for new skill candidates
 ```
+
+`myco agent --task <name>` is the equivalent lower-level form. Use
+`myco task run <name>` when you want the task-oriented CLI surface, including
+`--dry-run`.
 
 ## Custom tasks
 
 Drop a YAML task definition into `.myco/tasks/*.yaml` and it'll load alongside the built-ins on restart. Custom tasks have access to the same tool set and scheduling options as built-ins. The built-in task definitions are in `packages/myco/src/agent/definitions/tasks/` if you want reference examples.
+
+Example one-shot recipe: [`docs/examples/skill-decontaminate.yaml`](examples/skill-decontaminate.yaml) cleans up older generated skills whose live procedural prose contains point-in-time release, PR, date, session, or decision-state artifacts.
 
 ## Monitoring and troubleshooting
 

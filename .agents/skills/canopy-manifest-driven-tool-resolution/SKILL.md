@@ -294,7 +294,7 @@ ln -sf ../../.agents/skills/my-skill .cursor/skills/my-skill
 
 ### Cline MCP Config Path: `~/.cline/data/settings/cline_mcp_settings.json`
 
-**Cline's documented MCP path is wrong.** Early Cline integration assumed `~/.cline/mcp.json` based on Cline documentation, but live dogfooding of Cline CLI 3.0.24 confirmed the actual runtime path is `~/.cline/data/settings/cline_mcp_settings.json`. Both paths appear in `packages/myco/src/symbionts/manifests.generated.ts` (primary at line 424, fallback at line 427). The installer writes to the primary path; read-time resolution should check the primary path first before falling back. When debugging Cline MCP registration failures, always check `~/.cline/data/settings/cline_mcp_settings.json` first.
+**Cline's documented MCP path is wrong.** Early Cline integration assumed `~/.cline/mcp.json` based on Cline documentation, but live dogfooding confirmed the actual runtime path is `~/.cline/data/settings/cline_mcp_settings.json`. Both paths appear in `packages/myco/src/symbionts/manifests.generated.ts` (primary at line 424, fallback at line 427). The installer writes to the primary path; read-time resolution should check the primary path first before falling back. When debugging Cline MCP registration failures, always check `~/.cline/data/settings/cline_mcp_settings.json` first.
 
 ### `service-dev` Daemon Claim Hijacks Machine-Wide Claude Code Capture
 

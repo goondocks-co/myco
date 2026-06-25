@@ -101,16 +101,16 @@ function resolveProjectIdentity(workingDir: string) {
 
 ### loadMergedConfig Auto-Resolution from Project Manifest
 
-**Critical update (commit 17e3e923)**: `loadMergedConfig()` now automatically resolves Grove identity from the current project's `.myco/project.toml`, eliminating the need for explicit Grove parameter passing at call sites.
+**Critical update**: `loadMergedConfig()` automatically resolves Grove identity from the current project's `.myco/project.toml`, eliminating the need for explicit Grove parameter passing at call sites.
 
-**Old pattern** (pre-17e3e923):
+**Old pattern:**
 ```typescript
 // Caller had to explicitly provide Grove context
 const groveId = resolveGroveIdFromEnvironment();
 const config = await loadMergedConfig(projectPath, { groveId });
 ```
 
-**New pattern** (post-17e3e923):
+**New pattern:**
 ```typescript
 // loadMergedConfig auto-resolves Grove from project.toml binding_id
 const config = await loadMergedConfig(projectPath);
@@ -310,7 +310,7 @@ Implement security enforcement across Grove multi-tenant architecture.
 - **`assertAssignableProject(projectId)`** — use at team-assignment write boundaries to confirm the project has a valid grove before writing membership.
 - **`ProjectGroveMissingError`** — every project belongs to exactly one grove. A grove-less project is a loud failure, never a silent "global" fallback.
 
-**Why this matters:** Bypassing this module and using `machineHasAnyTeam()` for per-project outbox scoping caused the PR #508 team-sync flood — a non-member grove accumulated 1.7M phantom `team_outbox` rows. The authority centralizes the grove-membership check so there is only one place to get it wrong.
+**Why this matters:** Bypassing this module and using `machineHasAnyTeam()` for per-project outbox scoping can flood a non-member grove with phantom `team_outbox` rows. The authority centralizes the grove-membership check so there is only one place to get it wrong.
 
 ### Multi-Tenant Request Context Validation
 
@@ -354,7 +354,7 @@ Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER T
 
 ## Cross-Cutting Gotchas
 
-**Global Daemon MCP Context**: Post-PR #208, all MCP requests route through the global daemon. Ensure context headers are properly threaded from CLI environment to daemon MCP endpoint to avoid "no project context" errors.
+**Global Daemon MCP Context**: All MCP requests route through the global daemon. Ensure context headers are properly threaded from CLI environment to daemon MCP endpoint to avoid "no project context" errors.
 
 **Context Propagation Gaps**: Always verify context is threaded through new transport paths. Missing context headers cause requests to fail with "no project context" errors.
 
@@ -376,7 +376,7 @@ Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER T
 
 **D1 Worker Intelligence Violation**: The worker must remain a passive receiver for all D1 operations. Implementing analysis or decision-making in the worker violates the daemon-side intelligence principle and creates architectural inconsistencies.
 
-**loadMergedConfig Grove Auto-Resolution**: After commit 17e3e923, `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
+**loadMergedConfig Grove Auto-Resolution**: `loadMergedConfig()` automatically resolves Grove from project manifest. If you receive "Grove not found" errors, check that `.myco/project.toml` contains a valid `grove.binding_id` field. Do not pass explicit Grove context to `loadMergedConfig()` — the function ignores it.
 
 **Migration Walker Grove Filtering**: The migration walker in `packages/myco/src/grove/migration-walker.ts` traverses ALL Groves unless explicitly scoped by `currentDaemonVariant` served_by constraints. Always validate the daemon's served_by scope before executing walkers.
 
@@ -390,6 +390,6 @@ Validate daemon PID, uptime, and schema version before any CREATE TABLE, ALTER T
 
 **Machine-level routes use action-scope, not tenantRoute**: Routes that operate across all Groves (backup, database vacuum, global dispatch) use `actionScopeKey` from `packages/myco/src/daemon/api/action-scope.ts` for deduplication, not `tenantRoute`. Using `tenantRoute` on machine-level routes fails with missing-project errors on callers that legitimately have no project context. The scoped-dispatch module (`packages/myco/src/daemon/api/scoped-dispatch.ts`) enforces the all-groves confirmation gate automatically.
 
-**v1.0.8 capture-only bug — saveConfig materializes defaults into committed tier**: A v1.0.8 bug caused `saveConfig` to write machine-scoped defaults into the committed project config tier when called from capture-only mode; the vault-gate hot path also bypassed the archived-project refusal check. If a project stuck in capture-only mode shows unexpected config entries, check for materialized defaults from this regression. Fix: call `saveConfig` only after verifying the project is not in archived/capture-only state.
+**Capture-only config materialization bug**: A prior bug caused `saveConfig` to write machine-scoped defaults into the committed project config tier when called from capture-only mode; the vault-gate hot path also bypassed the archived-project refusal check. If a project stuck in capture-only mode shows unexpected config entries, check for materialized defaults from this regression. Fix: call `saveConfig` only after verifying the project is not in archived/capture-only state.
 
-**Never bypass the tenancy authority for per-project team decisions**: `machineHasAnyTeam()` in `packages/myco/src/grove/project-tenancy.ts` answers "has this machine joined ANY team" — it is NOT a per-project gate. Using it for per-project outbox scoping caused the PR #508 team-sync flood (1.7M phantom rows in a non-member grove). Always use `memberProjectIdsForGrove(groveId)` to determine which projects in a grove are actually team members, and `resolveProjectTenancy(projectId)` to determine a specific project's grove and team context.
+**Never bypass the tenancy authority for per-project team decisions**: `machineHasAnyTeam()` in `packages/myco/src/grove/project-tenancy.ts` answers "has this machine joined ANY team" — it is NOT a per-project gate. Using it for per-project outbox scoping can flood a non-member grove with phantom rows. Always use `memberProjectIdsForGrove(groveId)` to determine which projects in a grove are actually team members, and `resolveProjectTenancy(projectId)` to determine a specific project's grove and team context.

@@ -55,7 +55,7 @@ Symptoms:
 - The match strings in each check don't exactly agree
 - A file could pass one check and fail the other
 
-**Real example (PR #355):** `installer.ts:1278` had regex `/\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/` while `install-helpers.ts:isMycoHookCommand` used different substring checks. When they diverged, uninstall silently failed on files that only one path recognized as Myco-owned.
+**Real example:** `installer.ts:1278` had regex `/\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/` while `install-helpers.ts:isMycoHookCommand` used different substring checks. When they diverged, uninstall silently failed on files that only one path recognized as Myco-owned.
 
 **Fix signal:** Consolidate into a single helper with a named constant for the match strings (see Procedure E2).
 

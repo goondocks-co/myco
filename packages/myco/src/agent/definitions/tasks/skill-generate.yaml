@@ -102,6 +102,13 @@ phases:
         instruction as the approval record for this candidate. Use the
         source material to ground the skill; do not broaden the skill
         beyond what the approved evidence supports.
+      - **Distill, do not transcribe.** Source evidence may contain
+        Myco release versions, PR/issue refs, dates, branch names,
+        session/spore IDs, or one-time decision state. Those facts live
+        in Myco evidence, not live skill prose. Convert them into
+        durable procedure, reference Myco when the state matters, or
+        move genuine history into `## Old patterns` /
+        `## Historical context`.
       - **Enforce the evidence contract before staging.** If
         `evidence_bundle_id` is missing, `quality_failures` is not `[]`,
         or `source_ids` is empty/malformed, report failure via
@@ -210,7 +217,14 @@ phases:
          whose load-bearing paths can't be verified against the
          current codebase — that's how hallucinated paths ship.
 
-      8. **Evidence contract:** source_ids resolve, evidence_bundle_id
+      8. **Content hygiene:** Does live procedural prose avoid Myco
+         release versions, PR/issue refs, dates, branch names,
+         session/spore IDs, and one-time decision state? The staging
+         and finalize tools run this gate too; if either rejects, clean
+         the matched spans and re-stage. Keep genuine history only in
+         `## Old patterns` / `## Historical context`.
+
+      9. **Evidence contract:** source_ids resolve, evidence_bundle_id
          is present, quality_failures is empty, and coverage_matches are
          reflected by a clear skill boundary or supersession rationale.
          If this fails, report failure and do not finalize.

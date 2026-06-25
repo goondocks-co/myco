@@ -239,4 +239,4 @@ Implement GitHub token configuration and machine-scoped auth for release provena
 
 **Self-healing orphan rows**: Rows with `synced_at IS NULL` must be treated as dirty to force them through the sync pipeline until they reach a steady state.
 
-**Config Routes Cross-Project Bleed**: Six config routes in `packages/myco/src/daemon/main.ts` (lines 910, 917–919, 992–994, 1003–1004) must use `req.requestContext?.projectVaultDir` instead of `bootstrapVaultDir`. Hard-wiring `bootstrapVaultDir` causes settings to leak across projects within the same machine. Regression test: `tests/daemon/api/config.test.ts` (PR #280).
+**Config Routes Cross-Project Bleed**: Six config routes in `packages/myco/src/daemon/main.ts` (lines 910, 917–919, 992–994, 1003–1004) must use `req.requestContext?.projectVaultDir` instead of `bootstrapVaultDir`. Hard-wiring `bootstrapVaultDir` causes settings to leak across projects within the same machine. Regression test: `tests/daemon/api/config.test.ts`.

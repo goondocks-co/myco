@@ -36,7 +36,7 @@ Myco daemon processes require careful lifecycle management to ensure reliable op
 
 ### Service-Aware Daemon Control via launchd Integration
 
-**Critical architecture**: Grove's launchd service installer (PR #267) creates a permanent service (co.goondocks.myco-dev) with KeepAlive=true. This fundamentally changes daemon control from direct process management to service-aware coordination:
+**Critical architecture**: Grove's launchd service installer creates a permanent service (co.goondocks.myco-dev) with KeepAlive=true. This fundamentally changes daemon control from direct process management to service-aware coordination:
 
 ```typescript
 // Service-Aware Daemon Control - Three Unified Code Paths
@@ -91,7 +91,7 @@ Grove architecture uses a global daemon that manages all projects through centra
 
 ### Three-Tier Daemon Discovery and Self-Reconciliation Pattern
 
-**Critical discovery** (v0.27.17): The daemon's initialization must follow three distinct tiers to prevent resource conflicts and enable safe cleanup of stale process records:
+**Critical discovery**: The daemon's initialization must follow three distinct tiers to prevent resource conflicts and enable safe cleanup of stale process records:
 
 1. **Tier 1 — Process discovery and feasibility check**: Before allocating port or lock, check if an existing daemon is alive
    ```typescript
@@ -121,7 +121,7 @@ Grove architecture uses a global daemon that manages all projects through centra
 
 ### Self-Reconciliation Interval Pattern
 
-**New operational pattern** (v0.27.17): Daemon must periodically reconcile its own state and detect stale process records:
+**Operational pattern**: Daemon must periodically reconcile its own state and detect stale process records:
 
 ```typescript
 // Run every 5 minutes during daemon operation
@@ -157,7 +157,7 @@ setInterval(runDaemonSelfReconciliation, 5 * 60 * 1000); // Every 5 minutes
 
 ### NPM Package Upgrade Binary Version Mismatch Detection
 
-**Critical issue**: npm install -g @goondocks/myco@latest doesn't restart daemon, causing stale binary to serve incorrect responses.
+**Critical issue**: npm install -g @goondocks/myco doesn't restart daemon, causing stale binary to serve incorrect responses.
 
 ```bash
 # Detect binary version mismatch after npm upgrade
@@ -288,7 +288,7 @@ async function serviceAwareDaemonEviction(): Promise<void> {
 **Resolution**: MCP stdio bridge now includes automatic daemon-restart recovery with indefinite reconnect capability
 
 ```typescript
-// MCP Bridge Auto-Recovery (v0.27.11+)
+// MCP Bridge Auto-Recovery
 class McpStdioBridge {
   private static readonly DAEMON_HEARTBEAT_INTERVAL_MS = 5000;
   

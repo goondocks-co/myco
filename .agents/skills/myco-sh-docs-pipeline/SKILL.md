@@ -116,7 +116,7 @@ The discovery layer (robots.txt / sitemap.xml / llms.txt / JSON-LD) is independe
 | `docs/llms.txt` | Curated LLM-readable entry point (Markdown) | Adding or significantly revising a guide |
 | `docs/index.html` (head) | Canonical URL, robots meta, OG/Twitter tags, JSON-LD | Changing site name, URL, or description |
 
-**`docs/robots.txt` — currently allows:**
+**`docs/robots.txt` — allowed crawler entries:**
 - `GPTBot` (OpenAI training)
 - `ClaudeBot` (Anthropic)
 - `PerplexityBot`
@@ -138,7 +138,7 @@ The deploy workflow (`.github/workflows/docs.yml`) triggers on push to `main` (w
 
 **Version pairing rule — do not mix major versions:**
 
-GitHub hard-deprecated `upload-pages-artifact@v3` + `deploy-pages@v4` on **2025-01-30**. The v3 artifact can no longer hand off to the deploy action — workflows using this pairing fail silently or with an opaque error at the deploy step (the upload step reports success, making the failure hard to diagnose).
+GitHub Pages actions must use compatible major versions. A mismatched `upload-pages-artifact` / `deploy-pages` pair can fail silently or with an opaque error at the deploy step (the upload step reports success, making the failure hard to diagnose).
 
 Always use a matched pair. The current workflow uses v4:
 
@@ -149,7 +149,7 @@ Always use a matched pair. The current workflow uses v4:
     path: docs/_site
 - uses: actions/deploy-pages@v4
 
-# If bumping to v5 (latest as of 2025) — bump BOTH at the same time:
+# If bumping to v5, bump BOTH at the same time:
 - uses: actions/upload-pages-artifact@v5
   with:
     path: docs/_site
@@ -207,7 +207,7 @@ Then run a BFS link crawler against `http://localhost:8080` and assert all inter
 
 **`sitemap.xml` is generated, not committed.** It lives in `docs/_site/sitemap.xml` after a build — do not create or maintain a static `docs/sitemap.xml`. Keeping guide URLs current in `sitemap.xml` is automatic once the NAV manifest is accurate.
 
-**Link rewriting is path-relative.** If you restructure the `docs/` directory hierarchy (e.g., add subdirectories like `architecture/`), re-verify the out-of-tree link detection logic in `docs/lib/links.mjs`. Links currently classified as out-of-tree (rewritten to GitHub blob URLs) may become in-tree or vice versa.
+**Link rewriting is path-relative.** If you restructure the `docs/` directory hierarchy (e.g., add subdirectories like `architecture/`), re-verify the out-of-tree link detection logic in `docs/lib/links.mjs`. Links classified as out-of-tree (rewritten to GitHub blob URLs) may become in-tree or vice versa.
 
 **`llms.txt` links must point to `.md` URLs, not `.html` URLs.** LLMs benefit from the raw Markdown. The rendered HTML is for humans. Mixing this up undermines the dual-surface strategy. The build verifies `llms.txt` `.md` links resolve — broken ones abort the build.
 

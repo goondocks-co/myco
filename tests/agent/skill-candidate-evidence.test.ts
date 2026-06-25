@@ -177,6 +177,27 @@ describe('assessCandidateEvidence', () => {
     expect(result.score).toBeCloseTo(0.8, 5);
   });
 
+  it('keeps release and branch tokens available for overlap scoring', () => {
+    const result = assessCandidateEvidence({
+      topic: 'Release branch cleanup',
+      rationale: 'Anchored to `packages/myco/src/agent/skill-candidate-evidence.ts`.',
+      sourceRefs: [
+        { id: 'spore-1', type: 'spore' },
+        { id: 'spore-2', type: 'spore' },
+        { id: 'session-1', type: 'session' },
+      ],
+      sourceSessions: ['session-1', 'session-2'],
+      activeSkills: [
+        {
+          name: 'release-branch-cleanup',
+          description: 'Use when handling release branch cleanup in Myco skill candidate evidence.',
+        },
+      ],
+    });
+
+    expect(result.failures).toContain('active-skill-overlap');
+  });
+
   it('counts distinct valid source refs for the source gate', () => {
     const result = assessCandidateEvidence({
       topic: 'Daemon restart workflow',
@@ -480,6 +501,52 @@ describe('buildCandidateEvidenceBundles', () => {
     expect(bundles[0].failures).not.toContain('missing-project-anchor');
     expect(bundles[0].score).toBeGreaterThan(0.8);
     expect(bundles[0].topic).toContain('projectscope');
+  });
+
+  it('scrubs release-state tokens from generated bundle topics', () => {
+    const bundles = buildCandidateEvidenceBundles({
+      wisdomSpores: [
+        {
+          id: 'spore-wisdom-skill-survey',
+          observation_type: 'wisdom',
+          session_id: 'session-1',
+          content: 'Release v0.27.17 PR508 Issue #348 alpha1 beta2 June branches cleanup in `packages/myco/src/agent/skill-candidate-evidence.ts` should route topic selection through durable skill lifecycle procedures.',
+          importance: 9,
+          properties: JSON.stringify({ consolidated_from: ['spore-source-1', 'spore-source-2'] }),
+          created_at: 300,
+        },
+      ],
+      decisions: [
+        {
+          id: 'spore-decision-skill-survey',
+          observation_type: 'decision',
+          session_id: 'session-2',
+          content: 'Skill lifecycle topic selection in `packages/myco/src/agent/skill-candidate-evidence.ts` should prefer durable procedure names over release branch tokens.',
+          importance: 8,
+          created_at: 200,
+        },
+      ],
+      gotchas: [
+        {
+          id: 'spore-gotcha-skill-survey',
+          observation_type: 'gotcha',
+          session_id: 'session-1',
+          content: 'July rc3 branch tokens in `packages/myco/src/agent/skill-candidate-evidence.ts` can make skill survey candidates look like one-time fixes.',
+          importance: 7,
+          created_at: 100,
+        },
+      ],
+      sessions: [
+        { id: 'session-1', summary: 'Skill lifecycle topic selection through skill-candidate-evidence.ts.' },
+        { id: 'session-2', summary: 'Durable skill survey candidate procedure naming.' },
+      ],
+      activeSkills: [],
+      existingCandidates: [],
+    });
+
+    expect(bundles.length).toBeGreaterThan(0);
+    expect(bundles[0].topic).not.toMatch(/\b(?:release|alpha1|beta2|june|july|branch|branche|branches|issue|pr508|348|508|rc3)\b/);
+    expect(bundles[0].topic).toContain('cleanup');
   });
 
   it('does not collapse distinct strong bundles that only share a broad file anchor', () => {

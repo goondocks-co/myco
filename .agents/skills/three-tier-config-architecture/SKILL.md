@@ -205,7 +205,7 @@ When moving a field from one tier to another:
 
 ### 3. Maintain Backward Compatibility During Migration
 
-During the transition window, code must be able to read from both the old and new locations. Use `loadMergedConfig()` — it reads all tiers and applies precedence — so code that reads from the merged result automatically picks up values from whichever tier they currently live in. Avoid reading individual tier files directly during migration windows; always go through `loadMergedConfig()`.
+During the transition window, code must be able to read from both the old and new locations. Use `loadMergedConfig()` — it reads all tiers and applies precedence — so code that reads from the merged result automatically picks up values from whichever tier they live in during migration. Avoid reading individual tier files directly during migration windows; always go through `loadMergedConfig()`.
 
 ### 4. Migration Validation
 

@@ -110,7 +110,7 @@ Backfills must complete before `currentVersion` advances — never split DDL and
 
 ### 5. Update the schema version stored in the database
 
-The migration runner reads and writes `PRAGMA user_version` (or a `meta` table row) to know which version the vault is currently at. Confirm the runner pattern:
+The migration runner reads and writes `PRAGMA user_version` (or a `meta` table row) to know which version the vault is at. Confirm the runner pattern:
 
 ```bash
 grep -r "user_version\|schemaVersion\|meta.*version" packages/myco/src --include="*.ts"
@@ -220,7 +220,7 @@ grep -r "schema v" memory/ --include="*.md"
 
 **NOT NULL columns without defaults will fail on existing data.** Either provide a DEFAULT in the DDL, or backfill immediately after the ALTER TABLE and before advancing `currentVersion`.
 
-**SQLite doesn't support DROP COLUMN before version 3.35.0.** If targeting older SQLite (common in embedded contexts), use the rename→create→copy→drop pattern instead.
+**Older SQLite releases may not support DROP COLUMN.** If targeting older SQLite (common in embedded contexts), use the rename→create→copy→drop pattern instead.
 
 **Transaction wrapping matters for multi-statement migrations.** If a version block executes multiple statements and one fails mid-way, the vault can be left in a partially migrated state. Wrap complex blocks:
 
@@ -233,4 +233,4 @@ db.transaction(() => {
 })();
 ```
 
-**D1 schema drift causes team sync failures.** Always sync D1 schema changes using the procedures in step 6. Sessions 6193f54f, 0440b9ac, and 4ee6eeec hit D1 drift failures from missing this step.
+**D1 schema drift causes team sync failures.** Always sync D1 schema changes using the procedures in step 6. Missing this step creates runtime drift between the daemon schema and the worker database.

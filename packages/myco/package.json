@@ -30,6 +30,8 @@
     "test:fast": "cd ../.. && MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
     "test:integration": "cd ../.. && MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
     "test:watch": "cd ../.. && bun test --watch",
+    "lint:skills": "tsx scripts/lint-skill-content.ts",
+    "lint:skills:strict": "tsx scripts/lint-skill-content.ts --strict",
     "lint": "tsc --noEmit"
   },
   "publishConfig": {

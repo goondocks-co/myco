@@ -69,7 +69,7 @@ The Myco capture pipeline can fail silently while the daemon appears healthy—s
 
 ## Procedure 2: Diagnosing Failure Modes with Three-Tier Daemon.lock Discovery
 
-**Three-Tier Discovery Pattern (v0.27.17+):**
+**Three-tier discovery pattern:**
 The daemon discovery system uses three tiers to locate and validate daemon.lock:
 
 1. **Tier 1 — Explicit Path Resolution:**
@@ -155,7 +155,7 @@ await client.capturePost('/events', {
 - Health checks, context switches, stats reads
 - These get basic `spawnDaemon()` recovery, appropriate for unmanaged daemons
 
-**Self-Reconcile Architecture (v0.27.17+):**
+**Self-reconcile architecture:**
 Self-reconciliation is now decoupled from PowerManager scheduling. It is started via `startSelfReconcileLoop` in `packages/myco/src/daemon/self-reconcile-wiring.ts` on a dedicated interval:
 
 ```typescript
@@ -226,7 +226,7 @@ When capture appears degraded (incomplete sessions, missing prompts, tool call f
 ### Layer 1: Hook Diagnosis
 **Question:** Did the hook fire and reach the daemon?
 
-**Error Semantics (v0.27.17+):**
+**Error semantics:**
 - **transport-failure**: Network/socket level issue (daemon unreachable, connection reset, timeout)
 - **http-error**: HTTP-level failure (4xx/5xx response, routing middleware rejected request)
 - **daemon-ignored**: Daemon received but intentionally filtered (rule-based drops, phantom defense)
@@ -300,7 +300,7 @@ ps -o pid,ppid,cmd | grep "myco-run mcp"
 kill <stale-pid>
 ```
 
-**Architecture:** Post-PR #286, a 10s ppid watchdog auto-detects orphans. If seeing 21+ hour old processes, the watchdog isn't running.
+**Architecture:** A ppid watchdog auto-detects orphans. If seeing 21+ hour old processes, the watchdog isn't running.
 
 ### Daemon Restart Detection
 After daemon restart, MCP bridges retain stdio to the old process.
@@ -317,10 +317,10 @@ pkill -f "myco-run mcp"
 # 3. Fresh bridge reads new daemon.json (new port)
 ```
 
-**Expected recovery time:** ~60s from daemon restart (post-PR #286 heartbeat).
+**Expected recovery time:** ~60s from daemon restart once the bridge heartbeat notices the change.
 
 ### MCP Observability
-Post-PR #286, every state transition logs to stderr:
+Every state transition logs to stderr:
 
 ```bash
 # Check MCP bridge state transitions
@@ -376,7 +376,7 @@ HAVING COUNT(*) > 1;"
 ### Architecture Context
 Double-fire hooks are **normal and expected**. Symbionts and agents consume hook configuration from multiple sources. The system must accommodate this architecturally.
 
-### RC-7 Content-Keyed Convergence Model (PRs #472–#475)
+### Content-Keyed Convergence Model
 Buffer replay was rebuilt from count-based divergence to **content-keyed convergence**: buffered events are matched against existing DB records using a stable fingerprint key. Replay is idempotent — replaying the same event twice produces one record, not two.
 
 ```typescript
@@ -422,7 +422,7 @@ const key = eventDedupKey(event);
 
 **No-protocol-skew contract:** Hook buffer-fallback logic in `packages/myco/src/hooks/send-event.ts` is vintage-blind — it does not inspect hook or daemon version numbers. This is safe because the update installer rewrites every hook and plugin file synchronously before restarting the daemon, ensuring hooks and daemon always co-ship at the same version. The only skew window is seconds-long during an in-flight update, and content-keyed convergence collapses any duplicate buffered events on replay.
 
-**Dev daemon `symbiont-config` claim hijacks global Claude Code capture (field incident 2026-06-17):** A dogfood `service-dev` daemon holding the `symbiont-config` subsystem claim can silently embed its own dev binary path into global agent hook config, causing ALL Claude Code capture machine-wide to be dropped for non-dogfood projects while Pi/MCP agents continue capturing normally. Root cause: `packages/myco/src/symbionts/installer.ts`'s `resolveManagedBinaryPath()` previously fell back to the daemon's own executable path, letting a dev daemon embed its binary path into shared global settings. Fix (2026-06-17): `resolveManagedBinaryPath()` now resolves in daemon-agnostic priority order — machine runtime pin → converged managed binary → daemon executable as absolute last resort — preventing this class of cross-daemon contamination. Recovery: re-run symbiont install on affected projects to regenerate hooks with the correct managed binary path.
+**Dev daemon `symbiont-config` claim hijacks global Claude Code capture:** A dogfood `service-dev` daemon holding the `symbiont-config` subsystem claim can silently embed its own dev binary path into global agent hook config, causing ALL Claude Code capture machine-wide to be dropped for non-dogfood projects while Pi/MCP agents continue capturing normally. Root cause: `packages/myco/src/symbionts/installer.ts`'s `resolveManagedBinaryPath()` previously fell back to the daemon's own executable path, letting a dev daemon embed its binary path into shared global settings. Fix: `resolveManagedBinaryPath()` resolves in daemon-agnostic priority order — machine runtime pin → converged managed binary → daemon executable as absolute last resort — preventing this class of cross-daemon contamination. Recovery: re-run symbiont install on affected projects to regenerate hooks with the correct managed binary path.
 
 **Windows bare-git ENOENT = P1 silent capture loss:** Windows GUI agents (Claude Desktop, Cursor) inherit a stripped PATH that excludes Git's installation directory. Any bare `git` spawn on the critical capture path — such as in the Pi plugin's commit-range detection or the release-provenance reconciler — throws `ENOENT` on Windows and silently drops the entire capture event. Fix: probe and cache the absolute path to the git binary at startup rather than relying on PATH, or guard git-dependent capture code with an explicit PATH expansion for Windows. Do not assume `git` is resolvable on PATH in Windows GUI agent environments.
 

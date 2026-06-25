@@ -1,0 +1,106 @@
+# Copyright 2026 Goondocks.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: skill-decontaminate
+displayName: Skill Decontamination Sweep
+description: >-
+  One-shot custom task that rewrites existing Myco-managed skills so live
+  procedural prose contains durable procedure instead of release, PR, date,
+  branch, session, or decision-state artifacts.
+agent: myco-agent
+prompt: >-
+  Sweep every active Myco-managed skill once, using the content-contamination
+  scanner as the targeting signal. This is a migration recipe for existing
+  skills, not a recurring evolution policy and not a CI lint command.
+isDefault: false
+reasoningLevel: default
+maxTurns: 96
+timeoutSeconds: 3600
+schedule:
+  enabled: false
+  intervalSeconds: 86400
+  runIn:
+    - idle
+    - sleep
+phases:
+  - name: sweep
+    prompt: |
+      Run a one-time content cleanup across ALL active Myco-managed skills.
+      Do not apply skill-evolve's CURRENT bias, drift selection, or per-run
+      batch cap. Process every active skill returned by the inventory in this
+      run. If the inventory is too large for the turn budget, report the exact
+      cutoff and rerun requirement instead of silently stopping.
+
+      This is content migration, not CI lint. Do not run shell lint commands.
+      Use `vault_scan_skill_contamination` with `strict: true` to identify
+      release, PR, issue, date, branch, session, spore, short-id, and temporal
+      phrasing spans in live procedural prose.
+
+      ## Procedure
+
+      1. Call `vault_skill_records` with:
+         `{ "action": "list", "status": "active", "limit": 500 }`.
+
+      2. For each returned skill, call `vault_skill_records` with:
+         `{ "action": "get", "id": "<skill id or name>" }`.
+         The get result must include the current `content`. If content is
+         missing, record the skill as skipped with reason `missing_content`.
+
+      3. Scan the content with `vault_scan_skill_contamination`:
+         `{ "content": "<full SKILL.md>", "strict": true }`.
+         A clean scan means no write. Record the skill as clean and continue.
+
+      4. For every hard or warn span, rewrite only the matched live-prose
+         neighborhood. Distill point-in-time text into durable procedure:
+         - release/version facts become capability or behavior descriptions;
+         - PR, issue, session, spore, branch, and date references are removed;
+         - temporal wording becomes stable wording;
+         - genuine history is kept only when useful under `## Old patterns` or
+           `## Historical context`.
+
+         Preserve protected frontmatter exactly, especially `user-invocable`
+         and `allowed-tools`. Preserve real file paths, commands, function
+         names, and code examples unless the matched span itself proves they
+         are historical clutter.
+
+      5. Re-scan the corrected content with `strict: true` before writing.
+         Do not call `vault_write_skill` until the proposed content has
+         `ok: true`, `hard_count: 0`, and `warn_count: 0`.
+
+      6. Call `vault_write_skill` with the existing record's name,
+         display name, description, source IDs, and the corrected content.
+         Use rationale:
+         "One-shot content hygiene migration: remove point-in-time skill prose."
+
+      7. After the write, call `vault_skill_records` get and re-scan the stored
+         content with `strict: true`. If the stored content is not clean, report
+         failure for that skill and continue to the next one.
+
+      ## Output
+
+      Finish with one `vault_report` call:
+      - action: `skill-decontaminate`
+      - summary: counts for clean, updated, skipped, and failed skills
+      - details: per-skill entries with name, action, hard_count, warn_count,
+        and any error returned by `vault_write_skill`
+
+      Idempotency requirement: a second run over the same inventory should
+      produce zero writes unless skills changed between runs.
+    tools:
+      - vault_skill_records
+      - vault_scan_skill_contamination
+      - vault_write_skill
+      - vault_report
+    maxTurns: 96
+    required: true
