@@ -62,6 +62,21 @@ describe('renderLaunchdPlist', () => {
     expect(plist).not.toContain('<key>KeepAlive</key>');
   });
 
+  test('KeepAlive is a SuccessfulExit=false dict, never a bare <true/>', () => {
+    // Restart-on-failure-ONLY parity with systemd (Restart=on-failure) and the
+    // Windows launcher (errorlevel equ 0 -> stop). A bare <true/> respawns a
+    // deliberate step-aside exit(0) and hot-loops the launchd job.
+    const plist = renderLaunchdPlist(baseSpec);
+    const keepAliveBlock = plist
+      .split('<key>KeepAlive</key>')[1]
+      ?.split('<key>ThrottleInterval</key>')[0] ?? '';
+    expect(keepAliveBlock).toContain('<dict>');
+    expect(keepAliveBlock).toContain('<key>SuccessfulExit</key>');
+    expect(keepAliveBlock).toContain('<false/>');
+    // The bare form (KeepAlive immediately followed by <true/>) must be gone.
+    expect(plist).not.toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
+  });
+
   test('raises NumberOfFiles past the launchd-session default of 256', () => {
     // launchd inherits the user session's `maxfiles` ceiling, which on
     // macOS is typically 256. A burst of concurrent HTTP connections

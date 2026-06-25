@@ -5,17 +5,17 @@ import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-b
 import { serviceLabel } from '../service/labels.js';
 import { isDefaultMycoHome, resolveMycoHome, resolveServiceDir, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 
-export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'status';
+export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'status' | 'reconcile';
 
 export interface ParsedServiceArgs {
   action: ServiceAction;
 }
 
-const ACTIONS: ServiceAction[] = ['install', 'uninstall', 'start', 'stop', 'restart', 'status'];
+const ACTIONS: ServiceAction[] = ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'reconcile'];
 
 export function parseServiceArgs(args: string[]): ParsedServiceArgs {
   if (args.length === 0) {
-    throw new Error('Usage: myco service <install|uninstall|start|stop|restart|status>');
+    throw new Error('Usage: myco service <install|uninstall|start|stop|restart|status|reconcile>');
   }
   const action = args[0] as ServiceAction;
   if (!ACTIONS.includes(action)) {
@@ -76,7 +76,7 @@ export function assertSafeServiceMutation(
   execPath: string,
   mycoHome: string = resolveMycoHome(),
 ): string | null {
-  const mutating: ReadonlySet<ServiceAction> = new Set(['install', 'uninstall', 'start', 'stop', 'restart']);
+  const mutating: ReadonlySet<ServiceAction> = new Set(['install', 'uninstall', 'start', 'stop', 'restart', 'reconcile']);
   if (!isDefaultMycoHome(mycoHome)) return null;
   if (!mutating.has(parsed.action)) return null;
   if (!looksLikeDevBuildExecutable(execPath)) return null;
@@ -135,5 +135,57 @@ export async function run(args: string[]): Promise<void> {
       console.log(JSON.stringify({ label, platform: mgr.platformName, ...st }, null, 2));
       return;
     }
+    case 'reconcile': {
+      await reconcile(mgr, mycoHome, label);
+      return;
+    }
   }
+}
+
+/**
+ * Re-establish exactly ONE supervisor-tracked daemon for this home, healing a
+ * detached/looping state: a daemon that direct-spawned (detached from its
+ * launchd job) keeps the lock and serves while the job hot-loops, respawning
+ * step-aside daemons.
+ *
+ * Safe BECAUSE it runs from the CLI (a separate process), so the cooperative
+ * shutdown + bootout/bootstrap never targets the caller's own process:
+ *   1. Cooperative-shutdown whatever currently holds the port (the detached
+ *      usurper) so it drains and releases the lifecycle lock.
+ *   2. install(force) re-bootstraps the on-disk (corrected) plist — the loaded
+ *      policy becomes current AND a single tracked daemon comes up under it.
+ *   3. start ensures it is running; it claims the now-free lock and serves.
+ *
+ * Exported so the daemon's autonomous detached-state detection and `myco doctor`
+ * can drive the same heal.
+ */
+export async function reconcile(
+  mgr: ReturnType<typeof getServiceManager>,
+  mycoHome: string,
+  label: string,
+): Promise<void> {
+  const { findInstalledServiceLabel } = await import('../daemon/api/restart.js');
+  const found = await findInstalledServiceLabel(mgr, mycoHome);
+  if (!found) {
+    console.log(`No managed service installed for ${label}; nothing to reconcile.`);
+    return;
+  }
+
+  const { resolveGlobalDaemonPort } = await import('../daemon/service-state.js');
+  const { requestCooperativeShutdown } = await import('../service/cooperative-shutdown.js');
+  const port = resolveGlobalDaemonPort(mycoHome);
+  const stopped = await requestCooperativeShutdown(port);
+  if (!stopped) {
+    // The serving daemon did not drain in time. Re-bootstrap still installs the
+    // correct policy + a tracked daemon, but if a wedged daemon keeps the lock
+    // the fresh one will step aside — surface that rather than claim success.
+    console.warn(
+      `Warning: daemon on port ${port} did not confirm shutdown; if it is wedged, kill it manually and re-run.`,
+    );
+  }
+
+  const spec = buildServiceSpec({ mycoHome, executable: resolveServiceExecutable(mycoHome) });
+  await mgr.install(spec, { force: true });
+  await mgr.start(label);
+  console.log(`Reconciled ${label}: one ${mgr.platformName}-tracked daemon.`);
 }

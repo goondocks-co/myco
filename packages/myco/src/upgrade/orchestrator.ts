@@ -39,10 +39,13 @@ import { spawn } from 'node:child_process';
 
 import {
   UPDATE_ERROR_PATH,
+  UPDATE_EVENTS_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
 } from '../constants/update.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
+import { resolveServiceDaemonStatePath } from '../grove/paths.js';
+import { appendUpdateEvent, type UpdateEventLevel } from './update-events.js';
 import type { ServiceManager } from '../service/types.js';
 
 // ---------------------------------------------------------------------------
@@ -111,6 +114,9 @@ export interface ApplyAdoptParams {
   healthIntervalMs: number;
   /** Error side-channel path. Defaults to UPDATE_ERROR_PATH; overridable for tests. */
   errorPath?: string;
+  /** Adopt-event side-channel path. Defaults to UPDATE_EVENTS_PATH; overridable
+   *  for hermetic tests (the default is machine-global, not MYCO_HOME-scoped). */
+  updateEventsPath?: string;
   /**
    * Absolute path to the `update.in-progress` sentinel. Cleared on every
    * abort/restore exit path so a failed adopt never locks out future updates
@@ -143,6 +149,9 @@ export interface ApplyUpdateDeps {
   runFanout: (mycoBinary: string, logPath: string) => Promise<void>;
   /** Probe the daemon /health endpoint; null on any failure. */
   probeHealth: (daemonPort: number) => Promise<{ version?: string } | null>;
+  /** Read the daemon's recorded version from daemon.json, gated on a live pid;
+   *  null when absent/stale. The probe-independent second health signal. */
+  probeDaemonState: (home: string) => { version?: string } | null;
   /** Sleep helper (overridable so tests don't actually wait). */
   sleep: (ms: number) => Promise<void>;
   /**
@@ -190,6 +199,16 @@ export interface ApplyUpdateDeps {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * How many times `runAdopt` restarts onto the new binary and re-watches health
+ * before restoring the previous version. >1 so a single transient failure (a
+ * respawn racing the restart) converges instead of immediately rolling back —
+ * the convergence the manual one-shot apply needs and the idle auto-adopt
+ * previously provided only via its next-tick retry. Kept small so a genuinely
+ * broken binary still rolls back promptly.
+ */
+const ADOPT_RESTART_ATTEMPTS = 2;
 
 /**
  * Spawn `<bin> <args>` cross-platform without letting the shell word-split a
@@ -258,12 +277,17 @@ function runFanout(mycoBinary: string, logPath: string): Promise<void> {
   });
 }
 
-/** Probe /health with a ~2s timeout; returns the parsed body or null. */
+/** Probe /health; returns the parsed body or null. `Connection: close` forces a
+ *  FRESH connection every probe so a pooled/keep-alive socket left dead by the
+ *  daemon's restart can never poison the whole health-watch. */
 async function probeHealth(daemonPort: number): Promise<{ version?: string } | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2000);
+  const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort}/health`, { signal: controller.signal });
+    const res = await fetch(`http://127.0.0.1:${daemonPort}/health`, {
+      signal: controller.signal,
+      headers: { connection: 'close' },
+    });
     if (!res.ok) return null;
     return (await res.json()) as { version?: string };
   } catch {
@@ -273,12 +297,35 @@ async function probeHealth(daemonPort: number): Promise<{ version?: string } | n
   }
 }
 
+const HEALTH_PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * Cross-check the daemon's OWN recorded state: the version it wrote to
+ * `<home>/service/daemon.json` on startup, gated on that pid being alive. This
+ * is a file read + process-liveness check — immune to the HTTP-probe flakiness
+ * that would otherwise roll back a demonstrably-healthy adopt. The health-watch
+ * succeeds when EITHER /health OR this agrees the target is live, so a single
+ * fragile signal can no longer fail a good update.
+ */
+function probeDaemonState(home: string): { version?: string } | null {
+  try {
+    const raw = fs.readFileSync(resolveServiceDaemonStatePath(home), 'utf-8');
+    const d = JSON.parse(raw) as { version?: string; pid?: number };
+    if (!d.version || typeof d.pid !== 'number') return null;
+    try { process.kill(d.pid, 0); } catch { return null; } // pid not alive → stale record
+    return { version: d.version };
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_DEPS: ApplyUpdateDeps = {
   getServiceManager,
   runNpm,
   spawnDetached,
   runFanout,
   probeHealth,
+  probeDaemonState,
   sleep,
 };
 
@@ -435,9 +482,23 @@ async function resolvePruneVersions(
 // Adopt path
 // ---------------------------------------------------------------------------
 
+interface HealthWatchResult {
+  healthy: boolean;
+  /** Last version EITHER signal reported (null = never reachable in the window).
+   *  The adopt-failure discriminator: a window stuck on the OLD version means the
+   *  restart never brought up the target; null means the daemon stayed down. */
+  lastSeenVersion: string | null;
+  /** Which signal confirmed the target — for the narration. */
+  via: 'health' | 'daemon-state' | null;
+}
+
 /**
- * Poll /health up to `maxHealthAttempts` times for `targetVersion`.
- * Returns true on success.
+ * Watch for `targetVersion` up to `maxHealthAttempts` times using TWO
+ * independent signals each poll: the HTTP /health probe AND the daemon's own
+ * `daemon.json` record (version + live pid). Either confirming the target is
+ * success — so a flaky HTTP probe can no longer roll back a daemon that is
+ * demonstrably running the new version. Reports the last version seen + which
+ * signal won so the caller can narrate WHY a watch failed.
  */
 async function pollHealthForAdopt(
   deps: ApplyUpdateDeps,
@@ -445,17 +506,29 @@ async function pollHealthForAdopt(
   targetVersion: string,
   maxHealthAttempts: number,
   healthIntervalMs: number,
-): Promise<boolean> {
+  home: string,
+): Promise<HealthWatchResult> {
+  let lastSeenVersion: string | null = null;
   for (let i = 0; i < maxHealthAttempts; i += 1) {
     if (i > 0) await deps.sleep(healthIntervalMs);
+    // Signal 1: HTTP /health (fresh connection per probe).
     try {
       const body = await deps.probeHealth(daemonPort);
-      if (body && body.version === targetVersion) return true;
+      if (body) {
+        lastSeenVersion = body.version ?? lastSeenVersion;
+        if (body.version === targetVersion) return { healthy: true, lastSeenVersion, via: 'health' };
+      }
     } catch {
-      /* probe failure → not yet healthy */
+      /* probe failure → fall through to the file signal */
+    }
+    // Signal 2: daemon.json (version + live pid). Probe-independent.
+    const state = deps.probeDaemonState(home);
+    if (state) {
+      lastSeenVersion = state.version ?? lastSeenVersion;
+      if (state.version === targetVersion) return { healthy: true, lastSeenVersion, via: 'daemon-state' };
     }
   }
-  return false;
+  return { healthy: false, lastSeenVersion, via: null };
 }
 
 /**
@@ -470,6 +543,17 @@ async function pollHealthForAdopt(
 async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<void> {
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
 
+  // Observability side-channel — the daemon replays these into log_entries on
+  // its next startup (see update-events.ts). Path is injectable for hermetic tests.
+  const eventsPath = p.updateEventsPath ?? UPDATE_EVENTS_PATH;
+  const event = (level: UpdateEventLevel, message: string, data?: Record<string, unknown>): void =>
+    appendUpdateEvent(eventsPath, level, message, data);
+
+  event('info', 'adopt started', {
+    from: p.prevVersion, to: p.targetVersion, platform: p.platform,
+    daemon_port: p.daemonPort, service_managed_label: p.serviceManagedLabel ?? null,
+  });
+
   const errorPath = p.errorPath ?? UPDATE_ERROR_PATH;
   const writeError = (message: string): void => {
     writeFileSafe(errorPath, JSON.stringify({ error: message }));
@@ -483,6 +567,9 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
   // --- Step 1: cooperative stop ---
   const cooperativeShutdown = await resolveRequestCooperativeShutdown(deps);
   const stopConfirmed = await cooperativeShutdown(p.daemonPort);
+  event('info', stopConfirmed ? 'cooperative stop confirmed' : 'cooperative stop NOT confirmed', {
+    daemon_port: p.daemonPort,
+  });
 
   // --- Step 2: cross-platform stop-confirm gate ---
   // win32 invariant: NEVER copy over a live image (Windows locks running .exe
@@ -530,22 +617,46 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
     return;
   }
 
-  // --- Step 4: restart onto the new binary ---
+  // --- Step 4+5: restart onto the new binary, then confirm it reaches the
+  // target version — RETRIED a bounded number of times before restoring.
   // Past this point the daemon MUST come back. Wrap in try/catch so an
   // unexpected throw (e.g. a deps bug) still ends in a final restart attempt.
   try {
-    await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
-
-    // --- Step 5: health-watch ---
-    const healthy = await pollHealthForAdopt(
-      deps,
-      p.daemonPort,
-      p.targetVersion,
-      p.maxHealthAttempts,
-      p.healthIntervalMs,
-    );
+    // A single restart can fail to "take" transiently (a respawn racing the
+    // restart during the shutdown window, the supervisor not yet re-adopting).
+    // Retrying the restart+health-watch makes BOTH entry points converge through
+    // this one shared path: the manual one-shot apply now lands reliably instead
+    // of relying on the idle auto-adopt's next-tick retry to eventually fix it.
+    // The binary was already copied in Step 3, so each retry only re-restarts —
+    // never re-copies. A genuinely broken binary that never reaches the target
+    // version exhausts the attempts and falls through to the restore below.
+    let healthy = false;
+    for (let attempt = 1; attempt <= ADOPT_RESTART_ATTEMPTS; attempt += 1) {
+      event('info', 'restart onto target', {
+        attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
+        service_managed_label: p.serviceManagedLabel ?? null,
+      });
+      await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
+      const watch = await pollHealthForAdopt(
+        deps,
+        p.daemonPort,
+        p.targetVersion,
+        p.maxHealthAttempts,
+        p.healthIntervalMs,
+        p.home,
+      );
+      healthy = watch.healthy;
+      event(healthy ? 'info' : 'warn', healthy ? 'target healthy' : 'health-watch did not reach target', {
+        attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
+        last_seen_version: watch.lastSeenVersion, // OLD version = restart never took; null = daemon stayed down
+        via: watch.via, // 'health' = HTTP probe, 'daemon-state' = daemon.json cross-check
+        health_polls: p.maxHealthAttempts, poll_interval_ms: p.healthIntervalMs,
+      });
+      if (healthy || attempt === ADOPT_RESTART_ATTEMPTS) break;
+    }
 
     if (healthy) {
+      event('info', 'adopt succeeded', { version: p.targetVersion, from: p.prevVersion });
       // Success: prune old versions, clear error, clear sentinel.
       // The daemon-startup clear fires when the new daemon sees targetVersion ==
       // sentinel.targetVersion — but we also clear here so the sentinel is gone
@@ -573,8 +684,12 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
       );
     }
     writeError(
-      `new binary ${p.targetVersion} failed to become healthy after ${p.maxHealthAttempts} attempts — rollback to ${p.prevVersion} applied`,
+      `new binary ${p.targetVersion} failed to become healthy after ${ADOPT_RESTART_ATTEMPTS} restart attempts `
+      + `(${p.maxHealthAttempts} health polls each) — rollback to ${p.prevVersion} applied`,
     );
+    event('error', 'rollback applied', {
+      target: p.targetVersion, restored: p.prevVersion, restart_attempts: ADOPT_RESTART_ATTEMPTS,
+    });
     clearSentinel();
     await restart(deps, p.serviceManagedLabel, p.mycoBinary, p.projectRoot);
   } catch (err) {

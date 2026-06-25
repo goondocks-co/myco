@@ -82,6 +82,22 @@ export async function ensureSelfInstalledAsService(
     // `force: true` would terminate the calling daemon.
     const result = await mgr.install(spec);
 
+    // Sweep superseded sibling units whose target binary is gone (old version
+    // dirs, removed dev-build worktrees) so the supervisor stops respawning dead
+    // units. Best-effort and never touches our own label (passed as keepLabel).
+    try {
+      const pruned = (await mgr.pruneSupersededUnits?.(label)) ?? [];
+      if (pruned.length > 0) {
+        logger.info('daemon.service_install', `Pruned ${pruned.length} superseded service unit(s)`, {
+          home: mycoHome, platform: mgr.platformName, pruned,
+        });
+      }
+    } catch (err) {
+      logger.debug('daemon.service_install', 'Superseded-unit prune skipped', {
+        error: (err as Error).message,
+      });
+    }
+
     if (!result.changed) {
       logger.debug('daemon.service_install', `Managed service ${label} unchanged`, {
         home: mycoHome, platform: mgr.platformName, executable,

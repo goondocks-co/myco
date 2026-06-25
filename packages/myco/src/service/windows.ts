@@ -78,7 +78,7 @@ export interface WindowsManagerOptions {
  * `sc start`. A logon-triggered scheduled task runs an ordinary process with
  * no service-protocol contract — the correct fit for a user daemon.
  *
- * Crash auto-restart (the launchd `KeepAlive` / systemd `Restart=always`
+ * Crash auto-restart (the launchd `KeepAlive` / systemd `Restart=on-failure`
  * equivalent) is handled by the existing hook-respawn path — a hook fires,
  * finds no live daemon via the lifecycle lock, and spawns one. A Task
  * Scheduler `RestartOnFailure` policy (XML task definition) would add
@@ -183,13 +183,6 @@ export class WindowsTaskServiceManager implements ServiceManager {
     // daemon exits — re-triggers the task to bring the daemon back. Mirrors
     // the systemd/launchd restart primitives.
     return `schtasks /run /tn "${label}"`;
-  }
-
-  isManagedDaemon(label: string, _status: ServiceStatus, _myPid: number): boolean {
-    // schtasks exposes no action PID (status.pid is always null), so the
-    // launchd/systemd pid-match can't work. The launcher .cmd exports
-    // MYCO_SERVICE_MANAGED=<label> (renderWindowsServiceScript); trust it.
-    return process.env.MYCO_SERVICE_MANAGED === label;
   }
 
   async status(label: string): Promise<ServiceStatus> {

@@ -47,13 +47,13 @@ mock.module('@myco/install/managed-binary.js', () => ({
     platform === 'win32' ? `${home}\\AppData\\Local\\Myco\\bin\\myco.exe` : `${home}/.myco/bin/myco`,
 }));
 
-// Mock service/manager and daemon/api/restart for detectServiceManagedLabel.
+// Mock service/manager and daemon/api/restart for resolveRestartServiceLabel.
 mock.module('@myco/service/manager.js', () => ({
   getServiceManager: () => ({ type: 'none' }),
 }));
 
 mock.module('@myco/daemon/api/restart.js', () => ({
-  detectServiceManagedLabel: async () => null,
+  resolveRestartServiceLabel: async () => null,
 }));
 
 // import AFTER mocks

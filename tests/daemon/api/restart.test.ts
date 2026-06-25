@@ -36,7 +36,7 @@ function restoreProcessKill() {
   (process as any).kill = realKill;
 }
 
-import { buildRestartArgv, detectServiceManagedLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
+import { buildRestartArgv, resolveRestartServiceLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import { serviceLabel } from '@myco/service/labels.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
@@ -75,11 +75,11 @@ describe('buildRestartArgv (shell-free, cross-platform)', () => {
   });
 });
 
-// Process-agnostic sibling of detectServiceManagedLabel — used by client-side
-// surfaces (DaemonClient.spawnDaemon) that need to know "is a supervisor
-// installed for this home" without checking the PID match. There is exactly
-// one managed service per home now (its label IS the home), so the default
-// resolves `serviceLabel(resolveMycoHome())`; the test env's default home is
+// Resolves "is a supervisor installed for this home" without checking the PID
+// match — the basis for restart routing (resolveRestartServiceLabel) and for
+// client-side surfaces (DaemonClient.spawnDaemon). There is exactly one managed
+// service per home now (its label IS the home), so the default resolves
+// `serviceLabel(resolveMycoHome())`; the test env's default home is
 // `~/.myco` → `co.goondocks.myco`.
 describe('findInstalledServiceLabel', () => {
   test('returns null when service manager is unsupported', async () => {
@@ -115,7 +115,7 @@ describe('findInstalledServiceLabel', () => {
     const mgr = new FakeServiceManager();
     mgr.installed.add(HOME_LABEL);
     // PID intentionally different from process.pid — findInstalledServiceLabel
-    // must still return the entry; only detectServiceManagedLabel checks PID.
+    // keys on the installed unit, never on a PID match.
     mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x.plist' });
     const found = await findInstalledServiceLabel(mgr);
     expect(found?.label).toBe(HOME_LABEL);
@@ -131,11 +131,18 @@ describe('findInstalledServiceLabel', () => {
     expect(found?.label).toBe(label);
   });
 
-  test('detectServiceManagedLabel matches the home service by PID', async () => {
+  test('resolveRestartServiceLabel returns the home label whenever the unit is installed (no PID match)', async () => {
     const mgr = new FakeServiceManager();
     mgr.installed.add(HOME_LABEL);
-    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod.plist' });
-    await expect(detectServiceManagedLabel(mgr, process.pid)).resolves.toBe(HOME_LABEL);
+    // Tracked PID deliberately unequal to ours: a detached daemon must still
+    // resolve the label so the restart re-attaches it via the supervisor.
+    mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/prod.plist' });
+    await expect(resolveRestartServiceLabel(mgr)).resolves.toBe(HOME_LABEL);
+  });
+
+  test('resolveRestartServiceLabel returns null when no unit is installed', async () => {
+    const mgr = new FakeServiceManager();
+    await expect(resolveRestartServiceLabel(mgr)).resolves.toBeNull();
   });
 });
 
@@ -173,7 +180,12 @@ describe('handleRestart', () => {
     expect(shellCmd).not.toContain('--dev');
   });
 
-  test('service installed but a different PID is the running daemon: treats us as non-service-managed', async () => {
+  test('DETACHED daemon (unit installed, different tracked PID): still routes to `service restart` so the supervisor re-adopts it', async () => {
+    // Regression guard for the launchd respawn-loop incident: routing keyed on
+    // pid-identity returned null in the detached state and fell to an
+    // unsupervised direct spawn that re-detached on every restart. Keyed on the
+    // installed unit, a detached daemon restarts via the supervisor's
+    // `kickstart -k`, which re-attaches it — healing the detach.
     const mgr = new FakeServiceManager();
     mgr.installed.add(HOME_LABEL);
     mgr.statuses.set(HOME_LABEL, { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
@@ -181,7 +193,7 @@ describe('handleRestart', () => {
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });
     const shellCmd = (spawnCalls[0].args ?? []).join(' '); // direct-spawn argv, joined
-    expect(shellCmd).not.toContain('service restart');
+    expect(shellCmd).toContain('service restart');
   });
 
   test('unsupported service manager: takes the non-service path without crashing', async () => {
