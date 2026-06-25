@@ -213,8 +213,6 @@ describe('team-sync reconcile triggers', () => {
   function reconcileArgs(): Array<{
     projectId: string;
     table: string;
-    operatorConfirmed: boolean;
-    passAggregate: { count: number };
     forceFullDiff: boolean | undefined;
   }> {
     return reconcilePartitionSpy.mock.calls.map((c) => (c as unknown[])[1] as never);
@@ -234,16 +232,13 @@ describe('team-sync reconcile triggers', () => {
     const args = reconcileArgs();
     expect(new Set(args.map((a) => a.projectId))).toEqual(new Set(['p-a', 'p-b']));
     expect(new Set(args.map((a) => a.table))).toEqual(new Set(MOCK_RECONCILE_TABLES));
-    // Automatic (re-enable-after-backfill) path is never operator-confirmed.
-    expect(args.every((a) => a.operatorConfirmed === false)).toBe(true);
-    // ONE shared per-pass aggregate threads through every partition.
-    const aggregates = new Set(args.map((a) => a.passAggregate));
-    expect(aggregates.size).toBe(1);
+    // Poll path is count-first (cheap), never a forced full diff.
+    expect(args.every((a) => a.forceFullDiff === false)).toBe(true);
     // Reconcile runs only after the backfill it follows.
     expect(backfillUnsyncedMock).toHaveBeenCalled();
   });
 
-  it('the periodic team-sync-reconcile job runs automatic, threading one shared passAggregate across all partitions', async () => {
+  it('the periodic team-sync-reconcile job runs the automatic full-diff reconcile across all groves', async () => {
     const a = await registerGroveWithProjects('grove-a', ['p-a']);
     const b = await registerGroveWithProjects('grove-b', ['p-b']);
     groveScopesForMock = [{ id: a.grove.id }, { id: b.grove.id }];
@@ -262,24 +257,22 @@ describe('team-sync reconcile triggers', () => {
     // 2 groves × 1 project × 2 tables = 4 partition reconciles.
     expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
     const args = reconcileArgs();
-    expect(args.every((a2) => a2.operatorConfirmed === false)).toBe(true);
     expect(new Set(args.map((a2) => a2.projectId))).toEqual(new Set(['p-a', 'p-b']));
-    // A single accumulator object reaches every partition across BOTH groves so
-    // cross-partition deletes can't sum past the aggregate cap.
-    expect(new Set(args.map((a2) => a2.passAggregate)).size).toBe(1);
+    // The backstop always forces a full diff to catch equal-count / different-set
+    // drift the poll path misses.
+    expect(args.every((a2) => a2.forceFullDiff === true)).toBe(true);
   });
 
-  it('the on-demand entrypoint reconciles operator-confirmed across all groves', async () => {
+  it('the on-demand entrypoint reconciles automatically across all groves', async () => {
     const a = await registerGroveWithProjects('grove-a', ['p-a']);
     groveScopesForMock = [{ id: a.grove.id }];
     const teamSync = makeTeamSync();
 
-    await teamSync.reconcileAllGroves({} as never, true);
+    await teamSync.reconcileAllGroves({} as never);
 
     expect(reconcilePartitionSpy).toHaveBeenCalledTimes(MOCK_RECONCILE_TABLES.length);
     const args = reconcileArgs();
-    expect(args.every((a2) => a2.operatorConfirmed === true)).toBe(true);
-    expect(new Set(args.map((a2) => a2.passAggregate)).size).toBe(1);
+    expect(args.every((a2) => a2.forceFullDiff === true)).toBe(true);
   });
 
   it('does not reconcile a grove with no member projects (not participates / not membershipSeeded)', async () => {
@@ -305,12 +298,12 @@ describe('team-sync reconcile triggers', () => {
     groveScopesForMock = [{ id: empty.id }];
     const teamSync = makeTeamSync();
 
-    await teamSync.reconcileAllGroves({} as never, false);
+    await teamSync.reconcileAllGroves({} as never);
 
     expect(reconcilePartitionSpy).not.toHaveBeenCalled();
   });
 
-  it('throttles repeated reconcileClient passes for one grove but never throttles the operator path', async () => {
+  it('throttles repeated reconcileClient passes for one grove but never throttles the on-demand path', async () => {
     const { grove } = await registerGroveWithProjects('owns-two', ['p-a', 'p-b']);
     groveScopesForMock = [{ id: grove.id }];
     const teamSync = makeTeamSync();
@@ -321,15 +314,15 @@ describe('team-sync reconcile triggers', () => {
     await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
     await flushAsync();
 
-    // Exactly ONE automatic pass ran (2 projects × 2 tables = 4), not two.
-    const automatic = reconcileArgs().filter((a) => a.operatorConfirmed === false);
-    expect(automatic.length).toBe(4);
+    // Exactly ONE poll-path pass ran (count-first; 2 projects × 2 tables = 4), not two.
+    const pollPath = reconcileArgs().filter((a) => a.forceFullDiff === false);
+    expect(pollPath.length).toBe(4);
 
-    // The operator path bypasses the throttle entirely: it runs immediately even
-    // though an automatic pass just executed for the same grove.
-    await teamSync.reconcileAllGroves({} as never, true);
-    const operator = reconcileArgs().filter((a) => a.operatorConfirmed === true);
-    expect(operator.length).toBe(4);
+    // The on-demand path bypasses the throttle entirely: it runs immediately even
+    // though a poll-path pass just executed for the same grove. It full-diffs.
+    await teamSync.reconcileAllGroves({} as never);
+    const onDemand = reconcileArgs().filter((a) => a.forceFullDiff === true);
+    expect(onDemand.length).toBe(4);
   });
 
   it('a throwing reconcile pass does not propagate out of reconcileClient and does not break the flush', async () => {
@@ -358,12 +351,12 @@ describe('team-sync reconcile triggers', () => {
   // forceFullDiff threading: backstop/operator → true, poll path → false
   // ---------------------------------------------------------------------------
 
-  it('reconcileAllGroves (backstop/operator) reaches reconcilePartition with forceFullDiff:true', async () => {
+  it('reconcileAllGroves (backstop/on-demand) reaches reconcilePartition with forceFullDiff:true', async () => {
     const a = await registerGroveWithProjects('force-diff-grove', ['p-fd']);
     groveScopesForMock = [{ id: a.grove.id }];
     const teamSync = makeTeamSync();
 
-    await teamSync.reconcileAllGroves({} as never, false);
+    await teamSync.reconcileAllGroves({} as never);
 
     const args = reconcileArgs();
     expect(args.length).toBeGreaterThan(0);

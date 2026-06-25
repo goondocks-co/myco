@@ -2099,20 +2099,19 @@ export async function main(): Promise<void> {
     const result = await teamSync.rebuildFromLocal(req.requestContext);
     return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
-  // POST /api/team/reconcile — operator-confirmed symmetric reconcile. Runs the
-  // count-first reconcile across every owned (grove, project) partition with
-  // operatorConfirmed=true: the settledness guards (empty local set, unseeded
-  // membership) still block, but the magnitude caps (per-partition floor,
-  // fraction, aggregate) are bypassed so an operator can heal large genuine
-  // drift the automatic path leaves for a human. The automatic path runs
-  // continuously via reconcileClient triggers + the team-sync-reconcile backstop.
+  // POST /api/team/reconcile — on-demand symmetric reconcile. An immediacy
+  // trigger only: it runs the SAME fully-automatic full-diff reconcile across
+  // every owned (grove, project) partition that the periodic backstop runs, just
+  // now instead of on the next tick. There is no operator power — deletes are
+  // bounded by settledness + cross-pass drift stability inside reconcilePartition
+  // (an orphan must persist across two passes before it is deleted), so a single
+  // on-demand pass heals only drift already observed on a prior pass.
   server.registerRoute('POST', '/api/team/reconcile', async (req) => {
-    // Operator pass once, over every owned grove. We do NOT also call
-    // reconcileTeamRoute(req) here — that would run a redundant automatic pass
-    // over the request grove on top of the operator fan-out below. Targeting a
-    // single grove instead of the all-groves fan-out is future UI work.
-    const result = await teamSync.reconcileAllGroves(runtimeCache, true);
-    return { status: 200, body: { ok: true, deletes: result.deletes } };
+    // One pass over every owned grove. We do NOT also call reconcileTeamRoute(req)
+    // here — that would run a redundant pass over the request grove on top of the
+    // all-groves fan-out below. Targeting a single grove is future UI work.
+    await teamSync.reconcileAllGroves(runtimeCache);
+    return { status: 200, body: { ok: true } };
   });
 
   const collectiveHandlers = createCollectiveHandlers({

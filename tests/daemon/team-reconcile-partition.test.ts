@@ -1,16 +1,22 @@
 /**
  * Unit tests for reconcilePartition — the orchestration that probes the worker,
- * diffs the local partition against the D1 manifest, runs the delete-safety
- * firewall, dedups against in-flight outbox rows, and seeds survivors into the
- * outbox under the reconcile↔flush mutex.
+ * diffs the local partition against the D1 manifest, runs the settledness
+ * firewall + cross-pass drift stability gate, dedups against in-flight outbox
+ * rows, and seeds survivors into the outbox under the reconcile↔flush mutex.
  *
  * All deps are injected mocks; this test touches NO real DB, network, or fs.
  * It is the contract test for the code path that actually SEEDS DELETES.
+ *
+ * Cross-pass model: a D1-only orphan is deleted only after it is observed on TWO
+ * consecutive full-diff passes. The first sighting is recorded in the module's
+ * in-memory drift map; the second sighting intersects with it and seeds the
+ * delete. `resetReconcileDriftTracking()` clears that map between tests.
  */
 
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   reconcilePartition,
+  resetReconcileDriftTracking,
   createReconcileFlushMutex,
   type ReconcilePartitionDeps,
   type ReconcileMutex,
@@ -42,13 +48,7 @@ interface Harness {
   logs: string[];
 }
 
-/**
- * Build a reconcilePartition deps harness. `pages` is the ordered list of
- * paged-manifest responses (each may carry next_cursor); `summary` is the
- * cheap-count response. `local` is the local partition; `pending` is the set
- * of already-in-flight outbox row_ids.
- */
-function makeHarness(opts: {
+interface HarnessOpts {
   protocolVersion?: number | undefined;
   local: PartitionRow[];
   pages: ManifestResponse[];
@@ -57,7 +57,15 @@ function makeHarness(opts: {
   membershipSeeded?: boolean;
   upsertPayload?: (table: string, id: string) => string | null;
   mutex?: ReconcileMutex;
-}): Harness {
+}
+
+/**
+ * Build a reconcilePartition deps harness. `pages` is the ordered list of
+ * paged-manifest responses (each may carry next_cursor); `summary` is the
+ * cheap-count response. `local` is the local partition; `pending` is the set
+ * of already-in-flight outbox row_ids.
+ */
+function makeHarness(opts: HarnessOpts): Harness {
   let version = opts.protocolVersion;
   const enqueued: OutboxInsert[] = [];
   const logs: string[] = [];
@@ -140,13 +148,12 @@ function page(items: ManifestItem[], count: number, nextCursor?: string): Manife
   return r;
 }
 
-const BASE = { machineId: 'm1', projectId: 'p1', table: 'spores', operatorConfirmed: false };
+const BASE = { machineId: 'm1', projectId: 'p1', table: 'spores' };
 
 /**
  * A pool of `n` shared ids present in BOTH local and D1, used to give a
- * partition enough headroom that a single delete stays under the 20% fraction
- * cap (e.g. with n=20, deleting 1 of 21 D1 rows is ~4.8%). Returns the local
- * rows, the matching manifest items, and the shared count.
+ * partition a non-empty (settled) local set. Returns the local rows, the
+ * matching manifest items, and the shared count.
  */
 function settled(n: number, projectId = 'p1'): {
   local: PartitionRow[];
@@ -162,6 +169,31 @@ function settled(n: number, projectId = 'p1'): {
   return { local, manifest: items, count: n };
 }
 
+/**
+ * Run `passes` consecutive reconcile passes against the SAME partition (a fresh
+ * harness each pass so enqueued/page counters reset, but the module-level drift
+ * map carries across). Returns the LAST harness so callers assert on the pass
+ * whose outcome they care about.
+ */
+async function runPasses(
+  opts: HarnessOpts,
+  passes: number,
+  argOverrides: { table?: string; forceFullDiff?: boolean } = {},
+): Promise<Harness> {
+  let last!: Harness;
+  for (let i = 0; i < passes; i++) {
+    last = makeHarness(opts);
+    await reconcilePartition(last.deps, { ...BASE, ...argOverrides });
+  }
+  return last;
+}
+
+beforeEach(() => {
+  // The cross-pass drift map is module state; clear it so each test starts with
+  // no carried orphan candidates (and one test's candidates never leak forward).
+  resetReconcileDriftTracking();
+});
+
 // ---------------------------------------------------------------------------
 // Count-match fast path
 // ---------------------------------------------------------------------------
@@ -174,7 +206,7 @@ describe('reconcilePartition — count-match fast path', () => {
       pages: [],
       summaryCount: 2,
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.summaryCalls).toBe(1);
     expect(h.pageCalls).toBe(0);
     expect(h.enqueued.length).toBe(0);
@@ -193,7 +225,7 @@ describe('reconcilePartition — MF2 probe before feature detect', () => {
       pages: [page([], 0)],
       summaryCount: 0,
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.healthCalls).toBe(1);
     // version became 3 → supportsManifest → proceeds. Local has 1, D1 has 0:
     // count mismatch, so it pages and enqueues an upsert.
@@ -208,7 +240,7 @@ describe('reconcilePartition — MF2 probe before feature detect', () => {
       pages: [page([], 5)],
       summaryCount: 5,
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.healthCalls).toBe(0); // already probed, no re-probe needed
     expect(h.summaryCalls).toBe(0);
     expect(h.pageCalls).toBe(0);
@@ -218,20 +250,28 @@ describe('reconcilePartition — MF2 probe before feature detect', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete seeding
+// Cross-pass drift stability (the delete-seeding contract)
 // ---------------------------------------------------------------------------
 
-describe('reconcilePartition — delete seeding', () => {
-  it('D1 has an extra id (settled, small) → enqueues a delete', async () => {
-    // 20 shared rows + 1 D1-only extra → 1/21 ≈ 4.8% delete, under the 20% cap.
-    const s = settled(20);
-    const h = makeHarness({
+describe('reconcilePartition — cross-pass drift stability', () => {
+  /** A settled partition with one D1-only orphan ('extra'). */
+  function orphanOpts(): HarnessOpts {
+    const s = settled(2);
+    return {
       protocolVersion: 3,
       local: s.local,
       pages: [page([...s.manifest, manifest('extra', 'p1')], s.count + 1)],
-      summaryCount: s.count + 1, // D1 count 21 vs local 20 → mismatch
-    });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+      summaryCount: s.count + 1, // D1 count 3 vs local 2 → mismatch → diff path
+    };
+  }
+
+  it('an orphan observed in ONE pass is recorded but NOT deleted', async () => {
+    const h = await runPasses(orphanOpts(), 1);
+    expect(h.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+  });
+
+  it('the SAME orphan observed in TWO consecutive passes is deleted on the second', async () => {
+    const h = await runPasses(orphanOpts(), 2);
     const deletes = h.enqueued.filter((e) => e.operation === 'delete');
     expect(deletes.length).toBe(1);
     expect(deletes[0].row_id).toBe('extra');
@@ -240,22 +280,97 @@ describe('reconcilePartition — delete seeding', () => {
     expect(payload).toEqual({ id: 'extra', machine_id: 'm1' });
   });
 
-  it('delete count is accumulated into passAggregate', async () => {
-    const s = settled(20);
-    const h = makeHarness({
+  it('an orphan that is resolved by the next pass is never deleted', async () => {
+    const s = settled(2);
+    // Pass 1: 'extra' is a D1 orphan → recorded as a candidate.
+    const h1 = makeHarness(orphanOpts());
+    await reconcilePartition(h1.deps, { ...BASE });
+    expect(h1.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+    // Pass 2: drift resolved (D1 no longer has 'extra'; count now matches local).
+    const h2 = makeHarness({
+      protocolVersion: 3,
+      local: s.local,
+      pages: [page([...s.manifest], s.count)],
+      summaryCount: s.count, // count match → fast path clears the candidate
+    });
+    await reconcilePartition(h2.deps, { ...BASE });
+    expect(h2.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+  });
+
+  it('a DIFFERENT orphan each pass is never deleted (no consecutive sighting)', async () => {
+    const s = settled(2);
+    // Pass 1: orphan 'X'.
+    const h1 = makeHarness({
+      protocolVersion: 3,
+      local: s.local,
+      pages: [page([...s.manifest, manifest('X', 'p1')], s.count + 1)],
+      summaryCount: s.count + 1,
+    });
+    await reconcilePartition(h1.deps, { ...BASE });
+    // Pass 2: a different orphan 'Y' (full diff runs; 'X' is gone from D1).
+    const h2 = makeHarness({
+      protocolVersion: 3,
+      local: s.local,
+      pages: [page([...s.manifest, manifest('Y', 'p1')], s.count + 1)],
+      summaryCount: s.count + 1,
+    });
+    await reconcilePartition(h2.deps, { ...BASE });
+    // Neither orphan was seen twice in a row → nothing deleted.
+    expect(h1.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+    expect(h2.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+  });
+
+  it('a large settled persistent drift heals fully across two passes (no magnitude cap)', async () => {
+    const ORPHANS = 5000;
+    const local: PartitionRow[] = [{ id: 'keep' }];
+    const items: ManifestItem[] = [manifest('keep', 'p1')];
+    for (let i = 0; i < ORPHANS; i++) items.push(manifest(`orphan${i}`, 'p1'));
+    const opts: HarnessOpts = {
+      protocolVersion: 3,
+      local, // localCount 1 > 0 → settled
+      pages: [page(items, ORPHANS + 1)],
+      summaryCount: ORPHANS + 1, // D1 5001 vs local 1 → diff path
+    };
+
+    // Pass 1: records 5000 candidates, deletes nothing (not blocked, just first
+    // sighting). Pass 2: every orphan was seen on both passes → all 5000 delete.
+    const h1 = await runPasses(opts, 1);
+    expect(h1.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+
+    const h2 = await runPasses(opts, 2);
+    const deletes = h2.enqueued.filter((e) => e.operation === 'delete');
+    expect(deletes.length).toBe(ORPHANS);
+    // No safety block was logged — a large settled drift is NOT operator-gated.
+    expect(h2.logs.some((l) => /blocked/i.test(l))).toBe(false);
+  });
+
+  it('settledness gates BEFORE cross-pass: a recorded orphan in a not_settled pass seeds zero deletes', async () => {
+    const s = settled(2);
+    // Pass 1 (settled): 'extra' recorded as a candidate.
+    const h1 = makeHarness({
       protocolVersion: 3,
       local: s.local,
       pages: [page([...s.manifest, manifest('extra', 'p1')], s.count + 1)],
       summaryCount: s.count + 1,
     });
-    const passAggregate = { count: 3 };
-    await reconcilePartition(h.deps, { ...BASE, passAggregate });
-    expect(passAggregate.count).toBe(4); // 3 + 1 applied delete
+    await reconcilePartition(h1.deps, { ...BASE });
+    // Pass 2 (not settled): local has not loaded (empty) while D1 still reports
+    // rows — including the recorded 'extra'. Settledness must block regardless of
+    // the carried candidate.
+    const h2 = makeHarness({
+      protocolVersion: 3,
+      local: [], // localCount 0, d1Count > 0 → not_settled
+      pages: [page([...s.manifest, manifest('extra', 'p1')], s.count + 1)],
+      summaryCount: s.count + 1,
+    });
+    await reconcilePartition(h2.deps, { ...BASE });
+    expect(h2.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+    expect(h2.logs.some((l) => /not_settled|blocked/i.test(l))).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Upsert seeding
+// Upsert seeding (independent of cross-pass; always proceeds)
 // ---------------------------------------------------------------------------
 
 describe('reconcilePartition — upsert seeding', () => {
@@ -268,7 +383,7 @@ describe('reconcilePartition — upsert seeding', () => {
       summaryCount: 1,
       upsertPayload: (table, id) => JSON.stringify({ id, machine_id: 'm1', table }),
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
     expect(upserts.length).toBe(1);
     expect(upserts[0].row_id).toBe('b');
@@ -285,7 +400,7 @@ describe('reconcilePartition — upsert seeding', () => {
       summaryCount: 1,
       upsertPayload: (_table, id) => (id === 'gone' ? null : JSON.stringify({ id })),
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.enqueued.filter((e) => e.row_id === 'gone').length).toBe(0);
   });
 });
@@ -303,41 +418,51 @@ describe('reconcilePartition — resurrection guard', () => {
       summaryCount: 1,
       pending: new Set(['b']), // 'b' already in flight
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.enqueued.filter((e) => e.row_id === 'b').length).toBe(0);
   });
 
-  it('id in BOTH upsert and delete sets is skipped from both', async () => {
+  it('id in BOTH upsert and delete sets is skipped from both (on the delete-active pass)', async () => {
     // The real diffPartition can never put one id in both sets, so the
     // contradiction guard is defense-in-depth. Exercise it deterministically by
     // injecting a diff that classifies 'dup' as BOTH a delete and an upsert.
     // 'dup' is present in the manifest under p1 (so it passes the N3 deletable
-    // filter); the guard must then drop it from BOTH the upsert and delete sets.
-    const s = settled(20);
-    const h = makeHarness({
+    // filter). The delete only becomes active on the SECOND consecutive pass
+    // (cross-pass), so run two passes; the guard must then drop 'dup' from BOTH.
+    const s = settled(2);
+    const opts: HarnessOpts = {
       protocolVersion: 3,
       local: [...s.local, { id: 'dup' }],
       pages: [page([...s.manifest, manifest('dup', 'p1')], s.count + 1)],
       summaryCount: s.count + 1, // mismatch → diff path
-    });
-    h.deps.diff = () => ({ upsertIds: ['dup'], deleteIds: ['dup'], staleIds: [] });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
-    // 'dup' is contradictory → skipped from both; nothing enqueued for it.
-    expect(h.enqueued.filter((e) => e.row_id === 'dup').length).toBe(0);
+    };
+    const inject = () => ({ upsertIds: ['dup'], deleteIds: ['dup'], staleIds: [] });
+
+    const h1 = makeHarness(opts);
+    h1.deps.diff = inject;
+    await reconcilePartition(h1.deps, { ...BASE });
+
+    const h2 = makeHarness(opts);
+    h2.deps.diff = inject;
+    await reconcilePartition(h2.deps, { ...BASE });
+
+    // On pass 2 'dup' is a confirmed delete AND an upsert → contradiction →
+    // dropped from both; nothing enqueued for it.
+    expect(h2.enqueued.filter((e) => e.row_id === 'dup').length).toBe(0);
   });
 
   it('stale id (in both, hash differs) re-pushes as a single upsert, never a delete', async () => {
     // A stale row does not change the partition count, so add a local-only id to
     // break count-equality and force the diff path. The stale id must then
     // produce exactly one upsert and no delete.
-    const s = settled(20);
+    const s = settled(2);
     const h = makeHarness({
       protocolVersion: 3,
-      local: [...s.local, { id: 'dup', content_hash: 'h1' }, { id: 'localonly' }], // count 22
+      local: [...s.local, { id: 'dup', content_hash: 'h1' }, { id: 'localonly' }], // count 4
       pages: [page([...s.manifest, manifest('dup', 'p1', 'h2')], s.count + 1)],
-      summaryCount: s.count + 1, // D1 count 21 ≠ local 22 → diff path
+      summaryCount: s.count + 1, // D1 count 3 ≠ local 4 → diff path
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.enqueued.filter((e) => e.row_id === 'dup' && e.operation === 'delete').length).toBe(0);
     expect(h.enqueued.filter((e) => e.row_id === 'dup').length).toBe(1);
     // 'localonly' also upserts (local-only).
@@ -346,18 +471,19 @@ describe('reconcilePartition — resurrection guard', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete safety firewall
+// Delete safety firewall (settledness)
 // ---------------------------------------------------------------------------
 
 describe('reconcilePartition — delete safety', () => {
   it('transient localCount=0 (d1Count>0) → NO delete, but does not throw', async () => {
-    const h = makeHarness({
+    // Even across two passes, a not_settled partition seeds no deletes.
+    const opts: HarnessOpts = {
       protocolVersion: 3,
       local: [], // empty local → not_settled blocks deletes
       pages: [page([manifest('a', 'p1'), manifest('b', 'p1')], 2)],
       summaryCount: 2,
-    });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    };
+    const h = await runPasses(opts, 2);
     expect(h.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
     // No upserts either — local is empty.
     expect(h.enqueued.length).toBe(0);
@@ -367,16 +493,17 @@ describe('reconcilePartition — delete safety', () => {
   it('blocked deletes still allow upserts/stale re-pushes to proceed', async () => {
     // membershipSeeded=false blocks deletes; a local-only id still upserts.
     // Use a count mismatch (D1 has two extras, local has one extra) so the diff
-    // path runs rather than the count-equal fast path.
-    const s = settled(20);
-    const h = makeHarness({
+    // path runs rather than the count-equal fast path. Two passes prove the block
+    // holds even once an orphan would otherwise be cross-pass confirmed.
+    const s = settled(2);
+    const opts: HarnessOpts = {
       protocolVersion: 3,
-      local: [...s.local, { id: 'localonly' }], // count 21
+      local: [...s.local, { id: 'localonly' }], // count 3
       pages: [page([...s.manifest, manifest('d1extra1', 'p1'), manifest('d1extra2', 'p1')], s.count + 2)],
-      summaryCount: s.count + 2, // D1 count 22 ≠ local 21
+      summaryCount: s.count + 2, // D1 count 4 ≠ local 3
       membershipSeeded: false, // blocks deletes (membership_unseeded)
-    });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    };
+    const h = await runPasses(opts, 2);
     expect(h.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
     const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
     expect(upserts.map((u) => u.row_id)).toEqual(['localonly']);
@@ -388,16 +515,16 @@ describe('reconcilePartition — delete safety', () => {
 // ---------------------------------------------------------------------------
 
 describe('reconcilePartition — N3 per-home mismatch guard', () => {
-  it('manifest item from a DIFFERENT project is NOT deleted', async () => {
-    const h = makeHarness({
+  it('manifest item from a DIFFERENT project is NOT deleted (even across passes)', async () => {
+    const opts: HarnessOpts = {
       protocolVersion: 3,
       local: [{ id: 'a' }],
       // 'other' belongs to project p2 (another home's grove) — must not delete.
       // count mismatch (D1 reports 2 for partition) to force the diff path.
       pages: [page([manifest('a', 'p1'), manifest('other', 'p2')], 2)],
       summaryCount: 2,
-    });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    };
+    const h = await runPasses(opts, 2);
     expect(h.enqueued.filter((e) => e.row_id === 'other').length).toBe(0);
     expect(h.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
   });
@@ -411,17 +538,15 @@ describe('reconcilePartition — pagination', () => {
   it('follows next_cursor until exhausted', async () => {
     const h = makeHarness({
       protocolVersion: 3,
-      local: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      local: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
       pages: [
         page([manifest('a', 'p1')], 3, 'cursor-2'),
         page([manifest('b', 'p1')], 3, 'cursor-3'),
         page([manifest('c', 'p1')], 3), // no next_cursor → stop
       ],
-      summaryCount: 3, // count differs? equal to local (3) → fast path!
+      summaryCount: 3, // D1 count 3 ≠ local 4 → diff path forces paging
     });
-    // Make count differ from local to force paging.
-    h.deps.localPartition = () => [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    await reconcilePartition(h.deps, { ...BASE });
     expect(h.pageCalls).toBe(3);
     // 'd' is local-only → one upsert.
     expect(h.enqueued.filter((e) => e.row_id === 'd').length).toBe(1);
@@ -433,7 +558,6 @@ describe('reconcilePartition — pagination', () => {
 // ---------------------------------------------------------------------------
 
 describe('reconcilePartition — forceFullDiff gap closure', () => {
-  // 5 shared rows so a 1-delete doesn't hit the 20% fraction cap (1/6 ≈ 16.7%).
   const baseShared = settled(5); // {s0..s4}
 
   it('forceFullDiff:false + equal counts → count-match fast path, no diff, no enqueue', async () => {
@@ -443,27 +567,35 @@ describe('reconcilePartition — forceFullDiff gap closure', () => {
       pages: [page([...baseShared.manifest, manifest('A', 'p1')], 6)], // 6 D1
       summaryCount: 6,  // D1 count == local count → fast-path skip
     });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 }, forceFullDiff: false });
+    await reconcilePartition(h.deps, { ...BASE, forceFullDiff: false });
     // Count-equality fast path: summary fetched, no paging, no enqueue.
     expect(h.summaryCalls).toBe(1);
     expect(h.pageCalls).toBe(0);
     expect(h.enqueued.length).toBe(0);
   });
 
-  it('forceFullDiff:true + equal counts → full diff runs, seeds delete for D1-orphan and upsert for local-only', async () => {
-    const h = makeHarness({
+  it('forceFullDiff:true + equal counts → full diff runs, upserts local-only immediately; D1-orphan deletes on the 2nd pass', async () => {
+    const opts: HarnessOpts = {
       protocolVersion: 3,
       local: [...baseShared.local, { id: 'B' }],           // 6 local: s0-s4 + B
       pages: [page([...baseShared.manifest, manifest('A', 'p1')], 6)], // 6 D1: s0-s4 + A
       summaryCount: 6,  // same count — would skip without forceFullDiff
-    });
-    await reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 }, forceFullDiff: true });
-    // Summary skipped; paging ran.
-    expect(h.summaryCalls).toBe(0);
-    expect(h.pageCalls).toBe(1);
-    // A is D1-orphan → delete; B is local-only → upsert.
-    const deletes = h.enqueued.filter((e) => e.operation === 'delete');
-    const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
+    };
+
+    // Pass 1: summary skipped, paging ran; B (local-only) upserts now, A
+    // (D1-orphan) is only recorded (first sighting), not yet deleted.
+    const h1 = makeHarness(opts);
+    await reconcilePartition(h1.deps, { ...BASE, forceFullDiff: true });
+    expect(h1.summaryCalls).toBe(0);
+    expect(h1.pageCalls).toBe(1);
+    expect(h1.enqueued.filter((e) => e.operation === 'delete').length).toBe(0);
+    expect(h1.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert' && e.row_id === 'B').length).toBe(1);
+
+    // Pass 2: A seen again → delete; B still upserts.
+    const h2 = makeHarness(opts);
+    await reconcilePartition(h2.deps, { ...BASE, forceFullDiff: true });
+    const deletes = h2.enqueued.filter((e) => e.operation === 'delete');
+    const upserts = h2.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
     expect(deletes.length).toBe(1);
     expect(deletes[0].row_id).toBe('A');
     expect(upserts.length).toBe(1);
@@ -479,8 +611,8 @@ describe('reconcilePartition — INTEGER id partition (type normalization)', () 
   it('number/string id mismatch does not cause spurious mass delete/upsert', async () => {
     // localPartition stringifies ids; the raw D1 manifest hands back numbers.
     // The 20 shared rows must be recognized as in-sync (no upsert, no delete);
-    // only the genuine integer D1-orphan (999) is deleted, with a STRING row_id.
-    // 1/21 deletes ≈ 4.8% keeps us under the 20% fraction cap.
+    // only the genuine integer D1-orphan (999) is deleted, with a STRING row_id —
+    // and only after it is observed on two consecutive passes.
     const local: PartitionRow[] = [];
     const items: ManifestItem[] = [];
     for (let i = 1; i <= 20; i++) {
@@ -489,13 +621,13 @@ describe('reconcilePartition — INTEGER id partition (type normalization)', () 
     }
     items.push({ id: 999, project_id: 'p1' } as unknown as ManifestItem);        // D1 orphan
 
-    const h = makeHarness({
+    const opts: HarnessOpts = {
       protocolVersion: 3,
       local,
       pages: [page(items, 21)],
       summaryCount: 21, // D1 21 vs local 20 → diff path
-    });
-    await reconcilePartition(h.deps, { ...BASE, table: 'prompt_batches', passAggregate: { count: 0 } });
+    };
+    const h = await runPasses(opts, 2, { table: 'prompt_batches' });
 
     const deletes = h.enqueued.filter((e) => e.operation === 'delete');
     const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
@@ -545,7 +677,7 @@ describe('reconcilePartition — MF3 mutex', () => {
     // Start the reconcile, then immediately start the flush. Because the seed
     // section holds the mutex, the flush must run entirely before or entirely
     // after the seed — never interleaved with seed:enqueue.
-    const recon = reconcilePartition(h.deps, { ...BASE, passAggregate: { count: 0 } });
+    const recon = reconcilePartition(h.deps, { ...BASE });
     const fl = flush();
     await Promise.all([recon, fl]);
 

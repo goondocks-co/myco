@@ -135,33 +135,8 @@ export function diffPartition(
 }
 
 // ---------------------------------------------------------------------------
-// Delete-safety gate
+// Delete-safety gate (settledness)
 // ---------------------------------------------------------------------------
-
-/**
- * Maximum per-partition deletes the AUTOMATIC reconcile path may apply in one
- * pass. Chosen as 50: large enough to heal genuine bulk-drift (e.g. a restore
- * that wiped a few dozen rows) without approaching the scale of a full-
- * partition wipe on any realistic team dataset. `== floor` is allowed;
- * `> floor` requires operator confirmation.
- */
-export const MIN_ABSOLUTE_DELETE_FLOOR = 50;
-
-/**
- * Maximum fraction of the D1 partition the AUTOMATIC path may delete in one
- * pass. 0.2 (20%) bounds blast radius relative to partition size while still
- * allowing meaningful drift healing. Values above 0.2 would let a 300-row
- * partition lose 60+ rows automatically — closer to a wipe than drift repair.
- */
-export const MAX_DELETE_FRACTION = 0.2;
-
-/**
- * Per-pass cap across ALL partitions. Set to 4× the per-partition floor so
- * N partitions each under the floor cannot SUM to an unbounded wipe across
- * the full reconcile pass. 200 allows roughly 4 fully-drifted partitions to
- * heal in one pass while still bounding the worst-case aggregate.
- */
-export const MAX_PASS_AGGREGATE_DELETES = 200;
 
 /** Inputs to the delete-safety gate. */
 export interface DeleteSafetyInput {
@@ -169,10 +144,6 @@ export interface DeleteSafetyInput {
   localCount: number;
   /** Number of rows the D1 manifest reports for this partition. */
   d1Count: number;
-  /** How many D1 rows the current partition diff wants to delete. */
-  partitionDeleteCount: number;
-  /** Running total of delete ops already approved across all partitions in this pass. */
-  passAggregateDeleteCount: number;
   /**
    * Whether the team membership registry has been seeded (i.e. the caller
    * confirmed that `memberProjectIdsForGrove(grove)` returned a non-empty set).
@@ -180,13 +151,6 @@ export interface DeleteSafetyInput {
    * deletes may proceed.
    */
   membershipSeeded: boolean;
-  /**
-   * When true the operator has explicitly confirmed this reconcile, which
-   * bypasses the magnitude caps (floor, fraction, aggregate). Settledness
-   * guards (localCount==0 and membershipSeeded) are NEVER overridable —
-   * an operator confirming does not make not-yet-loaded data trustworthy.
-   */
-  operatorConfirmed: boolean;
 }
 
 /** Result of the delete-safety gate. */
@@ -197,68 +161,42 @@ export interface DeleteSafetyResult {
 }
 
 /**
- * Evaluate whether a set of delete ops is safe to proceed.
+ * Evaluate whether deletes for a partition are safe to proceed.
  *
- * Guards are evaluated in strict order. The first two are settledness guards
- * that block unconditionally — even operator confirmation cannot override them,
- * because no human decision can make a not-yet-loaded local dataset trustworthy.
+ * The reconcile path is a FULLY AUTOMATIC backstop: its actor is any member
+ * daemon that just syncs (possibly headless), so this gate is machine-decidable
+ * with zero human judgment. Magnitude is NOT gated here — delete blast radius is
+ * bounded instead by cross-pass drift stability in `reconcilePartition` (an
+ * orphan must be observed across two consecutive passes before it is deleted, so
+ * a transient/partial-load orphan never reaches a delete). What remains are the
+ * two settledness guards, which block unconditionally because no amount of drift
+ * confirmation can make a not-yet-loaded local dataset trustworthy:
  *
- * Guard order:
- *   1. localCount===0 && d1Count>0   → not_settled         (unconditional)
- *   2. !membershipSeeded             → membership_unseeded  (unconditional)
- *   3. operatorConfirmed             → allow (magnitude caps bypassed)
- *   4. partitionDeleteCount > floor  → requires_operator
- *   5. fraction > MAX_DELETE_FRACTION (when d1Count>0) → exceeds_fraction
- *   6. passAggregateDeleteCount > aggregate cap → exceeds_aggregate
- *   7. otherwise                     → allow
+ *   1. localCount===0 && d1Count>0 → not_settled
+ *      The local set has simply not loaded yet; treating an empty local as
+ *      authoritative would wipe the whole partition.
+ *   2. !membershipSeeded → membership_unseeded
+ *      Without a populated membership registry the daemon cannot tell a
+ *      genuinely-absent row from one temporarily invisible behind an unseeded
+ *      registry.
+ *
+ * Otherwise → allow.
  */
 export function evaluateDeleteSafety(input: DeleteSafetyInput): DeleteSafetyResult {
-  const {
-    localCount,
-    d1Count,
-    partitionDeleteCount,
-    passAggregateDeleteCount,
-    membershipSeeded,
-    operatorConfirmed,
-  } = input;
+  const { localCount, d1Count, membershipSeeded } = input;
 
-  // Guard 1: transient-empty trap. A reconcile may never wipe a whole
-  // partition, regardless of operator intent — the local set has simply not
-  // loaded yet and cannot be trusted as authoritative.
+  // Guard 1: transient-empty trap. A reconcile may never wipe a whole partition
+  // — an empty local set has simply not loaded yet and cannot be trusted as
+  // authoritative.
   if (localCount === 0 && d1Count > 0) {
     return { allow: false, reason: 'not_settled' };
   }
 
-  // Guard 2: membership not yet seeded. Without a populated membership
-  // registry the daemon cannot determine which rows are genuinely absent
-  // locally vs. temporarily invisible due to an unseeded registry.
+  // Guard 2: membership not yet seeded. Without a populated membership registry
+  // the daemon cannot determine which rows are genuinely absent locally vs.
+  // temporarily invisible due to an unseeded registry.
   if (!membershipSeeded) {
     return { allow: false, reason: 'membership_unseeded' };
-  }
-
-  // Guard 3: operator confirmed — settledness already passed above; bypass
-  // all magnitude caps.
-  if (operatorConfirmed) {
-    return { allow: true };
-  }
-
-  // Guard 4: per-partition absolute floor. Deleting more than this many rows
-  // from a single partition in one automatic pass requires a human decision.
-  if (partitionDeleteCount > MIN_ABSOLUTE_DELETE_FLOOR) {
-    return { allow: false, reason: 'requires_operator' };
-  }
-
-  // Guard 5: fraction cap. Even if the count is under the floor, a high
-  // fraction signals the local set diverged from D1 by an unusual proportion.
-  // Skip when d1Count===0 — there are no D1 rows to bound.
-  if (d1Count > 0 && (partitionDeleteCount / d1Count) > MAX_DELETE_FRACTION) {
-    return { allow: false, reason: 'exceeds_fraction' };
-  }
-
-  // Guard 6: per-pass aggregate cap. Prevents N partitions each under the
-  // per-partition floor from summing to an unbounded total wipe.
-  if (passAggregateDeleteCount > MAX_PASS_AGGREGATE_DELETES) {
-    return { allow: false, reason: 'exceeds_aggregate' };
   }
 
   return { allow: true };
@@ -368,33 +306,48 @@ export interface ReconcilePartitionDeps {
   diff?: typeof diffPartition;
 }
 
-/**
- * A shared, mutable per-pass delete accumulator. reconcilePartition adds this
- * partition's APPLIED delete count to it and passes the running cumulative to
- * evaluateDeleteSafety, so N partitions' deletes can't sum to a wipe.
- */
-export interface PassAggregate {
-  count: number;
-}
-
 export interface ReconcilePartitionArgs {
   machineId: string;
   projectId: string;
   table: string;
-  operatorConfirmed: boolean;
-  passAggregate: PassAggregate;
   /**
    * When true, skip the count-equality fast path and always run the full ID diff.
-   * Used by the 6h periodic backstop and the operator on-demand reconcile to
-   * catch equal-count / different-set drift (e.g. one local delete + one local
-   * add that nets the same count). The frequent poll path keeps forceFullDiff
-   * false so per-partition summary fetches stay cheap.
+   * Used by the 6h periodic backstop and the on-demand reconcile to catch
+   * equal-count / different-set drift (e.g. one local delete + one local add
+   * that nets the same count). The frequent poll path keeps forceFullDiff false
+   * so per-partition summary fetches stay cheap.
    */
   forceFullDiff?: boolean;
 }
 
 /** Page size for paged manifest fetches. */
 const MANIFEST_PAGE_LIMIT = 500;
+
+/**
+ * Cross-pass drift tracking. Maps a partition key (machineId, projectId, table)
+ * to the set of orphan-candidate ids — D1 rows absent locally — observed on the
+ * PREVIOUS full-diff pass. An orphan is deleted only when it appears in TWO
+ * consecutive passes: the first pass records it here, the second pass intersects
+ * the current candidates with this set and seeds the survivors. A transient or
+ * partial-load orphan that has vanished by the next pass is never deleted;
+ * genuine drift persists and heals on the second pass. This is process memory,
+ * not I/O, so the module stays import-pure. State is best-effort: a daemon
+ * restart simply costs one extra pass before the first delete.
+ */
+const priorDeleteCandidates = new Map<string, Set<string>>();
+
+/** Stable partition key for the cross-pass drift map. */
+function partitionKey(machineId: string, projectId: string, table: string): string {
+  return `${machineId} ${projectId} ${table}`;
+}
+
+/**
+ * Clear all in-memory cross-pass drift tracking. Test seam only — production
+ * never resets this; the map lives for the daemon process's lifetime.
+ */
+export function resetReconcileDriftTracking(): void {
+  priorDeleteCandidates.clear();
+}
 
 /**
  * Reconcile one (machineId, projectId, table) partition against D1 and seed the
@@ -409,8 +362,10 @@ const MANIFEST_PAGE_LIMIT = 500;
  *   5. Per-home mismatch guard (N3): only delete manifest items whose
  *      project_id === projectId (machine_id is machine-global, shared by both
  *      daemon homes — a delete must never target another home's partition).
- *   6. Delete safety firewall: evaluateDeleteSafety; on block, skip ONLY the
- *      deletes (upserts/stale re-pushes are always safe and still proceed).
+ *   6. Settledness firewall + cross-pass drift stability: evaluateDeleteSafety
+ *      blocks deletes for an unsettled partition; otherwise only orphans also
+ *      seen on the PREVIOUS pass are deleted now (current candidates are
+ *      recorded for the next pass). Upserts/stale re-pushes always proceed.
  *   7. Resurrection guard / dedup: skip ids already pending in the outbox; skip
  *      any id that lands in BOTH the upsert/stale set and the delete set.
  *   8. Seed under the mutex (MF3): enqueue survivors via enqueueOutbox.
@@ -420,7 +375,8 @@ export async function reconcilePartition(
   args: ReconcilePartitionArgs,
 ): Promise<void> {
   const { client, logger } = deps;
-  const { machineId, projectId, table, operatorConfirmed, passAggregate, forceFullDiff = false } = args;
+  const { machineId, projectId, table, forceFullDiff = false } = args;
+  const key = partitionKey(machineId, projectId, table);
 
   // 1. Probe-before-feature-detect (MF2). An unprobed client reports undefined;
   // learn the version via health() rather than silently skipping.
@@ -458,6 +414,9 @@ export async function reconcilePartition(
     const summary = await client.getManifest(machineId, table, { projectId, summary: true });
     d1Count = summary.count;
     if (d1Count === localCount) {
+      // No drift this pass — drop any candidate carried from a prior pass so a
+      // since-resolved orphan can never linger as a stale second-pass match.
+      priorDeleteCandidates.delete(key);
       return;
     }
   }
@@ -495,25 +454,32 @@ export async function reconcilePartition(
   }
   const deleteCandidates = diff.deleteIds.filter((id) => deletableProjectById.has(id));
 
-  // 6. Delete safety firewall. The running cumulative INCLUDES this partition's
-  // candidates so an aggregate wipe across partitions is bounded.
-  const partitionDeleteCount = deleteCandidates.length;
+  // 6. Settledness firewall + cross-pass drift stability. Settledness gates
+  // FIRST: an unsettled partition seeds zero deletes regardless of candidates,
+  // and — being an untrustworthy observation — breaks the consecutive-pass chain
+  // (drop any carried candidates). When settled, only orphans also seen on the
+  // PREVIOUS pass are deleted now; the current candidate set is recorded for the
+  // next pass so a transient/partial-load orphan (gone by then) is never deleted
+  // while genuine drift heals on its second consecutive sighting.
   const safety = evaluateDeleteSafety({
     localCount,
     d1Count,
-    partitionDeleteCount,
-    passAggregateDeleteCount: passAggregate.count + partitionDeleteCount,
     membershipSeeded: deps.membershipSeeded,
-    operatorConfirmed,
   });
-  let allowedDeletes = deleteCandidates;
+  let allowedDeletes: string[];
   if (!safety.allow) {
     logger.warn(
-      `reconcile[${table}/${projectId}]: ${partitionDeleteCount} delete(s) blocked (${
+      `reconcile[${table}/${projectId}]: ${deleteCandidates.length} delete(s) blocked (${
         safety.reason ?? 'unknown'
       }); applying upserts only`,
     );
     allowedDeletes = [];
+    priorDeleteCandidates.delete(key);
+  } else {
+    const prior = priorDeleteCandidates.get(key);
+    allowedDeletes = prior ? deleteCandidates.filter((id) => prior.has(id)) : [];
+    if (deleteCandidates.length === 0) priorDeleteCandidates.delete(key);
+    else priorDeleteCandidates.set(key, new Set(deleteCandidates));
   }
 
   // 7. Resurrection guard / dedup. Build the upsert/stale id set, the delete id
@@ -553,7 +519,6 @@ export async function reconcilePartition(
       });
     }
 
-    let appliedDeletes = 0;
     for (const id of deleteIds) {
       // project_id MUST come from the manifest item — there is no local row to
       // source it from, and the worker's grove-project_id gate 409-rejects
@@ -573,11 +538,7 @@ export async function reconcilePartition(
         project_id: manifestProjectId,
         created_at: now,
       });
-      appliedDeletes += 1;
     }
-
-    // Accumulate APPLIED deletes into the shared per-pass aggregate.
-    passAggregate.count += appliedDeletes;
   });
 }
 
