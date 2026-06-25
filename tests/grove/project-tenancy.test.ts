@@ -19,6 +19,7 @@ import { teamRegistry, type TeamRecord } from '@myco/team/registry.js';
 
 let home: string;
 let prevHome: string | undefined;
+let prevTeamHome: string | undefined;
 const projectRoots: string[] = [];
 
 function makeProjectRoot(): string {
@@ -38,20 +39,24 @@ function saveTeam(projects: Array<{ grove_id: string; project_id: string }>): st
     created_at: new Date(0).toISOString(),
     projects,
   };
-  teamRegistry.save(record, home);
+  teamRegistry.save(record);
   return teamId;
 }
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tenancy-home-'));
   prevHome = process.env.MYCO_HOME;
+  prevTeamHome = process.env.MYCO_TEAM_HOME;
   process.env.MYCO_HOME = home;
+  process.env.MYCO_TEAM_HOME = path.join(home, 'team-home');
   clearGroveRegistryCaches();
 });
 
 afterEach(() => {
   if (prevHome === undefined) delete process.env.MYCO_HOME;
   else process.env.MYCO_HOME = prevHome;
+  if (prevTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+  else process.env.MYCO_TEAM_HOME = prevTeamHome;
   fs.rmSync(home, { recursive: true, force: true });
   for (const root of projectRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   clearGroveRegistryCaches();

@@ -78,6 +78,7 @@ describe('team-connect handlers — direct coverage', () => {
   // createGrove() to satisfy both gates.
   let groveId: string;
   let originalMycoHome: string | undefined;
+  let originalTeamHome: string | undefined;
   let groveCtx: MycoRequestContext;
 
   beforeAll(() => {
@@ -100,7 +101,9 @@ describe('team-connect handlers — direct coverage', () => {
     mycoHome = path.join(tempDir, 'home');
     fs.mkdirSync(mycoHome, { recursive: true });
     originalMycoHome = process.env.MYCO_HOME;
+    originalTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
     // Register a Grove via the public API so it satisfies G3/G6.
     const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
     const grove = createGrove('handler-test', mycoHome);
@@ -124,6 +127,8 @@ describe('team-connect handlers — direct coverage', () => {
   afterEach(() => {
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
+    if (originalTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = originalTeamHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

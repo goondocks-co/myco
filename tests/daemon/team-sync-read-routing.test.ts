@@ -86,6 +86,8 @@ describe('team-sync READ path + MCP token from the registry', () => {
   let mycoHome: string;
   let bootVaultDir: string;
   let previousMycoHome: string | undefined;
+  let previousTeamHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -96,7 +98,11 @@ describe('team-sync READ path + MCP token from the registry', () => {
     fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
     fs.mkdirSync(bootVaultDir, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     rotateCalls.length = 0;
     getConfigCalls.length = 0;
@@ -109,6 +115,10 @@ describe('team-sync READ path + MCP token from the registry', () => {
   afterEach(() => {
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -128,10 +138,10 @@ describe('team-sync READ path + MCP token from the registry', () => {
       created_at: new Date().toISOString(),
       projects: [{ grove_id: grove.id, project_id: projectId }],
     };
-    teamRegistry.save(record, mycoHome);
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-${teamId}`, mycoHome);
+    teamRegistry.save(record);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', `secret-${teamId}`);
     if (opts.mcpToken) {
-      teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, opts.mcpToken, mycoHome);
+      teamRegistry.writeSecret(teamId, TEAM_MCP_TOKEN_SECRET, opts.mcpToken);
     }
     return record;
   }
@@ -207,7 +217,7 @@ describe('team-sync READ path + MCP token from the registry', () => {
 
     // Token was rotated once and persisted into the registry.
     expect(rotateCalls).toEqual([team.worker_url]);
-    expect(teamRegistry.readSecrets(team.team_id, mycoHome)[TEAM_MCP_TOKEN_SECRET])
+    expect(teamRegistry.readSecrets(team.team_id)[TEAM_MCP_TOKEN_SECRET])
       .toBe(`rotated-token-for-${team.worker_url}`);
     // /config was seeded with both the worker-authoritative team_id and the
     // team name + embedding config — one PUT body per missing key group.
@@ -252,7 +262,7 @@ describe('team-sync READ path + MCP token from the registry', () => {
     expect(putConfigCalls).toHaveLength(0); // never re-seeded
     // The pre-existing token is untouched.
     const team = teamRegistry.list()[0];
-    expect(teamRegistry.readSecrets(team.team_id, mycoHome)[TEAM_MCP_TOKEN_SECRET])
+    expect(teamRegistry.readSecrets(team.team_id)[TEAM_MCP_TOKEN_SECRET])
       .toBe('already-here');
 
     cache.closeAll();

@@ -6,7 +6,6 @@ import {
   writeSecret as writeSecretFile,
 } from '../config/secrets.js';
 import {
-  resolveMycoHome,
   resolveTeamsDir,
   resolveTeamDir,
   resolveTeamConfigPath,
@@ -37,104 +36,73 @@ export interface TeamDeploymentRecord {
   config_version: number;
 }
 
-function resolveTeamDeploymentPath(teamId: string, mycoHome = resolveMycoHome()): string {
-  return path.join(resolveTeamDir(teamId, mycoHome), 'deployment.json');
+function resolveTeamDeploymentPath(teamId: string): string {
+  return path.join(resolveTeamDir(teamId), 'deployment.json');
 }
 
-function list(mycoHome = resolveMycoHome()): TeamRecord[] {
-  const teamsDir = resolveTeamsDir(mycoHome);
+function list(): TeamRecord[] {
+  const teamsDir = resolveTeamsDir();
   if (!fs.existsSync(teamsDir)) return [];
-
   const results: TeamRecord[] = [];
   let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(teamsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
+  try { entries = fs.readdirSync(teamsDir, { withFileTypes: true }); } catch { return []; }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const configPath = path.join(teamsDir, entry.name, 'team.json');
-    try {
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      results.push(JSON.parse(raw) as TeamRecord);
-    } catch {
-      // Missing or unparseable — skip silently
-    }
+    try { results.push(JSON.parse(fs.readFileSync(configPath, 'utf-8')) as TeamRecord); }
+    catch { /* missing/unparseable — skip */ }
   }
-
   return results;
 }
 
-function get(teamId: string, mycoHome = resolveMycoHome()): TeamRecord | null {
-  const configPath = resolveTeamConfigPath(teamId, mycoHome);
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    return JSON.parse(raw) as TeamRecord;
-  } catch {
-    return null;
-  }
+function get(teamId: string): TeamRecord | null {
+  try { return JSON.parse(fs.readFileSync(resolveTeamConfigPath(teamId), 'utf-8')) as TeamRecord; }
+  catch { return null; }
 }
 
-function save(record: TeamRecord, mycoHome = resolveMycoHome()): void {
-  const teamDir = resolveTeamDir(record.team_id, mycoHome);
+function save(record: TeamRecord): void {
+  const teamDir = resolveTeamDir(record.team_id);
   fs.mkdirSync(teamDir, { recursive: true });
-
-  const configPath = resolveTeamConfigPath(record.team_id, mycoHome);
+  const configPath = resolveTeamConfigPath(record.team_id);
   const tmpPath = configPath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
   fs.renameSync(tmpPath, configPath);
 }
 
-function remove(teamId: string, mycoHome = resolveMycoHome()): void {
-  fs.rmSync(resolveTeamDir(teamId, mycoHome), { recursive: true, force: true });
+function remove(teamId: string): void {
+  fs.rmSync(resolveTeamDir(teamId), { recursive: true, force: true });
 }
 
-function membershipByProject(mycoHome = resolveMycoHome()): Map<string, string> {
+function membershipByProject(): Map<string, string> {
   const map = new Map<string, string>();
-  for (const record of list(mycoHome)) {
-    for (const ref of record.projects) {
-      map.set(ref.project_id, record.team_id);
-    }
-  }
+  for (const record of list()) for (const ref of record.projects) map.set(ref.project_id, record.team_id);
   return map;
 }
 
-function projectsForTeam(teamId: string, mycoHome = resolveMycoHome()): TeamProjectRef[] {
-  return get(teamId, mycoHome)?.projects ?? [];
+function projectsForTeam(teamId: string): TeamProjectRef[] { return get(teamId)?.projects ?? []; }
+
+function readSecrets(teamId: string): Record<string, string> { return readSecretsFile(resolveTeamDir(teamId)); }
+
+function writeSecret(teamId: string, key: string, value: string): void {
+  writeSecretFile(resolveTeamDir(teamId), key, value);
 }
 
-function readSecrets(teamId: string, mycoHome = resolveMycoHome()): Record<string, string> {
-  return readSecretsFile(resolveTeamDir(teamId, mycoHome));
+function readDeployment(teamId: string): TeamDeploymentRecord | null {
+  try { return JSON.parse(fs.readFileSync(resolveTeamDeploymentPath(teamId), 'utf-8')) as TeamDeploymentRecord; }
+  catch { return null; }
 }
 
-function writeSecret(teamId: string, key: string, value: string, mycoHome = resolveMycoHome()): void {
-  writeSecretFile(resolveTeamDir(teamId, mycoHome), key, value);
-}
-
-function readDeployment(teamId: string, mycoHome = resolveMycoHome()): TeamDeploymentRecord | null {
-  const deploymentPath = resolveTeamDeploymentPath(teamId, mycoHome);
-  try {
-    const raw = fs.readFileSync(deploymentPath, 'utf-8');
-    return JSON.parse(raw) as TeamDeploymentRecord;
-  } catch {
-    return null;
-  }
-}
-
-function saveDeployment(record: TeamDeploymentRecord, mycoHome = resolveMycoHome()): void {
-  const teamDir = resolveTeamDir(record.team_id, mycoHome);
+function saveDeployment(record: TeamDeploymentRecord): void {
+  const teamDir = resolveTeamDir(record.team_id);
   fs.mkdirSync(teamDir, { recursive: true });
-
-  const deploymentPath = resolveTeamDeploymentPath(record.team_id, mycoHome);
+  const deploymentPath = resolveTeamDeploymentPath(record.team_id);
   const tmpPath = deploymentPath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(record, null, 2), 'utf-8');
   fs.renameSync(tmpPath, deploymentPath);
 }
 
-function removeDeployment(teamId: string, mycoHome = resolveMycoHome()): void {
-  fs.rmSync(resolveTeamDeploymentPath(teamId, mycoHome), { force: true });
+function removeDeployment(teamId: string): void {
+  fs.rmSync(resolveTeamDeploymentPath(teamId), { force: true });
 }
 
 export function withProjectAdded(record: TeamRecord, ref: TeamProjectRef): TeamRecord {
@@ -147,15 +115,6 @@ export function withProjectRemoved(record: TeamRecord, projectId: string): TeamR
 }
 
 export const teamRegistry = {
-  list,
-  get,
-  save,
-  remove,
-  membershipByProject,
-  projectsForTeam,
-  readSecrets,
-  writeSecret,
-  readDeployment,
-  saveDeployment,
-  removeDeployment,
+  list, get, save, remove, membershipByProject, projectsForTeam,
+  readSecrets, writeSecret, readDeployment, saveDeployment, removeDeployment,
 };
