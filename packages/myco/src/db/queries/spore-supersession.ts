@@ -67,12 +67,13 @@ export function listRecentSupersessions(
   sinceEpoch: number,
   limit: number,
 ): RecentSupersession[] {
-  return listResolutionEvents({ scope, limit })
-    .filter((event) => (
-      event.action === RESOLUTION_ACTION.SUPERSEDE
-      && event.new_spore_id
-      && event.created_at > sinceEpoch
-    ))
+  return listResolutionEvents({
+    scope,
+    action: RESOLUTION_ACTION.SUPERSEDE,
+    created_after: sinceEpoch,
+    has_new_spore_id: true,
+    limit,
+  })
     .map((event) => ({
       spore_id: event.spore_id,
       new_spore_id: event.new_spore_id!,

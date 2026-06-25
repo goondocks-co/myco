@@ -553,6 +553,67 @@ describe('buildSkillEvolveInstruction', () => {
     expect(result).not.toContain('spore-old-legacy-daemon');
   });
 
+  it('does not let newer non-supersede resolution events crowd out recent supersessions', async () => {
+    const now = epochSeconds();
+    const watermark = now - 100;
+    createSkillWithWatermark(
+      'daemon-crowded-legacy',
+      watermark,
+      0,
+      'Apply this skill when operating daemon restart and routing workflows.',
+    );
+    insertSpore({
+      id: 'spore-old-crowded-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'superseded',
+      content: 'Daemon restart workflow used stale routing guidance.',
+      importance: 7,
+      created_at: now - 1000,
+    });
+    insertSpore({
+      id: 'spore-new-crowded-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'active',
+      content: 'Daemon restart workflow should verify runtime routing after build.',
+      importance: 8,
+      created_at: now - 900,
+    });
+    for (let i = 0; i < 60; i += 1) {
+      const sporeId = `spore-obsolete-noise-${i}`;
+      insertSpore({
+        id: sporeId,
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'discovery',
+        status: 'obsolete',
+        content: `Noise event ${i}`,
+        importance: 1,
+        created_at: now - 80 + i,
+      });
+      insertResolutionEvent({
+        id: `res-obsolete-noise-${i}`,
+        agent_id: TEST_AGENT_ID,
+        spore_id: sporeId,
+        action: 'obsolete',
+        created_at: now - 60 + i,
+      });
+    }
+    insertResolutionEvent({
+      id: 'res-crowded-legacy-daemon',
+      agent_id: TEST_AGENT_ID,
+      spore_id: 'spore-old-crowded-daemon',
+      action: 'supersede',
+      new_spore_id: 'spore-new-crowded-daemon',
+      created_at: now - 70,
+    });
+
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('daemon-crowded-legacy');
+    expect(result).toContain('spore-new-crowded-daemon');
+    expect(result).not.toContain('spore-old-crowded-daemon');
+  });
+
   // --- Re-surface of unresolved needs-work skills -------------------------
   // A skill that assess classified STALE/MERGE/NARROW but that act never
   // rewrote must come back for re-assessment, even though its watermark and

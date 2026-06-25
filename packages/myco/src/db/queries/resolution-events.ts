@@ -55,6 +55,9 @@ export interface ListResolutionEventsOptions {
   scope: ProjectScope;
   agent_id?: string;
   spore_id?: string;
+  action?: string;
+  created_after?: number;
+  has_new_spore_id?: boolean;
   limit?: number;
 }
 
@@ -158,6 +161,17 @@ export function listResolutionEvents(
   if (options.spore_id !== undefined) {
     conditions.push(`spore_id = ?`);
     params.push(options.spore_id);
+  }
+  if (options.action !== undefined) {
+    conditions.push(`action = ?`);
+    params.push(options.action);
+  }
+  if (options.created_after !== undefined) {
+    conditions.push(`created_at > ?`);
+    params.push(options.created_after);
+  }
+  if (options.has_new_spore_id) {
+    conditions.push(`new_spore_id IS NOT NULL`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

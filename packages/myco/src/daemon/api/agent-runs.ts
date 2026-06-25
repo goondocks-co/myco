@@ -137,6 +137,7 @@ export interface AgentRunDeps {
 
 export function createAgentRunHandlers(deps: AgentRunDeps) {
   const { vaultDir, resolveEmbeddingManager, logger, getTeamClient } = deps;
+  const vaultDirForRequest = (req: RouteRequest): string => req.requestContext?.projectVaultDir ?? vaultDir;
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
@@ -163,7 +164,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     } = parsedBody.data;
     const scope = projectScopeFromRequestContext(req.requestContext);
     const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
-    const runVaultDir = req.requestContext?.projectVaultDir ?? vaultDir;
+    const runVaultDir = vaultDirForRequest(req);
 
     // `force` is opt-in per task and currently only meaningful for
     // skill-survey (bypasses the incremental watermark). For any other
@@ -270,28 +271,31 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     resultPromise
       .then((result) => {
         const taskName = task ?? 'agent run';
+        const notificationOptions = req.requestContext?.projectId
+          ? { projectId: req.requestContext.projectId }
+          : undefined;
         if (result.status === 'failed') {
-          notify(vaultDir, {
+          notify(runVaultDir, {
             domain: 'agents',
             type: 'agent.task.failure',
             title: `Task failed: ${taskName}`,
             message: result.error ?? 'Unknown error',
             link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
-          }, mycoConfig);
+          }, mycoConfig, notificationOptions);
           logger.error(LOG_KINDS.AGENT_ERROR, 'Agent run failed', {
             runId: result.runId,
             error: result.error ?? 'No error message',
             phases: result.phases?.map(p => `${p.name}:${p.status}`) ?? [],
           });
         } else {
-          notify(vaultDir, {
+          notify(runVaultDir, {
             domain: 'agents',
             type: 'agent.task.success',
             title: `Task completed: ${taskName}`,
             link: agentRunNotificationLink(result.runId),
             metadata: { taskName: task ?? null, runId: result.runId },
-          }, mycoConfig);
+          }, mycoConfig, notificationOptions);
           logger.info(LOG_KINDS.AGENT_RUN, 'Agent run completed', {
             runId: result.runId,
             status: result.status,
@@ -396,8 +400,9 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     const { mode } = ResumeRunBody.parse(req.body ?? {});
     const embeddingManager = resolveEmbeddingManager(req.requestContext);
+    const runVaultDir = vaultDirForRequest(req);
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
-    const resultPromise = dispatchAgentRun(vaultDir, {
+    const resultPromise = dispatchAgentRun(runVaultDir, {
       agentId: run.agent_id,
       task: run.task ?? undefined,
       instruction: run.instruction ?? undefined,

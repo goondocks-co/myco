@@ -16,10 +16,13 @@ import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate } from '@myco/db/queries/skill-candidates.js';
+import { insertRun } from '@myco/db/queries/runs.js';
+import { getDatabase } from '@myco/db/client.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import type { RouteRequest } from '@myco/daemon/router';
 import { makeTestRequestContext } from '../../helpers/request-context';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { _clearNotifyDedupForTests } from '@myco/notifications/notify.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -69,6 +72,7 @@ describe('POST /api/agent/run — executionOverrides security', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {
     cleanTestDb();
+    _clearNotifyDedupForTests();
     runAgentSpy.mockClear();
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'Test', created_at: epochNow() });
   });
@@ -155,6 +159,78 @@ describe('POST /api/agent/run — executionOverrides security', () => {
       expect(runAgentSpy).toHaveBeenCalledTimes(1);
       const [dispatchedVaultDir] = runAgentSpy.mock.calls[0] as [string];
       expect(dispatchedVaultDir).toBe(projectVaultDir);
+    } finally {
+      fs.rmSync(projectVaultDir, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatches manual resume against the request-scoped project vault dir', async () => {
+    const projectVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-resume-vault-'));
+    const projectId = 'proj_11111111111111111111111111111111';
+    fs.writeFileSync(
+      path.join(projectVaultDir, 'myco.yaml'),
+      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n',
+      'utf-8',
+    );
+    insertRun({
+      id: 'run-resume-request-vault',
+      project_id: projectId,
+      agent_id: DEFAULT_AGENT_ID,
+      task: 'custom-resume-smoke',
+      instruction: 'resume me',
+      status: 'failed',
+      resumable: 1,
+      dryRun: true,
+      started_at: epochNow(),
+    });
+
+    try {
+      const { handleResumeRun } = makeHandlers();
+      const response = await handleResumeRun(makeRequest({
+        params: { id: 'run-resume-request-vault' },
+        requestContext: makeTestRequestContext({
+          vaultDir: projectVaultDir,
+          projectId,
+          groveId: 'grove_11111111111111111111111111111111',
+        }),
+        body: { mode: 'manual' },
+      }));
+
+      expect(response.body).toMatchObject({ ok: true, message: 'Agent resume started' });
+      expect(runAgentSpy).toHaveBeenCalledTimes(1);
+      const [dispatchedVaultDir, opts] = runAgentSpy.mock.calls[0] as [string, { resumeRunId?: string }];
+      expect(dispatchedVaultDir).toBe(projectVaultDir);
+      expect(opts.resumeRunId).toBe('run-resume-request-vault');
+    } finally {
+      fs.rmSync(projectVaultDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits manual-run completion notifications against the request-scoped project vault dir', async () => {
+    const projectVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-notify-vault-'));
+    const projectId = 'proj_22222222222222222222222222222222';
+    fs.writeFileSync(
+      path.join(projectVaultDir, 'myco.yaml'),
+      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nnotifications:\n  enabled: true\n',
+      'utf-8',
+    );
+
+    try {
+      const { handleRun } = makeHandlers();
+      await handleRun(makeRequest({
+        requestContext: makeTestRequestContext({
+          vaultDir: projectVaultDir,
+          projectId,
+          groveId: 'grove_22222222222222222222222222222222',
+        }),
+        body: { task: 'custom-notify-smoke', instruction: 'go', agentId: DEFAULT_AGENT_ID },
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const row = getDatabase().prepare(
+        `SELECT project_id, type FROM notifications WHERE type = ?`,
+      ).get('agent.task.success') as { project_id: string; type: string } | undefined;
+      expect(row).toEqual({ project_id: projectId, type: 'agent.task.success' });
     } finally {
       fs.rmSync(projectVaultDir, { recursive: true, force: true });
     }
