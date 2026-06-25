@@ -25,15 +25,27 @@ import type { OutboxInsert, OutboxRow, PartitionRow } from '@myco/db/queries/tea
 // Types
 // ---------------------------------------------------------------------------
 
-/** A local row as returned by `localPartition`. */
+/**
+ * A local row as returned by `localPartition`.
+ *
+ * `id` is `string | number` because integer-id tables (prompt_batches,
+ * knowledge_release_state) surface ids as JS numbers from bun:sqlite. The
+ * comparison in `diffPartition` coerces both sides to strings before matching.
+ */
 export interface LocalRow {
-  id: string;
+  id: string | number;
   content_hash?: string;
 }
 
-/** One item from the worker's GET /manifest response. */
+/**
+ * One item from the worker's GET /manifest response.
+ *
+ * `id` is `string | number` because D1 returns INTEGER id columns as JS
+ * numbers; `diffPartition` normalizes to strings so a number id can never
+ * mis-compare against a stringified local id.
+ */
 export interface ManifestItemLike {
-  id: string;
+  id: string | number;
   content_hash?: string | null;
 }
 
@@ -73,14 +85,19 @@ export function diffPartition(
   local: ReadonlyArray<LocalRow>,
   manifestItems: ReadonlyArray<ManifestItemLike>,
 ): PartitionDiff {
+  // Key both maps — and every returned id — by String(id). D1 returns INTEGER
+  // id columns as JS numbers while the local side (localPartition) stringifies
+  // ids; without this coercion an integer-id table would compare '101' against
+  // 101, miss on every row, and classify EVERY id as a spurious delete/upsert.
+  // For text-id tables String(uuid) === uuid, so this is a no-op there.
   const localMap = new Map<string, string | undefined>();
   for (const row of local) {
-    localMap.set(row.id, row.content_hash);
+    localMap.set(String(row.id), row.content_hash);
   }
 
   const manifestMap = new Map<string, string | null | undefined>();
   for (const item of manifestItems) {
-    manifestMap.set(item.id, item.content_hash);
+    manifestMap.set(String(item.id), item.content_hash);
   }
 
   const upsertIds: string[] = [];
@@ -470,9 +487,11 @@ export async function reconcilePartition(
   // must never target another home's partition. Only consider manifest items
   // whose project_id === projectId as deletable (defense-in-depth on top of the
   // already-strict project-scoped fetch).
+  // Key by String(id) to match diff.deleteIds (which diffPartition stringifies)
+  // — an integer-id table's manifest items arrive as numbers from D1.
   const deletableProjectById = new Map<string, string>();
   for (const item of manifestItems) {
-    if (item.project_id === projectId) deletableProjectById.set(item.id, item.project_id);
+    if (item.project_id === projectId) deletableProjectById.set(String(item.id), item.project_id);
   }
   const deleteCandidates = diff.deleteIds.filter((id) => deletableProjectById.has(id));
 
@@ -539,7 +558,11 @@ export async function reconcilePartition(
       // project_id MUST come from the manifest item — there is no local row to
       // source it from, and the worker's grove-project_id gate 409-rejects
       // deletes lacking project_id. Payload matches the delete-trigger shape:
-      // json_object('id', id, 'machine_id', machine_id).
+      // json_object('id', id, 'machine_id', machine_id). `id` is a string here
+      // (diffPartition stringifies all ids); a string id in the delete payload
+      // still matches an INTEGER D1 row because the worker's `DELETE ... WHERE
+      // id = ?` applies the id column's INTEGER affinity to the bound value, so
+      // '12345' converts to 12345 and matches.
       const manifestProjectId = deletableProjectById.get(id)!;
       deps.enqueueOutbox({
         table_name: table,

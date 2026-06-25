@@ -160,21 +160,45 @@ export async function queryManifest(
   const hasContentHash = WORKER_CONTENT_HASH_TABLES.has(table);
   const projection = hasContentHash ? 'id, project_id, content_hash' : 'id, project_id';
 
-  const cursorId = cursor ?? '';
+  // The `AND id > ?` cursor filter is applied ONLY when a real cursor is
+  // present. The FIRST page (no/empty cursor) omits it entirely.
+  //
+  // Why: SQLite/D1 sorts NULL < INTEGER/REAL < TEXT, and `id > ?` applies the
+  // id column's affinity to the bound param. An empty-string cursor ('') is not
+  // a valid number, so it stays TEXT — making `id > ''` FALSE for EVERY
+  // integer id (integer < text). Tables with an INTEGER id (prompt_batches,
+  // knowledge_release_state, ...) would then return zero items on the first
+  // page while still reporting the correct count. On later pages the cursor is
+  // a concrete id whose affinity-converted value compares correctly for both
+  // integer and text ids, so the clause is safe there. Do NOT "simplify" this
+  // back to an always-on `id > ?` with an empty-string default.
+  const hasCursor = cursor != null && cursor !== '';
 
-  const sql = projectId
-    ? `SELECT ${projection} FROM ${table} WHERE machine_id = ? AND project_id = ? AND id > ? ORDER BY id LIMIT ?`
-    : `SELECT ${projection} FROM ${table} WHERE machine_id = ? AND id > ? ORDER BY id LIMIT ?`;
+  const whereParts = ['machine_id = ?'];
+  const bindValues: unknown[] = [machineId];
+  if (projectId) {
+    whereParts.push('project_id = ?');
+    bindValues.push(projectId);
+  }
+  if (hasCursor) {
+    whereParts.push('id > ?');
+    bindValues.push(cursor);
+  }
+  bindValues.push(limit + 1);
 
-  const rows = await (projectId
-    ? db.prepare(sql).bind(machineId, projectId, cursorId, limit + 1)
-    : db.prepare(sql).bind(machineId, cursorId, limit + 1)
-  ).all<ManifestItem>();
+  const sql = `SELECT ${projection} FROM ${table} WHERE ${whereParts.join(' AND ')} ORDER BY id LIMIT ?`;
+
+  const rows = await db.prepare(sql).bind(...bindValues).all<ManifestItem>();
 
   const allItems = rows.results ?? [];
   const hasMore = allItems.length > limit;
-  const items = hasMore ? allItems.slice(0, limit) : allItems;
-  const nextCursor = hasMore ? String(items[items.length - 1].id) : undefined;
+  const page = hasMore ? allItems.slice(0, limit) : allItems;
+  // D1 returns INTEGER id columns as JS numbers. Coerce every id to a string so
+  // the wire shape is type-stable and the daemon diff compares like-typed ids
+  // against its (already-stringified) local partition. String(uuid) === uuid,
+  // so text-id tables are unaffected.
+  const items = page.map((row) => ({ ...row, id: String(row.id) }));
+  const nextCursor = hasMore ? items[items.length - 1].id : undefined;
 
   // Also fetch count for the summary field on paged responses.
   const aggSql = projectId

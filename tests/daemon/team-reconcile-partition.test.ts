@@ -472,6 +472,44 @@ describe('reconcilePartition — forceFullDiff gap closure', () => {
 });
 
 // ---------------------------------------------------------------------------
+// INTEGER-id partition: end-to-end type normalization
+// ---------------------------------------------------------------------------
+
+describe('reconcilePartition — INTEGER id partition (type normalization)', () => {
+  it('number/string id mismatch does not cause spurious mass delete/upsert', async () => {
+    // localPartition stringifies ids; the raw D1 manifest hands back numbers.
+    // The 20 shared rows must be recognized as in-sync (no upsert, no delete);
+    // only the genuine integer D1-orphan (999) is deleted, with a STRING row_id.
+    // 1/21 deletes ≈ 4.8% keeps us under the 20% fraction cap.
+    const local: PartitionRow[] = [];
+    const items: ManifestItem[] = [];
+    for (let i = 1; i <= 20; i++) {
+      local.push({ id: String(100 + i) });                                       // '101'..'120'
+      items.push({ id: 100 + i, project_id: 'p1' } as unknown as ManifestItem);  // numbers
+    }
+    items.push({ id: 999, project_id: 'p1' } as unknown as ManifestItem);        // D1 orphan
+
+    const h = makeHarness({
+      protocolVersion: 3,
+      local,
+      pages: [page(items, 21)],
+      summaryCount: 21, // D1 21 vs local 20 → diff path
+    });
+    await reconcilePartition(h.deps, { ...BASE, table: 'prompt_batches', passAggregate: { count: 0 } });
+
+    const deletes = h.enqueued.filter((e) => e.operation === 'delete');
+    const upserts = h.enqueued.filter((e) => (e.operation ?? 'upsert') === 'upsert');
+
+    expect(upserts.length).toBe(0); // no spurious all-upsert from a type mismatch
+    expect(deletes.length).toBe(1); // only the genuine orphan
+    expect(deletes[0].row_id).toBe('999');
+    expect(typeof deletes[0].row_id).toBe('string');
+    const payload = JSON.parse(deletes[0].payload) as Record<string, unknown>;
+    expect(payload).toEqual({ id: '999', machine_id: 'm1' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MF3 mutex serialization
 // ---------------------------------------------------------------------------
 

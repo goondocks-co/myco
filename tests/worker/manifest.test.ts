@@ -55,7 +55,11 @@ const PROJECT_1 = 'proj_0000000000000000000000000000001a';
 const PROJECT_2 = 'proj_0000000000000000000000000000002b';
 
 interface FakeRow {
-  id: string;
+  // `id` is `string | number` so the fake can model BOTH text-id tables
+  // (sessions: TEXT id) and integer-id tables (prompt_batches: INTEGER id).
+  // D1 returns INTEGER id columns as JS numbers, so integer-id fixtures store
+  // numbers here — the regression the integer-id tests below pin down.
+  id: string | number;
   machine_id: string;
   project_id: string | null;
   content_hash?: string | null;
@@ -77,6 +81,60 @@ const ENTITIES_ROWS: FakeRow[] = [
   { id: 'ent-b1', machine_id: MACHINE_B, project_id: PROJECT_1, rowid: 3 },
 ];
 
+// Seed rows for the 'prompt_batches' table — INTEGER id, has content_hash.
+// MACHINE_A + PROJECT_1: ids 101, 102, 103 (3 rows) for multi-page coverage.
+const PROMPT_BATCHES_ROWS: FakeRow[] = [
+  { id: 101, machine_id: MACHINE_A, project_id: PROJECT_1, content_hash: 'pb-101', rowid: 1 },
+  { id: 102, machine_id: MACHINE_A, project_id: PROJECT_1, content_hash: 'pb-102', rowid: 2 },
+  { id: 103, machine_id: MACHINE_A, project_id: PROJECT_1, content_hash: 'pb-103', rowid: 3 },
+  { id: 104, machine_id: MACHINE_A, project_id: PROJECT_2, content_hash: 'pb-104', rowid: 4 },
+  { id: 201, machine_id: MACHINE_B, project_id: PROJECT_1, content_hash: 'pb-201', rowid: 5 },
+];
+
+// ---------------------------------------------------------------------------
+// SQLite storage-class semantics (faithful to D1)
+// ---------------------------------------------------------------------------
+// The previous fake compared ids as strings, which silently masked the
+// integer-affinity bug. These helpers model SQLite's real cross-type ordering
+// and affinity application so the integer-id tests below actually exercise the
+// `id > ''` first-page failure.
+
+/** Storage-class rank for ordering: NULL < INTEGER/REAL < TEXT. */
+function sqliteRank(v: unknown): number {
+  if (v === null || v === undefined) return 0;
+  if (typeof v === 'number') return 1;
+  return 2;
+}
+
+/** Compare two values per SQLite's cross-storage-class ordering. */
+function sqliteCompare(a: unknown, b: unknown): number {
+  const ra = sqliteRank(a);
+  const rb = sqliteRank(b);
+  if (ra !== rb) return ra - rb;
+  if (ra === 1) return (a as number) - (b as number);
+  const sa = String(a);
+  const sb = String(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+/**
+ * Apply a column's type affinity to a bound param, as SQLite does inside an
+ * `id > ?` comparison. INTEGER affinity converts a well-formed integer string
+ * to a number; '' and non-numeric strings stay TEXT — which is exactly why
+ * `id > ''` excludes every INTEGER-id row (integer < text), the bug under test.
+ */
+function applyAffinity(value: unknown, affinity: 'integer' | 'text'): unknown {
+  if (
+    affinity === 'integer' &&
+    typeof value === 'string' &&
+    value !== '' &&
+    /^-?\d+$/.test(value)
+  ) {
+    return Number(value);
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Fake D1 implementation
 // ---------------------------------------------------------------------------
@@ -89,9 +147,18 @@ const ENTITIES_ROWS: FakeRow[] = [
  *     WHERE machine_id = ? [AND project_id = ?]
  *
  *   SELECT id, project_id[, content_hash] FROM <table>
- *     WHERE machine_id = ? [AND project_id = ?] AND id > ? ORDER BY id LIMIT ?
+ *     WHERE machine_id = ? [AND project_id = ?] [AND id > ?] ORDER BY id LIMIT ?
+ *
+ * The `AND id > ?` cursor clause is OPTIONAL (the first page omits it). The
+ * fake detects each clause from the SQL and parses bindings positionally so it
+ * works against both the buggy (always-on cursor) and fixed (first-page-omits)
+ * worker code. `idAffinity` maps a table to its id column affinity so the fake
+ * reproduces SQLite's integer-vs-empty-string comparison faithfully.
  */
-function createFakeD1(tableData: Record<string, FakeRow[]>): ManifestDb {
+function createFakeD1(
+  tableData: Record<string, FakeRow[]>,
+  idAffinity: Record<string, 'integer' | 'text'> = {},
+): ManifestDb {
   return {
     prepare(sql: string) {
       let boundValues: unknown[] = [];
@@ -106,7 +173,7 @@ function createFakeD1(tableData: Record<string, FakeRow[]>): ManifestDb {
           const rows = tableData[table] ?? [];
 
           // Parse WHERE clause bindings.
-          // Summary: SELECT COUNT(*), MAX(rowid) FROM t WHERE machine_id=? [AND project_id=?]
+          // Summary: SELECT COUNT(*) FROM t WHERE machine_id=? [AND project_id=?]
           const [machineId, maybeProjectId] = boundValues as string[];
           const filtered = rows.filter((r) => {
             if (r.machine_id !== machineId) return false;
@@ -122,37 +189,42 @@ function createFakeD1(tableData: Record<string, FakeRow[]>): ManifestDb {
           const tableMatch = sql.match(/FROM\s+(\w+)/i);
           const table = tableMatch?.[1] ?? '';
           const rows = tableData[table] ?? [];
+          const affinity = idAffinity[table] ?? 'text';
 
           const hasProjectIdFilter = /AND project_id = \?/.test(sql);
+          const hasCursorFilter = /id > \?/.test(sql);
           const hasContentHash = sql.includes('content_hash');
 
-          // Binding order for paged query:
-          //   With project_id:    machine_id, project_id, cursor_id, limit
-          //   Without project_id: machine_id, cursor_id, limit
-          let machineId: string;
-          let projectId: string | null = null;
-          let cursorId: string;
-          let limit: number;
+          // Binding order for the paged query (clauses optional):
+          //   machine_id, [project_id], [cursor], limit
+          let bi = 0;
+          const machineId = boundValues[bi++] as string;
+          const projectId = hasProjectIdFilter ? (boundValues[bi++] as string) : null;
+          const cursorRaw = hasCursorFilter ? boundValues[bi++] : undefined;
+          // limit not read directly: queryManifest binds limit+1 and slices via
+          // hasMore. The fake returns all matches; queryManifest paginates.
 
-          if (hasProjectIdFilter) {
-            [machineId, projectId, cursorId, limit] = boundValues as [string, string, string, number];
-          } else {
-            [machineId, cursorId, limit] = boundValues as [string, string, number];
-          }
+          // SQLite applies the id column's affinity to the bound cursor before
+          // comparing. This is what makes `id > ''` FALSE for integer ids.
+          const cursorBound = hasCursorFilter ? applyAffinity(cursorRaw, affinity) : undefined;
 
           const filtered = rows
             .filter((r) => {
               if (r.machine_id !== machineId) return false;
               if (projectId !== null && r.project_id !== projectId) return false;
-              if (String(r.id) <= String(cursorId)) return false;
+              if (hasCursorFilter && sqliteCompare(r.id, cursorBound) <= 0) return false;
               return true;
             })
-            .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+            .sort((a, b) => sqliteCompare(a.id, b.id));
 
+          const limit = boundValues[bi] as number;
           const paged = filtered.slice(0, limit);
 
-          const items = paged.map((r): ManifestItem => {
-            const item: ManifestItem = {
+          // Return ids in their stored runtime type (number for integer-id
+          // tables) — queryManifest is responsible for coercing them to strings
+          // on the wire, mirroring how D1 hands back raw INTEGER columns.
+          const items = paged.map((r) => {
+            const item: Record<string, unknown> = {
               id: r.id,
               project_id: r.project_id,
               ...(hasContentHash ? { content_hash: r.content_hash ?? null } : {}),
@@ -167,10 +239,14 @@ function createFakeD1(tableData: Record<string, FakeRow[]>): ManifestDb {
   };
 }
 
-const fakeDb = createFakeD1({
-  sessions: SESSIONS_ROWS,
-  entities: ENTITIES_ROWS,
-});
+const fakeDb = createFakeD1(
+  {
+    sessions: SESSIONS_ROWS,
+    entities: ENTITIES_ROWS,
+    prompt_batches: PROMPT_BATCHES_ROWS,
+  },
+  { prompt_batches: 'integer' },
+);
 
 // ---------------------------------------------------------------------------
 // Parity assertion: WORKER_CONTENT_HASH_TABLES vs schema.ts
@@ -555,6 +631,86 @@ describe('content_hash field on paged results', () => {
     expect(result.items.length).toBeGreaterThan(0);
     for (const item of result.items) {
       expect('content_hash' in item).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INTEGER-id tables — regression for the first-page `id > ''` paging bug
+// ---------------------------------------------------------------------------
+// Tables whose `id` column is INTEGER (prompt_batches, knowledge_release_state)
+// returned the correct count but `items: []` on the FIRST page, because
+// `id > ''` is FALSE for every integer id (SQLite orders INTEGER < TEXT). Every
+// existing test used string ids, so the suite never caught it. These tests pin:
+//   - first page returns items (not empty)
+//   - pagination works ACROSS pages for integer ids (multi-page with limit)
+//   - ids come back as strings on the wire
+
+describe('GET /manifest paged — INTEGER id tables (regression)', () => {
+  it('first page returns items for an integer-id table (not empty)', async () => {
+    const result = await queryManifest(fakeDb, {
+      machineId: MACHINE_A, table: 'prompt_batches',
+      projectId: PROJECT_1, cursor: null, limit: 200, summary: false,
+    });
+
+    expect('items' in result).toBe(true);
+    if (!('items' in result)) return;
+
+    // The bug returned []. MACHINE_A + PROJECT_1 has 3 prompt_batches.
+    expect(result.items.length).toBe(3);
+    expect(result.count).toBe(3);
+  });
+
+  it('returns integer ids coerced to strings on the wire', async () => {
+    const result = await queryManifest(fakeDb, {
+      machineId: MACHINE_A, table: 'prompt_batches',
+      projectId: PROJECT_1, cursor: null, limit: 200, summary: false,
+    });
+    expect('items' in result).toBe(true);
+    if (!('items' in result)) return;
+
+    for (const item of result.items) {
+      expect(typeof item.id).toBe('string');
+    }
+    expect(result.items.map((r) => r.id)).toEqual(['101', '102', '103']);
+  });
+
+  it('paginates across pages for integer ids (multi-page with limit)', async () => {
+    const page1 = await queryManifest(fakeDb, {
+      machineId: MACHINE_A, table: 'prompt_batches',
+      projectId: PROJECT_1, cursor: null, limit: 2, summary: false,
+    });
+    expect('items' in page1).toBe(true);
+    if (!('items' in page1)) return;
+
+    expect(page1.items.map((r) => r.id)).toEqual(['101', '102']);
+    expect(page1.next_cursor).toBe('102');
+
+    const page2 = await queryManifest(fakeDb, {
+      machineId: MACHINE_A, table: 'prompt_batches',
+      projectId: PROJECT_1, cursor: page1.next_cursor!, limit: 2, summary: false,
+    });
+    expect('items' in page2).toBe(true);
+    if (!('items' in page2)) return;
+
+    expect(page2.items.map((r) => r.id)).toEqual(['103']);
+    expect(page2.next_cursor).toBeUndefined();
+
+    const allIds = [...page1.items, ...page2.items].map((r) => r.id);
+    expect(allIds).toEqual(['101', '102', '103']);
+  });
+
+  it('includes content_hash for the integer-id content-hash table', async () => {
+    const result = await queryManifest(fakeDb, {
+      machineId: MACHINE_A, table: 'prompt_batches',
+      projectId: PROJECT_1, cursor: null, limit: 200, summary: false,
+    });
+    expect('items' in result).toBe(true);
+    if (!('items' in result)) return;
+
+    expect(result.items.length).toBeGreaterThan(0);
+    for (const item of result.items) {
+      expect('content_hash' in item).toBe(true);
     }
   });
 });

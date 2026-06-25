@@ -118,4 +118,50 @@ describe('diffPartition', () => {
     expect(result.deleteIds).toEqual([]);
     expect(result.staleIds).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // INTEGER-id tables: D1 returns INTEGER id columns as JS numbers and
+  // bun:sqlite does too. diffPartition must coerce ids on BOTH sides so an
+  // integer-id table never mis-compares '101' (one side) against 101 (other),
+  // which would classify every row as a spurious delete/upsert.
+  // -------------------------------------------------------------------------
+
+  it('integer-typed ids (numbers) classify correctly and return string ids', () => {
+    const result = diffPartition(
+      [{ id: 101 }, { id: 102 }, { id: 103 }], // local as numbers
+      [{ id: 102 }, { id: 103 }, { id: 104 }], // manifest as numbers
+    );
+    expect(result.upsertIds).toEqual(['101']); // local-only
+    expect(result.deleteIds).toEqual(['104']); // D1-only
+    expect(result.staleIds).toEqual([]);
+
+    // Every returned id is a string, so it matches the TEXT outbox row_id and
+    // the Set<string> resurrection-guard dedup downstream.
+    for (const id of [...result.upsertIds, ...result.deleteIds, ...result.staleIds]) {
+      expect(typeof id).toBe('string');
+    }
+  });
+
+  it('mixed number/string ids for the same row are treated as equal (no spurious diff)', () => {
+    // Models the live shape: localPartition stringifies ids while the raw D1
+    // manifest hands back numbers. Without coercion this produces a catastrophic
+    // all-upsert + all-delete; with coercion the rows are recognized as in-sync.
+    const result = diffPartition(
+      [{ id: '101' }, { id: '102' }], // local stringified
+      [{ id: 101 }, { id: 102 }],     // manifest numeric
+    );
+    expect(result.upsertIds).toEqual([]);
+    expect(result.deleteIds).toEqual([]);
+    expect(result.staleIds).toEqual([]);
+  });
+
+  it('integer-id stale detection: same id, differing content_hash → staleIds (string)', () => {
+    const result = diffPartition(
+      [{ id: 101, content_hash: 'h-old' }],
+      [{ id: 101, content_hash: 'h-new' }],
+    );
+    expect(result.upsertIds).toEqual([]);
+    expect(result.deleteIds).toEqual([]);
+    expect(result.staleIds).toEqual(['101']);
+  });
 });
