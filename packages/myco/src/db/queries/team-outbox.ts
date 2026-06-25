@@ -608,6 +608,90 @@ export function backfillAllForRebuild(machineId: string): number {
   return backfillRows(machineId, 'all', REBUILD_TABLES);
 }
 
+// ---------------------------------------------------------------------------
+// Reconcile helpers (symmetric reconcile)
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal row shape for partition comparisons.
+ * `content_hash` is present only for tables that carry the column
+ * (sessions, prompt_batches, spores, plans).
+ */
+export interface PartitionRow {
+  id: string;
+  content_hash?: string;
+}
+
+/**
+ * Return all local rows for a (machineId, projectId, table) partition in the
+ * minimal `{ id, content_hash? }` shape needed by diffPartition.
+ *
+ * Always uses `1=1` as the row predicate (the reconcile path needs the full
+ * local id-set, not just unsynced rows). Tables that lack a `synced_at`
+ * column — specifically skill_usage — are safe here because no
+ * `synced_at IS NULL` predicate is applied.
+ *
+ * `content_hash` is included in the SELECT only when the table's schema
+ * carries that column (detected via PRAGMA table_info). For presence-only
+ * tables the returned rows have no `content_hash` property so diffPartition
+ * skips stale detection automatically.
+ */
+export function localPartition(
+  machineId: string,
+  projectId: string,
+  table: string,
+): PartitionRow[] {
+  const db = getDatabase();
+
+  // Detect available columns for this table via the schema.
+  const cols = new Set(
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map((r) => r.name),
+  );
+
+  const selectCols = cols.has('content_hash') ? 'id, content_hash' : 'id';
+
+  const rows = db.prepare(
+    `SELECT ${selectCols}
+     FROM ${table}
+     WHERE machine_id = ? AND project_id = ?`,
+  ).all(machineId, projectId) as Array<{ id: string; content_hash?: string }>;
+
+  return rows.map((r) => {
+    const row: PartitionRow = { id: String(r.id) };
+    if (cols.has('content_hash') && r.content_hash != null) {
+      row.content_hash = r.content_hash;
+    }
+    return row;
+  });
+}
+
+/**
+ * Return the set of row_ids in team_outbox that are still pending
+ * (`sent_at IS NULL`) for the exact (table, machine_id, project_id) partition.
+ *
+ * Used by the reconcile orchestrator to skip rows already in-flight so the
+ * outbox is not double-enqueued before the pending entries drain.
+ */
+export function pendingRowIdsForPartition(
+  table: string,
+  machineId: string,
+  projectId: string,
+): Set<string> {
+  const db = getDatabase();
+
+  const rows = db.prepare(
+    `SELECT row_id
+     FROM team_outbox
+     WHERE table_name = ?
+       AND machine_id = ?
+       AND project_id = ?
+       AND sent_at IS NULL`,
+  ).all(table, machineId, projectId) as Array<{ row_id: string }>;
+
+  return new Set(rows.map((r) => r.row_id));
+}
+
 function backfillRows(
   machineId: string,
   mode: 'unsynced' | 'all',
