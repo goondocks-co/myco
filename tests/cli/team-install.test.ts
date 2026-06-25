@@ -80,6 +80,7 @@ describe('teamInit', () => {
   let sourceDir: string;
   let previousHome: string | undefined;
   let previousMycoHome: string | undefined;
+  let previousTeamHome: string | undefined;
   let previousPackageRoot: string | undefined;
   let previousExit: typeof process.exit;
   let previousConsoleError: typeof console.error;
@@ -97,11 +98,13 @@ describe('teamInit', () => {
 
     previousHome = process.env.HOME;
     previousMycoHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
     previousPackageRoot = process.env.MYCO_TEAM_PACKAGE_ROOT;
     previousExit = process.exit;
     previousConsoleError = console.error;
     process.env.HOME = tmpDir;
     process.env.MYCO_HOME = homeDir;
+    process.env.MYCO_TEAM_HOME = homeDir;
     process.env.MYCO_TEAM_PACKAGE_ROOT = path.join(tmpDir, 'package-root');
 
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
@@ -128,6 +131,8 @@ describe('teamInit', () => {
     else process.env.HOME = previousHome;
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
     if (previousPackageRoot === undefined) delete process.env.MYCO_TEAM_PACKAGE_ROOT;
     else process.env.MYCO_TEAM_PACKAGE_ROOT = previousPackageRoot;
     process.exit = previousExit;
@@ -206,10 +211,10 @@ describe('teamInit', () => {
     expect(args).toContainEqual(['queues', 'create', `${resourceName}-sync-dlq`]);
     expect(args).toContainEqual(['secret', 'put', 'MYCO_TEAM_API_KEY', '--name', resourceName]);
 
-    const teams = teamRegistry.list(homeDir);
+    const teams = teamRegistry.list();
     expect(teams).toHaveLength(1);
     const teamId = teams[0].team_id;
-    const deployDir = path.join(resolveTeamDir(teamId, homeDir), 'worker');
+    const deployDir = path.join(resolveTeamDir(teamId), 'worker');
     const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
     expect(patchedToml).toContain(`name = "${resourceName}"`);
     expect(patchedToml).toContain(`database_name = "${resourceName}"`);
@@ -221,7 +226,7 @@ describe('teamInit', () => {
     expect(patchedToml).toContain(`queue = "${resourceName}-sync-dlq"`);
 
     const deployment = JSON.parse(
-      fs.readFileSync(path.join(resolveTeamDir(teamId, homeDir), 'deployment.json'), 'utf-8'),
+      fs.readFileSync(path.join(resolveTeamDir(teamId), 'deployment.json'), 'utf-8'),
     ) as { team_id: string; worker_name: string; worker_url: string };
     expect(deployment.team_id).toMatch(/^team_[0-9a-f]{32}$/);
     expect(deployment.worker_name).toBe(resourceName);

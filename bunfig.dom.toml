@@ -1,3 +1,3 @@
 [test]
-preload = ["./tests/setup/jsdom.ts"]
+preload = ["./tests/setup/jsdom.ts", "./tests/setup/sandbox-preload.ts"]
 timeout = 15000

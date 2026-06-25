@@ -27,6 +27,7 @@ describe('teamDestroy', () => {
   let tempDir: string;
   let vaultDir: string;
   let originalMycoHome: string | undefined;
+  let originalTeamHome: string | undefined;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-destroy-'));
@@ -34,7 +35,9 @@ describe('teamDestroy', () => {
     execHandlers.length = 0;
     execCalls.length = 0;
     originalMycoHome = process.env.MYCO_HOME;
+    originalTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = path.join(tempDir, 'home');
+    process.env.MYCO_TEAM_HOME = path.join(tempDir, 'home');
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(
@@ -66,6 +69,8 @@ describe('teamDestroy', () => {
   afterEach(() => {
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
+    if (originalTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = originalTeamHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
     vi.clearAllMocks();
     vi.resetModules();
@@ -82,7 +87,7 @@ describe('teamDestroy', () => {
     const { teamDestroy } = await import('../../packages/myco-team/src/cli.js');
 
     await expect(teamDestroy(vaultDir, { teamId: TEAM_ID })).rejects.toThrow('Local state preserved for retry');
-    expect(teamRegistry.readDeployment(TEAM_ID, path.join(tempDir, 'home'))).not.toBeNull();
+    expect(teamRegistry.readDeployment(TEAM_ID)).not.toBeNull();
   });
 
   it('uses the current wrangler destroy flags for remote teardown', async () => {
@@ -109,7 +114,7 @@ describe('teamDestroy', () => {
       'kv-namespace-456',
       '--skip-confirmation',
     ]);
-    expect(teamRegistry.readDeployment(TEAM_ID, path.join(tempDir, 'home'))).toBeNull();
-    expect(teamRegistry.get(TEAM_ID, path.join(tempDir, 'home'))).toBeNull();
+    expect(teamRegistry.readDeployment(TEAM_ID)).toBeNull();
+    expect(teamRegistry.get(TEAM_ID)).toBeNull();
   });
 });

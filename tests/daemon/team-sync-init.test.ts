@@ -102,6 +102,7 @@ describe('initTeamSync.reconcileClient', () => {
   let tmpDir: string;
   let vaultDir: string;
   let previousMycoHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
 
   const logger = {
     info: vi.fn(),
@@ -115,7 +116,10 @@ describe('initTeamSync.reconcileClient', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-sync-init-'));
     vaultDir = path.join(tmpDir, '.myco');
     previousMycoHome = process.env.MYCO_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
+    process.env.MYCO_TEAM_HOME = path.join(tmpDir, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     fs.mkdirSync(vaultDir, { recursive: true });
     connectMock.mockResolvedValue({});
     rebuildMock.mockResolvedValue(undefined);
@@ -143,6 +147,9 @@ describe('initTeamSync.reconcileClient', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
   });
 
   async function registerRegistryTeam(name = 'Registry Team') {
@@ -163,9 +170,8 @@ describe('initTeamSync.reconcileClient', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: grove.id, project_id: projectId }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
     return { grove, projectId, teamId };
   }
 
@@ -267,9 +273,8 @@ describe('initTeamSync.reconcileClient', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: grove.id, project_id: projectId }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
 
     const groveDir = resolveGroveDir(grove.id);
     fs.mkdirSync(groveDir, { recursive: true });
@@ -469,9 +474,8 @@ describe('initTeamSync.reconcileClient', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: otherGrove.id, project_id: createProjectId() }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
 
     const teamSync = initTeamSync({
       liveConfig: {
@@ -516,9 +520,8 @@ describe('initTeamSync.reconcileClient', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: grove.id, project_id: 'p-mine' }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
 
     const teamSync = initTeamSync({
       liveConfig: {
@@ -568,6 +571,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
   let tmpDir: string;
   let vaultDir: string;
   let previousMycoHome: string | undefined;
+  let prevLegacyHomes: string | undefined;
 
   const logger = {
     info: vi.fn(),
@@ -618,7 +622,10 @@ describe('initTeamSync.rebuildFromLocal', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-rebuild-from-local-'));
     vaultDir = path.join(tmpDir, '.myco');
     previousMycoHome = process.env.MYCO_HOME;
+    prevLegacyHomes = process.env.MYCO_TEAM_LEGACY_HOMES;
     process.env.MYCO_HOME = path.join(tmpDir, 'home');
+    process.env.MYCO_TEAM_HOME = path.join(tmpDir, 'team-home');
+    process.env.MYCO_TEAM_LEGACY_HOMES = '';
     fs.mkdirSync(vaultDir, { recursive: true });
     rebuildMock.mockResolvedValue(undefined);
     listPendingMock.mockReturnValue([]);
@@ -630,6 +637,9 @@ describe('initTeamSync.rebuildFromLocal', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
+    delete process.env.MYCO_TEAM_HOME;
+    if (prevLegacyHomes === undefined) delete process.env.MYCO_TEAM_LEGACY_HOMES;
+    else process.env.MYCO_TEAM_LEGACY_HOMES = prevLegacyHomes;
   });
 
   async function registerRegistryTeam() {
@@ -650,9 +660,8 @@ describe('initTeamSync.rebuildFromLocal', () => {
         created_at: new Date().toISOString(),
         projects: [{ grove_id: grove.id, project_id: projectId }],
       },
-      mycoHome,
     );
-    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret', mycoHome);
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
     return requestContext(grove.id, projectId);
   }
 

@@ -16,12 +16,15 @@ describe('Grove discovery API', () => {
   let mycoHome: string;
   let serviceDir: string;
   let previousHome: string | undefined;
+  let previousTeamHome: string | undefined;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-groves-api-'));
     mycoHome = path.join(testDir, 'home');
     previousHome = process.env.MYCO_HOME;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = mycoHome;
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
     serviceDir = path.join(mycoHome, 'service');
     fs.mkdirSync(serviceDir, { recursive: true });
   });
@@ -29,6 +32,8 @@ describe('Grove discovery API', () => {
   afterEach(() => {
     if (previousHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousHome;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 

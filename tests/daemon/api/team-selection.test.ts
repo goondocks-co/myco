@@ -41,6 +41,7 @@ function membershipBody(
 describe('createTeamSelectionHandlers', () => {
   let tempDir: string;
   let originalMycoHome: string | undefined;
+  let originalTeamHome: string | undefined;
   let handlers: ReturnType<typeof createTeamSelectionHandlers>;
 
   /**
@@ -59,8 +60,10 @@ describe('createTeamSelectionHandlers', () => {
 
   beforeEach(() => {
     originalMycoHome = process.env.MYCO_HOME;
+    originalTeamHome = process.env.MYCO_TEAM_HOME;
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-selection-'));
     process.env.MYCO_HOME = path.join(tempDir, '.myco-home');
+    process.env.MYCO_TEAM_HOME = path.join(tempDir, '.myco-home', 'team-home');
     fs.mkdirSync(process.env.MYCO_HOME, { recursive: true });
     clearGroveRegistryCaches();
     handlers = createTeamSelectionHandlers();
@@ -71,6 +74,8 @@ describe('createTeamSelectionHandlers', () => {
     clearGroveRegistryCaches();
     if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = originalMycoHome;
+    if (originalTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = originalTeamHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 

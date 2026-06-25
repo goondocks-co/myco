@@ -36,14 +36,17 @@ describe('Grove CRUD API', () => {
   let serviceDevDir: string;
   let previousHome: string | undefined;
   let previousBackupsDir: string | undefined;
+  let previousTeamHome: string | undefined;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-groves-crud-'));
     mycoHome = path.join(testDir, 'home');
     previousHome = process.env.MYCO_HOME;
     previousBackupsDir = process.env.MYCO_BACKUPS_DIR;
+    previousTeamHome = process.env.MYCO_TEAM_HOME;
     process.env.MYCO_HOME = mycoHome;
     process.env.MYCO_BACKUPS_DIR = path.join(testDir, 'backups');
+    process.env.MYCO_TEAM_HOME = path.join(mycoHome, 'team-home');
     fs.mkdirSync(mycoHome, { recursive: true });
     serviceDir = path.join(mycoHome, 'service');
     serviceDevDir = path.join(mycoHome, 'service-dev');
@@ -57,6 +60,8 @@ describe('Grove CRUD API', () => {
     else process.env.MYCO_HOME = previousHome;
     if (previousBackupsDir === undefined) delete process.env.MYCO_BACKUPS_DIR;
     else process.env.MYCO_BACKUPS_DIR = previousBackupsDir;
+    if (previousTeamHome === undefined) delete process.env.MYCO_TEAM_HOME;
+    else process.env.MYCO_TEAM_HOME = previousTeamHome;
     resetTeamContext();
     fs.rmSync(testDir, { recursive: true, force: true });
     clearGroveRegistryCaches();

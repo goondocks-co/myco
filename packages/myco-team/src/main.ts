@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolveVaultDir } from '@myco/vault/resolve.js';
 import { teamDestroy, teamInit, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade, upgradeWorker, reindexWorkerVectors } from './cli.js';
+import { migrateTeamsHomeIfNeeded } from '@myco/team/migrate-home.js';
 
 const [command, ...args] = process.argv.slice(2);
 type CommandHandler = (args: string[]) => Promise<void>;
@@ -25,6 +26,10 @@ dogfooding instances where tail access matters more than spend.
 human-readable progress output. Used by the myco daemon's one-click
 "Update Worker" handler to drive the upgrade without importing myco-team
 internals.
+
+Team registrations live in the machine-scoped ~/.myco-team/ directory,
+shared by every myco daemon on this machine. Set MYCO_TEAM_HOME to
+override the location (used by the test suite).
 `);
 }
 
@@ -180,6 +185,8 @@ if (!command || command === '--help' || command === '-h') {
   showHelp();
   process.exit(0);
 }
+
+try { migrateTeamsHomeIfNeeded(); } catch { /* best-effort; admin command proceeds on current home */ }
 
 const handler = COMMAND_HANDLERS[command];
 if (!handler) {

@@ -27,6 +27,19 @@ if (!process.env.MYCO_HOME) {
 }
 
 // ---------------------------------------------------------------------------
+// Hermetic team-home migration scan
+// ---------------------------------------------------------------------------
+// initTeamSync() runs the team-home migration, which by default sweeps the
+// real ~/.myco and ~/.myco-dev (it must, in production). A test that boots
+// initTeamSync would otherwise copy + RETIRE the developer's real
+// ~/.myco/teams. Neutralise the default scan for the whole run; tests that
+// exercise the migration pass explicit legacyHomes. An explicit value is
+// honored so a debugging run can target fixture homes.
+if (process.env.MYCO_TEAM_LEGACY_HOMES === undefined) {
+  process.env.MYCO_TEAM_LEGACY_HOMES = '';
+}
+
+// ---------------------------------------------------------------------------
 // Watchdog diagnostics
 // ---------------------------------------------------------------------------
 // Hangs in CI used to be opaque: the runner emitted a single
