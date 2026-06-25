@@ -190,6 +190,20 @@ The `myco-dev` wrapper at `~/.local/bin/myco-dev` sets `MYCO_HOME=~/.myco-dev` a
 `MYCO_CLAIMS_HOME=~/.myco` before executing `~/.myco-dev/bin/myco`. This is what
 `runtime.command` points to.
 
+**Layered resolution (`resolveRuntimeCommand` / `resolveRuntimeHome`):**
+The pin files have a two-layer lookup order implemented in
+`packages/myco/src/daemon/update-checker.ts`:
+1. **Project-scope pin** — `<vaultDir>/runtime.command` (written by `make dev-link`)
+2. **Machine-scope fallback** — `~/.myco/runtime.command` (written by the beta-channel
+   installer for global channel overrides)
+
+For the standalone launch preamble (hooks, MCP launchers), `resolveRuntimePinForCwd()`
+performs a **filesystem upward walk** instead — it climbs from the cwd looking for
+`<dir>/.myco/runtime.command`. This walk is intentionally filesystem-based, not
+git-vault-based, so a **worktree-local pin** written by `make dev-link-worktree` (in
+`<worktree>/.myco/runtime.command`) is found correctly. Git-vault resolution would
+collapse a worktree to the main repo's vault path and skip the worktree-local pin.
+
 ### Mechanism 2: `manual` channel in `~/.myco-dev/config.yaml`
 
 The `daemon.update_channel` enum extends from `stable | beta` to
@@ -255,3 +269,19 @@ var set.
   BEFORE the GA stable tag exists causes every beta-channel user to downgrade to the
   previous stable version. Always verify that `myco/v<GA>` is published and resolving
   correctly on the beta channel before removing any pre-release tags or GitHub releases.
+
+- **Pin file trust check.** `runtime.command` and `runtime.home` pin files are only
+  honored if the file is owned by the current user AND not group/other writable
+  (mode bits checked against mask `0o022`). A pin whose trust check fails is silently
+  ignored and the daemon falls back to the default binary. If a dev-link pin appears
+  to be ignored, check permissions: `stat .myco/runtime.command` — mode `0644` is
+  trusted, `0664` or `0666` is refused. No error is logged for a missing pin; a
+  trust-refused pin logs a warning to stderr but never aborts.
+
+- **Worktree-local pin vs git-vault resolution.** `resolveRuntimePinForCwd()` (used
+  by hooks and MCP launcher shims) walks the filesystem upward to find
+  `<dir>/.myco/runtime.command`. It does NOT use git-vault path resolution because
+  git-vault collapses a worktree cwd to the MAIN repo vault, causing the worktree's
+  `make dev-link-worktree` pin to be skipped. Always use `make dev-link-worktree`
+  (not `make dev-link`) when operating in a git worktree — the two have different
+  pin-file placements.
