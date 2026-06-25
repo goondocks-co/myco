@@ -543,6 +543,52 @@ describe('initTeamSync.reconcileClient', () => {
     expect(backfillUnsyncedMock).toHaveBeenCalled();
   });
 
+  it('does not set enabled=false when the team registry dir is unreadable (readdirSync throws)', async () => {
+    // Plant a regular file at the teams/ path so readdirSync throws ENOTDIR.
+    // This simulates a transient/mid-migration state where the directory
+    // cannot be read — the result is indeterminate, not confirmed-empty.
+    const teamsDir = path.join(process.env.MYCO_TEAM_HOME!, 'teams');
+    fs.mkdirSync(path.dirname(teamsDir), { recursive: true });
+    fs.writeFileSync(teamsDir, 'not-a-dir');
+
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const grove = createGrove('resilience-unreadable', process.env.MYCO_HOME!);
+    const teamSync = initTeamSync({
+      liveConfig: { current: { team: { enabled: false, worker_url: undefined } } } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'proj-unreadable'));
+
+    // Registry read failed — enabled must be left unchanged (NOT set to false).
+    expect(setTeamSyncEnabledMock).not.toHaveBeenCalledWith(false);
+    expect(setTeamSyncEnabledMock).not.toHaveBeenCalledWith(true);
+  });
+
+  it('sets enabled=false when the registry is readable but has no members for this grove (confirmed empty)', async () => {
+    // Empty teams/ dir — successfully read but genuinely no members.
+    const teamsDir = path.join(process.env.MYCO_TEAM_HOME!, 'teams');
+    fs.mkdirSync(teamsDir, { recursive: true });
+
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const grove = createGrove('confirmed-empty', process.env.MYCO_HOME!);
+    const teamSync = initTeamSync({
+      liveConfig: { current: { team: { enabled: false, worker_url: undefined } } } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+
+    await teamSync.reconcileClient(requestContext(grove.id, 'proj-no-team'));
+
+    // Registry readable + genuinely empty → confirmed non-member → disabled.
+    expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
+  });
+
   function writeTeamConfig(enabled: boolean): void {
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
       'version: 3',

@@ -55,6 +55,36 @@ function list(): TeamRecord[] {
   return results;
 }
 
+/**
+ * Discriminated variant of `list()`. Returns `{ resolved: false }` when the
+ * teams directory exists but cannot be read (e.g. ENOTDIR during a migration
+ * window). Callers that must distinguish "confirmed no teams" from "couldn't
+ * determine" should use this instead of `list()`.
+ *
+ * `resolved: true` is returned for both "directory does not exist" (confirmed
+ * no teams — the directory is created on first join) and "directory readable"
+ * (zero or more teams). `resolved: false` means the directory exists but the
+ * read failed; the result is indeterminate and callers must not treat it as
+ * an empty team set.
+ */
+export type TeamListResult = { resolved: true; teams: TeamRecord[] } | { resolved: false };
+
+function listResolved(): TeamListResult {
+  const teamsDir = resolveTeamsDir();
+  if (!fs.existsSync(teamsDir)) return { resolved: true, teams: [] };
+  const results: TeamRecord[] = [];
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(teamsDir, { withFileTypes: true }); }
+  catch { return { resolved: false }; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const configPath = path.join(teamsDir, entry.name, 'team.json');
+    try { results.push(JSON.parse(fs.readFileSync(configPath, 'utf-8')) as TeamRecord); }
+    catch { /* missing/unparseable — skip */ }
+  }
+  return { resolved: true, teams: results };
+}
+
 function get(teamId: string): TeamRecord | null {
   try { return JSON.parse(fs.readFileSync(resolveTeamConfigPath(teamId), 'utf-8')) as TeamRecord; }
   catch { return null; }
@@ -115,6 +145,6 @@ export function withProjectRemoved(record: TeamRecord, projectId: string): TeamR
 }
 
 export const teamRegistry = {
-  list, get, save, remove, membershipByProject, projectsForTeam,
+  list, listResolved, get, save, remove, membershipByProject, projectsForTeam,
   readSecrets, writeSecret, readDeployment, saveDeployment, removeDeployment,
 };

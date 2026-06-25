@@ -120,11 +120,13 @@ describe('project tenancy authority', () => {
       { grove_id: otherGrove.id, project_id: 'P-other' },
     ]);
 
-    expect(new Set(memberProjectIdsForGrove(grove.id))).toEqual(new Set(['P']));
-    // A grove with no team-member projects returns [].
+    const res = memberProjectIdsForGrove(grove.id);
+    expect(res.resolved).toBe(true);
+    expect(new Set((res as { resolved: true; projectIds: string[] }).projectIds)).toEqual(new Set(['P']));
+    // A grove with no team-member projects returns confirmed-empty.
     const emptyGrove = createGrove('Empty', home);
-    expect(memberProjectIdsForGrove(emptyGrove.id)).toEqual([]);
-    expect(memberProjectIdsForGrove(null)).toEqual([]);
+    expect(memberProjectIdsForGrove(emptyGrove.id)).toEqual({ resolved: true, projectIds: [] });
+    expect(memberProjectIdsForGrove(null)).toEqual({ resolved: true, projectIds: [] });
   });
 
   it('machineHasAnyTeam reflects whether any team is registered', () => {

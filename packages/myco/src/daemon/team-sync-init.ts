@@ -286,7 +286,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   /** Boolean convenience over `memberProjectIdsForGrove`, used by the deep-sleep `pending` probe. */
   function groveParticipates(groveId: string | null): boolean {
-    return memberProjectIdsForGrove(groveId).length > 0;
+    const resolution = memberProjectIdsForGrove(groveId);
+    return resolution.resolved && resolution.projectIds.length > 0;
   }
 
   function participatingTeamIds(groveId: string | null): string[] {
@@ -522,16 +523,22 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
     const groveId = requestContext?.groveId ?? null;
     const teams = teamRegistry.list();
-    const memberProjectIds = memberProjectIdsForGrove(groveId);
+    const memberResolution = memberProjectIdsForGrove(groveId);
+    const memberProjectIds = memberResolution.resolved ? memberResolution.projectIds : [];
     // The registry is now the write-path gate: keep delete triggers + syncRow
     // in lockstep with whether this Grove feeds any team via project membership,
     // every tick. The per-project member set + non-member purge self-correct on
     // every served Grove regardless of which entry point last reconciled them.
     // (Machine-scoped self rows reach the outbox through backfillUnsynced, which
     // bypasses this flag, so a joined-no-project Grove still queues its self row.)
-    setTeamSyncEnabled(memberProjectIds.length > 0);
-    setProjectSyncMembership(memberProjectIds);
-    purgeNonMemberOutbox(memberProjectIds);
+    // Only act when the registry was successfully read: a failed/indeterminate
+    // read must not flip enabled off or purge rows for projects that may still
+    // be members.
+    if (memberResolution.resolved) {
+      setTeamSyncEnabled(memberProjectIds.length > 0);
+      setProjectSyncMembership(memberProjectIds);
+      purgeNonMemberOutbox(memberProjectIds);
+    }
     // Short-circuit only when this machine has joined no team at all — there is
     // nowhere to route any row. With ≥1 registered team we must still drain
     // machine-scoped rows even if no project participates.
@@ -815,9 +822,12 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     forceFullDiff: boolean,
   ): Promise<void> {
     try {
-      const memberProjectIds = memberProjectIdsForGrove(groveId);
+      const memberResolution = memberProjectIdsForGrove(groveId);
       // participates && membershipSeeded both reduce to a non-empty member set.
-      if (memberProjectIds.length === 0) return;
+      // An unresolved (indeterminate) registry read also short-circuits: we
+      // cannot reconcile without knowing which projects are members.
+      if (!memberResolution.resolved || memberResolution.projectIds.length === 0) return;
+      const memberProjectIds = memberResolution.projectIds;
 
       const membershipByProject = teamRegistry.membershipByProject();
       const baseDeps: Omit<ReconcilePartitionDeps, 'client'> = {
@@ -920,29 +930,38 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
     const groveId = requestContext?.groveId ?? null;
-    const memberProjectIds = memberProjectIdsForGrove(groveId);
-    const participates = memberProjectIds.length > 0;
+    const memberResolution = memberProjectIdsForGrove(groveId);
+    const memberProjectIds = memberResolution.resolved ? memberResolution.projectIds : [];
+    const participates = memberResolution.resolved && memberProjectIds.length > 0;
 
     // (1) Reconcile the per-Grove gate state read by syncRow / backfillRows /
     //     delete triggers: the enablement flag AND the per-project member set.
-    setTeamSyncEnabled(participates);
-    setProjectSyncMembership(memberProjectIds);
+    //     Only when the registry was successfully read — a failed/indeterminate
+    //     read must not flip enabled off (D1 orphan risk) or clear membership.
+    if (memberResolution.resolved) {
+      setTeamSyncEnabled(participates);
+      setProjectSyncMembership(memberProjectIds);
+    }
 
-    // (2) Drop outbox rows for non-member projects (sent or pending). Always
-    //     runs — self-heals historical bloat and prevents the re-enqueue loop.
-    try {
-      const purged = purgeNonMemberOutbox(memberProjectIds);
-      if (purged > 0) {
-        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
+    // (2) Drop outbox rows for non-member projects (sent or pending). Only
+    //     when membership is confirmed: purging with an empty list when the
+    //     registry was unreadable would discard rows for projects that may
+    //     still be members.
+    if (memberResolution.resolved) {
+      try {
+        const purged = purgeNonMemberOutbox(memberProjectIds);
+        if (purged > 0) {
+          logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
+            grove_id: groveId,
+            purged,
+          });
+        }
+      } catch (err) {
+        logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Non-member outbox purge failed', {
           grove_id: groveId,
-          purged,
+          error: (err as Error).message,
         });
       }
-    } catch (err) {
-      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Non-member outbox purge failed', {
-        grove_id: groveId,
-        error: (err as Error).message,
-      });
     }
 
     // (3) Machine in NO team: also clear leftover machine-scoped (self-row)
@@ -1108,10 +1127,16 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       logger,
       async ({ grove, databasePath, db, groveHome }) => {
         await withDatabase(db, async () => {
-          const memberProjectIds = memberProjectIdsForGrove(grove.id);
-          setTeamSyncEnabled(memberProjectIds.length > 0);
-          setProjectSyncMembership(memberProjectIds);
-          purgeNonMemberOutbox(memberProjectIds);
+          const memberResolution = memberProjectIdsForGrove(grove.id);
+          // Only write state when the registry was successfully read. A
+          // failed/indeterminate read (e.g. mid-migration directory unavailable)
+          // must not flip enabled off and silence delete-trigger journaling.
+          if (memberResolution.resolved) {
+            const memberProjectIds = memberResolution.projectIds;
+            setTeamSyncEnabled(memberProjectIds.length > 0);
+            setProjectSyncMembership(memberProjectIds);
+            purgeNonMemberOutbox(memberProjectIds);
+          }
         });
       },
       { daemonStateDir, jobName: 'team-sync-flag-reconcile', parallel: true },
