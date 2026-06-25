@@ -9,6 +9,16 @@ import { initTeamSync } from '@myco/daemon/team-sync-init.js';
 // small set so call counts stay legible (real list is 13 project-scoped tables).
 const MOCK_RECONCILE_TABLES = ['sessions', 'spores'];
 
+/**
+ * Drain the microtask + timer queues so a FIRE-AND-FORGET reconcile pass
+ * (dispatched by reconcileClient via triggerReconcilePass, not awaited) settles
+ * before we assert on its spy. Each partition is one awaited spy call; a couple
+ * of macrotask turns flush them all.
+ */
+async function flushAsync(times = 3): Promise<void> {
+  for (let i = 0; i < times; i++) await new Promise<void>((r) => setTimeout(r, 0));
+}
+
 const {
   enqueueBatchMock,
   listPendingMock,
@@ -124,6 +134,9 @@ describe('team-sync reconcile triggers', () => {
     listPendingMock.mockReturnValue([]);
     backfillUnsyncedMock.mockReturnValue(0);
     upsertSelfMemberMock.mockReturnValue({ inserted: false, row: {} });
+    // clearAllMocks resets call history but NOT implementations, so restore the
+    // default no-op pass here (the throwing-reconcile test overrides it).
+    reconcilePartitionSpy.mockImplementation(async () => {});
     // Default fan-out: replay whatever scopes the test registered.
     forEachGroveMock.mockImplementation(
       async (
@@ -211,6 +224,9 @@ describe('team-sync reconcile triggers', () => {
     const teamSync = makeTeamSync();
 
     await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
+    // The reconcile pass is dispatched fire-and-forget off the poll path; let it
+    // settle before counting partition reconciles.
+    await flushAsync();
 
     // 2 projects × 2 eligible tables = 4 partition reconciles.
     expect(reconcilePartitionSpy).toHaveBeenCalledTimes(4);
@@ -291,5 +307,49 @@ describe('team-sync reconcile triggers', () => {
     await teamSync.reconcileAllGroves({} as never, false);
 
     expect(reconcilePartitionSpy).not.toHaveBeenCalled();
+  });
+
+  it('throttles repeated reconcileClient passes for one grove but never throttles the operator path', async () => {
+    const { grove } = await registerGroveWithProjects('owns-two', ['p-a', 'p-b']);
+    groveScopesForMock = [{ id: grove.id }];
+    const teamSync = makeTeamSync();
+
+    // Two back-to-back Team-page polls of the same grove, well inside the throttle
+    // window: the first dispatches a reconcile pass, the second is rate-limited.
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
+    await teamSync.reconcileClient(requestContext(grove.id, 'p-a'));
+    await flushAsync();
+
+    // Exactly ONE automatic pass ran (2 projects × 2 tables = 4), not two.
+    const automatic = reconcileArgs().filter((a) => a.operatorConfirmed === false);
+    expect(automatic.length).toBe(4);
+
+    // The operator path bypasses the throttle entirely: it runs immediately even
+    // though an automatic pass just executed for the same grove.
+    await teamSync.reconcileAllGroves({} as never, true);
+    const operator = reconcileArgs().filter((a) => a.operatorConfirmed === true);
+    expect(operator.length).toBe(4);
+  });
+
+  it('a throwing reconcile pass does not propagate out of reconcileClient and does not break the flush', async () => {
+    reconcilePartitionSpy.mockImplementation(() => {
+      throw new Error('reconcile boom');
+    });
+    const { grove } = await registerGroveWithProjects('owns-one', ['p-a']);
+    const teamSync = makeTeamSync();
+
+    // reconcileClient must RESOLVE (not reject) even though the injected reconcile
+    // partition throws on the fire-and-forget pass.
+    await expect(
+      teamSync.reconcileClient(requestContext(grove.id, 'p-a')),
+    ).resolves.toBeUndefined();
+    await flushAsync();
+
+    // The pass was attempted; its throw was caught + logged, never propagated.
+    expect(reconcilePartitionSpy).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
+    // The flush still ran despite the reconcile failure — listPending is touched
+    // only by the flush drain, so its invocation proves flushPending executed.
+    expect(listPendingMock).toHaveBeenCalled();
   });
 });

@@ -171,6 +171,26 @@ export interface TeamFlushAggregate {
  */
 const TEAM_SYNC_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Per-grove rate limit for the reconcileClient-triggered reconcile pass.
+ *
+ * A reconcile pass does roughly one summary manifest fetch per
+ * (project × eligible-table) partition, and reconcileClient is invoked on every
+ * Team-page read poll (status/members/queue-stats/sync-summary/dlq) which fires
+ * every 5-10s while a Team page is open. Without a rate limit an open Team page
+ * sustains a continuous stream of full reconcile passes (worker load + latency).
+ *
+ * 2 minutes is ~12-24x the poll interval, so it collapses the burst of polls an
+ * open Team page produces into at most one pass per grove per 2 minutes — over a
+ * 90% cut in poll-path manifest traffic — while keeping drift-healing on an
+ * actively-watched page far tighter than the 6h periodic backstop. This is a
+ * pure rate limit (an in-memory last-run timestamp), NOT a synthetic transition
+ * flag, so it does not reintroduce SF2. The FIRST call after connect has no
+ * prior timestamp and always runs, preserving connect-time auto-heal; the
+ * operator path and the periodic backstop bypass it entirely.
+ */
+const TEAM_SYNC_RECONCILE_TRIGGER_THROTTLE_MS = 2 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Config-seed planner
 // ---------------------------------------------------------------------------
@@ -225,6 +245,18 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   // deps) AND the flush-drain path (flushPending wraps its body in it), so a
   // reconcile that is mid-seed and a flush that is mid-drain never interleave.
   const reconcileFlushMutex = createReconcileFlushMutex();
+
+  // Rate-limit + single-flight state for the reconcileClient-triggered reconcile
+  // pass, keyed per grove (empty string for the null/boot grove). The automatic
+  // poll path (reconcileTeamRoute → reconcileClient) hits this on every Team-page
+  // poll, so it must NOT each launch a full per-partition summary-fetch pass.
+  //   - last-run timestamp → throttle window (see the constant above).
+  //   - in-flight set → single-flight, so overlapping polls don't pile up
+  //     concurrent passes for the same grove.
+  // The operator path (reconcileAllGroves operatorConfirmed=true) and the
+  // periodic backstop call runReconcilePass directly and bypass both guards.
+  const reconcileTriggerLastRunAt = new Map<string, number>();
+  const reconcileTriggerInFlight = new Set<string>();
 
   // Adapt the daemon logger (info(kind, msg, fields)) to the reconcile module's
   // minimal info/warn(message) surface, tagging team-sync log kinds.
@@ -820,6 +852,38 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   /**
+   * Trigger the AUTOMATIC reconcile pass from the reconcileClient path without
+   * adding latency to the (frequently-polled) Team-page read handlers.
+   *
+   * Two guards keep the poll path cheap (see the rate-limit constant): a per-grove
+   * throttle window and a per-grove single-flight set. When neither guard skips,
+   * the pass is dispatched FIRE-AND-FORGET — the read handler never awaits it, so
+   * the per-partition summary fetches never sit on the response path. This mirrors
+   * the JobRunner's single-flight + non-blocking dispatch discipline; the pass is
+   * async I/O so it yields at every await and can't starve the loop. The
+   * AsyncLocalStorage database scope active at the call site is captured by the
+   * promise, so getDatabase() inside the background pass still resolves to this
+   * grove's DB. runReconcilePass is non-throwing, so the detached promise always
+   * resolves (no unhandled rejection); the .finally only clears the in-flight key.
+   *
+   * Only the automatic path routes through here. The operator path and the
+   * periodic backstop call runReconcilePass / reconcileAllGroves directly, so
+   * they are never throttled.
+   */
+  function triggerReconcilePass(groveId: string | null): void {
+    const key = groveId ?? '';
+    const now = Date.now();
+    const last = reconcileTriggerLastRunAt.get(key) ?? 0;
+    if (now - last < TEAM_SYNC_RECONCILE_TRIGGER_THROTTLE_MS) return; // throttled
+    if (reconcileTriggerInFlight.has(key)) return; // a pass is already running for this grove
+    reconcileTriggerLastRunAt.set(key, now);
+    reconcileTriggerInFlight.add(key);
+    void runReconcilePass(groveId, false, { count: 0 }).finally(() => {
+      reconcileTriggerInFlight.delete(key);
+    });
+  }
+
+  /**
    * Fan a symmetric reconcile pass across every registered Grove. Mirrors
    * flushAllGroves's forEachGrove fan-out (per-Grove DB pinned + scoped via
    * withDatabase, per-Grove failures isolated). ONE passAggregate spans the
@@ -901,13 +965,15 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       }
       // (6) Re-enable the symmetric reconcile delete/upsert seed after backfill
       //     whenever this grove participates (≥1 member project ⇒ participates &&
-      //     membershipSeeded). Automatic path (operatorConfirmed=false): the
-      //     count-first no-op keeps a steady-state partition cheap, so this runs
-      //     unconditionally on every reconcile without a synthetic transition
-      //     flag. A fresh per-call aggregate bounds this reconcile's deletes;
-      //     runReconcilePass is itself non-throwing so it can't abort the flush.
+      //     membershipSeeded). Automatic path (operatorConfirmed=false). This is
+      //     dispatched throttled + fire-and-forget (triggerReconcilePass): the
+      //     Team-page read poll path calls reconcileClient on every poll, so the
+      //     per-partition summary fetches must not run on every poll nor block the
+      //     handler response. A fresh per-call aggregate bounds the pass's deletes;
+      //     the seed and this flush serialize via the shared mutex (MF3) so the
+      //     reconcile-seeded rows drain on this or the next flush tick.
       if (participates) {
-        await runReconcilePass(groveId, false, { count: 0 });
+        triggerReconcilePass(groveId);
       }
       await flushPending(requestContext);
     } catch (err) {

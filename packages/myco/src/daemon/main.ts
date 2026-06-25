@@ -2107,7 +2107,10 @@ export async function main(): Promise<void> {
   // drift the automatic path leaves for a human. The automatic path runs
   // continuously via reconcileClient triggers + the team-sync-reconcile backstop.
   server.registerRoute('POST', '/api/team/reconcile', async (req) => {
-    await reconcileTeamRoute(req);
+    // Operator pass once, over every owned grove. We do NOT also call
+    // reconcileTeamRoute(req) here — that would run a redundant automatic pass
+    // over the request grove on top of the operator fan-out below. Targeting a
+    // single grove instead of the all-groves fan-out is future UI work.
     const result = await teamSync.reconcileAllGroves(runtimeCache, true);
     return { status: 200, body: { ok: true, deletes: result.deletes } };
   });
