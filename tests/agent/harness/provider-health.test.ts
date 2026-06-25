@@ -36,6 +36,18 @@ describe('probeProviderAvailable', () => {
     expect(calls.n).toBe(2); // not collapsed to one key
   });
 
+  test('cache entry expires after TTL → re-probes', async () => {
+    __resetProviderHealthCache();
+    const calls = { n: 0 };
+    __setProviderHealthBackendFactory(() => fakeBackend(true, calls));
+    let t = 1000;
+    const opts = { now: () => t };
+    await probeProviderAvailable({ type: 'ollama', baseUrl: 'http://y:11434', model: 'm' } as any, opts);
+    t += 6000; // past 5s TTL
+    await probeProviderAvailable({ type: 'ollama', baseUrl: 'http://y:11434', model: 'm' } as any, opts);
+    expect(calls.n).toBe(2);
+  });
+
   test('cloud provider with no baseUrl → true without a local probe', async () => {
     __resetProviderHealthCache();
     const ok = await probeProviderAvailable({ type: 'anthropic', model: 'claude-sonnet-4-6' } as any);
