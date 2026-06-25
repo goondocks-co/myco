@@ -44,6 +44,7 @@ import {
 } from '../constants/update.js';
 import { getServiceManager } from '../service/manager.js';
 import { clearJsonSentinel } from '../utils/json-sentinel.js';
+import { resolveServiceDaemonStatePath } from '../grove/paths.js';
 import { appendUpdateEvent, type UpdateEventLevel } from './update-events.js';
 import type { ServiceManager } from '../service/types.js';
 
@@ -148,6 +149,9 @@ export interface ApplyUpdateDeps {
   runFanout: (mycoBinary: string, logPath: string) => Promise<void>;
   /** Probe the daemon /health endpoint; null on any failure. */
   probeHealth: (daemonPort: number) => Promise<{ version?: string } | null>;
+  /** Read the daemon's recorded version from daemon.json, gated on a live pid;
+   *  null when absent/stale. The probe-independent second health signal. */
+  probeDaemonState: (home: string) => { version?: string } | null;
   /** Sleep helper (overridable so tests don't actually wait). */
   sleep: (ms: number) => Promise<void>;
   /**
@@ -273,12 +277,17 @@ function runFanout(mycoBinary: string, logPath: string): Promise<void> {
   });
 }
 
-/** Probe /health with a ~2s timeout; returns the parsed body or null. */
+/** Probe /health; returns the parsed body or null. `Connection: close` forces a
+ *  FRESH connection every probe so a pooled/keep-alive socket left dead by the
+ *  daemon's restart can never poison the whole health-watch. */
 async function probeHealth(daemonPort: number): Promise<{ version?: string } | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2000);
+  const timer = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort}/health`, { signal: controller.signal });
+    const res = await fetch(`http://127.0.0.1:${daemonPort}/health`, {
+      signal: controller.signal,
+      headers: { connection: 'close' },
+    });
     if (!res.ok) return null;
     return (await res.json()) as { version?: string };
   } catch {
@@ -288,12 +297,35 @@ async function probeHealth(daemonPort: number): Promise<{ version?: string } | n
   }
 }
 
+const HEALTH_PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * Cross-check the daemon's OWN recorded state: the version it wrote to
+ * `<home>/service/daemon.json` on startup, gated on that pid being alive. This
+ * is a file read + process-liveness check — immune to the HTTP-probe flakiness
+ * that would otherwise roll back a demonstrably-healthy adopt. The health-watch
+ * succeeds when EITHER /health OR this agrees the target is live, so a single
+ * fragile signal can no longer fail a good update.
+ */
+function probeDaemonState(home: string): { version?: string } | null {
+  try {
+    const raw = fs.readFileSync(resolveServiceDaemonStatePath(home), 'utf-8');
+    const d = JSON.parse(raw) as { version?: string; pid?: number };
+    if (!d.version || typeof d.pid !== 'number') return null;
+    try { process.kill(d.pid, 0); } catch { return null; } // pid not alive → stale record
+    return { version: d.version };
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_DEPS: ApplyUpdateDeps = {
   getServiceManager,
   runNpm,
   spawnDetached,
   runFanout,
   probeHealth,
+  probeDaemonState,
   sleep,
 };
 
@@ -452,16 +484,21 @@ async function resolvePruneVersions(
 
 interface HealthWatchResult {
   healthy: boolean;
-  /** Last version /health reported (null = never reachable in the window). The
-   *  key adopt-failure discriminator: a window stuck on the OLD version means
-   *  the restart never brought up the target; null means the daemon stayed
-   *  down; the target with healthy=false would mean a version-match bug. */
+  /** Last version EITHER signal reported (null = never reachable in the window).
+   *  The adopt-failure discriminator: a window stuck on the OLD version means the
+   *  restart never brought up the target; null means the daemon stayed down. */
   lastSeenVersion: string | null;
+  /** Which signal confirmed the target — for the narration. */
+  via: 'health' | 'daemon-state' | null;
 }
 
 /**
- * Poll /health up to `maxHealthAttempts` times for `targetVersion`, reporting
- * the last version it saw so the caller can log WHY a watch failed.
+ * Watch for `targetVersion` up to `maxHealthAttempts` times using TWO
+ * independent signals each poll: the HTTP /health probe AND the daemon's own
+ * `daemon.json` record (version + live pid). Either confirming the target is
+ * success — so a flaky HTTP probe can no longer roll back a daemon that is
+ * demonstrably running the new version. Reports the last version seen + which
+ * signal won so the caller can narrate WHY a watch failed.
  */
 async function pollHealthForAdopt(
   deps: ApplyUpdateDeps,
@@ -469,21 +506,29 @@ async function pollHealthForAdopt(
   targetVersion: string,
   maxHealthAttempts: number,
   healthIntervalMs: number,
+  home: string,
 ): Promise<HealthWatchResult> {
   let lastSeenVersion: string | null = null;
   for (let i = 0; i < maxHealthAttempts; i += 1) {
     if (i > 0) await deps.sleep(healthIntervalMs);
+    // Signal 1: HTTP /health (fresh connection per probe).
     try {
       const body = await deps.probeHealth(daemonPort);
       if (body) {
         lastSeenVersion = body.version ?? lastSeenVersion;
-        if (body.version === targetVersion) return { healthy: true, lastSeenVersion };
+        if (body.version === targetVersion) return { healthy: true, lastSeenVersion, via: 'health' };
       }
     } catch {
-      /* probe failure → not yet healthy */
+      /* probe failure → fall through to the file signal */
+    }
+    // Signal 2: daemon.json (version + live pid). Probe-independent.
+    const state = deps.probeDaemonState(home);
+    if (state) {
+      lastSeenVersion = state.version ?? lastSeenVersion;
+      if (state.version === targetVersion) return { healthy: true, lastSeenVersion, via: 'daemon-state' };
     }
   }
-  return { healthy: false, lastSeenVersion };
+  return { healthy: false, lastSeenVersion, via: null };
 }
 
 /**
@@ -598,11 +643,13 @@ async function runAdopt(p: ApplyAdoptParams, deps: ApplyUpdateDeps): Promise<voi
         p.targetVersion,
         p.maxHealthAttempts,
         p.healthIntervalMs,
+        p.home,
       );
       healthy = watch.healthy;
       event(healthy ? 'info' : 'warn', healthy ? 'target healthy' : 'health-watch did not reach target', {
         attempt, of: ADOPT_RESTART_ATTEMPTS, target: p.targetVersion,
         last_seen_version: watch.lastSeenVersion, // OLD version = restart never took; null = daemon stayed down
+        via: watch.via, // 'health' = HTTP probe, 'daemon-state' = daemon.json cross-check
         health_polls: p.maxHealthAttempts, poll_interval_ms: p.healthIntervalMs,
       });
       if (healthy || attempt === ADOPT_RESTART_ATTEMPTS) break;

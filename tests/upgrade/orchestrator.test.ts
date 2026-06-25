@@ -58,6 +58,8 @@ interface AdoptRecorder {
 
 interface AdoptRecorderOpts {
   healthSequence?: Array<{ version?: string } | null>;
+  /** Version the daemon.json cross-check reports (null = absent/stale). */
+  daemonState?: { version?: string } | null;
   stopConfirmed?: boolean;
   adoptThrows?: Error;
   platform?: NodeJS.Platform;
@@ -98,6 +100,7 @@ function makeAdoptDeps(opts: AdoptRecorderOpts = {}): AdoptRecorder {
     probeHealth: vi.fn(async () => {
       return healthQueue.length > 0 ? healthQueue.shift()! : null;
     }),
+    probeDaemonState: vi.fn(() => opts.daemonState ?? null),
     sleep: vi.fn(async () => {}),
     adoptStaged: vi.fn(async (params: { version: string }) => {
       rec.adoptCalls.push({ version: params.version });
@@ -304,6 +307,23 @@ describe('runAdopt — crash-loop (health never reaches target → restore + res
     expect(rec.restoreCalls).toEqual([]);
     expect(rec.restartCount).toBe(1);
     expect(rec.pruneCalls.length).toBe(1);
+  });
+
+  it('FLAKY-PROBE RESCUE: /health stays dark but daemon.json shows the target → success, no rollback', async () => {
+    // The actual root cause of the manual-button rollback: a healthy new daemon
+    // whose HTTP /health probe flakes for the entire watch (seen live: /health
+    // served the target for 100+s while the orchestrator's probe got null). The
+    // daemon.json cross-check (recorded version + live pid) must confirm the adopt
+    // instead of rolling back a demonstrably-running new version.
+    const rec = makeAdoptDeps({
+      healthSequence: [null, null, null], // HTTP probe dead the whole window
+      daemonState: { version: '1.2.3' },  // but the daemon recorded the target
+    });
+    await run([writeParamsFile(makeParams())], rec.deps);
+
+    expect(rec.restoreCalls).toEqual([]);  // NO rollback
+    expect(rec.restartCount).toBe(1);       // landed on attempt 1 via daemon-state
+    expect(rec.pruneCalls.length).toBe(1);  // success path
   });
 
   it('CONVERGENCE: first restart never reaches target, a retried restart does → success, no restore', async () => {
