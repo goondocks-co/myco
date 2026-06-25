@@ -4,7 +4,7 @@ In an initialized project, prefer the `myco` CLI:
 
     myco <command> [flags]
 
-It honors project and worktree runtime pins — the binary walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH (e.g. GUI- or launchd-spawned agents), use the absolute global launcher `node ~/.myco/launcher.cjs <command> [flags]`, which resolves the same pins.
+It honors project and worktree runtime pins — the binary walks up from the working directory for `.myco/runtime.command`. When `myco` is not on PATH (e.g. GUI- or launchd-spawned agents), invoke the installed self-contained binary directly (POSIX: `~/.myco/bin/myco`; Windows: `%LOCALAPPDATA%\Myco\bin\myco.exe`) or the binary named by a trusted `runtime.command` pin. Do not invoke a Node launcher.
 
 ---
 
