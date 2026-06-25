@@ -6,6 +6,7 @@
  */
 
 import { parse as parseYaml } from 'yaml';
+import { scanForContamination } from './skill-contamination.js';
 
 /** Maximum lines for a generated skill. */
 export const MAX_SKILL_LINES = 800;
@@ -442,6 +443,15 @@ export function validateSkillContent(content: string, dirName: string): string[]
   const lineCount = content.split('\n').length;
   if (lineCount > MAX_SKILL_LINES) {
     issues.push(`Skill is ${lineCount} lines (max ${MAX_SKILL_LINES})`);
+  }
+
+  const contamination = scanForContamination(content);
+  for (const span of [...contamination.hard, ...contamination.warn]) {
+    issues.push(
+      `Skill content contains point-in-time Myco/history contamination ` +
+      `(${span.kind}) at chars ${span.start}-${span.end}: "${span.text}". ` +
+      'Skills must encode durable procedures; move release/PR/date/session state to Myco or an explicit ## Old patterns / ## Historical context section.',
+    );
   }
 
   return issues;

@@ -1,7 +1,7 @@
 /**
  * Skill lifecycle vault tools.
  *
- * 9 tools:
+ * 10 tools:
  *   - vault_skill_survey_prepare: read-only deterministic preparation for
  *     skill-survey runs, including queue snapshot and evidence bundles.
  *   - vault_skill_survey_bundle_decisions: validates review-bundles
@@ -15,6 +15,8 @@
  *     'approved' transitions go through the UI / MCP approve action, and
  *     'generated' is set internally by vault_finalize_skill.
  *   - vault_skill_records: read/update/delete live skill records.
+ *   - vault_scan_skill_contamination: read-only content lint over proposed
+ *     SKILL.md prose, returning hard and warn spans.
  *   - vault_write_skill: one-shot create-or-evolve write path used by
  *     skill-evolve and any non-staged skill authoring.
  *   - vault_stage_skill: provisional write used by skill-generate's draft
@@ -64,6 +66,7 @@ import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './skill-validator.js';
+import { scanForContamination } from './skill-contamination.js';
 import {
   writeStagedSkill,
   readStagedSkill,
@@ -121,6 +124,41 @@ import {
 
 const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
+
+interface SkillClaimGatePayload {
+  error: string;
+  missing_paths: string[];
+  missing_symbols: string[];
+  unverified_example_symbols?: string[];
+}
+
+function verifySkillContentClaimGate(args: {
+  content: string;
+  root: string;
+  priorContent?: string;
+  label: string;
+  name: string;
+}): SkillClaimGatePayload | null {
+  const claimCheck = verifySkillContentClaims(args.content, args.root, args.priorContent);
+  if (claimCheck.missingPaths.length > 0 || claimCheck.missingInlineSymbols.length > 0) {
+    return {
+      error: 'Skill write rejected: the content references code that does not exist in this repository. '
+        + 'Verify every path and identifier with fs_read/code_grep and remove or correct the fabricated references before writing. '
+        + 'Never invent a function, file, env var, or API to make an example look complete.',
+      missing_paths: claimCheck.missingPaths,
+      missing_symbols: claimCheck.missingInlineSymbols,
+      ...(claimCheck.suspectFencedSymbols.length > 0 ? { unverified_example_symbols: claimCheck.suspectFencedSymbols } : {}),
+    };
+  }
+  if (claimCheck.suspectFencedSymbols.length > 0) {
+    console.warn(
+      `[${args.label}] '${args.name}': code-fence examples reference symbols not found in the codebase: `
+      + `${claimCheck.suspectFencedSymbols.join(', ')}. If these are real APIs, confirm they exist; `
+      + 'if illustrative, prefer names that cannot be mistaken for real references.',
+    );
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -1524,6 +1562,29 @@ export function createSkillTools(deps: VaultToolDeps) {
     { annotations: {} },
   );
 
+  const vaultScanSkillContamination = tool(
+    'vault_scan_skill_contamination',
+    'Read-only lint for proposed SKILL.md content. Returns hard and warn spans; live skill write gates reject either kind.',
+    {
+      content: z.string().describe('Full SKILL.md content to scan, including frontmatter. The scanner ignores non-description frontmatter, code blocks, inline code, and explicit history sections.'),
+      strict: z.boolean().optional().describe('Retained for callers that label strict scans. ok=false whenever either hard or warn spans are present, matching live write gates.'),
+    },
+    async (args) => {
+      const scan = scanForContamination(args.content);
+      const strict = args.strict === true;
+      const ok = scan.hard.length === 0 && scan.warn.length === 0;
+      return textResult({
+        ok,
+        strict,
+        hard: scan.hard,
+        warn: scan.warn,
+        hard_count: scan.hard.length,
+        warn_count: scan.warn.length,
+      });
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const vaultWriteSkill = tool(
     'vault_write_skill',
     'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
@@ -1591,24 +1652,14 @@ export function createSkillTools(deps: VaultToolDeps) {
       // fabrication); symbols that appear only inside ```code``` examples are
       // surfaced as warnings, since illustrative pseudo-code may legitimately
       // use invented names. On evolve, only NEWLY introduced claims are gated.
-      const claimCheck = verifySkillContentClaims(args.content, root, priorContent);
-      if (claimCheck.missingPaths.length > 0 || claimCheck.missingInlineSymbols.length > 0) {
-        return textResult({
-          error: 'Skill write rejected: the content references code that does not exist in this repository. '
-            + 'Verify every path and identifier with fs_read/code_grep and remove or correct the fabricated references before writing. '
-            + 'Never invent a function, file, env var, or API to make an example look complete.',
-          missing_paths: claimCheck.missingPaths,
-          missing_symbols: claimCheck.missingInlineSymbols,
-          ...(claimCheck.suspectFencedSymbols.length > 0 ? { unverified_example_symbols: claimCheck.suspectFencedSymbols } : {}),
-        });
-      }
-      if (claimCheck.suspectFencedSymbols.length > 0) {
-        console.warn(
-          `[vault_write_skill] '${args.name}': code-fence examples reference symbols not found in the codebase: `
-          + `${claimCheck.suspectFencedSymbols.join(', ')}. If these are real APIs, confirm they exist; `
-          + 'if illustrative, prefer names that cannot be mistaken for real references.',
-        );
-      }
+      const claimGateError = verifySkillContentClaimGate({
+        content: args.content,
+        root,
+        priorContent,
+        label: 'vault_write_skill',
+        name: args.name,
+      });
+      if (claimGateError) return textResult(claimGateError);
 
       // Create path: delegate to the shared promoteNewSkill helper.
       // Candidate linking uses exact-then-prefix matching since the
@@ -1812,6 +1863,15 @@ export function createSkillTools(deps: VaultToolDeps) {
       });
       if (dedupError) return textResult(dedupError);
 
+      const root = projectRoot ?? process.cwd();
+      const claimGateError = verifySkillContentClaimGate({
+        content: args.content,
+        root,
+        label: 'vault_stage_skill',
+        name: args.name,
+      });
+      if (claimGateError) return textResult(claimGateError);
+
       // Write staging content + manifest
       let stagingFilePath: string;
       try {
@@ -1876,6 +1936,13 @@ export function createSkillTools(deps: VaultToolDeps) {
             'Call vault_stage_skill first.',
         });
       }
+      if (manifest.candidate_id !== args.candidate_id) {
+        return textResult({
+          error:
+            `Staged skill manifest candidate_id mismatch: expected ${args.candidate_id}, ` +
+            `found ${manifest.candidate_id}. Re-stage the skill before finalizing.`,
+        });
+      }
 
       // Defense-in-depth: candidate must still be 'approved' at
       // finalize time. If a human (or another tool) dismissed the
@@ -1895,6 +1962,15 @@ export function createSkillTools(deps: VaultToolDeps) {
           issues: validationErrors,
         });
       }
+
+      const root = projectRoot ?? process.cwd();
+      const claimGateError = verifySkillContentClaimGate({
+        content: stagedContent,
+        root,
+        label: 'vault_finalize_skill',
+        name: manifest.name,
+      });
+      if (claimGateError) return textResult(claimGateError);
 
       // Defense-in-depth: re-run dedup against the manifest-declared
       // description. Catches the "agent staged a fresh description,
@@ -1959,6 +2035,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     vaultSkillSurveyApplyReconciliation,
     vaultSkillCandidates,
     vaultSkillRecords,
+    vaultScanSkillContamination,
     vaultWriteSkill,
     vaultStageSkill,
     vaultFinalizeSkill,

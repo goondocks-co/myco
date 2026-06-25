@@ -1,6 +1,6 @@
 ---
 name: dogfood-worktree
-description: Procedure for dogfooding Myco changes inside a git worktree so capture, MCP, and CLI route to the worktree's own build instead of the production binary. Use when developing Myco in a git worktree, when capture/MCP in a worktree behaves like production or points at the wrong build, or when wiring up `make dev-link-worktree` / `make dev-unlink-worktree`. Covers why `.myco/runtime.command` does not travel with `git worktree add`, why a build must happen first, the shared-vault schema rollup hazard across worktrees, and the vendor-asset build gotcha.
+description: Procedure for dogfooding Myco changes inside a git worktree so capture, MCP, and CLI route to the worktree's own build instead of the production binary. Use when developing Myco in a git worktree, when capture/MCP in a worktree behaves like production or points at the wrong build, or when wiring up `make dev-link-worktree` / `make dev-unlink-worktree`. Covers why `.myco/runtime.command` does not travel with `git worktree add`, why a build must happen first, the direct-CLI `MYCO_HOME` gotcha, the shared-vault schema rollup hazard across worktrees, and the vendor-asset build gotcha.
 ---
 
 # Dogfooding Myco in a Git Worktree
@@ -49,10 +49,31 @@ Either way a fresh worktree never uses **its own** build until you pin it.
    launchers (`.agents/myco-run.cjs` is retired — the global launcher + cwd-walk
    handle routing through the pin).
 
-3. **Verify routing:** from inside the worktree, hooks, MCP, and CLI now dispatch
-   to the worktree binary. Capture still attaches to the **main project vault**
-   (resolved via `git rev-parse --git-common-dir`) — worktrees are not a separate
-   Myco project by design; their data rolls up to the main tree.
+3. **Verify binary routing and vault home separately:**
+   ```bash
+   myco --version
+   myco doctor
+   ```
+   `make dev-link-worktree` pins the **binary** only. It writes
+   `<worktree>/.myco/runtime.command` directly to
+   `packages/myco-<target>/bin/myco`; it does **not** write a wrapper that exports
+   `MYCO_HOME`, and adding `<worktree>/.myco/runtime.home` alone is not enough
+   for direct `myco` CLI calls. A sibling worktree can therefore run the
+   worktree binary while still talking to the production home/daemon
+   (`~/.myco`) for `myco tool call`, `myco doctor`, plan lookups, and session
+   lookups.
+
+   When you need direct CLI calls to read or mutate the dogfood dev vault, prefix
+   the command explicitly:
+   ```bash
+   MYCO_HOME="$HOME/.myco-dev" MYCO_CLAIMS_HOME="$HOME/.myco" \
+     myco tool call myco_plans --json --input '{"op":"list","limit":5}'
+   ```
+   Verify the result against the main checkout before mutating plan/session
+   state. Do not treat `git rev-parse --git-common-dir`, a matching
+   `.myco/project.toml`, or a URL/project slug as proof that the worktree is
+   using the same daemon or Grove DB; `myco doctor` and a known plan/session
+   lookup are the proof.
 
 4. **Revert when done:**
    ```bash

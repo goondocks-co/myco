@@ -14,6 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getSpore, insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
+import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { type ProjectScope } from '@myco/db/queries/project-scope.js';
 import {
   RESOLUTION_ACTION,
@@ -132,25 +133,48 @@ export function applySporeResolution(
 ): ApplySporeResolutionResult | SporeWriteFailure {
   const now = input.now ?? epochSeconds();
   const status = RESOLUTION_ACTION_TO_STATUS[input.action];
-
-  const updated = updateSporeStatus(input.spore_id, status, now, input.scope);
-  if (!updated) return { ok: false, error: `spore not found: ${input.spore_id}` };
-
   const resolutionEventId = `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`;
-  insertResolutionEvent({
-    id: resolutionEventId,
-    project_id: input.project_id ?? null,
-    agent_id: input.agent_id,
-    machine_id: input.machine_id,
-    spore_id: input.spore_id,
-    action: input.action,
-    new_spore_id: input.new_spore_id ?? null,
-    reason: input.reason ?? null,
-    session_id: input.session_id ?? null,
-    created_at: now,
+  let updated: SporeRow | null = null;
+
+  const writeResolution = getDatabase().transaction(() => {
+    updated = updateSporeStatus(input.spore_id, status, now, input.scope);
+    if (!updated) return false;
+
+    insertResolutionEvent({
+      id: resolutionEventId,
+      project_id: input.project_id ?? null,
+      agent_id: input.agent_id,
+      machine_id: input.machine_id,
+      spore_id: input.spore_id,
+      action: input.action,
+      new_spore_id: input.new_spore_id ?? null,
+      reason: input.reason ?? null,
+      session_id: input.session_id ?? null,
+      created_at: now,
+    });
+
+    if (input.action === RESOLUTION_ACTION.SUPERSEDE && input.new_spore_id) {
+      insertGraphEdge({
+        project_id: input.project_id ?? null,
+        agent_id: input.agent_id,
+        machine_id: input.machine_id,
+        source_id: input.spore_id,
+        source_type: 'spore',
+        target_id: input.new_spore_id,
+        target_type: 'spore',
+        type: 'SUPERSEDED_BY',
+        session_id: input.session_id ?? undefined,
+        confidence: 1,
+        created_at: now,
+      });
+    }
+
+    return true;
   });
 
-  return { ok: true, spore: updated, status, resolution_event_id: resolutionEventId };
+  if (!writeResolution()) return { ok: false, error: `spore not found: ${input.spore_id}` };
+
+  return { ok: true, spore: updated!, status, resolution_event_id: resolutionEventId };
 }
 
 export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult | SporeWriteFailure {

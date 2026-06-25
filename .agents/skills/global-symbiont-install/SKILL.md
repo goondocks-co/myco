@@ -20,7 +20,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Global Symbiont Install: Design Decisions and Hazard Disciplines
 
-The global symbiont install model (introduced in PR #355) auto-registers all
+The global symbiont install model auto-registers all
 detected symbionts into every project owned by the current grove. This makes
 scope mutations wide by design — a single command can touch dozens of project
 directories simultaneously. The three design decisions below define the model's
@@ -42,7 +42,7 @@ When the migration walker has run, the configuration is global. Do not add
 "if old config exists, use that" fallback paths.
 
 **Why:** Legacy fallbacks compound into divergent code paths, exponential test
-burden, and permanent production debt. From PR #355 code review (batch 5128):
+burden, and permanent production debt. From code review:
 
 > *"It's this class of bug that's continuously plagued us time and time again.
 > We just squashed another one today with a Grove migration legacy fallback.
@@ -258,8 +258,7 @@ running any hooks.
 
 ### Documentation Discipline — Three-Surface Rule
 
-When documenting global symbiont install behavior, apply the three-surface rule
-(from PR #355 documentation finalization, commit `d3d38158`):
+When documenting global symbiont install behavior, apply the three-surface rule:
 
 1. **AGENTS.md** — durable invariants only (e.g., "project registration is
    automatic on first agent hook"). No implementation details, no fallback
@@ -324,7 +323,7 @@ launcher. The correct order is:
 
 ### Legacy `.agents/` Stub Cleanup in Brownfield Projects
 
-The global-install migration must also remove pre-1.0.0 legacy launcher stubs
+The global-install migration must also remove legacy launcher stubs
 from brownfield projects. These stubs (detectable by their "Managed by Myco"
 header comment) are NOT automatically removed by the new install walker — they
 require an explicit cleanup pass. The migration in
@@ -347,4 +346,4 @@ global write by the dev daemon is safe when prod is also active.
 
 ### Daemon Rebuild Re-Fires Capture-Only Seed — Clobbers Already-Admitted Project Capabilities
 
-**Development-time gotcha** (session 7bf0bb2d, batches 9332–9338): When rebuilding the daemon on a feature branch and restarting it, the daemon re-fires the capture-only seed for already-admitted projects. The seed overwrites all 4 project capabilities (capture, analysis, etc.) with their initial disabled/default values — even for projects that had been fully enabled via the UI. This looks like a config loss or UI bug but the root cause is a missing admission guard in the seed logic: the seed must check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during development silently disables all capabilities for all registered projects. Workaround while the guard is pending: manually re-enable capabilities via the UI after each rebuild on the feature branch.
+**Development-time gotcha**: When rebuilding the daemon on a feature branch and restarting it, the daemon can re-fire the capture-only seed for already-admitted projects. The seed overwrites all 4 project capabilities (capture, analysis, etc.) with their initial disabled/default values — even for projects that had been fully enabled via the UI. This looks like a config loss or UI bug but the root cause is a missing admission guard in the seed logic: the seed must check whether a project is already admitted before overwriting its capabilities. Without the guard, every daemon rebuild during development silently disables all capabilities for all registered projects. Workaround while the guard is pending: manually re-enable capabilities via the UI after each rebuild on the feature branch.

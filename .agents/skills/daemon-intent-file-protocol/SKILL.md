@@ -19,7 +19,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Daemon Intent File Protocol — Four Correctness Gaps
 
-Myco's daemon uses an intent-file protocol for inter-process communication: a CLI or background job writes a TOML file signaling desired state; the SELF_RECONCILE job picks it up and acts. The protocol sounds simple but has four seams where failures are **silent** — the daemon appears healthy while actually doing nothing or doing the wrong thing. These four gaps were discovered across sessions cfde2eeb (v0.27.11/v0.27.12) and 81767ff4 (PR #355).
+Myco's daemon uses an intent-file protocol for inter-process communication: a CLI or background job writes a TOML file signaling desired state; the SELF_RECONCILE job picks it up and acts. The protocol sounds simple but has four seams where failures are **silent** — the daemon appears healthy while actually doing nothing or doing the wrong thing.
 
 ## Prerequisites
 
@@ -158,7 +158,7 @@ Tests for intent consumption must explicitly exercise all daemon power states, i
 **Category:** Reconciler re-entrancy — a handler called from the reconciler raises a new intent for the action it is already executing, creating a perpetual no-op loop.
 
 **Files:** `packages/myco/src/daemon/self-reconcile.ts`, `packages/myco/src/grove/launcher-install.ts` (`installGlobalLaunchers`)
-**Commit:** `56b5bc9a` | **PR:** #355 (global-symbiont-install)
+**Context:** global symbiont install
 
 **Symptom:** Launchers were never written on first-start. Every hook fire raised ENOENT because `~/.myco/launchers/*.cjs` did not exist, making all symbiont integrations non-functional.
 

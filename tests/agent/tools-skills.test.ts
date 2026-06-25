@@ -2678,6 +2678,65 @@ describe('vault skill tools', () => {
       expect(parsed.generation).toBe(1);
     });
 
+    it('rejects writes with hard skill-content contamination', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      const result = await t.handler(
+        {
+          name: 'contaminated-skill',
+          display_name: 'Contaminated Skill',
+          description: 'Skill with release-state contamination',
+          content: validSkillContent(
+            'contaminated-skill',
+            '# Contaminated\n\nCritical discovery (v0.27.17): use the new workflow.',
+          ),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
+      expect(parsed.error).toContain('Skill validation failed');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('myco-version-parenthetical'),
+      ]));
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('(v0.27.17)'),
+      ]));
+    });
+
+    it('rejects writes with strict skill-lint warnings', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+
+      const result = await t.handler(
+        {
+          name: 'warn-only-skill',
+          display_name: 'Warn Only Skill',
+          description: 'Skill with durable third-party references',
+          content: validSkillContent(
+            'warn-only-skill',
+            [
+              '# Warn Only',
+              '',
+              'Use Node (v22.11.0) for local testing.',
+              'Use npm@v10.1.0 for package scripts.',
+              'Use Node version >= v22.12.0 for local runtime checks.',
+              'SQLite does not support DROP COLUMN before version 3.35.0.',
+              'Use PR #346 as a teaching example for docs placement.',
+            ].join('\n'),
+          ),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
+      expect(parsed.error).toContain('Skill validation failed');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('third-party-version'),
+        expect.stringContaining('reference-id'),
+      ]));
+      expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'warn-only-skill', 'SKILL.md'))).toBe(false);
+    });
+
     it('allows updating an existing skill that overlaps its own description', async () => {
       const t = findTool(tools, 'vault_write_skill');
 
@@ -2706,6 +2765,80 @@ describe('vault skill tools', () => {
       const parsed = parseResult(result) as { generation?: number; error?: string };
       expect(parsed.error).toBeUndefined();
       expect(parsed.generation).toBe(2);
+    });
+  });
+
+  describe('vault_scan_skill_contamination', () => {
+    it('is read-only and returns hard and warn spans', async () => {
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+      expect(t.annotations?.readOnlyHint).toBe(true);
+
+      const result = await t.handler(
+        {
+          content: validSkillContent(
+            'scan-target',
+            [
+              '# Scan Target',
+              '',
+              'Critical discovery (v0.27.17): hard contamination.',
+              'The procedure was drafted on ck/skill-lifecycle-content-hygiene.',
+              'The source came from session-abc123 and spore-gotcha-skill-survey.',
+              'SQLite does not support DROP COLUMN before version 3.35.0.',
+            ].join('\n'),
+          ),
+          strict: true,
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        ok: boolean;
+        strict: boolean;
+        hard: Array<{ kind: string; text: string; start: number; end: number }>;
+        warn: Array<{ kind: string; text: string; start: number; end: number }>;
+      };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.strict).toBe(true);
+      expect(parsed.hard).toEqual([
+        expect.objectContaining({ kind: 'myco-version-parenthetical', text: '(v0.27.17)' }),
+        expect.objectContaining({ kind: 'branch-name', text: 'ck/skill-lifecycle-content-hygiene' }),
+        expect.objectContaining({ kind: 'state-id', text: 'session-abc123' }),
+        expect.objectContaining({ kind: 'state-id', text: 'spore-gotcha-skill-survey' }),
+      ]);
+      expect(parsed.warn).toEqual([
+        expect.objectContaining({ kind: 'third-party-version', text: '3.35.0' }),
+      ]);
+    });
+
+    it('reports ok=false for warning-only content to match live write gates', async () => {
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+
+      const result = await t.handler(
+        {
+          content: validSkillContent(
+            'scan-warn-target',
+            [
+              '# Scan Warn Target',
+              '',
+              'Use Node (v22.11.0) for local testing.',
+            ].join('\n'),
+          ),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        ok: boolean;
+        strict: boolean;
+        hard: Array<{ kind: string; text: string }>;
+        warn: Array<{ kind: string; text: string }>;
+      };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.strict).toBe(false);
+      expect(parsed.hard).toEqual([]);
+      expect(parsed.warn).toEqual([
+        expect.objectContaining({ kind: 'third-party-version', text: 'v22.11.0' }),
+      ]);
     });
   });
 
@@ -2870,6 +3003,77 @@ describe('vault skill tools', () => {
       const parsed = parseResult(result) as { error?: string };
       expect(parsed.error).toBeDefined();
       expect(parsed.error).toMatch(/validation failed/i);
+    });
+
+    it('rejects staging when hard skill-content contamination is present', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Contaminated staging', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'contaminated-stage',
+          display_name: 'Contaminated Stage',
+          description: 'Bad staged content',
+          content: validSkillContent(
+            'contaminated-stage',
+            '# Stage\n\nThis operational pattern was added in PR #508.',
+          ),
+          rationale: 'test',
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
+      expect(parsed.error).toContain('validation failed');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('marker-artifact'),
+      ]));
+
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      expect(fs.existsSync(stagedFile)).toBe(false);
+    });
+
+    it('rejects staging when content references nonexistent code paths', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const realThing = 1;\n');
+
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Fabricated staging', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'fabricated-stage',
+          display_name: 'Fabricated Stage',
+          description: 'Bad staged content',
+          content: validSkillContent(
+            'fabricated-stage',
+            '# Stage\n\nSee `packages/myco/src/does-not-exist.ts` before changing this workflow.',
+          ),
+          rationale: 'test',
+        },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; missing_paths?: string[] };
+      expect(parsed.error).toContain('does not exist in this repository');
+      expect(parsed.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      expect(fs.existsSync(stagedFile)).toBe(false);
     });
 
     it('rejects staging when description overlaps an existing active skill', async () => {
@@ -3238,6 +3442,133 @@ describe('vault skill tools', () => {
       expect(parsed.error).toMatch(/no staged/i);
     });
 
+    it('re-runs content contamination validation on staged content before promoting', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Finalize contamination', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'finalize-contamination');
+
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      fs.writeFileSync(
+        stagedFile,
+        validSkillContent(
+          'finalize-contamination',
+          '# Finalize Contamination\n\nCritical discovery (v0.27.17): use the new workflow.',
+        ),
+      );
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: candidate.id },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
+      expect(parsed.error).toContain('Staged skill failed validation');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('myco-version-parenthetical'),
+      ]));
+
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-contamination', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
+    });
+
+    it('re-runs fabricated code-claim validation on staged content before promoting', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const realThing = 1;\n');
+
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Finalize fabrication', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'finalize-fabrication');
+
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      fs.writeFileSync(
+        stagedFile,
+        validSkillContent(
+          'finalize-fabrication',
+          '# Finalize Fabrication\n\nSee `packages/myco/src/does-not-exist.ts` before changing this workflow.',
+        ),
+      );
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: candidate.id },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string; missing_paths?: string[] };
+      expect(parsed.error).toContain('does not exist in this repository');
+      expect(parsed.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-fabrication', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
+    });
+
+    it('rejects finalize when the staged manifest candidate_id differs from the requested candidate', async () => {
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidateA = parseResult(
+        await candidateTool.handler(
+          {
+            action: 'create',
+            topic: 'Finalize manifest mismatch alpha',
+            rationale: 'r',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-finalize-manifest-a' }),
+          },
+          undefined,
+        ),
+      ) as { id?: string; error?: string };
+      const candidateB = parseResult(
+        await candidateTool.handler(
+          {
+            action: 'create',
+            topic: 'Graph cache retention omega',
+            rationale: 'r',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-finalize-manifest-b' }),
+          },
+          undefined,
+        ),
+      ) as { id?: string; error?: string };
+      expect(candidateA.error).toBeUndefined();
+      expect(candidateB.error).toBeUndefined();
+      expect(candidateA.id).toBeDefined();
+      expect(candidateB.id).toBeDefined();
+      const candidateAId = candidateA.id!;
+      const candidateBId = candidateB.id!;
+      approveCandidate(candidateAId);
+      approveCandidate(candidateBId);
+      await stageForFinalize(candidateAId, 'finalize-manifest-mismatch');
+
+      const manifestPath = path.join(vaultDir, 'staging', 'skills', candidateAId, 'manifest.json');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      manifest.candidate_id = candidateBId;
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler(
+        { candidate_id: candidateAId },
+        undefined,
+      );
+      const parsed = parseResult(result) as { error?: string };
+      expect(parsed.error).toContain('Staged skill manifest candidate_id mismatch');
+
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-manifest-mismatch', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
+      const updatedB = parseResult(
+        await candidateTool.handler({ action: 'get', id: candidateBId }, undefined),
+      ) as { status: string; skill_id: string | null };
+      expect(updatedB.status).toBe('approved');
+      expect(updatedB.skill_id).toBeNull();
+    });
+
     it('re-runs dedup gate on the staged content before promoting', async () => {
       // Seed a live skill with a distinctive description
       const writeTool = findTool(tools, 'vault_write_skill');
@@ -3319,24 +3650,28 @@ describe('vault skill tools', () => {
       approveCandidate(candidate.id);
       await stageForFinalize(candidate.id, 'rollback-symlink-cleanup');
 
-      // Tamper the staged manifest so the DB transaction fails on the
-      // inserted skill_records.candidate_id FK after the live file and
-      // symbiont symlinks have already been created.
-      const manifestPath = path.join(
-        vaultDir,
-        'staging',
-        'skills',
-        candidate.id,
-        'manifest.json',
-      );
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-      manifest.candidate_id = 'cand-missing-after-stage';
-      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+      // Force the candidate-link step to fail inside promoteNewSkill's
+      // DB transaction after the live file and symbiont symlinks have
+      // already been created.
+      const db = getDatabase();
+      db.exec(`
+        CREATE TEMP TRIGGER test_finalize_candidate_update_fail
+        BEFORE UPDATE OF status ON skill_candidates
+        WHEN NEW.status = 'generated'
+        BEGIN
+          SELECT RAISE(FAIL, 'forced rollback after publish');
+        END;
+      `);
 
       const finalizeTool = findTool(tools, 'vault_finalize_skill');
-      const result = parseResult(
-        await finalizeTool.handler({ candidate_id: candidate.id }, undefined),
-      ) as { error?: string };
+      let result: { error?: string };
+      try {
+        result = parseResult(
+          await finalizeTool.handler({ candidate_id: candidate.id }, undefined),
+        ) as { error?: string };
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS test_finalize_candidate_update_fail');
+      }
 
       expect(result.error).toContain('database transaction failed');
 

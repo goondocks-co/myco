@@ -20,7 +20,9 @@
     "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
     "test:integration": "MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
     "test:watch": "bun test --watch",
-    "lint": "tsc --noEmit && npm run check:workers"
+    "lint:skills": "tsx packages/myco/scripts/lint-skill-content.ts",
+    "lint:skills:strict": "tsx packages/myco/scripts/lint-skill-content.ts --strict",
+    "lint": "npm run lint:skills:strict && tsc --noEmit && npm run check:workers"
   },
   "repository": {
     "type": "git",

@@ -36,6 +36,8 @@ import {
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
+import { listSupersedingSporeIds } from '@myco/db/queries/spore-supersession.js';
+import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import { searchCanopy } from '@myco/canopy/search.js';
 import { requireProjectId } from '@myco/grove/request-context.js';
 import { projectScopeFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
@@ -67,6 +69,15 @@ const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_EDGES_LIMIT = 50;
 /** Default projection mode for read tools. */
 const DEFAULT_INCLUDE_METADATA = false;
+
+function supersededByMap(sporeIds: string[], scope: ProjectScope): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const id of sporeIds) {
+    const [replacementId] = listSupersedingSporeIds(id, scope, 10);
+    if (replacementId) out.set(id, replacementId);
+  }
+  return out;
+}
 
 function projectToolRows<T>(
   rows: T[],
@@ -216,10 +227,15 @@ export function createReadTools(deps: VaultToolDeps) {
           .map((id) => getSpore(id, scope))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
         const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
+        const supersededBy = supersededByMap(spores.map((s) => s.id), scope);
         return projectToolRows(
           spores,
           includeMetadata,
-          (spore) => projectSporeForAgent(spore, { exact: true, release: releases.get(spore.id) }),
+          (spore) => projectSporeForAgent(spore, {
+            exact: true,
+            release: releases.get(spore.id),
+            supersededBy: supersededBy.get(spore.id),
+          }),
         );
       }
       const spores = listSpores({
@@ -232,10 +248,15 @@ export function createReadTools(deps: VaultToolDeps) {
         includeActive: args.include_active === true,
       });
       const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
+      const supersededBy = supersededByMap(spores.map((s) => s.id), scope);
       return projectToolRows(
         spores,
         includeMetadata,
-        (spore) => projectSporeForAgent(spore, { exact: false, release: releases.get(spore.id) }),
+        (spore) => projectSporeForAgent(spore, {
+          exact: false,
+          release: releases.get(spore.id),
+          supersededBy: supersededBy.get(spore.id),
+        }),
       );
     },
     { annotations: { readOnlyHint: true } },

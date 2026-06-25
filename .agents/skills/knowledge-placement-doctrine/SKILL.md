@@ -127,7 +127,7 @@ Code comments describe **what the code does and why it behaves that way** — th
 // We chose this over option B because the daemon couldn't handle missing fields.
 ```
 
-**Enforcement precedent:** PR #346 required a 13-file cleanup (132 lines removed, 53 added) to purge incident dates and historical narrative before submission, codified as the `feedback_no_reasoning_comments` rule. PR #348 simplify pass (`aa961648`) scrubbed the same pattern from `api/update.ts`, `self-reconcile-wiring.ts`, and `main.ts`.
+**Enforcement precedent:** Prior cleanup passes removed incident dates and historical narrative before submission and codified the `feedback_no_reasoning_comments` rule. The same pattern applies to `api/update.ts`, `self-reconcile-wiring.ts`, and `main.ts`.
 
 ## Procedure D: Decisions and Rationale → Myco Vault
 
@@ -172,8 +172,8 @@ User-facing docs (README, CHANGELOG, quickstart, docs/, marketing site) guide us
 Always write content in the raw `.md` source files; do not hand-edit generated HTML. PRs touching docs should touch the `.md` sources — the HTML is derived automatically by the build script.
 
 **Enforcement precedents:**
-- **PR #355 (`c6669f7e`):** `_unbound-bootstrap` removed from CHANGELOG, README, quickstart, and marketing site. Chris's framing: *"Users expect myco to not crash and work correctly without knowing why."*
-- **Cloud MCP branch (`cd96797`):** Full rewrite pass converted implementation-narrating drafts into user-facing guides across `docs/cloud-mcp.md`, `docs/team-sync.md`, and `README.md`. Chris's exact framing: *"The docs should read user documentation, not change logs."*
+- `_unbound-bootstrap` was removed from CHANGELOG, README, quickstart, and marketing site. Chris's framing: *"Users expect myco to not crash and work correctly without knowing why."*
+- Cloud MCP docs were rewritten from implementation-narrating drafts into user-facing guides across `docs/cloud-mcp.md`, `docs/team-sync.md`, and `README.md`. Chris's exact framing: *"The docs should read user documentation, not change logs."*
 
 ## Cross-Cutting Gotchas
 

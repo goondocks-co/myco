@@ -11,13 +11,13 @@
  *                    vault_set_state, vault_read_digest, vault_write_digest,
  *                    vault_mark_processed
  * - Observability (1): vault_report
- * - Skill tools (9): vault_skill_survey_prepare,
+ * - Skill tools (10): vault_skill_survey_prepare,
  *                    vault_skill_survey_bundle_decisions,
  *                    vault_skill_survey_reconciliation_plan,
  *                    vault_skill_survey_apply_reconciliation,
  *                    vault_skill_candidates, vault_skill_records,
- *                    vault_write_skill, vault_stage_skill,
- *                    vault_finalize_skill
+ *                    vault_scan_skill_contamination, vault_write_skill,
+ *                    vault_stage_skill, vault_finalize_skill
  * - Canopy tools (2): canopy_describe_next, canopy_describe_write
  *
  * `agentId` and `runId` are captured in closures — tools inject them
@@ -199,8 +199,8 @@ const SKILL_TOOL_NAMES = new Set([
   'vault_skill_survey_prepare', 'vault_skill_survey_bundle_decisions',
   'vault_skill_survey_reconciliation_plan',
   'vault_skill_survey_apply_reconciliation',
-  'vault_skill_candidates', 'vault_skill_records', 'vault_write_skill',
-  'vault_stage_skill', 'vault_finalize_skill',
+  'vault_skill_candidates', 'vault_skill_records', 'vault_scan_skill_contamination',
+  'vault_write_skill', 'vault_stage_skill', 'vault_finalize_skill',
 ]);
 
 const EXPLORATION_TOOL_NAMES = new Set([

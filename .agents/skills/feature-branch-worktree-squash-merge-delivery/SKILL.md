@@ -226,7 +226,7 @@ The single squashed commit becomes the PR commit.
 
 - **Never run `make dev-link` from a worktree directory** — `make dev-link` copies the built binary to `~/.myco-dev/bin/myco` and writes a wrapper script at `~/.local/bin/myco-dev`; running it from inside a worktree routes the global daemon through the worktree binary, breaking isolation for all other sessions. Always run `make dev-link` from the root repo checkout. Use `make dev-link-worktree` (inside the worktree) to pin only that worktree's binary.
 
-- **`make build` alone does NOT update the standalone dev daemon** — since v1.2.0, the dev daemon runs via a copied standalone binary at `~/.myco-dev/bin/myco` (not a symlink to the repo build). Running `make build` only refreshes the in-repo build output. To propagate changes to the main dev daemon, run `make dev-link` + daemon restart. Exception: worktrees using `make dev-link-worktree` point directly to the in-repo build, so `make build` + restart is sufficient there.
+- **`make build` alone does NOT update the standalone dev daemon** — the dev daemon runs via a copied standalone binary at `~/.myco-dev/bin/myco` (not a symlink to the repo build). Running `make build` only refreshes the in-repo build output. To propagate changes to the main dev daemon, run `make dev-link` + daemon restart. Exception: worktrees using `make dev-link-worktree` point directly to the in-repo build, so `make build` + restart is sufficient there.
 
 ### CLI and Configuration Compatibility
 

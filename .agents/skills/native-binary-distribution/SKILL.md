@@ -3,7 +3,7 @@ name: myco:native-binary-distribution
 description: |
   Apply this skill when working on native binary installation, upgrade pipelines,
   daemon binary path management, or dev/prod daemon coexistence for the Myco
-  native installer (1.2.0+). Covers: the steady-state binary path model
+  native installer. Covers: the steady-state binary path model
   (~/.myco/bin/myco after plist self-heal), the looksLikeDevBuildExecutable()
   service-mutation guard, managedBinaryPath() usage, the MYCO_HOME physical
   boundary model (prod ~/.myco vs dogfood ~/.myco-dev) that replaced the
@@ -19,7 +19,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Native Binary Distribution and Installer Pipeline
 
-Myco's 1.2.0+ native installer places the daemon binary at a managed stable slot
+Myco's native installer places the daemon binary at a managed stable slot
 (`~/.myco/bin/myco`) via plist self-healing, distinct from the npm global prefix
 (`/opt/homebrew/...`). This creates a two-path world that every piece of upgrade,
 coexistence, and service-mutation guard must understand. Getting the boundary wrong
@@ -40,8 +40,7 @@ Key source files:
 - `packages/myco/src/cli/service.ts` — `assertSafeServiceMutation()`, `resolveServiceExecutable()`
 - `packages/myco/src/daemon/update-checker.ts` — `resolveMycoBinary()`, `releaseChannelIsManual()`
 
-Additional service-identity functions added in the daemon-coexistence redesign
-(v1.2.1+): `serviceLabel()`, `defaultServiceExecutable()`, `ensureSelfInstalledAsService()`.
+Service identity helpers: `serviceLabel()`, `defaultServiceExecutable()`, `ensureSelfInstalledAsService()`.
 
 Quick diagnostic — check upgrade status on a running daemon:
 ```bash
@@ -75,7 +74,7 @@ Never hardcode `~/.myco/bin/myco` as a literal — use this function.
 
 ### The Upgrade API Response Shape
 
-Current `/api/upgrade/status` response fields (note: `update_exempt` was removed in 1.2.0):
+Current `/api/upgrade/status` response fields (note: `update_exempt` is not part of this API):
 
 ```json
 {
@@ -102,7 +101,7 @@ If `update_available` is unexpectedly `false` when a newer build is published, c
 
 The production/dev distinction is enforced at two levels: the **binary path pattern**
 and the **MYCO_HOME boundary**. These replaced the deprecated `detectDevBuild()` function
-(which existed in 1.2.0-beta.5/6 era and misclassified the managed stable slot as a dev
+(which existed in an earlier beta era and misclassified the managed stable slot as a dev
 build, blocking all upgrade surfaces simultaneously — see architectural note below).
 
 ### Current Dev-Build Detection: `looksLikeDevBuildExecutable()`
@@ -184,7 +183,7 @@ Immediately after `npm install -g`, the daemon runs from
 it to `~/.myco/bin/myco` does any managed-path-specific bug appear.
 
 > **Rule:** upgrade tests MUST be run after confirming plist self-heal, not immediately
-> after `npm install -g`. This is how the 1.2.0-beta.5 GA blocker was caught.
+> after `npm install -g`. This is how steady-state GA blockers are caught.
 
 ### Validation Steps
 
@@ -205,7 +204,7 @@ it to `~/.myco/bin/myco` does any managed-path-specific bug appear.
 
 ### Zero-Migration Check
 
-For minor version upgrades (e.g., 1.1.2 → 1.2.0), verify that restarting the daemon
+For minor version upgrades, verify that restarting the daemon
 produces zero pending migrations — the install path change should not trigger schema drift.
 
 ## Procedure D: Beta Rollout Sequencing for Upgrade-Path Fixes
@@ -263,7 +262,7 @@ No binary needs to inspect its own path to determine which kind of daemon it is.
 
 The OS service label (launchd on macOS, systemd --user on Linux) is derived from the
 `MYCO_HOME` path — not from a prod/dev variant enum. This is the core change from the
-daemon-coexistence redesign (v1.2.1+), implemented via `serviceLabel(mycoHome)`:
+daemon-coexistence design, implemented via `serviceLabel(mycoHome)`:
 
 - **Default home** (`~/.myco`) → `SERVICE_LABEL_PROD` — the stable constant for the
   production daemon label. Existing installs depend on this value; it must never change.
@@ -277,7 +276,7 @@ obtain labels via `serviceLabel(mycoHome)` — never hardcode the label string.
 ### Non-Default Home Always Uses `process.execPath` for Service Executable
 
 `defaultServiceExecutable(mycoHome, platform)` governs which binary the service unit
-points at (added in v1.2.1 daemon-coexistence redesign):
+points at:
 
 - **Default home** (`~/.myco`): prefers `managedBinaryPath()` (`~/.myco/bin/myco`) when
   it exists; falls back to `process.execPath`. This means a self-update's in-place binary
@@ -351,7 +350,7 @@ A dev daemon in `~/.myco-dev` runs its own upgrade pipeline without exemption.
 ## Cross-Cutting Gotchas
 
 **The upgrade API has no `update_exempt` field.**
-That field existed in 1.2.0-beta.5/6 era and was removed when `detectDevBuild()` was
+That field existed in an earlier beta era and was removed when `detectDevBuild()` was
 eliminated. Stale docs or tests referencing `update_exempt` are incorrect. Current API
 fields: `update_available`, `revert_available`, `channel`, `channel_scope`, `runtime_scope`.
 

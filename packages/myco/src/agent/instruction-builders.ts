@@ -34,10 +34,11 @@ import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
 import { getDatabase } from '@myco/db/client.js';
-import { getSpore, listSpores } from '@myco/db/queries/spores.js';
+import { getSpore, listSpores, type SporeRow } from '@myco/db/queries/spores.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { listRecentSupersessions, listSupersedingSporeIds } from '@myco/db/queries/spore-supersession.js';
 import { epochSeconds } from '@myco/constants.js';
 import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
 import { detectDrift, type SkillFileFingerprint } from '@myco/agent/skill-drift.js';
@@ -329,13 +330,43 @@ async function selectRelevantSporeIdsForSkill(
   retrievalProvider: SemanticSearchProvider | undefined,
   scope: ProjectScope,
 ): Promise<string[]> {
-  const recentSpores = listSpores({
+  const byId = new Map<string, SporeRow>();
+  const addSpore = (spore: SporeRow | null): void => {
+    if (spore && spore.status === 'active') byId.set(spore.id, spore);
+  };
+
+  const activeSpores = listSpores({
     ...scopedOptions(scope),
     status: 'active',
     since: sinceEpoch,
     includeActive: false,
     limit: SKILL_EVOLVE_RECENT_SPORE_SCAN_LIMIT,
   });
+  for (const spore of activeSpores) addSpore(spore);
+
+  const addReplacementSpores = (supersededSporeId: string): void => {
+    for (const replacementId of listSupersedingSporeIds(supersededSporeId, scope, 10)) {
+      addSpore(getSpore(replacementId, scope));
+    }
+  };
+
+  const supersededSpores = listSpores({
+    ...scopedOptions(scope),
+    status: 'superseded',
+    since: sinceEpoch,
+    includeActive: false,
+    limit: SKILL_EVOLVE_RECENT_SPORE_SCAN_LIMIT,
+  });
+  for (const spore of supersededSpores) {
+    addReplacementSpores(spore.id);
+  }
+
+  const recentSupersessions = listRecentSupersessions(scope, sinceEpoch, SKILL_EVOLVE_RECENT_SPORE_SCAN_LIMIT);
+  for (const event of recentSupersessions) {
+    addSpore(getSpore(event.new_spore_id, scope));
+  }
+
+  const recentSpores = [...byId.values()];
   if (recentSpores.length === 0) return [];
 
   const semanticIds = await shortlistSemanticIds({
@@ -349,7 +380,6 @@ async function selectRelevantSporeIdsForSkill(
     filters: {
       status: 'active',
       ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
-      created_at_gte: sinceEpoch,
     },
   });
   if (semanticIds.length > 0) return semanticIds;

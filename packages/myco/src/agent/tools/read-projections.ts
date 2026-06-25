@@ -80,6 +80,7 @@ export function projectSessionForAgent(session: SessionRow, options: ProjectionO
 
 export interface SporeProjectionOptions extends ProjectionOptions {
   exact: boolean;
+  supersededBy?: string;
 }
 
 export function projectSporeForAgent(
@@ -92,6 +93,8 @@ export function projectSporeForAgent(
   return {
     id: spore.id,
     observation_type: spore.observation_type,
+    status: spore.status,
+    ...(options.supersededBy ? { superseded_by: options.supersededBy } : {}),
     ...contentField,
     ...(spore.session_id ? { session_id: spore.session_id } : {}),
     ...(spore.importance ? { importance: spore.importance } : {}),

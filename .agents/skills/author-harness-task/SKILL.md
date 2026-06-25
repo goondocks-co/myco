@@ -317,7 +317,7 @@ This prevents inconsistent or divergent behavior across the delegation hierarchy
 
 1. **Scan for installed agents**: Check agent-specific hook configurations in `.myco/`
 2. **Validate hook implementations**: Check that hook files exist and are executable
-3. **Cross-platform deployment**: Use `join(resolveMycoHome(), 'launcher.cjs')` for the cross-platform hook guard (`.agents/myco-run.cjs` was retired by PR #355 global-install migration)
+3. **Cross-platform deployment**: Use `join(resolveMycoHome(), 'launcher.cjs')` for the cross-platform hook guard (`.agents/myco-run.cjs` is a retired project-local path)
 4. **Transport protocol setup**: Configure capture channels based on agent type
 5. **Scope validation**: Ensure captured content belongs to current project
 6. **Permission checks**: Verify agent has capture rights for target files/directories
@@ -363,6 +363,6 @@ This prevents inconsistent or divergent behavior across the delegation hierarchy
 - **Session state consistency** → Always validate session status before operations — intelligence tasks must gate on session-terminal state (completed/processed) as active sessions produce stale artifacts.
 - **Cortex instructions requirement** → Lead agent MUST call `myco_cortex({op:"instructions"})` before delegating to sub-agents — delegation without instructions causes sub-agents to operate with inconsistent scope.
 - **Cortex injection uniformity** → All task phases must receive cortex context via unified injection path. Tasks that bypass cortex context propagation or re-acquire it per-phase introduce inconsistency.
-- **Cross-platform hook deployment** → The cross-platform hook guard is `join(resolveMycoHome(), 'launcher.cjs')` (exported from `packages/myco/src/grove/paths.ts`). The old `.agents/myco-run.cjs` project-local path was retired by PR #355 global-install migration. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
+- **Cross-platform hook deployment** → The cross-platform hook guard is `join(resolveMycoHome(), 'launcher.cjs')` (exported from `packages/myco/src/grove/paths.ts`). The old `.agents/myco-run.cjs` project-local path is retired. MCP children inherit `cwd=/` from some agents — use `resolveVaultDir()` with `MYCO_VAULT_DIR` fallback.
 - **Runtime resource management** → Agent harness execution consumes resources — implement proper cleanup. Concurrent sessions must coordinate vault database access to prevent corruption.
 - **Cortex injection is capability-gated at two levels**: A task that depends on cortex context must verify two conditions before assuming injection happened: (1) `capabilityEnabled(config, 'cortex')` from `packages/myco/src/config/capabilities.ts` returns true — the gate is fail-closed (null config → false) and reads the `cortex` capability's masterGate config leaf; (2) the relevant injection flag in the `cortex.instructions` config block — either `inject_on_session_start` or `inject_on_subagent_start` — is enabled. Both must be true. A task that assumes cortex context exists will silently operate without it when the capability is disabled or the injection flags are off.

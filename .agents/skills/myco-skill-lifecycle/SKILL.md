@@ -142,7 +142,7 @@ evolve phase: maxTurns: 35
 
 ### Candidates present but no skills appear
 - Verify candidates have `approved` status (not just `identified`)
-- Confirm skill-generate has been enabled and run recently
+- Confirm skill-generate has been enabled and run for the candidate
 - Check skill-generate run logs for quality gate rejections (most common: missing frontmatter fields, vault_* in allowed-tools)
 
 ### Skills aren't triggered by Claude Code
