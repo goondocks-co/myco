@@ -163,6 +163,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     } = parsedBody.data;
     const scope = projectScopeFromRequestContext(req.requestContext);
     const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
+    const runVaultDir = req.requestContext?.projectVaultDir ?? vaultDir;
 
     // `force` is opt-in per task and currently only meaningful for
     // skill-survey (bypasses the incremental watermark). For any other
@@ -186,14 +187,14 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
     // Guard: ensure a provider is configured before allowing a run.
     // Uses the same per-task-over-global precedence as the executor's resolver.
-    const mycoConfig = loadMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null });
+    const mycoConfig = loadMergedConfig(runVaultDir, { groveId: req.requestContext?.groveId ?? null });
     // User-initiated manual run: the default claude-sdk harness (subscription
     // auth via the Claude Code CLI) is runnable with no explicit provider. The
     // automatic Cortex path keeps the strict check (no auto-default per grove).
     // Pass the task definition's harness so admission matches the executor's
     // resolution — never admit a run the executor would route to a non-claude
     // harness that has no provider.
-    const definitionExecution = resolveTaskDefinitionExecution(task, vaultDir);
+    const definitionExecution = resolveTaskDefinitionExecution(task, runVaultDir);
     if (!hasConfiguredProvider(mycoConfig, task, {
       allowDefaultHarness: true,
       definitionHarness: definitionExecution.harness,
@@ -221,10 +222,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         ? { ...(configuredTaskParams ?? {}), force: true }
         : configuredTaskParams;
       try {
-        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       } catch {
-        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(runVaultDir);
         const fallbackTaskParams = force && task === SKILL_SURVEY_TASK ? { force: true } : undefined;
         built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       }
@@ -249,7 +250,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
-    const resultPromise = dispatchAgentRun(vaultDir, {
+    const resultPromise = dispatchAgentRun(runVaultDir, {
       task,
       instruction,
       agentId: effectiveAgentId,

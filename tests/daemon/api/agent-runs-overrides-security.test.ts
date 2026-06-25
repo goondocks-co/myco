@@ -18,7 +18,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate } from '@myco/db/queries/skill-candidates.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import type { RouteRequest } from '@myco/daemon/router';
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import { makeTestRequestContext } from '../../helpers/request-context';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -41,10 +41,18 @@ mock.module('@myco/agent/executor.js', () => ({
 }));
 mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
+  resolveTaskDefinitionExecution: () => ({}),
 }));
 
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
-  return { params: {}, query: {}, body: undefined, pathname: '/', requestContext: TEST_REQUEST_CONTEXT, ...overrides } as RouteRequest;
+  return {
+    params: {},
+    query: {},
+    body: undefined,
+    pathname: '/',
+    requestContext: makeTestRequestContext({ vaultDir: VAULT_DIR }),
+    ...overrides,
+  } as RouteRequest;
 }
 
 function makeHandlers() {
@@ -124,10 +132,32 @@ describe('POST /api/agent/run — executionOverrides security', () => {
       logger: logger as never,
     });
     await handleRun(makeRequest({ body: { task: 't', instruction: 'go', agentId: 'myco-agent' } }));
-    expect(seenContext).toBe(TEST_REQUEST_CONTEXT);
+    expect((seenContext as { projectVaultDir?: string }).projectVaultDir).toBe(VAULT_DIR);
     expect(runAgentSpy).toHaveBeenCalledTimes(1);
     const [, opts] = runAgentSpy.mock.calls[0] as [string, { embeddingManager?: unknown }];
     expect(opts.embeddingManager).toBe(groveManager);
+  });
+
+  it('dispatches manual runs against the request-scoped project vault dir', async () => {
+    const projectVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-project-run-vault-'));
+    fs.writeFileSync(
+      path.join(projectVaultDir, 'myco.yaml'),
+      'version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\n',
+      'utf-8',
+    );
+    try {
+      const { handleRun } = makeHandlers();
+      await handleRun(makeRequest({
+        requestContext: makeTestRequestContext({ vaultDir: projectVaultDir }),
+        body: { task: 'custom-smoke', instruction: 'go', agentId: 'myco-agent' },
+      }));
+
+      expect(runAgentSpy).toHaveBeenCalledTimes(1);
+      const [dispatchedVaultDir] = runAgentSpy.mock.calls[0] as [string];
+      expect(dispatchedVaultDir).toBe(projectVaultDir);
+    } finally {
+      fs.rmSync(projectVaultDir, { recursive: true, force: true });
+    }
   });
 
   it('PRESERVES provider.baseUrl for type=openai-compatible (legitimate local path)', async () => {
