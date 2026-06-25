@@ -62,7 +62,7 @@ import {
 } from './team-reconcile.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
-import { memberProjectIdsForGrove, machineHasAnyTeam } from '@myco/grove/project-tenancy.js';
+import { memberProjectIdsForGrove, machineHasAnyTeamResolved } from '@myco/grove/project-tenancy.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -968,7 +968,14 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     //     pending rows that the project-scoped purge above leaves behind, then
     //     stop — there is nowhere to route. Without this the Team page would
     //     keep surfacing "N pending failures" against a Grove in no Team.
-    if (!machineHasAnyTeam()) {
+    //     Only purge on a confirmed read — an indeterminate result (e.g.
+    //     registry mid-migration/unreadable) must not delete rows that may
+    //     belong to a team we couldn't observe.
+    const machineTeamRes = machineHasAnyTeamResolved();
+    if (!machineTeamRes.resolved) {
+      return; // indeterminate — leave all state, including pending rows, untouched
+    }
+    if (!machineTeamRes.hasTeam) {
       try {
         purgePendingOutbox();
       } catch (err) {

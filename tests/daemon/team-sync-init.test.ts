@@ -566,6 +566,9 @@ describe('initTeamSync.reconcileClient', () => {
     // Registry read failed — enabled must be left unchanged (NOT set to false).
     expect(setTeamSyncEnabledMock).not.toHaveBeenCalledWith(false);
     expect(setTeamSyncEnabledMock).not.toHaveBeenCalledWith(true);
+    // Pending self-rows (machine-scoped outbox entries) must NOT be purged —
+    // the machine may belong to a team that we couldn't observe.
+    expect(purgePendingOutboxMock).not.toHaveBeenCalled();
   });
 
   it('sets enabled=false when the registry is readable but has no members for this grove (confirmed empty)', async () => {
@@ -587,6 +590,8 @@ describe('initTeamSync.reconcileClient', () => {
 
     // Registry readable + genuinely empty → confirmed non-member → disabled.
     expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
+    // Confirmed-empty read IS a valid reason to purge pending self-rows.
+    expect(purgePendingOutboxMock).toHaveBeenCalled();
   });
 
   function writeTeamConfig(enabled: boolean): void {

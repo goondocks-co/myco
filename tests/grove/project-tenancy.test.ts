@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   assertAssignableProject,
   machineHasAnyTeam,
+  machineHasAnyTeamResolved,
   memberProjectIdsForGrove,
   ProjectGroveMissingError,
   resolveProjectTenancy,
@@ -133,6 +134,32 @@ describe('project tenancy authority', () => {
     expect(machineHasAnyTeam()).toBe(false);
     saveTeam([]);
     expect(machineHasAnyTeam()).toBe(true);
+  });
+
+  it('memberProjectIdsForGrove returns resolved:false when the teams dir is unreadable', () => {
+    // Plant a regular file at the teams/ path so readdirSync throws ENOTDIR.
+    const teamsDir = path.join(process.env.MYCO_TEAM_HOME!, 'teams');
+    fs.mkdirSync(path.dirname(teamsDir), { recursive: true });
+    fs.writeFileSync(teamsDir, 'not-a-dir');
+    const grove = createGrove('G-unreadable', home);
+    expect(memberProjectIdsForGrove(grove.id)).toEqual({ resolved: false });
+  });
+
+  it('machineHasAnyTeamResolved returns resolved:false when the teams dir is unreadable', () => {
+    const teamsDir = path.join(process.env.MYCO_TEAM_HOME!, 'teams');
+    fs.mkdirSync(path.dirname(teamsDir), { recursive: true });
+    fs.writeFileSync(teamsDir, 'not-a-dir');
+    expect(machineHasAnyTeamResolved()).toEqual({ resolved: false });
+  });
+
+  it('machineHasAnyTeamResolved returns resolved:true with hasTeam false when no teams exist', () => {
+    // teams/ dir absent — confirmed no teams
+    expect(machineHasAnyTeamResolved()).toEqual({ resolved: true, hasTeam: false });
+  });
+
+  it('machineHasAnyTeamResolved returns resolved:true with hasTeam true when a team is registered', () => {
+    saveTeam([]);
+    expect(machineHasAnyTeamResolved()).toEqual({ resolved: true, hasTeam: true });
   });
 
   it('assertAssignableProject accepts a grove-bound project and rejects a grove-less one', () => {

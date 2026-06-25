@@ -75,6 +75,23 @@ export function memberProjectIdsForGrove(groveId: string | null): MemberProjectR
 export const machineHasAnyTeam = (): boolean => teamRegistry.list().length > 0;
 
 /**
+ * Discriminated variant of `machineHasAnyTeam`. Returns `{ resolved: false }`
+ * when the team directory exists but cannot be read (e.g. ENOTDIR during a
+ * migration window). Callers that must not act on an unconfirmed "no teams"
+ * state — such as paths that would delete pending outbox rows — should use
+ * this instead of `machineHasAnyTeam()`.
+ */
+export type MachineTeamResolution =
+  | { resolved: true; hasTeam: boolean }
+  | { resolved: false };
+
+export function machineHasAnyTeamResolved(): MachineTeamResolution {
+  const result = teamRegistry.listResolved();
+  if (!result.resolved) return { resolved: false };
+  return { resolved: true, hasTeam: result.teams.length > 0 };
+}
+
+/**
  * The "check" at assignment boundaries: a project may only be referenced by a
  * global construct (team) if it exists and resolves to a grove.
  */
