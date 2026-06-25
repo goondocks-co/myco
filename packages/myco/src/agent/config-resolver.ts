@@ -25,6 +25,7 @@ import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/conf
 import type { ProviderConfig, EffectiveConfig, HarnessId, ReasoningLevel } from './types.js';
 import { HARNESS_CLAUDE_SDK } from './types.js';
 import { inferHarnessFromProviderType } from './provider-harness.js';
+import type { AgentTask } from './types.js';
 
 /**
  * Returns true when an agent provider is configured for the given task —
@@ -159,6 +160,38 @@ function toProviderConfig(p: {
   };
 }
 
+function taskOverridesFromSources(
+  taskRow: ReturnType<typeof getTask> | ReturnType<typeof getDefaultTask>,
+  yamlTask: AgentTask | undefined,
+): AgentTask | undefined {
+  if (!taskRow && !yamlTask) return undefined;
+
+  const name = taskRow?.id ?? yamlTask?.name;
+  if (!name) return undefined;
+
+  return {
+    name,
+    displayName: taskRow?.display_name ?? yamlTask?.displayName ?? name,
+    description: taskRow?.description ?? yamlTask?.description ?? '',
+    agent: taskRow?.agent_id ?? yamlTask?.agent ?? '',
+    prompt: taskRow?.prompt ?? yamlTask?.prompt ?? '',
+    isDefault: taskRow ? taskRow.is_default === 1 : (yamlTask?.isDefault ?? false),
+    ...(taskRow?.tool_overrides
+      ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
+      : yamlTask?.toolOverrides
+        ? { toolOverrides: yamlTask.toolOverrides }
+        : {}),
+    ...(yamlTask?.model ? { model: yamlTask.model } : {}),
+    ...(yamlTask?.reasoningLevel ? { reasoningLevel: yamlTask.reasoningLevel } : {}),
+    ...(yamlTask?.maxTurns ? { maxTurns: yamlTask.maxTurns } : {}),
+    ...(yamlTask?.timeoutSeconds ? { timeoutSeconds: yamlTask.timeoutSeconds } : {}),
+    ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
+    ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
+    ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
+    ...(yamlTask?.orchestrator ? { orchestrator: yamlTask.orchestrator } : {}),
+  };
+}
+
 /**
  * Apply the myco.yaml task-config overrides on top of the resolved effective
  * config. Reasoning-tier precedence (highest first):
@@ -233,29 +266,7 @@ export function resolveRunConfig(
   const taskName = taskRow?.id ?? requestedTask;
   const yamlTask = taskName ? allTasks.get(taskName) : undefined;
 
-  const taskOverrides = taskRow
-    ? {
-        name: taskRow.id,
-        displayName: taskRow.display_name ?? taskRow.id,
-        description: taskRow.description ?? '',
-        agent: taskRow.agent_id,
-        prompt: taskRow.prompt,
-        isDefault: taskRow.is_default === 1,
-        ...(taskRow.tool_overrides
-          ? { toolOverrides: JSON.parse(taskRow.tool_overrides) as string[] }
-          : {}),
-        // Scalar config from YAML (model, turns, timeout) — DB doesn't store these
-        ...(yamlTask?.model ? { model: yamlTask.model } : {}),
-        ...(yamlTask?.reasoningLevel ? { reasoningLevel: yamlTask.reasoningLevel } : {}),
-        ...(yamlTask?.maxTurns ? { maxTurns: yamlTask.maxTurns } : {}),
-        ...(yamlTask?.timeoutSeconds ? { timeoutSeconds: yamlTask.timeoutSeconds } : {}),
-        // Structural config from YAML
-        ...(yamlTask?.phases ? { phases: yamlTask.phases } : {}),
-        ...(yamlTask?.execution ? { execution: yamlTask.execution } : {}),
-        ...(yamlTask?.contextQueries ? { contextQueries: yamlTask.contextQueries } : {}),
-        ...(yamlTask?.orchestrator ? { orchestrator: yamlTask.orchestrator } : {}),
-      }
-    : undefined;
+  const taskOverrides = taskOverridesFromSources(taskRow, yamlTask);
 
   const config = resolveEffectiveConfig(definition, agentRow, taskOverrides);
 

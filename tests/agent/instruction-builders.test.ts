@@ -20,6 +20,8 @@ import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
+import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
@@ -464,6 +466,152 @@ describe('buildSkillEvolveInstruction', () => {
     expect(result).toContain('Pre-computed Drift Report');
     expect(result).toContain('growth=');
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('selects a superseding active spore when a recent relevant spore was superseded', async () => {
+    const now = epochSeconds();
+    const watermark = now - 1000;
+    createSkillWithWatermark(
+      'daemon-ops',
+      watermark,
+      0,
+      'Apply this skill when operating daemon restart and routing workflows.',
+    );
+    insertSpore({
+      id: 'spore-old-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'superseded',
+      content: 'Daemon restart workflow used stale routing guidance.',
+      importance: 7,
+      created_at: now - 100,
+    });
+    insertSpore({
+      id: 'spore-new-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'active',
+      content: 'Daemon restart workflow should verify runtime routing after build.',
+      importance: 8,
+      created_at: now - 1200,
+    });
+    insertGraphEdge({
+      agent_id: TEST_AGENT_ID,
+      source_id: 'spore-old-daemon',
+      source_type: 'spore',
+      target_id: 'spore-new-daemon',
+      target_type: 'spore',
+      type: 'SUPERSEDED_BY',
+      created_at: now - 90,
+    });
+
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('daemon-ops');
+    expect(result).toContain('spore-new-daemon');
+    expect(result).not.toContain('spore-old-daemon');
+  });
+
+  it('selects a superseding active spore from a legacy resolution event newer than the skill watermark', async () => {
+    const now = epochSeconds();
+    const watermark = now - 100;
+    createSkillWithWatermark(
+      'daemon-legacy',
+      watermark,
+      0,
+      'Apply this skill when operating daemon restart and routing workflows.',
+    );
+    insertSpore({
+      id: 'spore-old-legacy-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'superseded',
+      content: 'Daemon restart workflow used stale routing guidance.',
+      importance: 7,
+      created_at: now - 1000,
+    });
+    insertSpore({
+      id: 'spore-new-legacy-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'active',
+      content: 'Daemon restart workflow should verify runtime routing after build.',
+      importance: 8,
+      created_at: now - 900,
+    });
+    insertResolutionEvent({
+      id: 'res-legacy-daemon',
+      agent_id: TEST_AGENT_ID,
+      spore_id: 'spore-old-legacy-daemon',
+      action: 'supersede',
+      new_spore_id: 'spore-new-legacy-daemon',
+      created_at: now - 10,
+    });
+
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('daemon-legacy');
+    expect(result).toContain('spore-new-legacy-daemon');
+    expect(result).not.toContain('spore-old-legacy-daemon');
+  });
+
+  it('does not let newer non-supersede resolution events crowd out recent supersessions', async () => {
+    const now = epochSeconds();
+    const watermark = now - 100;
+    createSkillWithWatermark(
+      'daemon-crowded-legacy',
+      watermark,
+      0,
+      'Apply this skill when operating daemon restart and routing workflows.',
+    );
+    insertSpore({
+      id: 'spore-old-crowded-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'superseded',
+      content: 'Daemon restart workflow used stale routing guidance.',
+      importance: 7,
+      created_at: now - 1000,
+    });
+    insertSpore({
+      id: 'spore-new-crowded-daemon',
+      agent_id: TEST_AGENT_ID,
+      observation_type: 'gotcha',
+      status: 'active',
+      content: 'Daemon restart workflow should verify runtime routing after build.',
+      importance: 8,
+      created_at: now - 900,
+    });
+    for (let i = 0; i < 60; i += 1) {
+      const sporeId = `spore-obsolete-noise-${i}`;
+      insertSpore({
+        id: sporeId,
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'discovery',
+        status: 'obsolete',
+        content: `Noise event ${i}`,
+        importance: 1,
+        created_at: now - 80 + i,
+      });
+      insertResolutionEvent({
+        id: `res-obsolete-noise-${i}`,
+        agent_id: TEST_AGENT_ID,
+        spore_id: sporeId,
+        action: 'obsolete',
+        created_at: now - 60 + i,
+      });
+    }
+    insertResolutionEvent({
+      id: 'res-crowded-legacy-daemon',
+      agent_id: TEST_AGENT_ID,
+      spore_id: 'spore-old-crowded-daemon',
+      action: 'supersede',
+      new_spore_id: 'spore-new-crowded-daemon',
+      created_at: now - 70,
+    });
+
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toContain('daemon-crowded-legacy');
+    expect(result).toContain('spore-new-crowded-daemon');
+    expect(result).not.toContain('spore-old-crowded-daemon');
   });
 
   // --- Re-surface of unresolved needs-work skills -------------------------

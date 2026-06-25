@@ -129,6 +129,42 @@ const STOP_WORDS = new Set([
   'workflow',
 ]);
 
+const TOPIC_STATE_WORDS = new Set([
+  'alpha',
+  'beta',
+  'branche',
+  'branch',
+  'branches',
+  'issue',
+  'issues',
+  'jan',
+  'january',
+  'feb',
+  'february',
+  'mar',
+  'march',
+  'apr',
+  'april',
+  'may',
+  'jun',
+  'june',
+  'jul',
+  'july',
+  'aug',
+  'august',
+  'sep',
+  'sept',
+  'september',
+  'oct',
+  'october',
+  'nov',
+  'november',
+  'rc',
+  'release',
+  'dec',
+  'december',
+]);
+
 interface SporeFeatures {
   anchors: string[];
   strippedText: string;
@@ -448,9 +484,20 @@ function topicForBundle(seed: CandidateEvidenceSpore, spores: CandidateEvidenceS
   const textTokens = [...normalizedTokens(sporeText(seed))]
     .filter(token => !STOP_WORDS.has(token));
   const tokens = uniqueStrings([...textTokens, ...anchorTokens])
-    .filter(token => !/^\d+$/.test(token))
+    .filter(token => !isTopicStateToken(token))
     .slice(0, 5);
   return tokens.length > 0 ? tokens.join(' ') : seed.id;
+}
+
+function isTopicStateToken(token: string): boolean {
+  return TOPIC_STATE_WORDS.has(token)
+    || /^\d+$/.test(token)
+    || /^v\d+$/.test(token)
+    || /^pr\d+$/.test(token)
+    || /^issue\d+$/.test(token)
+    || /^rc\d+$/.test(token)
+    || /^alpha\d+$/.test(token)
+    || /^beta\d+$/.test(token);
 }
 
 export function extractProjectAnchors(text: string): string[] {

@@ -170,11 +170,16 @@ phases:
       1. PROCEDURE TEST: Does this domain describe "how to do a
          family of related tasks in this project"? A domain about
          "what X is" or "X exists" is knowledge, not a skill.
+         A domain that is mainly release state, PR/issue cleanup,
+         branch names, dates, or one-time decision status is state,
+         not procedure; SKIP it or leave the state in Myco evidence.
 
       2. PROJECT-SPECIFICITY TEST: Is this domain meaningfully tied
          to THIS repository? It must be anchored to named project
          components, files, commands, or conventions. Generic
-         engineering topics FAIL.
+         engineering topics FAIL. Version numbers, PR/issue refs,
+         branch names, release names, and dates are not valid
+         project-specific anchors by themselves.
 
       3. REPEATABILITY TEST: Will developers need these procedures
          again as the project grows? Domains covering extension

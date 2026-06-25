@@ -17,7 +17,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Backup/Restore Async Architecture and Reliability
 
-The Myco backup/restore subsystem handles SQLite dumps that can reach 800 MB+. These operations must never block the daemon's single main thread. This skill covers the full domain: restore UX design, async job execution, preview correctness, and concurrency safety — all grounded in PR #459 (session `86244e62`).
+The Myco backup/restore subsystem handles SQLite dumps that can reach 800 MB+. These operations must never block the daemon's single main thread. This skill covers the full domain: restore UX design, async job execution, preview correctness, and concurrency safety.
 
 ## Prerequisites
 
@@ -130,7 +130,7 @@ Error:    { job_id: "...", status: "error", error: "...", ... }
 
 ## Procedure D: Hardening the Job Registry
 
-Two reliability bugs were found during code review of PR #459. Both are addressed in the current implementation in `packages/myco/src/backup/restore-jobs.ts`.
+Two reliability bugs were found during code review. Both are addressed in the current implementation in `packages/myco/src/backup/restore-jobs.ts`.
 
 ### D1 — Temp Path Collision (`restore-runner.ts`)
 

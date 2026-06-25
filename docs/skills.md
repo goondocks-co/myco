@@ -99,6 +99,12 @@ The generate and evolve tasks only run when there's work to do (approved candida
 
 You can also trigger any skill task manually from the **Agent** page's **Run Task** dialog.
 
+## One-time cleanup for existing skills
+
+New skill writes are gated so generated and evolved skills reject release, PR, date, session, and decision-state contamination in live procedural prose. Existing repositories may still have older generated skills with that content.
+
+Use [`docs/examples/skill-decontaminate.yaml`](examples/skill-decontaminate.yaml) as a drop-in custom task recipe for a one-time migration. Put it in `.myco/tasks/skill-decontaminate.yaml`, restart the daemon so user tasks reload, then run `myco task run skill-decontaminate`. The recipe scans every active Myco-managed skill, rewrites only matched live-prose spans, writes through `vault_write_skill`, and verifies the stored content is clean. It is intentionally not a built-in recurring task.
+
 ## Configuration
 
 Two settings under `skills:` in `myco.yaml` control global behavior:

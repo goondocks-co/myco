@@ -117,7 +117,7 @@ phases:
       against spores, sessions, plans, or code before classifying STALE,
       MERGE, or NARROW.
 
-      There are THREE sources of skills to assess:
+      There are FOUR sources of skills to assess:
 
       **A. Skills with new knowledge** — listed in the instruction
       with descriptions and new spore IDs (full content is NOT in
@@ -204,7 +204,7 @@ phases:
       Any remaining candidates must be deferred and listed in
       vault_report details under `deferred_skills`.
 
-      For ALL skills from all three sources, classify with one of:
+      For ALL skills from all sources, classify with one of:
          - CURRENT — still accurate, no changes needed.
          - STALE — new knowledge OR drift report changes specific
            steps, paths, or gotchas. Note exactly WHAT is new or

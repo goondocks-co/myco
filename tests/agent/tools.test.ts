@@ -31,6 +31,7 @@ import { insertSpore, type SporeInsert } from '@myco/db/queries/spores.js';
 import { insertEntity } from '@myco/db/queries/entities.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
+import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
@@ -498,6 +499,7 @@ describe('vault tools', () => {
 
       expect(data).toHaveLength(1);
       expect(data[0].id).toBe('spore-compact');
+      expect(data[0].status).toBe('active');
       expect(data[0].content_preview).toBe('Compact content');
       expect(data[0].importance).toBe(8);
       expect(data[0].context).toBeUndefined();
@@ -524,6 +526,76 @@ describe('vault tools', () => {
       expect(data[0].content).toBe('Full content');
       expect(data[0].context).toBe('Stored context');
       expect(data[0].properties).toBe(JSON.stringify({ foo: 'bar' }));
+    });
+
+    it('projects spore status and superseded_by replacement id', async () => {
+      insertSpore({
+        id: 'spore-old',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        status: 'superseded',
+        content: 'Old content',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-newer',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'Newer content',
+        created_at: epochNow(),
+      });
+      insertGraphEdge({
+        agent_id: TEST_AGENT_ID,
+        source_id: 'spore-old',
+        source_type: 'spore',
+        target_id: 'spore-newer',
+        target_type: 'spore',
+        type: 'SUPERSEDED_BY',
+        created_at: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_spores');
+      const result = await t.handler({ ids: ['spore-old'] }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].status).toBe('superseded');
+      expect(data[0].superseded_by).toBe('spore-newer');
+      expect(data[0].content).toBe('Old content');
+    });
+
+    it('projects superseded_by from legacy resolution events without graph edges', async () => {
+      insertSpore({
+        id: 'spore-old',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        status: 'superseded',
+        content: 'Old content',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-newer',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'Newer content',
+        created_at: epochNow(),
+      });
+      insertResolutionEvent({
+        id: 'res-legacy-supersede',
+        agent_id: TEST_AGENT_ID,
+        spore_id: 'spore-old',
+        action: 'supersede',
+        new_spore_id: 'spore-newer',
+        created_at: epochNow(),
+      });
+
+      const t = findTool(tools, 'vault_spores');
+      const result = await t.handler({ ids: ['spore-old'] }, undefined);
+      const data = parseResult(result) as Array<Record<string, unknown>>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].status).toBe('superseded');
+      expect(data[0].superseded_by).toBe('spore-newer');
     });
 
     it('returns exact spores by id in the requested order', async () => {
@@ -1127,6 +1199,11 @@ describe('vault tools', () => {
         `SELECT * FROM resolution_events WHERE spore_id = ?`,
       ).all('spore-resolve-test');
       expect(events).toHaveLength(1);
+
+      const edge = db.prepare(
+        `SELECT * FROM graph_edges WHERE source_id = ? AND target_id = ? AND type = ?`,
+      ).get('spore-resolve-test', 'spore-new', 'SUPERSEDED_BY') as Record<string, unknown> | undefined;
+      expect(edge).toBeDefined();
     });
 
     it('does not resolve a spore outside the request-context project', async () => {

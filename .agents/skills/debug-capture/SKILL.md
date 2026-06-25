@@ -1,7 +1,7 @@
 ---
 name: myco:debug-capture
 description: >
-  Use this skill when a Myco session, prompt, tool use, or attachment appears to have gone missing — the agent says "I sent that" but it isn't in the dashboard, a session shows zero batches, MCP tool calls hang or silently no-op, hooks aren't firing in a worktree, the buffer file isn't growing, FK constraint errors appear in the daemon log, or the symptom is "capture went silent." Also use when investigating any reported capture regression in the Myco repo. Walks the capture lifecycle top-down — agent → hook → daemon HTTP → buffer → registry → SQLite → transcript miner — and tells you which layer to look at, in what order, with the exact command to run. Replaces the "investigate capture loss from scratch" antipattern that produced PRs #278, #284, #285, #286 each as one-offs.
+  Use this skill when a Myco session, prompt, tool use, or attachment appears to have gone missing — the agent says "I sent that" but it isn't in the dashboard, a session shows zero batches, MCP tool calls hang or silently no-op, hooks aren't firing in a worktree, the buffer file isn't growing, FK constraint errors appear in the daemon log, or the symptom is "capture went silent." Also use when investigating any reported capture regression in the Myco repo. Walks the capture lifecycle top-down — agent → hook → daemon HTTP → buffer → registry → SQLite → transcript miner — and tells you which layer to look at, in what order, with the exact command to run. Replaces the "investigate capture loss from scratch" antipattern that produced repeated one-off patches.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Bash, Grep, Glob
@@ -13,7 +13,7 @@ Top-down procedure for "why didn't this land in Myco?" Walks the capture lifecyc
 
 ## Why this exists
 
-Three independent capture regressions in one cycle (PRs #278, #284, #285, #286) all presented identically — "session went silent" — and each was investigated from scratch via process trees, buffer mtimes, and intuition. The pattern wasted hours. This skill replaces intuition with a procedure that starts at the same step every time.
+Several independent capture regressions all presented identically — "session went silent" — and each was investigated from scratch via process trees, buffer mtimes, and intuition. The pattern wasted hours. This skill replaces intuition with a procedure that starts at the same step every time.
 
 ## Background reading
 
@@ -51,7 +51,7 @@ tail -200 ~/Library/Logs/Claude/hooks.log 2>/dev/null
 ```
 
 **Common failures here:**
-- New git worktree without bootstrap files → run `myco init --worktree` from the worktree (PR #300).
+- New git worktree without a runtime pin → run `make dev-link-worktree` from the worktree, then verify routing with the `dogfood-worktree` skill.
 - `.claude/settings.json` exists but Claude doesn't read it → wrong `CLAUDE_PROJECT_DIR`.
 - Hook fires but fails to exec `myco` → `runtime.command` pin missing or pointing at a nonexistent binary. Walk up from cwd looking for `<dir>/.myco/runtime.command`, then check `~/.myco/runtime.command`.
 
@@ -121,7 +121,7 @@ sqlite3 "$GROVE_DB" "SELECT id, prompt_batch_id, tool_name, file_path FROM activ
 
 If the session row exists but batches don't (or vice versa) — that's a FK or transaction-boundary bug. Cross-reference with the daemon log for the event window.
 
-If the rows exist but you can't see them via a scoped query (e.g., from the UI for project A) — that's the multi-tenancy shape (#235, #280). The row's `project_id` must match the request context's project scope.
+If the rows exist but you can't see them via a scoped query (e.g., from the UI for project A) — that's the multi-tenancy shape. The row's `project_id` must match the request context's project scope.
 
 ### Step 5 — Did transcript-mining add the post-stop turns?
 
@@ -144,14 +144,14 @@ If `/events/stop` never arrived — the agent crashed or was killed without firi
 
 ### Step 6 — Did MCP tool calls log?
 
-(Added by issue #288 / PR #301; in if you're on a daemon version ≥ 0.27.)
+Use this check when investigating missing MCP tool-call capture.
 
 ```bash
 # Every MCP tool dispatch leaves info-level entries.
 grep 'mcp.call' ~/.myco/service*/logs/daemon.log | tail -10
 ```
 
-If the agent says a Myco tool "didn't respond" and `grep mcp.call` returns nothing in the relevant window, the call never reached the daemon's `/mcp` route. Suspect the stdio bridge (PR #286 hardened parent-death + heartbeat; see if the bridge process is still alive and connected to the current daemon).
+If the agent says a Myco tool "didn't respond" and `grep mcp.call` returns nothing in the relevant window, the call never reached the daemon's `/mcp` route. Suspect the stdio bridge: check whether the bridge process is still alive and connected to the current daemon.
 
 ## Anti-patterns
 
@@ -163,7 +163,7 @@ If the agent says a Myco tool "didn't respond" and `grep mcp.call` returns nothi
 
 If you fixed a regression while debugging, the right follow-up is:
 
-1. Add the test that would have caught it (probably in `tests/integration/`). The Phase 3 audit (#297, #298, #301) wrote the templates; reuse them.
+1. Add the test that would have caught it (probably in `tests/integration/`). Reuse the existing audit templates where possible.
 2. If the failure was at a layer this skill didn't cover well, update the skill — it's meant to evolve.
 
 ## Related
