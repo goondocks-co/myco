@@ -20,12 +20,6 @@ import {
   type HarnessScopeSetup,
 } from './types.js';
 import { isConnectionError, isCapHitMessage } from './classify-error.js';
-
-export function classifyHarnessErrorKind(message: string, errName: string | undefined): HarnessErrorKind {
-  if (isConnectionError(message)) return 'connection';
-  if (errName === 'MaxTurnsExceededError' || isCapHitMessage(message)) return 'max-turns';
-  return 'other';
-}
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
@@ -42,6 +36,12 @@ import {
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
+
+export function classifyHarnessErrorKind(message: string, errName: string | undefined): HarnessErrorKind {
+  if (isConnectionError(message)) return 'connection';
+  if (errName === 'MaxTurnsExceededError' || isCapHitMessage(message)) return 'max-turns';
+  return 'other';
+}
 
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
