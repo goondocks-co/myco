@@ -120,12 +120,14 @@ export interface HarnessScopeRunInput {
  * Classification of HarnessExecutionError causes. Set by the adapter at
  * the throw site where the SDK's error type/wording is authoritative.
  * `'max-turns'` means the configured maxTurns budget was the binding
- * constraint; `'other'` covers everything else (timeouts, network,
- * tool execution, etc.). Cost-audit tooling counts `capHit` separately
- * from generic failures, so this classification matters at the phase
- * checkpoint level.
+ * constraint; `'connection'` covers network and provider connectivity
+ * errors (dropped connections, refused connections, DNS failures);
+ * `'other'` is the residual for everything else (unparseable output,
+ * tool execution failures, etc.). Cost-audit tooling counts `capHit`
+ * separately from generic failures, so this classification matters at
+ * the phase checkpoint level.
  */
-export type HarnessErrorKind = 'max-turns' | 'other';
+export type HarnessErrorKind = 'max-turns' | 'connection' | 'other';
 
 export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;

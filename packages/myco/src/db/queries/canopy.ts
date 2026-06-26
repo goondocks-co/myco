@@ -14,6 +14,8 @@ import { getDatabase } from '@myco/db/client.js';
 import { CANOPY_SESSION_COLUMNS, CANOPY_ACTIVITY_COLUMN } from '@myco/db/schema-ddl.js';
 import { allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
 import { projectScopeClause, type ProjectScope } from './project-scope.js';
+import type { CanopyEntry } from '@myco/db/schema.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -385,6 +387,24 @@ export function describedCanopyEntriesPredicate(
 export const DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS = 2;
 
 /**
+ * Parse and clamp the per-project `params.max_attempts` override for the
+ * `canopy-describe` task into a valid retry budget. Accepts the merged
+ * project config (or null for the default install) and falls back to
+ * `DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS` whenever the param is absent,
+ * non-finite, or less than 1. Single source of truth shared by the
+ * scheduler's fetch predicate (task-scheduling.ts) and the backlog's
+ * eligible/stuck buckets (canopy/describe-backlog.ts) so the two can never
+ * disagree — which was the stall bug this consolidation prevents.
+ */
+export function canopyDescribeMaxAttempts(config: MycoConfig | null): number {
+  const raw = config?.agent.tasks?.['canopy-describe']?.params?.max_attempts;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1
+    ? Math.floor(parsed)
+    : DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+}
+
+/**
  * Canonical "needs an llm_description" predicate for canopy_entries:
  * description NULL or stale relative to mechanical_updated_at, AND the row
  * has not exhausted its describe retry budget (one `?` placeholder for
@@ -398,6 +418,21 @@ export const PENDING_CANOPY_DESCRIBE_PREDICATE = `(
       OR llm_updated_at < mechanical_updated_at
     )
     AND describe_attempts < ?`;
+
+/**
+ * Canonical "needs an llm_description but has exhausted its retry budget"
+ * predicate for canopy_entries. Mirrors PENDING_CANOPY_DESCRIBE_PREDICATE's
+ * needs-describe condition (`llm_updated_at IS NULL OR llm_updated_at <
+ * mechanical_updated_at`) but gates on `describe_attempts >= ?` (one `?`
+ * placeholder for maxAttempts). Used by getCanopyDescribeBacklog to surface
+ * the stuck bucket — rows that will never be serviced by the current scribe
+ * run until their attempt counter is reset.
+ */
+export const STUCK_CANOPY_DESCRIBE_PREDICATE = `(
+      llm_updated_at IS NULL
+      OR llm_updated_at < mechanical_updated_at
+    )
+    AND describe_attempts >= ?`;
 
 /**
  * Count canopy_entries rows that need an llm_description (NULL or stale
@@ -440,6 +475,8 @@ export interface CanopyDescribeBacklog {
   pending: number;
   undescribed: number;
   stale: number;
+  /** Rows that need a description but have exhausted the retry budget. */
+  stuck: number;
 }
 
 export interface CanopyDescribeBacklogOptions {
@@ -482,14 +519,16 @@ export function getCanopyDescribeBacklog(
     `SELECT
        SUM(CASE WHEN ${PENDING_CANOPY_DESCRIBE_PREDICATE} THEN 1 ELSE 0 END) AS pending,
        SUM(CASE WHEN llm_updated_at IS NULL AND describe_attempts < ? THEN 1 ELSE 0 END) AS undescribed,
-       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at AND describe_attempts < ? THEN 1 ELSE 0 END) AS stale
+       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at AND describe_attempts < ? THEN 1 ELSE 0 END) AS stale,
+       SUM(CASE WHEN ${STUCK_CANOPY_DESCRIBE_PREDICATE} THEN 1 ELSE 0 END) AS stuck
        FROM canopy_entries
       WHERE 1 = 1${projectSql}${restrictSql}`,
-  ).get(maxAttempts, maxAttempts, maxAttempts, ...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
+  ).get(maxAttempts, maxAttempts, maxAttempts, maxAttempts, ...params) as { pending: number | null; undescribed: number | null; stale: number | null; stuck: number | null } | undefined;
   return {
     pending: Number(row?.pending ?? 0),
     undescribed: Number(row?.undescribed ?? 0),
     stale: Number(row?.stale ?? 0),
+    stuck: Number(row?.stuck ?? 0),
   };
 }
 
@@ -589,4 +628,184 @@ export function getCanopyToolCallContext(
 
   if (!row || !row.file_path) return null;
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Canopy-describe tool queries (canopy-tools.ts data-access layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch up to `limit` canopy_entries rows that need an llm_description —
+ * NULL or stale relative to mechanical_updated_at, with describe_attempts
+ * under the retry budget. Bind order: (projectId, maxAttempts, limit).
+ *
+ * Uses PENDING_CANOPY_DESCRIBE_PREDICATE verbatim so fetch and count
+ * cannot disagree about what is pending.
+ */
+export function selectPendingCanopyDescribe(
+  db: Database,
+  projectId: string,
+  options: { maxAttempts: number; limit: number },
+): CanopyEntry[] {
+  return db.prepare(
+    `SELECT *
+       FROM canopy_entries
+      WHERE project_id = ?
+        AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}
+      ORDER BY (llm_updated_at IS NULL) DESC, mechanical_updated_at ASC
+      LIMIT ?`,
+  ).all(projectId, options.maxAttempts, options.limit) as CanopyEntry[];
+}
+
+/**
+ * Charge one describe attempt against each of `paths` for the given project.
+ * Called by canopy_describe_charge after the harness has evaluated a batch:
+ * every path passed here is a row the model ran against but that produced no
+ * accepted description (content failure or skip). Connectivity failures must
+ * never reach this function — charging them would burn the per-row retry
+ * budget during a provider outage. json_each fans the path list into the
+ * IN-clause in a single statement. Returns the number of rows charged.
+ * Bind order: (projectId, JSON path array).
+ */
+export function chargeDescribeAttempts(
+  db: Database,
+  projectId: string,
+  paths: readonly string[],
+): number {
+  const result = db.prepare(
+    `UPDATE canopy_entries
+        SET describe_attempts = describe_attempts + 1
+      WHERE project_id = ?
+        AND path IN (SELECT value FROM json_each(?))`,
+  ).run(projectId, JSON.stringify(paths));
+  return Number(result.changes ?? 0);
+}
+
+/**
+ * Reset `describe_attempts` to 0 for all stuck rows (rows matching
+ * `STUCK_CANOPY_DESCRIBE_PREDICATE`) within `scope`. This re-eligibilizes
+ * them for the next canopy-describe scribe run.
+ *
+ * Pass `options.projectIds` to restrict the reset to serviceable projects.
+ * For a grove-wide ('all') reset, pass `projectIds` (the active registered
+ * project list) so orphaned/archived-project rows are NOT cleared — mirrors
+ * the same `projectIds` restrict in `getCanopyDescribeBacklog`.
+ *
+ * Bind order: (maxAttempts, ...scopeParams[, projectIds JSON]).
+ * `STUCK_CANOPY_DESCRIBE_PREDICATE` supplies the leading `>= ?` placeholder;
+ * scope params follow; the optional json_each param is last.
+ *
+ * Returns the number of rows reset.
+ */
+export function resetStuckDescribeAttempts(
+  db: Database,
+  scope: ProjectScope,
+  options: { maxAttempts?: number; projectIds?: readonly string[] } = {},
+): number {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+  const { sql: projectSql, params } = projectScopeClause(scope);
+  let restrictSql = '';
+  if (options.projectIds) {
+    restrictSql = ' AND project_id IN (SELECT value FROM json_each(?))';
+    params.push(JSON.stringify(options.projectIds));
+  }
+  const res = db.prepare(
+    `UPDATE canopy_entries SET describe_attempts = 0
+       WHERE ${STUCK_CANOPY_DESCRIBE_PREDICATE}${projectSql}${restrictSql}`,
+  ).run(maxAttempts, ...params);
+  return Number(res.changes ?? 0);
+}
+
+/**
+ * Fetch a single canopy_entries row by (projectId, path).
+ * Returns the full CanopyEntry or null if no row exists.
+ * Bind order: (projectId, path).
+ */
+export function getCanopyEntryByPath(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+): CanopyEntry | null {
+  return db.prepare(
+    `SELECT *
+       FROM canopy_entries
+      WHERE project_id = ? AND path = ?
+      LIMIT 1`,
+  ).get(projectId, entryPath) as CanopyEntry | null;
+}
+
+/**
+ * Fetch only the exports_json column for a canopy_entries row.
+ * Used by canopy_describe_write to run the post-process gate without
+ * pulling the full row. Bind order: (projectId, path).
+ *
+ * Returns null when the path is unknown (triggers unknown_path rejection).
+ */
+export function getCanopyEntryExports(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+): { exports_json: string | null } | null {
+  return db.prepare(
+    `SELECT exports_json
+       FROM canopy_entries
+      WHERE project_id = ? AND path = ?`,
+  ).get(projectId, entryPath) as { exports_json: string | null } | null;
+}
+
+/**
+ * Write a post-processed description onto a canopy_entries row and reset
+ * embedded=0 so the embedding queue picks the row up again.
+ * Bind order: (description, nowEpochSeconds, projectId, path).
+ */
+export function setCanopyDescription(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+  description: string,
+  nowEpochSeconds: number,
+): void {
+  db.prepare(
+    `UPDATE canopy_entries
+        SET llm_description = ?,
+            llm_updated_at  = ?,
+            embedded        = 0
+      WHERE project_id = ? AND path = ?`,
+  ).run(description, nowEpochSeconds, projectId, entryPath);
+}
+
+/**
+ * Row shape returned by listCanopyEntries — the column subset the
+ * canopy_list tool projects.
+ */
+export interface CanopyListRow {
+  path: string;
+  language: string | null;
+  llm_description: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  token_estimate: number;
+}
+
+/**
+ * List canopy_entries for a project.  When includeUndescribed is false
+ * (default) only rows with a non-NULL llm_description are returned.
+ * Uses describedCanopyEntriesPredicate and CANOPY_ENTRIES_ORDER_BY so the
+ * sort and predicate cannot diverge from other consumers.
+ */
+export function listCanopyEntries(
+  db: Database,
+  projectId: string,
+  options: { includeUndescribed: boolean; limit: number },
+): CanopyListRow[] {
+  const { where, params } = options.includeUndescribed
+    ? { where: 'project_id = ?', params: [projectId] as unknown[] }
+    : describedCanopyEntriesPredicate(projectId);
+  return db.prepare(
+    `SELECT path, language, llm_description, exports_json, imports_json, token_estimate
+       FROM canopy_entries
+      WHERE ${where}
+      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
+      LIMIT ?`,
+  ).all(...params, options.limit) as CanopyListRow[];
 }

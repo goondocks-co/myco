@@ -17,7 +17,7 @@ import {
 } from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
-import { countPendingCanopyDescribe, DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS } from '@myco/db/queries/canopy.js';
+import { countPendingCanopyDescribe, canopyDescribeMaxAttempts } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches, INTELLIGENCE_DEFAULT_ORIGINS } from '@myco/db/queries/batches.js';
 import { countTaskRunsSince, getLastCompletedRunsForProject } from '@myco/db/queries/project-activity.js';
 import { withDatabase } from '@myco/db/client.js';
@@ -68,18 +68,6 @@ export interface CanopyPendingProbeDeps {
   logger: DaemonLogger;
   mycoHome?: string;
   daemonStateDir: string;
-}
-
-// Per-row describe retry budget from the task's params, falling back to the
-// canopy-describe.yaml default. Threaded into every pending count so the
-// scheduler precondition/accelerator/probe agree with the fetch predicate
-// even when a project overrides params.max_attempts.
-function canopyDescribeMaxAttempts(config: MycoConfig | null): number {
-  const raw = config?.agent.tasks?.['canopy-describe']?.params?.max_attempts;
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(parsed) && parsed >= 1
-    ? Math.floor(parsed)
-    : DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
 }
 
 // Holds the daemon awake only when canopy-describe will actually drain the

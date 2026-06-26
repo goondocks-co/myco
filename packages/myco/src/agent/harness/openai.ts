@@ -12,12 +12,14 @@ import {
   HarnessExecutionError,
   type AgentHarness,
   type HarnessCapability,
+  type HarnessErrorKind,
   type HarnessExecuteInput,
   type HarnessExecuteResult,
   type HarnessScope,
   type HarnessScopeRunInput,
   type HarnessScopeSetup,
 } from './types.js';
+import { isConnectionError, isCapHitMessage } from './classify-error.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
@@ -34,6 +36,12 @@ import {
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
+
+export function classifyHarnessErrorKind(message: string, errName: string | undefined): HarnessErrorKind {
+  if (isConnectionError(message)) return 'connection';
+  if (errName === 'MaxTurnsExceededError' || isCapHitMessage(message)) return 'max-turns';
+  return 'other';
+}
 
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
@@ -332,10 +340,7 @@ async function runOpenAIAgent(
     // binding; the constructor name is the most reliable signal. Fall back
     // to wording match for forward compatibility.
     const errName = err && typeof err === 'object' ? (err as { constructor?: { name?: string } }).constructor?.name : undefined;
-    const kind: 'max-turns' | 'other' = errName === 'MaxTurnsExceededError'
-      || /max[\s_-]?turns/i.test(message)
-      ? 'max-turns'
-      : 'other';
+    const kind = classifyHarnessErrorKind(message, errName);
     throw new HarnessExecutionError(
       message,
       { usage, sessionRef: options.sessionRef, sessionData: persistedItems, kind },

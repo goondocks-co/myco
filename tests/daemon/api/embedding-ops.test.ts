@@ -131,7 +131,7 @@ describe('embedding operations API', () => {
     } as unknown as RouteRequest);
 
     expect(result.body).toEqual(expect.objectContaining({
-      canopy_describe: { pending: 1, undescribed: 0, stale: 1 },
+      canopy_describe: { pending: 1, undescribed: 0, stale: 1, stuck: 0 },
       namespace_breakdown: expect.objectContaining({
         canopy_entries: { embedded: 0, pending: 0, stale: 1, total: 0 },
       }),

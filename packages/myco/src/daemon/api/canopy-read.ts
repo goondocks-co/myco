@@ -3,7 +3,17 @@
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
-import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import {
+  CANOPY_ENTRIES_ORDER_BY,
+  getCanopyToolCallContext,
+  resetStuckDescribeAttempts,
+  rollupCanopy,
+} from '@myco/db/queries/canopy.js';
+import {
+  effectiveCanopyDescribeMaxAttempts,
+  serviceableProjectIds,
+} from '@myco/canopy/describe-backlog.js';
 import { getSessionMycoToolCallCounts } from '@myco/db/queries/myco-tool-usage.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -12,6 +22,7 @@ import { composeBlob } from '@myco/canopy/inject/compose.js';
 import { relativizeForLookup } from './canopy-inject.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { readCanopyEntry } from '@myco/canopy/read-service.js';
+import { resolveActionScope, InvalidActionScopeError } from './action-scope.js';
 
 function notFound(reason: string): RouteResponse {
   return { status: 404, body: errorBody('not_found', reason) };
@@ -555,6 +566,15 @@ export interface CanopyReadRouteDeps {
    * don't exercise the action can omit this.
    */
   runCanopyDescribeTask?: CanopyEntryRedescribeTaskRunner['runner'];
+  /**
+   * Optional drain kicker for `/describe/retry-stuck`. After re-eligibilizing
+   * stuck rows the endpoint fires a canopy-describe bypass so the scribe
+   * drains them on the next compatible tick instead of waiting a full
+   * interval. Omit `target` for a grove-wide ('all') reset (broadcast bypass);
+   * pass `{ groveId, projectId }` for a project-scoped reset. When omitted the
+   * reset still lands — PowerManager catch-up drains on the next tick.
+   */
+  kickCanopyDescribe?: (target?: { groveId: string; projectId: GroveProjectId }) => void;
 }
 
 export function registerCanopyReadRoutes(server: {
@@ -567,6 +587,51 @@ export function registerCanopyReadRoutes(server: {
     handleGetCanopyToolCallBlob,
   );
   server.registerRoute('GET', '/api/canopy/rollup', handleGetCanopyRollup);
+
+  // POST /api/canopy/describe/retry-stuck — re-eligibilize describe rows that
+  // exhausted their retry budget so a poisoned tail stops silently stalling
+  // the backlog. Resets `describe_attempts = 0` for stuck rows in scope,
+  // restricted to serviceable (registered, active) projects so orphaned or
+  // archived rows no scribe run will service aren't cleared. Registered
+  // unconditionally — it needs no deps beyond the (optional) drain kicker.
+  const retryStuckHandler: RouteHandler = async (req) => {
+    const ctx = req.requestContext;
+    if (!ctx) return badRequest('missing_request_context');
+    let actionScope;
+    try {
+      actionScope = resolveActionScope({ body: req.body, requestContext: ctx });
+    } catch (err) {
+      if (err instanceof InvalidActionScopeError) {
+        return { status: 400, body: errorBody('bad_request', err.message) };
+      }
+      throw err;
+    }
+    // Map ActionScope → ProjectScope for the DAL: grove/all-groves fan out
+    // across all projects; project kind narrows to one.
+    const scope = actionScope.kind === 'project'
+      ? projectScope(actionScope.project_id)
+      : ALL_PROJECTS_SCOPE;
+    // Derive groveId from the body envelope; all-groves has no single grove_id
+    // so fall back to the request context.
+    const groveId = actionScope.kind !== 'all-groves'
+      ? actionScope.grove_id
+      : (ctx.groveId ?? null);
+    const ids = serviceableProjectIds(groveId);
+    const maxAttempts = effectiveCanopyDescribeMaxAttempts(scope, groveId);
+    const reset = resetStuckDescribeAttempts(getDatabase(), scope, {
+      maxAttempts,
+      ...(ids ? { projectIds: ids } : {}),
+    });
+    if (reset > 0 && deps?.kickCanopyDescribe) {
+      if (scope.kind === 'project' && groveId) {
+        deps.kickCanopyDescribe({ groveId, projectId: scope.id });
+      } else {
+        deps.kickCanopyDescribe();
+      }
+    }
+    return { body: { reset } };
+  };
+  server.registerRoute('POST', '/api/canopy/describe/retry-stuck', retryStuckHandler);
 
   // /canopy/entries routes need a project_id resolver. Existing tests register
   // canopy-read routes without deps; skip the entries routes when no resolver

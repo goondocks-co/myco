@@ -17,6 +17,8 @@ import { interpolate } from '@myco/utils/interpolate.js';
 import type { AgentEmbeddingPort } from '@myco/agent/runtime/ports.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
+import { probeProviderAvailable } from './harness/provider-health.js';
+import { isConnectionError } from './harness/classify-error.js';
 import {
   HarnessExecutionError,
   type AgentHarness,
@@ -48,6 +50,13 @@ export interface ExecuteMapPhaseInput {
   logger?: RunLogger;
   /** Run-level abort controller. Aborting it stops current and future map items. */
   runAbortController?: AbortController;
+  /**
+   * Provider reachability probe, run once before the source fetch. Injectable
+   * for tests; defaults to {@link probeProviderAvailable}. When it returns
+   * false the phase short-circuits with `providerUnavailable: true` and zero
+   * items — no source fetch, no per-item harness calls against a dead endpoint.
+   */
+  probeAvailable?: (p: ProviderConfig | undefined) => Promise<boolean>;
 }
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
@@ -61,6 +70,24 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
   }
 
   throwIfRunAborted(runAbortController);
+  const probe = input.probeAvailable ?? probeProviderAvailable;
+  if (!(await probe(provider))) {
+    logger?.info('agent.map.provider-unavailable', `Map phase "${phase.name}" skipped — provider unavailable`, {
+      runId, phase: phase.name,
+    });
+    return {
+      itemCount: 0,
+      written: 0,
+      skipped: 0,
+      failed: 0,
+      abandoned: 0,
+      skipReasons: {},
+      writeAfterThrow: 0,
+      providerUnavailable: true,
+      unavailable: 0,
+      usage: {},
+    };
+  }
   const items = await fetchSourceItems({ phase, allTools, params });
   throwIfRunAborted(runAbortController);
   logger?.debug('agent.map.fetched', `Map phase "${phase.name}" fetched ${items.length} items`, {
@@ -76,8 +103,16 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     abandoned: 0,
     skipReasons: {},
     writeAfterThrow: 0,
+    providerUnavailable: false,
+    unavailable: 0,
     usage: {},
   };
+
+  // Raw source items whose disposition was a genuine content failure or skip
+  // (model ran, produced no accepted write). Written items and
+  // connection-unavailable items are never pushed here. Flushed to the
+  // accounting tool once after the loop.
+  const chargeItems: unknown[] = [];
 
   const normalizedItemPrompt = normalizeTemplateBraces(phase.item.prompt);
   const sharedItemCtx: {
@@ -184,12 +219,36 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         });
         continue;
       }
+      // A per-item timeout aborts THIS item's controller (not the run-level
+      // one, which the rethrow above already handled). Its abort reason can
+      // surface as a message matching a connection pattern (e.g. /timeout/),
+      // but a per-item timeout is a per-item content-budget failure, NOT a
+      // provider outage — it must fall through to the normal failed/skip path
+      // and never open the circuit. A genuine harness connection error does not
+      // abort the per-item controller, so this guard won't suppress real outages.
+      const perItemTimedOut = controller.signal.aborted && !runAbortController?.signal.aborted;
+      // Connection-class failure: the provider endpoint was never reached (or
+      // dropped mid-request), so this item was not evaluated. Don't count it as
+      // a content failure, and open the circuit — grinding the remaining items
+      // against a dead endpoint is futile. The `isConnectionError(reason)`
+      // message-fallback is a best-effort net for adapters that don't set
+      // `telemetry.kind`; per-item timeouts are deliberately excluded above.
+      const kind = err instanceof HarnessExecutionError ? err.telemetry?.kind : undefined;
+      if (!perItemTimedOut && (kind === 'connection' || isConnectionError(reason))) {
+        result.unavailable += 1;
+        result.providerUnavailable = true;
+        logger?.info('agent.map.item-unavailable', `Map phase "${phase.name}" item hit provider outage — circuit open, halting batch`, {
+          runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
+        });
+        break;
+      }
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
         runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
       });
       if ((phase.onItemError ?? 'skip') === 'abort') {
         throw err;
       }
+      chargeItems.push(item);
       result.failed += 1;
       continue;
     } finally {
@@ -200,16 +259,35 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     if (sinkOutcome?.ok === true) {
       result.written += 1;
     } else if (sinkOutcome) {
+      chargeItems.push(item);
       result.skipped += 1;
       const reason = sinkOutcome.reason ?? 'unknown';
       result.skipReasons[reason] = (result.skipReasons[reason] ?? 0) + 1;
     } else {
+      chargeItems.push(item);
       result.skipped += 1;
       result.skipReasons.no_terminal_tool = (result.skipReasons.no_terminal_tool ?? 0) + 1;
     }
   }
   } finally {
     if (scope) await scope.close();
+  }
+
+  // Charge attempts for the content-failed/skip items. Reached even after a
+  // connection `break`, so pre-outage content failures are still charged
+  // while the outage item (never pushed) is not.
+  if (phase.accounting && chargeItems.length > 0) {
+    const accountingTool = allTools.find((t) => t.name === phase.accounting!.tool);
+    if (accountingTool) {
+      // The tool receives the raw source items (full rows) via a direct handler()
+      // call that bypasses zod validation; the tool extracts .path itself — so
+      // {items:[{path}]} is the MCP surface shape, not the in-process payload shape.
+      await (accountingTool as any).handler({ items: chargeItems });
+    } else {
+      logger?.warn('agent.map.accounting-tool-missing', `Map phase "${phase.name}" accounting tool "${phase.accounting.tool}" not found — ${chargeItems.length} item(s) were NOT charged`, {
+        runId, phase: phase.name, tool: phase.accounting.tool, itemCount: chargeItems.length,
+      });
+    }
   }
 
   result.usage = aggregateUsage(itemUsages);
