@@ -663,6 +663,41 @@ export function chargeDescribeAttempts(
 }
 
 /**
+ * Reset `describe_attempts` to 0 for all stuck rows (rows matching
+ * `STUCK_CANOPY_DESCRIBE_PREDICATE`) within `scope`. This re-eligibilizes
+ * them for the next canopy-describe scribe run.
+ *
+ * Pass `options.projectIds` to restrict the reset to serviceable projects
+ * (should-fix C: grove-wide callers supply the active registered project list
+ * so orphaned/archived-project rows are NOT cleared — mirrors the same
+ * `projectIds` restrict in `getCanopyDescribeBacklog`).
+ *
+ * Bind order: (maxAttempts, ...scopeParams[, projectIds JSON]).
+ * `STUCK_CANOPY_DESCRIBE_PREDICATE` supplies the leading `>= ?` placeholder;
+ * scope params follow; the optional json_each param is last.
+ *
+ * Returns the number of rows reset.
+ */
+export function resetStuckDescribeAttempts(
+  db: Database,
+  scope: ProjectScope,
+  options: { maxAttempts?: number; projectIds?: readonly string[] } = {},
+): number {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+  const { sql: projectSql, params } = projectScopeClause(scope);
+  let restrictSql = '';
+  if (options.projectIds) {
+    restrictSql = ' AND project_id IN (SELECT value FROM json_each(?))';
+    params.push(JSON.stringify(options.projectIds));
+  }
+  const res = db.prepare(
+    `UPDATE canopy_entries SET describe_attempts = 0
+       WHERE ${STUCK_CANOPY_DESCRIBE_PREDICATE}${projectSql}${restrictSql}`,
+  ).run(maxAttempts, ...params);
+  return res.changes;
+}
+
+/**
  * Fetch a single canopy_entries row by (projectId, path).
  * Returns the full CanopyEntry or null if no row exists.
  * Bind order: (projectId, path).
