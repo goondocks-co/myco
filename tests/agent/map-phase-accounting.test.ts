@@ -136,6 +136,39 @@ describe('executeMapPhase accounting hook', () => {
     expect(charged).toEqual([]);
   });
 
+  test('content-failure-via-throw charges the item and leaves providerUnavailable false', async () => {
+    // Harness throws a HarnessExecutionError with kind:'other' — a genuine content
+    // failure (model crash, bad response, etc.). isConnectionError() is false and
+    // kind !== 'connection', so the code falls through the connection guard and
+    // reaches chargeItems.push(item) at map-phase.ts:251. With onItemError:'skip'
+    // the item is charged rather than aborting the run.
+    const charged: unknown[] = [];
+    const harness = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: async () => {
+        throw new HarnessExecutionError('sink_response_unparseable', {
+          usage: {},
+          kind: 'other',
+        });
+      },
+    };
+    const res = await executeMapPhase({
+      phase: makePhase(),
+      allTools: [makeSource([{ path: 'bad-content' }]), makeSink(), makeCharge(charged)],
+      harness: harness as any,
+      params: {},
+      systemPrompt: 's',
+      runId: 'r',
+      agentId: 'a',
+      provider: { type: 'lmstudio', baseUrl: 'http://x:1234', model: 'm' },
+      probeAvailable: async () => true,
+    });
+    expect(res.failed).toBe(1);
+    expect(res.providerUnavailable).toBe(false);
+    expect(charged).toEqual([{ path: 'bad-content' }]);
+  });
+
   test('pre-outage content failures flush even after a connection break', async () => {
     const charged: unknown[] = [];
     // First item is rejected by the sink (skip → charge); second item hits a

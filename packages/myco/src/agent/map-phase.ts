@@ -278,7 +278,16 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
   // while the outage item (never pushed) is not.
   if (phase.accounting && chargeItems.length > 0) {
     const accountingTool = allTools.find((t) => t.name === phase.accounting!.tool);
-    if (accountingTool) await (accountingTool as any).handler({ items: chargeItems });
+    if (accountingTool) {
+      // The tool receives the raw source items (full rows) via a direct handler()
+      // call that bypasses zod validation; the tool extracts .path itself — so
+      // {items:[{path}]} is the MCP surface shape, not the in-process payload shape.
+      await (accountingTool as any).handler({ items: chargeItems });
+    } else {
+      logger?.warn('agent.map.accounting-tool-missing', `Map phase "${phase.name}" accounting tool "${phase.accounting.tool}" not found — ${chargeItems.length} item(s) were NOT charged`, {
+        runId, phase: phase.name, tool: phase.accounting.tool, itemCount: chargeItems.length,
+      });
+    }
   }
 
   result.usage = aggregateUsage(itemUsages);
