@@ -15,6 +15,7 @@ import { CANOPY_SESSION_COLUMNS, CANOPY_ACTIVITY_COLUMN } from '@myco/db/schema-
 import { allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
 import { projectScopeClause, type ProjectScope } from './project-scope.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -384,6 +385,24 @@ export function describedCanopyEntriesPredicate(
  * `PENDING_CANOPY_DESCRIBE_PREDICATE` so fetch and count agree.
  */
 export const DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS = 2;
+
+/**
+ * Parse and clamp the per-project `params.max_attempts` override for the
+ * `canopy-describe` task into a valid retry budget. Accepts the merged
+ * project config (or null for the default install) and falls back to
+ * `DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS` whenever the param is absent,
+ * non-finite, or less than 1. Single source of truth shared by the
+ * scheduler's fetch predicate (task-scheduling.ts) and the backlog's
+ * eligible/stuck buckets (canopy/describe-backlog.ts) so the two can never
+ * disagree — which was the stall bug this consolidation prevents.
+ */
+export function canopyDescribeMaxAttempts(config: MycoConfig | null): number {
+  const raw = config?.agent.tasks?.['canopy-describe']?.params?.max_attempts;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1
+    ? Math.floor(parsed)
+    : DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
+}
 
 /**
  * Canonical "needs an llm_description" predicate for canopy_entries:

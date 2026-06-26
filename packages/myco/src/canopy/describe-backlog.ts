@@ -18,6 +18,7 @@ import { getDatabase } from '@myco/db/client.js';
 import {
   getCanopyDescribeBacklog,
   DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS,
+  canopyDescribeMaxAttempts,
   type CanopyDescribeBacklog,
 } from '@myco/db/queries/canopy.js';
 import type { ProjectScope } from '@myco/grove/ids.js';
@@ -75,19 +76,6 @@ export function serviceableProjectIds(
   const home = mycoHome ?? resolveMycoHome();
   if (!loadGroveRecord(groveId, home)) return null;
   return listRegisteredProjects(groveId, home).map((project) => project.project_id);
-}
-
-// Per-row describe retry budget from the project's `canopy-describe`
-// task params, falling back to the canopy-describe.yaml default. Mirrors
-// the resolution in daemon/task-scheduling.ts so the backlog buckets
-// (eligible/stuck) and the reset endpoint agree with the fetch predicate
-// even when a project overrides `params.max_attempts`.
-function canopyDescribeMaxAttempts(config: MycoConfig | null): number {
-  const raw = config?.agent.tasks?.['canopy-describe']?.params?.max_attempts;
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(parsed) && parsed >= 1
-    ? Math.floor(parsed)
-    : DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
 }
 
 /**

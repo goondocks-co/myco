@@ -600,7 +600,7 @@ export function registerCanopyReadRoutes(server: {
     // Mirror createEmbeddingDetailsHandler's scope derivation: default to the
     // request's project; `?scope=grove` opts into the grove-wide reset that
     // matches the grove-level stuck count shown in Operations.
-    const scope = req.query.scope === 'grove'
+    const scope = typeof req.query.scope === 'string' && req.query.scope === 'grove'
       ? ALL_PROJECTS_SCOPE
       : projectScopeFromRequestContext(ctx);
     const ids = serviceableProjectIds(groveId);
