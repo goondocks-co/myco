@@ -401,6 +401,21 @@ export const PENDING_CANOPY_DESCRIBE_PREDICATE = `(
     AND describe_attempts < ?`;
 
 /**
+ * Canonical "needs an llm_description but has exhausted its retry budget"
+ * predicate for canopy_entries. Mirrors PENDING_CANOPY_DESCRIBE_PREDICATE's
+ * needs-describe condition (`llm_updated_at IS NULL OR llm_updated_at <
+ * mechanical_updated_at`) but gates on `describe_attempts >= ?` (one `?`
+ * placeholder for maxAttempts). Used by getCanopyDescribeBacklog to surface
+ * the stuck bucket — rows that will never be serviced by the current scribe
+ * run until their attempt counter is reset.
+ */
+export const STUCK_CANOPY_DESCRIBE_PREDICATE = `(
+      llm_updated_at IS NULL
+      OR llm_updated_at < mechanical_updated_at
+    )
+    AND describe_attempts >= ?`;
+
+/**
  * Count canopy_entries rows that need an llm_description (NULL or stale
  * relative to mechanical_updated_at, with describe_attempts under the
  * retry budget). Owned by the canopy domain — the predicate is literally
@@ -441,6 +456,8 @@ export interface CanopyDescribeBacklog {
   pending: number;
   undescribed: number;
   stale: number;
+  /** Rows that need a description but have exhausted the retry budget. */
+  stuck: number;
 }
 
 export interface CanopyDescribeBacklogOptions {
@@ -483,14 +500,16 @@ export function getCanopyDescribeBacklog(
     `SELECT
        SUM(CASE WHEN ${PENDING_CANOPY_DESCRIBE_PREDICATE} THEN 1 ELSE 0 END) AS pending,
        SUM(CASE WHEN llm_updated_at IS NULL AND describe_attempts < ? THEN 1 ELSE 0 END) AS undescribed,
-       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at AND describe_attempts < ? THEN 1 ELSE 0 END) AS stale
+       SUM(CASE WHEN llm_updated_at IS NOT NULL AND llm_updated_at < mechanical_updated_at AND describe_attempts < ? THEN 1 ELSE 0 END) AS stale,
+       SUM(CASE WHEN ${STUCK_CANOPY_DESCRIBE_PREDICATE} THEN 1 ELSE 0 END) AS stuck
        FROM canopy_entries
       WHERE 1 = 1${projectSql}${restrictSql}`,
-  ).get(maxAttempts, maxAttempts, maxAttempts, ...params) as { pending: number | null; undescribed: number | null; stale: number | null } | undefined;
+  ).get(maxAttempts, maxAttempts, maxAttempts, maxAttempts, ...params) as { pending: number | null; undescribed: number | null; stale: number | null; stuck: number | null } | undefined;
   return {
     pending: Number(row?.pending ?? 0),
     undescribed: Number(row?.undescribed ?? 0),
     stale: Number(row?.stale ?? 0),
+    stuck: Number(row?.stuck ?? 0),
   };
 }
 
