@@ -214,7 +214,9 @@ registration:
   mcpFormat: toml
   globalMcpTarget: ~/.codex/config.toml
   skillsTarget: .agents/skills
-  globalSkillsTarget: ~/.codex/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.codex/skills
   settingsTarget: .codex/config.toml
   # Settings under global scope MUST land in config.toml (TOML) and
   # NOT share a path with the JSON hooks file. Required because

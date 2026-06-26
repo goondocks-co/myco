@@ -11,34 +11,26 @@
 // Check sync (CI / test guard): node packages/myco/scripts/gen-templates.mjs --check
 // Wired into `npm run codegen`.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { walk, readTextFile, emitBundle } from './codegen-bundle.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(__dirname, '..');
 const TEMPLATES_DIR = path.resolve(PKG_ROOT, 'src/symbionts/templates');
 const OUTPUT = path.resolve(PKG_ROOT, 'src/symbionts/templates.generated.ts');
 
-function walk(dir, acc = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, acc);
-    else if (entry.isFile()) acc.push(full);
-  }
-  return acc;
-}
-
 /**
  * Build the templates.generated.ts content in memory. Both the write mode and
  * the --check guard call this so the committed bundle and the freshly-generated
- * bundle are compared byte-for-byte against one source of truth.
+ * bundle are compared byte-for-byte against one source of truth. Templates are
+ * serialized FLAT: `Record<relPath, content>`.
  */
 function buildBundle() {
   const files = walk(TEMPLATES_DIR).sort();
   const entries = files.map((abs) => {
     const rel = path.relative(TEMPLATES_DIR, abs).split(path.sep).join('/');
-    const body = fs.readFileSync(abs, 'utf-8');
+    const body = readTextFile(abs);
     return [rel, body];
   });
 
@@ -57,28 +49,12 @@ ${serialized}
   return { content, count: entries.length };
 }
 
-const checkMode = process.argv.includes('--check');
 const { content, count } = buildBundle();
-
-if (checkMode) {
-  // Codegen-sync guard: the compiled binary reads ONLY templates.generated.ts,
-  // so a forgotten codegen silently ships stale templates. Fail loudly when the
-  // committed bundle no longer matches what the templates would generate.
-  let committed = null;
-  try {
-    committed = fs.readFileSync(OUTPUT, 'utf-8');
-  } catch {
-    committed = null;
-  }
-  if (committed !== content) {
-    process.stderr.write(
-      `[gen-templates] ${path.relative(PKG_ROOT, OUTPUT)} is stale — run \`npm run codegen\` and commit the result.\n`,
-    );
-    process.exit(1);
-  }
-  process.stdout.write(`[gen-templates] ${path.relative(PKG_ROOT, OUTPUT)} is in sync (${count} files)\n`);
-  process.exit(0);
-}
-
-fs.writeFileSync(OUTPUT, content, 'utf-8');
-process.stdout.write(`[gen-templates] wrote ${path.relative(PKG_ROOT, OUTPUT)} (${count} files)\n`);
+emitBundle({
+  outputPath: OUTPUT,
+  pkgRoot: PKG_ROOT,
+  content,
+  count: `${count} files`,
+  label: 'gen-templates',
+  checkMode: process.argv.includes('--check'),
+});

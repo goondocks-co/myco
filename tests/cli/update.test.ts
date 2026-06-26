@@ -36,6 +36,9 @@ mock.module('@myco/symbionts/installer.js', () => ({
       isConfigured: vi.fn().mockReturnValue(false),
       install: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
       uninstall: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
+      // Detection sweeps each manifest's retired global skill dirs before the
+      // detection gate, for every manifest (not just detected ones).
+      sweepRetiredGlobalSkills: vi.fn(),
     };
   }),
   MYCO_MCP_SERVER_NAME: 'myco',

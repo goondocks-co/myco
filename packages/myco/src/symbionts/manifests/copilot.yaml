@@ -83,7 +83,9 @@ registration:
     - path: ~/Library/Application Support/Code/User/mcp.json
       serversKey: servers
   skillsTarget: .agents/skills
-  globalSkillsTarget: ~/.copilot/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.copilot/skills
   settingsTarget: .vscode/settings.json
   # Copilot's hook file (~/.copilot/hooks/myco-hooks.json) accepts the
   # `chat.tools.terminal.autoApprove` key alongside the hooks block —

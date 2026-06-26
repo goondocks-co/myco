@@ -44,6 +44,8 @@ import {
   type GroveRecord,
 } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
+import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { ensureManagedSkills } from '../symbionts/managed-skills.js';
 
 export interface DetectionResult {
   /** Manifest name (e.g. 'claude-code'). */
@@ -116,8 +118,20 @@ export function shouldRunGlobalBootstrap(
 export function runSymbiontDetection(
   packageRoot: string = resolvePackageRoot(),
 ): DetectionResult[] {
+  // Seed the managed skills dir (`<mycoHome>/skills`) from the binary-embedded
+  // bundle before linking, so global skill symlinks resolve to a stable managed
+  // target instead of a checkout. This is the chokepoint every global-install
+  // entry funnels through (first-start bootstrap, the hourly detection tick,
+  // `myco doctor --fix`, `myco update`). Gated by the same subsystem-claim
+  // deferral as the per-symbiont config writes so a dogfood daemon (which
+  // defers to the prod claim) can't overwrite the managed skills.
+  const manifests = loadManifests();
+  const deferGlobal = shouldDeferSubsystem(SYMBIONT_CONFIG_SUBSYSTEM);
+  if (!deferGlobal) {
+    ensureManagedSkills(resolveMycoHome());
+  }
   const results: DetectionResult[] = [];
-  for (const manifest of loadManifests()) {
+  for (const manifest of manifests) {
     // `projectRoot` is unused in global scope — every operation that
     // touches it (AGENTS.md, .gitignore, instructions) is skipped. The
     // SymbiontInstaller takes the value through its constructor for
@@ -125,6 +139,11 @@ export function runSymbiontDetection(
     const installer = new SymbiontInstaller(
       manifest, '/', packageRoot, false, undefined, null, 'global',
     );
+    // Sweep this agent's retired global skill dirs (links left behind after a
+    // `globalSkillsTarget` migration, often dangling into a deleted checkout).
+    // Runs for EVERY manifest, not just detected ones — a retired link can
+    // outlive the agent's detectionDir. Gated by the same claim deferral.
+    if (!deferGlobal) installer.sweepRetiredGlobalSkills();
     if (!installer.isAvailableForScope()) {
       results.push({ symbiont: manifest.name, status: 'not-detected' });
       continue;

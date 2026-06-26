@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { ensureManagedSkills } from '@myco/symbionts/managed-skills.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { derivePort } from '@myco/daemon/port.js';
 import { isMycoHookCommand, MYCO_MANAGED_MARKER } from '@myco/symbionts/install-helpers.js';
@@ -3025,9 +3026,15 @@ describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-rc14-'));
     const origHome = process.env.HOME;
     const origSandbox = process.env.MYCO_SANDBOX_ROOT;
+    const origMycoHome = process.env.MYCO_HOME;
     process.env.HOME = home;
     process.env.MYCO_SANDBOX_ROOT = home;
+    // Global skills source from the managed <mycoHome>/skills dir, so seed it
+    // from the embedded bundle first (the daemon does this via ensureManagedSkills
+    // at the top of runSymbiontDetection).
+    process.env.MYCO_HOME = path.join(home, '.myco');
     try {
+      ensureManagedSkills(process.env.MYCO_HOME);
       const globalClaude = {
         ...CLAUDE_MANIFEST,
         registration: {
@@ -3051,6 +3058,7 @@ describe('RC-14 — global-scope (flatSkills) uninstall symmetry', () => {
     } finally {
       if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
       if (origSandbox === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = origSandbox;
+      if (origMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = origMycoHome;
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

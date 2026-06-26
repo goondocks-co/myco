@@ -56,3 +56,17 @@ export function versionBinaryPath(mycoHome, platform, version, localAppData) {
   const binaryName = platform === 'win32' ? 'myco.exe' : 'myco';
   return p.join(versionDir(mycoHome, platform, version, localAppData), binaryName);
 }
+
+/**
+ * Managed skills directory: `<mycoHome>/skills` (all platforms).
+ *
+ * Unlike the managed bin (which lives outside myco-home on Windows), skills sit
+ * directly under myco-home everywhere — the daemon seeds them here from the
+ * binary-embedded bundle, and global skill symlinks resolve here. A stable
+ * managed target divorced from any checkout is what lets global skills survive a
+ * worktree/checkout deletion and self-heal on the detection tick. The bin layout
+ * is unused for skills, so no `localAppData` argument is needed.
+ */
+export function managedSkillsDir(mycoHome, platform = process.platform) {
+  return (platform === 'win32' ? path.win32 : path.posix).join(mycoHome, 'skills');
+}

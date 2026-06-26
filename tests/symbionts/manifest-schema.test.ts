@@ -205,12 +205,13 @@ describe('symbiont manifests', () => {
     // Skills deliberately do NOT live inside the plugin bundle.
     // Antigravity reads workspace `.agents/skills/` natively (populated
     // by other cross-agent symbiont installs and Myco's intelligence
-    // pipeline), and the package myco + myco-rules skills go to
-    // Antigravity's user-global skills dir `~/.gemini/antigravity/skills/`.
-    // This keeps the plugin bundle lean — only the hook/MCP/manifest
-    // surface lives there.
+    // pipeline), and the package skills go to the cross-agent standard
+    // user-global dir `~/.agents/skills/` (agy supports `.agents`). The
+    // deprecated Gemini-era `~/.gemini/antigravity/skills` is swept via
+    // `retiredGlobalSkillsTargets`.
     expect(manifest.registration!.skillsTarget).toBeUndefined();
-    expect(manifest.registration!.globalSkillsTarget).toBe('~/.gemini/antigravity/skills');
+    expect(manifest.registration!.globalSkillsTarget).toBe('~/.agents/skills');
+    expect(manifest.registration!.retiredGlobalSkillsTargets).toEqual(['~/.gemini/antigravity/skills']);
   });
 
   it('windsurf manifest has registration without mcpTarget', () => {
