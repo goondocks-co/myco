@@ -341,6 +341,12 @@ export function EmbeddingTab() {
     (sum, ns) => sum + (data.namespace_breakdown?.[ns]?.stale ?? data.by_namespace[ns]?.stale ?? 0), 0);
   const canopyDescribePending = data.canopy_describe?.pending ?? 0;
   const canopyDescribeStuck = data.canopy_describe?.stuck ?? 0;
+  const canopyDescribePendingLabel = canopyDescribePending > 0
+    ? `${data.canopy_describe?.undescribed ?? 0} new, ${data.canopy_describe?.stale ?? 0} stale`
+    : 'fresh';
+  const canopyDescribeSublabel = canopyDescribeStuck > 0
+    ? `⚠ stuck: ${canopyDescribeStuck} · ${canopyDescribePendingLabel}`
+    : canopyDescribePendingLabel;
 
   return (
     <div className="space-y-6">
@@ -371,14 +377,7 @@ export function EmbeddingTab() {
         <StatCard
           label="Canopy Scribe"
           value={String(canopyDescribePending)}
-          sublabel={(() => {
-            const pendingLabel = canopyDescribePending > 0
-              ? `${data.canopy_describe?.undescribed ?? 0} new, ${data.canopy_describe?.stale ?? 0} stale`
-              : 'fresh';
-            return canopyDescribeStuck > 0
-              ? `⚠ stuck: ${canopyDescribeStuck} · ${pendingLabel}`
-              : pendingLabel;
-          })()}
+          sublabel={canopyDescribeSublabel}
           accent={canopyDescribeStuck > 0 ? 'terracotta' : canopyDescribePending > 0 ? 'ochre' : 'outline'}
         />
       </div>
