@@ -3,7 +3,17 @@
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
-import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
+import { ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
+import {
+  CANOPY_ENTRIES_ORDER_BY,
+  getCanopyToolCallContext,
+  resetStuckDescribeAttempts,
+  rollupCanopy,
+} from '@myco/db/queries/canopy.js';
+import {
+  effectiveCanopyDescribeMaxAttempts,
+  serviceableProjectIds,
+} from '@myco/canopy/describe-backlog.js';
 import { getSessionMycoToolCallCounts } from '@myco/db/queries/myco-tool-usage.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -555,6 +565,15 @@ export interface CanopyReadRouteDeps {
    * don't exercise the action can omit this.
    */
   runCanopyDescribeTask?: CanopyEntryRedescribeTaskRunner['runner'];
+  /**
+   * Optional drain kicker for `/describe/retry-stuck`. After re-eligibilizing
+   * stuck rows the endpoint fires a canopy-describe bypass so the scribe
+   * drains them on the next compatible tick instead of waiting a full
+   * interval. Omit `target` for a grove-wide ('all') reset (broadcast bypass);
+   * pass `{ groveId, projectId }` for a project-scoped reset. When omitted the
+   * reset still lands — PowerManager catch-up drains on the next tick.
+   */
+  kickCanopyDescribe?: (target?: { groveId: string; projectId: GroveProjectId }) => void;
 }
 
 export function registerCanopyReadRoutes(server: {
@@ -567,6 +586,39 @@ export function registerCanopyReadRoutes(server: {
     handleGetCanopyToolCallBlob,
   );
   server.registerRoute('GET', '/api/canopy/rollup', handleGetCanopyRollup);
+
+  // POST /api/canopy/describe/retry-stuck — re-eligibilize describe rows that
+  // exhausted their retry budget so a poisoned tail stops silently stalling
+  // the backlog. Resets `describe_attempts = 0` for stuck rows in scope,
+  // restricted to serviceable (registered, active) projects so orphaned or
+  // archived rows no scribe run will service aren't cleared. Registered
+  // unconditionally — it needs no deps beyond the (optional) drain kicker.
+  const retryStuckHandler: RouteHandler = async (req) => {
+    const ctx = req.requestContext;
+    if (!ctx) return badRequest('missing_request_context');
+    const groveId = ctx.groveId ?? null;
+    // Mirror createEmbeddingDetailsHandler's scope derivation: default to the
+    // request's project; `?scope=grove` opts into the grove-wide reset that
+    // matches the grove-level stuck count shown in Operations.
+    const scope = req.query.scope === 'grove'
+      ? ALL_PROJECTS_SCOPE
+      : projectScopeFromRequestContext(ctx);
+    const ids = serviceableProjectIds(groveId);
+    const maxAttempts = effectiveCanopyDescribeMaxAttempts(scope, groveId);
+    const reset = resetStuckDescribeAttempts(getDatabase(), scope, {
+      maxAttempts,
+      ...(ids ? { projectIds: ids } : {}),
+    });
+    if (reset > 0 && deps?.kickCanopyDescribe) {
+      if (scope.kind === 'project' && groveId) {
+        deps.kickCanopyDescribe({ groveId, projectId: scope.id });
+      } else {
+        deps.kickCanopyDescribe();
+      }
+    }
+    return { body: { reset } };
+  };
+  server.registerRoute('POST', '/api/canopy/describe/retry-stuck', retryStuckHandler);
 
   // /canopy/entries routes need a project_id resolver. Existing tests register
   // canopy-read routes without deps; skip the entries routes when no resolver
