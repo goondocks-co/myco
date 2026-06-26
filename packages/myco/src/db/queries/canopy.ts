@@ -667,10 +667,10 @@ export function chargeDescribeAttempts(
  * `STUCK_CANOPY_DESCRIBE_PREDICATE`) within `scope`. This re-eligibilizes
  * them for the next canopy-describe scribe run.
  *
- * Pass `options.projectIds` to restrict the reset to serviceable projects
- * (should-fix C: grove-wide callers supply the active registered project list
- * so orphaned/archived-project rows are NOT cleared — mirrors the same
- * `projectIds` restrict in `getCanopyDescribeBacklog`).
+ * Pass `options.projectIds` to restrict the reset to serviceable projects.
+ * For a grove-wide ('all') reset, pass `projectIds` (the active registered
+ * project list) so orphaned/archived-project rows are NOT cleared — mirrors
+ * the same `projectIds` restrict in `getCanopyDescribeBacklog`.
  *
  * Bind order: (maxAttempts, ...scopeParams[, projectIds JSON]).
  * `STUCK_CANOPY_DESCRIBE_PREDICATE` supplies the leading `>= ?` placeholder;
@@ -694,7 +694,7 @@ export function resetStuckDescribeAttempts(
     `UPDATE canopy_entries SET describe_attempts = 0
        WHERE ${STUCK_CANOPY_DESCRIBE_PREDICATE}${projectSql}${restrictSql}`,
   ).run(maxAttempts, ...params);
-  return res.changes;
+  return Number(res.changes ?? 0);
 }
 
 /**
