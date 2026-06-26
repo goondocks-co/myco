@@ -18,6 +18,7 @@ export interface EmbeddingDetails {
     pending: number;
     undescribed: number;
     stale: number;
+    stuck: number;
   };
 }
 
