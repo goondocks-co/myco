@@ -123,6 +123,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 61, migrate: (db) => migrateV60ToV61(db) },
   { version: 62, migrate: (db) => migrateV61ToV62(db) },
   { version: 63, migrate: (db) => migrateV62ToV63(db) },
+  { version: 64, migrate: (db) => migrateV63ToV64(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -3962,6 +3963,73 @@ function migrateV62ToV63(db: Database): void {
     db.prepare(
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
     ).run(63, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Frozen at the v64 revision: carried-team delete triggers. The snapshot must
+ * stay byte-equivalent (after whitespace normalization) to live
+ * TEAM_DELETE_TRIGGERS so fresh and migrated vaults converge
+ * (tests/db/migration-matrix.test.ts).
+ */
+const V64_TEAM_DELETE_TRIGGER_TABLES = [
+  'sessions', 'prompt_batches', 'spores', 'entities', 'graph_edges',
+  'resolution_events', 'plans', 'artifacts', 'digest_extracts',
+  'skill_candidates', 'skill_records', 'skill_usage', 'knowledge_release_state',
+] as const;
+
+const V64_TEAM_DELETE_TRIGGERS: readonly string[] = V64_TEAM_DELETE_TRIGGER_TABLES.map(
+  (table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_team_ad
+  AFTER DELETE ON ${table}
+  WHEN OLD.project_id IN (SELECT project_id FROM team_sync_membership)
+  BEGIN
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at)
+    VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
+            json_object('id', OLD.id, 'machine_id', OLD.machine_id),
+            OLD.machine_id,
+            (SELECT team_id FROM team_sync_membership WHERE project_id = OLD.project_id),
+            OLD.project_id,
+            CAST(strftime('%s','now') AS INTEGER));
+  END`,
+);
+
+/**
+ * v63 -> v64: carry team_id in the local membership projection and outbox.
+ *
+ * `team_outbox.project_id` pinned project tenancy, but drain still re-derived
+ * team tenancy from mutable registry state. Add `team_id` to the outbox and to
+ * `team_sync_membership` so SQL delete triggers can stamp the owning team at
+ * tombstone creation time. Trigger bodies are DROP+CREATE because SQLite does
+ * not update existing trigger SQL from the live DDL replay.
+ */
+function migrateV63ToV64(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const outboxCols = getTableColumnSet(db, 'team_outbox');
+    if (!outboxCols.has('team_id')) {
+      db.prepare('ALTER TABLE team_outbox ADD COLUMN team_id TEXT').run();
+    }
+
+    const membershipCols = getTableColumnSet(db, 'team_sync_membership');
+    if (!membershipCols.has('team_id')) {
+      db.prepare('ALTER TABLE team_sync_membership ADD COLUMN team_id TEXT').run();
+    }
+
+    for (const table of V64_TEAM_DELETE_TRIGGER_TABLES) {
+      db.exec(`DROP TRIGGER IF EXISTS ${table}_team_ad`);
+    }
+    for (const trg of V64_TEAM_DELETE_TRIGGERS) {
+      db.exec(trg);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?) ON CONFLICT (version) DO NOTHING`,
+    ).run(64, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

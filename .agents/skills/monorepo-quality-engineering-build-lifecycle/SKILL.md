@@ -724,6 +724,8 @@ done
 - **Fast profile assumptions**: Remember `make build` now uses fast profile by default - use `make build-all` for comprehensive CI validation
 - **`make dev-build` requires daemon restart**: `make dev-build` compiles the Bun binary to `packages/myco-$(HOST_TARGET)/bin/` but does not reload the running daemon. After a rebuild, run `myco-dev restart` to pick up the new binary.
 - **Cross-variant artifact thrash**: `make build-all` compiles all platform targets. During development iteration, use `make dev-build` (host target only) to avoid building artifacts for platforms that cannot run on the local machine.
+- **Binary recompilation can trigger launchd KeepAlive throttle**: `packages/myco/scripts/clean-core.mjs` (run by `npm run build` and `npm run build:binaries`) removes build artifacts before recompiling. If the launchd daemon service monitors the binary output path, the temporary absence triggers KeepAlive respawn attempts. Under rapid successive rebuilds launchd may enter throttle mode. Recovery: `launchctl kickstart -k gui/$(id -u)/com.myco.daemon` after the build completes.
+- **`npm allow-scripts` silently blocks postinstall binary convergence**: If an `allow-scripts` policy blocks postinstall hooks, `packages/myco/scripts/select-binary.mjs` won't run and npm exits 0 without error. The binary appears installed but may be wrong for the platform. Check for `allow-scripts` warnings in install output or run `cd packages/myco && node scripts/select-binary.mjs` manually.
 
 ### Release Workflow Traps
 - **npm global installations in CI**: Never `npm install -g npm@latest` - corrupts npm's dependencies

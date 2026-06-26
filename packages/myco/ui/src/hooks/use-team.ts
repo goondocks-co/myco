@@ -138,6 +138,7 @@ export interface TeamDriftRow {
 
 export interface TeamSyncSummaryResponse {
   generated_at: number;
+  home_serves_team: boolean;
   local: {
     total_records: number;
     pending_sync_count: number;

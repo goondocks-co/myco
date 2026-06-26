@@ -100,7 +100,7 @@ describe('project tenancy authority', () => {
     expect(() => resolveProjectTenancy('ghost')).toThrow(ProjectGroveMissingError);
   });
 
-  it("memberProjectIdsForGrove returns only this grove's team-member projects", () => {
+  it("memberProjectIdsForGrove returns this grove's registered team-member projects", () => {
     const grove = createGrove('G', home);
     const projectRoot = makeProjectRoot();
     registerProjectInGrove(
@@ -115,19 +115,27 @@ describe('project tenancy authority', () => {
       { projectId: 'P-other', projectName: 'P-other', projectRoot: otherRoot },
       home,
     );
-    // P (in grove G) and P-other (in otherGrove) both belong to one team.
-    saveTeam([
-      { grove_id: grove.id, project_id: 'P' },
+    // P is registered in grove G but its machine-scope Team row carries a
+    // stale Grove id. Membership is by portable project id; placement is by the
+    // current home's Grove registry.
+    const teamId = saveTeam([
+      { grove_id: otherGrove.id, project_id: 'P' },
       { grove_id: otherGrove.id, project_id: 'P-other' },
     ]);
 
     const res = memberProjectIdsForGrove(grove.id);
     expect(res.resolved).toBe(true);
     expect(new Set((res as { resolved: true; projectIds: string[] }).projectIds)).toEqual(new Set(['P']));
+    expect((res as { resolved: true; memberships: Array<{ project_id: string; team_id: string }> }).memberships).toEqual([
+      { project_id: 'P', team_id: teamId },
+    ]);
+    const otherRes = memberProjectIdsForGrove(otherGrove.id);
+    expect(otherRes.resolved).toBe(true);
+    expect(new Set((otherRes as { resolved: true; projectIds: string[] }).projectIds)).toEqual(new Set(['P-other']));
     // A grove with no team-member projects returns confirmed-empty.
     const emptyGrove = createGrove('Empty', home);
-    expect(memberProjectIdsForGrove(emptyGrove.id)).toEqual({ resolved: true, projectIds: [] });
-    expect(memberProjectIdsForGrove(null)).toEqual({ resolved: true, projectIds: [] });
+    expect(memberProjectIdsForGrove(emptyGrove.id)).toEqual({ resolved: true, projectIds: [], memberships: [] });
+    expect(memberProjectIdsForGrove(null)).toEqual({ resolved: true, projectIds: [], memberships: [] });
   });
 
   it('machineHasAnyTeam reflects whether any team is registered', () => {

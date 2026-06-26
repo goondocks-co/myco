@@ -9,6 +9,11 @@
 import { getDatabase } from '@myco/db/client.js';
 import type { Database } from 'bun:sqlite';
 
+export interface ProjectSyncMembership {
+  project_id: string;
+  team_id: string;
+}
+
 export function getTeamSyncEnabled(db: Database = getDatabase()): boolean {
   const row = db
     .prepare('SELECT enabled FROM team_sync_state WHERE rowid_guard = 1')
@@ -29,17 +34,28 @@ export function setTeamSyncEnabled(enabled: boolean, db: Database = getDatabase(
  * `backfillRows` read this so a non-member project's rows are never enqueued.
  */
 export function setProjectSyncMembership(
-  projectIds: string[],
+  memberships: readonly ProjectSyncMembership[],
   db: Database = getDatabase(),
 ): void {
-  const tx = db.transaction((ids: string[]) => {
+  const tx = db.transaction((rows: readonly ProjectSyncMembership[]) => {
     db.prepare('DELETE FROM team_sync_membership').run();
     const insert = db.prepare(
-      'INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)',
+      'INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)',
     );
-    for (const id of ids) insert.run(id);
+    for (const row of rows) insert.run(row.project_id, row.team_id);
+    db.prepare(
+      `UPDATE team_outbox
+          SET team_id = (
+            SELECT team_sync_membership.team_id
+              FROM team_sync_membership
+             WHERE team_sync_membership.project_id = team_outbox.project_id
+          )
+        WHERE sent_at IS NULL
+          AND team_id IS NULL
+          AND project_id IN (SELECT project_id FROM team_sync_membership)`,
+    ).run();
   });
-  tx(projectIds);
+  tx(memberships);
 }
 
 export function getSyncableProjectIds(db: Database = getDatabase()): string[] {
@@ -50,14 +66,20 @@ export function getSyncableProjectIds(db: Database = getDatabase()): string[] {
   ).map((r) => r.project_id);
 }
 
+export function getSyncableProjectTeamId(
+  projectId: string | null,
+  db: Database = getDatabase(),
+): string | null {
+  if (projectId == null) return null;
+  const row = db
+    .prepare('SELECT team_id FROM team_sync_membership WHERE project_id = ? LIMIT 1')
+    .get(projectId) as { team_id: string | null } | undefined;
+  return row?.team_id ?? null;
+}
+
 export function isProjectSyncable(
   projectId: string | null,
   db: Database = getDatabase(),
 ): boolean {
-  if (projectId == null) return false;
-  return (
-    db
-      .prepare('SELECT 1 FROM team_sync_membership WHERE project_id = ? LIMIT 1')
-      .get(projectId) != null
-  );
+  return getSyncableProjectTeamId(projectId, db) != null;
 }

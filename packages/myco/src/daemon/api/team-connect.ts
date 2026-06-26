@@ -18,6 +18,7 @@ import {
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
+  enqueueProjectRemovalTombstones,
   LOCAL_ONLY_OUTBOX_TABLES,
   LOCAL_ONLY_SYNC_COLUMNS,
   LOCAL_ONLY_RATIONALES,
@@ -280,6 +281,10 @@ export interface TableDrift {
  * the exclusion is structural so it stays correct if rows ever reappear.
  */
 const DRIFT_EXCLUDED_TABLES: ReadonlySet<string> = new Set(['entity_mentions']);
+const PROJECT_SCOPED_DRIFT_EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  ...DRIFT_EXCLUDED_TABLES,
+  'team_members',
+]);
 
 /**
  * Compare per-table local row counts against per-table cloud row counts
@@ -302,6 +307,13 @@ export function computeDrift(
     const c = cloud[table] ?? 0;
     return { table, local: l, cloud: c, delta: c - l };
   });
+}
+
+export function computeProjectScopedDrift(
+  local: Record<string, number>,
+  cloud: Record<string, number>,
+): TableDrift[] {
+  return computeDrift(local, cloud, PROJECT_SCOPED_DRIFT_EXCLUDED_TABLES);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +448,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const team = teamRegistry.get(teamId);
     if (!team) return { body: { connected: false, removed_project: false } };
 
+    enqueueProjectRemovalTombstones({ projectId, teamId, machineId });
     teamRegistry.save(withProjectRemoved(team, projectId));
     logger.info('team-sync.registry.disconnected', 'Removed project from Team registry membership', {
       team_id: teamId,
@@ -713,16 +726,22 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     const guard = clientOrError(req);
     if (!guard.ok) return guard.response;
 
-    // Tables / total / drift stay machine-scoped (the machine-mirror-vs-cloud
-    // axis); only pending_sync_count is team-scoped so Status and Sync report
-    // the same pending number for the selected team.
-    const localTables = countTeamSyncRows(machineId);
-    const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
     const resolvedTeam = guard.teamId ? teamRegistry.get(guard.teamId) : null;
+    const requestGroveId = req.requestContext?.groveId ?? null;
+    const servedProjectIds = resolvedTeam
+      ? resolvedTeam.projects
+          .filter((p) => requestGroveId == null || p.grove_id === requestGroveId)
+          .map((p) => p.project_id)
+      : undefined;
+    const homeServesTeam = resolvedTeam ? (servedProjectIds?.length ?? 0) > 0 : true;
+    const localTables = resolvedTeam
+      ? countTeamSyncRows(machineId, servedProjectIds ?? [])
+      : countTeamSyncRows(machineId);
+    const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
     let pendingCount = 0;
     try {
       pendingCount = resolvedTeam
-        ? countPendingForProjects(resolvedTeam.projects.map((p) => p.project_id))
+        ? countPendingForProjects(servedProjectIds ?? [])
         : countPending();
     } catch {
       pendingCount = 0;
@@ -742,8 +761,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // a rolling upgrade) or a remote failure must NOT be treated as cloud-0 —
     // that would inflate total_delta and misfire the destructive Rebuild.
     const cloudTables = remote?.machine_tables ?? null;
-    const drift = cloudTables != null
-      ? computeDrift(localTables as Record<string, number>, cloudTables)
+    const drift = cloudTables != null && homeServesTeam
+      ? computeProjectScopedDrift(localTables as Record<string, number>, cloudTables)
       : [];
     const total_delta = drift.reduce((s, d) => s + Math.abs(d.delta), 0);
 
@@ -753,13 +772,16 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // whenever the cloud held rows under other (or legacy 'local') machine_ids.
     // Null when the worker is too old to scope (cloudTables == null) so the UI
     // renders '—' instead of a misleading number — mirrors the drift guard.
-    const remote_machine_total = cloudTables != null
-      ? Object.values(cloudTables).reduce((sum, count) => sum + count, 0)
+    const remote_machine_total = cloudTables != null && homeServesTeam
+      ? Object.entries(cloudTables)
+          .filter(([table]) => !PROJECT_SCOPED_DRIFT_EXCLUDED_TABLES.has(table))
+          .reduce((sum, [, count]) => sum + count, 0)
       : null;
 
     return {
       body: {
         generated_at: Math.floor(Date.now() / 1000),
+        home_serves_team: homeServesTeam,
         local: {
           total_records: localTotal,
           pending_sync_count: pendingCount,

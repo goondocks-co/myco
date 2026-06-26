@@ -9,6 +9,7 @@ import {
   enqueueOutbox,
   listPending,
   markSent,
+  markSourceRowsSynced,
   pruneOld,
   countPending,
   countPendingForProjects,
@@ -22,7 +23,7 @@ import {
 } from '@myco/db/queries/team-outbox.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
-import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
+import type { OutboxInsert, OutboxRow } from '@myco/db/queries/team-outbox.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -117,6 +118,14 @@ describe('team outbox query helpers', () => {
     it('respects custom operation', () => {
       const row = enqueueOutbox(makeOutbox({ operation: 'delete' }));
       expect(row.operation).toBe('delete');
+    });
+
+    it('resolves team_id from project membership when omitted', () => {
+      setProjectSyncMembership([{ project_id: 'proj-a', team_id: 'team-a' }]);
+
+      const row = enqueueOutbox(makeOutbox({ project_id: 'proj-a' }));
+
+      expect(row.team_id).toBe('team-a');
     });
 
     it('parses payload back to its structured shape on read', () => {
@@ -243,6 +252,61 @@ describe('team outbox query helpers', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // markSourceRowsSynced
+  // ---------------------------------------------------------------------------
+
+  describe('markSourceRowsSynced', () => {
+    function seedSpore(id: string, projectId = 'proj-remove'): void {
+      const db = getDatabase();
+      db.prepare(
+        `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at)
+         VALUES ('user', 'user', 'built-in', 1, 1)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id, synced_at)
+         VALUES (?, ?, 'user', 'decision', 'x', 1, 'machine-1', NULL)`,
+      ).run(id, projectId);
+    }
+
+    function sourceBookkeepingRow(operation: 'upsert' | 'delete', rowId: string): OutboxRow {
+      return {
+        id: operation === 'delete' ? 1 : 2,
+        table_name: 'spores',
+        row_id: rowId,
+        operation,
+        payload: { id: rowId, machine_id: 'machine-1' },
+        machine_id: 'machine-1',
+        team_id: 'team-a',
+        project_id: 'proj-remove',
+        created_at: 1,
+        sent_at: null,
+      };
+    }
+
+    it('does not mark source rows synced for carried-team delete tombstones', () => {
+      seedSpore('sp-delete');
+
+      markSourceRowsSynced([sourceBookkeepingRow('delete', 'sp-delete')], 123);
+
+      const row = getDatabase()
+        .prepare(`SELECT synced_at FROM spores WHERE id = 'sp-delete'`)
+        .get() as { synced_at: number | null };
+      expect(row.synced_at).toBeNull();
+    });
+
+    it('still marks source rows synced for accepted upserts', () => {
+      seedSpore('sp-upsert');
+
+      markSourceRowsSynced([sourceBookkeepingRow('upsert', 'sp-upsert')], 123);
+
+      const row = getDatabase()
+        .prepare(`SELECT synced_at FROM spores WHERE id = 'sp-upsert'`)
+        .get() as { synced_at: number | null };
+      expect(row.synced_at).toBe(123);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // discardRows
   // ---------------------------------------------------------------------------
 
@@ -348,11 +412,13 @@ describe('team outbox query helpers', () => {
   });
 
   describe('dropPendingForProjects', () => {
-    it('deletes only unsent rows for the given projects', () => {
+    it('deletes only unsent non-delete rows for the given projects', () => {
       enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's1', project_id: 'proj_a' }));
+      enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's1-delete', operation: 'delete', project_id: 'proj_a' }));
       enqueueOutbox(makeOutbox({ table_name: 'spores', row_id: 's2', project_id: 'proj_b' }));
       expect(dropPendingForProjects(['proj_a'])).toBe(1);
-      expect(countPendingForProjects(['proj_a'])).toBe(0);
+      expect(countPendingForProjects(['proj_a'])).toBe(1);
+      expect(listPending().find((row) => row.row_id === 's1-delete')?.operation).toBe('delete');
       expect(countPendingForProjects(['proj_b'])).toBe(1);
       expect(dropPendingForProjects([])).toBe(0);
     });
@@ -362,7 +428,7 @@ describe('team outbox query helpers', () => {
     it('re-enqueues an unsynced row whose only outbox trace is sent-but-unpruned', () => {
       const db = getDatabase();
       const now = epochNow();
-      setProjectSyncMembership(['proj-a']);
+      setProjectSyncMembership([{ project_id: 'proj-a', team_id: 'team-a' }]);
       // An unsynced local row (synced_at NULL) — e.g. reset by the
       // JOIN/drop path — whose prior outbox entry was sent and is inside
       // the 24h retention window.
@@ -381,12 +447,13 @@ describe('team outbox query helpers', () => {
       expect(backfillUnsynced('machine-a')).toBe(1);
       expect(listPending()).toHaveLength(1);
       expect(listPending()[0].row_id).toBe('session-masked');
+      expect(listPending()[0].team_id).toBe('team-a');
     });
 
     it('still skips rows that already have a PENDING outbox entry', () => {
       const db = getDatabase();
       const now = epochNow();
-      setProjectSyncMembership(['proj-a']);
+      setProjectSyncMembership([{ project_id: 'proj-a', team_id: 'team-a' }]);
       db.prepare(
         `INSERT INTO sessions (
           id, agent, project_id, started_at, created_at, machine_id, synced_at
@@ -406,7 +473,7 @@ describe('team outbox query helpers', () => {
     it('re-enqueues previously synced Grove rows', () => {
       const db = getDatabase();
       const now = epochNow();
-      setProjectSyncMembership(['proj-a']);
+      setProjectSyncMembership([{ project_id: 'proj-a', team_id: 'team-a' }]);
       db.prepare(
         `INSERT INTO sessions (
           id, agent, project_id, started_at, created_at, machine_id, synced_at
@@ -419,6 +486,7 @@ describe('team outbox query helpers', () => {
       // 'all' mode re-enqueues regardless of synced_at.
       expect(backfillAll('machine-a')).toBe(1);
       expect(listPending()).toHaveLength(1);
+      expect(listPending()[0].team_id).toBe('team-a');
     });
   });
 
@@ -447,7 +515,7 @@ describe('team outbox query helpers', () => {
 
     it('backfillAllForRebuild re-enqueues a row that already has a PENDING outbox entry (no skip)', () => {
       const db = getDatabase();
-      setProjectSyncMembership(['proj']);
+      setProjectSyncMembership([{ project_id: 'proj', team_id: 'team-a' }]);
       seedSyncedSpore(db, 'spore-pending', 'machine-a');
 
       // Pre-existing PENDING (sent_at IS NULL) outbox entry for that same row —
@@ -462,16 +530,18 @@ describe('team outbox query helpers', () => {
       // A NEW outbox entry now exists for the row (two pending entries total —
       // the duplicate is safe: the worker upsert is keyed by (id, machine_id)).
       const pendingForRow = db.prepare(
-        `SELECT id FROM team_outbox
-         WHERE table_name = 'spores' AND row_id = 'spore-pending' AND sent_at IS NULL`,
-      ).all() as Array<{ id: number }>;
+        `SELECT id, team_id FROM team_outbox
+         WHERE table_name = 'spores' AND row_id = 'spore-pending' AND sent_at IS NULL
+         ORDER BY id`,
+      ).all() as Array<{ id: number; team_id: string | null }>;
       expect(pendingForRow.length).toBe(2);
+      expect(pendingForRow.map((row) => row.team_id)).toContain('team-a');
     });
 
     it("'unsynced' mode STILL skips a row that already has an outbox entry (unchanged)", () => {
       const db = getDatabase();
       const now = epochNow();
-      setProjectSyncMembership(['proj']);
+      setProjectSyncMembership([{ project_id: 'proj', team_id: 'team-a' }]);
       // Source row is UNSYNCED so the only thing that can suppress it is the
       // existing outbox-entry dedup.
       db.prepare(
@@ -496,7 +566,12 @@ describe('team outbox query helpers', () => {
   // ---------------------------------------------------------------------------
 
   describe('countTeamSyncRows', () => {
-    function insertSpore(db: ReturnType<typeof getDatabase>, id: string, machineId: string) {
+    function insertSpore(
+      db: ReturnType<typeof getDatabase>,
+      id: string,
+      machineId: string,
+      projectId = 'proj',
+    ) {
       // Agents table is the only FK dependency for spores in these tests.
       // Insert agent idempotently so multiple calls within one test don't error.
       db.prepare(
@@ -504,8 +579,8 @@ describe('team outbox query helpers', () => {
       ).run();
       db.prepare(
         `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
-         VALUES (?, 'proj', 'test-agent', 'decision', 'active', 'c', 1, ?)`,
-      ).run(id, machineId);
+         VALUES (?, ?, 'test-agent', 'decision', 'active', 'c', 1, ?)`,
+      ).run(id, projectId, machineId);
     }
 
     it('without machineId counts rows across ALL machine_ids', () => {
@@ -558,6 +633,19 @@ describe('team outbox query helpers', () => {
       // Unscoped local would produce false drift
       expect(localAll).toBe(8);
       expect(localAll - cloudSporeCount).toBe(3); // false drift magnitude = legacy rows
+    });
+
+    it('with projectIds counts only rows served by the selected team in this Grove', () => {
+      const db = getDatabase();
+      insertSpore(db, 'spore-served-1', 'machine-a', 'proj-served');
+      insertSpore(db, 'spore-served-2', 'machine-a', 'proj-served');
+      insertSpore(db, 'spore-other', 'machine-a', 'proj-other');
+      insertSpore(db, 'spore-served-other-machine', 'machine-b', 'proj-served');
+
+      const scopedCounts = countTeamSyncRows('machine-a', ['proj-served']);
+
+      expect(scopedCounts.spores).toBe(2);
+      expect(scopedCounts.team_members).toBe(0);
     });
   });
 });

@@ -5,6 +5,7 @@ import { withDatabase } from '@myco/db/client.js';
 import {
   setProjectSyncMembership,
   getSyncableProjectIds,
+  getSyncableProjectTeamId,
   isProjectSyncable,
 } from '@myco/db/queries/team-sync-state.js';
 
@@ -19,7 +20,7 @@ describe('team_sync_membership schema', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(62);
   });
 
-  it('fresh install creates team_sync_membership with a project_id PK', () => {
+  it('fresh install creates team_sync_membership with a project_id PK and carried team_id', () => {
     const db = freshDb();
     const cols = db.prepare(`PRAGMA table_info(team_sync_membership)`).all() as Array<{
       name: string;
@@ -27,6 +28,7 @@ describe('team_sync_membership schema', () => {
     }>;
     const names = cols.map((c) => c.name);
     expect(names).toContain('project_id');
+    expect(names).toContain('team_id');
     expect(cols.find((c) => c.name === 'project_id')?.pk).toBe(1);
   });
 
@@ -85,18 +87,39 @@ describe('team_sync_membership accessors', () => {
   it('replaces the membership set and answers membership queries', () => {
     const db = freshDb();
     withDatabase(db, () => {
-      setProjectSyncMembership(['p1', 'p2']);
+      setProjectSyncMembership([
+        { project_id: 'p1', team_id: 'team-a' },
+        { project_id: 'p2', team_id: 'team-a' },
+      ]);
       expect(new Set(getSyncableProjectIds())).toEqual(new Set(['p1', 'p2']));
+      expect(getSyncableProjectTeamId('p1')).toBe('team-a');
       expect(isProjectSyncable('p1')).toBe(true);
       expect(isProjectSyncable('p3')).toBe(false);
       expect(isProjectSyncable(null)).toBe(false);
 
-      setProjectSyncMembership(['p2']);
+      setProjectSyncMembership([{ project_id: 'p2', team_id: 'team-a' }]);
       expect(getSyncableProjectIds()).toEqual(['p2']);
       expect(isProjectSyncable('p1')).toBe(false);
 
       setProjectSyncMembership([]);
       expect(getSyncableProjectIds()).toEqual([]);
+    });
+  });
+
+  it('stamps legacy pending outbox rows with the reconciled project team', () => {
+    const db = freshDb();
+    withDatabase(db, () => {
+      db.prepare(
+        `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at, sent_at)
+         VALUES ('spores', 'legacy-delete', 'delete', '{}', 'machine-1', NULL, 'p1', 1, NULL)`,
+      ).run();
+
+      setProjectSyncMembership([{ project_id: 'p1', team_id: 'team-a' }]);
+
+      const row = db.prepare(
+        `SELECT team_id FROM team_outbox WHERE row_id = 'legacy-delete'`,
+      ).get() as { team_id: string | null };
+      expect(row.team_id).toBe('team-a');
     });
   });
 });

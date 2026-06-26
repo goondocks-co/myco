@@ -37,7 +37,7 @@ describe('syncRow gate reads team_sync_membership (project-scoped)', () => {
   });
 
   it('enqueues an upsert when the project is a sync member', () => {
-    setProjectSyncMembership(['proj_x']);
+    setProjectSyncMembership([{ project_id: 'proj_x', team_id: 'team_x' }]);
     syncRow('spores', { id: 'sp_gate2', project_id: 'proj_x', created_at: 1 } as never);
     const rows = getDatabase().prepare(`SELECT operation, row_id FROM team_outbox WHERE row_id='sp_gate2'`).all() as Array<Record<string, unknown>>;
     expect(rows.length).toBe(1);

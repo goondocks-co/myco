@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { computeDrift } from '../../../packages/myco/src/daemon/api/team-connect.js';
+import {
+  computeDrift,
+  computeProjectScopedDrift,
+} from '../../../packages/myco/src/daemon/api/team-connect.js';
 
 describe('computeDrift', () => {
   it('reports per-table delta as cloud minus local', () => {
@@ -26,5 +29,16 @@ describe('computeDrift', () => {
     );
     expect(drift.find((d) => d.table === 'spores')).toEqual({ table: 'spores', local: 2, cloud: 2, delta: 0 });
     expect(drift.find((d) => d.table === 'entity_mentions')).toBeUndefined();
+  });
+
+  it('project-scoped summaries keep structural exclusions while also hiding machine-scoped team_members', () => {
+    const drift = computeProjectScopedDrift(
+      { entity_mentions: 5, team_members: 1, spores: 2 },
+      { team_members: 3, spores: 2 },
+    );
+
+    expect(drift.find((d) => d.table === 'spores')).toEqual({ table: 'spores', local: 2, cloud: 2, delta: 0 });
+    expect(drift.find((d) => d.table === 'entity_mentions')).toBeUndefined();
+    expect(drift.find((d) => d.table === 'team_members')).toBeUndefined();
   });
 });

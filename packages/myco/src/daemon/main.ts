@@ -45,6 +45,8 @@ import { migrateLegacyBackups } from '@myco/backup/migrate.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createTeamSelectionHandlers } from './api/team-selection.js';
 import { createListTeamMembersHandler } from './api/team-members.js';
+import { teamRegistry } from '@myco/team/registry.js';
+import { parseOptionalTeamId } from './api/team-request-parsing.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
@@ -1982,17 +1984,53 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/team/registry', async (req) => teamSelectionHandlers.handleListTeams(req));
   server.registerRoute('GET', '/api/team/projects', async (req) => teamSelectionHandlers.handleListProjects(req));
   server.registerRoute('POST', '/api/team/project-membership', async (req) => {
+    const body = (req.body ?? {}) as { action?: unknown; team_id?: unknown; grove_id?: unknown; project_id?: unknown };
+    let affectedGroveId = typeof body.grove_id === 'string' ? body.grove_id : null;
+    let addAfterSave: { groveId: string; projectId: string; teamId: string } | null = null;
+    let removeAfterSave: { groveId: string; projectId: string; teamId: string } | null = null;
+    if (
+      body.action === 'remove' &&
+      typeof body.team_id === 'string' &&
+      typeof body.grove_id === 'string' &&
+      typeof body.project_id === 'string'
+    ) {
+      const existingTeam = teamRegistry.get(body.team_id);
+      if (existingTeam?.projects.some((project) => project.project_id === body.project_id)) {
+        removeAfterSave = { groveId: body.grove_id, projectId: body.project_id, teamId: body.team_id };
+      }
+    } else if (
+      body.action === 'add' &&
+      typeof body.team_id === 'string' &&
+      typeof body.grove_id === 'string' &&
+      typeof body.project_id === 'string'
+    ) {
+      addAfterSave = { groveId: body.grove_id, projectId: body.project_id, teamId: body.team_id };
+    }
     const result = teamSelectionHandlers.handleSetProjectMembership(req);
     if (!result.status || result.status < 400) {
+      if (removeAfterSave) {
+        await teamSync.prepareProjectRemoval(
+          runtimeCache,
+          removeAfterSave.groveId,
+          removeAfterSave.projectId,
+          removeAfterSave.teamId,
+        );
+      } else if (addAfterSave) {
+        await teamSync.prepareProjectAddition(
+          runtimeCache,
+          addAfterSave.groveId,
+          addAfterSave.projectId,
+          addAfterSave.teamId,
+        );
+      }
       // Reconcile the Grove that actually owns the (re)assigned project, not the
       // ambient request Grove — membership is machine-wide on the Team page, so a
       // project can be assigned/removed from any Grove. reconcileGrove targets
-      // that Grove (a no-op when the Grove lives in another daemon's home) and runs the
+      // that Grove (a no-op when the Grove is not registered in this home) and runs the
       // full backfill + flush so an assigned project starts syncing immediately
       // and a removed project's rows are purged immediately.
-      const groveId = (req.body as { grove_id?: string } | undefined)?.grove_id ?? null;
-      if (groveId) {
-        await teamSync.reconcileGrove(runtimeCache, groveId);
+      if (affectedGroveId) {
+        await teamSync.reconcileGrove(runtimeCache, affectedGroveId);
       }
     }
     return result;
@@ -2016,6 +2054,23 @@ export async function main(): Promise<void> {
     return result;
   });
   server.registerRoute('POST', '/api/team/forget', async (req) => {
+    const body = (req.body ?? {}) as { team_id?: unknown };
+    const teamId = typeof body.team_id === 'string' ? body.team_id.trim() : '';
+    if (teamId) {
+      const preparation = await teamSync.prepareTeamForget(runtimeCache, teamId);
+      if (preparation.pendingDeletes > 0 || preparation.flushErrors > 0) {
+        return {
+          status: 503,
+          body: {
+            error: 'team_forget_cleanup_pending',
+            enqueued: preparation.enqueued,
+            flush_errors: preparation.flushErrors,
+            pending_deletes: preparation.pendingDeletes,
+            reset: preparation.reset,
+          },
+        };
+      }
+    }
     const result = await teamHandlers.handleForget(req);
     if (!result.status || result.status < 400) {
       await teamSync.reconcileClient(req.requestContext);
@@ -2100,7 +2155,9 @@ export async function main(): Promise<void> {
   // reconcile. Retired the old drift-reconciler endpoint in favour of this.
   server.registerRoute('POST', '/api/team/rebuild', async (req) => {
     await reconcileTeamRoute(req);
-    const result = await teamSync.rebuildFromLocal(req.requestContext);
+    const parsedTeamId = parseOptionalTeamId(req.body);
+    if (!parsedTeamId.ok) return { status: 400, body: { error: parsedTeamId.error } };
+    const result = await teamSync.rebuildFromLocal(runtimeCache, req.requestContext, parsedTeamId.teamId);
     return { status: result.error ? 502 : 200, body: { ok: !result.error, ...result } };
   });
   // POST /api/team/reconcile — on-demand symmetric reconcile. An immediacy

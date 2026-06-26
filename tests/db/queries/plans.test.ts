@@ -229,8 +229,8 @@ describe('plan query helpers', () => {
       // membership in team_sync_membership.
       setTeamSyncEnabled(true);
       getDatabase().prepare(
-        'INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)',
-      ).run(projectId);
+        'INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)',
+      ).run(projectId, 'team-a');
 
       deletePlan(data.id, projectScope(projectId as GroveProjectId));
 
