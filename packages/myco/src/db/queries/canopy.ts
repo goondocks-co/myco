@@ -621,20 +621,20 @@ export function selectPendingCanopyDescribe(
 
 /**
  * Fetch a single canopy_entries row by (projectId, path).
- * Returns the full CanopyEntry or undefined if no row exists.
+ * Returns the full CanopyEntry or null if no row exists.
  * Bind order: (projectId, path).
  */
 export function getCanopyEntryByPath(
   db: Database,
   projectId: string,
   entryPath: string,
-): CanopyEntry | undefined {
+): CanopyEntry | null {
   return db.prepare(
     `SELECT *
        FROM canopy_entries
       WHERE project_id = ? AND path = ?
       LIMIT 1`,
-  ).get(projectId, entryPath) as CanopyEntry | undefined;
+  ).get(projectId, entryPath) as CanopyEntry | null;
 }
 
 /**
@@ -642,18 +642,18 @@ export function getCanopyEntryByPath(
  * Used by canopy_describe_write to run the post-process gate without
  * pulling the full row. Bind order: (projectId, path).
  *
- * Returns undefined when the path is unknown (triggers unknown_path rejection).
+ * Returns null when the path is unknown (triggers unknown_path rejection).
  */
 export function getCanopyEntryExports(
   db: Database,
   projectId: string,
   entryPath: string,
-): { exports_json: string | null } | undefined {
+): { exports_json: string | null } | null {
   return db.prepare(
     `SELECT exports_json
        FROM canopy_entries
       WHERE project_id = ? AND path = ?`,
-  ).get(projectId, entryPath) as { exports_json: string | null } | undefined;
+  ).get(projectId, entryPath) as { exports_json: string | null } | null;
 }
 
 /**

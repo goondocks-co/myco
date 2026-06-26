@@ -215,7 +215,6 @@ describe('setCanopyDescription', () => {
   it('resets embedded to 0 when description is written', () => {
     const db = getDatabase();
     seedCanopyEntry(db, { project_id: PROJECT_A, path: 'emb.ts', embedded: 1 });
-    db.prepare('UPDATE canopy_entries SET embedded = 1 WHERE path = ?').run('emb.ts');
     let row = db.prepare('SELECT embedded FROM canopy_entries WHERE path = ?').get('emb.ts') as { embedded: number };
     expect(row.embedded).toBe(1);
 
