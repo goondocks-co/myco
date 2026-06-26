@@ -24,6 +24,7 @@ export {
   versionsDir,
   versionDir,
   versionBinaryPath,
+  managedSkillsDir,
 } from '../../scripts/managed-paths.mjs';
 
 /** Shape of the install marker written to `<myco-home>/install.json`. */

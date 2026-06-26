@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/select-binary.mjs",
-    "codegen": "tsx scripts/gen-hook-config.ts && tsx scripts/gen-agent-definitions.ts && tsx scripts/gen-static-assets.ts && tsx scripts/gen-ui-assets.ts && node scripts/gen-templates.mjs",
+    "codegen": "tsx scripts/gen-hook-config.ts && tsx scripts/gen-agent-definitions.ts && tsx scripts/gen-static-assets.ts && tsx scripts/gen-ui-assets.ts && node scripts/gen-templates.mjs && node scripts/gen-skills.mjs",
     "build": "npm run build:ui && npm run codegen && node scripts/clean-core.mjs && npm run build:binary && npm run build:verify",
     "build:binaries": "node scripts/clean-core.mjs && node scripts/build-all-targets.mjs",
     "build:binary": "node scripts/build-single-target.mjs",

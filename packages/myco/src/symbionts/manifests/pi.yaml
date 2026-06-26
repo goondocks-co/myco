@@ -23,7 +23,9 @@ registration:
   # mcpTarget is omitted; tools are wired in the extension itself.
   globalMcpTarget: null
   skillsTarget: .agents/skills
-  globalSkillsTarget: ~/.pi/agent/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.pi/agent/skills
   # No instructionsFile — pi reads AGENTS.md natively via context files
 capabilities:
   # Tool transport: neither `mcp` nor the session-start `cli` directive. Pi's

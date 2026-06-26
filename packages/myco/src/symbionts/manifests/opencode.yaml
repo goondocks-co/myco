@@ -27,7 +27,9 @@ registration:
   mcpServersKey: mcp
   settingsTarget: opencode.json
   skillsTarget: .agents/skills
-  globalSkillsTarget: ~/.config/opencode/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.config/opencode/skills
   # No instructionsFile — opencode reads AGENTS.md natively
 capabilities:
   sessionStartInjection: true

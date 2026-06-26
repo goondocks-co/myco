@@ -40,7 +40,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.gemini/config/plugins/myco/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.gemini/antigravity/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.gemini/antigravity/skills"
+      ],
       "pluginManifestTarget": ".agents/plugins/myco/plugin.json",
       "globalPluginManifestTarget": "~/.gemini/config/plugins/myco/plugin.json",
       "hooksFormat": "plugin-file",
@@ -682,7 +685,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.codex/config.toml"
         }
       ],
-      "globalSkillsTarget": "~/.codex/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.codex/skills"
+      ],
       "globalSettingsTarget": "~/.codex/config.toml",
       "hooksFormat": "json",
       "mcpTarget": ".codex/config.toml",
@@ -792,7 +798,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "serversKey": "servers"
         }
       ],
-      "globalSkillsTarget": "~/.copilot/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.copilot/skills"
+      ],
       "globalSettingsTarget": "~/.copilot/hooks/myco-hooks.json",
       "hooksFormat": "json",
       "mcpTarget": ".vscode/mcp.json",
@@ -1058,7 +1067,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.cursor/mcp.json"
         }
       ],
-      "globalSkillsTarget": "~/.cursor/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.cursor/skills"
+      ],
       "globalSettingsTarget": "~/.cursor/hooks.json",
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
@@ -1174,7 +1186,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.config/opencode/opencode.json"
         }
       ],
-      "globalSkillsTarget": "~/.config/opencode/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.config/opencode/skills"
+      ],
       "hooksFormat": "plugin-file",
       "pluginPackageTarget": ".opencode/package.json",
       "mcpTarget": "opencode.json",
@@ -1263,7 +1278,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "hooksTarget": ".pi/extensions/myco/index.ts",
       "globalHooksTarget": "~/.pi/agent/extensions/myco/index.ts",
       "globalMcpTarget": null,
-      "globalSkillsTarget": "~/.pi/agent/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.pi/agent/skills"
+      ],
       "hooksFormat": "plugin-file",
       "pluginPackageTarget": ".pi/extensions/myco/package.json",
       "mcpFormat": "json",
@@ -1349,7 +1367,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.codeium/windsurf/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.codeium/windsurf/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.codeium/windsurf/skills"
+      ],
       "globalSettingsTarget": null,
       "hooksFormat": "json",
       "mcpFormat": "json",

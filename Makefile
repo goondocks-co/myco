@@ -1,4 +1,4 @@
-.PHONY: build build-all build-packages build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-packages build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -211,6 +211,23 @@ dev-link: dev-build
 	@chmod 0644 $(PWD)/.myco/runtime.home
 	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"
 	@echo "✓ $(PWD)/.myco/runtime.home set to $(HOME)/.myco-dev"
+	@# Operator-driven coexistence: with prod (~/.myco) + dev (~/.myco-dev) daemons
+	@# on one machine, exactly one owns machine-global agent config; the other
+	@# defers. `make dev-link` is the dogfood setup, so claim it for DEV — the
+	@# contributor's most-recent build manages global skills/hooks/MCP while you
+	@# dogfood. Hand ownership back to the released daemon with `make dev-claim-prod`.
+	@# The claim model is deliberately operator-driven (no daemon self-claims); the
+	@# Makefile is the contributor automation that performs the operator step.
+	@# --force takes ownership even if prod currently holds it. MYCO_RUN_REDIRECTED=1
+	@# + MYCO_TRAMPOLINED=1 bypass the repo's runtime.command/runtime.home redirect so
+	@# the claim lands under the dev home regardless of cwd.
+	@if command -v myco >/dev/null 2>&1; then \
+		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" MYCO_CLAIMS_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
+			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config while you dogfood (use 'make dev-claim-prod' to hand back)" \
+			|| echo "⚠ could not claim symbiont-config for dev — run: MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force"; \
+	else \
+		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force'"; \
+	fi
 	@# Sweep any machine-scope pin: dev mode uses a PROJECT-scope pin (above), so a
 	@# leftover ~/.myco/runtime.command would shadow it from outside the repo.
 	@if [ -f $(HOME)/.myco/runtime.command ]; then \
@@ -298,18 +315,64 @@ dev-unlink:
 
 dev-link-worktree: dev-build
 	@mkdir -p $(PWD)/.myco
-	@# Pin THIS worktree to its own freshly-built binary. Do NOT touch the
-	@# shared ~/.local/bin/myco-dev symlink — the main checkout and other
-	@# agents rely on it. `.myco/runtime.command` is gitignored, so
-	@# `git worktree add` never carries the main checkout's pin; without this
-	@# the worktree falls back to prod `myco`. The global launcher + bin/myco-run
-	@# resolve the binary by walking up from cwd, so hooks, MCP, and CLI in this
-	@# worktree all dispatch to the worktree build. Routing detail + the
-	@# shared-vault schema caveat: see the `dogfood-worktree` skill.
-	@printf '%s/packages/myco-%s/bin/myco\n' "$(PWD)" "$(HOST_TARGET)" > $(PWD)/.myco/runtime.command
-	@echo "✓ $(PWD)/.myco/runtime.command pinned to packages/myco-$(HOST_TARGET)/bin/myco"
-	@echo "  (worktree-local pin; shared ~/.local/bin/myco-dev symlink unchanged)"
+	@mkdir -p $(HOME)/.myco-dev
+	@# Seed the dev home config only if absent so a re-link never clobbers a
+	@# contributor's pinned settings (e.g. daemon.port).
+	@test -f $(HOME)/.myco-dev/config.yaml || printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
+	@# Pin THIS worktree to its own freshly-built binary THROUGH A HOME-SETTING
+	@# WRAPPER — not the raw binary. Pinning the raw binary (the old behavior) ran
+	@# it under the ambient MYCO_HOME (prod ~/.myco): a global-install command from
+	@# the worktree (`myco doctor --fix` / `myco update`) then looked like the prod
+	@# claim owner (daemonIdentity == resolved MYCO_HOME) and wrote machine-global
+	@# agent config from the transient worktree packageRoot — repointing the host's
+	@# real hooks/MCP/skills at a binary that vanishes on worktree deletion. The
+	@# wrapper gives the worktree a distinct MYCO_HOME (~/.myco-dev) + shared
+	@# MYCO_CLAIMS_HOME (~/.myco), mirroring full dev-link, so the worktree binary
+	@# DEFERS global writes via the operator-asserted prod symbiont-config claim
+	@# (set below) — home-separation + claims, the same mechanism the standalone
+	@# dev daemon uses. The MYCO_TRAMPOLINED loop guard in the launch preamble lets
+	@# the wrapper exec the binary without recursing. The shared
+	@# ~/.local/bin/myco-dev symlink is untouched; the wrapper is worktree-local
+	@# and gitignored. Routing + shared-vault caveat: see the `dogfood-worktree` skill.
+	@rm -f $(PWD)/.myco/runtime-exec
+	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexport MYCO_CLAIMS_HOME="$$HOME/.myco"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(PWD)/.myco/runtime-exec
+	@chmod +x $(PWD)/.myco/runtime-exec
+	@printf '%s/.myco/runtime-exec\n' "$(PWD)" > $(PWD)/.myco/runtime.command
+	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
+	@chmod 0644 $(PWD)/.myco/runtime.home
+	@# Claim symbiont-config for DEV so this worktree's dev daemon
+	@# (MYCO_HOME=~/.myco-dev) owns + manages machine-global agent config while you
+	@# dogfood (same as full dev-link). Hand back with `make dev-claim-prod`.
+	@# --force takes ownership even if prod holds it; MYCO_RUN_REDIRECTED=1 +
+	@# MYCO_TRAMPOLINED=1 bypass the repo's runtime.command/runtime.home redirect.
+	@if command -v myco >/dev/null 2>&1; then \
+		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" MYCO_CLAIMS_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
+			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — worktree dev daemon manages global agent config while dogfooding (use 'make dev-claim-prod' to hand back)" \
+			|| echo "⚠ could not claim symbiont-config for dev — run: MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force"; \
+	else \
+		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force'"; \
+	fi
+	@echo "✓ $(PWD)/.myco/runtime.command pinned to worktree wrapper (.myco/runtime-exec → packages/myco-$(HOST_TARGET)/bin/myco)"
+	@echo "✓ worktree runs under MYCO_HOME=~/.myco-dev, MYCO_CLAIMS_HOME=~/.myco (shared ~/.local/bin/myco-dev symlink unchanged)"
 
 dev-unlink-worktree:
 	@rm -f $(PWD)/.myco/runtime.command
-	@echo "✓ $(PWD)/.myco/runtime.command removed — worktree falls back to the resolution chain"
+	@rm -f $(PWD)/.myco/runtime.home
+	@rm -f $(PWD)/.myco/runtime-exec
+	@echo "✓ $(PWD)/.myco/runtime.command + runtime.home + wrapper removed — worktree falls back to the resolution chain"
+
+# Reassign the machine-global symbiont-config claim between the coexisting prod
+# (~/.myco) and dev (~/.myco-dev) daemons. Exactly one owns global agent config
+# (skills/hooks/MCP); the other defers. `make dev-link` claims it for DEV by
+# default (dogfooding the newest build); these move it explicitly without a
+# re-link. MYCO_RUN_REDIRECTED=1 + MYCO_TRAMPOLINED=1 bypass the repo's
+# runtime.command/runtime.home redirect so the claim lands under the home named.
+dev-claim-prod:
+	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco" MYCO_CLAIMS_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force \
+		&& echo "✓ prod (~/.myco) owns symbiont-config — the released daemon manages global agent config; the dev daemon defers" \
+		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force"
+
+dev-claim-dev:
+	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" MYCO_CLAIMS_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force \
+		&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config; prod defers" \
+		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco-dev MYCO_CLAIMS_HOME=~/.myco myco subsystem claim symbiont-config --force"
