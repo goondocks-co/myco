@@ -60,7 +60,7 @@ const TOOLS_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'agent', 'too
 const ALLOWLIST: readonly { file: string; why: string }[] = [
   {
     file: 'packages/myco/src/agent/tools/skill-tools.ts',
-    why: 'pre-existing inline SQL (1 site); out of scope for the canopy-describe data-access migration; tracked for a follow-up migration',
+    why: 'pre-existing inline SQL (3 `.transaction(` sites); out of scope for the canopy-describe data-access migration; tracked for a follow-up migration',
   },
 ];
 
@@ -68,6 +68,11 @@ const ALLOWLISTED_FILES = new Set(ALLOWLIST.map((entry) => entry.file));
 
 // ---------------------------------------------------------------------------
 // Forbidden patterns — raw SQLite execution surfacing in a tool file.
+//
+// Note: the scan is intentionally line-based (mirrors no-anchor-as-tenancy.test.ts).
+// A multi-line split such as `getDatabase()\n  .exec(` would evade the chained-exec
+// rule — accepted narrow limitation; `.prepare(` and `.transaction(` are caught
+// regardless of what precedes them on the line, so the high-signal patterns hold.
 // ---------------------------------------------------------------------------
 
 const FORBIDDEN_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
