@@ -28,6 +28,7 @@ import {
   getCanopyEntryExports,
   setCanopyDescription,
   listCanopyEntries,
+  chargeDescribeAttempts,
 } from '@myco/db/queries/canopy.js';
 import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { textResult, type VaultToolDeps } from './types.js';
@@ -60,19 +61,6 @@ const CANOPY_LIST_MAX_LIMIT = 500;
 // cortex.canopy.llm.max_description_chars default. Centralised here so
 // the harness reads it without round-tripping through MycoConfig.
 const MAX_DESCRIPTION_CHARS = 180;
-
-// Increment-at-fetch: every row a pending fetch hands to the harness counts
-// one attempt, whether the model later fails, the sink rejects the write, or
-// the row is filtered as sensitive. Rows at the cap fall out of the pending
-// predicate until the mechanical scanner touches them again
-// (canopy/scanner/upsert.ts resets describe_attempts to 0).
-// Task A7 moves this into a chargeDescribeAttempts query function.
-const INCREMENT_ATTEMPTS_SQL = `
-  UPDATE canopy_entries
-  SET describe_attempts = describe_attempts + 1
-  WHERE project_id = ?
-    AND path IN (SELECT value FROM json_each(?))
-`;
 
 async function readFirstLines(absolutePath: string, limit: number): Promise<string> {
   let content: string;
@@ -239,7 +227,28 @@ export function createCanopyTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
-  return [canopyDescribeNext, canopyDescribeWrite, canopyListTool];
+  const canopyDescribeCharge = tool(
+    'canopy_describe_charge',
+    'Record one describe attempt for canopy rows that were evaluated but produced no accepted description. Connectivity failures must NOT be passed here.',
+    {
+      items: z.array(z.object({ path: z.string() })),
+    },
+    async (args) => {
+      const projectId = resolveProjectId(deps);
+      if (!projectId) {
+        return textResult({ charged: 0 });
+      }
+      const charged = chargeDescribeAttempts(
+        getDatabase(),
+        projectId,
+        args.items.map((i) => i.path),
+      );
+      return textResult({ charged });
+    },
+    { annotations: {} },
+  );
+
+  return [canopyDescribeNext, canopyDescribeWrite, canopyListTool, canopyDescribeCharge];
 }
 
 // Categorise post-process rejections so the agent can react (retry vs.

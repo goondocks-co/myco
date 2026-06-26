@@ -620,6 +620,30 @@ export function selectPendingCanopyDescribe(
 }
 
 /**
+ * Charge one describe attempt against each of `paths` for the given project.
+ * Called by canopy_describe_charge after the harness has evaluated a batch:
+ * every path passed here is a row the model ran against but that produced no
+ * accepted description (content failure or skip). Connectivity failures must
+ * never reach this function — charging them would burn the per-row retry
+ * budget during a provider outage. json_each fans the path list into the
+ * IN-clause in a single statement. Returns the number of rows charged.
+ * Bind order: (projectId, JSON path array).
+ */
+export function chargeDescribeAttempts(
+  db: Database,
+  projectId: string,
+  paths: readonly string[],
+): number {
+  const result = db.prepare(
+    `UPDATE canopy_entries
+        SET describe_attempts = describe_attempts + 1
+      WHERE project_id = ?
+        AND path IN (SELECT value FROM json_each(?))`,
+  ).run(projectId, JSON.stringify(paths));
+  return Number(result.changes ?? 0);
+}
+
+/**
  * Fetch a single canopy_entries row by (projectId, path).
  * Returns the full CanopyEntry or null if no row exists.
  * Bind order: (projectId, path).

@@ -123,3 +123,9 @@ phases:
       tool: canopy_describe_write
       argMap:
         path: "{{ item.path }}"
+
+    # Charge one describe attempt per content-failed/skip item at end of phase.
+    # Connectivity-unavailable items are excluded by the map-phase hook, so a
+    # provider outage never burns the per-row retry budget.
+    accounting:
+      tool: canopy_describe_charge

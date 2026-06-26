@@ -108,6 +108,12 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     usage: {},
   };
 
+  // Raw source items whose disposition was a genuine content failure or skip
+  // (model ran, produced no accepted write). Written items and
+  // connection-unavailable items are never pushed here. Flushed to the
+  // accounting tool once after the loop.
+  const chargeItems: unknown[] = [];
+
   const normalizedItemPrompt = normalizeTemplateBraces(phase.item.prompt);
   const sharedItemCtx: {
     argMap: Record<string, unknown>;
@@ -242,6 +248,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       if ((phase.onItemError ?? 'skip') === 'abort') {
         throw err;
       }
+      chargeItems.push(item);
       result.failed += 1;
       continue;
     } finally {
@@ -252,16 +259,26 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     if (sinkOutcome?.ok === true) {
       result.written += 1;
     } else if (sinkOutcome) {
+      chargeItems.push(item);
       result.skipped += 1;
       const reason = sinkOutcome.reason ?? 'unknown';
       result.skipReasons[reason] = (result.skipReasons[reason] ?? 0) + 1;
     } else {
+      chargeItems.push(item);
       result.skipped += 1;
       result.skipReasons.no_terminal_tool = (result.skipReasons.no_terminal_tool ?? 0) + 1;
     }
   }
   } finally {
     if (scope) await scope.close();
+  }
+
+  // Charge attempts for the content-failed/skip items. Reached even after a
+  // connection `break`, so pre-outage content failures are still charged
+  // while the outage item (never pushed) is not.
+  if (phase.accounting && chargeItems.length > 0) {
+    const accountingTool = allTools.find((t) => t.name === phase.accounting!.tool);
+    if (accountingTool) await (accountingTool as any).handler({ items: chargeItems });
   }
 
   result.usage = aggregateUsage(itemUsages);

@@ -208,6 +208,7 @@ export const PhaseDefinitionSchema = z.object({
   source: MapPhaseSourceSchema.optional(),
   item: MapPhaseItemSchema.optional(),
   sink: MapPhaseSinkSchema.optional(),
+  accounting: z.object({ tool: z.string().min(1) }).optional(),
 }).refine(
   (p) => p.mode !== 'map' || (p.source && p.item && p.sink),
   { message: 'mode: map requires source, item, and sink blocks' },
