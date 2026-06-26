@@ -10,4 +10,12 @@ describe('mapResultToPhaseStatus', () => {
     const r = { providerUnavailable: true, written: 3, failed: 0, skipped: 0 } as any;
     expect(mapResultToPhaseStatus(r)).toBe('completed');
   });
+  test('all content failed, no outage → failed', () => {
+    const r = { providerUnavailable: false, itemCount: 3, written: 0, failed: 3, skipped: 0 } as any;
+    expect(mapResultToPhaseStatus(r)).toBe('failed');
+  });
+  test('outage wins over all-content-failed precedence → skipped', () => {
+    const r = { providerUnavailable: true, itemCount: 3, written: 0, failed: 0, skipped: 0 } as any;
+    expect(mapResultToPhaseStatus(r)).toBe('skipped');
+  });
 });
