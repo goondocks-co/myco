@@ -17,6 +17,7 @@ import { vi } from '../helpers/vi-shim.js';
 
 const enqueueBatchByGrove = new Map<string, Array<{ count: number }>>();
 const connectMock = vi.fn();
+const rebuildCallsByGrove = new Map<string, number>();
 
 // Track which TeamSyncClient was hit per Grove so we can assert that the
 // flush actually fanned out and that each invocation drained that
@@ -46,6 +47,9 @@ mock.module('@myco/daemon/team-sync.js', () => ({
       }
       return { accepted: records.length, rejected: [] };
     };
+    rebuild = async () => {
+      rebuildCallsByGrove.set(this.groveTag, (rebuildCallsByGrove.get(this.groveTag) ?? 0) + 1);
+    };
     getCollectiveStatus = vi.fn();
     getMcpToken = vi.fn(() => null);
     getMcpEndpoint = vi.fn(() => null);
@@ -57,7 +61,7 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { withDatabase } from '@myco/db/client.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
-import { createGrove, type GroveRecord } from '@myco/grove/registry.js';
+import { createGrove, registerProjectInGrove, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveGroveDir, resolveTeamSecretsPath } from '@myco/grove/paths.js';
 import { enqueueOutbox, listPending } from '@myco/db/queries/team-outbox.js';
 import { getSyncableProjectIds } from '@myco/db/queries/team-sync-state.js';
@@ -88,6 +92,7 @@ describe('team-sync flush fan-out across Groves', () => {
     process.env.MYCO_TEAM_LEGACY_HOMES = '';
     logger = new DaemonLogger(path.join(tmpDir, 'logs'), { level: 'error' });
     enqueueBatchByGrove.clear();
+    rebuildCallsByGrove.clear();
     projectByGrove.clear();
     connectMock.mockReset();
     connectMock.mockResolvedValue({});
@@ -108,6 +113,16 @@ describe('team-sync flush fan-out across Groves', () => {
   // (not just grove.yaml). The team worker_url embeds the grove id so the mock
   // above can still route enqueueBatch back per Grove via the `grove-<id>` tag.
   const projectByGrove = new Map<string, string>();
+
+  function registerProjectForGrove(grove: GroveRecord, projectId: string, name = grove.name): void {
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId, projectName: name, projectRoot },
+      mycoHome,
+    );
+  }
 
   function createGroveWithTeamConfig(name: string): GroveRecord {
     const grove = createGrove(name, mycoHome);
@@ -131,6 +146,7 @@ describe('team-sync flush fan-out across Groves', () => {
 
     const projectId = createProjectId();
     projectByGrove.set(grove.id, projectId);
+    registerProjectForGrove(grove, projectId, name);
     const teamId = createTeamId();
     teamRegistry.save(
       {
@@ -184,6 +200,22 @@ describe('team-sync flush fan-out across Groves', () => {
       db.prepare(
         `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
          VALUES (?, ?, 'user', 'decision', 'x', 1, 'machine-1')`,
+      ).run(id, projectId);
+    });
+  }
+
+  /** Seed a previously synced source spore so rebuild must use all-mode re-enqueue. */
+  function seedSyncedSpore(grove: GroveRecord, cache: GroveRuntimeCache, id: string): void {
+    const dbPath = path.join(mycoHome, 'groves', grove.id, 'myco.db');
+    const db = cache.getDatabase(dbPath);
+    const projectId = projectByGrove.get(grove.id)!;
+    withDatabase(db, () => {
+      db.prepare(
+        `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
+      ).run();
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id, synced_at)
+         VALUES (?, ?, 'user', 'decision', 'x', 1, 'machine-1', 123)`,
       ).run(id, projectId);
     });
   }
@@ -460,6 +492,99 @@ describe('team-sync flush fan-out across Groves', () => {
     // the owning daemon's flush-tick backstop covers it.
     await teamSync.reconcileGrove(cache, 'grove_ffffffffffffffffffffffffffffffff');
     expect(enqueueBatchByGrove.size).toBe(0);
+
+    cache.closeAll();
+  });
+
+  it('selected-team rebuild re-enqueues every owned Grove in the selected team', async () => {
+    const groveOne = createGrove('Shared A', mycoHome);
+    const groveTwo = createGrove('Shared B', mycoHome);
+    const staleGrove = createGrove('Shared stale registry Grove', mycoHome);
+    ensureGroveDatabase(groveOne.id, mycoHome);
+    ensureGroveDatabase(groveTwo.id, mycoHome);
+    const projectOne = createProjectId();
+    const projectTwo = createProjectId();
+    projectByGrove.set(groveOne.id, projectOne);
+    projectByGrove.set(groveTwo.id, projectTwo);
+    registerProjectForGrove(groveOne, projectOne, 'Shared A Project');
+    registerProjectForGrove(groveTwo, projectTwo, 'Shared B Project');
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Shared Team',
+      worker_url: 'https://grove-shared.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [
+        { grove_id: staleGrove.id, project_id: projectOne },
+        { grove_id: groveTwo.id, project_id: projectTwo },
+      ],
+    });
+    teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'secret-shared');
+    const cache = new GroveRuntimeCache();
+    seedSyncedSpore(groveOne, cache, 'sp-rebuild-a');
+    seedSyncedSpore(groveTwo, cache, 'sp-rebuild-b');
+
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: false, worker_url: undefined } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir: bootVaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
+
+    const result = await teamSync.rebuildFromLocal(cache, buildGroveCtx(groveOne), teamId);
+
+    expect(result.error).toBeUndefined();
+    expect(rebuildCallsByGrove.get('shared')).toBe(1);
+    expect(pendingCount(groveOne, cache)).toBe(0);
+    expect(pendingCount(groveTwo, cache)).toBe(0);
+    const handedOff = enqueueBatchByGrove.get('shared') ?? [];
+    expect(handedOff.reduce((sum, batch) => sum + batch.count, 0)).toBeGreaterThanOrEqual(2);
+
+    cache.closeAll();
+  });
+
+  it('prepareTeamForget reports pending delete cleanup when the team client is unavailable', async () => {
+    const grove = createGrove('Forget Offline', mycoHome);
+    const staleGrove = createGrove('Forget Offline stale registry Grove', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+    const projectId = createProjectId();
+    projectByGrove.set(grove.id, projectId);
+    registerProjectForGrove(grove, projectId, 'Forget Offline Project');
+    const teamId = createTeamId();
+    teamRegistry.save({
+      team_id: teamId,
+      name: 'Offline Team',
+      worker_url: 'https://grove-offline.example.workers.dev',
+      domain: null,
+      mcp_endpoint: null,
+      created_at: new Date().toISOString(),
+      projects: [{ grove_id: staleGrove.id, project_id: projectId }],
+    });
+    const cache = new GroveRuntimeCache();
+    seedSyncedSpore(grove, cache, 'sp-forget-offline');
+
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: { team: { enabled: false, worker_url: undefined } },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir: bootVaultDir,
+      serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
+
+    const result = await teamSync.prepareTeamForget(cache, teamId);
+
+    expect(result.enqueued).toBeGreaterThanOrEqual(1);
+    expect(result.pendingDeletes).toBeGreaterThanOrEqual(1);
+    expect(teamRegistry.get(teamId)).not.toBeNull();
 
     cache.closeAll();
   });

@@ -167,8 +167,8 @@ describe('migration v55 -> v56: authorship-gated plan cleanup', () => {
          ON CONFLICT (rowid_guard) DO UPDATE SET enabled = 1`,
     ).run();
     db.prepare(
-      `INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)`,
-    ).run(PROJECT);
+      `INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)`,
+    ).run(PROJECT, 'team-a');
 
     createSchema(db, LOCAL);
 

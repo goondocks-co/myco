@@ -13,7 +13,7 @@
  * registry and Grove helpers default to `resolveMycoHome()` internally.
  */
 
-import { teamRegistry, withProjectAdded, withProjectRemoved } from '@myco/team/registry.js';
+import { findProjectRef, teamRegistry, withProjectAdded, withProjectRemoved } from '@myco/team/registry.js';
 import { listGroves } from '@myco/grove/registry.js';
 import { assertAssignableProject, ProjectGroveMissingError } from '@myco/grove/project-tenancy.js';
 import { listGroveSummaries } from './groves.js';
@@ -97,9 +97,12 @@ export function createTeamSelectionHandlers() {
    * On `add` the project is validated through the tenancy authority
    * (`assertAssignableProject`): a team is a global construct, so it may only
    * reference a project that resolves to a grove, and the caller's claimed
-   * `grove_id` must match that resolved grove. `remove` skips the check — a
-   * project being removed may already be grove-less (its grove was
-   * deregistered), and we must still let it leave the team.
+   * `grove_id` must match that resolved grove. `remove` uses the same current
+   * home tenancy when available; team.json owns project -> team membership by
+   * portable project_id, while the current home's Grove registry owns local
+   * placement. If the project is no longer registered, removal falls back to
+   * the stored ref so legacy/grove-less rows still require the caller to name
+   * their last known Grove.
    */
   function handleSetProjectMembership(req: RouteRequest): RouteResponse {
     const body = (req.body ?? {}) as SetProjectMembershipBody;
@@ -137,6 +140,21 @@ export function createTeamSelectionHandlers() {
       }
       teamRegistry.save(withProjectAdded(team, { grove_id: groveId, project_id: projectId }));
     } else {
+      const existingRef = findProjectRef(team, projectId);
+      try {
+        const tenancy = assertAssignableProject(projectId);
+        if (tenancy.grove.id !== groveId) {
+          return { status: 400, body: { error: 'grove_mismatch', grove_id: tenancy.grove.id } };
+        }
+      } catch (err) {
+        if (err instanceof ProjectGroveMissingError) {
+          if (existingRef && existingRef.grove_id !== groveId) {
+            return { status: 400, body: { error: 'grove_mismatch', grove_id: existingRef.grove_id } };
+          }
+        } else {
+          throw err;
+        }
+      }
       teamRegistry.save(withProjectRemoved(team, projectId));
     }
 

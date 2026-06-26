@@ -31,6 +31,7 @@ const {
   localPartitionMock,
   pendingRowIdsForPartitionMock,
   enqueueOutboxMock,
+  enqueueProjectRemovalTombstonesMock,
   forEachGroveMock,
 } = vi.hoisted(() => ({
   enqueueBatchMock: vi.fn(),
@@ -44,6 +45,7 @@ const {
   localPartitionMock: vi.fn(() => []),
   pendingRowIdsForPartitionMock: vi.fn(() => new Set<string>()),
   enqueueOutboxMock: vi.fn(),
+  enqueueProjectRemovalTombstonesMock: vi.fn(() => ({ enqueued: 0, reset: 0 })),
   forEachGroveMock: vi.fn(),
 }));
 
@@ -61,6 +63,7 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   purgePendingOutbox: purgePendingOutboxMock,
   purgeNonMemberOutbox: purgeNonMemberOutboxMock,
   enqueueOutbox: enqueueOutboxMock,
+  enqueueProjectRemovalTombstones: enqueueProjectRemovalTombstonesMock,
   localPartition: localPartitionMock,
   pendingRowIdsForPartition: pendingRowIdsForPartitionMock,
   sanitizeSyncPayload: (_table: string, row: object) => row,
@@ -163,11 +166,20 @@ describe('team-sync reconcile triggers', () => {
 
   /** Register a team owning `projectIds` in a fresh grove; returns the grove + ids. */
   async function registerGroveWithProjects(name: string, projectIds: string[]) {
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
     const grove = createGrove(name, mycoHome);
+    for (const projectId of projectIds) {
+      const projectRoot = path.join(tmpDir, 'projects', projectId);
+      fs.mkdirSync(projectRoot, { recursive: true });
+      registerProjectInGrove(
+        grove.id,
+        { projectId, projectName: projectId, projectRoot },
+        mycoHome,
+      );
+    }
     const teamId = createTeamId();
     teamRegistry.save({
       team_id: teamId,
@@ -211,6 +223,7 @@ describe('team-sync reconcile triggers', () => {
 
   /** Distinct args[1] objects passed to the reconcile spy. */
   function reconcileArgs(): Array<{
+    teamId: string;
     projectId: string;
     table: string;
     forceFullDiff: boolean | undefined;

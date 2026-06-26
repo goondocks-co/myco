@@ -19,6 +19,7 @@ const {
   backfillAllForRebuildMock,
   discardRowsMock,
   enqueueOutboxMock,
+  enqueueProjectRemovalTombstonesMock,
   upsertSelfMemberMock,
   setTeamSyncEnabledMock,
   setProjectSyncMembershipMock,
@@ -37,6 +38,7 @@ const {
   backfillAllForRebuildMock: vi.fn(),
   discardRowsMock: vi.fn(),
   enqueueOutboxMock: vi.fn(),
+  enqueueProjectRemovalTombstonesMock: vi.fn(() => ({ enqueued: 0, reset: 0 })),
   upsertSelfMemberMock: vi.fn(),
   setTeamSyncEnabledMock: vi.fn(),
   setProjectSyncMembershipMock: vi.fn(),
@@ -58,6 +60,7 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   purgePendingOutbox: purgePendingOutboxMock,
   purgeNonMemberOutbox: purgeNonMemberOutboxMock,
   enqueueOutbox: enqueueOutboxMock,
+  enqueueProjectRemovalTombstones: enqueueProjectRemovalTombstonesMock,
 }));
 
 mock.module('@myco/db/queries/team-members.js', () => ({
@@ -153,12 +156,19 @@ describe('initTeamSync.reconcileClient', () => {
   });
 
   async function registerRegistryTeam(name = 'Registry Team') {
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
     const grove = createGrove(name, mycoHome);
     const projectId = createProjectId();
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId, projectName: `${name} Project`, projectRoot },
+      mycoHome,
+    );
     const teamId = createTeamId();
     teamRegistry.save(
       {
@@ -256,12 +266,19 @@ describe('initTeamSync.reconcileClient', () => {
     // routes each pending row to the worker of the team that owns its
     // project. Register a team for this Grove's project, tag the pending row
     // with that project_id, and assert it reached the team's client.
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
     const grove = createGrove('flush-route-test', mycoHome);
     const projectId = createProjectId();
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId, projectName: 'flush-route-test-project', projectRoot },
+      mycoHome,
+    );
     const teamId = createTeamId();
     teamRegistry.save(
       {
@@ -434,7 +451,7 @@ describe('initTeamSync.reconcileClient', () => {
     // G3 requires grove_<32hex>; G6 requires registry membership.
     // Register a Grove via createGrove() to satisfy both gates and use
     // its real id in the request context.
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const grove = createGrove('external-team-test');
     const groveContext = requestContext(grove.id, 'proj_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2');
     const groveDir = resolveGroveDir(groveContext.groveId);
@@ -457,7 +474,7 @@ describe('initTeamSync.reconcileClient', () => {
   it('a grove with no member projects does NOT project-backfill, but purges and still pushes the self-row', async () => {
     // The machine joined a team via ANOTHER grove, so it has joined a team but
     // THIS grove owns no member project.
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
@@ -493,7 +510,7 @@ describe('initTeamSync.reconcileClient', () => {
 
     expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(false);
     expect(setProjectSyncMembershipMock).toHaveBeenCalledWith([]);
-    expect(purgeNonMemberOutboxMock).toHaveBeenCalledWith([]);
+    expect(purgeNonMemberOutboxMock).toHaveBeenCalledWith([], [teamId]);
     // Roster self-row is still published, and backfill still runs (it carries
     // the machine-scoped self-row; backfillRows filters project rows internally).
     expect(upsertSelfMemberMock).toHaveBeenCalled();
@@ -504,11 +521,18 @@ describe('initTeamSync.reconcileClient', () => {
   });
 
   it('a grove that owns a member project reconciles that project and backfills', async () => {
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
     const grove = createGrove('owns', mycoHome);
+    const projectRoot = path.join(tmpDir, 'projects', 'p-mine');
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId: 'p-mine', projectName: 'p-mine', projectRoot },
+      mycoHome,
+    );
     const teamId = createTeamId();
     teamRegistry.save(
       {
@@ -538,8 +562,8 @@ describe('initTeamSync.reconcileClient', () => {
     await teamSync.reconcileClient(requestContext(grove.id, 'p-mine'));
 
     expect(setTeamSyncEnabledMock).toHaveBeenCalledWith(true);
-    expect(setProjectSyncMembershipMock).toHaveBeenCalledWith(['p-mine']);
-    expect(purgeNonMemberOutboxMock).toHaveBeenCalledWith(['p-mine']);
+    expect(setProjectSyncMembershipMock).toHaveBeenCalledWith([{ project_id: 'p-mine', team_id: teamId }]);
+    expect(purgeNonMemberOutboxMock).toHaveBeenCalledWith(['p-mine'], [teamId]);
     expect(backfillUnsyncedMock).toHaveBeenCalled();
   });
 
@@ -694,12 +718,19 @@ describe('initTeamSync.rebuildFromLocal', () => {
   });
 
   async function registerRegistryTeam() {
-    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const { createGrove, registerProjectInGrove } = await import('../../packages/myco/src/grove/registry.js');
     const { createTeamId, createProjectId } = await import('../../packages/myco/src/grove/ids.js');
     const { teamRegistry } = await import('../../packages/myco/src/team/registry.js');
     const mycoHome = process.env.MYCO_HOME!;
     const grove = createGrove('rebuild-test', mycoHome);
     const projectId = createProjectId();
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId, projectName: 'rebuild-test-project', projectRoot },
+      mycoHome,
+    );
     const teamId = createTeamId();
     teamRegistry.save(
       {
@@ -713,12 +744,12 @@ describe('initTeamSync.rebuildFromLocal', () => {
       },
     );
     teamRegistry.writeSecret(teamId, 'MYCO_TEAM_API_KEY', 'routing-secret');
-    return requestContext(grove.id, projectId);
+    return { ctx: requestContext(grove.id, projectId), teamId };
   }
 
   it('happy path: truncates the registry Team, backfills, and flushes', async () => {
     writeTeamConfig(true);
-    const ctx = await registerRegistryTeam();
+    const { ctx } = await registerRegistryTeam();
     const teamSync = makeTeamSync();
 
     const result = await teamSync.rebuildFromLocal(ctx);
@@ -731,7 +762,7 @@ describe('initTeamSync.rebuildFromLocal', () => {
 
   it('rebuild throws: still backfills so any partial truncate is restored and reports the error', async () => {
     writeTeamConfig(true);
-    const ctx = await registerRegistryTeam();
+    const { ctx } = await registerRegistryTeam();
     const teamSync = makeTeamSync();
     rebuildMock.mockRejectedValueOnce(new Error('worker truncate failed'));
 
@@ -740,6 +771,32 @@ describe('initTeamSync.rebuildFromLocal', () => {
     expect(rebuildMock).toHaveBeenCalledTimes(1);
     expect(backfillAllForRebuildMock).toHaveBeenCalledWith('machine-1');
     expect(result.error).toContain('worker truncate failed');
+  });
+
+  it('selected-team rebuild only backfills rows for that team', async () => {
+    writeTeamConfig(true);
+    const { ctx, teamId } = await registerRegistryTeam();
+    const teamSync = makeTeamSync();
+
+    const result = await teamSync.rebuildFromLocal(ctx, teamId);
+
+    expect(rebuildMock).toHaveBeenCalledTimes(1);
+    expect(backfillAllForRebuildMock).toHaveBeenCalledWith('machine-1', teamId);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('selected-team rebuild is a no-op for a team not served by the request Grove', async () => {
+    writeTeamConfig(true);
+    const { ctx } = await registerRegistryTeam();
+    const { createTeamId } = await import('../../packages/myco/src/grove/ids.js');
+    const unrelatedTeamId = createTeamId();
+    const teamSync = makeTeamSync();
+
+    const result = await teamSync.rebuildFromLocal(ctx, unrelatedTeamId);
+
+    expect(rebuildMock).not.toHaveBeenCalled();
+    expect(backfillAllForRebuildMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ handedOff: 0, rejected: 0, batches: 0 });
   });
 
   it('no registry membership: returns a typed error without touching the worker', async () => {

@@ -48,6 +48,7 @@ describe('migrate v62 -> v63: drop the enabled gate from delete triggers', () =>
     for (const table of TEAM_DELETE_TRIGGER_TABLES) {
       const sql = triggerSql(db, `${table}_team_ad`);
       expect(sql).toContain('OLD.project_id IN (SELECT project_id FROM team_sync_membership)');
+      expect(sql).toContain('team_id');
       expect(sql).not.toContain('team_sync_state');
     }
   });
@@ -91,17 +92,18 @@ describe('migrate v62 -> v63: drop the enabled gate from delete triggers', () =>
       `INSERT INTO team_sync_state (rowid_guard, enabled) VALUES (1, 0)
        ON CONFLICT (rowid_guard) DO UPDATE SET enabled = 0`,
     ).run();
-    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES ('proj_x')`).run();
+    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES ('proj_x', 'team-x')`).run();
     db.prepare(
       `INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
        VALUES ('sp_mig', 'proj_x', 'user', 'decision', 'active', 'c', 1, 'local')`,
     ).run();
     db.prepare(`DELETE FROM spores WHERE id = 'sp_mig'`).run();
 
-    const n = (db.prepare(
-      `SELECT COUNT(*) AS n FROM team_outbox WHERE table_name='spores' AND operation='delete'`,
-    ).get() as { n: number }).n;
-    expect(n).toBe(1);
+    const row = db.prepare(
+      `SELECT team_id FROM team_outbox WHERE table_name='spores' AND operation='delete'`,
+    ).get() as { team_id: string | null };
+    expect(row).toBeDefined();
+    expect(row.team_id).toBe('team-x');
   });
 
   it('is idempotent: re-running createSchema leaves the trigger unchanged', () => {

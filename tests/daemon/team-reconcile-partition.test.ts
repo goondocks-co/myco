@@ -120,6 +120,7 @@ function makeHarness(opts: HarnessOpts): Harness {
         operation: data.operation ?? 'upsert',
         payload: {},
         machine_id: data.machine_id,
+        team_id: data.team_id ?? null,
         project_id: data.project_id ?? null,
         created_at: data.created_at,
         sent_at: null,
@@ -148,7 +149,7 @@ function page(items: ManifestItem[], count: number, nextCursor?: string): Manife
   return r;
 }
 
-const BASE = { machineId: 'm1', projectId: 'p1', table: 'spores' };
+const BASE = { machineId: 'm1', teamId: 'team-a', projectId: 'p1', table: 'spores' };
 
 /**
  * A pool of `n` shared ids present in BOTH local and D1, used to give a
@@ -231,6 +232,7 @@ describe('reconcilePartition — MF2 probe before feature detect', () => {
     // count mismatch, so it pages and enqueues an upsert.
     expect(h.enqueued.length).toBe(1);
     expect(h.enqueued[0].operation ?? 'upsert').toBe('upsert');
+    expect(h.enqueued[0].team_id).toBe('team-a');
   });
 
   it('confirmed v2 worker → skip + log, no paging, no enqueue', async () => {
@@ -276,6 +278,7 @@ describe('reconcilePartition — cross-pass drift stability', () => {
     expect(deletes.length).toBe(1);
     expect(deletes[0].row_id).toBe('extra');
     expect(deletes[0].project_id).toBe('p1'); // FROM the manifest item
+    expect(deletes[0].team_id).toBe('team-a');
     const payload = JSON.parse(deletes[0].payload) as Record<string, unknown>;
     expect(payload).toEqual({ id: 'extra', machine_id: 'm1' });
   });
@@ -388,6 +391,7 @@ describe('reconcilePartition — upsert seeding', () => {
     expect(upserts.length).toBe(1);
     expect(upserts[0].row_id).toBe('b');
     expect(upserts[0].project_id).toBe('p1'); // the partition being reconciled
+    expect(upserts[0].team_id).toBe('team-a');
     const payload = JSON.parse(upserts[0].payload) as Record<string, unknown>;
     expect(payload.id).toBe('b');
   });

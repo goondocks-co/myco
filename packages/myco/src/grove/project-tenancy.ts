@@ -1,5 +1,11 @@
-import { findRegisteredProject, type GroveRecord, type RegisteredProject } from './registry.js';
-import { teamRegistry } from '@myco/team/registry.js';
+import {
+  findRegisteredProject,
+  listGroves,
+  listRegisteredProjects,
+  type GroveRecord,
+  type RegisteredProject,
+} from './registry.js';
+import { teamRegistry, type TeamRecord } from '@myco/team/registry.js';
 
 /**
  * A project's resolved tenancy. grove is ALWAYS present (every project belongs to
@@ -43,8 +49,29 @@ export function resolveProjectTenancy(projectId: string): ProjectTenancy {
  * unchanged).
  */
 export type MemberProjectResolution =
-  | { resolved: true; projectIds: string[] }
+  | { resolved: true; projectIds: string[]; memberships: Array<{ project_id: string; team_id: string }> }
   | { resolved: false };
+
+export interface ServedTeamProjectRef {
+  grove_id: string;
+  project_id: string;
+  team_id: string;
+}
+
+export type ServedTeamProjectRefsResolution =
+  | { resolved: true; refs: ServedTeamProjectRef[] }
+  | { resolved: false };
+
+function membershipByProjectFromTeams(teams: TeamRecord[]): Map<string, string> {
+  const membership = new Map<string, string>();
+  for (const team of teams) {
+    for (const project of team.projects) {
+      if (membership.has(project.project_id)) continue;
+      membership.set(project.project_id, team.team_id);
+    }
+  }
+  return membership;
+}
 
 /**
  * Member projects (assigned to any team) that live in this grove. The authority
@@ -55,20 +82,68 @@ export type MemberProjectResolution =
  * read failure (`resolved: false`). Only the former should disable team sync.
  */
 export function memberProjectIdsForGrove(groveId: string | null): MemberProjectResolution {
-  if (!groveId) return { resolved: true, projectIds: [] };
+  if (!groveId) return { resolved: true, projectIds: [], memberships: [] };
   const result = teamRegistry.listResolved();
   if (!result.resolved) return { resolved: false };
+  const membership = membershipByProjectFromTeams(result.teams);
+  const byProject = new Map<string, { project_id: string; team_id: string }>();
+  for (const project of listRegisteredProjects(groveId)) {
+    const teamId = membership.get(project.project_id);
+    if (!teamId || byProject.has(project.project_id)) continue;
+    byProject.set(project.project_id, {
+      project_id: project.project_id,
+      team_id: teamId,
+    });
+  }
+  const memberships = [...byProject.values()];
   return {
     resolved: true,
-    projectIds: [
-      ...new Set(
-        result.teams
-          .flatMap((t) => t.projects)
-          .filter((p) => p.grove_id === groveId)
-          .map((p) => p.project_id),
-      ),
-    ],
+    projectIds: memberships.map((p) => p.project_id),
+    memberships,
   };
+}
+
+/**
+ * Project refs for a team, resolved against the current MYCO_HOME. The
+ * machine Team registry is authoritative for project -> team membership by
+ * portable project_id; the current home's Grove registry is authoritative for
+ * local Grove placement. Active registered projects therefore win over the
+ * stored team.json Grove hint, with an owned-raw-ref fallback for legacy rows
+ * whose project is no longer registered but whose Grove exists in this home.
+ */
+export function memberProjectRefsForTeam(teamId: string): ServedTeamProjectRefsResolution {
+  const result = teamRegistry.listResolved();
+  if (!result.resolved) return { resolved: false };
+  const team = result.teams.find((candidate) => candidate.team_id === teamId);
+  if (!team) return { resolved: true, refs: [] };
+
+  const membership = membershipByProjectFromTeams(result.teams);
+  const refsByProject = new Map<string, ServedTeamProjectRef>();
+  const ownedGroveIds = new Set<string>();
+
+  for (const grove of listGroves()) {
+    ownedGroveIds.add(grove.id);
+    for (const project of listRegisteredProjects(grove.id)) {
+      if (membership.get(project.project_id) !== teamId) continue;
+      refsByProject.set(project.project_id, {
+        grove_id: grove.id,
+        project_id: project.project_id,
+        team_id: teamId,
+      });
+    }
+  }
+
+  for (const project of team.projects) {
+    if (refsByProject.has(project.project_id)) continue;
+    if (!ownedGroveIds.has(project.grove_id)) continue;
+    refsByProject.set(project.project_id, {
+      grove_id: project.grove_id,
+      project_id: project.project_id,
+      team_id: teamId,
+    });
+  }
+
+  return { resolved: true, refs: [...refsByProject.values()] };
 }
 
 /** True when this machine has joined at least one team. */
