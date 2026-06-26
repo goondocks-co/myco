@@ -41,6 +41,7 @@ import type { ContextQueryResult } from './context-queries.js';
 import type {
   RunOptions,
   EffectiveConfig,
+  MapPhaseResult,
   PhaseDefinition,
   PhaseResult,
   ProviderConfig,
@@ -64,6 +65,25 @@ import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
  */
 export function isCapHitError(err: unknown): boolean {
   return err instanceof HarnessExecutionError && err.telemetry.kind === 'max-turns';
+}
+
+/**
+ * Resolve the map phase's terminal status from its result.
+ *
+ * Three-way contract:
+ * - 'skipped'   — a whole-endpoint provider outage with no writes; infra issue,
+ *                 NOT a content failure, so a required map phase doesn't fail the run.
+ * - 'failed'    — items were fetched but nothing was written and no provider outage;
+ *                 every item threw, was rejected, or never reached a terminal tool call.
+ *                 Preserves the all-poisoned-batch behavior asserted by phase-loop.test.ts.
+ * - 'completed' — at least one item was written, OR the batch was empty.
+ */
+export function mapResultToPhaseStatus(r: MapPhaseResult): 'completed' | 'failed' | 'skipped' {
+  // Provider outage with no writes → skipped (infra; does NOT fail the run).
+  if (r.providerUnavailable && r.written === 0) return 'skipped';
+  // All-content-failed batch (items fetched, nothing written, no provider outage) → failed.
+  if (r.itemCount > 0 && r.written === 0) return 'failed';
+  return 'completed';
 }
 
 // ---------------------------------------------------------------------------
@@ -425,15 +445,13 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     const writeAfterThrowPart = mapResult.writeAfterThrow > 0
       ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
       : '';
-    // An all-poisoned batch (items fetched, nothing written) is a failure,
-    // not a quiet completion — every item either threw, was rejected by the
-    // sink, or never reached a terminal tool call. Surfacing it as 'failed'
-    // lets required map phases fail the run and fire the failure notify.
-    const allPoisoned = mapResult.itemCount > 0 && mapResult.written === 0;
+    const phaseStatus = mapResultToPhaseStatus(mapResult);
     return buildPhaseResult({
       name: phase.name,
-      status: allPoisoned ? 'failed' : 'completed',
-      summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
+      status: phaseStatus,
+      summary: phaseStatus === 'skipped'
+        ? 'provider unavailable'
+        : `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
       usage: mapResult.usage,
       costData,
     });

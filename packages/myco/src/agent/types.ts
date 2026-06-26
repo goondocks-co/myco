@@ -109,6 +109,14 @@ export interface PhaseDefinition {
   item?: MapPhaseItem;
   /** Map mode: sink-block config (required when mode === 'map'). */
   sink?: MapPhaseSink;
+  /**
+   * Map mode: optional end-of-phase accounting hook. Names a tool in the
+   * registry that receives the raw source items whose disposition was a
+   * genuine content failure or skip (model ran, produced no accepted write).
+   * Written items and connection-unavailable items are never passed. Flushed
+   * once after the per-item loop as `tool.handler({ items })`.
+   */
+  accounting?: { tool: string };
 }
 
 /** Result of a single phase execution within a phased run. */
@@ -223,6 +231,20 @@ export interface MapPhaseResult {
    * without conflating it with genuine failures.
    */
   writeAfterThrow: number;
+  /**
+   * True when the phase short-circuited on provider connectivity: either the
+   * pre-fetch health probe reported the provider unreachable, or a per-item
+   * invocation hit a connection-class error and opened the circuit. Lets the
+   * phase loop record the phase as connectivity-skipped rather than a content
+   * failure.
+   */
+  providerUnavailable: boolean;
+  /**
+   * Count of items that hit a connection-class error (provider outage) before
+   * the circuit opened. Tracked separately from `failed` so an unreachable
+   * provider is never conflated with genuine content failures.
+   */
+  unavailable: number;
   /**
    * Aggregated harness usage across all per-item invocations. Token counts
    * sum across items; durations sum; cost sums where the harness reports

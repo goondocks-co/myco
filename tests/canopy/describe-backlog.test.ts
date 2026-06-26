@@ -66,7 +66,7 @@ describe('canopy describe backlog reader', () => {
       reader.read(ALL_PROJECTS_SCOPE, { groveId: grove.id }),
     );
 
-    expect(backlog).toEqual({ pending: 2, undescribed: 2, stale: 0 });
+    expect(backlog).toEqual({ pending: 2, undescribed: 2, stale: 0, stuck: 0 });
   });
 
   it('falls back to the unrestricted count when the grove record is unknown', () => {
@@ -111,7 +111,7 @@ describe('getCanopyDescribeBacklog — describe_attempts budget', () => {
     ).run();
 
     const backlog = getCanopyDescribeBacklog(db, projectScope('proj_a'));
-    expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0 });
+    expect(backlog).toEqual({ pending: 1, undescribed: 1, stale: 0, stuck: 2 });
   });
 
   it('reports zero against a fully-poisoned tail, matching the scheduler count', () => {
@@ -120,7 +120,7 @@ describe('getCanopyDescribeBacklog — describe_attempts budget', () => {
     db.prepare('UPDATE canopy_entries SET describe_attempts = 2').run();
 
     expect(getCanopyDescribeBacklog(db, projectScope('proj_a')))
-      .toEqual({ pending: 0, undescribed: 0, stale: 0 });
+      .toEqual({ pending: 0, undescribed: 0, stale: 0, stuck: 2 });
   });
 
   it('honors a larger per-project maxAttempts', () => {
@@ -129,6 +129,6 @@ describe('getCanopyDescribeBacklog — describe_attempts budget', () => {
     db.prepare('UPDATE canopy_entries SET describe_attempts = 2').run();
 
     expect(getCanopyDescribeBacklog(db, projectScope('proj_a'), { maxAttempts: 4 }))
-      .toEqual({ pending: 2, undescribed: 1, stale: 1 });
+      .toEqual({ pending: 2, undescribed: 1, stale: 1, stuck: 0 });
   });
 });

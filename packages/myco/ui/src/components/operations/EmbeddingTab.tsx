@@ -304,6 +304,20 @@ export function EmbeddingTab() {
     confirmAndRun('reconcile', 'Force reconcile embeddings', doReconcile);
   }
 
+  async function doRetryStuck() {
+    setActionResult(null);
+    try {
+      const result = await postJson<{ reset: number }>(
+        '/canopy/describe/retry-stuck',
+        { scope: buildActionScope(actionScope, selection) },
+      );
+      setActionResult({ type: 'success', text: `Reset ${result.reset ?? 0} stuck row(s) for re-processing` });
+      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
+    } catch (err) {
+      setActionResult({ type: 'error', text: `Error: ${errorMessage(err)}` });
+    }
+  }
+
   if (!data) {
     return (
       <PageLoading
@@ -326,6 +340,13 @@ export function EmbeddingTab() {
   const totalStale = EMBEDDABLE_NAMESPACES.reduce(
     (sum, ns) => sum + (data.namespace_breakdown?.[ns]?.stale ?? data.by_namespace[ns]?.stale ?? 0), 0);
   const canopyDescribePending = data.canopy_describe?.pending ?? 0;
+  const canopyDescribeStuck = data.canopy_describe?.stuck ?? 0;
+  const canopyDescribePendingLabel = canopyDescribePending > 0
+    ? `${data.canopy_describe?.undescribed ?? 0} new, ${data.canopy_describe?.stale ?? 0} stale`
+    : 'fresh';
+  const canopyDescribeSublabel = canopyDescribeStuck > 0
+    ? `⚠ stuck: ${canopyDescribeStuck} · ${canopyDescribePendingLabel}`
+    : canopyDescribePendingLabel;
 
   return (
     <div className="space-y-6">
@@ -356,12 +377,8 @@ export function EmbeddingTab() {
         <StatCard
           label="Canopy Scribe"
           value={String(canopyDescribePending)}
-          sublabel={
-            canopyDescribePending > 0
-              ? `${data.canopy_describe?.undescribed ?? 0} new, ${data.canopy_describe?.stale ?? 0} stale`
-              : 'fresh'
-          }
-          accent={canopyDescribePending > 0 ? 'ochre' : 'outline'}
+          sublabel={canopyDescribeSublabel}
+          accent={canopyDescribeStuck > 0 ? 'terracotta' : canopyDescribePending > 0 ? 'ochre' : 'outline'}
         />
       </div>
 
@@ -383,6 +400,12 @@ export function EmbeddingTab() {
       <Surface level="low" className="p-6 space-y-3">
         <SectionHeader>Actions</SectionHeader>
         <div className="flex flex-wrap gap-2">
+          {canopyDescribeStuck > 0 && (
+            <Button variant="ghost" size="sm" onClick={doRetryStuck}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Retry stuck
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={handleReembedStale}>
             <RefreshCw className="mr-2 h-4 w-4" />
             Re-embed stale

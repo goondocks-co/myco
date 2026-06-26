@@ -22,10 +22,13 @@ import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
 import {
-  describedCanopyEntriesPredicate,
-  CANOPY_ENTRIES_ORDER_BY,
-  PENDING_CANOPY_DESCRIBE_PREDICATE,
   DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS,
+  selectPendingCanopyDescribe,
+  getCanopyEntryByPath,
+  getCanopyEntryExports,
+  setCanopyDescription,
+  listCanopyEntries,
+  chargeDescribeAttempts,
 } from '@myco/db/queries/canopy.js';
 import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { textResult, type VaultToolDeps } from './types.js';
@@ -58,42 +61,6 @@ const CANOPY_LIST_MAX_LIMIT = 500;
 // cortex.canopy.llm.max_description_chars default. Centralised here so
 // the harness reads it without round-tripping through MycoConfig.
 const MAX_DESCRIPTION_CHARS = 180;
-
-const SELECT_PENDING_SQL = `
-  SELECT *
-  FROM canopy_entries
-  WHERE project_id = ?
-    AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}
-  ORDER BY (llm_updated_at IS NULL) DESC, mechanical_updated_at ASC
-  LIMIT ?
-`;
-
-// Increment-at-fetch: every row a pending fetch hands to the harness counts
-// one attempt, whether the model later fails, the sink rejects the write, or
-// the row is filtered as sensitive. Rows at the cap fall out of
-// SELECT_PENDING_SQL until the mechanical scanner touches them again
-// (canopy/scanner/upsert.ts resets describe_attempts to 0).
-const INCREMENT_ATTEMPTS_SQL = `
-  UPDATE canopy_entries
-  SET describe_attempts = describe_attempts + 1
-  WHERE project_id = ?
-    AND path IN (SELECT value FROM json_each(?))
-`;
-
-const SELECT_BY_PATH_SQL = `
-  SELECT *
-  FROM canopy_entries
-  WHERE project_id = ? AND path = ?
-  LIMIT 1
-`;
-
-const UPDATE_DESCRIPTION_SQL = `
-  UPDATE canopy_entries
-  SET llm_description = ?,
-      llm_updated_at  = ?,
-      embedded        = 0
-  WHERE project_id = ? AND path = ?
-`;
 
 async function readFirstLines(absolutePath: string, limit: number): Promise<string> {
   let content: string;
@@ -164,25 +131,15 @@ export function createCanopyTools(deps: VaultToolDeps) {
 
       let rows: CanopyEntry[];
       if (args.canopy_entry_path) {
-        rows = getDatabase().prepare(SELECT_BY_PATH_SQL).all(projectId, args.canopy_entry_path) as CanopyEntry[];
+        const row = getCanopyEntryByPath(getDatabase(), projectId, args.canopy_entry_path);
+        rows = row ? [row] : [];
       } else {
         const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
         const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
         const maxAttempts = args.max_attempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
-        // Fetch + attempt-increment in one transaction so a crash between
-        // the two can't hand out a batch that never accrued an attempt.
-        const db = getDatabase();
-        const fetchBatch = db.transaction(() => {
-          const batch = db.prepare(SELECT_PENDING_SQL).all(projectId, maxAttempts, limit) as CanopyEntry[];
-          if (batch.length > 0) {
-            db.prepare(INCREMENT_ATTEMPTS_SQL).run(
-              projectId,
-              JSON.stringify(batch.map((row) => row.path)),
-            );
-          }
-          return batch;
-        });
-        rows = fetchBatch();
+        // Fetch only — attempt charging moves to canopy_describe_charge (Task A7).
+        // A provider outage must not burn every pending row's retry budget.
+        rows = selectPendingCanopyDescribe(getDatabase(), projectId, { maxAttempts, limit });
       }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
@@ -213,9 +170,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
         return textResult({ ok: false, reason: 'project_id unavailable' });
       }
 
-      const row = getDatabase()
-        .prepare('SELECT exports_json FROM canopy_entries WHERE project_id = ? AND path = ?')
-        .get(projectId, args.path) as { exports_json: string | null } | undefined;
+      const row = getCanopyEntryExports(getDatabase(), projectId, args.path);
       if (!row) {
         return textResult({ ok: false, reason: 'unknown_path' });
       }
@@ -233,7 +188,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
       }
 
       const now = epochSeconds();
-      getDatabase().prepare(UPDATE_DESCRIPTION_SQL).run(cleaned, now, projectId, args.path);
+      setCanopyDescription(getDatabase(), projectId, args.path, cleaned, now);
 
       return textResult({ ok: true, description: cleaned });
     },
@@ -254,21 +209,10 @@ export function createCanopyTools(deps: VaultToolDeps) {
       }
       const requestedLimit = args.limit ?? CANOPY_LIST_DEFAULT_LIMIT;
       const limit = Math.min(Math.max(1, requestedLimit), CANOPY_LIST_MAX_LIMIT);
-      // include_undescribed toggles between the canonical described
-      // predicate and a project-only predicate that includes NULL rows.
-      const { where, params } = args.include_undescribed === true
-        ? { where: 'project_id = ?', params: [projectId] as unknown[] }
-        : describedCanopyEntriesPredicate(projectId);
-      const rows = getDatabase().prepare(
-        `SELECT path, language, llm_description, exports_json, imports_json, token_estimate
-           FROM canopy_entries
-          WHERE ${where}
-          ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
-          LIMIT ?`,
-      ).all(...params, limit) as Array<{
-        path: string; language: string | null; llm_description: string | null;
-        exports_json: string | null; imports_json: string | null; token_estimate: number;
-      }>;
+      const rows = listCanopyEntries(getDatabase(), projectId, {
+        includeUndescribed: args.include_undescribed === true,
+        limit,
+      });
       return textResult({
         rows: rows.map((r) => ({
           path: r.path,
@@ -283,7 +227,28 @@ export function createCanopyTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true } },
   );
 
-  return [canopyDescribeNext, canopyDescribeWrite, canopyListTool];
+  const canopyDescribeCharge = tool(
+    'canopy_describe_charge',
+    'Record one describe attempt for canopy rows that were evaluated but produced no accepted description. Connectivity failures must NOT be passed here.',
+    {
+      items: z.array(z.object({ path: z.string() })),
+    },
+    async (args) => {
+      const projectId = resolveProjectId(deps);
+      if (!projectId) {
+        return textResult({ charged: 0 });
+      }
+      const charged = chargeDescribeAttempts(
+        getDatabase(),
+        projectId,
+        args.items.map((i) => i.path),
+      );
+      return textResult({ charged });
+    },
+    { annotations: {} },
+  );
+
+  return [canopyDescribeNext, canopyDescribeWrite, canopyListTool, canopyDescribeCharge];
 }
 
 // Categorise post-process rejections so the agent can react (retry vs.

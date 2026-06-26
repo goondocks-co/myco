@@ -1784,6 +1784,10 @@ export async function main(): Promise<void> {
 
       return { run_id: runId ?? '' };
     },
+    // Drain bypass for /describe/retry-stuck. Captures the `scheduledTaskKicker`
+    // let-binding by reference (reassigned in syncScheduledTasks before any
+    // request lands), mirroring the onCanopyMassAdd kicker closure below.
+    kickCanopyDescribe: (target) => scheduledTaskKicker.kick('canopy-describe', target),
   });
 
   // --- Skill lifecycle API routes ---

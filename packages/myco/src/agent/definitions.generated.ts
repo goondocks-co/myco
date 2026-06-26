@@ -87,6 +87,9 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "argMap": {
             "path": "{{ item.path }}"
           }
+        },
+        "accounting": {
+          "tool": "canopy_describe_charge"
         }
       }
     ],

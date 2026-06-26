@@ -11,7 +11,8 @@ import type {
   HarnessScopeRunInput,
   HarnessScopeSetup,
 } from './types.js';
-import { HarnessExecutionError } from './types.js';
+import { HarnessExecutionError, type HarnessErrorKind } from './types.js';
+import { isConnectionError } from './classify-error.js';
 import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
 import {
   createMaterializedVaultToolServer,
@@ -141,9 +142,11 @@ async function consumeClaudeMessageStream(
       // The Claude SDK throws with the literal message
       // "Reached maximum number of turns (N)" when maxTurns is binding.
       // Classify here so phase-loop doesn't have to regex the message.
-      const kind: 'max-turns' | 'other' = /reached.*maximum number of turns|max\s*turns/i.test(message)
-        ? 'max-turns'
-        : 'other';
+      const kind: HarnessErrorKind = isConnectionError(message)
+        ? 'connection'
+        : /reached.*maximum number of turns|max\s*turns/i.test(message)
+          ? 'max-turns'
+          : 'other';
       throw new HarnessExecutionError(
         message,
         {
