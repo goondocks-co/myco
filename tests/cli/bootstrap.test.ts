@@ -35,6 +35,9 @@ import {
 } from '@myco/grove/registry.js';
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { ensureProjectVault } from '@myco/vault/provision.js';
+import { managedSkillsDir } from '@myco/install/managed-binary.js';
+import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { daemonIdentity } from '@myco/grove/paths.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
@@ -133,6 +136,30 @@ describe('runSymbiontDetection', () => {
     runSymbiontDetection(PKG_ROOT);
     for (const dirname of ['.claude', '.codex', '.cursor', '.gemini', '.pi', '.copilot']) {
       expect(fs.existsSync(path.join(tmpHome, dirname))).toBe(false);
+    }
+  });
+
+  it('seeds the managed skills dir from the embedded bundle', () => {
+    // The chokepoint every global-install entry funnels through must populate
+    // <mycoHome>/skills so global skill links resolve to a stable managed target.
+    runSymbiontDetection(PKG_ROOT);
+    const skillsDir = managedSkillsDir(path.join(tmpHome, '.myco'));
+    expect(fs.existsSync(path.join(skillsDir, 'myco', 'SKILL.md'))).toBe(true);
+  });
+
+  it('does NOT seed the managed skills dir when a peer holds the symbiont-config claim', () => {
+    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detection-claims-'));
+    const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detection-peer-')));
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
+    const prevClaims = process.env.MYCO_CLAIMS_HOME;
+    process.env.MYCO_CLAIMS_HOME = claimsHome;
+    try {
+      runSymbiontDetection(PKG_ROOT);
+      const skillsDir = managedSkillsDir(path.join(tmpHome, '.myco'));
+      expect(fs.existsSync(skillsDir)).toBe(false);
+    } finally {
+      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
+      fs.rmSync(claimsHome, { recursive: true, force: true });
     }
   });
 

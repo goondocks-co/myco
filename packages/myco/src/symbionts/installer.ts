@@ -19,9 +19,10 @@ import { manifestToolTransport } from './capabilities.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
-import { managedBinaryPath } from '../install/managed-binary.js';
+import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
+import { BUNDLED_SKILLS } from './skills.generated.js';
 import {
   CANONICAL_SKILLS_DIR,
   CLI_LAUNCHER_PROJECT_PATH,
@@ -1294,10 +1295,29 @@ export class SymbiontInstaller {
     return false;
   }
 
-  /** List skill directory names from the package root. Returns empty array if not found. */
+  /**
+   * Directory the install sources skills from.
+   *
+   * Global scope reads the managed `<mycoHome>/skills` (seeded from the
+   * binary-embedded bundle by `ensureManagedSkills`) — a stable target divorced
+   * from any checkout, which is what lets global links survive a checkout
+   * deletion and self-heal. The managed daemon binary has no `skills/` under its
+   * own root (`resolvePackageRoot()` falls to `cwd=/`), so sourcing from
+   * `packageRoot` here was a silent no-op for every native/curl install.
+   *
+   * Project scope keeps sourcing from the package root — a real project install
+   * (npm CLI / in-repo checkout) ships its skills under `<packageRoot>/skills`.
+   */
+  private skillsSourceDir(): string {
+    return this.installScope === 'global'
+      ? managedSkillsDir(resolveMycoHome())
+      : path.join(this.packageRoot, SKILLS_SUBDIR);
+  }
+
+  /** List skill directory names from the skills source dir. Returns empty array if not found. */
   private listSkillDirs(): string[] {
     try {
-      const skillsRoot = path.join(this.packageRoot, SKILLS_SUBDIR);
+      const skillsRoot = this.skillsSourceDir();
       return fs.readdirSync(skillsRoot, { withFileTypes: true })
         .filter((d) => d.isDirectory())
         .filter((d) => fs.existsSync(path.join(skillsRoot, d.name, 'SKILL.md')))
@@ -1325,6 +1345,61 @@ export class SymbiontInstaller {
       try { fs.rmdirSync(this.resolveAbsoluteTarget("skills")!); } catch { /* not empty or missing */ }
     }
     try { fs.rmdirSync(canonicalDir); } catch { /* not empty or missing */ }
+  }
+
+  /**
+   * Skill names Myco owns in GLOBAL (flatSkills) scope: the current embedded
+   * bundle plus retired built-in names. Derived from the binary, NOT from the
+   * materialized `<mycoHome>/skills` dir — so uninstall/cleanup work even when
+   * that dir was never seeded (e.g. `myco remove` right after an upgrade, before
+   * any detection tick). This is the global counterpart to the project-scope
+   * `currentSkillNames ∪ LEGACY_BUILTIN_SKILL_NAMES` used by
+   * `cleanupLegacySkillSymlinks`.
+   */
+  private mycoOwnedGlobalSkillNames(): readonly string[] {
+    return [...new Set([...Object.keys(BUNDLED_SKILLS), ...LEGACY_BUILTIN_SKILL_NAMES])];
+  }
+
+  /**
+   * Remove Myco-owned skill symlinks (by `names`) from `dir`. Only symlinks are
+   * unlinked — a real file/dir under the same name is user content, and other
+   * sources' skills (different names) are never touched. Returns true if any
+   * link was removed.
+   */
+  private removeMycoSkillLinks(dir: string, names: Iterable<string>): boolean {
+    let removed = false;
+    for (const name of names) {
+      const link = path.join(dir, name);
+      try {
+        if (fs.lstatSync(link).isSymbolicLink()) { fs.unlinkSync(link); removed = true; }
+      } catch { /* absent, or real content — leave it */ }
+    }
+    return removed;
+  }
+
+  /** ensureSymlink + the standard "kept user content" warning. */
+  private linkOrWarn(linkPath: string, target: string): void {
+    if (ensureSymlink(linkPath, target) === 'kept-real-path') {
+      process.stderr.write(`[myco] Skipped skill link '${path.basename(linkPath)}' — a real file or directory occupies ${linkPath}\n`);
+    }
+  }
+
+  /**
+   * Sweep Myco's package-skill symlinks from this agent's RETIRED global skill
+   * dirs (`retiredGlobalSkillsTargets`) — dirs it was installed into before its
+   * `globalSkillsTarget` moved (e.g. consolidating on `~/.agents/skills`). The
+   * agent reads the new target now; the old links are unread cruft (often
+   * dangling into a deleted checkout). Removes current AND legacy names so a
+   * retired `~/.codex/skills/{myco,myco-curate,rules}` is fully cleaned. Public
+   * so the detection chokepoint can call it for EVERY manifest (not only
+   * detected ones — a retired link can outlive the agent's detectionDir).
+   */
+  sweepRetiredGlobalSkills(): void {
+    const targets = this.manifest.registration?.retiredGlobalSkillsTargets ?? [];
+    const owned = this.mycoOwnedGlobalSkillNames();
+    for (const target of targets) {
+      this.removeMycoSkillLinks(expandHome(target), owned);
+    }
   }
 
   /**
@@ -1912,9 +1987,19 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Create symlinks for skills through .agents/skills/ canonical layer.
-   * Canonical: .agents/skills/<name> -> <packageRoot>/skills/<name>
-   * Agent-specific: <skillsTarget>/<name> -> ../../.agents/skills/<name>
+   * Symlink skills into the agent's skill dir(s).
+   *
+   * Project scope: a canonical `.agents/skills/<name>` -> `<packageRoot>/skills/<name>`
+   * layer, with agent-specific `<skillsTarget>/<name>` -> `../../.agents/skills/<name>`
+   * for non-`.agents` agents.
+   *
+   * Global scope (flatSkills): symlink `<globalSkillsTarget>/<name>` directly to
+   * the managed source `<mycoHome>/skills/<name>` (`skillsSourceDir()`), no
+   * canonical layer. Most agents share `~/.agents/skills` (the cross-agent
+   * standard); claude (`~/.claude/skills`) and cline (`~/.cline/skills`) are the
+   * exceptions. Several manifests resolving to the same `~/.agents/skills`
+   * re-create identical links idempotently — `ensureSymlink` early-returns
+   * `'unchanged'`, so no cross-manifest dedup is needed.
    */
   installSkills(): boolean {
     const reg = this.manifest.registration;
@@ -1927,7 +2012,7 @@ export class SymbiontInstaller {
     const skillNames = this.listSkillDirs();
     if (skillNames.length === 0) return false;
 
-    const skillsSrc = path.join(this.packageRoot, SKILLS_SUBDIR);
+    const skillsSrc = this.skillsSourceDir();
     const agentSkillsDir = this.resolveAbsoluteTarget("skills")!;
 
     if (this.capabilities.flatSkills) {
@@ -1936,10 +2021,14 @@ export class SymbiontInstaller {
       // directly under the agent's globalSkillsTarget.
       fs.mkdirSync(agentSkillsDir, { recursive: true });
       for (const name of skillNames) {
-        if (ensureSymlink(path.join(agentSkillsDir, name), path.join(skillsSrc, name)) === 'kept-real-path') {
-          process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${path.join(agentSkillsDir, name)}\n`);
-        }
+        this.linkOrWarn(path.join(agentSkillsDir, name), path.join(skillsSrc, name));
       }
+      // Remove stale Myco-owned links (retired built-ins + any dropped/renamed
+      // skill no longer in the bundle) from the active target — the global
+      // analog of cleanupLegacySkillSymlinks. Without it a renamed/removed skill
+      // leaves a permanent dangling link.
+      const current = new Set(skillNames);
+      this.removeMycoSkillLinks(agentSkillsDir, this.mycoOwnedGlobalSkillNames().filter((n) => !current.has(n)));
       return true;
     }
 
@@ -1950,11 +2039,7 @@ export class SymbiontInstaller {
     fs.mkdirSync(canonicalDir, { recursive: true });
 
     for (const name of skillNames) {
-      const canonicalLink = path.join(canonicalDir, name);
-      const target = path.join(skillsSrc, name);
-      if (ensureSymlink(canonicalLink, target) === 'kept-real-path') {
-        process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${canonicalLink}\n`);
-      }
+      this.linkOrWarn(path.join(canonicalDir, name), path.join(skillsSrc, name));
     }
 
     // Create agent-specific symlinks if skillsTarget differs from canonical
@@ -1963,11 +2048,7 @@ export class SymbiontInstaller {
     if (reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
       fs.mkdirSync(agentSkillsDir, { recursive: true });
       for (const name of skillNames) {
-        const agentLink = path.join(agentSkillsDir, name);
-        const relTarget = path.join(canonicalRel, name);
-        if (ensureSymlink(agentLink, relTarget) === 'kept-real-path') {
-          process.stderr.write(`[myco] Skipped skill link '${name}' — a real file or directory occupies ${agentLink}\n`);
-        }
+        this.linkOrWarn(path.join(agentSkillsDir, name), path.join(canonicalRel, name));
       }
       ensureLocalSkillsGitignore(agentSkillsDir);
     }
@@ -2408,30 +2489,36 @@ export class SymbiontInstaller {
   uninstallSkills(): boolean {
     const reg = this.manifest.registration;
 
-    const skillNames = this.listSkillDirs();
-    if (skillNames.length === 0) return false;
-
     // Global scope installs flat symlinks under globalSkillsTarget with no
-    // canonical layer (see installSkills). Uninstall must mirror that or
-    // every globally-installed agent keeps orphaned skill links forever.
-    // Only symlinks are removed — a real file or directory under the same
-    // name is user content.
+    // canonical layer (see installSkills). Uninstall mirrors that, removing only
+    // Myco-owned skill links (current + legacy names), only when they're
+    // symlinks — a real file/dir under the same name is user content, and other
+    // sources' skills (different names) are untouched.
+    //
+    // Names come from the binary (mycoOwnedGlobalSkillNames), NOT the
+    // materialized `<mycoHome>/skills` dir, so `myco remove` cleans up even when
+    // that dir was never seeded (e.g. removal right after an upgrade, before any
+    // detection tick). It also sweeps this agent's retired global dirs so a
+    // remove doesn't leave the pre-migration links behind.
+    //
+    // Shared-dir coupling: the standard `~/.agents/skills` is shared across
+    // agents; full `myco remove` uninstalls every co-tenant manifest in the same
+    // loop. A future SELECTIVE per-agent global uninstall must not strip skills
+    // still needed by other installed agents that share the dir.
     if (this.capabilities.flatSkills) {
       if (!reg?.globalSkillsTarget) return false;
+      const owned = this.mycoOwnedGlobalSkillNames();
       const agentSkillsDir = this.resolveAbsoluteTarget("skills")!;
-      let removedFlat = false;
-      for (const name of skillNames) {
-        const link = path.join(agentSkillsDir, name);
-        try {
-          if (fs.lstatSync(link).isSymbolicLink()) {
-            fs.unlinkSync(link);
-            removedFlat = true;
-          }
-        } catch { /* doesn't exist */ }
+      let removed = this.removeMycoSkillLinks(agentSkillsDir, owned);
+      for (const target of reg.retiredGlobalSkillsTargets ?? []) {
+        removed = this.removeMycoSkillLinks(expandHome(target), owned) || removed;
       }
       try { fs.rmdirSync(agentSkillsDir); } catch { /* not empty or missing */ }
-      return removedFlat;
+      return removed;
     }
+
+    const skillNames = this.listSkillDirs();
+    if (skillNames.length === 0) return false;
 
     if (!reg?.skillsTarget) return false;
 

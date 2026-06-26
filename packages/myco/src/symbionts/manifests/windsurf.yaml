@@ -36,7 +36,9 @@ registration:
   # mcpTarget omitted on purpose.
   globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
   skillsTarget: .agents/skills
-  globalSkillsTarget: ~/.codeium/windsurf/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.codeium/windsurf/skills
   settingsTarget: .windsurf/settings.json
   # Cascade's `windsurf.cascadeCommandsAllowList` is an IDE user-settings
   # key, not a hooks-file key. The installer's default global fallback

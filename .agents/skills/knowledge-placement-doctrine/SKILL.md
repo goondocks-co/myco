@@ -85,8 +85,15 @@ SKILL.md files capture **reusable project procedures** — step-by-step playbook
 - Standing rules that apply project-wide (→ AGENTS.md)
 - Historical rationale for why the procedure exists (→ vault)
 - User-facing explanations of what the feature does (→ user docs)
+- **Version numbers or v-prefix version references** — skills encode durable procedures, not release-bounded content; version-specific claims rot as versions advance
+- **Temporal markers** (e.g., "as of today", "at the time of writing") — skill steps must be true across time, not pinned to a moment
+- **Decision rationale prose** ("we chose X over Y because…") — that context belongs in the vault where it can be searched and cross-referenced
 
 **Test:** "Is this a step-by-step playbook for a task someone repeats?" If yes → SKILL.md. If it's a standing operating rule → AGENTS.md. If it's the WHY behind the procedure → vault.
+
+**Content validation gate:** `validateSkillContent` (in `packages/myco/src/agent/tools/skill-validator.ts`) catches structural contamination — version numbers, temporal markers, PR/date references, vault agent tool names in `allowed-tools`. If the gate rejects a write, move the contaminated content to the vault or strip it entirely.
+
+**What the gate cannot catch:** Semantic falsehoods — invented function names, file paths that don't exist in the codebase, or behavior claims that are wrong. A skill can pass all lint checks while containing stale or fabricated procedure steps. The gate is necessary but not sufficient. Verify new concrete claims (symbols, paths, behavior) independently before writing.
 
 **In-package vs. harness-generated skills:** Myco has two distinct kinds of SKILL.md files:
 
@@ -107,7 +114,7 @@ Code comments describe **what the code does and why it behaves that way** — th
 
 | Forbidden pattern | Example to reject | Where it belongs |
 |---|---|---|
-| Incident dates | `"2026-05-18 wedge: this was added because..."` | Vault (decision spore) |
+| Incident dates | `"// Added [date] after the wedge incident"` | Vault (decision spore) |
 | External tracking IDs | `"see decision-2f9b3306"`, `"as of PR #346"` | Vault |
 | Decision rationale | `"we chose X over Y because..."` | Vault |
 | Bug-fix narrative | `"this fixes the crash from commit X"` | Vault |
@@ -123,7 +130,7 @@ Code comments describe **what the code does and why it behaves that way** — th
 // shape to initialize registry state.
 
 // ❌ Incident narrative (move to vault)
-// Added 2026-05-18 after the daemon wedge incident (spore a397e909).
+// Added after the daemon wedge incident (spore a397e909).
 // We chose this over option B because the daemon couldn't handle missing fields.
 ```
 
@@ -192,7 +199,7 @@ Always write content in the raw `.md` source files; do not hand-edit generated H
 | Surface | Store here | Don't store here |
 |---|---|---|
 | **AGENTS.md** | Durable agent rules, project-wide architectural invariants | Implementation details, one-off decisions, procedure-specific guidance |
-| **SKILL.md** (harness) | Codified procedures with steps, examples, gotchas | Project-wide invariants, historical rationale, user-facing explanations |
+| **SKILL.md** (harness) | Codified procedures with steps, examples, gotchas | Project-wide invariants, historical rationale, version numbers, temporal markers, user-facing explanations |
 | **SKILL.md** (in-package) | Bundled product reference skills (`packages/myco/skills/`) — no `managed_by` | Do not add `managed_by: myco` |
 | **Code comments** | Behavioral invariants, HOW the code works, contract shapes | Incident dates, spore/PR/ticket IDs, decision rationale, historical narrative |
 | **Myco vault** | Decisions, rationale, incidents, tradeoffs, cross-references, rigor gaps | Content that belongs in user docs or code comments |

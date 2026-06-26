@@ -217,6 +217,17 @@ const RegistrationSchema = z.object({
    */
   globalSkillsTarget: z.string().nullable().optional(),
   /**
+   * Global skill dirs this agent USED to be installed into, before its
+   * `globalSkillsTarget` moved (e.g. consolidating on the `~/.agents/skills`
+   * cross-agent standard). Each entry is swept of Myco's own package-skill
+   * symlinks on detection so stale/dangling links don't linger after a target
+   * migration. Declarative + co-located: when an agent later adopts a new
+   * standard dir, flip `globalSkillsTarget` and append the old one here — no
+   * separate legacy list in code. Only Myco-named symlinks are removed; real
+   * user content and other sources' skills are untouched.
+   */
+  retiredGlobalSkillsTargets: z.array(z.string()).optional(),
+  /**
    * Absolute path (with `~` expansion) where Myco writes the settings
    * template under global scope. When unset, settings under global scope
    * share the file with hooks (the historical Claude-Code-style merge:

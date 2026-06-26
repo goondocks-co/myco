@@ -11,9 +11,9 @@ description: |
   path properties to service state objects (DaemonServiceState). Also covers
   two critical violation classes to detect during code review: parallel
   ownership predicates (is-this-mine? checks duplicated across files) and
-  daemon variant dispatch (isDevServiceMode() ternaries at multiple call
-  sites). The root discipline is: name the thing, own it in one place, let
-  consumers reference it.
+  database query locality (direct DB calls in tool files that bypass the shared
+  data access layer). The root discipline is: name the thing, own it in one
+  place, let consumers reference it.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -36,7 +36,7 @@ The Myco codebase has a recurring architectural smell: logic, values, or transfo
 
 ## Procedure A: Detecting SSoT Violations During Code Review
 
-Apply these three checks when reviewing any PR that touches shared infrastructure. The violations surface as runtime failures, not compile errors — catching them here saves production incidents.
+Apply these two checks when reviewing any PR that touches shared infrastructure. The violations surface as runtime failures, not compile errors — catching them here saves production incidents.
 
 ### Check 1 — Re-computation of an already-available value
 
@@ -44,7 +44,7 @@ Flag any function that re-derives a value already available from a canonical sou
 
 Ask: "Does a helper already exist that produces this?" If yes, the consumer should call the canonical source, not re-derive it inline.
 
-**Example trigger:** A file computing `isDevServiceMode() ? 'service-dev' : 'service'` inline at its own call site when `currentDaemonVariant()` (in `grove/paths.ts`) already exists and is co-located with `isDevServiceMode()`.
+**Example trigger:** A file computing a daemon variant string inline at its own call site when a canonical helper already exists and is co-located with the relevant domain module.
 
 ### Check 2 — Parallel ownership predicates
 
@@ -58,12 +58,6 @@ Symptoms:
 **Real example:** `installer.ts:1278` had regex `/\bmyco-run\.cjs\b|\bmyco-hook\.cjs\b|\blauncher\.cjs\b/` while `install-helpers.ts:isMycoHookCommand` used different substring checks. When they diverged, uninstall silently failed on files that only one path recognized as Myco-owned.
 
 **Fix signal:** Consolidate into a single helper with a named constant for the match strings (see Procedure E2).
-
-### Check 3 — Variant dispatch at multiple sites
-
-Flag `isDevServiceMode() ? 'service-dev' : 'service'` (or equivalent daemon-scoping logic) appearing at more than one call site. This is a daemon-boundary decision — getting it wrong risks a cross-daemon Grove leak where a migration walker operates on the wrong daemon's projects.
-
-**Canonical home:** `grove/paths.ts` → `currentDaemonVariant()`. All 5 previously duplicated sites (`migration-walker.ts:82`, `remove.ts:108-110`, `startup-pauses.ts:60`, `backup.ts:200`, `buffer-location.ts:78`) now delegate here.
 
 ## Procedure B: Extracting Shared Read Projections
 
@@ -264,7 +258,7 @@ const lockFile = daemonService.lockPath;
 **Verify all smell classes after any SSoT refactor.** Use this table as a checklist:
 
 | Smell | Canonical fix | Canonical location |
-|-------|---------------|--------------------|
+|-------|---------------|--------------------:|
 | Projection logic in 2+ consumers | Named projections module | `read-projections.ts` |
 | Provider capability defaults in switch blocks | Named constants | `context-windows.ts` |
 | Magic string literals scattered | Named constant | `constants.ts` |
@@ -274,6 +268,6 @@ const lockFile = daemonService.lockPath;
 | Ad-hoc error-to-string in UI | `errorMessage()` canonical helper | UI lib module |
 | File paths reconstructed at call sites | Service state path properties | `daemon/service-state.ts` |
 | Parallel ownership predicates | Single canonical helper | `symbionts/install-helpers.ts` |
-| Variant dispatch at N sites | Single `currentDaemonVariant()` | `grove/paths.ts` |
+| Direct DB calls in tool files | Queries belong in the data access layer | domain query/read module |
 
 **When you discover a new violation class:** don't only fix the instance — add it to this table. The skill grows with the codebase.

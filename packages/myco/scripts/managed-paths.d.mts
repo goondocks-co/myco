@@ -32,3 +32,8 @@ export function versionBinaryPath(
   version: string,
   localAppData?: string,
 ): string;
+
+export function managedSkillsDir(
+  mycoHome: string,
+  platform?: NodeJS.Platform | string,
+): string;
