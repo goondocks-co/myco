@@ -165,7 +165,7 @@ describe('canopy_describe_next — describe_attempts budget', () => {
     return row.describe_attempts;
   }
 
-  it('increments describe_attempts for every row a pending fetch returns', async () => {
+  it('does not increment describe_attempts on fetch', async () => {
     upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
     upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/bar.ts' }));
 
@@ -173,8 +173,9 @@ describe('canopy_describe_next — describe_attempts budget', () => {
     const out = parseResult(await tool.handler({ limit: 5 }, {} as any));
     expect(out.entries).toHaveLength(2);
 
-    expect(getAttempts('src/foo.ts')).toBe(1);
-    expect(getAttempts('src/bar.ts')).toBe(1);
+    // Charging moves to canopy_describe_charge (Task A7); fetch is read-only.
+    expect(getAttempts('src/foo.ts')).toBe(0);
+    expect(getAttempts('src/bar.ts')).toBe(0);
   });
 
   it('excludes rows at the attempts cap from pending fetches', async () => {
@@ -192,22 +193,24 @@ describe('canopy_describe_next — describe_attempts budget', () => {
     expect(getAttempts('src/poisoned.ts')).toBe(2);
   });
 
-  it('drains a poisoned row out of the pending pool across fetches', async () => {
+  it('does not drain a pending row from the pool via repeated fetches', async () => {
     upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
 
     // Each fetch needs a fresh tool instance (one-call-per-run gate).
+    // Charging is now deferred to canopy_describe_charge; fetch alone never
+    // burns the retry budget, so the row stays in the pending pool.
     const first = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
     expect(first.entries).toHaveLength(1);
     const second = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
     expect(second.entries).toHaveLength(1);
-    expect(getAttempts('src/foo.ts')).toBe(2);
+    expect(getAttempts('src/foo.ts')).toBe(0);
 
     const third = parseResult(await findTool(createTools(), 'canopy_describe_next').handler({}, {} as any));
-    expect(third.entries).toEqual([]);
-    expect(getAttempts('src/foo.ts')).toBe(2);
+    expect(third.entries).toHaveLength(1);
+    expect(getAttempts('src/foo.ts')).toBe(0);
   });
 
-  it('honors a larger max_attempts from task params', async () => {
+  it('honors a larger max_attempts from task params without charging on fetch', async () => {
     upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
     getDatabase()
       .prepare('UPDATE canopy_entries SET describe_attempts = 2 WHERE path = ?')
@@ -216,8 +219,10 @@ describe('canopy_describe_next — describe_attempts budget', () => {
     const out = parseResult(
       await findTool(createTools(), 'canopy_describe_next').handler({ max_attempts: 4 }, {} as any),
     );
+    // Row is included because describe_attempts(2) < max_attempts(4).
     expect(out.entries).toHaveLength(1);
-    expect(getAttempts('src/foo.ts')).toBe(3);
+    // Fetch does not charge; attempts stays at 2.
+    expect(getAttempts('src/foo.ts')).toBe(2);
   });
 
   it('a mechanical update resets describe_attempts so the row is describable again', async () => {

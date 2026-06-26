@@ -169,20 +169,10 @@ export function createCanopyTools(deps: VaultToolDeps) {
         const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
         const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
         const maxAttempts = args.max_attempts ?? DEFAULT_CANOPY_DESCRIBE_MAX_ATTEMPTS;
-        // Fetch + attempt-increment in one transaction so a crash between
-        // the two can't hand out a batch that never accrued an attempt.
+        // Fetch only — attempt charging moves to canopy_describe_charge (Task A7).
+        // A provider outage must not burn every pending row's retry budget.
         const db = getDatabase();
-        const fetchBatch = db.transaction(() => {
-          const batch = db.prepare(SELECT_PENDING_SQL).all(projectId, maxAttempts, limit) as CanopyEntry[];
-          if (batch.length > 0) {
-            db.prepare(INCREMENT_ATTEMPTS_SQL).run(
-              projectId,
-              JSON.stringify(batch.map((row) => row.path)),
-            );
-          }
-          return batch;
-        });
-        rows = fetchBatch();
+        rows = db.prepare(SELECT_PENDING_SQL).all(projectId, maxAttempts, limit) as CanopyEntry[];
       }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
