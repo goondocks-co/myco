@@ -14,6 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { CANOPY_SESSION_COLUMNS, CANOPY_ACTIVITY_COLUMN } from '@myco/db/schema-ddl.js';
 import { allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
 import { projectScopeClause, type ProjectScope } from './project-scope.js';
+import type { CanopyEntry } from '@myco/db/schema.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -589,4 +590,125 @@ export function getCanopyToolCallContext(
 
   if (!row || !row.file_path) return null;
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Canopy-describe tool queries (canopy-tools.ts data-access layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch up to `limit` canopy_entries rows that need an llm_description —
+ * NULL or stale relative to mechanical_updated_at, with describe_attempts
+ * under the retry budget. Bind order: (projectId, maxAttempts, limit).
+ *
+ * Uses PENDING_CANOPY_DESCRIBE_PREDICATE verbatim so fetch and count
+ * cannot disagree about what is pending.
+ */
+export function selectPendingCanopyDescribe(
+  db: Database,
+  projectId: string,
+  options: { maxAttempts: number; limit: number },
+): CanopyEntry[] {
+  return db.prepare(
+    `SELECT *
+       FROM canopy_entries
+      WHERE project_id = ?
+        AND ${PENDING_CANOPY_DESCRIBE_PREDICATE}
+      ORDER BY (llm_updated_at IS NULL) DESC, mechanical_updated_at ASC
+      LIMIT ?`,
+  ).all(projectId, options.maxAttempts, options.limit) as CanopyEntry[];
+}
+
+/**
+ * Fetch a single canopy_entries row by (projectId, path).
+ * Returns the full CanopyEntry or undefined if no row exists.
+ * Bind order: (projectId, path).
+ */
+export function getCanopyEntryByPath(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+): CanopyEntry | undefined {
+  return db.prepare(
+    `SELECT *
+       FROM canopy_entries
+      WHERE project_id = ? AND path = ?
+      LIMIT 1`,
+  ).get(projectId, entryPath) as CanopyEntry | undefined;
+}
+
+/**
+ * Fetch only the exports_json column for a canopy_entries row.
+ * Used by canopy_describe_write to run the post-process gate without
+ * pulling the full row. Bind order: (projectId, path).
+ *
+ * Returns undefined when the path is unknown (triggers unknown_path rejection).
+ */
+export function getCanopyEntryExports(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+): { exports_json: string | null } | undefined {
+  return db.prepare(
+    `SELECT exports_json
+       FROM canopy_entries
+      WHERE project_id = ? AND path = ?`,
+  ).get(projectId, entryPath) as { exports_json: string | null } | undefined;
+}
+
+/**
+ * Write a post-processed description onto a canopy_entries row and reset
+ * embedded=0 so the embedding queue picks the row up again.
+ * Bind order: (description, nowEpochSeconds, projectId, path).
+ */
+export function setCanopyDescription(
+  db: Database,
+  projectId: string,
+  entryPath: string,
+  description: string,
+  nowEpochSeconds: number,
+): void {
+  db.prepare(
+    `UPDATE canopy_entries
+        SET llm_description = ?,
+            llm_updated_at  = ?,
+            embedded        = 0
+      WHERE project_id = ? AND path = ?`,
+  ).run(description, nowEpochSeconds, projectId, entryPath);
+}
+
+/**
+ * Row shape returned by listCanopyEntries — the column subset the
+ * canopy_list tool projects.
+ */
+export interface CanopyListRow {
+  path: string;
+  language: string | null;
+  llm_description: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  token_estimate: number;
+}
+
+/**
+ * List canopy_entries for a project.  When includeUndescribed is false
+ * (default) only rows with a non-NULL llm_description are returned.
+ * Uses describedCanopyEntriesPredicate and CANOPY_ENTRIES_ORDER_BY so the
+ * sort and predicate cannot diverge from other consumers.
+ */
+export function listCanopyEntries(
+  db: Database,
+  projectId: string,
+  options: { includeUndescribed: boolean; limit: number },
+): CanopyListRow[] {
+  const { where, params } = options.includeUndescribed
+    ? { where: 'project_id = ?', params: [projectId] as unknown[] }
+    : describedCanopyEntriesPredicate(projectId);
+  return db.prepare(
+    `SELECT path, language, llm_description, exports_json, imports_json, token_estimate
+       FROM canopy_entries
+      WHERE ${where}
+      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
+      LIMIT ?`,
+  ).all(...params, options.limit) as CanopyListRow[];
 }
