@@ -103,8 +103,8 @@ describe('skill record API deletion', () => {
     // the project's membership in team_sync_membership.
     setTeamSyncEnabled(true);
     getDatabase().prepare(
-      'INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES (?)',
-    ).run(PROJECT_ID);
+      'INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES (?, ?)',
+    ).run(PROJECT_ID, 'team-a');
 
     const response = await handleDeleteSkillRecord(
       { params: { id: 'skill-scoped' }, requestContext: REQUEST_CONTEXT } as never,

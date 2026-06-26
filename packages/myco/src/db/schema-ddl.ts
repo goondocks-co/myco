@@ -473,6 +473,7 @@ export const TEAM_OUTBOX_TABLE = `
     operation   TEXT NOT NULL DEFAULT 'upsert',
     payload     TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
+    team_id     TEXT,
     project_id  TEXT,
     created_at  INTEGER NOT NULL,
     sent_at     INTEGER
@@ -492,7 +493,8 @@ export const TEAM_SYNC_STATE_TABLE = `
  */
 export const TEAM_SYNC_MEMBERSHIP_TABLE = `
   CREATE TABLE IF NOT EXISTS team_sync_membership (
-    project_id TEXT PRIMARY KEY
+    project_id TEXT PRIMARY KEY,
+    team_id    TEXT
   )`;
 
 // -- Logging Layer ----------------------------------------------------------
@@ -1008,10 +1010,13 @@ export const TEAM_DELETE_TRIGGERS: readonly string[] = TEAM_DELETE_TRIGGER_TABLE
   AFTER DELETE ON ${table}
   WHEN OLD.project_id IN (SELECT project_id FROM team_sync_membership)
   BEGIN
-    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
+    INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at)
     VALUES ('${table}', CAST(OLD.id AS TEXT), 'delete',
             json_object('id', OLD.id, 'machine_id', OLD.machine_id),
-            OLD.machine_id, OLD.project_id, CAST(strftime('%s','now') AS INTEGER));
+            OLD.machine_id,
+            (SELECT team_id FROM team_sync_membership WHERE project_id = OLD.project_id),
+            OLD.project_id,
+            CAST(strftime('%s','now') AS INTEGER));
   END`,
 );
 

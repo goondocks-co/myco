@@ -144,6 +144,10 @@ export function withProjectRemoved(record: TeamRecord, projectId: string): TeamR
   return { ...record, projects: record.projects.filter(p => p.project_id !== projectId) };
 }
 
+export function findProjectRef(record: TeamRecord, projectId: string): TeamProjectRef | null {
+  return record.projects.find((p) => p.project_id === projectId) ?? null;
+}
+
 export const teamRegistry = {
   list, listResolved, get, save, remove, membershipByProject, projectsForTeam,
   readSecrets, writeSecret, readDeployment, saveDeployment, removeDeployment,

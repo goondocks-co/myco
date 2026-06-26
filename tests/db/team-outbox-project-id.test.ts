@@ -1,9 +1,9 @@
 /**
- * team_outbox.project_id foundation.
+ * team_outbox project/team routing foundation.
  *
- * Per-row project attribution on the team-sync outbox so a later step can
- * route each queued row to the right team's worker. Covers:
- *   1. syncRow on a project-scoped table carries project_id into the outbox.
+ * Per-row project + team attribution on the team-sync outbox so each queued row
+ * routes to the team stamped at enqueue time. Covers:
+ *   1. syncRow on a project-scoped table carries project_id + team_id.
  *   2. syncRow on a machine-scoped table (no project_id) leaves it null.
  *   3. The v53 schema: the project_id column exists on a fresh schema, and the
  *      recreated AFTER DELETE trigger captures OLD.project_id through a real
@@ -23,9 +23,9 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
 
-  it('carries project_id from a project-scoped row into the outbox', () => {
+  it('carries project_id and team_id from a project-scoped row into the outbox', () => {
     setTeamSyncEnabled(true);
-    setProjectSyncMembership(['proj_y']);
+    setProjectSyncMembership([{ project_id: 'proj_y', team_id: 'team-y' }]);
 
     syncRow('spores', { id: 'spore_x', project_id: 'proj_y', created_at: 1 });
 
@@ -33,6 +33,7 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].row_id).toBe('spore_x');
     expect(pending[0].project_id).toBe('proj_y');
+    expect(pending[0].team_id).toBe('team-y');
   });
 
   it('does not enqueue a machine-scoped row through syncRow (no project_id)', () => {
@@ -46,14 +47,14 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     expect(listPending()).toHaveLength(0);
   });
 
-  it('backfill carries project_id from the source row into the outbox', () => {
+  it('backfill carries project_id and team_id from the source row into the outbox', () => {
     // Re-enqueued (backfilled) rows must route too, so the backfill insert
     // path populates project_id exactly like syncRow. Without this, a
     // backfilled row would have a null project_id and fan out to every team
     // instead of routing to its owning team.
     const db = getDatabase();
     setTeamSyncEnabled(true, db);
-    setProjectSyncMembership(['proj_bf'], db);
+    setProjectSyncMembership([{ project_id: 'proj_bf', team_id: 'team-y' }], db);
     db.prepare(
       `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('user','user','built-in',1,1)`,
     ).run();
@@ -68,6 +69,7 @@ describe('team_outbox.project_id — syncRow plumbing', () => {
     const row = listPending().find((r) => r.row_id === 'sp_bf');
     expect(row).toBeDefined();
     expect(row!.project_id).toBe('proj_bf');
+    expect(row!.team_id).toBe('team-y');
   });
 });
 
@@ -76,12 +78,13 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(53);
   });
 
-  it('fresh schema has project_id on team_outbox', () => {
+  it('fresh schema has project_id and team_id on team_outbox', () => {
     const db = new Database(':memory:');
     createSchema(db);
     const cols = (db.prepare(`PRAGMA table_info(team_outbox)`).all() as Array<{ name: string }>)
       .map((c) => c.name);
     expect(cols).toContain('project_id');
+    expect(cols).toContain('team_id');
     db.close();
   });
 
@@ -90,7 +93,7 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     db.exec('PRAGMA foreign_keys = OFF'); // FK-free fixture insert
     createSchema(db);
     setTeamSyncEnabled(true, db);
-    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES ('proj_del')`).run();
+    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES ('proj_del', 'team-y')`).run();
 
     // Insert a project-scoped spore, then delete it. The recreated team-sync
     // delete trigger must journal a 'delete' row into team_outbox carrying the
@@ -103,13 +106,14 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     db.prepare(`DELETE FROM spores WHERE id = 'sp_del'`).run();
 
     const row = db.prepare(
-      `SELECT operation, row_id, project_id, machine_id
+      `SELECT operation, row_id, project_id, team_id, machine_id
          FROM team_outbox WHERE table_name = 'spores' AND row_id = 'sp_del'`,
-    ).get() as { operation: string; row_id: string; project_id: string | null; machine_id: string };
+    ).get() as { operation: string; row_id: string; project_id: string | null; team_id: string | null; machine_id: string };
 
     expect(row).toBeDefined();
     expect(row.operation).toBe('delete');
     expect(row.project_id).toBe('proj_del');
+    expect(row.team_id).toBe('team-y');
     expect(row.machine_id).toBe('local');
     db.close();
   });
@@ -162,14 +166,15 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     // Run the v53 migration.
     createSchema(db);
 
-    // (a) project_id column added.
+    // (a) project_id + team_id columns added.
     const colsAfter = (db.prepare(`PRAGMA table_info(team_outbox)`).all() as Array<{ name: string }>)
       .map((c) => c.name);
     expect(colsAfter).toContain('project_id');
+    expect(colsAfter).toContain('team_id');
 
     // (b) the trigger now captures project_id through a real delete.
     setTeamSyncEnabled(true, db);
-    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id) VALUES ('proj_mig')`).run();
+    db.prepare(`INSERT OR IGNORE INTO team_sync_membership (project_id, team_id) VALUES ('proj_mig', 'team-y')`).run();
     db.prepare(`
       INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at, machine_id)
       VALUES ('sp_mig', 'proj_mig', 'agent-x', 'note', 'gone', 1000, 'local')
@@ -177,10 +182,11 @@ describe('team_outbox.project_id — v53 schema + delete trigger', () => {
     db.prepare(`DELETE FROM spores WHERE id = 'sp_mig'`).run();
 
     const row = db.prepare(
-      `SELECT operation, project_id FROM team_outbox WHERE row_id = 'sp_mig'`,
-    ).get() as { operation: string; project_id: string | null };
+      `SELECT operation, project_id, team_id FROM team_outbox WHERE row_id = 'sp_mig'`,
+    ).get() as { operation: string; project_id: string | null; team_id: string | null };
     expect(row.operation).toBe('delete');
     expect(row.project_id).toBe('proj_mig');
+    expect(row.team_id).toBe('team-y');
 
     // (c) schema_version advanced to current.
     const ver = db.prepare(`SELECT MAX(version) AS v FROM schema_version`).get() as { v: number };

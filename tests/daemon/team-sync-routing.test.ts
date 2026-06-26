@@ -112,7 +112,7 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { withDatabase } from '@myco/db/client.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
-import { createGrove, type GroveRecord } from '@myco/grove/registry.js';
+import { createGrove, registerProjectInGrove, type GroveRecord } from '@myco/grove/registry.js';
 import { enqueueOutbox, listPending } from '@myco/db/queries/team-outbox.js';
 import { teamRegistry, type TeamRecord } from '@myco/team/registry.js';
 import { createTeamId, createProjectId } from '@myco/grove/ids.js';
@@ -157,6 +157,13 @@ describe('team-sync DRAIN routing from the registry', () => {
   });
 
   function registerTeam(name: string, grove: GroveRecord, projectId: string): TeamRecord {
+    const projectRoot = path.join(tmpDir, 'projects', projectId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    registerProjectInGrove(
+      grove.id,
+      { projectId, projectName: `${name} Project`, projectRoot },
+      mycoHome,
+    );
     const teamId = createTeamId();
     const record: TeamRecord = {
       team_id: teamId,

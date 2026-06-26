@@ -302,7 +302,7 @@ export function SyncTab({ status, teamId }: { status: TeamStatusResponse; teamId
     setRebuilding(true);
     setRebuildMessage(null);
     try {
-      const res = await postJson<{ ok: boolean; handedOff: number; rejected: number; batches: number; error?: string }>('/team/rebuild');
+      const res = await postJson<{ ok: boolean; handedOff: number; rejected: number; batches: number; error?: string }>('/team/rebuild', { team_id: teamId });
       if (res.error) {
         setRebuildMessage(`Rebuild failed: ${res.error}`);
       } else {
@@ -317,11 +317,12 @@ export function SyncTab({ status, teamId }: { status: TeamStatusResponse; teamId
     } finally {
       setRebuilding(false);
     }
-  }, [queryClient]);
+  }, [queryClient, teamId]);
 
   const dlqMessages = dlq?.messages ?? [];
   const remoteTotal = syncSummary?.remote_machine_total ?? null;
   const localTotal = syncSummary?.local.total_records ?? null;
+  const homeServesTeam = syncSummary?.home_serves_team ?? true;
 
   return (
     <div className="flex flex-col gap-4">
@@ -355,28 +356,32 @@ export function SyncTab({ status, teamId }: { status: TeamStatusResponse; teamId
           <p className="text-sm text-terracotta break-words m-0">{syncSummary.remote_error}</p>
         ) : syncSummary ? (
           <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <StatCard label="Local records" value={formatNumber(localTotal)} sublabel="this machine" accent="outline" />
-              <StatCard label="Remote records" value={formatNumber(remoteTotal)} sublabel="this machine" accent="outline" />
-              <StatCard
-                label="Delta"
-                value={remoteTotal === null || localTotal === null ? '—' : tableDelta(localTotal, remoteTotal)}
-                accent={remoteTotal !== null && localTotal !== null && remoteTotal !== localTotal ? 'ochre' : 'outline'}
-              />
-              <VectorsTile remote={syncSummary.remote} localEmbedded={daemonStats?.embedding.embedded_count ?? null} />
-            </div>
-            {syncSummary.drift && syncSummary.drift.length > 0 ? (
+            {homeServesTeam ? (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatCard label="Local records" value={formatNumber(localTotal)} sublabel="this machine" accent="outline" />
+                <StatCard label="Remote records" value={formatNumber(remoteTotal)} sublabel="this machine" accent="outline" />
+                <StatCard
+                  label="Delta"
+                  value={remoteTotal === null || localTotal === null ? '—' : tableDelta(localTotal, remoteTotal)}
+                  accent={remoteTotal !== null && localTotal !== null && remoteTotal !== localTotal ? 'ochre' : 'outline'}
+                />
+                <VectorsTile remote={syncSummary.remote} localEmbedded={daemonStats?.embedding.embedded_count ?? null} />
+              </div>
+            ) : (
+              <p className="text-sm text-on-surface-variant m-0">No local projects are synced to this team from this Grove.</p>
+            )}
+            {homeServesTeam && syncSummary.drift && syncSummary.drift.length > 0 ? (
               <div className="flex flex-col gap-2">
                 <p className="text-xs text-on-surface-variant m-0">Local vs cloud (this machine)</p>
                 <DriftTable rows={syncSummary.drift} />
               </div>
-            ) : syncSummary.total_delta === 0 ? (
+            ) : homeServesTeam && syncSummary.total_delta === 0 ? (
               <p className="text-xs text-sage m-0">In sync</p>
             ) : null}
             <p className="text-xs text-on-surface-variant m-0">
               Last synced {formatTime(syncSummary.last_handoff?.completed_at)}
             </p>
-            {(syncSummary.total_delta ?? 0) > 0 && (
+            {homeServesTeam && (syncSummary.total_delta ?? 0) > 0 && (
               <div className="flex flex-col gap-2 border-t border-outline-variant/10 pt-3">
                 <div className="flex items-center justify-between gap-4">
                   <p className="text-xs text-on-surface-variant m-0">

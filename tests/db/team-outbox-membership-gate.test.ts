@@ -9,8 +9,9 @@
  *      while still carrying machine-scoped (team_members) self-rows.
  *   3. the AFTER DELETE triggers (gated in Task 1) journal a delete op only for
  *      member projects.
- * And purgeNonMemberOutbox self-heals historical bloat without ever touching
- * machine-scoped self-rows (project_id IS NULL).
+ * And purgeNonMemberOutbox self-heals pending non-member upsert bloat without
+ * touching machine-scoped self-rows (project_id IS NULL) or carried-team delete
+ * tombstones that still need to route after project removal.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -46,7 +47,7 @@ describe('outbox membership gate', () => {
   it('syncRow enqueues a member project row and skips a non-member one', () => {
     withDatabase(db(), () => {
       setTeamSyncEnabled(true);
-      setProjectSyncMembership(['member']);
+      setProjectSyncMembership([{ project_id: 'member', team_id: 'team-a' }]);
       syncRow('spores', spore('s1', 'member'));
       syncRow('spores', spore('s2', 'outsider'));
       expect(countPending()).toBe(1);
@@ -56,7 +57,7 @@ describe('outbox membership gate', () => {
   it('backfillUnsynced only enqueues rows whose project is a member', () => {
     withDatabase(db(), () => {
       setTeamSyncEnabled(true);
-      setProjectSyncMembership(['member']);
+      setProjectSyncMembership([{ project_id: 'member', team_id: 'team-a' }]);
       const conn = getDatabase();
       seedSpore(conn, 'm1', 'member'); // synced_at NULL
       seedSpore(conn, 'o1', 'outsider');
@@ -69,7 +70,7 @@ describe('outbox membership gate', () => {
   it('a delete of a non-member project row does NOT enqueue a delete op (trigger gate)', () => {
     withDatabase(db(), () => {
       setTeamSyncEnabled(true); // grove participates (mixed)
-      setProjectSyncMembership(['member']);
+      setProjectSyncMembership([{ project_id: 'member', team_id: 'team-a' }]);
       const conn = getDatabase();
       seedSpore(conn, 'm1', 'member');
       seedSpore(conn, 'o1', 'outsider');
@@ -81,24 +82,45 @@ describe('outbox membership gate', () => {
     });
   });
 
-  it('purgeNonMemberOutbox removes sent + pending rows for non-member projects, keeps members and self-rows', () => {
+  it('purgeNonMemberOutbox removes pending non-member upserts, keeps sent rows, delete tombstones, members, and self-rows', () => {
     withDatabase(db(), () => {
       const conn = getDatabase();
       // team_outbox.id is INTEGER PRIMARY KEY AUTOINCREMENT — use integer ids.
       const ins = conn.prepare(
-        `INSERT INTO team_outbox (id, table_name, row_id, operation, payload, machine_id, project_id, created_at, sent_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO team_outbox (id, table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at, sent_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       );
-      ins.run(1, 'spores', '1', 'upsert', '{}', 'm', 'member', 1, null); // member pending
-      ins.run(2, 'spores', '2', 'upsert', '{}', 'm', 'outsider', 1, 5); // non-member SENT
-      ins.run(3, 'spores', '3', 'upsert', '{}', 'm', 'outsider', 1, null); // non-member pending
-      ins.run(4, 'team_members', 'm', 'upsert', '{}', 'm', null, 1, 5); // self-row (project_id NULL)
+      ins.run(1, 'spores', '1', 'upsert', '{}', 'm', 'team-a', 'member', 1, null); // member pending
+      ins.run(2, 'spores', '2', 'upsert', '{}', 'm', 'team-a', 'outsider', 1, 5); // non-member SENT
+      ins.run(3, 'spores', '3', 'upsert', '{}', 'm', 'team-a', 'outsider', 1, null); // non-member pending
+      ins.run(4, 'team_members', 'm', 'upsert', '{}', 'm', null, null, 1, 5); // self-row (project_id NULL)
+      ins.run(5, 'spores', '5', 'delete', '{}', 'm', 'team-a', 'outsider', 1, null); // removal tombstone
       const removed = purgeNonMemberOutbox(['member']);
-      expect(removed).toBe(2);
+      expect(removed).toBe(1);
       const left = (conn.prepare('SELECT id FROM team_outbox ORDER BY id').all() as Array<{ id: number }>).map(
         (r) => r.id,
       );
-      expect(left).toEqual([1, 4]); // member row + self-row survive
+      expect(left).toEqual([1, 2, 4, 5]); // sent row, member row, self-row, and delete tombstone survive
+    });
+  });
+
+  it('purgeNonMemberOutbox can also drop pending rows for unregistered teams', () => {
+    withDatabase(db(), () => {
+      const conn = getDatabase();
+      const ins = conn.prepare(
+        `INSERT INTO team_outbox (id, table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at, sent_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      );
+      ins.run(1, 'spores', '1', 'upsert', '{}', 'm', 'team-a', 'member', 1, null);
+      ins.run(2, 'spores', '2', 'upsert', '{}', 'm', 'old-team', 'member', 1, null);
+      ins.run(3, 'spores', '3', 'delete', '{}', 'm', 'old-team', 'member', 1, null);
+
+      const removed = purgeNonMemberOutbox(['member'], ['team-a']);
+      expect(removed).toBe(1);
+      const left = (conn.prepare('SELECT id FROM team_outbox ORDER BY id').all() as Array<{ id: number }>).map(
+        (r) => r.id,
+      );
+      expect(left).toEqual([1, 3]);
     });
   });
 

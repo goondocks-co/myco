@@ -12,7 +12,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { TEAM_SYNC_OBSERVED_TABLES, type TeamSyncObservedTable } from '@myco/db/schema-ddl.js';
-import { isProjectSyncable } from '@myco/db/queries/team-sync-state.js';
+import { getSyncableProjectTeamId } from '@myco/db/queries/team-sync-state.js';
 import { getTeamMachineId } from '@myco/team/context.js';
 import { epochSeconds } from '@myco/constants.js';
 
@@ -119,6 +119,7 @@ export interface OutboxInsert {
   operation?: string;
   payload: string;
   machine_id: string;
+  team_id?: string | null;
   project_id?: string | null;
   created_at: number;
 }
@@ -137,6 +138,7 @@ export interface OutboxRow {
   operation: string;
   payload: Record<string, unknown>;
   machine_id: string;
+  team_id: string | null;
   project_id: string | null;
   created_at: number;
   sent_at: number | null;
@@ -153,6 +155,7 @@ const OUTBOX_COLUMNS = [
   'operation',
   'payload',
   'machine_id',
+  'team_id',
   'project_id',
   'created_at',
   'sent_at',
@@ -183,6 +186,7 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
     operation: row.operation as string,
     payload,
     machine_id: row.machine_id as string,
+    team_id: (row.team_id as string) ?? null,
     project_id: (row.project_id as string) ?? null,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,
@@ -220,12 +224,14 @@ export function syncRow(
   // enqueued by the daemon's reconcileSelfMember / backfill paths.) Membership
   // is only populated when the grove participates, so this subsumes the prior
   // grove-level getTeamSyncEnabled check.
-  if (!isProjectSyncable(projectId)) return;
+  const teamId = getSyncableProjectTeamId(projectId);
+  if (!teamId) return;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
     payload: JSON.stringify(sanitizeSyncPayload(tableName, row)),
     machine_id: getTeamMachineId(),
+    team_id: teamId,
     project_id: projectId,
     created_at: row.created_at ?? epochSeconds(),
   });
@@ -250,17 +256,21 @@ export function enqueueOutbox(data: OutboxInsert): OutboxRow {
   }
 
   const db = getDatabase();
+  const teamId = data.team_id !== undefined
+    ? data.team_id
+    : getSyncableProjectTeamId(data.project_id ?? null, db);
 
   const info = db.prepare(
     `INSERT INTO team_outbox (
-       table_name, row_id, operation, payload, machine_id, project_id, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.table_name,
     data.row_id,
     data.operation ?? 'upsert',
     data.payload,
     data.machine_id,
+    teamId ?? null,
     data.project_id ?? null,
     data.created_at,
   );
@@ -374,26 +384,75 @@ export function dropPendingForProjects(projectIds: string[]): number {
   const db = getDatabase();
   const placeholders = projectIds.map(() => '?').join(', ');
   const result = db.prepare(
-    `DELETE FROM team_outbox WHERE sent_at IS NULL AND project_id IN (${placeholders})`,
+    `DELETE FROM team_outbox
+      WHERE sent_at IS NULL
+        AND operation <> 'delete'
+        AND project_id IN (${placeholders})`,
   ).run(...projectIds);
   return result.changes;
 }
 
 /**
- * Delete outbox rows (sent OR pending) for project-scoped rows whose project is
- * not in the given member set. Self-rows (project_id IS NULL) are never touched.
- * This both stops the re-enqueue loop and self-heals historical bloat for groves
- * that were incorrectly enqueued before the membership gate existed.
+ * Delete stale pending outbox rows for project-scoped UPSERTs whose project is
+ * not in the given member set. DELETE tombstones are intentionally preserved:
+ * they carry the project row's original team_id and must be allowed to route
+ * after de-membership so the cloud copy is removed. Non-delete rows carrying a
+ * team_id that is no longer registered are dropped because there is no client to
+ * route them to.
  */
-export function purgeNonMemberOutbox(memberProjectIds: string[]): number {
+export function purgeNonMemberOutbox(memberProjectIds: string[], validTeamIds?: string[]): number {
   const db = getDatabase();
+  let removed = 0;
   if (memberProjectIds.length === 0) {
-    return db.prepare('DELETE FROM team_outbox WHERE project_id IS NOT NULL').run().changes;
+    removed += db.prepare(
+      `DELETE FROM team_outbox
+        WHERE sent_at IS NULL
+          AND project_id IS NOT NULL
+          AND operation <> 'delete'`,
+    ).run().changes;
+  } else {
+    const placeholders = memberProjectIds.map(() => '?').join(', ');
+    removed += db.prepare(
+      `DELETE FROM team_outbox
+        WHERE sent_at IS NULL
+          AND project_id IS NOT NULL
+          AND operation <> 'delete'
+          AND project_id NOT IN (${placeholders})`,
+    ).run(...memberProjectIds).changes;
   }
-  const placeholders = memberProjectIds.map(() => '?').join(', ');
-  return db.prepare(
-    `DELETE FROM team_outbox WHERE project_id IS NOT NULL AND project_id NOT IN (${placeholders})`,
-  ).run(...memberProjectIds).changes;
+  if (validTeamIds === undefined) {
+    return removed;
+  }
+  if (validTeamIds.length === 0) {
+    removed += db.prepare(
+      `DELETE FROM team_outbox
+        WHERE sent_at IS NULL
+          AND team_id IS NOT NULL
+          AND operation <> 'delete'`,
+    ).run().changes;
+  } else {
+    const teamPlaceholders = validTeamIds.map(() => '?').join(', ');
+    removed += db.prepare(
+      `DELETE FROM team_outbox
+        WHERE sent_at IS NULL
+          AND team_id IS NOT NULL
+          AND operation <> 'delete'
+          AND team_id NOT IN (${teamPlaceholders})`,
+    ).run(...validTeamIds).changes;
+  }
+  return removed;
+}
+
+export function countPendingDeleteTombstonesForTeam(teamId: string): number {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM team_outbox
+      WHERE sent_at IS NULL
+        AND operation = 'delete'
+        AND team_id = ?`,
+  ).get(teamId) as { count: number };
+  return row.count;
 }
 
 /**
@@ -432,8 +491,8 @@ function insertOutboxRowsForUpsert(
   if (rows.length === 0) return;
   db.transaction((batchRows: ReadonlyArray<Record<string, unknown>>) => {
     const stmt = db.prepare(
-      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, project_id, created_at)
-       VALUES (?, ?, 'upsert', ?, ?, ?, ?)`,
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at)
+       VALUES (?, ?, 'upsert', ?, ?, ?, ?, ?)`,
     );
     for (const row of batchRows) {
       // Carry project_id from the source row exactly as `syncRow` does, so
@@ -441,11 +500,15 @@ function insertOutboxRowsForUpsert(
       // worker. Machine-scoped rows (e.g. team_members) have no project_id
       // and resolve to null — correct for fan-out routing.
       const projectId = (row as { project_id?: string }).project_id ?? null;
+      const teamId = (row.__myco_team_id as string | undefined) ?? null;
+      const payloadRow = { ...row };
+      delete payloadRow.__myco_team_id;
       stmt.run(
         tableName,
         String(row.id),
-        JSON.stringify(sanitizeSyncPayload(tableName, row)),
+        JSON.stringify(sanitizeSyncPayload(tableName, payloadRow)),
         machineId,
+        teamId,
         projectId,
         now,
       );
@@ -543,25 +606,108 @@ export type { TeamSyncObservedTable };
 
 const BACKFILL_TABLE_SET = new Set<string>(TEAM_SYNC_BACKFILL_TABLES);
 
-export function countTeamSyncRows(machineId?: string): Record<TeamSyncObservedTable, number> {
+export interface ProjectRemovalTombstoneResult {
+  enqueued: number;
+  reset: number;
+}
+
+/**
+ * Enqueue carried-team delete tombstones for every local project-scoped row
+ * before a project is removed from team membership. The source rows stay local,
+ * but `synced_at` is reset so re-adding the project later re-pushes them through
+ * the normal unsynced backfill path.
+ */
+export function enqueueProjectRemovalTombstones(opts: {
+  projectId: string;
+  teamId: string;
+  machineId: string;
+  createdAt?: number;
+}): ProjectRemovalTombstoneResult {
+  const db = getDatabase();
+  const createdAt = opts.createdAt ?? epochSeconds();
+  let enqueued = 0;
+  let reset = 0;
+
+  db.transaction(() => {
+    const insert = db.prepare(
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, team_id, project_id, created_at)
+       VALUES (?, ?, 'delete', ?, ?, ?, ?, ?)`,
+    );
+
+    for (const table of RECONCILE_ELIGIBLE_TABLES) {
+      const rows = db.prepare(
+        `SELECT id, machine_id
+           FROM ${table}
+          WHERE project_id = ? AND machine_id = ?`,
+      ).all(opts.projectId, opts.machineId) as Array<{ id: string | number; machine_id: string }>;
+
+      for (const row of rows) {
+        insert.run(
+          table,
+          String(row.id),
+          JSON.stringify({ id: row.id, machine_id: row.machine_id }),
+          row.machine_id,
+          opts.teamId,
+          opts.projectId,
+          createdAt,
+        );
+      }
+      enqueued += rows.length;
+
+      if (BACKFILL_TABLE_SET.has(table)) {
+        reset += db.prepare(
+          `UPDATE ${table}
+              SET synced_at = NULL
+            WHERE project_id = ? AND machine_id = ?`,
+        ).run(opts.projectId, opts.machineId).changes;
+      }
+    }
+  })();
+
+  return { enqueued, reset };
+}
+
+export function countTeamSyncRows(
+  machineId?: string,
+  projectIds?: readonly string[],
+): Record<TeamSyncObservedTable, number> {
   const db = getDatabase();
   const counts = {} as Record<TeamSyncObservedTable, number>;
+  const projectScoped = projectIds !== undefined;
+  const projectPlaceholders = projectIds?.map(() => '?').join(', ') ?? '';
   for (const table of TEAM_SYNC_OBSERVED_TABLES) {
-    const row = machineId
-      ? db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE machine_id = ?`).get(machineId) as { count: number }
-      : db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+    if (projectScoped && (projectIds.length === 0 || table === 'team_members')) {
+      counts[table] = 0;
+      continue;
+    }
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (machineId) {
+      conditions.push('machine_id = ?');
+      params.push(machineId);
+    }
+    if (projectScoped) {
+      conditions.push(`project_id IN (${projectPlaceholders})`);
+      params.push(...projectIds);
+    }
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}${where}`).get(...params) as { count: number };
     counts[table] = row.count;
   }
   return counts;
 }
 
 /**
- * Mark source rows as synced after successful outbox flush.
+ * Mark upsert source rows as synced after successful outbox flush.
  *
- * Groups outbox records by table_name, then sets `synced_at` on the
+ * Groups upsert outbox records by table_name, then sets `synced_at` on the
  * corresponding source rows. This closes the re-enqueue loop: once
  * synced_at is non-NULL, `backfillUnsynced` skips the row even after
  * the outbox entry is pruned.
+ *
+ * Delete tombstones are delivery records, not source-row sync events; marking
+ * their source rows would corrupt re-add semantics after a project leaves and
+ * later rejoins a team.
  *
  * Note: with queues, `synced_at` records that the daemon handed the row
  * off to the worker — not that the queue consumer wrote it to D1. A
@@ -574,6 +720,7 @@ export function markSourceRowsSynced(records: OutboxRow[], syncedAt: number): vo
   // Group row_ids by table
   const byTable = new Map<string, string[]>();
   for (const rec of records) {
+    if (rec.operation !== 'upsert') continue;
     if (!BACKFILL_TABLE_SET.has(rec.table_name)) continue;
     const ids = byTable.get(rec.table_name) ?? [];
     ids.push(rec.row_id);
@@ -623,8 +770,16 @@ export function backfillAll(machineId: string): number {
  * Must use 'all' mode — skill_usage has no synced_at column, so 'unsynced'
  * mode's `synced_at IS NULL` predicate would error on it.
  */
-export function backfillAllForRebuild(machineId: string): number {
-  return backfillRows(machineId, 'all', REBUILD_TABLES);
+export function backfillAllForRebuild(machineId: string, teamId?: string): number {
+  return backfillRows(machineId, 'all', REBUILD_TABLES, { teamId });
+}
+
+export function backfillProjectForTeam(machineId: string, projectId: string, teamId: string): number {
+  return backfillRows(machineId, 'all', REBUILD_TABLES, {
+    includeMachineScoped: false,
+    projectId,
+    teamId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +870,7 @@ function backfillRows(
   machineId: string,
   mode: 'unsynced' | 'all',
   tables: readonly string[] = TEAM_SYNC_BACKFILL_TABLES,
+  opts: { includeMachineScoped?: boolean; projectId?: string; teamId?: string } = {},
 ): number {
   const db = getDatabase();
   let total = 0;
@@ -748,20 +904,33 @@ function backfillRows(
     // member. The machine-scoped team_members self-row table has no project_id
     // and is exempt — it must always backfill so the roster reaches the outbox.
     const isMachineScoped = table === 'team_members';
-    const memberFilter = isMachineScoped
-      ? ''
-      : ' AND project_id IN (SELECT project_id FROM team_sync_membership)';
+    if (isMachineScoped && opts.includeMachineScoped === false) continue;
+    const sourceExpr = isMachineScoped
+      ? `${table}.*, NULL AS __myco_team_id FROM ${table}`
+      : `${table}.*, team_sync_membership.team_id AS __myco_team_id FROM ${table}
+           INNER JOIN team_sync_membership ON team_sync_membership.project_id = ${table}.project_id`;
+    const filters: string[] = [];
+    const filterParams: unknown[] = [];
+    if (!isMachineScoped && opts.teamId) {
+      filters.push('team_sync_membership.team_id = ?');
+      filterParams.push(opts.teamId);
+    }
+    if (!isMachineScoped && opts.projectId) {
+      filters.push(`${table}.project_id = ?`);
+      filterParams.push(opts.projectId);
+    }
+    const filterSql = filters.length > 0 ? ` AND ${filters.join(' AND ')}` : '';
     const rows = mode === 'all'
-      ? db.prepare(`SELECT * FROM ${table} WHERE 1=1${memberFilter}`).all() as Record<string, unknown>[]
+      ? db.prepare(`SELECT ${sourceExpr} WHERE 1=1${filterSql}`).all(...filterParams) as Record<string, unknown>[]
       : db.prepare(
-          `SELECT * FROM ${table}
-           WHERE synced_at IS NULL${memberFilter}
+          `SELECT ${sourceExpr}
+           WHERE synced_at IS NULL${filterSql}
            AND NOT EXISTS (
              SELECT 1 FROM team_outbox
              WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
                AND team_outbox.sent_at IS NULL
            )`,
-        ).all(table) as Record<string, unknown>[];
+        ).all(...filterParams, table) as Record<string, unknown>[];
 
     if (rows.length === 0) continue;
     insertOutboxRowsForUpsert(db, table, rows, machineId, now);

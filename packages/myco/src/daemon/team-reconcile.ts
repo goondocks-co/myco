@@ -308,6 +308,7 @@ export interface ReconcilePartitionDeps {
 
 export interface ReconcilePartitionArgs {
   machineId: string;
+  teamId: string;
   projectId: string;
   table: string;
   /**
@@ -525,6 +526,7 @@ export async function reconcilePartition(
         operation: 'upsert',
         payload,
         machine_id: machineId,
+        team_id: args.teamId,
         project_id: projectId,
         created_at: now,
       });
@@ -546,6 +548,7 @@ export async function reconcilePartition(
         operation: 'delete',
         payload: JSON.stringify({ id, machine_id: machineId }),
         machine_id: machineId,
+        team_id: args.teamId,
         project_id: manifestProjectId,
         created_at: now,
       });

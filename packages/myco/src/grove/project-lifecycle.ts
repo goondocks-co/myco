@@ -107,7 +107,7 @@ export function deleteProjectPermanently(
     // best available outcome, since replacing it with a known-wrong empty
     // list would cause member-project deletes to silently skip D1 journaling.
     if (memberResolution.resolved) {
-      setProjectSyncMembership(memberResolution.projectIds, db);
+      setProjectSyncMembership(memberResolution.memberships, db);
     }
     // Each `DELETE FROM <table> WHERE project_id = ?` in deleteProjectRows
     // fires that table's `_team_ad` trigger, which journals the delete to

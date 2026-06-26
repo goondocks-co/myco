@@ -43,11 +43,14 @@ import {
   pruneOld,
   backfillUnsynced,
   backfillAllForRebuild,
+  backfillProjectForTeam,
+  countPendingDeleteTombstonesForTeam,
   discardRows,
   countPending,
   purgePendingOutbox,
   purgeNonMemberOutbox,
   enqueueOutbox,
+  enqueueProjectRemovalTombstones,
   localPartition,
   pendingRowIdsForPartition,
   sanitizeSyncPayload,
@@ -61,7 +64,11 @@ import {
 } from './team-reconcile.js';
 import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import { setTeamSyncEnabled, setProjectSyncMembership } from '@myco/db/queries/team-sync-state.js';
-import { memberProjectIdsForGrove, machineHasAnyTeamResolved } from '@myco/grove/project-tenancy.js';
+import {
+  memberProjectIdsForGrove,
+  memberProjectRefsForTeam,
+  machineHasAnyTeamResolved,
+} from '@myco/grove/project-tenancy.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -71,7 +78,7 @@ import {
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
-import { forEachGrove } from './scope-iteration.js';
+import { forEachGrove, type ForEachGroveOptions } from './scope-iteration.js';
 import { withDatabase, getDatabase } from '@myco/db/client.js';
 import { teamRegistry } from '@myco/team/registry.js';
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
@@ -111,7 +118,26 @@ export interface TeamSyncResult {
    * One-way repair: truncate THIS machine's cloud mirror, then re-push every
    * local row. Replaces the retired /verify drift reconciler.
    */
-  rebuildFromLocal: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
+  rebuildFromLocal: {
+    (cache: GroveRuntimeCache, requestContext?: MycoRequestContext, teamId?: string): Promise<TeamFlushResult>;
+    (requestContext?: MycoRequestContext, teamId?: string): Promise<TeamFlushResult>;
+  };
+  prepareProjectAddition: (
+    cache: GroveRuntimeCache,
+    groveId: string,
+    projectId: string,
+    teamId: string,
+  ) => Promise<{ enqueued: number }>;
+  prepareProjectRemoval: (
+    cache: GroveRuntimeCache,
+    groveId: string,
+    projectId: string,
+    teamId: string,
+  ) => Promise<{ enqueued: number; reset: number }>;
+  prepareTeamForget: (
+    cache: GroveRuntimeCache,
+    teamId: string,
+  ) => Promise<{ enqueued: number; flushErrors: number; pendingDeletes: number; reset: number }>;
   /**
    * Run flushPending across every registered Grove. Each Grove's outbox
    * lives in its own SQLite DB, so this fans out via `forEachGrove` and
@@ -288,18 +314,23 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   function participatingTeamIds(groveId: string | null): string[] {
-    if (!groveId) return [];
-    return [
-      ...new Set(
-        teamRegistry
-          .list()
-          .filter((t) => t.projects.some((p) => p.grove_id === groveId))
-          .map((t) => t.team_id),
-      ),
-    ];
+    const resolution = memberProjectIdsForGrove(groveId);
+    if (!resolution.resolved) return [];
+    return [...new Set(resolution.memberships.map((membership) => membership.team_id))];
   }
 
-  function teamIdsForRebuild(requestContext?: MycoRequestContext): string[] {
+  function teamIdsForRebuild(requestContext?: MycoRequestContext, explicitTeamId?: string): string[] {
+    if (explicitTeamId) {
+      const groveId = requestContext?.groveId ?? null;
+      const team = teamRegistry.get(explicitTeamId);
+      if (!team) return [];
+      if (!groveId) return [explicitTeamId];
+      const memberResolution = memberProjectIdsForGrove(groveId);
+      if (!memberResolution.resolved) return [];
+      return memberResolution.memberships.some((membership) => membership.team_id === explicitTeamId)
+        ? [explicitTeamId]
+        : [];
+    }
     const projectId = requestContext?.projectId;
     if (projectId) {
       const teamId = teamRegistry.membershipByProject().get(projectId);
@@ -533,8 +564,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     // be members.
     if (memberResolution.resolved) {
       setTeamSyncEnabled(memberProjectIds.length > 0);
-      setProjectSyncMembership(memberProjectIds);
-      purgeNonMemberOutbox(memberProjectIds);
+      setProjectSyncMembership(memberResolution.memberships);
+      purgeNonMemberOutbox(memberProjectIds, teams.map((t) => t.team_id));
     }
     // Short-circuit only when this machine has joined no team at all — there is
     // nowhere to route any row. With ≥1 registered team we must still drain
@@ -542,6 +573,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     if (teams.length === 0) return result;
 
     const map = teamRegistry.membershipByProject();
+    const registeredTeamIds = new Set(teams.map((t) => t.team_id));
     // Machine-scoped (null project_id) rows fan out to every team this machine
     // has joined, not just the teams with a project assigned to this Grove.
     const machineScopedTargetTeamIds = teams.map((t) => t.team_id);
@@ -574,13 +606,19 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
       for (const row of pending) {
         if (row.project_id != null) {
-          // Project-scoped row: route to the team that owns the project, or
-          // DROP if the project belongs to no registered team.
-          if (!map.has(row.project_id)) {
+          // Project-scoped row: route by the team stamped at enqueue. Legacy
+          // rows without team_id fall back to the old live membership lookup for
+          // one release so in-flight pre-v64 rows still drain.
+          const teamId = row.team_id ?? map.get(row.project_id) ?? null;
+          if (!teamId) {
             dropIds.push(row.id);
             continue;
           }
-          pushToTeam(map.get(row.project_id)!, row);
+          if (!registeredTeamIds.has(teamId)) {
+            if (row.operation !== 'delete') dropIds.push(row.id);
+            continue;
+          }
+          pushToTeam(teamId, row);
         } else if (machineScopedTargetTeamIds.length === 0) {
           // Machine-scoped row with no team to route to. teams.length === 0 is
           // already handled by the early return above, so this is defensive —
@@ -756,10 +794,24 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     return result;
   }
 
-  async function rebuildFromLocal(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
+  async function rebuildFromLocal(
+    cacheOrRequestContext?: GroveRuntimeCache | MycoRequestContext,
+    requestContextOrTeamId?: MycoRequestContext | string,
+    maybeSelectedTeamId?: string,
+  ): Promise<TeamFlushResult> {
+    const hasCache = isGroveRuntimeCache(cacheOrRequestContext);
+    const cache = hasCache ? cacheOrRequestContext : null;
+    const requestContext = hasCache
+      ? (typeof requestContextOrTeamId === 'object' && requestContextOrTeamId != null
+          ? requestContextOrTeamId
+          : defaultRequestContext)
+      : cacheOrRequestContext;
+    const selectedTeamId = hasCache
+      ? maybeSelectedTeamId
+      : (typeof requestContextOrTeamId === 'string' ? requestContextOrTeamId : undefined);
     const empty: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
-    const teamIds = teamIdsForRebuild(requestContext);
-    if (teamIds.length === 0) return { ...empty, error: 'team_not_configured' };
+    const teamIds = teamIdsForRebuild(requestContext, selectedTeamId);
+    if (teamIds.length === 0) return selectedTeamId ? empty : { ...empty, error: 'team_not_configured' };
 
     const clients: Array<{ teamId: string; client: TeamSyncClient }> = [];
     for (const teamId of teamIds) {
@@ -783,12 +835,26 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
 
     try {
-      const enqueued = backfillAllForRebuild(machineId);  // re-enqueue every local row including skill_usage
+      let enqueued = 0;
+      let result: TeamFlushResult;
+      if (selectedTeamId && cache) {
+        const refs = memberProjectRefsForTeam(selectedTeamId);
+        if (!refs.resolved) return { ...empty, error: 'team_registry_unresolved' };
+        const groveIds = new Set(refs.refs.map((p) => p.grove_id));
+        enqueued = await backfillTeamForRebuild(cache, selectedTeamId, groveIds);
+        result = aggregateToFlushResult(
+          await flushGroves(cache, 'team-sync-selected-rebuild-flush', (grove) => groveIds.has(grove.id)),
+        );
+      } else {
+        enqueued = selectedTeamId
+          ? backfillAllForRebuild(machineId, selectedTeamId)
+          : backfillAllForRebuild(machineId);  // re-enqueue every local row including skill_usage
+        result = await flushPending(requestContext);  // push them
+      }
       logger.info(LOG_KINDS.TEAM_SYNC_START, 'Rebuild from local: re-enqueued rows', {
         enqueued,
         team_ids: teamIds,
       });
-      const result = await flushPending(requestContext);  // push them
       if (rebuildErrors.length > 0 && !result.error) result.error = rebuildErrors.join('; ');
       return result;
     } catch (err) {
@@ -796,6 +862,47 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       const prefix = rebuildErrors.length > 0 ? `${rebuildErrors.join('; ')}; ` : '';
       return { ...empty, error: `${prefix}${(err as Error).message}` };
     }
+  }
+
+  function isGroveRuntimeCache(value: unknown): value is GroveRuntimeCache {
+    return typeof value === 'object' && value !== null && 'getDatabase' in value && 'withPinned' in value;
+  }
+
+  function aggregateToFlushResult(aggregate: TeamFlushAggregate): TeamFlushResult {
+    return {
+      handedOff: aggregate.flushed,
+      rejected: aggregate.rejected,
+      batches: aggregate.batches,
+      ...(aggregate.errors > 0 ? { error: `team_sync_flush_errors:${aggregate.errors}` } : {}),
+    };
+  }
+
+  async function backfillTeamForRebuild(
+    cache: GroveRuntimeCache,
+    teamId: string,
+    groveIds: ReadonlySet<string>,
+  ): Promise<number> {
+    let enqueued = 0;
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, db }) => {
+        await withDatabase(db, () => {
+          const memberResolution = memberProjectIdsForGrove(grove.id);
+          if (memberResolution.resolved) {
+            setTeamSyncEnabled(memberResolution.projectIds.length > 0);
+            setProjectSyncMembership(memberResolution.memberships);
+          }
+          enqueued += backfillAllForRebuild(machineId, teamId);
+        });
+      },
+      {
+        daemonStateDir,
+        jobName: 'team-sync-selected-rebuild-backfill',
+        shouldVisitGrove: (grove) => groveIds.has(grove.id),
+      },
+    );
+    return enqueued;
   }
 
   /**
@@ -822,9 +929,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       // An unresolved (indeterminate) registry read also short-circuits: we
       // cannot reconcile without knowing which projects are members.
       if (!memberResolution.resolved || memberResolution.projectIds.length === 0) return;
-      const memberProjectIds = memberResolution.projectIds;
 
-      const membershipByProject = teamRegistry.membershipByProject();
       const baseDeps: Omit<ReconcilePartitionDeps, 'client'> = {
         localPartition,
         pendingRowIdsForPartition,
@@ -835,9 +940,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         logger: reconcilePartitionLogger,
       };
 
-      for (const projectId of memberProjectIds) {
-        const teamId = membershipByProject.get(projectId);
-        const client = teamId ? getOrBuildTeamClient(teamId) : null;
+      for (const membership of memberResolution.memberships) {
+        const { project_id: projectId, team_id: teamId } = membership;
+        const client = getOrBuildTeamClient(teamId);
         // No reachable/configured team worker for this project this pass — skip
         // (its rows stay as-is for a later pass), never delete on a missing peer.
         if (!client) continue;
@@ -845,7 +950,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           try {
             await reconcilePartition(
               { ...baseDeps, client },
-              { machineId, projectId, table, forceFullDiff },
+              { machineId, teamId, projectId, table, forceFullDiff },
             );
           } catch (partitionErr) {
             logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Reconcile partition failed (skipping)', {
@@ -927,7 +1032,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     //     read must not flip enabled off (D1 orphan risk) or clear membership.
     if (memberResolution.resolved) {
       setTeamSyncEnabled(participates);
-      setProjectSyncMembership(memberProjectIds);
+      setProjectSyncMembership(memberResolution.memberships);
     }
 
     // (2) Drop outbox rows for non-member projects (sent or pending). Only
@@ -936,7 +1041,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     //     still be members.
     if (memberResolution.resolved) {
       try {
-        const purged = purgeNonMemberOutbox(memberProjectIds);
+        const purged = purgeNonMemberOutbox(memberProjectIds, teamRegistry.list().map((t) => t.team_id));
         if (purged > 0) {
           logger.info(LOG_KINDS.TEAM_SYNC_START, 'Purged outbox rows for non-member projects', {
             grove_id: groveId,
@@ -1038,7 +1143,11 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
    * via `withDatabase` for the duration of the per-Grove flush. Errors
    * are isolated per Grove via `forEachGrove`.
    */
-  async function flushAllGroves(cache: GroveRuntimeCache): Promise<TeamFlushAggregate> {
+  async function flushGroves(
+    cache: GroveRuntimeCache,
+    jobName: string,
+    shouldVisitGrove?: ForEachGroveOptions['shouldVisitGrove'],
+  ): Promise<TeamFlushAggregate> {
     const aggregate: TeamFlushAggregate = { groves: 0, flushed: 0, rejected: 0, batches: 0, errors: 0 };
     await forEachGrove(
       cache,
@@ -1059,7 +1168,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           if (result.error) aggregate.errors += 1;
         });
       },
-      { daemonStateDir, jobName: 'team-sync-flush' },
+      { daemonStateDir, jobName, shouldVisitGrove },
     );
 
     // Teams are machine-level, so provision each participating team once per
@@ -1072,6 +1181,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
 
     return aggregate;
+  }
+
+  async function flushAllGroves(cache: GroveRuntimeCache): Promise<TeamFlushAggregate> {
+    return flushGroves(cache, 'team-sync-flush');
   }
 
   /**
@@ -1103,6 +1216,126 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     );
   }
 
+  async function prepareProjectRemoval(
+    cache: GroveRuntimeCache,
+    groveId: string,
+    projectId: string,
+    teamId: string,
+  ): Promise<{ enqueued: number; reset: number }> {
+    const total = { enqueued: 0, reset: 0 };
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ db }) => {
+        await withDatabase(db, () => {
+          const result = enqueueProjectRemovalTombstones({ projectId, teamId, machineId });
+          total.enqueued += result.enqueued;
+          total.reset += result.reset;
+        });
+      },
+      {
+        daemonStateDir,
+        jobName: 'team-sync-project-removal',
+        shouldVisitGrove: (grove) => grove.id === groveId,
+      },
+    );
+    if (total.enqueued > 0 || total.reset > 0) {
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Prepared project team-removal tombstones', {
+        grove_id: groveId,
+        project_id: projectId,
+        team_id: teamId,
+        enqueued: total.enqueued,
+        reset: total.reset,
+      });
+    }
+    return total;
+  }
+
+  async function prepareProjectAddition(
+    cache: GroveRuntimeCache,
+    groveId: string,
+    projectId: string,
+    teamId: string,
+  ): Promise<{ enqueued: number }> {
+    const total = { enqueued: 0 };
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, db }) => {
+        await withDatabase(db, () => {
+          const memberResolution = memberProjectIdsForGrove(grove.id);
+          if (memberResolution.resolved) {
+            setTeamSyncEnabled(memberResolution.projectIds.length > 0);
+            setProjectSyncMembership(memberResolution.memberships);
+          }
+          total.enqueued += backfillProjectForTeam(machineId, projectId, teamId);
+        });
+      },
+      {
+        daemonStateDir,
+        jobName: 'team-sync-project-addition',
+        shouldVisitGrove: (grove) => grove.id === groveId,
+      },
+    );
+    if (total.enqueued > 0) {
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Prepared project team-addition rows', {
+        grove_id: groveId,
+        project_id: projectId,
+        team_id: teamId,
+        enqueued: total.enqueued,
+      });
+    }
+    return total;
+  }
+
+  async function countPendingDeleteTombstonesForTeamAcrossGroves(
+    cache: GroveRuntimeCache,
+    teamId: string,
+  ): Promise<number> {
+    const refs = memberProjectRefsForTeam(teamId);
+    if (!refs.resolved) return 0;
+    const groveIds = new Set(refs.refs.map((p) => p.grove_id));
+    let pendingDeletes = 0;
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ db }) => {
+        await withDatabase(db, () => {
+          pendingDeletes += countPendingDeleteTombstonesForTeam(teamId);
+        });
+      },
+      {
+        daemonStateDir,
+        jobName: 'team-sync-team-forget-pending-delete-count',
+        shouldVisitGrove: (grove) => groveIds.has(grove.id),
+      },
+    );
+    return pendingDeletes;
+  }
+
+  async function prepareTeamForget(
+    cache: GroveRuntimeCache,
+    teamId: string,
+  ): Promise<{ enqueued: number; flushErrors: number; pendingDeletes: number; reset: number }> {
+    const team = teamRegistry.get(teamId);
+    const total = { enqueued: 0, flushErrors: 0, pendingDeletes: 0, reset: 0 };
+    if (!team) return total;
+
+    const refs = memberProjectRefsForTeam(teamId);
+    if (!refs.resolved) return total;
+    for (const project of refs.refs) {
+      const result = await prepareProjectRemoval(cache, project.grove_id, project.project_id, teamId);
+      total.enqueued += result.enqueued;
+      total.reset += result.reset;
+    }
+    if (total.enqueued > 0) {
+      const aggregate = await flushAllGroves(cache);
+      total.flushErrors = aggregate.errors;
+    }
+    total.pendingDeletes = await countPendingDeleteTombstonesForTeamAcrossGroves(cache, teamId);
+    return total;
+  }
+
   /**
    * Reconcile team_sync_state.enabled for every registered Grove without pushing.
    * Mirrors flushAllGroves's forEachGrove fan-out exactly (same groveSyncContext,
@@ -1129,8 +1362,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           if (memberResolution.resolved) {
             const memberProjectIds = memberResolution.projectIds;
             setTeamSyncEnabled(memberProjectIds.length > 0);
-            setProjectSyncMembership(memberProjectIds);
-            purgeNonMemberOutbox(memberProjectIds);
+            setProjectSyncMembership(memberResolution.memberships);
+            purgeNonMemberOutbox(memberProjectIds, teamRegistry.list().map((t) => t.team_id));
           }
         });
       },
@@ -1164,6 +1397,9 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     rebuildFromLocal,
     flushAllGroves,
     reconcileGrove,
+    prepareProjectAddition,
+    prepareProjectRemoval,
+    prepareTeamForget,
     reconcileAllGroveFlags,
     reconcileAllGroves,
     registerFlushJob: (runner, cache) => {
