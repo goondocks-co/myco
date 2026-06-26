@@ -3,7 +3,7 @@
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { projectScopeFromRequestContext } from '@myco/grove/request-context.js';
-import { ALL_PROJECTS_SCOPE, type GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import {
   CANOPY_ENTRIES_ORDER_BY,
   getCanopyToolCallContext,
@@ -22,6 +22,7 @@ import { composeBlob } from '@myco/canopy/inject/compose.js';
 import { relativizeForLookup } from './canopy-inject.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { readCanopyEntry } from '@myco/canopy/read-service.js';
+import { resolveActionScope, InvalidActionScopeError } from './action-scope.js';
 
 function notFound(reason: string): RouteResponse {
   return { status: 404, body: errorBody('not_found', reason) };
@@ -596,13 +597,25 @@ export function registerCanopyReadRoutes(server: {
   const retryStuckHandler: RouteHandler = async (req) => {
     const ctx = req.requestContext;
     if (!ctx) return badRequest('missing_request_context');
-    const groveId = ctx.groveId ?? null;
-    // Mirror createEmbeddingDetailsHandler's scope derivation: default to the
-    // request's project; `?scope=grove` opts into the grove-wide reset that
-    // matches the grove-level stuck count shown in Operations.
-    const scope = typeof req.query.scope === 'string' && req.query.scope === 'grove'
-      ? ALL_PROJECTS_SCOPE
-      : projectScopeFromRequestContext(ctx);
+    let actionScope;
+    try {
+      actionScope = resolveActionScope({ body: req.body, requestContext: ctx });
+    } catch (err) {
+      if (err instanceof InvalidActionScopeError) {
+        return { status: 400, body: errorBody('bad_request', err.message) };
+      }
+      throw err;
+    }
+    // Map ActionScope → ProjectScope for the DAL: grove/all-groves fan out
+    // across all projects; project kind narrows to one.
+    const scope = actionScope.kind === 'project'
+      ? projectScope(actionScope.project_id)
+      : ALL_PROJECTS_SCOPE;
+    // Derive groveId from the body envelope; all-groves has no single grove_id
+    // so fall back to the request context.
+    const groveId = actionScope.kind !== 'all-groves'
+      ? actionScope.grove_id
+      : (ctx.groveId ?? null);
     const ids = serviceableProjectIds(groveId);
     const maxAttempts = effectiveCanopyDescribeMaxAttempts(scope, groveId);
     const reset = resetStuckDescribeAttempts(getDatabase(), scope, {

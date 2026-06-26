@@ -160,14 +160,21 @@ function captureRetryStuckHandler(
   return { handler, kicks };
 }
 
-function retryStuckRequest(fx: Fixture, query: Record<string, string>): RouteRequest {
+function retryStuckRequest(
+  fx: Fixture,
+  scopeKind: 'grove' | 'project' = 'project',
+  overrides: { projectId?: string } = {},
+): RouteRequest {
+  const scopeBody = scopeKind === 'grove'
+    ? { kind: 'grove', grove_id: fx.grove.id }
+    : { kind: 'project', grove_id: fx.grove.id, project_id: overrides.projectId ?? fx.projectId };
   return {
-    body: undefined,
-    query,
+    body: { scope: scopeBody },
+    query: {},
     params: {},
     pathname: '/api/canopy/describe/retry-stuck',
     requestContext: {
-      projectId: fx.projectId,
+      projectId: overrides.projectId ?? fx.projectId,
       groveId: fx.grove.id,
       machineId: 'local',
       projectVaultDir: resolveProjectVaultDir(fx.projectRoot),
@@ -197,7 +204,7 @@ describe('POST /api/canopy/describe/retry-stuck', () => {
     seedStuckRow(fx.orphanProjectId, 'orphan', 2);
 
     const { handler, kicks } = captureRetryStuckHandler(fx);
-    const res = await handler(retryStuckRequest(fx, { scope: 'grove' }));
+    const res = await handler(retryStuckRequest(fx, 'grove'));
 
     // Only the two serviceable rows reset.
     expect(res.body).toEqual({ reset: 2 });
@@ -212,7 +219,7 @@ describe('POST /api/canopy/describe/retry-stuck', () => {
     // No stuck rows present.
     seedStuckRow(fx.projectId, 'fresh', 0);
     const { handler, kicks } = captureRetryStuckHandler(fx);
-    const res = await handler(retryStuckRequest(fx, { scope: 'grove' }));
+    const res = await handler(retryStuckRequest(fx, 'grove'));
 
     expect(res.body).toEqual({ reset: 0 });
     expect(kicks).toEqual([]);
@@ -225,8 +232,8 @@ describe('POST /api/canopy/describe/retry-stuck', () => {
     seedStuckRow(fx.projectId, 'below-raised-cap', 3);
 
     const { handler, kicks } = captureRetryStuckHandler(fx);
-    // Project scope (no ?scope=grove) → effective cap resolved from config.
-    const res = await handler(retryStuckRequest(fx, {}));
+    // Project-scope body → effective cap resolved from project config.
+    const res = await handler(retryStuckRequest(fx, 'project'));
 
     expect(res.body).toEqual({ reset: 0 });
     expect(attemptsFor(fx.projectId)).toEqual([3]);
@@ -236,10 +243,41 @@ describe('POST /api/canopy/describe/retry-stuck', () => {
   it('project-scope reset fires a project-targeted kicker', async () => {
     seedStuckRow(fx.projectId, 'stuck', 2);
     const { handler, kicks } = captureRetryStuckHandler(fx);
-    const res = await handler(retryStuckRequest(fx, {}));
+    const res = await handler(retryStuckRequest(fx, 'project'));
 
     expect(res.body).toEqual({ reset: 1 });
     expect(kicks).toEqual([{ target: { groveId: fx.grove.id, projectId: fx.projectId } }]);
+  });
+
+  it('grove-body scope resets stuck rows across two registered projects (multi-project seam)', async () => {
+    // Register a second project in the same grove — the case the old
+    // query-based code silently missed: stuck rows in sibling projects were
+    // counted in the grove badge but never reset.
+    const projectId2 = 'proj_' + 'b2b2b2b2b2b2b2b2b2b2c2c2c2c2c2c2';
+    const projectRoot2 = path.join(fx.workDir, 'projects', 'second');
+    const projectVaultDir2 = resolveProjectVaultDir(projectRoot2);
+    fs.mkdirSync(projectVaultDir2, { recursive: true });
+    fs.writeFileSync(path.join(projectVaultDir2, 'myco.yaml'), 'version: 3\n');
+    registerProjectInGrove(fx.grove.id, {
+      projectId: projectId2,
+      projectName: 'second',
+      projectRoot: projectRoot2,
+    }, fx.mycoHome);
+    clearGroveRegistryCaches();
+
+    // Seed one stuck row in each registered project.
+    seedStuckRow(fx.projectId, 'p1-stuck', 2);
+    seedStuckRow(projectId2, 'p2-stuck', 2);
+
+    const { handler, kicks } = captureRetryStuckHandler(fx);
+    const res = await handler(retryStuckRequest(fx, 'grove'));
+
+    // Both projects' stuck rows must be reset under the grove-body scope.
+    expect(res.body).toEqual({ reset: 2 });
+    expect(attemptsFor(fx.projectId)).toEqual([0]);
+    expect(attemptsFor(projectId2)).toEqual([0]);
+    // Grove-wide reset fires a broadcast (no target).
+    expect(kicks).toEqual([{ target: undefined }]);
   });
 });
 
