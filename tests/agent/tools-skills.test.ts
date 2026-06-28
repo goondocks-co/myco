@@ -3000,6 +3000,115 @@ describe('vault skill tools', () => {
         expect.objectContaining({ kind: 'third-party-version', text: 'v22.11.0' }),
       ]);
     });
+
+    it('full_gate=true runs all write gates and returns batched result without writing anything', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const x = 1;\n');
+
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+
+      // Content with both a contamination issue (marker-artifact) and a fabricated path reference.
+      const result = await t.handler(
+        {
+          content: validSkillContent(
+            'full-gate-target',
+            '# Full Gate\n\nThis was added in PR #508.\nSee `packages/myco/src/does-not-exist.ts` for details.',
+          ),
+          name: 'full-gate-target',
+          full_gate: true,
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        ok: boolean;
+        issues: string[];
+        violations: string[];
+        fabrication?: { missing_paths?: string[] };
+      };
+
+      expect(parsed.ok).toBe(false);
+      // issues includes the contamination violation from validateSkillContent
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('marker-artifact'),
+      ]));
+      // fabrication gate fires for the nonexistent path
+      expect(parsed.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+
+      // No live skill was written — the .agents/skills directory must not exist
+      expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'full-gate-target'))).toBe(false);
+    });
+
+    it('full_gate=true returns ok=true for clean content', async () => {
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+
+      const result = await t.handler(
+        {
+          content: validSkillContent('clean-skill', '# Clean Skill\n\nThis skill covers the topic well.'),
+          name: 'clean-skill',
+          full_gate: true,
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as { ok: boolean; issues: string[]; violations: string[] };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.issues).toEqual([]);
+      expect(parsed.violations).toEqual([]);
+    });
+
+    it('full_gate=true with absent flag preserves the original {hard, warn} response shape', async () => {
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+
+      // Call WITHOUT full_gate — must get the original shape
+      const result = await t.handler(
+        {
+          content: validSkillContent('shape-check', '# Shape\n\nUse Node (v22.11.0) for local testing.'),
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        ok: boolean;
+        strict?: boolean;
+        hard: unknown[];
+        warn: unknown[];
+        hard_count: number;
+        warn_count: number;
+        // full_gate fields must NOT appear
+        issues?: unknown;
+        violations?: unknown;
+      };
+
+      // Original contamination-scan shape
+      expect(parsed.hard).toBeDefined();
+      expect(parsed.warn).toBeDefined();
+      expect(parsed.hard_count).toBeDefined();
+      expect(parsed.warn_count).toBeDefined();
+      // full_gate fields must be absent in the default path
+      expect(parsed.issues).toBeUndefined();
+      expect(parsed.violations).toBeUndefined();
+    });
+
+    it('full_gate=true rejects ".." in name before any filesystem access', async () => {
+      const t = findTool(tools, 'vault_scan_skill_contamination');
+
+      for (const badName of ['../escape', '../../etc/passwd', 'foo/../bar', '..']) {
+        const result = await t.handler(
+          {
+            content: validSkillContent('safe-content', '# Safe\n\nNo issues here.'),
+            name: badName,
+            full_gate: true,
+          },
+          undefined,
+        );
+
+        const parsed = parseResult(result) as { error?: string; ok?: boolean };
+        // Traversal guard fires; no fabrication or gate results should appear
+        expect(parsed.error).toContain('Invalid skill name');
+        expect(parsed.ok).toBeUndefined();
+      }
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -3160,9 +3269,10 @@ describe('vault skill tools', () => {
         },
         undefined,
       );
-      const parsed = parseResult(result) as { error?: string };
+      const parsed = parseResult(result) as { error?: string; issues?: string[] };
       expect(parsed.error).toBeDefined();
-      expect(parsed.error).toMatch(/validation failed/i);
+      expect(parsed.error).toMatch(/fix all listed issues/i);
+      expect(parsed.issues).toBeDefined();
     });
 
     it('rejects staging when hard skill-content contamination is present', async () => {
@@ -3191,7 +3301,7 @@ describe('vault skill tools', () => {
         undefined,
       );
       const parsed = parseResult(result) as { error?: string; issues?: string[] };
-      expect(parsed.error).toContain('validation failed');
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.issues).toEqual(expect.arrayContaining([
         expect.stringContaining('marker-artifact'),
       ]));
@@ -3228,10 +3338,67 @@ describe('vault skill tools', () => {
         },
         undefined,
       );
-      const parsed = parseResult(result) as { error?: string; missing_paths?: string[] };
-      expect(parsed.error).toContain('does not exist in this repository');
-      expect(parsed.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+      const parsed = parseResult(result) as { error?: string; fabrication?: { missing_paths?: string[] } };
+      expect(parsed.error).toContain('fix all listed issues');
+      expect(parsed.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
 
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      expect(fs.existsSync(stagedFile)).toBe(false);
+    });
+
+    it('batches structural and fabrication errors in one response (stage path)', async () => {
+      // Ensures collectSkillWriteIssues is used: content that is both structurally
+      // invalid (over-length description) AND references a nonexistent path must
+      // return BOTH classes of error in a single response.
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real-stage.ts'), 'export const x = 1;\n');
+
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Batch stage errors', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+
+      const tooLongDesc = 'a'.repeat(MAX_SKILL_DESCRIPTION_CHARS + 1);
+      const stageTool = findTool(tools, 'vault_stage_skill');
+      const result = await stageTool.handler(
+        {
+          candidate_id: candidate.id,
+          name: 'batch-stage-errors',
+          display_name: 'Batch Stage Errors',
+          description: tooLongDesc,
+          content:
+            '---\n' +
+            'name: myco:batch-stage-errors\n' +
+            `description: ${tooLongDesc}\n` +
+            'managed_by: myco\n' +
+            'user-invocable: true\n' +
+            'allowed-tools: Read, Grep, Glob\n' +
+            '---\n\n' +
+            '# Batch Errors\n\n' +
+            'See `packages/myco/src/does-not-exist-batch.ts` for details.\n',
+          rationale: 'test',
+        },
+        undefined,
+      );
+
+      const parsed = parseResult(result) as {
+        error?: string;
+        issues?: string[];
+        fabrication?: { missing_paths?: string[] };
+      };
+
+      // Both issue classes must be present in the single response.
+      expect(parsed.error).toContain('fix all listed issues');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('description exceeds maximum length'),
+      ]));
+      expect(parsed.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist-batch.ts');
+
+      // Nothing staged.
       const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
       expect(fs.existsSync(stagedFile)).toBe(false);
     });
@@ -3402,7 +3569,7 @@ describe('vault skill tools', () => {
         ),
       ) as { error?: string; issues?: string[] };
 
-      expect(result.error).toContain('validation failed');
+      expect(result.error).toContain('fix all listed issues');
       expect(result.issues?.some((issue) => issue.includes('Invalid YAML frontmatter'))).toBe(true);
     });
 
@@ -3439,7 +3606,7 @@ describe('vault skill tools', () => {
         ),
       ) as { error?: string; issues?: string[] };
 
-      expect(result.error).toContain('validation failed');
+      expect(result.error).toContain('fix all listed issues');
       expect(
         result.issues?.some((issue) =>
           issue.includes(`description exceeds maximum length of ${MAX_SKILL_DESCRIPTION_CHARS}`)),
@@ -3628,7 +3795,7 @@ describe('vault skill tools', () => {
         undefined,
       );
       const parsed = parseResult(result) as { error?: string; issues?: string[] };
-      expect(parsed.error).toContain('Staged skill failed validation');
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.issues).toEqual(expect.arrayContaining([
         expect.stringContaining('myco-version-parenthetical'),
       ]));
@@ -3665,9 +3832,9 @@ describe('vault skill tools', () => {
         { candidate_id: candidate.id },
         undefined,
       );
-      const parsed = parseResult(result) as { error?: string; missing_paths?: string[] };
-      expect(parsed.error).toContain('does not exist in this repository');
-      expect(parsed.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+      const parsed = parseResult(result) as { error?: string; fabrication?: { missing_paths?: string[] } };
+      expect(parsed.error).toContain('fix all listed issues');
+      expect(parsed.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
 
       const liveFile = path.join(tmpDir, '.agents', 'skills', 'finalize-fabrication', 'SKILL.md');
       expect(fs.existsSync(liveFile)).toBe(false);
@@ -3892,6 +4059,55 @@ describe('vault skill tools', () => {
       ) as { status: string; approved_at: number | null };
       expect(final.status).toBe('generated');
       expect(final.approved_at).toBe(approvedAt);
+    });
+
+    it('batches structural and fabrication errors in one response (finalize path)', async () => {
+      // Ensures collectSkillWriteIssues is used on the finalize path: staged content
+      // that is both contaminated (marker-artifact) AND references a nonexistent path
+      // must return BOTH classes of error in a single response without promoting.
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real-finalize.ts'), 'export const x = 1;\n');
+
+      const candidateTool = findTool(tools, 'vault_skill_candidates');
+      const candidate = parseResult(
+        await candidateTool.handler(
+          { action: 'create', topic: 'Batch finalize errors', rationale: 'r', ...validCandidateMetadata() },
+          undefined,
+        ),
+      ) as { id: string };
+      approveCandidate(candidate.id);
+      await stageForFinalize(candidate.id, 'batch-finalize-errors');
+
+      // Overwrite the staged file with content that has both a contamination issue
+      // and a fabricated path — the sequential gate previously stopped at the first.
+      const stagedFile = path.join(vaultDir, 'staging', 'skills', candidate.id, 'SKILL.md');
+      fs.writeFileSync(
+        stagedFile,
+        validSkillContent(
+          'batch-finalize-errors',
+          '# Batch\n\nThis was added in PR #508.\nSee `packages/myco/src/does-not-exist-finalize.ts` for details.\n',
+        ),
+      );
+
+      const finalizeTool = findTool(tools, 'vault_finalize_skill');
+      const result = await finalizeTool.handler({ candidate_id: candidate.id }, undefined);
+
+      const parsed = parseResult(result) as {
+        error?: string;
+        issues?: string[];
+        fabrication?: { missing_paths?: string[] };
+      };
+
+      // Both issue classes must appear in the single response.
+      expect(parsed.error).toContain('fix all listed issues');
+      expect(parsed.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('marker-artifact'),
+      ]));
+      expect(parsed.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist-finalize.ts');
+
+      // Skill must NOT have been promoted.
+      const liveFile = path.join(tmpDir, '.agents', 'skills', 'batch-finalize-errors', 'SKILL.md');
+      expect(fs.existsSync(liveFile)).toBe(false);
     });
   });
 });

@@ -325,7 +325,10 @@ phases:
          - user-invocable: copy EXACT value from existing skill
          - allowed-tools: copy EXACT value from existing skill
          - description: do not shorten (>10% reduction is rejected)
-      3. Write via vault_write_skill with a rationale explaining
+      3. Before writing, call vault_scan_skill_contamination with
+         `name` and `full_gate: true` to validate the proposed content;
+         fix all reported issues before calling vault_write_skill.
+      4. Write via vault_write_skill with a rationale explaining
          what specifically changed. Preserve the existing skill
          `source_ids` unless the update is based on new source evidence;
          when adding new evidence, pass the union of existing source_ids
@@ -431,6 +434,7 @@ phases:
       - Final assistant text <= 3 lines.
     tools:
       - vault_write_skill
+      - vault_scan_skill_contamination
       - vault_skill_records
       - vault_search_fts
       - fs_read
