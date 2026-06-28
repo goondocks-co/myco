@@ -6,7 +6,7 @@
  */
 
 import { parse as parseYaml } from 'yaml';
-import { scanForContamination } from './skill-contamination.js';
+import { descriptionHardContaminationLength, scanForContamination } from './skill-contamination.js';
 
 /** Maximum lines for a generated skill. */
 export const MAX_SKILL_LINES = 800;
@@ -324,11 +324,30 @@ export function checkFrontmatterPreservation(existing: string, incoming: string)
   // Lengthening is allowed (adding context), shortening is not (losing trigger keywords).
   const oldDesc = extractFrontmatterField(existing, 'description');
   const newDesc = extractFrontmatterField(incoming, 'description');
-  if (oldDesc && newDesc && newDesc.length < oldDesc.length * 0.9) {
-    violations.push(
-      `description shortened from ${oldDesc.length} to ${newDesc.length} chars (${Math.round((1 - newDesc.length / oldDesc.length) * 100)}% reduction). ` +
-      'Descriptions are the primary triggering mechanism — do not shorten them.',
-    );
+  if (oldDesc && newDesc) {
+    // Clamp the basis at the ceiling so the floor can never exceed what the
+    // ceiling allows — prevents a hard deadlock when the on-disk description
+    // is already over-length (e.g. oldLen 1138 → bare 0.9 basis of 1024.2
+    // would sit above the 1024 ceiling, making no new description valid).
+    const clampedOldLen = Math.min(oldDesc.length, MAX_SKILL_DESCRIPTION_CHARS);
+    // Discount HARD contamination present in the old description from the floor
+    // basis so that mandatory decontamination shortening never trips the gate.
+    // WARN-only contamination is not discounted — only HARD spans must be removed.
+    const hardContamLen = descriptionHardContaminationLength(existing);
+    const effectiveOldLen = Math.max(0, clampedOldLen - hardContamLen);
+    const floor = effectiveOldLen * 0.9;
+
+    if (newDesc.length < floor) {
+      const contamNote = hardContamLen > 0
+        ? ` (after discounting ${hardContamLen} chars of removable contamination)`
+        : '';
+      violations.push(
+        `description shortened from ${oldDesc.length} to ${newDesc.length} chars ` +
+        `(${Math.round((1 - newDesc.length / oldDesc.length) * 100)}% reduction). ` +
+        `Minimum allowed is ${Math.ceil(floor)} chars${contamNote}. ` +
+        'Descriptions are the primary triggering mechanism — do not shorten them.',
+      );
+    }
   }
 
   return violations;
