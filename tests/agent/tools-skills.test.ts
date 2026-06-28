@@ -2231,10 +2231,11 @@ describe('vault skill tools', () => {
           rationale: 'test',
         },
         undefined,
-      )) as { error?: string; missing_paths?: string[] };
+      )) as { error?: string; fabrication?: { missing_paths?: string[] } };
 
-      expect(result.error).toContain('does not exist in this repository');
-      expect(result.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
+      // Batched error: all gates run; fabrication findings are in `fabrication.*`
+      expect(result.error).toContain('fix all listed issues');
+      expect(result.fabrication?.missing_paths).toContain('packages/myco/src/does-not-exist.ts');
       // No file should have been written for a rejected skill.
       expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'fabricated-skill', 'SKILL.md'))).toBe(false);
     });
@@ -2454,7 +2455,8 @@ describe('vault skill tools', () => {
         undefined,
       );
       const parsed = parseResult(result) as { error?: string; violations?: string[] };
-      expect(parsed.error).toContain('protected frontmatter fields were changed');
+      // Batched error: all gates run; preservation violations in `violations`
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.violations).toBeDefined();
       expect(parsed.violations!.some(v => v.includes('user-invocable'))).toBe(true);
     });
@@ -2488,7 +2490,8 @@ describe('vault skill tools', () => {
         undefined,
       );
       const parsed = parseResult(result) as { error?: string; violations?: string[] };
-      expect(parsed.error).toContain('protected frontmatter fields were changed');
+      // Batched error: all gates run; preservation violations in `violations`
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.violations!.some(v => v.includes('allowed-tools'))).toBe(true);
     });
 
@@ -2540,7 +2543,8 @@ describe('vault skill tools', () => {
       );
 
       const parsed = parseResult(result) as { error?: string; issues?: string[] };
-      expect(parsed.error).toContain('Skill validation failed');
+      // Batched error: all gates run; validation issues in `issues`
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.issues).toEqual(expect.arrayContaining([
         expect.stringContaining('invented-myco-skill-lint-command'),
         expect.stringContaining('invalid-survey-candidate-status'),
@@ -2748,7 +2752,8 @@ describe('vault skill tools', () => {
       );
 
       const parsed = parseResult(result) as { error?: string; issues?: string[] };
-      expect(parsed.error).toContain('Skill validation failed');
+      // Batched error: all gates run; validation issues in `issues`
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.issues).toEqual(expect.arrayContaining([
         expect.stringContaining('myco-version-parenthetical'),
       ]));
@@ -2782,7 +2787,8 @@ describe('vault skill tools', () => {
       );
 
       const parsed = parseResult(result) as { error?: string; issues?: string[] };
-      expect(parsed.error).toContain('Skill validation failed');
+      // Batched error: all gates run; validation issues in `issues`
+      expect(parsed.error).toContain('fix all listed issues');
       expect(parsed.issues).toEqual(expect.arrayContaining([
         expect.stringContaining('third-party-version'),
         expect.stringContaining('reference-id'),
@@ -2818,6 +2824,107 @@ describe('vault skill tools', () => {
       const parsed = parseResult(result) as { generation?: number; error?: string };
       expect(parsed.error).toBeUndefined();
       expect(parsed.generation).toBe(2);
+    });
+
+    it('batches ceiling violation and fabrication error in one response on update', async () => {
+      // Seed real source so the fabrication gate can see the codebase.
+      fs.mkdirSync(path.join(tmpDir, 'packages', 'myco', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'myco', 'src', 'real.ts'), 'export const realThing = 1;\n');
+
+      const t = findTool(tools, 'vault_write_skill');
+
+      // Write initial valid skill with a short description.
+      await t.handler(
+        {
+          name: 'batch-error-test',
+          display_name: 'Batch Error Test',
+          description: 'A'.repeat(100),
+          content: [
+            '---',
+            'name: myco:batch-error-test',
+            `description: ${'A'.repeat(100)}`,
+            'managed_by: myco',
+            'user-invocable: true',
+            'allowed-tools: Read, Grep, Glob',
+            '---',
+            '# Batch Error Test',
+          ].join('\n'),
+        },
+        undefined,
+      );
+
+      // Update: description over ceiling (1025 chars) AND references a fabricated path.
+      const overLimitDesc = 'X'.repeat(1025);
+      const result = parseResult(
+        await t.handler(
+          {
+            name: 'batch-error-test',
+            display_name: 'Batch Error Test',
+            description: overLimitDesc,
+            content: [
+              '---',
+              'name: myco:batch-error-test',
+              `description: ${overLimitDesc}`,
+              'managed_by: myco',
+              'user-invocable: true',
+              'allowed-tools: Read, Grep, Glob',
+              '---',
+              '# Batch Error Test',
+              '',
+              'See `packages/myco/src/does-not-exist-at-all.ts`.',
+            ].join('\n'),
+          },
+          undefined,
+        ),
+      ) as {
+        error?: string;
+        issues?: string[];
+        fabrication?: { missing_paths?: string[] };
+        description_window?: { min: number; max: number; current: number };
+      };
+
+      // Single response surfaces both error classes.
+      expect(result.error).toContain('fix all listed issues');
+      expect(result.issues).toBeDefined();
+      expect(result.issues!.some(i => i.includes('description exceeds maximum'))).toBe(true);
+      expect(result.fabrication).toBeDefined();
+      expect(result.fabrication!.missing_paths).toContain('packages/myco/src/does-not-exist-at-all.ts');
+      // description_window is provided on updates so the agent knows the range.
+      expect(result.description_window).toBeDefined();
+      expect(result.description_window!.max).toBe(1024);
+    });
+
+    it('rejects names with path separators or dot-dot before any filesystem access', async () => {
+      const t = findTool(tools, 'vault_write_skill');
+      // The traversal guard fires first — before resolvePublishedSkillPaths,
+      // existsSync, or readFileSync are called. Verify by checking:
+      //   (a) error is the guard message (not a filesystem or validation error),
+      //   (b) no batch-validation fields appear (guard exits before validation),
+      //   (c) the .agents/skills directory was never created (no writes).
+      const liveSkillsDir = path.join(tmpDir, '.agents', 'skills');
+
+      for (const name of ['../../etc', '../foo', 'foo/bar', '..', 'foo/../bar']) {
+        const result = parseResult(
+          await t.handler(
+            {
+              name,
+              display_name: 'Invalid Skill',
+              description: 'Should be rejected before any filesystem access',
+              content: validSkillContent(name),
+            },
+            undefined,
+          ),
+        ) as { error?: string; issues?: unknown; violations?: unknown; fabrication?: unknown };
+
+        expect(result.error).toContain('Invalid skill name');
+        // Guard fires before content validation — no batch fields should appear.
+        expect(result.issues).toBeUndefined();
+        expect(result.violations).toBeUndefined();
+        expect(result.fabrication).toBeUndefined();
+      }
+
+      // Nothing was written to (or created under) the skills directory.
+      expect(fs.existsSync(liveSkillsDir)).toBe(false);
     });
   });
 

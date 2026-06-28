@@ -285,6 +285,27 @@ export const DESCRIPTION_DUPLICATE_THRESHOLD = 0.4;
 export const TOPIC_OVERLAP_THRESHOLD = 0.6;
 
 /**
+ * Minimum allowed description length for an update write.
+ *
+ * The basis is clamped at the ceiling so the floor can never exceed what the
+ * ceiling allows — prevents a deadlock when the on-disk description is already
+ * over-length (e.g. oldLen 1138 → bare 0.9 × 1024 sits at 921.6, not 1024.2).
+ * Hard contamination already present in the old description is discounted so
+ * that mandatory decontamination shortening never trips the gate.
+ *
+ * Exported so `collectSkillWriteIssues` (skill-write-validator) can compute the
+ * description window without duplicating this formula.
+ */
+export function computeDescriptionFloor(existing: string): number {
+  const oldDesc = extractFrontmatterField(existing, 'description');
+  if (!oldDesc) return 0;
+  const clampedOldLen = Math.min(oldDesc.length, MAX_SKILL_DESCRIPTION_CHARS);
+  const hardContamLen = descriptionHardContaminationLength(existing);
+  const effectiveOldLen = Math.max(0, clampedOldLen - hardContamLen);
+  return effectiveOldLen * 0.9;
+}
+
+/**
  * Compare protected frontmatter fields between existing and new content.
  * Returns an array of violation descriptions (empty = all preserved).
  *
@@ -325,19 +346,11 @@ export function checkFrontmatterPreservation(existing: string, incoming: string)
   const oldDesc = extractFrontmatterField(existing, 'description');
   const newDesc = extractFrontmatterField(incoming, 'description');
   if (oldDesc && newDesc) {
-    // Clamp the basis at the ceiling so the floor can never exceed what the
-    // ceiling allows — prevents a hard deadlock when the on-disk description
-    // is already over-length (e.g. oldLen 1138 → bare 0.9 basis of 1024.2
-    // would sit above the 1024 ceiling, making no new description valid).
-    const clampedOldLen = Math.min(oldDesc.length, MAX_SKILL_DESCRIPTION_CHARS);
-    // Discount HARD contamination present in the old description from the floor
-    // basis so that mandatory decontamination shortening never trips the gate.
-    // WARN-only contamination is not discounted — only HARD spans must be removed.
-    const hardContamLen = descriptionHardContaminationLength(existing);
-    const effectiveOldLen = Math.max(0, clampedOldLen - hardContamLen);
-    const floor = effectiveOldLen * 0.9;
-
+    const floor = computeDescriptionFloor(existing);
     if (newDesc.length < floor) {
+      // Recompute for the note message — one extra call is acceptable to keep
+      // the floor formula in a single place (computeDescriptionFloor).
+      const hardContamLen = descriptionHardContaminationLength(existing);
       const contamNote = hardContamLen > 0
         ? ` (after discounting ${hardContamLen} chars of removable contamination)`
         : '';

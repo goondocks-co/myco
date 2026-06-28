@@ -62,10 +62,10 @@ import {
 } from '@myco/agent/skill-candidate-quality.js';
 import {
   validateSkillContent,
-  checkFrontmatterPreservation,
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './skill-validator.js';
+import { collectSkillWriteIssues } from './skill-write-validator.js';
 import { scanForContamination } from './skill-contamination.js';
 import {
   writeStagedSkill,
@@ -1598,24 +1598,17 @@ export function createSkillTools(deps: VaultToolDeps) {
       rationale: z.string().optional().describe('Why this skill was created or updated'),
     },
     async (args) => {
-      // Validate skill content before writing -- reject malformed skills
-      const validationErrors = validateSkillContent(args.content, args.name);
-      if (validationErrors.length > 0) {
-        return textResult({
-          error: 'Skill validation failed. Fix these issues and try again.',
-          issues: validationErrors,
-        });
-      }
-
-      // Path traversal guard -- reject names containing path separators or dot-dot sequences
+      // Traversal guard — must run before ANY filesystem access.
+      // publishedSkillRelativePath() is unsanitized string interpolation;
+      // a name with '..' must never reach resolvePublishedSkillPaths or readFileSync.
       if (!args.name || /[/\\]|\.\./.test(args.name)) {
         return textResult({
           error: 'Invalid skill name: must be a simple directory name without path separators or ".."',
         });
       }
 
-      // Dedup gate is self-gating: returns null when same-name exists
-      // (the evolve path) so the caller falls through.
+      // Dedup gate: returns null when same-name exists (evolve path), so the
+      // caller falls through to the existing-record check below.
       const dedupError = checkDedupGates({
         candidate_id: args.candidate_id,
         name: args.name,
@@ -1624,42 +1617,44 @@ export function createSkillTools(deps: VaultToolDeps) {
       if (dedupError) {
         return textResult(dedupError);
       }
+
       const existing = getSkillRecordByName(args.name, scope);
-
       const root = projectRoot ?? process.cwd();
-      // Path shape is owned by the publication module — don't hand-build it.
-      const skillPath = resolve(root, publishedSkillRelativePath(args.name));
 
-      // Frontmatter preservation guard — when updating an existing skill,
-      // reject writes that change protected fields (user-invocable, allowed-tools).
-      const priorContent = existsSync(skillPath) ? readFileSync(skillPath, 'utf-8') : undefined;
-      if (priorContent !== undefined) {
-        const violations = checkFrontmatterPreservation(priorContent, args.content);
-        if (violations.length > 0) {
-          return textResult({
-            error: 'Skill update rejected: protected frontmatter fields were changed. Read the existing skill and preserve these values exactly.',
-            violations,
-          });
-        }
+      // Resolve the skill path — safe because the traversal guard already ran.
+      // resolvePublishedSkillPaths also performs its own path-escape check as
+      // a secondary defence.
+      const resolvedPaths = resolvePublishedSkillPaths(root, args.name);
+      if (!resolvedPaths.ok) {
+        return textResult({ error: 'Invalid skill name: resolved path escapes .agents/skills' });
       }
 
-      // Fabrication gate — skills are authoritative content that agents load
-      // and follow, so a confidently-wrong code reference is worse than none.
-      // Deterministically verify the concrete code claims in the proposed
-      // content against the codebase. This is the one check a cheap model or a
-      // skipped prompt-level verification cannot bypass. Inline path/symbol
-      // claims that do not exist are rejected (asserted as real → clear
-      // fabrication); symbols that appear only inside ```code``` examples are
-      // surfaced as warnings, since illustrative pseudo-code may legitimately
-      // use invented names. On evolve, only NEWLY introduced claims are gated.
-      const claimGateError = verifySkillContentClaimGate({
+      // Read prior content once — used by the preservation gate, the description
+      // window, the fabrication gate, and the evolve-path rollback.
+      const priorContent = existsSync(resolvedPaths.paths.skillPath)
+        ? readFileSync(resolvedPaths.paths.skillPath, 'utf-8')
+        : undefined;
+
+      // Run all content-validation gates in one pass and batch every failure.
+      // The agent previously saw at most one class of error per attempt; now it
+      // sees the full picture so it can fix everything before the next write.
+      const { issues, violations, claim, descWindow } = collectSkillWriteIssues({
         content: args.content,
-        root,
-        priorContent,
-        label: 'vault_write_skill',
         name: args.name,
+        priorContent,
+        root,
       });
-      if (claimGateError) return textResult(claimGateError);
+
+      if (issues.length > 0 || violations.length > 0 || claim !== null) {
+        const response: Record<string, unknown> = {
+          error: 'Skill write rejected — fix all listed issues and retry.',
+        };
+        if (issues.length > 0) response.issues = issues;
+        if (violations.length > 0) response.violations = violations;
+        if (claim !== null) response.fabrication = claim;
+        if (descWindow !== undefined) response.description_window = descWindow;
+        return textResult(response);
+      }
 
       // Create path: delegate to the shared promoteNewSkill helper.
       // Candidate linking uses exact-then-prefix matching since the
@@ -1722,7 +1717,11 @@ export function createSkillTools(deps: VaultToolDeps) {
       // prior SKILL.md content on rollback. This branch stays inline
       // because its rollback semantics (restore prior content) differ
       // from the create helper.
-      const priorSkillContent = readFileSync(skillPath, 'utf-8');
+      // priorContent was already read above; reuse it to avoid a second
+      // disk read. If the file was absent despite a DB record existing
+      // (orphan), fall back to re-reading — this will throw if still
+      // missing, preserving the same behavior as before.
+      const priorSkillContent = priorContent ?? readFileSync(resolvedPaths.paths.skillPath, 'utf-8');
 
       try {
         const writeResult = writePublishedSkillFile(root, args.name, args.content);
