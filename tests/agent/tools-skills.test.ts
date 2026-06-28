@@ -2926,6 +2926,155 @@ describe('vault skill tools', () => {
       // Nothing was written to (or created under) the skills directory.
       expect(fs.existsSync(liveSkillsDir)).toBe(false);
     });
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker tests
+    // -----------------------------------------------------------------------
+
+    /**
+     * Content that reliably fails the content-validation gate: the body
+     * contains a hard contamination span (v0.27.17 version marker).
+     */
+    function contaminatedSkillContent(name: string) {
+      return validSkillContent(
+        name,
+        '# Skill\n\nFixed in v0.27.17: hard contamination marker that triggers the gate.\n',
+      );
+    }
+
+    it('defers a skill after 3 consecutive validation failures in the same run', async () => {
+      // Use a unique run ID so the module-level counter is isolated from other tests.
+      const circuitTools = createVaultTools(TEST_AGENT_ID, 'run-breaker-deferred', {
+        projectRoot: tmpDir,
+        vaultDir,
+        requestContext: TEST_REQUEST_CONTEXT,
+      });
+      const t = findTool(circuitTools, 'vault_write_skill');
+      const args = {
+        name: 'breaker-test',
+        display_name: 'Breaker Test',
+        description: 'Circuit breaker test skill',
+        content: contaminatedSkillContent('breaker-test'),
+        rationale: 'test',
+      };
+
+      // Attempts 1–3: validation errors, no deferral yet.
+      for (let i = 0; i < 3; i++) {
+        const result = parseResult(await t.handler(args, undefined)) as {
+          error?: string;
+          deferred?: boolean;
+        };
+        expect(result.deferred).toBeUndefined();
+        expect(result.error).toContain('fix all listed issues');
+      }
+
+      // Attempt 4: circuit breaker fires — deferred, not a validation error list.
+      const deferred = parseResult(await t.handler(args, undefined)) as {
+        error?: string;
+        deferred?: boolean;
+        name?: string;
+      };
+      expect(deferred.deferred).toBe(true);
+      expect(deferred.name).toBe('breaker-test');
+      expect(deferred.error).toContain('deferred after 3 failed validation attempts');
+      expect(deferred.error).toContain('vault_report');
+      // No per-gate detail fields — this is a terminal deferred response.
+      expect((deferred as Record<string, unknown>).issues).toBeUndefined();
+      expect((deferred as Record<string, unknown>).fabrication).toBeUndefined();
+    });
+
+    it('resets the circuit breaker counter on a successful write; writes to other skills are independent', async () => {
+      // Use a unique run ID so the module-level counter is isolated from other tests.
+      const circuitTools = createVaultTools(TEST_AGENT_ID, 'run-breaker-reset', {
+        projectRoot: tmpDir,
+        vaultDir,
+        requestContext: TEST_REQUEST_CONTEXT,
+      });
+      const t = findTool(circuitTools, 'vault_write_skill');
+
+      // Fail skill "breaker-reset-x" twice — approaching but not at cap.
+      const argsX = {
+        name: 'breaker-reset-x',
+        display_name: 'Breaker Reset X',
+        description: 'Circuit breaker reset test',
+        content: contaminatedSkillContent('breaker-reset-x'),
+        rationale: 'test',
+      };
+      for (let i = 0; i < 2; i++) {
+        const r = parseResult(await t.handler(argsX, undefined)) as { error?: string; deferred?: boolean };
+        expect(r.deferred).toBeUndefined();
+      }
+
+      // Fail skill "breaker-reset-y" — Y's counter is independent of X's.
+      const argsY = {
+        name: 'breaker-reset-y',
+        display_name: 'Breaker Reset Y',
+        description: 'Independent skill counter test',
+        content: contaminatedSkillContent('breaker-reset-y'),
+        rationale: 'test',
+      };
+      const rY = parseResult(await t.handler(argsY, undefined)) as { error?: string; deferred?: boolean };
+      expect(rY.deferred).toBeUndefined();
+
+      // Write X successfully (valid content) — should reset X's counter.
+      const successArgs = {
+        name: 'breaker-reset-x',
+        display_name: 'Breaker Reset X',
+        description: 'Circuit breaker reset test',
+        content: validSkillContent('breaker-reset-x'),
+        rationale: 'test',
+      };
+      const ok = parseResult(await t.handler(successArgs, undefined)) as { id?: string; error?: string };
+      expect(ok.error).toBeUndefined();
+      expect(ok.id).toBeDefined();
+
+      // After the reset, X can fail 3 more times without deferred triggering.
+      for (let i = 0; i < 3; i++) {
+        const r = parseResult(await t.handler(argsX, undefined)) as { error?: string; deferred?: boolean };
+        expect(r.deferred).toBeUndefined();
+        expect(r.error).toContain('fix all listed issues');
+      }
+    });
+
+    it('circuit breaker counters are isolated per run — no cross-run leak', async () => {
+      // Run A exhausts X's cap.
+      const runATools = createVaultTools(TEST_AGENT_ID, 'run-breaker-a', {
+        projectRoot: tmpDir,
+        vaultDir,
+        requestContext: TEST_REQUEST_CONTEXT,
+      });
+      const tA = findTool(runATools, 'vault_write_skill');
+      const args = {
+        name: 'breaker-leak-x',
+        display_name: 'Breaker Leak X',
+        description: 'Cross-run leak test',
+        content: contaminatedSkillContent('breaker-leak-x'),
+        rationale: 'test',
+      };
+
+      for (let i = 0; i < 3; i++) {
+        await tA.handler(args, undefined);
+      }
+      // Run A is now at cap — next attempt returns deferred.
+      const deferredA = parseResult(await tA.handler(args, undefined)) as { deferred?: boolean };
+      expect(deferredA.deferred).toBe(true);
+
+      // Run B starts fresh — the same skill name with a different runId
+      // must NOT inherit run A's counter.
+      const runBTools = createVaultTools(TEST_AGENT_ID, 'run-breaker-b', {
+        projectRoot: tmpDir,
+        vaultDir,
+        requestContext: TEST_REQUEST_CONTEXT,
+      });
+      const tB = findTool(runBTools, 'vault_write_skill');
+      const resultB = parseResult(await tB.handler(args, undefined)) as {
+        error?: string;
+        deferred?: boolean;
+      };
+      // Run B should see a validation error, not a deferred result.
+      expect(resultB.deferred).toBeUndefined();
+      expect(resultB.error).toContain('fix all listed issues');
+    });
   });
 
   describe('vault_scan_skill_contamination', () => {

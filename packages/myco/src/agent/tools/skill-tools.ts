@@ -124,6 +124,24 @@ const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS',
 const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
 
 // ---------------------------------------------------------------------------
+// Per-run failed-write circuit breaker
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-run, per-skill consecutive validation-rejection counters.
+ * Outer key: runId. Inner key: skill directory name. Value: consecutive
+ * content-validation failure count for that skill in that run.
+ * A successful vault_write_skill resets the counter to zero; a validation
+ * rejection increments it. When the count reaches the cap, the next rejected
+ * write returns a terminal deferred result instead of another validation error
+ * so one unsatisfiable skill cannot exhaust the run budget.
+ */
+const skillWriteFailureCounts = new Map<string, Map<string, number>>();
+
+/** Consecutive-failure cap per skill per run before deferral triggers. */
+const SKILL_WRITE_FAILURE_CAP = 3;
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -1645,6 +1663,22 @@ export function createSkillTools(deps: VaultToolDeps) {
       });
 
       if (issues.length > 0 || violations.length > 0 || claim !== null) {
+        // Circuit breaker: cap consecutive validation rejections per run+skill
+        // so one unsatisfiable skill cannot exhaust the run budget.
+        const runCounts = skillWriteFailureCounts.get(deps.runId) ?? new Map<string, number>();
+        const currentCount = runCounts.get(args.name) ?? 0;
+        if (currentCount >= SKILL_WRITE_FAILURE_CAP) {
+          return textResult({
+            error:
+              `Skill ${args.name} deferred after ${SKILL_WRITE_FAILURE_CAP} failed validation attempts this run — ` +
+              'stop retrying it; continue with other skills and record it via vault_report.',
+            deferred: true,
+            name: args.name,
+          });
+        }
+        runCounts.set(args.name, currentCount + 1);
+        skillWriteFailureCounts.set(deps.runId, runCounts);
+
         const response: Record<string, unknown> = {
           error: 'Skill write rejected — fix all listed issues and retry.',
         };
@@ -1697,6 +1731,8 @@ export function createSkillTools(deps: VaultToolDeps) {
           label: 'vault_write_skill',
         });
         if ('error' in result) return textResult(result);
+        // Reset consecutive-failure counter on successful create.
+        skillWriteFailureCounts.get(deps.runId)?.delete(args.name);
         emitSkillNotification(vaultDir, 'created', {
           name: result.name,
           display_name: args.display_name,
@@ -1797,6 +1833,9 @@ export function createSkillTools(deps: VaultToolDeps) {
         name: args.name,
         ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
       }).catch(() => {});
+
+      // Reset consecutive-failure counter on successful evolve.
+      skillWriteFailureCounts.get(deps.runId)?.delete(args.name);
 
       return textResult({
         id: recordId,
